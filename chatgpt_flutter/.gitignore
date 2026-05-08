@@ -1,0 +1,78 @@
+# Miscellaneous
+*.class
+*.log
+*.pyc
+*.swp
+.DS_Store
+.atom/
+.build/
+.buildlog/
+.history
+.svn/
+.swiftpm/
+migrate_working_dir/
+
+# IntelliJ related
+*.iml
+*.ipr
+*.iws
+.idea/
+
+# The .vscode folder contains launch configuration and tasks you configure in
+# VS Code which you may wish to be included in version control, so this line
+# is commented out by default.
+#.vscode/
+
+# Flutter/Dart/Pub related
+**/doc/api/
+**/ios/Flutter/.last_build_id
+.dart_tool/
+.flutter-plugins
+.flutter-plugins-dependencies
+.packages
+.pub-cache/
+.pub/
+/build/
+
+# Symbolication related
+app.*.symbols
+
+# Obfuscation related
+app.*.map.json
+
+# Android Studio will place build artifacts here
+/android/app/debug
+/android/app/profile
+/android/app/release
+flutter_export_environment.sh
+Generated.xcconfig
+path_provider_linux
+Flutter-Generated.xcconfig
+
+# 测试覆盖率
+coverage/
+
+# Flutter Version Manager
+.fvm/
+.fvmrc
+
+# DevTools 用户级配置
+devtools_options.yaml
+
+# 环境变量 / 敏感配置
+.env
+.env.*
+!.env.example
+
+# 编辑器备份与合并冲突遗留
+*.bak
+*.orig
+*~
+
+# Windows / 其它操作系统垃圾
+Thumbs.db
+ehthumbs.db
+desktop.ini
+
+# 本地 OpenAI API Key，请勿提交。复制 hi_const.example.dart 后填入
+/lib/util/hi_const.dart

@@ -1,0 +1,34 @@
+# Files and directories created by pub.
+.dart_tool/
+.packages
+.pub-cache/
+.pub/
+build/
+# 库类型工程不提交 lockfile
+pubspec.lock
+
+# IntelliJ / Android Studio
+*.iml
+*.ipr
+*.iws
+.idea/
+
+# VS Code
+.vscode/
+
+# macOS
+.DS_Store
+
+# Flutter generated
+.flutter-plugins
+.flutter-plugins-dependencies
+**/doc/api/
+
+# Symbolication / Obfuscation
+app.*.symbols
+app.*.map.json
+
+# 编辑器备份
+*.bak
+*.orig
+*~
