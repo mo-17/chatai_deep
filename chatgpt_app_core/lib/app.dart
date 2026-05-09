@@ -4,6 +4,7 @@ import 'package:chatgpt_app_core/dao/ai_settings_dao.dart';
 import 'package:chatgpt_app_core/dao/hi_api_cache.dart';
 import 'package:chatgpt_app_core/db/hi_db_manager.dart';
 import 'package:chatgpt_app_core/pages/bottom_navigator.dart';
+import 'package:chatgpt_app_core/provider/ai_settings_provider.dart';
 import 'package:chatgpt_app_core/provider/hi_provider.dart';
 import 'package:chatgpt_app_core/provider/theme_provider.dart';
 import 'package:chatgpt_app_core/util/model_catalog.dart';
@@ -122,6 +123,11 @@ class _MyAppState extends State<MyApp> {
     ModelCatalog.loadFromCache();
     unawaited(ModelCatalog.refreshFromBackend());
 
+    // 已登录状态预加载 AI 设置，避免 BottomNavigator 首帧读到默认值
+    if (LoginDao.getBoardingPass() != null) {
+      AISettingsDao.load();
+    }
+
     if (!LoginDao.hooksRegistered) {
       LoginDao.hooksRegistered = true;
       LoginDao.addLogoutHook(() {
@@ -129,9 +135,14 @@ class _MyAppState extends State<MyApp> {
       });
       LoginDao.addLogoutHook(() {
         AISettingsDao.clear();
+        AISettingsProvider.resetToDefaults();
       });
       LoginDao.addLogoutHook(() {
         HiAPICache.getInstance().clearAll();
+      });
+      // 登录成功后重新加载 AI 设置（accountHash 已变更）
+      LoginDao.addLoginHook(() {
+        AISettingsProvider.reloadInstance();
       });
     }
   }

@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 
 import 'package:chatgpt_app_core/model/ai_settings.dart';
@@ -12,6 +13,7 @@ class AISettingsDao {
     return 'ai_settings_v1_$hash';
   }
 
+  ///同步读取当前账号的 AI 设置（HiCache 内存读是同步的）
   static AISettings load() {
     final key = _key();
     var raw = HiCache.getInstance().get(key);
@@ -21,8 +23,8 @@ class AISettingsDao {
       if (oldRaw != null) {
         raw = oldRaw;
         // 异步迁移到新 key，不阻塞当前读取
-        HiCache.getInstance().setString(key, oldRaw);
-        HiCache.getInstance().remove(_kOldKey);
+        unawaited(HiCache.getInstance().setString(key, oldRaw));
+        unawaited(HiCache.getInstance().remove(_kOldKey));
       }
     }
     if (raw == null) return AISettings.defaults();
@@ -37,8 +39,8 @@ class AISettingsDao {
     await HiCache.getInstance().setString(_key(), jsonEncode(s.toJson()));
   }
 
-  ///清除当前账号的 AI 设置
+  ///清除当前账号的 AI 设置（异步落盘，不阻塞调用方）
   static void clear() {
-    HiCache.getInstance().remove(_key());
+    unawaited(HiCache.getInstance().remove(_key()));
   }
 }

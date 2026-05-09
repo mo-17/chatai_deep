@@ -12,6 +12,7 @@ class LoginDao {
   static const kUserInfo = 'user_info';
 
   static final List<VoidCallback> _onLogoutHooks = [];
+  static final List<VoidCallback> _onLoginHooks = [];
   static bool hooksRegistered = false;
 
   ///注册登出钩子，宿主 App 在初始化时调用，用于清理账号态
@@ -19,13 +20,25 @@ class LoginDao {
     _onLogoutHooks.add(cb);
   }
 
+  ///注册登录成功钩子，在 _saveUserInfo 之后触发
+  static void addLoginHook(VoidCallback cb) {
+    _onLoginHooks.add(cb);
+  }
+
   ///登录
   static login({required String userName, required String password}) async {
-    Map<String, String> paramsMap = {};
-    paramsMap['userName'] = userName;
-    paramsMap['password'] = password;
-    var uri = BackendConfig.buildUri('/uapi/user/login', paramsMap);
-    final response = await http.post(uri, headers: hiHeaders());
+    var uri = BackendConfig.buildUri('/uapi/user/login');
+    //后端使用 @Body() + class-validator，必须 JSON body + Content-Type，
+    //不能塞到 query string，否则 DTO 字段全为 undefined，校验失败
+    final headers = <String, String>{
+      ...hiHeaders(),
+      'Content-Type': 'application/json',
+    };
+    final response = await http.post(
+      uri,
+      headers: headers,
+      body: jsonEncode({'userName': userName, 'password': password}),
+    );
     Utf8Decoder utf8decoder = const Utf8Decoder(); //fix 中文乱码
     String bodyString = utf8decoder.convert(response.bodyBytes);
     debugPrint(bodyString);
@@ -39,6 +52,12 @@ class LoginDao {
             userName: extra['userName'],
             avatar: extra['avatar'],
             imoocId: extra['imoocId']);
+        // 触发登录成功钩子（AISettingsProvider.reload 等）
+        for (final cb in _onLoginHooks) {
+          try {
+            cb();
+          } catch (_) {}
+        }
       } else {
         throw Exception(bodyString);
       }
