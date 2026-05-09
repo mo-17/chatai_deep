@@ -5,10 +5,12 @@ import {
   CreateDateColumn,
   UpdateDateColumn,
   OneToMany,
+  Index,
 } from 'typeorm';
 import { Message } from './message.entity';
 
 @Entity('conversations')
+@Index(['userId', 'updatedAt'])
 export class Conversation {
   @PrimaryGeneratedColumn()
   id: number;

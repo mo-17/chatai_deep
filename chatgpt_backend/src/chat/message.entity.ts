@@ -5,10 +5,12 @@ import {
   CreateDateColumn,
   ManyToOne,
   JoinColumn,
+  Index,
 } from 'typeorm';
 import { Conversation } from './conversation.entity';
 
 @Entity('messages')
+@Index(['conversationId', 'id'])
 export class Message {
   @PrimaryGeneratedColumn()
   id: number;

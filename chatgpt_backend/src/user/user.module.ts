@@ -6,6 +6,7 @@ import { User } from './user.entity';
 import { UserService } from './user.service';
 import { UserController } from './user.controller';
 import * as bcrypt from 'bcryptjs';
+import { BCRYPT_ROUNDS } from '../auth/bcrypt.const';
 
 @Injectable()
 export class UserSeedService implements OnApplicationBootstrap {
@@ -19,7 +20,10 @@ export class UserSeedService implements OnApplicationBootstrap {
     if (adminCount === 0) {
       const username = process.env.ADMIN_DEFAULT_USERNAME || 'admin';
       const password = process.env.ADMIN_DEFAULT_PASSWORD || 'admin123';
-      const hashed = await bcrypt.hash(password, 10);
+      if (process.env.NODE_ENV === 'production' && (!process.env.ADMIN_DEFAULT_PASSWORD || process.env.ADMIN_DEFAULT_PASSWORD === 'admin123')) {
+        throw new Error('生产环境必须设置 ADMIN_DEFAULT_PASSWORD，且不能等于默认值');
+      }
+      const hashed = await bcrypt.hash(password, BCRYPT_ROUNDS);
       await this.userRepo.save(
         this.userRepo.create({
           userName: username,

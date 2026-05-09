@@ -3,9 +3,13 @@ import {
   Column,
   PrimaryGeneratedColumn,
   CreateDateColumn,
+  Index,
 } from 'typeorm';
 
 @Entity()
+@Index(['userId', 'createdAt'])
+@Index(['provider', 'createdAt'])
+@Index(['createdAt'])
 export class Usage {
   @PrimaryGeneratedColumn()
   id: number;

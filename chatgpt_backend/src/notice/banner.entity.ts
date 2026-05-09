@@ -4,9 +4,11 @@ import {
   PrimaryGeneratedColumn,
   CreateDateColumn,
   UpdateDateColumn,
+  Index,
 } from 'typeorm';
 
 @Entity('banners')
+@Index(['enabled', 'sticky', 'createTime'])
 export class Banner {
   @PrimaryGeneratedColumn()
   id: number;

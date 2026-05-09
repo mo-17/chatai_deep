@@ -1,5 +1,5 @@
 import { Module } from '@nestjs/common';
-import { ConfigModule } from '@nestjs/config';
+import { ConfigModule, ConfigService } from '@nestjs/config';
 import { TypeOrmModule } from '@nestjs/typeorm';
 import { ThrottlerModule, ThrottlerGuard } from '@nestjs/throttler';
 import { APP_GUARD } from '@nestjs/core';
@@ -15,15 +15,20 @@ import { AiModule } from './ai/ai.module';
   imports: [
     ConfigModule.forRoot({ isGlobal: true }),
     ThrottlerModule.forRoot([{ ttl: 60_000, limit: 10 }]),
-    TypeOrmModule.forRoot({
-      type: 'postgres',
-      host: 'localhost',
-      port: 5432,
-      username: 'huangzhibin',
-      password: '',
-      database: 'chatgpt_flutter',
-      entities: [__dirname + '/**/*.entity{.ts,.js}'],
-      synchronize: true,
+    TypeOrmModule.forRootAsync({
+      inject: [ConfigService],
+      useFactory: (cfg: ConfigService) => ({
+        type: 'postgres',
+        host: cfg.get<string>('DB_HOST', 'localhost'),
+        port: cfg.get<number>('DB_PORT', 5432),
+        username: cfg.get<string>('DB_USER', 'huangzhibin'),
+        password: cfg.get<string>('DB_PASSWORD', ''),
+        database: cfg.get<string>('DB_NAME', 'chatgpt_flutter'),
+        entities: [__dirname + '/**/*.entity{.ts,.js}'],
+        synchronize: cfg.get<string>('NODE_ENV') !== 'production',
+        logging: cfg.get<string>('DB_LOGGING') === 'true' ? ['error', 'warn'] : ['error'],
+        extra: { max: parseInt(cfg.get<string>('DB_POOL_MAX', '10'), 10) },
+      }),
     }),
     UserModule,
     NoticeModule,
