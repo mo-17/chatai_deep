@@ -72,11 +72,6 @@ class _MyPageState extends State<MyPage> {
               title: '检测更新',
               icon: Icons.update,
               onTap: _checkUpdate),
-          ..._itemWidget(
-              color: color,
-              title: '设置代理',
-              icon: Icons.network_check,
-              onTap: _setProxy),
           _buildTitle,
           ThemeWidget(onThemeChange: _onThemeChange)
         ],
@@ -149,11 +144,6 @@ class _MyPageState extends State<MyPage> {
       AILogger.log(e.toString());
       HiDialog.showSnackBar(context, '已是最新版本');
     }
-  }
-
-  void _setProxy() {
-    HiDialog.showSnackBar(context, '代理设置正在迁移，敬请期待');
-    // TODO: 代理功能后续迁移到 AISettings 的 ProviderConfig 中
   }
 
   void _showUpdateDialog(ApkModel model) async {

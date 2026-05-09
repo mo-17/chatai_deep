@@ -15,7 +15,7 @@ class StudyPage extends StatefulWidget {
 }
 
 class _StudyPageState extends State<StudyPage> {
-  var noticeList = [];
+  List<BannerMo> noticeList = [];
 
   get _listView => ListView.builder(
       padding: const EdgeInsets.only(left: 5, right: 5),
@@ -25,7 +25,10 @@ class _StudyPageState extends State<StudyPage> {
   get _body => noticeList.isEmpty ? _loading : _listView;
 
   get _loading => Center(
-        child: Lottie.asset("assets/lottie/loading.json.zip", height: 200, package: 'chatgpt_app_core'),
+        child: Lottie.asset("assets/lottie/loading.json.zip", height: 200,
+            package: 'chatgpt_app_core',
+            errorBuilder: (_, __, ___) =>
+                const CircularProgressIndicator()),
       );
 
   @override
@@ -66,7 +69,7 @@ class _StudyPageState extends State<StudyPage> {
         hitCache: (NoticeModel model) => {
               AILogger.log('hiCache:${DateTime.now().millisecondsSinceEpoch}'),
               setState(() {
-                // noticeList = model.list!;
+                noticeList = model.list ?? [];
               })
             });
     setState(() {
