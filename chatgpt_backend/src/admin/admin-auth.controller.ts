@@ -16,6 +16,7 @@ import * as jwt from 'jsonwebtoken';
 import { User } from '../user/user.entity';
 import { AdminGuard } from '../auth/admin.guard';
 import { JWT_SECRET, JwtPayload } from '../auth/jwt.const';
+import { BCRYPT_ROUNDS } from '../auth/bcrypt.const';
 
 @Controller('uapi/admin')
 export class AdminAuthController {
@@ -91,7 +92,7 @@ export class AdminAuthController {
     if (!valid) {
       throw new BadRequestException('旧密码错误');
     }
-    user.password = await bcrypt.hash(newPassword, 10);
+    user.password = await bcrypt.hash(newPassword, BCRYPT_ROUNDS);
     await this.userRepo.save(user);
     return { code: 0, data: null };
   }

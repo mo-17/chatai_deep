@@ -7,8 +7,15 @@ import { join } from 'path';
 import { existsSync, mkdirSync } from 'fs';
 
 async function bootstrap() {
+  const origins = (process.env.CORS_ORIGINS ?? 'http://localhost:3001,http://localhost:5173')
+    .split(',').map((s) => s.trim()).filter(Boolean);
+
   const app = await NestFactory.create<NestExpressApplication>(AppModule, {
-    cors: true,
+    cors: {
+      origin: origins,
+      credentials: true,
+      methods: ['GET', 'POST', 'PATCH', 'DELETE', 'OPTIONS'],
+    },
   });
   app.useGlobalPipes(new ValidationPipe({ whitelist: true, transform: true }));
 

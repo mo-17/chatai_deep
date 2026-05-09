@@ -1,6 +1,8 @@
 import { Module } from '@nestjs/common';
 import { ConfigModule } from '@nestjs/config';
 import { TypeOrmModule } from '@nestjs/typeorm';
+import { ThrottlerModule, ThrottlerGuard } from '@nestjs/throttler';
+import { APP_GUARD } from '@nestjs/core';
 import { UserModule } from './user/user.module';
 import { NoticeModule } from './notice/notice.module';
 import { UpdateModule } from './update/update.module';
@@ -12,6 +14,7 @@ import { AiModule } from './ai/ai.module';
 @Module({
   imports: [
     ConfigModule.forRoot({ isGlobal: true }),
+    ThrottlerModule.forRoot([{ ttl: 60_000, limit: 10 }]),
     TypeOrmModule.forRoot({
       type: 'postgres',
       host: 'localhost',
@@ -25,10 +28,11 @@ import { AiModule } from './ai/ai.module';
     UserModule,
     NoticeModule,
     UpdateModule,
-    TestModule,
+    ...(process.env.NODE_ENV === 'production' ? [] : [TestModule]),
     ChatModule,
     AdminModule,
     AiModule,
   ],
+  providers: [{ provide: APP_GUARD, useClass: ThrottlerGuard }],
 })
 export class AppModule {}

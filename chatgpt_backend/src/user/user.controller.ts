@@ -2,7 +2,6 @@ import {
   Controller,
   Post,
   Get,
-  Query,
   Body,
   Res,
   HttpCode,
@@ -16,25 +15,17 @@ export class UserController {
 
   @Post('login')
   @HttpCode(200)
-  async login(
-    @Query('userName') userName?: string,
-    @Query('password') password?: string,
-    @Body() body?: { userName?: string; password?: string },
-  ) {
-    const u = userName || body?.userName || '';
-    const p = password || body?.password || '';
+  async login(@Body() body?: { userName?: string; password?: string }) {
+    const u = body?.userName || '';
+    const p = body?.password || '';
     return this.userService.login(u, p);
   }
 
   @Post('registration')
   @HttpCode(200)
-  async register(
-    @Query('userName') userName?: string,
-    @Query('password') password?: string,
-    @Body() body?: { userName?: string; password?: string },
-  ) {
-    const u = userName || body?.userName || '';
-    const p = password || body?.password || '';
+  async register(@Body() body?: { userName?: string; password?: string }) {
+    const u = body?.userName || '';
+    const p = body?.password || '';
     return this.userService.register(u, p);
   }
 

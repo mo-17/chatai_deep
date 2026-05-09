@@ -4,6 +4,7 @@ import { Repository, Like } from 'typeorm';
 import * as bcrypt from 'bcryptjs';
 import { User } from '../user/user.entity';
 import { Usage } from '../chat/usage.entity';
+import { BCRYPT_ROUNDS } from '../auth/bcrypt.const';
 
 @Injectable()
 export class AdminUserService {
@@ -23,7 +24,8 @@ export class AdminUserService {
     const pageSize = query.pageSize || 10;
     const where: Record<string, unknown> = {};
     if (query.keyword) {
-      where['userName'] = Like(`%${query.keyword}%`);
+      const kw = query.keyword.replace(/[\\%_]/g, (c) => '\\' + c);
+      where['userName'] = Like(`%${kw}%`);
     }
     if (query.role) {
       where['role'] = query.role;
@@ -69,7 +71,7 @@ export class AdminUserService {
   async resetPassword(id: number, password: string) {
     const user = await this.userRepo.findOne({ where: { id } });
     if (!user) throw new NotFoundException('用户不存在');
-    user.password = await bcrypt.hash(password, 10);
+    user.password = await bcrypt.hash(password, BCRYPT_ROUNDS);
     await this.userRepo.save(user);
     return null;
   }

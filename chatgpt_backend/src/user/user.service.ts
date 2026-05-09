@@ -5,6 +5,7 @@ import { User } from './user.entity';
 import * as bcrypt from 'bcryptjs';
 import * as jwt from 'jsonwebtoken';
 import { JWT_SECRET } from '../auth/jwt.const';
+import { BCRYPT_ROUNDS } from '../auth/bcrypt.const';
 
 function defaultAvatar(name: string) {
   return `https://ui-avatars.com/api/?name=${encodeURIComponent(name)}&background=0f3460&color=fff&size=128`;
@@ -22,7 +23,7 @@ export class UserService {
     if (existing) {
       throw new BadRequestException('用户名已存在');
     }
-    const hashedPassword = await bcrypt.hash(password, 10);
+    const hashedPassword = await bcrypt.hash(password, BCRYPT_ROUNDS);
     const user = this.userRepo.create({
       userName,
       password: hashedPassword,
@@ -33,6 +34,7 @@ export class UserService {
     const token = jwt.sign(
       { userId: user.id, userName, role: user.role },
       JWT_SECRET,
+      { expiresIn: '30d' },
     );
     return {
       code: 0,
@@ -60,7 +62,7 @@ export class UserService {
     const token = jwt.sign(
       { userId: user.id, userName, role: user.role },
       JWT_SECRET,
-      user.role === 'admin' ? { expiresIn: '7d' } : undefined,
+      user.role === 'admin' ? { expiresIn: '7d' } : { expiresIn: '30d' },
     );
     const avatar = user.avatar || defaultAvatar(user.userName);
     return {
