@@ -1,8 +1,12 @@
 import type { NextConfig } from "next";
 
 const nextConfig: NextConfig = {
+  // NextUI v2 SelectItem type incompatible with React 19 JSX; re-enable after upgrading to NextUI v3 / HeroUI
   typescript: {
     ignoreBuildErrors: true,
+  },
+  experimental: {
+    optimizePackageImports: ['lucide-react', '@nextui-org/react', 'recharts'],
   },
   async rewrites() {
     const backend = process.env.NEXT_PUBLIC_BACKEND || 'http://localhost:3000';

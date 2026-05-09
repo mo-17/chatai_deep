@@ -1,5 +1,11 @@
-import axios from 'axios';
+import axios, { AxiosError, AxiosResponse } from 'axios';
 import { useAuthStore } from '@/store/authStore';
+
+interface ApiEnvelope<T = unknown> {
+  code: number;
+  data: T;
+  message?: string;
+}
 
 export const api = axios.create({
   baseURL: '/api',
@@ -13,20 +19,24 @@ api.interceptors.request.use((config) => {
 });
 
 api.interceptors.response.use(
-  (res) => {
+  (res: AxiosResponse<ApiEnvelope>) => {
     const body = res.data;
     if (body && typeof body === 'object' && 'code' in body) {
-      if (body.code === 0) return { ...res, data: body.data };
+      if (body.code === 0) {
+        return { ...res, data: body.data } as AxiosResponse;
+      }
       throw new Error(body.message || '请求失败');
     }
     return res;
   },
-  (err) => {
+  (err: AxiosError<{ message?: string }>) => {
     if (err.response?.status === 401) {
       useAuthStore.getState().logout();
-      if (typeof window !== 'undefined') window.location.href = '/login';
+      return Promise.reject(Object.assign(new Error('未登录或登录已过期'), { isAuthError: true }));
     }
-    const msg = err.response?.data?.message || err.message || '网络错误';
+    const msg = err.response?.data?.message ?? err.message ?? '网络错误';
     return Promise.reject(new Error(msg));
   },
 );
+
+export type ApiResult<T> = AxiosResponse<T>;
