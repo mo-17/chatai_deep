@@ -2,6 +2,7 @@ import { Injectable, NotFoundException } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { Banner } from '../notice/banner.entity';
+import { UpdateBannerDto } from './dto/update-banner.dto';
 
 @Injectable()
 export class AdminBannerService {
@@ -32,10 +33,14 @@ export class AdminBannerService {
     return this.repo.save(entity);
   }
 
-  async edit(id: number, body: Partial<Banner>) {
+  async edit(id: number, body: UpdateBannerDto) {
     const entity = await this.repo.findOne({ where: { id } });
     if (!entity) throw new NotFoundException('Banner 不存在');
-    Object.assign(entity, body);
+    for (const key of Object.keys(body) as (keyof UpdateBannerDto)[]) {
+      if (body[key] !== undefined) {
+        (entity as unknown as Record<string, unknown>)[key] = body[key];
+      }
+    }
     return this.repo.save(entity);
   }
 

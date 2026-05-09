@@ -1,8 +1,9 @@
 import { Injectable } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository, Between } from 'typeorm';
+import { Repository, Between, FindOptionsWhere } from 'typeorm';
 import { Usage } from '../chat/usage.entity';
 import { User } from '../user/user.entity';
+import { toInt } from '../util/num';
 
 @Injectable()
 export class AdminUsageService {
@@ -22,7 +23,7 @@ export class AdminUsageService {
   }) {
     const page = query.page || 1;
     const pageSize = query.pageSize || 10;
-    const where: any = {};
+    const where: FindOptionsWhere<Usage> = {};
 
     if (query.userId) {
       where.userId = parseInt(query.userId, 10);
@@ -100,7 +101,7 @@ export class AdminUsageService {
         .select('COUNT(DISTINCT "userId")', 'cnt')
         .where('usage.createdAt >= :start', { start: todayStart })
         .getRawOne()
-        .then((r) => parseInt(r?.cnt || '0', 10)),
+        .then((r) => toInt(r?.cnt)),
     ]);
 
     return {
@@ -121,8 +122,8 @@ export class AdminUsageService {
       .where('usage.createdAt >= :start', { start: since })
       .getRawOne();
     return {
-      tokens: parseInt(result?.tokens || '0', 10),
-      calls: parseInt(result?.calls || '0', 10),
+      tokens: toInt(result?.tokens),
+      calls: toInt(result?.calls),
     };
   }
 
@@ -147,7 +148,7 @@ export class AdminUsageService {
     const dateMap = new Map(
       rows.map((r) => [
         r.date as string,
-        { tokens: parseInt(r.tokens, 10), calls: parseInt(r.calls, 10) },
+        { tokens: toInt(r.tokens), calls: toInt(r.calls) },
       ]),
     );
     const list: Array<{ date: string; tokens: number; calls: number }> = [];
@@ -177,8 +178,8 @@ export class AdminUsageService {
     return {
       list: rows.map((r) => ({
         provider: r.provider,
-        tokens: parseInt(r.tokens, 10),
-        calls: parseInt(r.calls, 10),
+        tokens: toInt(r.tokens),
+        calls: toInt(r.calls),
       })),
     };
   }
@@ -211,8 +212,8 @@ export class AdminUsageService {
       list: rows.map((r) => ({
         userId: r.userId,
         userName: userMap.get(r.userId) || '未知',
-        tokens: parseInt(r.tokens, 10),
-        calls: parseInt(r.calls, 10),
+        tokens: toInt(r.tokens),
+        calls: toInt(r.calls),
       })),
     };
   }
@@ -224,7 +225,7 @@ export class AdminUsageService {
     from?: string;
     to?: string;
   }): Promise<string> {
-    const where: any = {};
+    const where: FindOptionsWhere<Usage> = {};
     if (query.userId) where.userId = parseInt(query.userId, 10);
     if (query.provider) where.provider = query.provider;
     if (query.model) where.model = query.model;

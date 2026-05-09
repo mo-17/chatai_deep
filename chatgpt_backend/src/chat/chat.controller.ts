@@ -16,12 +16,7 @@ import type { AuthenticatedRequest } from '../auth/jwt.guard';
 import { JwtGuard } from '../auth/jwt.guard';
 import { AdminGuard } from '../auth/admin.guard';
 import { ChatService } from './chat.service';
-
-interface CompletionBody {
-  model: string;
-  messages: Record<string, unknown>[];
-  max_tokens?: number;
-}
+import { CompletionBodyDto } from './dto/completion-body.dto';
 
 @Controller('uapi/chat')
 export class ChatController {
@@ -98,7 +93,7 @@ export class ChatController {
   @UseGuards(JwtGuard)
   async completions(
     @Req() req: AuthenticatedRequest,
-    @Body() body: CompletionBody,
+    @Body() body: CompletionBodyDto,
   ) {
     const data = await this.svc.complete(req.user!.userId, body);
     return { code: 0, data, extra: {} };
@@ -108,7 +103,7 @@ export class ChatController {
   @UseGuards(JwtGuard)
   async completionsStream(
     @Req() req: AuthenticatedRequest,
-    @Body() body: CompletionBody,
+    @Body() body: CompletionBodyDto,
     @Res() res: Response,
   ) {
     try {

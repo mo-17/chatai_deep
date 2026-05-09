@@ -17,6 +17,8 @@ import { User } from '../user/user.entity';
 import { AdminGuard } from '../auth/admin.guard';
 import { JWT_SECRET, JwtPayload } from '../auth/jwt.const';
 import { BCRYPT_ROUNDS } from '../auth/bcrypt.const';
+import { LoginDto } from '../user/dto/login.dto';
+import { ChangePasswordDto } from './dto/change-password.dto';
 
 @Controller('uapi/admin')
 export class AdminAuthController {
@@ -27,11 +29,8 @@ export class AdminAuthController {
 
   @Post('login')
   @HttpCode(200)
-  async login(@Body() body: { userName?: string; password?: string }) {
+  async login(@Body() body: LoginDto) {
     const { userName, password } = body;
-    if (!userName || !password) {
-      throw new BadRequestException('请输入账号和密码');
-    }
     const user = await this.userRepo.findOne({ where: { userName } });
     if (!user || user.role !== 'admin') {
       throw new BadRequestException('账号或密码错误');
@@ -76,12 +75,9 @@ export class AdminAuthController {
   @HttpCode(200)
   async changePassword(
     @Req() req: Request & { user: JwtPayload },
-    @Body() body: { oldPassword?: string; newPassword?: string },
+    @Body() body: ChangePasswordDto,
   ) {
     const { oldPassword, newPassword } = body;
-    if (!oldPassword || !newPassword) {
-      throw new BadRequestException('请输入旧密码和新密码');
-    }
     const user = await this.userRepo.findOne({
       where: { id: req.user.userId },
     });

@@ -8,6 +8,8 @@ import {
 } from '@nestjs/common';
 import type { Response } from 'express';
 import { UserService } from './user.service';
+import { LoginDto } from './dto/login.dto';
+import { RegisterDto } from './dto/register.dto';
 
 @Controller('uapi/user')
 export class UserController {
@@ -15,18 +17,14 @@ export class UserController {
 
   @Post('login')
   @HttpCode(200)
-  async login(@Body() body?: { userName?: string; password?: string }) {
-    const u = body?.userName || '';
-    const p = body?.password || '';
-    return this.userService.login(u, p);
+  async login(@Body() body: LoginDto) {
+    return this.userService.login(body.userName, body.password);
   }
 
   @Post('registration')
   @HttpCode(200)
-  async register(@Body() body?: { userName?: string; password?: string }) {
-    const u = body?.userName || '';
-    const p = body?.password || '';
-    return this.userService.register(u, p);
+  async register(@Body() body: RegisterDto) {
+    return this.userService.register(body.userName, body.password);
   }
 
   @Get('register-page')

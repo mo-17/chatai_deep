@@ -11,7 +11,7 @@ export class TestController {
   }
 
   @Post('test')
-  postTest(@Body() body?: any) {
+  postTest(@Body() body?: Record<string, unknown>) {
     return {
       code: 0,
       data: { message: 'POST test ok', body },

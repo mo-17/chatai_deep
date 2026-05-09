@@ -5,6 +5,7 @@ import {
   CreateDateColumn,
   UpdateDateColumn,
 } from 'typeorm';
+import { Exclude } from 'class-transformer';
 
 @Entity('ai_providers')
 export class AiProvider {
@@ -18,6 +19,7 @@ export class AiProvider {
   displayName: string;
 
   @Column()
+  @Exclude({ toPlainOnly: true })
   apiKey: string;
 
   @Column()

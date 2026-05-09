@@ -11,6 +11,8 @@ import {
 } from '@nestjs/common';
 import { AdminBannerService } from './admin-banner.service';
 import { AdminGuard } from '../auth/admin.guard';
+import { CreateBannerDto } from './dto/create-banner.dto';
+import { UpdateBannerDto } from './dto/update-banner.dto';
 
 @Controller('uapi/admin/banners')
 @UseGuards(AdminGuard)
@@ -36,13 +38,13 @@ export class AdminBannerController {
   }
 
   @Post()
-  async create(@Body() body: any) {
+  async create(@Body() body: CreateBannerDto) {
     const data = await this.svc.create(body);
     return { code: 0, data };
   }
 
   @Patch(':id')
-  async edit(@Param('id') id: string, @Body() body: any) {
+  async edit(@Param('id') id: string, @Body() body: UpdateBannerDto) {
     const data = await this.svc.edit(parseInt(id, 10), body);
     return { code: 0, data };
   }

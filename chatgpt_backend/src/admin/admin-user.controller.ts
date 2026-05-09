@@ -11,6 +11,8 @@ import {
 } from '@nestjs/common';
 import { AdminUserService } from './admin-user.service';
 import { AdminGuard } from '../auth/admin.guard';
+import { UpdateUserDto } from './dto/update-user.dto';
+import { ResetPasswordDto } from './dto/reset-password.dto';
 
 @Controller('uapi/admin/users')
 @UseGuards(AdminGuard)
@@ -44,7 +46,7 @@ export class AdminUserController {
   @Patch(':id')
   async edit(
     @Param('id') id: string,
-    @Body() body: { avatar?: string; role?: string; banned?: boolean },
+    @Body() body: UpdateUserDto,
   ) {
     const data = await this.svc.edit(parseInt(id, 10), body);
     return { code: 0, data };
@@ -53,11 +55,8 @@ export class AdminUserController {
   @Post(':id/reset-password')
   async resetPassword(
     @Param('id') id: string,
-    @Body() body: { password?: string },
+    @Body() body: ResetPasswordDto,
   ) {
-    if (!body.password) {
-      return { code: 1, message: '请输入新密码' };
-    }
     await this.svc.resetPassword(parseInt(id, 10), body.password);
     return { code: 0, data: null };
   }
