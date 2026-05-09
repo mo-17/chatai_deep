@@ -4,6 +4,7 @@ import { AiProvider } from './ai-provider.entity';
 import { AiModel } from './ai-model.entity';
 import { AiGlobalConfig } from './ai-global-config.entity';
 import { AiSeedService } from './ai-seed.service';
+import { ProviderCacheService } from './provider-cache.service';
 import { AdminAiProviderController } from './admin-ai-provider.controller';
 import { AdminAiProviderService } from './admin-ai-provider.service';
 import { AdminAiModelController } from './admin-ai-model.controller';
@@ -27,10 +28,14 @@ import { PublicAiController } from './public-ai.controller';
   ],
   providers: [
     AiSeedService,
+    ProviderCacheService,
     AdminAiProviderService,
     AdminAiModelService,
     AdminAiGlobalService,
   ],
-  exports: [TypeOrmModule.forFeature([AiProvider, AiModel, AiGlobalConfig])],
+  exports: [
+    ProviderCacheService,
+    TypeOrmModule.forFeature([AiProvider, AiModel, AiGlobalConfig]),
+  ],
 })
 export class AiModule {}

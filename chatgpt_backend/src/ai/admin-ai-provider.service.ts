@@ -8,6 +8,7 @@ import { Repository, DataSource } from 'typeorm';
 import { AiProvider } from './ai-provider.entity';
 import { AiModel } from './ai-model.entity';
 import { ChatService } from '../chat/chat.service';
+import { ProviderCacheService } from './provider-cache.service';
 
 @Injectable()
 export class AdminAiProviderService {
@@ -18,6 +19,7 @@ export class AdminAiProviderService {
     private readonly modelRepo: Repository<AiModel>,
     private readonly dataSource: DataSource,
     private readonly chatService: ChatService,
+    private readonly providerCache: ProviderCacheService,
   ) {}
 
   async list() {
@@ -38,6 +40,7 @@ export class AdminAiProviderService {
   async create(body: Partial<AiProvider>) {
     const entity = this.repo.create(body);
     const saved = await this.repo.save(entity);
+    this.providerCache.invalidate();
     return { ...saved, apiKey: this.maskKey(saved.apiKey) };
   }
 
@@ -50,6 +53,7 @@ export class AdminAiProviderService {
     }
     Object.assign(entity, body);
     const saved = await this.repo.save(entity);
+    this.providerCache.invalidate();
     return { ...saved, apiKey: this.maskKey(saved.apiKey) };
   }
 
@@ -63,11 +67,13 @@ export class AdminAiProviderService {
       await manager.delete(AiModel, { providerId: id });
       await manager.remove(provider);
       if (modelCount > 0) {
+        // eslint-disable-next-line no-console
         console.warn(
           `已删除服务商 ${provider.code} 及其 ${modelCount} 个模型。全局默认 provider 可能已不可用，请到全局配置页修改。`,
         );
       }
     });
+    this.providerCache.invalidate();
     return null;
   }
 
@@ -97,8 +103,8 @@ export class AdminAiProviderService {
       });
       const sample = data.choices?.[0]?.message?.content?.slice(0, 50) || '';
       return { ok: true, latencyMs: Date.now() - start, sample };
-    } catch (err: any) {
-      return { ok: false, error: err.message || '未知错误' };
+    } catch (err: unknown) {
+      return { ok: false, error: (err as Error).message || '未知错误' };
     }
   }
 

@@ -3,6 +3,7 @@ import { InjectRepository } from '@nestjs/typeorm';
 import { Repository, DataSource, Like } from 'typeorm';
 import { AiModel } from './ai-model.entity';
 import { AiProvider } from './ai-provider.entity';
+import { ProviderCacheService } from './provider-cache.service';
 
 @Injectable()
 export class AdminAiModelService {
@@ -12,6 +13,7 @@ export class AdminAiModelService {
     @InjectRepository(AiProvider)
     private readonly providerRepo: Repository<AiProvider>,
     private readonly dataSource: DataSource,
+    private readonly providerCache: ProviderCacheService,
   ) {}
 
   async list(query: {
@@ -19,10 +21,10 @@ export class AdminAiModelService {
     enabled?: string;
     keyword?: string;
   }) {
-    const where: any = {};
-    if (query.providerId) where.providerId = parseInt(query.providerId, 10);
-    if (query.enabled === 'true') where.enabled = true;
-    else if (query.enabled === 'false') where.enabled = false;
+    const where: Record<string, unknown> = {};
+    if (query.providerId) where['providerId'] = parseInt(query.providerId, 10);
+    if (query.enabled === 'true') where['enabled'] = true;
+    else if (query.enabled === 'false') where['enabled'] = false;
 
     const list = await this.repo.find({
       where: query.keyword
@@ -57,6 +59,7 @@ export class AdminAiModelService {
   async create(body: Partial<AiModel>) {
     const entity = this.repo.create(body);
     const saved = await this.repo.save(entity);
+    this.providerCache.invalidate();
     const provider = await this.providerRepo.findOne({
       where: { id: saved.providerId },
     });
@@ -68,6 +71,7 @@ export class AdminAiModelService {
     if (!entity) throw new NotFoundException('模型不存在');
     Object.assign(entity, body);
     const saved = await this.repo.save(entity);
+    this.providerCache.invalidate();
     const provider = await this.providerRepo.findOne({
       where: { id: saved.providerId },
     });
@@ -78,6 +82,7 @@ export class AdminAiModelService {
     const entity = await this.repo.findOne({ where: { id } });
     if (!entity) throw new NotFoundException('模型不存在');
     await this.repo.remove(entity);
+    this.providerCache.invalidate();
     return null;
   }
 

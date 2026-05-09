@@ -114,12 +114,17 @@ export class ChatController {
     try {
       await this.svc.completeStream(req.user!.userId, body, res);
     } catch (err: unknown) {
+      const e = err as { status?: number; message?: string };
       if (!res.headersSent) {
-        const e = err as { status?: number; message?: string };
         res.status(e.status || 502).json({
           code: -1,
           message: e.message || '流式请求失败',
         });
+      } else {
+        res.write(
+          `event: error\ndata: ${JSON.stringify({ message: e.message ?? '上游错误' })}\n\n`,
+        );
+        res.end();
       }
     }
   }

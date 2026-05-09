@@ -1,4 +1,4 @@
-import { Module } from '@nestjs/common';
+import { Module, forwardRef } from '@nestjs/common';
 import { TypeOrmModule } from '@nestjs/typeorm';
 import { ChatController } from './chat.controller';
 import { ChatService } from './chat.service';
@@ -8,6 +8,7 @@ import { Message } from './message.entity';
 import { AiProvider } from '../ai/ai-provider.entity';
 import { AiModel } from '../ai/ai-model.entity';
 import { AiGlobalConfig } from '../ai/ai-global-config.entity';
+import { AiModule } from '../ai/ai.module';
 
 @Module({
   imports: [
@@ -19,6 +20,7 @@ import { AiGlobalConfig } from '../ai/ai-global-config.entity';
       AiModel,
       AiGlobalConfig,
     ]),
+    forwardRef(() => AiModule),
   ],
   controllers: [ChatController],
   providers: [ChatService],

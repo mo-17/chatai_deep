@@ -8,6 +8,7 @@ import { Message } from './message.entity';
 import { AiProvider } from '../ai/ai-provider.entity';
 import { AiModel } from '../ai/ai-model.entity';
 import { AiGlobalConfig } from '../ai/ai-global-config.entity';
+import { ProviderCacheService } from '../ai/provider-cache.service';
 
 export interface CompletionBody {
   model: string;
@@ -25,6 +26,8 @@ export interface UpstreamResponse {
   [key: string]: unknown;
 }
 
+const SSE_SEP = /\r?\n\r?\n/;
+
 @Injectable()
 export class ChatService {
   constructor(
@@ -40,6 +43,7 @@ export class ChatService {
     private readonly modelRepo: Repository<AiModel>,
     @InjectRepository(AiGlobalConfig)
     private readonly globalRepo: Repository<AiGlobalConfig>,
+    private readonly providerCache: ProviderCacheService,
   ) {}
 
   // --- Conversation CRUD ---
@@ -86,21 +90,26 @@ export class ChatService {
     return this.msgRepo.save(entities);
   }
 
-  // --- Existing methods ---
+  // --- Non-streaming completion ---
 
   async complete(userId: number, body: CompletionBody) {
     const provider = await this.resolveProvider(body.model);
     const data = await this.callUpstream(provider, body);
 
     if (data.usage) {
-      await this.usageRepo.save({
-        userId,
-        provider: provider.code,
-        model: body.model,
-        promptTokens: data.usage.prompt_tokens || 0,
-        completionTokens: data.usage.completion_tokens || 0,
-        totalTokens: data.usage.total_tokens || 0,
-      });
+      void this.usageRepo
+        .save({
+          userId,
+          provider: provider.code,
+          model: body.model,
+          promptTokens: data.usage.prompt_tokens || 0,
+          completionTokens: data.usage.completion_tokens || 0,
+          totalTokens: data.usage.total_tokens || 0,
+        })
+        .catch((e) => {
+          // eslint-disable-next-line no-console
+          console.error('[usage] save failed', e);
+        });
     }
 
     const choice = data.choices?.[0];
@@ -127,28 +136,48 @@ export class ChatService {
     }
 
     const url = `${provider.baseUrl}/chat/completions`;
-    const resp = await fetch(url, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        Authorization: `Bearer ${provider.apiKey}`,
-      },
-      body: JSON.stringify(body),
-    });
+    const t0 = Date.now();
+    try {
+      const resp = await fetch(url, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${provider.apiKey}`,
+        },
+        body: JSON.stringify(body),
+      });
 
-    const data: UpstreamResponse = (await resp.json()) as UpstreamResponse;
+      const data: UpstreamResponse = (await resp.json()) as UpstreamResponse;
 
-    if (!resp.ok) {
-      throw new BadGatewayException(
-        data?.error?.message || `上游 ${provider.code} 返回错误 ${resp.status}`,
+      if (!resp.ok) {
+        throw new BadGatewayException(
+          data?.error?.message ||
+            `上游 ${provider.code} 返回错误 ${resp.status}`,
+        );
+      }
+
+      // eslint-disable-next-line no-console
+      console.log(
+        `[upstream] ${provider.code}/${body.model} ${Date.now() - t0}ms tokens=${data.usage?.total_tokens ?? '?'}`,
       );
+      return data;
+    } catch (e) {
+      if (e instanceof BadGatewayException) throw e;
+      // eslint-disable-next-line no-console
+      console.warn(
+        `[upstream] ${provider.code}/${body.model} ${Date.now() - t0}ms FAIL: ${(e as Error).message}`,
+      );
+      throw e;
     }
-
-    return data;
   }
 
-  /// SSE 流式透传：将上游 SSE 转发给客户端，末尾落库 usage
-  async completeStream(userId: number, body: CompletionBody, res: Response) {
+  // --- SSE streaming completion ---
+
+  async completeStream(
+    userId: number,
+    body: CompletionBody,
+    res: Response,
+  ) {
     const provider = await this.resolveProvider(body.model);
 
     if (!provider.apiKey) {
@@ -166,6 +195,10 @@ export class ChatService {
       stream: true,
       stream_options: { include_usage: true },
     };
+
+    const controller = new AbortController();
+    res.on('close', () => controller.abort());
+
     const upstreamResp = await fetch(url, {
       method: 'POST',
       headers: {
@@ -173,6 +206,10 @@ export class ChatService {
         Authorization: `Bearer ${provider.apiKey}`,
       },
       body: JSON.stringify(streamBody),
+      signal: AbortSignal.any([
+        controller.signal,
+        AbortSignal.timeout(60_000),
+      ]),
     });
 
     if (!upstreamResp.ok) {
@@ -188,9 +225,10 @@ export class ChatService {
     }
 
     res.status(200);
-    res.setHeader('Content-Type', 'text/event-stream');
-    res.setHeader('Cache-Control', 'no-cache');
+    res.setHeader('Content-Type', 'text/event-stream; charset=utf-8');
+    res.setHeader('Cache-Control', 'no-cache, no-transform');
     res.setHeader('Connection', 'keep-alive');
+    res.setHeader('X-Accel-Buffering', 'no');
     res.flushHeaders();
 
     const reader = upstreamResp.body!.getReader();
@@ -204,37 +242,56 @@ export class ChatService {
         if (done) break;
 
         buffer += decoder.decode(value, { stream: true });
-        const lines = buffer.split('\n');
-        buffer = lines.pop() || '';
+        let idx: number;
+        while ((idx = buffer.search(SSE_SEP)) !== -1) {
+          const block = buffer.slice(0, idx);
+          buffer = buffer.slice(
+            idx + (buffer[idx] === '\r' ? 4 : 2),
+          );
 
-        for (const rawLine of lines) {
-          const line = rawLine.trimEnd(); // 去除 \r (DeepSeek 等 API 使用 \r\n 行尾)
-          if (line.startsWith('data: ')) {
-            const data = line.slice(6);
-            if (data === '[DONE]') continue;
-            try {
-              const json = JSON.parse(data) as UpstreamResponse;
-              if (json.usage) {
-                lastUsage = json.usage;
+          // Parse SSE block for usage info
+          const lines = block.split(/\r?\n/);
+          for (const rawLine of lines) {
+            const line = rawLine.trimEnd();
+            if (line.startsWith('data: ')) {
+              const data = line.slice(6);
+              if (data === '[DONE]') continue;
+              try {
+                const json = JSON.parse(data) as UpstreamResponse;
+                if (json.usage) {
+                  lastUsage = json.usage;
+                }
+              } catch {
+                // 忽略无法解析的 SSE 行
               }
-            } catch {
-              // 忽略无法解析的 SSE 行
             }
           }
-          res.write(line + '\n');
+
+          res.write(block + '\n\n');
         }
       }
-      // 处理 buffer 中的残余行
-      if (buffer.startsWith('data: ') && buffer !== 'data: [DONE]') {
-        try {
-          const data = buffer.slice(6).trimEnd();
-          const json = JSON.parse(data) as UpstreamResponse;
-          if (json.usage) {
-            lastUsage = json.usage;
+
+      // 处理 buffer 中的残余块
+      if (buffer.trim()) {
+        const lines = buffer.split(/\r?\n/);
+        for (const rawLine of lines) {
+          const line = rawLine.trimEnd();
+          if (line.startsWith('data: ') && line.slice(6) !== '[DONE]') {
+            try {
+              const json = JSON.parse(line.slice(6)) as UpstreamResponse;
+              if (json.usage) lastUsage = json.usage;
+            } catch {
+              // 忽略
+            }
           }
-        } catch {
-          // 忽略无法解析的残余行
         }
+        res.write(buffer);
+      }
+    } catch (err) {
+      if ((err as Error).name === 'AbortError') {
+        // Client disconnected — normal, just exit
+      } else {
+        throw err;
       }
     } finally {
       reader.releaseLock();
@@ -243,21 +300,31 @@ export class ChatService {
     res.write('data: [DONE]\n\n');
     res.end();
 
-    // 落库 usage
+    // Fire-and-forget usage save
     if (lastUsage) {
-      await this.usageRepo.save({
-        userId,
-        provider: provider.code,
-        model: body.model,
-        promptTokens: lastUsage.prompt_tokens || 0,
-        completionTokens: lastUsage.completion_tokens || 0,
-        totalTokens: lastUsage.total_tokens || 0,
-      });
+      void this.usageRepo
+        .save({
+          userId,
+          provider: provider.code,
+          model: body.model,
+          promptTokens: lastUsage.prompt_tokens || 0,
+          completionTokens: lastUsage.completion_tokens || 0,
+          totalTokens: lastUsage.total_tokens || 0,
+        })
+        .catch((e) => {
+          // eslint-disable-next-line no-console
+          console.error('[usage] save failed', e);
+        });
     }
   }
 
   async resolveProvider(model: string): Promise<AiProvider> {
-    // 1. 精确匹配 ai_models 表
+    // 1. Check cache
+    const cacheKey = `model:${model}`;
+    const cached = this.providerCache.get(cacheKey);
+    if (cached) return cached;
+
+    // 2. 精确匹配 ai_models 表
     const modelRow = await this.modelRepo.findOne({
       where: { modelId: model, enabled: true },
     });
@@ -265,10 +332,13 @@ export class ChatService {
       const provider = await this.providerRepo.findOne({
         where: { id: modelRow.providerId },
       });
-      if (provider) return provider;
+      if (provider) {
+        this.providerCache.set(cacheKey, provider);
+        return provider;
+      }
     }
 
-    // 2. 按 modelPrefixes 前缀匹配
+    // 3. 按 modelPrefixes 前缀匹配
     const providers = await this.providerRepo.find({
       where: { enabled: true },
       order: { sortOrder: 'DESC' },
@@ -280,12 +350,15 @@ export class ChatService {
           .map((s) => s.trim())
           .filter(Boolean);
         for (const prefix of prefixes) {
-          if (model.startsWith(prefix)) return p;
+          if (model.startsWith(prefix)) {
+            this.providerCache.set(cacheKey, p);
+            return p;
+          }
         }
       }
     }
 
-    // 3. 兜底：全局默认 provider
+    // 4. 兜底：全局默认 provider
     const global = await this.globalRepo.findOne({ where: { id: 1 } });
     const defaultCode = global?.defaultProviderCode || 'deepseek';
     const fallback = await this.providerRepo.findOne({
@@ -294,9 +367,11 @@ export class ChatService {
     if (!fallback) {
       throw new BadGatewayException('没有可用的 AI 服务商');
     }
+    // eslint-disable-next-line no-console
     console.warn(
       `model "${model}" 未匹配任何 provider，fallback to default provider: ${defaultCode}`,
     );
+    this.providerCache.set(cacheKey, fallback);
     return fallback;
   }
 }
