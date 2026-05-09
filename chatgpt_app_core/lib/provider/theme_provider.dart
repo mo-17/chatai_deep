@@ -24,12 +24,14 @@ class ThemeProvider extends ChangeNotifier {
     'brown',
     'grey'
   ];
-  MaterialColor? _themeColor;
+  MaterialColor _themeColor;
+
+  ThemeProvider() : _themeColor = _loadTheme();
 
   get themeColor => _themeColor;
 
-  ///获取主题模型
-  MaterialColor init() {
+  ///从缓存加载主题
+  static MaterialColor _loadTheme() {
     String? theme = HiCache.getInstance().get(keyThemeColor);
     return getThemeColor(theme);
   }
@@ -106,9 +108,8 @@ class ThemeProvider extends ChangeNotifier {
     notifyListeners();
   }
 
-  ///获取主题
+  ///获取主题（只读，无副作用）
   ThemeData getTheme() {
-    _themeColor ??= init();
     return ThemeData(primarySwatch: _themeColor);
   }
 }

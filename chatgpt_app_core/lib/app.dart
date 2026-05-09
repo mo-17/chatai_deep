@@ -16,11 +16,40 @@ import 'package:provider/provider.dart';
 
 Future<void> runChatGptApp() async {
   WidgetsFlutterBinding.ensureInitialized();
-  runApp(const MyApp());
+
+  // 全局错误上报 hook（后续接入 Sentry / 自建上报时替换此处）
+  FlutterError.onError = (FlutterErrorDetails details) {
+    FlutterError.presentError(details);
+    // ignore: avoid_print
+    debugPrint('FlutterError: ${details.exceptionAsString()}');
+    // TODO: 接入错误上报服务
+  };
+
+  runZonedGuarded(
+    () => runApp(const MyApp()),
+    (Object error, StackTrace stack) {
+      // ignore: avoid_print
+      debugPrint('uncaught error: $error\n$stack');
+      // TODO: 接入错误上报服务
+    },
+  );
 }
 
-class MyApp extends StatelessWidget {
+class MyApp extends StatefulWidget {
   const MyApp({super.key});
+
+  @override
+  State<MyApp> createState() => _MyAppState();
+}
+
+class _MyAppState extends State<MyApp> {
+  late final Future<void> _initFuture;
+
+  @override
+  void initState() {
+    super.initState();
+    _initFuture = doInit();
+  }
 
   Widget get _loadingPage => const MaterialApp(
         home: Scaffold(
@@ -30,19 +59,47 @@ class MyApp extends StatelessWidget {
         ),
       );
 
+  Widget _errorPage(Object error) => MaterialApp(
+        home: Scaffold(
+          body: Center(
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                const Icon(Icons.error_outline, size: 48, color: Colors.red),
+                const SizedBox(height: 16),
+                const Text('启动失败，请重启 App', style: TextStyle(fontSize: 16)),
+                const SizedBox(height: 8),
+                Text(error.toString(),
+                    style: const TextStyle(fontSize: 12, color: Colors.grey)),
+                const SizedBox(height: 16),
+                ElevatedButton(
+                  onPressed: () {
+                    setState(() {
+                      _initFuture = doInit();
+                    });
+                  },
+                  child: const Text('重试'),
+                ),
+              ],
+            ),
+          ),
+        ),
+      );
+
   @override
   Widget build(BuildContext context) {
     return FutureBuilder<void>(
-      future: doInit(),
+      future: _initFuture,
       builder: (BuildContext context, AsyncSnapshot<void> snapshot) {
-        Widget widget;
-        if (snapshot.connectionState == ConnectionState.done) {
-          widget = LoginDao.getBoardingPass() == null
-              ? const LoginPage()
-              : const BottomNavigator();
-        } else {
+        if (snapshot.hasError) {
+          return _errorPage(snapshot.error!);
+        }
+        if (snapshot.connectionState != ConnectionState.done) {
           return _loadingPage;
         }
+        final widget = LoginDao.getBoardingPass() == null
+            ? const LoginPage()
+            : const BottomNavigator();
         return MultiProvider(
           providers: mainProviders,
           child: Consumer<ThemeProvider>(builder: (BuildContext context,

@@ -5,15 +5,41 @@ import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import 'package:speech_to_text/speech_to_text.dart' as stt;
 
+/// 根据系统 locale 选择最匹配的语音识别 localeId
+String _pickLocaleId(List<stt.LocaleName> locales) {
+  if (locales.isEmpty) return 'en_US';
+  final sysLocale = Platform.localeName;
+  // 精确匹配
+  for (final l in locales) {
+    if (l.localeId == sysLocale) return l.localeId;
+  }
+  // 语言前缀匹配
+  final lang = sysLocale.split('_').first;
+  for (final l in locales) {
+    if (l.localeId.startsWith('$lang-') || l.localeId.startsWith('${lang}_')) {
+      return l.localeId;
+    }
+  }
+  // 降级到系统默认
+  return locales.first.localeId;
+}
+
 ///聊天输入框
 class MessageInputWidget extends StatefulWidget {
   final ValueChanged<String>? onChanged;
   final VoidCallback? onSend;
+  final VoidCallback? onStop;
   final String hint;
   final bool enable;
+  final bool isStreaming;
 
   const MessageInputWidget(this.hint,
-      {Key? key, this.onChanged, this.onSend, this.enable = true})
+      {Key? key,
+      this.onChanged,
+      this.onSend,
+      this.onStop,
+      this.enable = true,
+      this.isStreaming = false})
       : super(key: key);
 
   @override
@@ -111,6 +137,8 @@ class _MessageInputWidgetState extends State<MessageInputWidget> {
 
     _lastWords = _controller.text;
     try {
+      final locales = await _speech!.locales();
+      final localeId = _pickLocaleId(locales);
       await _speech!.listen(
         onResult: (result) {
           if (!mounted) return;
@@ -122,7 +150,7 @@ class _MessageInputWidgetState extends State<MessageInputWidget> {
           setState(() => _showSend = text.isNotEmpty);
           widget.onChanged?.call(text);
         },
-        localeId: 'zh_CN',
+        localeId: localeId,
       );
       _isListening = true;
       if (mounted) setState(() {});
@@ -158,12 +186,15 @@ class _MessageInputWidgetState extends State<MessageInputWidget> {
         child: MaterialButton(
           shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(6)),
           height: 35,
-          disabledColor: color.withOpacity(0.6),
-          color: color,
-          onPressed: widget.enable ? _onSend : null,
-          child: const Text(
-            '发送',
-            style: TextStyle(color: Colors.white, fontSize: 16),
+          disabledColor: color.withValues(alpha: 0.6),
+          color: widget.isStreaming ? Colors.red : color,
+          onPressed: widget.isStreaming
+              ? widget.onStop
+              : (widget.enable ? _onSend : null),
+          child: Icon(
+            widget.isStreaming ? Icons.stop : Icons.send,
+            color: Colors.white,
+            size: 18,
           ),
         ),
       );
@@ -208,7 +239,7 @@ class _MessageInputWidgetState extends State<MessageInputWidget> {
       padding: EdgeInsets.only(left: 20, right: 20, top: 5, bottom: bottom),
       decoration: BoxDecoration(color: Colors.grey.withValues(alpha: 0.2)),
       child: Row(
-        children: [_micBtn, _input, if (_showSend) _sendBtn(color)],
+        children: [_micBtn, _input, if (_showSend || widget.isStreaming) _sendBtn(color)],
       ),
     );
   }
