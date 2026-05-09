@@ -68,6 +68,10 @@
 	</array>
 	<key>UIViewControllerBasedStatusBarAppearance</key>
 	<false/>
+	<key>NSCameraUsageDescription</key>
+	<string>需要使用相机拍摄照片发送给 AI</string>
+	<key>NSPhotoLibraryUsageDescription</key>
+	<string>需要访问相册以选择图片发送给 AI</string>
 	<key>NSSpeechRecognitionUsageDescription</key>
 	<string>使用语音识别将您的语音转为文字</string>
 	<key>NSMicrophoneUsageDescription</key>

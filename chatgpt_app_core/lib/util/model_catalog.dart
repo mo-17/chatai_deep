@@ -9,8 +9,9 @@ class ModelCatalog {
   // 硬编码兜底，永远不删
   static const _hardcodedOpenai = <ModelOption>[
     ModelOption('gpt-3.5-turbo', '便宜快，适合日常对话'),
-    ModelOption('gpt-4o-mini', '小模型，性价比高（推荐）'),
-    ModelOption('gpt-4o', '主力模型，多模态'),
+    ModelOption('gpt-4o-mini', '小模型，性价比高（推荐）',
+        supportsVision: true),
+    ModelOption('gpt-4o', '主力模型，多模态', supportsVision: true),
     ModelOption('gpt-4-turbo', '上一代旗舰'),
     ModelOption('o1-mini', '推理模型（小）'),
     ModelOption('o1', '推理模型（强）'),
@@ -77,11 +78,13 @@ class ModelCatalog {
 
     for (final m in models) {
       final code = m['providerCode'] as String? ?? '';
+      final supportsVision = m['supportsVision'] as bool? ?? false;
       final option = ModelOption(
         m['modelId'] as String,
         m['description'] as String?,
         displayLabel: '${m['displayName']} · ${m['modelId']}',
         providerCode: code,
+        supportsVision: supportsVision,
       );
       allList.add(option);
 
@@ -90,12 +93,14 @@ class ModelCatalog {
           m['modelId'] as String,
           m['description'] as String?,
           displayLabel: m['displayName'] as String?,
+          supportsVision: supportsVision,
         ));
       } else if (code == 'deepseek') {
         deepseekList.add(ModelOption(
           m['modelId'] as String,
           m['description'] as String?,
           displayLabel: m['displayName'] as String?,
+          supportsVision: supportsVision,
         ));
       }
     }
@@ -114,9 +119,17 @@ class ModelOption {
   final String? hint;
   final String? displayLabel;
   final String? providerCode;
+  final bool supportsVision;
 
-  const ModelOption(this.id, this.hint, {this.displayLabel, this.providerCode});
+  const ModelOption(
+    this.id,
+    this.hint, {
+    this.displayLabel,
+    this.providerCode,
+    this.supportsVision = false,
+  });
 
   ModelOption withPrefix(String prefix) =>
-      ModelOption(id, hint, displayLabel: '$prefix$id');
+      ModelOption(id, hint, displayLabel: '$prefix$id',
+          supportsVision: supportsVision);
 }

@@ -1,4 +1,6 @@
 import 'dart:async';
+import 'dart:convert';
+import 'dart:io';
 
 import 'package:chat_message/core/chat_controller.dart';
 import 'package:chat_message/models/message_model.dart';
@@ -13,6 +15,7 @@ import 'package:chatgpt_app_core/model/favorite_model.dart';
 import 'package:chatgpt_app_core/provider/ai_settings_provider.dart';
 import 'package:chatgpt_app_core/util/hi_dialog.dart';
 import 'package:chatgpt_app_core/util/hi_utils.dart';
+import 'package:chatgpt_app_core/util/model_catalog.dart';
 import 'package:chatgpt_app_core/widget/message_input_widget.dart';
 import 'package:flutter/material.dart';
 import 'package:login_sdk/dao/login_dao.dart';
@@ -51,6 +54,8 @@ class _ConversationPageState extends State<ConversationPage> {
   final ScrollController _scrollController = ScrollController();
   StreamSubscription<String>? _activeStreamSub;
   late AISettings _currentSettings;
+  List<String> _pendingImages = [];
+  bool _supportsVision = false;
 
   get _chatList => Expanded(
           child: Padding(
@@ -81,6 +86,17 @@ class _ConversationPageState extends State<ConversationPage> {
       onStop: _isStreaming ? _stopStream : null,
       onChanged: (text) => _inputMessage = text,
       onSend: () => _onSend(_inputMessage),
+      pendingImages: _pendingImages,
+      imagesEnabled: _supportsVision,
+      imagesDisabledReason: _supportsVision
+          ? ''
+          : '当前模型不支持图片，请切换 gpt-4o 等多模态模型',
+      onImagesPicked: (images) => setState(() => _pendingImages = images),
+      onRemoveImage: (index) {
+        setState(() {
+          _pendingImages = List.from(_pendingImages)..removeAt(index);
+        });
+      },
     );
   }
 
@@ -112,17 +128,30 @@ class _ConversationPageState extends State<ConversationPage> {
   ///不用_inputMessage是因为在结果回来之前_inputMessage可能会变
   void _onSend(final String inputMessage) async {
     widget.conversationModel.hadChanged = true;
-    _addMessage(
-        _genMessageModel(ownerType: OwnerType.sender, message: inputMessage));
+    // 编码图片为 base64
+    final b64Images = _pendingImages.isNotEmpty
+        ? await _encodeImages(_pendingImages)
+        : null;
+    final pendingPaths =
+        _pendingImages.isNotEmpty ? List<String>.from(_pendingImages) : null;
+    _addMessage(_genMessageModel(
+      ownerType: OwnerType.sender,
+      message: inputMessage,
+      imagePaths: pendingPaths,
+      imageUrlsOrB64: b64Images,
+    ));
     setState(() {
       _isStreaming = true;
+      _pendingImages = [];
     });
 
     // 仅在 settings 变更时重建 CompletionDao，避免每次发送都新建实例
     final settings = context.read<AISettingsProvider>().settings;
     if (settings != _currentSettings) {
       _currentSettings = settings;
-      completionDao = CompletionDao(settings: settings, messages: completionDao.currentMessages);
+      _supportsVision = _checkVision(settings);
+      completionDao = CompletionDao(
+          settings: settings, messages: completionDao.currentMessages);
     }
     if (settings.streamEnabled) {
       await _onSendStream(inputMessage);
@@ -228,8 +257,12 @@ class _ConversationPageState extends State<ConversationPage> {
     super.setState(fn);
   }
 
-  MessageModel _genMessageModel(
-      {required OwnerType ownerType, required String message}) {
+  MessageModel _genMessageModel({
+    required OwnerType ownerType,
+    required String message,
+    List<String>? imagePaths,
+    List<String>? imageUrlsOrB64,
+  }) {
     String avatar, ownerName;
     if (ownerType == OwnerType.sender) {
       avatar = (userInfo['avatar'] as String?)?.isNotEmpty == true
@@ -245,7 +278,41 @@ class _ConversationPageState extends State<ConversationPage> {
         content: message,
         createdAt: DateTime.now().millisecondsSinceEpoch,
         avatar: avatar,
-        ownerName: ownerName);
+        ownerName: ownerName,
+        imagePaths: imagePaths,
+        imageUrlsOrB64: imageUrlsOrB64);
+  }
+
+  ///检查当前模型是否支持 vision
+  bool _checkVision(AISettings settings) {
+    final modelId = settings.effectiveModel;
+    // 后端模式：检查远程清单
+    if (settings.mode == AIMode.backend && ModelCatalog.remoteAvailable) {
+      for (final o in ModelCatalog.backendAll()) {
+        if (o.id == modelId) return o.supportsVision;
+      }
+    }
+    // 本地模式：检查对应 provider 清单
+    final options = settings.localProvider == LocalProvider.openai
+        ? ModelCatalog.openai
+        : ModelCatalog.deepseek;
+    for (final o in options) {
+      if (o.id == modelId) return o.supportsVision;
+    }
+    return false;
+  }
+
+  ///将图片路径编码为 base64 data URIs
+  Future<List<String>> _encodeImages(List<String> paths) async {
+    final result = <String>[];
+    for (final path in paths) {
+      final bytes = await File(path).readAsBytes();
+      final ext = path.split('.').last.toLowerCase();
+      final mime = ext == 'png' ? 'image/png' : 'image/jpeg';
+      final b64 = base64Encode(bytes);
+      result.add('data:$mime;base64,$b64');
+    }
+    return result;
   }
 
   void _doInit() async {
@@ -264,6 +331,7 @@ class _ConversationPageState extends State<ConversationPage> {
     final settings = context.read<AISettingsProvider>().settings;
     _currentSettings = settings;
     _aiName = settings.aiDisplayName;
+    _supportsVision = _checkVision(settings);
     var dbManager =
         await HiDBManager.instance(dbName: HiDBManager.getAccountHash());
     messageDao = await MessageDao.create(dbManager, cid: widget.conversationModel.cid);

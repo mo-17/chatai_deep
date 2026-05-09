@@ -30,14 +30,39 @@ class CompletionDao {
     return chatService.chatStream(prompt: prompt, history: history);
   }
 
-  List<Map<String, String>> _buildHistory() {
-    final history = <Map<String, String>>[];
+  List<Map<String, dynamic>> _buildHistory() {
+    final history = <Map<String, dynamic>>[];
     for (final m in _messageList) {
-      history.add({
-        'role': m.ownerType == OwnerType.sender ? 'user' : 'assistant',
-        'content': m.content,
-      });
+      final role = m.ownerType == OwnerType.sender ? 'user' : 'assistant';
+      final hasImages =
+          m.imageUrlsOrB64 != null && m.imageUrlsOrB64!.isNotEmpty;
+      if (role == 'user' && hasImages) {
+        history.add({
+          'role': role,
+          'content': _buildVisionContent(m),
+        });
+      } else {
+        history.add({
+          'role': role,
+          'content': m.content,
+        });
+      }
     }
     return history;
+  }
+
+  ///构造多模态 vision content 数组
+  List<Map<String, dynamic>> _buildVisionContent(MessageModel m) {
+    final parts = <Map<String, dynamic>>[];
+    if (m.content.isNotEmpty) {
+      parts.add({'type': 'text', 'text': m.content});
+    }
+    for (final img in m.imageUrlsOrB64!) {
+      parts.add({
+        'type': 'image_url',
+        'image_url': {'url': img},
+      });
+    }
+    return parts;
   }
 }

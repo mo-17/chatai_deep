@@ -16,7 +16,7 @@ class BackendChatService implements ChatService {
   @override
   Future<String?> chat({
     required String prompt,
-    required List<Map<String, String>> history,
+    required List<Map<String, dynamic>> history,
   }) async {
     final uri = BackendConst.buildUri('/uapi/chat/completions');
     final messages = [
@@ -68,7 +68,7 @@ class BackendChatService implements ChatService {
   @override
   Stream<String> chatStream({
     required String prompt,
-    required List<Map<String, String>> history,
+    required List<Map<String, dynamic>> history,
   }) async* {
     final uri = BackendConst.buildUri('/uapi/chat/completions/stream');
     final messages = [

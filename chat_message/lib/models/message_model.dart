@@ -1,3 +1,5 @@
+import 'dart:convert';
+
 import 'package:flutter/cupertino.dart';
 
 enum OwnerType { receiver, sender }
@@ -35,22 +37,44 @@ class MessageModel {
   ///是否展示创建时间
   bool showCreatedTime = false;
 
-  MessageModel(
-      {this.id,
-      this.ownerName,
-      required this.ownerType,
-      this.avatar,
-      required this.content,
-      required this.createdAt})
-      : key = GlobalKey();
+  ///图片本地路径（发送中持有，落库后置空）
+  final List<String>? imagePaths;
 
-  factory MessageModel.fromJson(Map<String, dynamic> json) => MessageModel(
+  ///已发送的图片：data:image/...;base64,xxx 或后端返回的 url
+  final List<String>? imageUrlsOrB64;
+
+  MessageModel({
+    this.id,
+    this.ownerName,
+    required this.ownerType,
+    this.avatar,
+    required this.content,
+    required this.createdAt,
+    this.imagePaths,
+    this.imageUrlsOrB64,
+  }) : key = GlobalKey();
+
+  factory MessageModel.fromJson(Map<String, dynamic> json) {
+    List<String>? parseImages(String? raw) {
+      if (raw == null || raw.isEmpty) return null;
+      try {
+        final list = jsonDecode(raw) as List;
+        return list.cast<String>();
+      } catch (_) {
+        return null;
+      }
+    }
+
+    return MessageModel(
       ownerType: _of(json['ownerType']),
-      content: json['content'],
+      content: json['content'] ?? '',
       createdAt: json['createdAt'],
       ownerName: json['ownerName'],
       avatar: json['avatar'],
-      id: json['id']);
+      id: json['id'],
+      imageUrlsOrB64: parseImages(json['images'] as String?),
+    );
+  }
 
   Map<String, dynamic> toJson() => {
         'id': id,
@@ -60,14 +84,23 @@ class MessageModel {
         'createdAt': createdAt,
         'avatar': avatar,
         'ownerName': ownerName,
+        if (imageUrlsOrB64 != null && imageUrlsOrB64!.isNotEmpty)
+          'images': jsonEncode(imageUrlsOrB64),
       };
 
-  MessageModel copyWith({String? content}) => MessageModel(
+  MessageModel copyWith({
+    String? content,
+    List<String>? imagePaths,
+    List<String>? imageUrlsOrB64,
+  }) =>
+      MessageModel(
         id: id,
         ownerType: ownerType,
         content: content ?? this.content,
         createdAt: createdAt,
         ownerName: ownerName,
         avatar: avatar,
+        imagePaths: imagePaths ?? this.imagePaths,
+        imageUrlsOrB64: imageUrlsOrB64 ?? this.imageUrlsOrB64,
       );
 }

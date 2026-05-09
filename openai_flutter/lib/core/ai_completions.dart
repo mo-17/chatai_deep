@@ -18,7 +18,7 @@ class AICompletion implements AICreateInterface {
     int? n,
     String? stop,
     String? user,
-    List<Map<String, String>>? messages,
+    List<Map<String, dynamic>>? messages,
   }) async {
     final body = <String, dynamic>{
       "model": model,
@@ -58,7 +58,7 @@ class AICompletion implements AICreateInterface {
     int? n,
     String? stop,
     String? user,
-    List<Map<String, String>>? messages,
+    List<Map<String, dynamic>>? messages,
   }) async* {
     final body = <String, dynamic>{
       "model": model,

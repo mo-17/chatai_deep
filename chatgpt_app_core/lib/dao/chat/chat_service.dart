@@ -5,12 +5,12 @@ import 'package:chatgpt_app_core/model/ai_settings.dart';
 abstract class ChatService {
   Future<String?> chat({
     required String prompt,
-    required List<Map<String, String>> history,
+    required List<Map<String, dynamic>> history,
   });
 
   Stream<String> chatStream({
     required String prompt,
-    required List<Map<String, String>> history,
+    required List<Map<String, dynamic>> history,
   });
 
   factory ChatService.from(AISettings s) {

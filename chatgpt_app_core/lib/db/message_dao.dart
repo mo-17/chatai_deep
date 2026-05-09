@@ -34,10 +34,18 @@ class MessageDao implements IMessage, ITable {
   static Future<MessageDao> create(HiDBManager storage, {required int cid}) async {
     await storage.db.execute(
         'create table if not exists tb_messages (id integer primary key autoincrement'
-        ', cid integer not null, content text, createdAt integer'
-        ', ownerName text, ownerType text, avatar text)');
+            ', cid integer not null, content text, createdAt integer'
+            ', ownerName text, ownerType text, avatar text'
+            ', images text)');
     await storage.db.execute(
         'create index if not exists tb_messages_cid_id_idx on tb_messages(cid, id desc)');
+    // 兼容旧表：无 images 列时自动新增
+    try {
+      await storage.db.execute(
+          'alter table tb_messages add column images text');
+    } catch (_) {
+      // 列已存在，忽略
+    }
     return MessageDao._(storage, cid: cid);
   }
 

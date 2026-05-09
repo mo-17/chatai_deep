@@ -17,7 +17,7 @@ class DirectChatService implements ChatService {
   @override
   Future<String?> chat({
     required String prompt,
-    required List<Map<String, String>> history,
+    required List<Map<String, dynamic>> history,
   }) async {
     _ensureApiKey();
     final config = AIConfigBuilder(
@@ -41,7 +41,7 @@ class DirectChatService implements ChatService {
   @override
   Stream<String> chatStream({
     required String prompt,
-    required List<Map<String, String>> history,
+    required List<Map<String, dynamic>> history,
   }) async* {
     _ensureApiKey();
     final config = AIConfigBuilder(

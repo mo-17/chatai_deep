@@ -1,3 +1,6 @@
+import 'dart:convert';
+import 'dart:io';
+
 import 'package:bubble/bubble.dart';
 import 'package:chat_message/util/wechat_date_format.dart';
 import 'package:flutter/material.dart';
@@ -150,18 +153,125 @@ class DefaultMessageWidget extends StatelessWidget {
   }
 
   Widget _buildContentText(TextAlign align, BuildContext context) {
-    return InkWell(
-      onTap: () => onBubbleTap != null ? onBubbleTap!(message, context) : null,
-      onLongPress: () => onBubbleLongPress != null
-          ? onBubbleLongPress!(message, context)
-          : null,
-      child: Text(
-        message.content,
-        textAlign: align,
-        style: TextStyle(
-            fontSize: fontSize,
-            color: textColor ?? Colors.black,
-            fontFamily: fontFamily),
+    final hasImages =
+        message.imageUrlsOrB64 != null && message.imageUrlsOrB64!.isNotEmpty;
+    final hasText = message.content.isNotEmpty;
+
+    if (!hasImages) {
+      return InkWell(
+        onTap: () => onBubbleTap != null ? onBubbleTap!(message, context) : null,
+        onLongPress: () => onBubbleLongPress != null
+            ? onBubbleLongPress!(message, context)
+            : null,
+        child: Text(
+          message.content,
+          textAlign: align,
+          style: TextStyle(
+              fontSize: fontSize,
+              color: textColor ?? Colors.black,
+              fontFamily: fontFamily),
+        ),
+      );
+    }
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        _buildImageGrid(context),
+        if (hasText) ...[
+          const SizedBox(height: 8),
+          Text(
+            message.content,
+            textAlign: align,
+            style: TextStyle(
+                fontSize: fontSize,
+                color: textColor ?? Colors.black,
+                fontFamily: fontFamily),
+          ),
+        ],
+      ],
+    );
+  }
+
+  Widget _buildImageGrid(BuildContext context) {
+    final images = message.imageUrlsOrB64!;
+    final count = images.length;
+    final crossAxisCount = count == 1 ? 1 : 2;
+    final itemWidth = count == 1 ? 200.0 : 100.0;
+    final itemHeight = count == 1 ? 200.0 : 100.0;
+
+    return Wrap(
+      spacing: 4,
+      runSpacing: 4,
+      children: List.generate(count, (i) {
+        return GestureDetector(
+          onTap: () => _previewImage(context, i),
+          child: ClipRRect(
+            borderRadius: BorderRadius.circular(6),
+            child: _buildImageWidget(images[i], itemWidth, itemHeight),
+          ),
+        );
+      }),
+    );
+  }
+
+  Widget _buildImageWidget(String img, double w, double h) {
+    if (img.startsWith('data:')) {
+      // base64 data URI
+      final parts = img.split(',');
+      if (parts.length < 2) {
+        return _imagePlaceholder(w, h);
+      }
+      final bytes = base64Decode(parts[1]);
+      return Image.memory(
+        bytes,
+        width: w,
+        height: h,
+        fit: BoxFit.cover,
+        errorBuilder: (_, __, ___) => _imagePlaceholder(w, h),
+      );
+    } else if (_isValidNetworkUrl(img)) {
+      return Image.network(
+        img,
+        width: w,
+        height: h,
+        fit: BoxFit.cover,
+        errorBuilder: (_, __, ___) => _imagePlaceholder(w, h),
+      );
+    } else if (img.startsWith('/') || img.contains('://')) {
+      // 本地文件路径
+      final file = File(img);
+      if (file.existsSync()) {
+        return Image.file(
+          file,
+          width: w,
+          height: h,
+          fit: BoxFit.cover,
+          errorBuilder: (_, __, ___) => _imagePlaceholder(w, h),
+        );
+      }
+    }
+    return _imagePlaceholder(w, h);
+  }
+
+  Widget _imagePlaceholder(double w, double h) {
+    return Container(
+      width: w,
+      height: h,
+      color: Colors.grey.shade200,
+      child: const Icon(Icons.broken_image, color: Colors.grey),
+    );
+  }
+
+  void _previewImage(BuildContext context, int index) {
+    Navigator.push(
+      context,
+      MaterialPageRoute(
+        builder: (_) => _ImageViewer(
+          images: message.imageUrlsOrB64!,
+          initialIndex: index,
+        ),
       ),
     );
   }
@@ -171,6 +281,57 @@ class DefaultMessageWidget extends StatelessWidget {
     return Container(
       padding: const EdgeInsets.only(top: 10),
       child: Text(showT),
+    );
+  }
+}
+
+///全屏图片预览
+class _ImageViewer extends StatelessWidget {
+  final List<String> images;
+  final int initialIndex;
+
+  const _ImageViewer({required this.images, required this.initialIndex});
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      backgroundColor: Colors.black,
+      appBar: AppBar(
+        backgroundColor: Colors.black,
+        iconTheme: const IconThemeData(color: Colors.white),
+      ),
+      body: PageView.builder(
+        controller: PageController(initialPage: initialIndex),
+        itemCount: images.length,
+        itemBuilder: (_, i) {
+          final img = images[i];
+          if (img.startsWith('data:')) {
+            final parts = img.split(',');
+            if (parts.length >= 2) {
+              return Center(
+                child: Image.memory(
+                  base64Decode(parts[1]),
+                  fit: BoxFit.contain,
+                  errorBuilder: (_, __, ___) =>
+                      const Icon(Icons.broken_image, color: Colors.white, size: 64),
+                ),
+              );
+            }
+          } else if (img.startsWith('http://') || img.startsWith('https://')) {
+            return Center(
+              child: Image.network(
+                img,
+                fit: BoxFit.contain,
+                errorBuilder: (_, __, ___) =>
+                    const Icon(Icons.broken_image, color: Colors.white, size: 64),
+              ),
+            );
+          }
+          return const Center(
+            child: Icon(Icons.broken_image, color: Colors.white, size: 64),
+          );
+        },
+      ),
     );
   }
 }

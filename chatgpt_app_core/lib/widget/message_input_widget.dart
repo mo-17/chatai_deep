@@ -2,6 +2,7 @@ import 'dart:io';
 
 import 'package:chatgpt_app_core/provider/theme_provider.dart';
 import 'package:flutter/material.dart';
+import 'package:image_picker/image_picker.dart';
 import 'package:provider/provider.dart';
 import 'package:speech_to_text/speech_to_text.dart' as stt;
 
@@ -29,18 +30,29 @@ class MessageInputWidget extends StatefulWidget {
   final ValueChanged<String>? onChanged;
   final VoidCallback? onSend;
   final VoidCallback? onStop;
+  final ValueChanged<List<String>>? onImagesPicked;
+  final List<String> pendingImages;
+  final ValueChanged<int>? onRemoveImage;
+  final bool imagesEnabled;
+  final String imagesDisabledReason;
   final String hint;
   final bool enable;
   final bool isStreaming;
 
-  const MessageInputWidget(this.hint,
-      {Key? key,
-      this.onChanged,
-      this.onSend,
-      this.onStop,
-      this.enable = true,
-      this.isStreaming = false})
-      : super(key: key);
+  const MessageInputWidget(
+    this.hint, {
+    Key? key,
+    this.onChanged,
+    this.onSend,
+    this.onStop,
+    this.onImagesPicked,
+    this.pendingImages = const [],
+    this.onRemoveImage,
+    this.imagesEnabled = true,
+    this.imagesDisabledReason = '当前模型不支持图片',
+    this.enable = true,
+    this.isStreaming = false,
+  }) : super(key: key);
 
   @override
   State<MessageInputWidget> createState() => _MessageInputWidgetState();
@@ -54,6 +66,7 @@ class _MessageInputWidgetState extends State<MessageInputWidget> {
   bool _hasSpeech = true; // 默认显示，初始化失败才隐藏
   bool _isListening = false;
   String _lastWords = '';
+  final _picker = ImagePicker();
 
   @override
   void initState() {
@@ -69,8 +82,8 @@ class _MessageInputWidgetState extends State<MessageInputWidget> {
     final isSimulator =
         Platform.environment.containsKey('SIMULATOR_DEVICE_NAME');
     if (!isSimulator) return false;
-    final match =
-        RegExp(r'Version (\d+)\.(\d+)').firstMatch(Platform.operatingSystemVersion);
+    final match = RegExp(r'Version (\d+)\.(\d+)')
+        .firstMatch(Platform.operatingSystemVersion);
     if (match == null) return false;
     final major = int.parse(match.group(1)!);
     final minor = int.parse(match.group(2)!);
@@ -84,7 +97,8 @@ class _MessageInputWidgetState extends State<MessageInputWidget> {
       return;
     }
     if (_isBrokenIosSimulator()) {
-      debugPrint('skip speech_to_text init: iOS 17.0–17.4 simulator audio bug');
+      debugPrint(
+          'skip speech_to_text init: iOS 17.0–17.4 simulator audio bug');
       if (mounted) setState(() => _hasSpeech = false);
       return;
     }
@@ -92,7 +106,8 @@ class _MessageInputWidgetState extends State<MessageInputWidget> {
       _speech = stt.SpeechToText();
       final available = await _speech!.initialize(
         onError: (error) {
-          debugPrint('speech error: ${error.errorMsg}, permanent: ${error.permanent}');
+          debugPrint(
+              'speech error: ${error.errorMsg}, permanent: ${error.permanent}');
           _isListening = false;
         },
         onStatus: (status) {
@@ -107,7 +122,8 @@ class _MessageInputWidgetState extends State<MessageInputWidget> {
       debugPrint('speech available: $available');
       if (available) {
         final locales = await _speech!.locales();
-        debugPrint('speech locales: ${locales.map((l) => l.localeId).toList()}');
+        debugPrint(
+            'speech locales: ${locales.map((l) => l.localeId).toList()}');
       }
       if (mounted) setState(() => _hasSpeech = available);
     } catch (e) {
@@ -160,6 +176,73 @@ class _MessageInputWidgetState extends State<MessageInputWidget> {
     }
   }
 
+  Future<void> _onPhotoTap() async {
+    if (!widget.imagesEnabled) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text(widget.imagesDisabledReason)),
+      );
+      return;
+    }
+    showModalBottomSheet(
+      context: context,
+      builder: (_) => SafeArea(
+        child: Wrap(
+          children: [
+            ListTile(
+              leading: const Icon(Icons.camera_alt),
+              title: const Text('拍照'),
+              onTap: () {
+                Navigator.pop(context);
+                _pickImage(ImageSource.camera);
+              },
+            ),
+            ListTile(
+              leading: const Icon(Icons.photo_library),
+              title: const Text('从相册选择'),
+              onTap: () {
+                Navigator.pop(context);
+                _pickImage(ImageSource.gallery);
+              },
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Future<void> _pickImage(ImageSource source) async {
+    if (widget.pendingImages.length >= 4) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('最多选择 4 张图片')),
+        );
+      }
+      return;
+    }
+    try {
+      final picked = await _picker.pickImage(
+        source: source,
+        imageQuality: 70,
+        maxWidth: 2048,
+        maxHeight: 2048,
+      );
+      if (picked != null && mounted) {
+        widget.onImagesPicked?.call([...widget.pendingImages, picked.path]);
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('选取图片失败: $e')),
+        );
+      }
+    }
+  }
+
+  bool get _showPhotoBtn =>
+      Platform.operatingSystem != 'ohos'; // image_picker 暂未支持鸿蒙
+
+  bool get _hasPendingImages => widget.pendingImages.isNotEmpty;
+
   @override
   void dispose() {
     _speech?.cancel();
@@ -167,6 +250,18 @@ class _MessageInputWidgetState extends State<MessageInputWidget> {
     _controller.dispose();
     super.dispose();
   }
+
+  get _photoBtn => GestureDetector(
+        onTap: _onPhotoTap,
+        child: Container(
+          margin: const EdgeInsets.only(right: 6),
+          child: Icon(
+            Icons.add_photo_alternate,
+            color: widget.imagesEnabled ? Colors.grey : Colors.grey.shade300,
+            size: 26,
+          ),
+        ),
+      );
 
   get _micBtn => GestureDetector(
         onTap: _onMicTap,
@@ -184,7 +279,8 @@ class _MessageInputWidgetState extends State<MessageInputWidget> {
         margin: const EdgeInsets.only(left: 10),
         width: 65,
         child: MaterialButton(
-          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(6)),
+          shape:
+              RoundedRectangleBorder(borderRadius: BorderRadius.circular(6)),
           height: 35,
           disabledColor: color.withValues(alpha: 0.6),
           color: widget.isStreaming ? Colors.red : color,
@@ -199,31 +295,74 @@ class _MessageInputWidgetState extends State<MessageInputWidget> {
         ),
       );
 
-  get _input => Expanded(
-          child: TextField(
-        focusNode: _focusNode,
-        onChanged: _onChanged,
-        controller: _controller,
-        //回车发送消息
-        onSubmitted: (_) => _onSend(),
-        style: const TextStyle(
-            fontSize: 18, color: Colors.black, fontWeight: FontWeight.w400),
-        //输入框的样式
-        decoration: InputDecoration(
-            border: OutlineInputBorder(
-                //设置填充圆角
+  Widget _buildThumbnailBar() {
+    if (!_hasPendingImages) return const SizedBox.shrink();
+    return Container(
+      height: 56,
+      padding: const EdgeInsets.only(bottom: 4),
+      child: ListView.builder(
+        scrollDirection: Axis.horizontal,
+        itemCount: widget.pendingImages.length,
+        itemBuilder: (_, i) => Padding(
+          padding: const EdgeInsets.only(right: 6),
+          child: Stack(
+            children: [
+              ClipRRect(
                 borderRadius: BorderRadius.circular(6),
-                //取消边框
-                borderSide:
-                    const BorderSide(width: 0, style: BorderStyle.none)),
-            filled: true,
-            //输入框样式的大小约束
-            constraints: const BoxConstraints(maxHeight: 39),
-            fillColor: Colors.white,
-            contentPadding: const EdgeInsets.only(left: 10),
-            hintStyle: const TextStyle(fontSize: 16),
-            hintText: widget.hint),
-      ));
+                child: Image.file(
+                  File(widget.pendingImages[i]),
+                  width: 48,
+                  height: 48,
+                  fit: BoxFit.cover,
+                ),
+              ),
+              Positioned(
+                top: -4,
+                right: -4,
+                child: GestureDetector(
+                  onTap: () => widget.onRemoveImage?.call(i),
+                  child: Container(
+                    decoration: const BoxDecoration(
+                      color: Colors.black54,
+                      shape: BoxShape.circle,
+                    ),
+                    child: const Icon(Icons.close, size: 16, color: Colors.white),
+                  ),
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  get _input => Expanded(
+        child: TextField(
+          focusNode: _focusNode,
+          onChanged: _onChanged,
+          controller: _controller,
+          //回车发送消息
+          onSubmitted: (_) => _onSend(),
+          style: const TextStyle(
+              fontSize: 18, color: Colors.black, fontWeight: FontWeight.w400),
+          //输入框的样式
+          decoration: InputDecoration(
+              border: OutlineInputBorder(
+                  //设置填充圆角
+                  borderRadius: BorderRadius.circular(6),
+                  //取消边框
+                  borderSide:
+                      const BorderSide(width: 0, style: BorderStyle.none)),
+              filled: true,
+              //输入框样式的大小约束
+              constraints: const BoxConstraints(maxHeight: 39),
+              fillColor: Colors.white,
+              contentPadding: const EdgeInsets.only(left: 10),
+              hintStyle: const TextStyle(fontSize: 16),
+              hintText: widget.hint),
+        ),
+      );
 
   @override
   Widget build(BuildContext context) {
@@ -235,11 +374,24 @@ class _MessageInputWidgetState extends State<MessageInputWidget> {
       bottom = 20;
     }
     return Container(
-      height: 50 + bottom,
       padding: EdgeInsets.only(left: 20, right: 20, top: 5, bottom: bottom),
       decoration: BoxDecoration(color: Colors.grey.withValues(alpha: 0.2)),
-      child: Row(
-        children: [_micBtn, _input, if (_showSend || widget.isStreaming) _sendBtn(color)],
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          _buildThumbnailBar(),
+          SizedBox(
+            height: 45,
+            child: Row(
+              children: [
+                if (_showPhotoBtn) _photoBtn,
+                _micBtn,
+                _input,
+                if (_showSend || widget.isStreaming) _sendBtn(color),
+              ],
+            ),
+          ),
+        ],
       ),
     );
   }
