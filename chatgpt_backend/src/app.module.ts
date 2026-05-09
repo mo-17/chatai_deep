@@ -3,6 +3,7 @@ import { ConfigModule, ConfigService } from '@nestjs/config';
 import { TypeOrmModule } from '@nestjs/typeorm';
 import { ThrottlerModule, ThrottlerGuard } from '@nestjs/throttler';
 import { APP_GUARD } from '@nestjs/core';
+import { LoggerModule } from 'nestjs-pino';
 import { UserModule } from './user/user.module';
 import { NoticeModule } from './notice/notice.module';
 import { UpdateModule } from './update/update.module';
@@ -10,10 +11,27 @@ import { TestModule } from './test/test.module';
 import { ChatModule } from './chat/chat.module';
 import { AdminModule } from './admin/admin.module';
 import { AiModule } from './ai/ai.module';
+import { HealthModule } from './health/health.module';
 
 @Module({
   imports: [
     ConfigModule.forRoot({ isGlobal: true }),
+    LoggerModule.forRoot({
+      pinoHttp: {
+        level: process.env.LOG_LEVEL ?? 'info',
+        transport: process.env.NODE_ENV === 'production' ? undefined : {
+          target: 'pino-pretty',
+          options: { colorize: true, translateTime: 'HH:MM:ss.l' },
+        },
+        redact: {
+          paths: ['req.headers.authorization', '*.password', '*.apiKey', 'res.headers["set-cookie"]'],
+          censor: '[REDACTED]',
+        },
+        serializers: {
+          req: (req) => ({ method: req.method, url: req.url, id: req.id }),
+        },
+      },
+    }),
     ThrottlerModule.forRoot([{ ttl: 60_000, limit: 10 }]),
     TypeOrmModule.forRootAsync({
       inject: [ConfigService],
@@ -37,6 +55,7 @@ import { AiModule } from './ai/ai.module';
     ChatModule,
     AdminModule,
     AiModule,
+    HealthModule,
   ],
   providers: [{ provide: APP_GUARD, useClass: ThrottlerGuard }],
 })
