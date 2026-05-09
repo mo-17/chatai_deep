@@ -1,7 +1,9 @@
+import 'package:cached_network_image/cached_network_image.dart';
 import 'package:chat_message/util/wechat_date_format.dart';
 import 'package:chatgpt_app_core/model/conversation_model.dart';
 import 'package:chatgpt_app_core/util/hi_dialog.dart';
 import 'package:flutter/material.dart';
+import 'package:login_sdk/dao/backend_host.dart';
 import 'package:login_sdk/dao/login_dao.dart';
 import 'package:login_sdk/util/padding_extension.dart';
 
@@ -35,10 +37,17 @@ class ConversationWidget extends StatelessWidget {
       );
 
   get _itemBackgroundColor =>
-      model.stickTime > 0 ? Colors.grey.withOpacity(0.2) : Colors.white;
+      model.stickTime > 0 ? Colors.grey.withValues(alpha: 0.2) : Colors.white;
 
   bool get _hasValidIcon => model.icon.isNotEmpty &&
       Uri.tryParse(model.icon)?.hasScheme == true;
+
+  /// 仅当 icon URL 与后端同源时才注入 Authorization，避免泄漏 Bearer Token 到第三方 CDN
+  bool get _isSameOrigin {
+    final uri = Uri.tryParse(model.icon);
+    if (uri == null) return false;
+    return uri.host == BackendConfig.host.split(':').first;
+  }
 
   Widget get _aiFallback => ClipRRect(
         borderRadius: BorderRadius.circular(5),
@@ -58,19 +67,15 @@ class ConversationWidget extends StatelessWidget {
   get _icon => _hasValidIcon
       ? ClipRRect(
           borderRadius: BorderRadius.circular(5),
-          child: Image.network(
-            model.icon,
+          child: CachedNetworkImage(
+            imageUrl: model.icon,
             height: 50,
             width: 50,
-            headers: {
-              if (LoginDao.getBoardingPass() != null)
-                'Authorization': 'Bearer ${LoginDao.getBoardingPass()}',
-            },
-            errorBuilder: (_, __, ___) => _aiFallback,
-            loadingBuilder: (_, child, progress) {
-              if (progress == null) return child;
-              return _aiFallback;
-            },
+            httpHeaders: _isSameOrigin && LoginDao.getBoardingPass() != null
+                ? {'Authorization': 'Bearer ${LoginDao.getBoardingPass()}'}
+                : null,
+            errorWidget: (_, __, ___) => _aiFallback,
+            placeholder: (_, __) => _aiFallback,
           ),
         )
       : _aiFallback;
@@ -109,7 +114,7 @@ class ConversationWidget extends StatelessWidget {
           ),
           Divider(
             height: 1,
-            color: Colors.grey.withOpacity(0.6),
+            color: Colors.grey.withValues(alpha: 0.6),
           )
         ],
       ));

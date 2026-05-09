@@ -4,9 +4,9 @@ import 'dart:convert';
 import 'package:chatgpt_app_core/dao/chat/chat_service.dart';
 import 'package:chatgpt_app_core/model/ai_settings.dart';
 import 'package:chatgpt_app_core/util/hi_const.dart';
-import 'package:flutter/cupertino.dart';
 import 'package:http/http.dart' as http;
 import 'package:login_sdk/dao/login_dao.dart';
+import 'package:openai_flutter/utils/ai_logger.dart';
 
 class BackendChatService implements ChatService {
   final AISettings _settings;
@@ -33,8 +33,9 @@ class BackendChatService implements ChatService {
       'Content-Type': 'application/json',
       'Authorization': 'Bearer ${token ?? ''}',
     };
-    final response = await http.post(uri, headers: headers, body: jsonEncode(body));
-    debugPrint('backend response: ${response.statusCode}');
+    final response = await http.post(uri, headers: headers, body: jsonEncode(body))
+        .timeout(const Duration(seconds: 15));
+    AILogger.log('backend response: ${response.statusCode}');
 
     if (response.statusCode == 401) {
       LoginDao.logOut();
@@ -43,7 +44,7 @@ class BackendChatService implements ChatService {
 
     const utf8decoder = Utf8Decoder();
     final bodyString = utf8decoder.convert(response.bodyBytes);
-    debugPrint('backend response body: $bodyString');
+    AILogger.log('backend response body: ${AILogger.truncate(bodyString)}');
 
     if (response.statusCode == 200 || response.statusCode == 201) {
       final result = json.decode(bodyString) as Map<String, dynamic>;
@@ -90,8 +91,9 @@ class BackendChatService implements ChatService {
 
     final httpClient = http.Client();
     try {
-      final streamedResponse = await httpClient.send(request);
-      debugPrint('backend stream status: ${streamedResponse.statusCode}');
+      final streamedResponse = await httpClient.send(request)
+          .timeout(const Duration(seconds: 20));
+      AILogger.log('backend stream status: ${streamedResponse.statusCode}');
 
       if (streamedResponse.statusCode == 401) {
         LoginDao.logOut();

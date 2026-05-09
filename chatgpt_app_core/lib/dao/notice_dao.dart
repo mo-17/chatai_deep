@@ -24,7 +24,8 @@ class NoticeDao {
     var uri = BackendConst.buildUri('uapi/notice/banner', paramsMap);
     //处理缓存
     _handleCache(hitCache, uri);
-    final response = await http.get(uri, headers: hiHeaders());
+    final response = await http.get(uri, headers: hiHeaders())
+        .timeout(const Duration(seconds: 15));
     Utf8Decoder utf8decoder = const Utf8Decoder();
     String bodyString = utf8decoder.convert(response.bodyBytes);
     if (response.statusCode == 200) {

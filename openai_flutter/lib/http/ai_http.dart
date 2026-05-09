@@ -30,9 +30,11 @@ class AIHttp {
     }
 
     IOClient myClient = IOClient(httpClient);
-    final http.Response response = await myClient.post(Uri.parse(url),
-        headers: config.headers(),
-        body: body != null ? jsonEncode(body) : null);
+    final http.Response response = await myClient
+        .post(Uri.parse(url),
+            headers: config.headers(),
+            body: body != null ? jsonEncode(body) : null)
+        .timeout(const Duration(seconds: 15));
     AILogger.log(
         'request to $url finished with status code ${response.statusCode}');
     AILogger.log('starting decoding response body');
@@ -79,7 +81,8 @@ class AIHttp {
       request.body = jsonEncode(body);
     }
 
-    final streamedResponse = await myClient.send(request);
+    final streamedResponse = await myClient.send(request)
+        .timeout(const Duration(seconds: 20));
     AILogger.log(
         'stream request to $url finished with status ${streamedResponse.statusCode}');
 

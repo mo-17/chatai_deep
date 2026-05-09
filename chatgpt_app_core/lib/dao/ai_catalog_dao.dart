@@ -1,10 +1,10 @@
 import 'dart:convert';
 
 import 'package:chatgpt_app_core/util/hi_const.dart';
-import 'package:flutter/cupertino.dart';
 import 'package:flutter_hi_cache/flutter_hi_cache.dart';
 import 'package:http/http.dart' as http;
 import 'package:login_sdk/dao/login_dao.dart';
+import 'package:openai_flutter/utils/ai_logger.dart';
 
 class AiCatalogDao {
   static const _kCacheKey = 'ai_catalog_v1';
@@ -39,7 +39,8 @@ class AiCatalogDao {
         'Content-Type': 'application/json',
         'Authorization': 'Bearer $token',
       };
-      final response = await http.get(uri, headers: headers);
+      final response = await http.get(uri, headers: headers)
+          .timeout(const Duration(seconds: 15));
 
       if (response.statusCode == 403) return null; // catalog 关闭
       if (response.statusCode != 200) return null;
@@ -55,7 +56,7 @@ class AiCatalogDao {
       }
       return null;
     } catch (e) {
-      debugPrint('AiCatalogDao.fetchRemote error: $e');
+      AILogger.log('AiCatalogDao.fetchRemote error: $e');
       return null;
     }
   }

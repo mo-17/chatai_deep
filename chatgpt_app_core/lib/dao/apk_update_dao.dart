@@ -16,7 +16,8 @@ class ApkUpdateDao {
     paramsMap['cid'] = '321';
     paramsMap['version'] = version;
     var uri = BackendConst.buildUri('uapi/checkUpdate', paramsMap);
-    final response = await http.get(uri, headers: hiHeaders());
+    final response = await http.get(uri, headers: hiHeaders())
+        .timeout(const Duration(seconds: 15));
     Utf8Decoder utf8decoder = const Utf8Decoder();
     String bodyString = utf8decoder.convert(response.bodyBytes);
     if (response.statusCode == 200) {
