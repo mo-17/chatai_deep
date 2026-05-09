@@ -1,15 +1,10 @@
-import {
-  Controller,
-  Post,
-  Get,
-  Body,
-  Res,
-  HttpCode,
-} from '@nestjs/common';
+import { Controller, Post, Get, Body, Res, HttpCode } from '@nestjs/common';
+import { Throttle } from '@nestjs/throttler';
 import type { Response } from 'express';
 import { UserService } from './user.service';
 import { LoginDto } from './dto/login.dto';
 import { RegisterDto } from './dto/register.dto';
+import { RequestResetDto, ConfirmResetDto } from './dto/forgot-password.dto';
 
 @Controller('uapi/user')
 export class UserController {
@@ -25,6 +20,24 @@ export class UserController {
   @HttpCode(200)
   async register(@Body() body: RegisterDto) {
     return this.userService.register(body.userName, body.password);
+  }
+
+  @Post('forgot-password/request')
+  @HttpCode(200)
+  @Throttle({ default: { limit: 5, ttl: 60_000 } })
+  async requestReset(@Body() body: RequestResetDto) {
+    return this.userService.requestPasswordReset(body.userName);
+  }
+
+  @Post('forgot-password/confirm')
+  @HttpCode(200)
+  @Throttle({ default: { limit: 5, ttl: 60_000 } })
+  async confirmReset(@Body() body: ConfirmResetDto) {
+    return this.userService.confirmPasswordReset(
+      body.userName,
+      body.code,
+      body.newPassword,
+    );
   }
 
   @Get('register-page')

@@ -19,16 +19,29 @@ import { HealthModule } from './health/health.module';
     LoggerModule.forRoot({
       pinoHttp: {
         level: process.env.LOG_LEVEL ?? 'info',
-        transport: process.env.NODE_ENV === 'production' ? undefined : {
-          target: 'pino-pretty',
-          options: { colorize: true, translateTime: 'HH:MM:ss.l' },
-        },
+        transport:
+          process.env.NODE_ENV === 'production'
+            ? undefined
+            : {
+                target: 'pino-pretty',
+                options: { colorize: true, translateTime: 'HH:MM:ss.l' },
+              },
         redact: {
-          paths: ['req.headers.authorization', '*.password', '*.apiKey', 'res.headers["set-cookie"]'],
+          paths: [
+            'req.headers.authorization',
+            '*.password',
+            '*.apiKey',
+            '*.code',
+            'res.headers["set-cookie"]',
+          ],
           censor: '[REDACTED]',
         },
         serializers: {
-          req: (req) => ({ method: req.method, url: req.url, id: req.id }),
+          req: (req: { method: string; url: string; id: unknown }) => ({
+            method: req.method,
+            url: req.url,
+            id: req.id,
+          }),
         },
       },
     }),
@@ -44,7 +57,10 @@ import { HealthModule } from './health/health.module';
         database: cfg.get<string>('DB_NAME', 'chatgpt_flutter'),
         entities: [__dirname + '/**/*.entity{.ts,.js}'],
         synchronize: cfg.get<string>('NODE_ENV') !== 'production',
-        logging: cfg.get<string>('DB_LOGGING') === 'true' ? ['error', 'warn'] : ['error'],
+        logging:
+          cfg.get<string>('DB_LOGGING') === 'true'
+            ? ['error', 'warn']
+            : ['error'],
         extra: { max: parseInt(cfg.get<string>('DB_POOL_MAX', '10'), 10) },
       }),
     }),

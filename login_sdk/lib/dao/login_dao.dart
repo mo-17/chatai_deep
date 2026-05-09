@@ -27,9 +27,21 @@ class LoginDao {
 
   ///登录
   static login({required String userName, required String password}) async {
-    var uri = BackendConfig.buildUri('/uapi/user/login');
-    //后端使用 @Body() + class-validator，必须 JSON body + Content-Type，
-    //不能塞到 query string，否则 DTO 字段全为 undefined，校验失败
+    return _authRequest('/uapi/user/login', userName, password);
+  }
+
+  ///注册（注册成功后自动登录）
+  static register({required String userName, required String password}) async {
+    return _authRequest('/uapi/user/registration', userName, password);
+  }
+
+  ///发送认证请求并处理响应（login / register 共用）
+  static Future<void> _authRequest(
+    String path,
+    String userName,
+    String password,
+  ) async {
+    var uri = BackendConfig.buildUri(path);
     final headers = <String, String>{
       ...hiHeaders(),
       'Content-Type': 'application/json',
@@ -64,6 +76,60 @@ class LoginDao {
     } else {
       throw Exception(bodyString);
     }
+  }
+
+  ///忘记密码 - 请求 reset code
+  static Future<Map<String, dynamic>> requestPasswordReset(
+    String userName,
+  ) async {
+    var uri = BackendConfig.buildUri('/uapi/user/forgot-password/request');
+    final headers = <String, String>{
+      ...hiHeaders(),
+      'Content-Type': 'application/json',
+    };
+    final response = await http.post(
+      uri,
+      headers: headers,
+      body: jsonEncode({'userName': userName}),
+    );
+    Utf8Decoder utf8decoder = const Utf8Decoder();
+    String bodyString = utf8decoder.convert(response.bodyBytes);
+    if (response.statusCode == 200) {
+      return json.decode(bodyString) as Map<String, dynamic>;
+    }
+    throw Exception(bodyString);
+  }
+
+  ///忘记密码 - 确认 reset code 并设置新密码
+  static Future<void> confirmPasswordReset(
+    String userName,
+    String code,
+    String newPassword,
+  ) async {
+    var uri = BackendConfig.buildUri('/uapi/user/forgot-password/confirm');
+    final headers = <String, String>{
+      ...hiHeaders(),
+      'Content-Type': 'application/json',
+    };
+    final response = await http.post(
+      uri,
+      headers: headers,
+      body: jsonEncode({
+        'userName': userName,
+        'code': code,
+        'newPassword': newPassword,
+      }),
+    );
+    Utf8Decoder utf8decoder = const Utf8Decoder();
+    String bodyString = utf8decoder.convert(response.bodyBytes);
+    if (response.statusCode == 200) {
+      var result = json.decode(bodyString);
+      if (result['code'] != 0) {
+        throw Exception(result['message'] ?? '重置失败');
+      }
+      return;
+    }
+    throw Exception(bodyString);
   }
 
   ///保存登录用户信息

@@ -1,11 +1,11 @@
 import 'package:flutter/material.dart';
-import 'package:login_sdk/dao/backend_host.dart';
 import 'package:login_sdk/dao/login_dao.dart';
+import 'package:login_sdk/pages/forgot_password_page.dart';
+import 'package:login_sdk/pages/register_page.dart';
 import 'package:login_sdk/util/navigator_util.dart';
 import 'package:login_sdk/util/padding_extension.dart';
 import 'package:login_sdk/widget/input_widget.dart';
 import 'package:login_sdk/widget/login_widget.dart';
-import 'package:url_launcher/url_launcher.dart';
 
 import '../util/string_util.dart';
 
@@ -69,15 +69,24 @@ class _LoginPageState extends State<LoginPage> {
               onPressed: () => _login(context),
             ),
             15.paddingHeight,
-            Align(
-              alignment: Alignment.centerRight,
-              child: InkWell(
-                onTap: _jumpRegistration,
-                child: const Text(
-                  '注册账号',
-                  style: TextStyle(color: Colors.white),
+            Row(
+              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+              children: [
+                InkWell(
+                  onTap: _jumpForgotPassword,
+                  child: const Text(
+                    '忘记密码？',
+                    style: TextStyle(color: Colors.white70),
+                  ),
                 ),
-              ),
+                InkWell(
+                  onTap: _jumpRegistration,
+                  child: const Text(
+                    '注册账号',
+                    style: TextStyle(color: Colors.white),
+                  ),
+                ),
+              ],
             )
           ],
         ));
@@ -93,12 +102,14 @@ class _LoginPageState extends State<LoginPage> {
     );
   }
 
-  _jumpRegistration() async {
-    //跳转到接口后台注册账号
-    Uri uri = BackendConfig.buildUri('/uapi/user/register-page');
-    if (!await launchUrl(uri, mode: LaunchMode.externalApplication)) {
-      debugPrint('Could not launch $uri');
-    }
+  _jumpRegistration() {
+    Navigator.push(
+        context, MaterialPageRoute(builder: (_) => const RegisterPage()));
+  }
+
+  _jumpForgotPassword() {
+    Navigator.push(
+        context, MaterialPageRoute(builder: (_) => const ForgotPasswordPage()));
   }
 
   void _checkInput() {
