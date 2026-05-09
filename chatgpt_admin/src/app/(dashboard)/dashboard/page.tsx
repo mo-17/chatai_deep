@@ -38,10 +38,10 @@ export default function DashboardPage() {
   });
 
   const kpis = [
-    { label: '今日 Token', value: summary?.today.tokens },
-    { label: '本周 Token', value: summary?.week.tokens },
-    { label: '本月 Token', value: summary?.month.tokens },
-    { label: '全部 Token', value: summary?.all.tokens },
+    { label: '今日 Token', value: summary?.today.tokens, calls: summary?.today.calls },
+    { label: '本周 Token', value: summary?.week.tokens, calls: summary?.week.calls },
+    { label: '本月 Token', value: summary?.month.tokens, calls: summary?.month.calls },
+    { label: '全部 Token', value: summary?.all.tokens, calls: summary?.all.calls },
   ];
 
   return (
@@ -57,7 +57,7 @@ export default function DashboardPage() {
                   <p className="text-sm text-default-500">{kpi.label}</p>
                   <p className="text-2xl font-bold">{fmtTokens(kpi.value || 0)}</p>
                   <p className="text-xs text-default-400 mt-1">
-                    调用次数: {fmtNum(0)}
+                    调用次数: {fmtNum(kpi.calls || 0)}
                   </p>
                 </>
               )}

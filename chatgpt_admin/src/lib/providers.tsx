@@ -8,7 +8,13 @@ export function Providers({ children }: { children: React.ReactNode }) {
     () =>
       new QueryClient({
         defaultOptions: {
-          queries: { staleTime: 30_000, retry: 1, refetchOnWindowFocus: false },
+          queries: {
+            staleTime: 30_000,
+            gcTime: 5 * 60_000,
+            refetchOnWindowFocus: false,
+            retry: (count, err) => count < 1 && !(err as { isAuthError?: boolean })?.isAuthError,
+          },
+          mutations: { retry: false },
         },
       }),
   );

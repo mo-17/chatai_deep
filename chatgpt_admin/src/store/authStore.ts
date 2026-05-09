@@ -18,7 +18,7 @@ export const useAuthStore = create<AuthState>()(
     }),
     {
       name: 'admin-auth',
-      storage: createJSONStorage(() => localStorage),
+      storage: createJSONStorage(() => sessionStorage),
     },
   ),
 );
