@@ -1,5 +1,3 @@
-import 'dart:convert';
-
 import 'package:chatgpt_app_core/dao/ai_catalog_dao.dart';
 import 'package:chatgpt_app_core/db/conversation_dao.dart';
 import 'package:chatgpt_app_core/db/message_dao.dart';
@@ -7,6 +5,7 @@ import 'package:chatgpt_app_core/model/conversation_model.dart';
 import 'package:chatgpt_app_core/pages/conversation_page.dart';
 import 'package:flutter/material.dart';
 import 'package:login_sdk/util/navigator_util.dart';
+import 'package:openai_flutter/utils/ai_logger.dart';
 
 import '../db/hi_db_manager.dart';
 import '../widget/conversation_widget.dart';
@@ -23,9 +22,6 @@ class _ConversationListPageState extends State<ConversationListPage>
   List<ConversationModel> conversationList = [];
   List<ConversationModel> stickConversationList = [];
   late ConversationListDao conversationListDao;
-
-  ///跳转到对话详情待更新的model
-  ConversationModel? pendingModel;
 
   get _dataCount => conversationList.length + stickConversationList.length;
 
@@ -92,7 +88,7 @@ class _ConversationListPageState extends State<ConversationListPage>
   void _doInit() async {
     var storage =
         await HiDBManager.instance(dbName: HiDBManager.getAccountHash());
-    conversationListDao = ConversationListDao(storage);
+    conversationListDao = await ConversationListDao.create(storage);
     _loadStickData();
     _loadData();
   }
@@ -115,8 +111,7 @@ class _ConversationListPageState extends State<ConversationListPage>
     }
     var list =
         await conversationListDao.getConversationList(pageIndex: pageIndex);
-    debugPrint('count:${list.length}');
-    debugPrint(jsonEncode(list));
+    AILogger.log('conversation list count:${list.length}');
     if (loadMore) {
       setState(() {
         conversationList.addAll(list);
@@ -130,41 +125,39 @@ class _ConversationListPageState extends State<ConversationListPage>
   }
 
   void _jumpToConversation(ConversationModel model) {
-    pendingModel = model;
     NavigatorUtil.push(
             context,
             ConversationPage(
                 conversationModel: model,
-                conversationUpdate: (model) => _doUpdate(model.cid)))
-        .then((value) => {
-              //从对话详情页返回
-              Future.delayed(
-                  const Duration(milliseconds: 500), () => _doUpdate(model.cid))
-            });
+                conversationUpdate: (updated) => _doUpdate(updated)))
+        .then((_) {
+      // 从对话详情页返回后立即更新，DB 操作已通过 async factory 保证表就绪
+      _doUpdate(model);
+    });
   }
 
-  _doUpdate(int cid) async {
+  _doUpdate(ConversationModel model) async {
     //fix 新建会话，没有聊天消息也会保存的问题
-    if (pendingModel == null || pendingModel?.title == null) {
+    if (model.title == null) {
       return;
     }
-    var messageDao = MessageDao(conversationListDao.storage, cid: cid);
+    var messageDao = await MessageDao.create(conversationListDao.storage, cid: model.cid);
     var count = await messageDao.getMessageCount();
     //fix 置顶消息从对话框返回重复添加的问题
-    if (pendingModel!.stickTime > 0) {
-      if (!stickConversationList.contains(pendingModel)) {
-        stickConversationList.add(pendingModel!);
+    if (model.stickTime > 0) {
+      if (!stickConversationList.contains(model)) {
+        stickConversationList.add(model);
       }
     } else {
-      if (!conversationList.contains(pendingModel)) {
-        conversationList.add(pendingModel!);
+      if (!conversationList.contains(model)) {
+        conversationList.add(model);
       }
     }
     //触发刷新
     setState(() {
-      pendingModel?.messageCount = count;
+      model.messageCount = count;
     });
-    conversationListDao.saveConversation(pendingModel!);
+    conversationListDao.saveConversation(model);
   }
 
   @override

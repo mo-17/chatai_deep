@@ -19,54 +19,47 @@ abstract class IMessage {
   Future<int> getMessageCount();
 }
 
-///https://github.com/tekartik/sqflite/blob/master/sqflite/doc/sql.md
-///IMessage的的具体实现
+///统一消息表 tb_messages，所有会话的消息存储在同一张表中，通过 cid 区分
 class MessageDao implements IMessage, ITable {
   final HiDBManager storage;
 
   ///会话id
   final int cid;
   @override
-  String tableName = '';
+  String tableName = 'tb_messages';
 
-//  字段	类型	备注
-//  id	integer	主键、自增
-//  content	text	消息内容
-//  createdAt	integer	消息创建时间
-//  ownerName	text	发送者昵称
-//  ownerType	text	发送者类型（receiver, sender）
-//  avatar	text	发送者头像
-  MessageDao(this.storage, {required this.cid})
-      : tableName = tableNameByCid(cid) {
-    storage.db.execute(
-        'create table if not exists $tableName (id integer primary key autoincrement, content	text'
-        ', createdAt	integer, ownerName	text, ownerType	text, avatar	text)');
-  }
+  MessageDao._(this.storage, {required this.cid});
 
-  ///获取带cid的表名称
-  static String tableNameByCid(int cid) {
-    return 'tb_$cid';
+  /// 静态工厂，确保表和索引创建完成后再返回实例
+  static Future<MessageDao> create(HiDBManager storage, {required int cid}) async {
+    await storage.db.execute(
+        'create table if not exists tb_messages (id integer primary key autoincrement'
+        ', cid integer not null, content text, createdAt integer'
+        ', ownerName text, ownerType text, avatar text)');
+    await storage.db.execute(
+        'create index if not exists tb_messages_cid_id_idx on tb_messages(cid, id desc)');
+    return MessageDao._(storage, cid: cid);
   }
 
   @override
   Future<int> deleteMessage(int id) {
-    return storage.db.delete(tableName, where: 'id=$id');
+    return storage.db.delete(tableName, where: 'id = ?', whereArgs: [id]);
   }
 
   @override
   Future<List<MessageModel>> getAllMessage() async {
-    var results =
-        await storage.db.rawQuery('select * from $tableName order by id asc');
-
-    ///将查询结果转成Dart Model以方便使用
+    var results = await storage.db.query(tableName,
+        where: 'cid = ?', whereArgs: [cid], orderBy: 'id asc');
     var list = results.map((item) => MessageModel.fromJson(item)).toList();
     return list;
   }
 
   @override
   Future<int> getMessageCount() async {
-    var result =
-        await storage.db.query(tableName, columns: ['COUNT(*) as cnt']);
+    var result = await storage.db.query(tableName,
+        columns: ['COUNT(*) as cnt'],
+        where: 'cid = ?',
+        whereArgs: [cid]);
     return result.first['cnt'] as int;
   }
 
@@ -74,8 +67,12 @@ class MessageDao implements IMessage, ITable {
   Future<List<MessageModel>> getMessages(
       {int pageIndex = 1, int pageSize = 15}) async {
     var offset = (pageIndex - 1) * pageSize;
-    var results = await storage.db.rawQuery(
-        'select * from $tableName order by id desc limit $pageSize offset $offset');
+    var results = await storage.db.query(tableName,
+        where: 'cid = ?',
+        whereArgs: [cid],
+        orderBy: 'id desc',
+        limit: pageSize,
+        offset: offset);
 
     ///将查询结果转成Dart Model以方便使用
     var list = results.map((item) => MessageModel.fromJson(item)).toList();
@@ -86,7 +83,9 @@ class MessageDao implements IMessage, ITable {
 
   @override
   void saveMessage(MessageModel model) {
-    storage.db.insert(tableName, model.toJson());
+    final data = model.toJson();
+    data['cid'] = cid;
+    storage.db.insert(tableName, data);
   }
 
   @override

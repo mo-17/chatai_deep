@@ -1,10 +1,10 @@
 import 'dart:async';
-import 'dart:convert';
 
 import 'package:chat_message/core/chat_controller.dart';
 import 'package:chat_message/models/message_model.dart';
 import 'package:chat_message/widget/chat_list.dart';
 import 'package:chatgpt_app_core/dao/completion_dao.dart';
+import 'package:chatgpt_app_core/model/ai_settings.dart';
 import 'package:chatgpt_app_core/db/favorite_dao.dart';
 import 'package:chatgpt_app_core/db/hi_db_manager.dart';
 import 'package:chatgpt_app_core/db/message_dao.dart';
@@ -43,13 +43,14 @@ class _ConversationPageState extends State<ConversationPage> {
   bool _hadUpdate = false;
   late Map<String, dynamic> userInfo;
   String _inputMessage = "";
-  bool _sendBtnEnable = true;
+  bool _isStreaming = false;
   late MessageDao messageDao;
   late FavoriteDao favoriteDao;
   late ChatController chatController;
   late CompletionDao completionDao;
   final ScrollController _scrollController = ScrollController();
   StreamSubscription<String>? _activeStreamSub;
+  late AISettings _currentSettings;
 
   get _chatList => Expanded(
           child: Padding(
@@ -66,12 +67,18 @@ class _ConversationPageState extends State<ConversationPage> {
 
   String _aiName = '';
 
-  String get _title => _sendBtnEnable && _aiName.isNotEmpty ? '与$_aiName的会话' : '对方正在输入...';
+  String get _title {
+    if (_isStreaming) return '对方正在输入...';
+    if (_aiName.isNotEmpty) return '与$_aiName的会话';
+    return 'ChatGPT';
+  }
 
   _inputWidget() {
     return MessageInputWidget(
       '请输入',
-      enable: _sendBtnEnable,
+      enable: !_isStreaming,
+      isStreaming: _isStreaming,
+      onStop: _isStreaming ? _stopStream : null,
       onChanged: (text) => _inputMessage = text,
       onSend: () => _onSend(_inputMessage),
     );
@@ -108,12 +115,15 @@ class _ConversationPageState extends State<ConversationPage> {
     _addMessage(
         _genMessageModel(ownerType: OwnerType.sender, message: inputMessage));
     setState(() {
-      _sendBtnEnable = false;
+      _isStreaming = true;
     });
 
-    // 确保使用最新设置（含 API key、provider、mode），避免 CompletionDao 持有旧 ChatService
+    // 仅在 settings 变更时重建 CompletionDao，避免每次发送都新建实例
     final settings = context.read<AISettingsProvider>().settings;
-    completionDao = CompletionDao(settings: settings, messages: completionDao.currentMessages);
+    if (settings != _currentSettings) {
+      _currentSettings = settings;
+      completionDao = CompletionDao(settings: settings, messages: completionDao.currentMessages);
+    }
     if (settings.streamEnabled) {
       await _onSendStream(inputMessage);
     } else {
@@ -121,20 +131,23 @@ class _ConversationPageState extends State<ConversationPage> {
     }
   }
 
+  void _stopStream() {
+    _activeStreamSub?.cancel();
+  }
+
   Future<void> _onSendNonStream(String inputMessage) async {
     String? response = "";
     try {
       response = await completionDao.createCompletions(prompt: inputMessage);
-      debugPrint(response);
     } catch (e) {
       response = e.toString();
-      debugPrint(e.toString());
+      AILogger.log('non-stream error: $e');
     }
     response ??= 'no response';
     _addMessage(
         _genMessageModel(ownerType: OwnerType.receiver, message: response));
     setState(() {
-      _sendBtnEnable = true;
+      _isStreaming = false;
     });
   }
 
@@ -156,7 +169,7 @@ class _ConversationPageState extends State<ConversationPage> {
           chatController.updateMessage(finalModel!);
         },
         onError: (e) {
-          debugPrint('stream error: $e');
+          AILogger.log('stream error: $e');
         },
         cancelOnError: false,
       );
@@ -167,8 +180,16 @@ class _ConversationPageState extends State<ConversationPage> {
       finalModel = receiverModel.copyWith(content: effective);
       messageDao.saveMessage(finalModel!);
       _notifyConversationListUpdate();
+    } on Exception catch (e) {
+      // 用户主动停止：保存已接收的内容
+      if (buffer.isNotEmpty) {
+        finalModel = receiverModel.copyWith(content: buffer.toString());
+        messageDao.saveMessage(finalModel!);
+        _notifyConversationListUpdate();
+      }
+      AILogger.log('stream stopped: $e');
     } catch (e) {
-      debugPrint('stream exception: $e');
+      AILogger.log('stream exception: $e');
       // 错误兜底：保存已接收的内容
       final content = buffer.toString();
       if (content.isNotEmpty) {
@@ -183,7 +204,7 @@ class _ConversationPageState extends State<ConversationPage> {
       _activeStreamSub = null;
       if (mounted) {
         setState(() {
-          _sendBtnEnable = true;
+          _isStreaming = false;
         });
       }
     }
@@ -241,11 +262,12 @@ class _ConversationPageState extends State<ConversationPage> {
       }
     });
     final settings = context.read<AISettingsProvider>().settings;
+    _currentSettings = settings;
     _aiName = settings.aiDisplayName;
     var dbManager =
         await HiDBManager.instance(dbName: HiDBManager.getAccountHash());
-    messageDao = MessageDao(dbManager, cid: widget.conversationModel.cid);
-    favoriteDao = FavoriteDao(dbManager);
+    messageDao = await MessageDao.create(dbManager, cid: widget.conversationModel.cid);
+    favoriteDao = await FavoriteDao.create(dbManager);
     var list = await _loadData();
     chatController.loadMoreData(list);
     completionDao = CompletionDao(settings: settings, messages: list);
@@ -267,8 +289,7 @@ class _ConversationPageState extends State<ConversationPage> {
       pageIndex = 1;
     }
     var list = await messageDao.getMessages(pageIndex: pageIndex);
-    AILogger.log('count:${list.length}');
-    AILogger.log(jsonEncode(list));
+    AILogger.log('loaded ${list.length} history messages');
     if (loadMore) {
       if (list.isNotEmpty) {
         chatController.loadMoreData(list);
@@ -345,10 +366,10 @@ class _ConversationPageState extends State<ConversationPage> {
       if (result > 0) {
         chatController.deleteMessage(message);
         _notifyConversationListUpdate();
-        debugPrint('删除成功');
+        AILogger.log('message deleted');
       }
     } catch (e) {
-      debugPrint(e.toString());
+      AILogger.log('delete message error: $e');
     }
   }
 }

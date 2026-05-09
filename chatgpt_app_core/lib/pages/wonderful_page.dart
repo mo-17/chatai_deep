@@ -48,7 +48,7 @@ class _WonderfulPageState extends State<WonderfulPage> {
   void _doInit() async {
     var dbManager =
         await HiDBManager.instance(dbName: HiDBManager.getAccountHash());
-    favoriteDao = FavoriteDao(dbManager);
+    favoriteDao = await FavoriteDao.create(dbManager);
     _loadData();
   }
 
