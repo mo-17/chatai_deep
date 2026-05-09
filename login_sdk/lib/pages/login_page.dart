@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:login_sdk/dao/backend_host.dart';
 import 'package:login_sdk/dao/login_dao.dart';
 import 'package:login_sdk/util/navigator_util.dart';
 import 'package:login_sdk/util/padding_extension.dart';
@@ -94,8 +95,7 @@ class _LoginPageState extends State<LoginPage> {
 
   _jumpRegistration() async {
     //跳转到接口后台注册账号
-    Uri uri = Uri.parse(
-        'http://localhost:3000/uapi/user/register-page');
+    Uri uri = BackendConfig.buildUri('/uapi/user/register-page');
     if (!await launchUrl(uri, mode: LaunchMode.externalApplication)) {
       debugPrint('Could not launch $uri');
     }

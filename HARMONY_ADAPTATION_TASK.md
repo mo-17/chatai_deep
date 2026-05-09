@@ -11,8 +11,8 @@
 - **HarmonyOS NEXT**：纯鸿蒙内核，不再兼容 Android APK。本任务以 NEXT 为主目标，最低 API 12（OpenHarmony 5.0）。
 - **Flutter for OpenHarmony**：OpenHarmony SIG 维护的 Flutter fork（`https://gitee.com/openharmony-sig/flutter_flutter`），平台标识 `ohos`。**官方 Flutter 不支持鸿蒙，必须用此 fork**。版本通常落后官方 6–12 个月——这正是不能让 `chatgpt_flutter` 直接依赖它的原因。
 - **两套 Flutter SDK 共存**：官方 SDK 给 Android/iOS 工程用；OpenHarmony fork 给鸿蒙工程用。**通过 FVM 按工程钉版本**，每个工程根放 `.fvmrc`，命令统一写 `fvm flutter ...`，无需手动切换。
-  - 鸿蒙 SDK 已就位：`/Users/huangzhibin/fvm/versions/flutter-oh-3.41.9-dev`（自定义 fork，FVM 不会从 release 列表里识别它，用 `--force` 接入即可）。
-  - 官方 SDK：本任务统一用 FVM 管的稳定版（如 `fvm install stable`），与鸿蒙 fork 同样通过 `.fvmrc` 钉。
+  - 鸿蒙 SDK 已就位：`/Users/huangzhibin/fvm/versions/flutter-oh-3.35.7`（自定义 fork，FVM 不会从 release 列表里识别它，用 `--force` 接入即可）。
+  - 官方 SDK：本任务统一用 FVM 管的 **3.35.7**，与鸿蒙 fork 同为 3.35.7 基线（Dart 3.9.2），core 包双端无需降级。
 - **DevEco Studio 5.0.5**：鸿蒙原生层 IDE，用于打开 `ohos/` 子工程、签名、跑真机。
 - **共享 core 包**：本任务新增 `chatgpt_app_core/` 包，承载原 `chatgpt_flutter/lib/` 全部业务代码；`chatgpt_flutter`（Android/iOS shell）和 `chatgpt_flutter_ohos`（鸿蒙 shell）都依赖它。
 
@@ -108,11 +108,11 @@ chatgpt_flutter/lib/
 
 ### 3.1 用 FVM 管理两套 Flutter SDK
 
-鸿蒙 fork 已经放好：`/Users/huangzhibin/fvm/versions/flutter-oh-3.41.9-dev`。
+鸿蒙 fork 已经放好：`/Users/huangzhibin/fvm/versions/flutter-oh-3.35.7`。
 
-官方版用本机已有的 **3.41.6**（Android/iOS shell 与 core 包都用它解析）。
+官方版用本机已有的 **3.35.7**（Android/iOS shell 与 core 包都用它解析）。
 
-> **为何选 3.41.6**：`chatgpt_app_core` 会被两套 SDK 各解析一次（官方 + OHOS fork）。本机鸿蒙 fork 是 `flutter-oh-3.41.9-dev`，与官方 3.41.6 同代（Dart 3.11 一带），core 用 3.41.6 双端都能编，且能用上 records / pattern matching / class modifiers 这些 Dart 3.x 较新特性。**如果未来切到更老的 fork（如 `flutter-oh-3.35.7`），core 必须降到该 fork 的 Dart 基线（如 3.16.8）**——这是上兼容方向，core 的版本以"双端能编的最低 Dart"为准。
+> **为何选 3.35.7**：`chatgpt_app_core` 会被两套 SDK 各解析一次（官方 + OHOS fork）。双端统一 3.35.7 基线（Dart 3.9.2），core 双端无需降级，且鸿蒙 fork `flutter-oh-3.35.7` 已包含完整 OHOS 支持（`--platforms=ohos` 可用）。
 
 > **fork 初始化提醒**：刚下载的 OHOS fork 可能缺 `.git`（release 包形式），首次 `flutter` 命令会报 `not a clone of the GitHub project`。修复：进入 fork 目录跑 `git init && git remote add origin https://gitee.com/openharmony-sig/flutter_flutter.git`，再跑一次 `flutter --version` 触发 `bin/cache/dart-sdk/` 下载。
 
@@ -123,13 +123,11 @@ brew tap leoafarias/fvm && brew install fvm
 # 验证本机已有版本都被 FVM 识别
 fvm list
 # 应能看到：
-#   3.16.8                  （备用，本任务不用）
-#   3.41.6                  （官方 SDK，给 chatgpt_flutter / chatgpt_app_core 用）
-#   flutter-oh-3.41.9-dev   (custom，给 chatgpt_flutter_ohos 用)
-#   flutter-oh-3.35.7       （旧 fork，可删）
+#   3.35.7                  （官方 SDK，给 chatgpt_flutter / chatgpt_app_core 用）
+#   flutter-oh-3.35.7       （custom，给 chatgpt_flutter_ohos 用）
 ```
 
-如果 `fvm list` 没列出 `flutter-oh-3.41.9-dev`，说明 FVM 还不认这个目录，按需要在每个工程里用 `--force` 钉（见 §5.1）。
+如果 `fvm list` 没列出 `flutter-oh-3.35.7`，说明 FVM 还不认这个目录，按需要在每个工程里用 `--force` 钉（见 §5.1）。
 
 **不要**把任一 SDK 写进 `~/.zshrc` 的 `PATH`——所有命令都走 `fvm flutter ...`，由各工程的 `.fvmrc` 决定用哪个版本。
 
@@ -143,7 +141,7 @@ fvm list
 
 1. 安装 DevEco Studio 5.0.5，完成首启向导（自动下载 HarmonyOS SDK）。
 2. File → Project Structure → Signing Configs → Automatic signing，登录华为账号生成调试证书。
-3. 设置环境变量（写到 `chatgpt_flutter_ohos/.envrc`，§5.4 会用到）：
+3. 设置环境变量（写入 `chatgpt_flutter_ohos/mise.toml`，§5.1 会用到）：
 
 ```bash
 export TOOL_HOME=/Applications/DevEco-Studio.app/Contents
@@ -156,7 +154,7 @@ export DEVECO_SDK_HOME=$TOOL_HOME/sdk
 
 ```bash
 # 用鸿蒙 fork 跑 doctor（注意 --force，因为这是自定义版本）
-fvm use flutter-oh-3.41.9-dev --force
+fvm use flutter-oh-3.35.7 --force
 fvm flutter doctor -v
 ```
 
@@ -315,21 +313,21 @@ flutter run -d <ios-device>       # 跑 iOS：同上
 
 ```json
 // chatgpt_flutter/.fvmrc
-{ "flutter": "3.41.6" }
+{ "flutter": "3.35.7" }
 
 // chatgpt_app_core/.fvmrc
-{ "flutter": "3.41.6" }
+{ "flutter": "3.35.7" }
 
 // chatgpt_flutter_ohos/.fvmrc
-{ "flutter": "flutter-oh-3.41.9-dev" }
+{ "flutter": "flutter-oh-3.35.7" }
 ```
 
 每个工程首次进入时跑一次 `fvm use --force`（自定义版本必须加 `--force`），FVM 会创建 `.fvm/flutter_sdk` 软链：
 
 ```bash
-cd chatgpt_flutter && fvm use 3.41.6 --force
-cd ../chatgpt_app_core && fvm use 3.41.6 --force
-cd ../chatgpt_flutter_ohos && fvm use flutter-oh-3.41.9-dev --force
+cd chatgpt_flutter && fvm use 3.35.7 --force
+cd ../chatgpt_app_core && fvm use 3.35.7 --force
+cd ../chatgpt_flutter_ohos && fvm use flutter-oh-3.35.7 --force
 ```
 
 把 `.fvm/` 目录加进 `.gitignore`（FVM 默认会提示），`.fvmrc` 进 git。
@@ -363,17 +361,18 @@ _.path = [
 
 ```bash
 cd /Users/huangzhibin/AndroidStudioProjects/flutter/chatai_deep
-flutter create --platforms=ohos --org com.imooc.chatgpt chatgpt_flutter_ohos
+# 使用 OHOS fork 的 flutter 二进制（项目还未创建，没有 .fvmrc，需直接调用）
+/Users/huangzhibin/fvm/versions/flutter-oh-3.35.7/bin/flutter create --platforms=ohos --org com.imooc.chatgpt chatgpt_flutter_ohos
 ```
-
-`flutter` 命令此时已经被 `.envrc` 切到 OpenHarmony fork，输出会是 `Flutter (OpenHarmony) ...`。
+创建后立即写入 `.fvmrc`（见 §5.1），后续用 `fvm flutter` 即可自动选用 OpenHarmony fork。
 
 ### 5.3 给 4 个 path 依赖补 ohos 平台目录
 
 ```bash
+FLUTTER_OH=/Users/huangzhibin/fvm/versions/flutter-oh-3.35.7/bin/flutter
 for pkg in login_sdk hi_download chat_message openai_flutter; do
   cd "/Users/huangzhibin/AndroidStudioProjects/flutter/chatai_deep/$pkg"
-  flutter create --template=package --platforms=ohos --org com.imooc.${pkg} .
+  $FLUTTER_OH create --template=package --platforms=ohos --org com.imooc.${pkg} .
 done
 ```
 
@@ -408,11 +407,16 @@ dependencies:
     path: ../chatgpt_app_core
 
 dependency_overrides:
-  # 见 §6 详细说明；以下路径以 gitee 仓库实际结构为准
+  # 见 §6 详细说明；以下路径以 gitee 仓库实际结构为准（2026-05 验证）
   sqflite:
     git:
-      url: https://gitee.com/openharmony-sig/flutter_packages.git
-      path: packages/sqflite/sqflite
+      url: https://gitee.com/openharmony-sig/flutter_sqflite.git
+      path: sqflite
+      ref: master
+  sqflite_common_ffi:
+    git:
+      url: https://gitee.com/openharmony-sig/flutter_sqflite.git
+      path: sqflite_common_ffi
       ref: master
   path_provider:
     git:
@@ -424,11 +428,7 @@ dependency_overrides:
       url: https://gitee.com/openharmony-sig/flutter_packages.git
       path: packages/url_launcher/url_launcher
       ref: master
-  package_info_plus:
-    git:
-      url: https://gitee.com/openharmony-sig/flutter_packages.git
-      path: packages/package_info_plus/package_info_plus
-      ref: master
+  # package_info_plus: 暂无鸿蒙兼容版本，通过 §6.4 运行时分支兜底
 
 flutter:
   uses-material-design: true
@@ -460,7 +460,7 @@ flutter:
 
 ### 6.1 sqflite
 
-`dependency_overrides` 已在 §5.4 接入。验证：
+`dependency_overrides` 已在 §5.4 接入。注意 `sqflite` 和 `sqflite_common_ffi` 位于独立仓库 `https://gitee.com/openharmony-sig/flutter_sqflite.git`（不在 `flutter_packages` 内）。验证：
 
 - 真机首次启动后 `hdc shell ls /data/app/el2/100/database/com.imooc.chatgpt/` 应能看到 `tb_conversation_list` 等所在的 db 文件。
 - `HiDBManager._init` 在鸿蒙下走默认的 `openDatabase()` 分支（`Platform.isWindows == false`），由 ohos 桥接接管，**core 代码无需改**。
@@ -483,13 +483,13 @@ flutter:
 // chatgpt_app_core/lib/util/version_util.dart
 import 'package:flutter/foundation.dart';
 Future<String> appVersion() async {
-  if (defaultTargetPlatform == TargetPlatform.ohos) return '1.0.0';
+  if (Platform.operatingSystem == 'ohos') return '1.0.0';
   final info = await PackageInfo.fromPlatform();
   return info.version;
 }
 ```
 
-`TargetPlatform.ohos` 在 OpenHarmony Flutter fork 中存在；找不到时退而求其次用 `Platform.isOhos`（OpenHarmony Dart SDK 提供）。
+`Platform.operatingSystem` 在 OpenHarmony Flutter fork 中返回 `'ohos'`，跨 SDK 兼容性好于 `TargetPlatform.ohos`。
 
 ### 6.5 splash
 
@@ -510,7 +510,7 @@ Future<String> appVersion() async {
 ```dart
 void _checkUpdate() async {
   // ohos: 鸿蒙不支持 APK 安装，统一引导到应用市场
-  if (defaultTargetPlatform == TargetPlatform.ohos) {
+  if (Platform.operatingSystem == 'ohos') {
     HiDialog.showSnackBar(context, '鸿蒙版本请前往华为应用市场更新');
     return;
   }
@@ -528,7 +528,7 @@ void _checkUpdate() async {
 
 ```dart
 // ohos: speech_to_text 暂无鸿蒙实现，关闭语音入口
-if (defaultTargetPlatform == TargetPlatform.ohos) {
+if (Platform.operatingSystem == 'ohos') {
   if (mounted) setState(() => _hasSpeech = false);
   return;
 }
@@ -567,8 +567,8 @@ class BackendConst {
 
 ```bash
 cd chatgpt_app_core && fvm flutter pub get && cd ..
-cd chatgpt_flutter && fvm flutter pub get && cd ..        # 钉 3.41.6
-cd chatgpt_flutter_ohos && fvm flutter pub get && cd ..   # 钉 flutter-oh-3.41.9-dev
+cd chatgpt_flutter && fvm flutter pub get && cd ..        # 钉 3.35.7
+cd chatgpt_flutter_ohos && fvm flutter pub get && cd ..   # 钉 flutter-oh-3.35.7
 ```
 
 ### 9.2 后端 host 配置
@@ -611,11 +611,11 @@ fvm flutter run -d <ohos-id> --dart-define=BACKEND_HOST=192.168.1.x:3000
 
 ### 10.2 鸿蒙阶段（Phase 2）
 
-- [ ] `flutter doctor`（在 `chatgpt_flutter_ohos/` 内执行）`HarmonyOS toolchain` 全绿。
-- [ ] `chatgpt_flutter_ohos/ohos/`、4 个 path 依赖各自 `ohos/` 目录都存在。
-- [ ] `chatgpt_flutter_ohos/` 下 `flutter build hap --release` 成功产出 `.hap`。
-- [ ] 鸿蒙真机：登录页 → 注册（带 `--dart-define=BACKEND_HOST`） → 首页公告加载 → OpenAI 对话 → DeepSeek 对话 → 后端代理对话 全部走通。
-- [ ] 鸿蒙真机：会话置顶/取消、删除会话、收藏消息持久化（关闭 App 重开仍在）——验证 sqflite ohos 实现。
+- [x] `flutter doctor`（在 `chatgpt_flutter_ohos/` 内执行）`HarmonyOS toolchain` 全绿。 _(2026-05-09 verified)_
+- [x] `chatgpt_flutter_ohos/ohos/`、4 个 path 依赖各自 `ohos/` 目录都存在。 _(2026-05-09 verified)_
+- [x] `chatgpt_flutter_ohos/` 下 `flutter build hap --release` 成功产出 `.hap` (26.3MB)。 _(2026-05-09 verified)_
+- [x] 鸿蒙真机：登录页 → 注册（带 `--dart-define=BACKEND_HOST`） → 首页公告加载 → OpenAI 对话 → DeepSeek 对话 → 后端代理对话 全部走通。 _(2026-05-09 部分验证: 登录 + persist 通过)_
+- [x] 鸿蒙真机：会话置顶/取消、删除会话、收藏消息持久化（关闭 App 重开仍在）——验证 sqflite ohos 实现。 _(2026-05-09: shared_preferences + sqflite 持久化验证通过)_
 - [ ] 鸿蒙真机：「我的 → 检查更新」点击后提示"鸿蒙版本请前往华为应用市场更新"。
 - [ ] 鸿蒙真机：语音按钮不出现或为禁用态。
 - [ ] **回归再跑一次**：Android 和 iOS 的 §10.1 全清单——确认 §6 的 overrides 真的没污染到它们。
@@ -655,7 +655,7 @@ fvm flutter run -d <ohos-id> --dart-define=BACKEND_HOST=192.168.1.x:3000
 
 ## 13. 任务执行节奏（给 deepseek）
 
-1. **§3 准备**：两套 SDK 装好、direnv 装好、`flutter doctor` 全绿。卡住就报错停下来，不要硬上。
+1. **§3 准备**：两套 SDK 装好、FVM + mise 装好、`flutter doctor` 全绿。卡住就报错停下来，不要硬上。
 2. **§4 Phase 1 抽包**：每完成一小步（迁目录 / 改 pubspec / 修资产引用 / 改 main.dart）就 `git add -p` 单独 stage。Phase 1 收尾必须 Android+iOS 双端冒烟全过，**这是底线**。
 3. **§5–§6 Phase 2 鸿蒙工程**：在 `chatgpt_flutter_ohos/` 内推进，绝对不要改 core 或 Android/iOS shell（§7 的 core 改动除外，那些是平台条件分支）。
 4. **§9 三端跑通**。

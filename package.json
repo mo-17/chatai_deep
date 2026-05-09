@@ -1,0 +1,12 @@
+{
+  "name": "chatai-deep-monorepo",
+  "private": true,
+  "packageManager": "pnpm@10.12.4",
+  "scripts": {
+    "backend:dev": "pnpm --filter chatgpt_backend run start:dev",
+    "backend:build": "pnpm --filter chatgpt_backend run build",
+    "backend:test": "pnpm --filter chatgpt_backend run test",
+    "admin:dev": "pnpm --filter chatgpt_admin run dev",
+    "admin:build": "pnpm --filter chatgpt_admin run build"
+  }
+}

@@ -18,10 +18,7 @@ class BackendChatService implements ChatService {
     required String prompt,
     required List<Map<String, String>> history,
   }) async {
-    final uri = Uri.http(
-      BackendConst.host,
-      '/uapi/chat/completions',
-    );
+    final uri = BackendConst.buildUri('/uapi/chat/completions');
     final messages = [
       ...history,
       {'role': 'user', 'content': prompt},
@@ -72,10 +69,7 @@ class BackendChatService implements ChatService {
     required String prompt,
     required List<Map<String, String>> history,
   }) async* {
-    final uri = Uri.http(
-      BackendConst.host,
-      '/uapi/chat/completions/stream',
-    );
+    final uri = BackendConst.buildUri('/uapi/chat/completions/stream');
     final messages = [
       ...history,
       {'role': 'user', 'content': prompt},

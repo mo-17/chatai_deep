@@ -1,3 +1,5 @@
+import 'package:login_sdk/dao/backend_host.dart';
+
 class HiConst {
   HiConst._();
 
@@ -10,5 +12,8 @@ class HiConst {
 class BackendConst {
   BackendConst._();
 
-  static const String host = 'localhost:3000';
+  static String get host => BackendConfig.host;
+
+  static Uri buildUri(String path, [Map<String, dynamic>? queryParameters]) =>
+      BackendConfig.buildUri(path, queryParameters);
 }

@@ -21,7 +21,7 @@ class NoticeDao {
     Map<String, String> paramsMap = {};
     paramsMap['pageIndex'] = pageIndex.toString();
     paramsMap['pageSize'] = pageSize.toString();
-    var uri = Uri.http(BackendConst.host, 'uapi/notice/banner', paramsMap);
+    var uri = BackendConst.buildUri('uapi/notice/banner', paramsMap);
     //处理缓存
     _handleCache(hitCache, uri);
     final response = await http.get(uri, headers: hiHeaders());

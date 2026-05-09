@@ -11,7 +11,10 @@ dependencies:
     sdk: flutter
   chatgpt_app_core:
     path: ../chatgpt_app_core
+  login_sdk:
+    path: ../login_sdk
   flutter_splash_screen: ^4.0.0
+  shared_preferences: ">=2.2.0 <2.3.0"
 
 dev_dependencies:
   flutter_test:

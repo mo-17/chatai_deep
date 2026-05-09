@@ -1,0 +1,47 @@
+name: chatgpt_flutter_ohos
+description: ChatGPT Flutter 鸿蒙端 app shell
+publish_to: 'none'
+version: 1.0.0+1
+
+environment:
+  sdk: '>=3.0.0 <4.0.0'
+
+dependencies:
+  flutter:
+    sdk: flutter
+  chatgpt_app_core:
+    path: ../chatgpt_app_core
+
+dependency_overrides:
+  sqflite:
+    git:
+      url: https://gitee.com/openharmony-sig/flutter_sqflite.git
+      path: sqflite
+      ref: master
+  sqflite_common_ffi:
+    git:
+      url: https://gitee.com/openharmony-sig/flutter_sqflite.git
+      path: sqflite_common_ffi
+      ref: master
+  path_provider:
+    git:
+      url: https://gitee.com/openharmony-sig/flutter_packages.git
+      path: packages/path_provider/path_provider
+      ref: master
+  url_launcher:
+    git:
+      url: https://gitee.com/openharmony-sig/flutter_packages.git
+      path: packages/url_launcher/url_launcher
+      ref: master
+  shared_preferences:
+    git:
+      url: https://gitee.com/openharmony-sig/flutter_packages.git
+      path: packages/shared_preferences/shared_preferences
+      ref: master
+  # package_info_plus: 暂无鸿蒙实现，通过 §6.4 运行时分支兜底
+
+dev_dependencies:
+  flutter_lints: ^2.0.0
+
+flutter:
+  uses-material-design: true

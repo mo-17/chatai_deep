@@ -26,14 +26,21 @@ flutter analyze         # uses analysis_options.yaml (flutter_lints)
 Single test: `flutter test test/widget_test.dart --plain-name "<test name>"`.
 
 ### Backend (`chatgpt_backend/`)
+The repo root is a **pnpm workspace** (`pnpm-workspace.yaml`) containing `chatgpt_backend` and `chatgpt_admin`. Run `pnpm install` once at the root — it sets up both Node packages and shares dependencies via the central pnpm store.
 ```bash
-npm install
-npm run start:dev       # nest start --watch, listens on :3000
-npm run lint            # eslint --fix
-npm test                # jest, *.spec.ts under src/
-npm run test:e2e        # uses test/jest-e2e.json
+pnpm install            # run from repo root, installs backend + admin together
+pnpm --filter chatgpt_backend run start:dev   # or: cd chatgpt_backend && pnpm start:dev
+pnpm --filter chatgpt_backend run lint
+pnpm --filter chatgpt_backend test
+pnpm --filter chatgpt_backend run test:e2e
 ```
-Single test: `npx jest <pattern>` or `npm test -- -t "<test name>"`.
+Single test: `pnpm --filter chatgpt_backend exec jest <pattern>` or `pnpm --filter chatgpt_backend test -- -t "<test name>"`.
+
+### Admin (`chatgpt_admin/`)
+```bash
+pnpm --filter chatgpt_admin run dev    # next dev -p 3001
+pnpm --filter chatgpt_admin run build
+```
 
 The backend expects a local Postgres (`host: localhost`, `port: 5432`, `username: huangzhibin`, no password, db `chatgpt_flutter`) hardcoded in `src/app.module.ts` with `synchronize: true` — schema is auto-created from entities, but you need the DB and role to exist.
 

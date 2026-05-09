@@ -1,0 +1,53 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "Flutter: Dev (auto host)",
+      "request": "launch",
+      "type": "dart",
+      "program": "chatgpt_flutter/lib/main.dart",
+      "cwd": "chatgpt_flutter"
+    },
+    {
+      "name": "Flutter: Dev (Android real device, LAN host)",
+      "request": "launch",
+      "type": "dart",
+      "program": "chatgpt_flutter/lib/main.dart",
+      "cwd": "chatgpt_flutter",
+      "toolArgs": [
+        "--dart-define=BACKEND_HOST=${input:lanHost}"
+      ]
+    },
+    {
+      "name": "Flutter: Production (https)",
+      "request": "launch",
+      "type": "dart",
+      "program": "chatgpt_flutter/lib/main.dart",
+      "cwd": "chatgpt_flutter",
+      "toolArgs": [
+        "--dart-define=BACKEND_HOST=api.your-domain.com",
+        "--dart-define=BACKEND_HTTPS=true"
+      ]
+    },
+    {
+      "name": "Flutter: Production (https, profile)",
+      "request": "launch",
+      "type": "dart",
+      "program": "chatgpt_flutter/lib/main.dart",
+      "cwd": "chatgpt_flutter",
+      "flutterMode": "profile",
+      "toolArgs": [
+        "--dart-define=BACKEND_HOST=api.your-domain.com",
+        "--dart-define=BACKEND_HTTPS=true"
+      ]
+    }
+  ],
+  "inputs": [
+    {
+      "id": "lanHost",
+      "type": "promptString",
+      "description": "Mac 局域网 host:port（如 192.168.31.167:3000）",
+      "default": "192.168.31.167:3000"
+    }
+  ]
+}

@@ -1,0 +1,107 @@
+Flutter crash report.
+Please report a bug at https://github.com/flutter/flutter/issues.
+
+## command
+
+flutter build hap --debug
+
+## exception
+
+ProcessPackageException: ProcessException: Failed to find "hvigorw" in the search path.
+  Command: hvigorw 
+
+```
+#0      LocalProcessManager.runSync (package:process/src/interface/local_process_manager.dart:118:7)
+#1      ErrorHandlingProcessManager.runSync.<anonymous closure> (package:flutter_tools/src/base/error_handling_io.dart:680:26)
+#2      _runSync (package:flutter_tools/src/base/error_handling_io.dart:552:14)
+#3      ErrorHandlingProcessManager.runSync (package:flutter_tools/src/base/error_handling_io.dart:678:12)
+#4      _DefaultProcessUtils.runSync (package:flutter_tools/src/base/process.dart:449:51)
+#5      hvigorwTask (package:flutter_tools/src/ohos/hvigor.dart:135:41)
+#6      assembleHap (package:flutter_tools/src/ohos/hvigor.dart:159:10)
+#7      OhosHvigorBuilder.buildHap (package:flutter_tools/src/ohos/hvigor.dart:419:33)
+<asynchronous suspension>
+#8      BuildHapCommand.runCommand (package:flutter_tools/src/commands/build_hap.dart:88:5)
+<asynchronous suspension>
+#9      FlutterCommand.run.<anonymous closure> (package:flutter_tools/src/runner/flutter_command.dart:1581:27)
+<asynchronous suspension>
+#10     AppContext.run.<anonymous closure> (package:flutter_tools/src/base/context.dart:154:19)
+<asynchronous suspension>
+#11     CommandRunner.runCommand (package:args/command_runner.dart:212:13)
+<asynchronous suspension>
+#12     FlutterCommandRunner.runCommand.<anonymous closure> (package:flutter_tools/src/runner/flutter_command_runner.dart:497:9)
+<asynchronous suspension>
+#13     AppContext.run.<anonymous closure> (package:flutter_tools/src/base/context.dart:154:19)
+<asynchronous suspension>
+#14     FlutterCommandRunner.runCommand (package:flutter_tools/src/runner/flutter_command_runner.dart:432:5)
+<asynchronous suspension>
+#15     run.<anonymous closure>.<anonymous closure> (package:flutter_tools/runner.dart:98:11)
+<asynchronous suspension>
+#16     AppContext.run.<anonymous closure> (package:flutter_tools/src/base/context.dart:154:19)
+<asynchronous suspension>
+#17     main (package:flutter_tools/executable.dart:101:3)
+<asynchronous suspension>
+```
+
+## flutter doctor
+
+```
+[!] Flutter (Channel main, 3.35.7, on macOS 26.4.1 25E253 darwin-arm64, locale zh-Hans-CN) [125.4s]
+    • Flutter version 3.35.7 on channel main at /Users/huangzhibin/fvm/versions/flutter-oh-3.35.7
+    ! Unknown upstream repository.
+      Reinstall Flutter by following instructions at https://flutter.dev/setup.
+    • Framework revision 002ff8966a (10 hours ago), 2026-05-08 16:27:25 +0800
+    • Engine revision 035316565a
+    • Dart version 3.9.2
+    • DevTools version 2.48.0
+    • Feature flags: enable-ohos, enable-web, enable-linux-desktop, enable-macos-desktop, enable-windows-desktop, enable-android, enable-ios, cli-animations, enable-native-assets, enable-lldb-debugging
+    • If those were intentional, you can disregard the above warnings; however it is recommended to use "git" directly to perform update checks and upgrades.
+
+[✗] HarmonyOS toolchain - develop for HarmonyOS devices
+    • OpenHarmony Sdk at /Applications/DevEco-Studio.app/Contents/sdk, available api versions has [23:12]
+    ✗ Ohpm is missing, please configure "ohpm" to the environment variable PATH.
+    • Node version v24.2.0
+    ✗ Hvigorw is missing, please configure "hvigorw" to the environment variable PATH.
+
+[!] Android toolchain - develop for Android devices (Android SDK version 35.0.0) [1,878ms]
+    • Android SDK at /Users/huangzhibin/Library/Android/sdk
+    • Emulator version 31.3.14.0 (build_id 9322596) (CL:N/A)
+    • Platform android-35, build-tools 35.0.0
+    • ANDROID_HOME = /Users/huangzhibin/Library/Android/sdk
+    • ANDROID_SDK_ROOT = /Users/huangzhibin/Library/Android/sdk
+    • Java binary at: /Applications/Android Studio.app/Contents/jbr/Contents/Home/bin/java
+      This is the JDK bundled with the latest Android Studio installation on this machine.
+      To manually set the JDK path, use: `flutter config --jdk-dir="path/to/jdk"`.
+    • Java version OpenJDK Runtime Environment (build 17.0.7+0-17.0.7b1000.6-10550314)
+    ! Some Android licenses not accepted. To resolve this, run: flutter doctor --android-licenses
+
+[✓] Xcode - develop for iOS and macOS (Xcode 26.0.1) [990ms]
+    • Xcode at /Applications/Xcode.app/Contents/Developer
+    • Build 17A400
+    • CocoaPods version 1.16.2
+
+[✓] Chrome - develop for the web [7ms]
+    • Chrome at /Applications/Google Chrome.app/Contents/MacOS/Google Chrome
+
+[✓] Android Studio (version 2023.1) [7ms]
+    • Android Studio at /Applications/Android Studio.app/Contents
+    • Flutter plugin can be installed from:
+      🔨 https://plugins.jetbrains.com/plugin/9212-flutter
+    • Dart plugin can be installed from:
+      🔨 https://plugins.jetbrains.com/plugin/6351-dart
+    • Java version OpenJDK Runtime Environment (build 17.0.7+0-17.0.7b1000.6-10550314)
+
+[✓] VS Code (version 1.114.0) [6ms]
+    • VS Code at /Applications/Visual Studio Code.app/Contents
+    • Flutter extension version 3.92.0
+
+[✓] Connected device (3 available) [7.4s]
+    • 2LQ0223A12016045 (mobile) • 2LQ0223A12016045 • ohos-arm64     • Ohos OpenHarmony-6.0.2.130 (API 22)
+    • macOS (desktop)           • macos            • darwin-arm64   • macOS 26.4.1 25E253 darwin-arm64
+    • Chrome (web)              • chrome           • web-javascript • Google Chrome 148.0.7778.96
+
+[!] Network resources [75.1s]
+    ✗ A network error occurred while checking "https://maven.google.com/": Operation timed out
+    ✗ A network error occurred while checking "https://github.com/": Operation timed out
+
+! Doctor found issues in 4 categories.
+```

@@ -1,0 +1,9 @@
+{
+  "name": "login_sdk",
+  "version": "1.0.0",
+  "description": "Login SDK for ChatGPT Flutter",
+  "main": "index.ets",
+  "author": "",
+  "license": "Apache-2.0",
+  "dependencies": {}
+}

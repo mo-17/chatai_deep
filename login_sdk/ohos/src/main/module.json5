@@ -1,0 +1,10 @@
+{
+  "module": {
+    "name": "login_sdk",
+    "type": "har",
+    "deviceTypes": [
+      "default",
+      "tablet"
+    ]
+  }
+}

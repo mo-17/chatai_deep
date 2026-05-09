@@ -132,6 +132,11 @@ class _MyPageState extends State<MyPage> {
       ];
 
   void _checkUpdate() async {
+    // ohos: 鸿蒙不支持 APK 安装，统一引导到应用市场
+    if (Platform.operatingSystem == 'ohos') {
+      HiDialog.showSnackBar(context, '鸿蒙版本请前往华为应用市场更新');
+      return;
+    }
     if (!Platform.isAndroid) {
       HiDialog.showSnackBar(context, '仅支持Android，其他平台敬请期待');
       return;

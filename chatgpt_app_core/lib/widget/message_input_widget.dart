@@ -32,6 +32,7 @@ class _MessageInputWidgetState extends State<MessageInputWidget> {
   @override
   void initState() {
     super.initState();
+    _initSpeech();
   }
 
   // iOS 17.0–17.4 模拟器存在 AVAudioEngine sampleRate 不匹配的 bug，
@@ -51,6 +52,11 @@ class _MessageInputWidgetState extends State<MessageInputWidget> {
   }
 
   Future<void> _initSpeech() async {
+    // ohos: speech_to_text 暂无鸿蒙实现，关闭语音入口
+    if (Platform.operatingSystem == 'ohos') {
+      if (mounted) setState(() => _hasSpeech = false);
+      return;
+    }
     if (_isBrokenIosSimulator()) {
       debugPrint('skip speech_to_text init: iOS 17.0–17.4 simulator audio bug');
       if (mounted) setState(() => _hasSpeech = false);

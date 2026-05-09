@@ -93,49 +93,46 @@ JWT_SECRET=chatgpt-flutter-secret-key
 
 ## 本地启动
 
+包管理器：**pnpm**（与 `chatgpt_admin` 共用仓库根的 pnpm workspace，磁盘占用更省）。
+
 ```bash
 # 1. 确保 Postgres 已运行，数据库 chatgpt_flutter 和角色 huangzhibin 已创建
-# 2. 安装依赖
-npm install
+# 2. 在仓库根目录安装依赖（一次性安装 backend + admin）
+cd ..
+pnpm install
 # 3. 配置环境变量
-cp .env.example .env
-# 编辑 .env 填入你的 API Key
+cd chatgpt_backend
+cp .env.example .env  # 编辑 .env 填入 JWT_SECRET 等
 # 4. 启动开发服务器
-npm run start:dev
+pnpm run start:dev
 ```
 
 后端监听 `http://localhost:3000`，`/uapi/chat/completions` 端点需要携带登录 JWT。
 
-## Project setup
+## 编译与运行
 
 ```bash
-$ npm install
+# 开发
+pnpm start
+
+# watch
+pnpm start:dev
+
+# 生产
+pnpm start:prod
 ```
 
-## Compile and run the project
+## 运行测试
 
 ```bash
-# development
-$ npm run start
+# 单元测试
+pnpm test
 
-# watch mode
-$ npm run start:dev
+# e2e
+pnpm test:e2e
 
-# production mode
-$ npm run start:prod
-```
-
-## Run tests
-
-```bash
-# unit tests
-$ npm run test
-
-# e2e tests
-$ npm run test:e2e
-
-# test coverage
-$ npm run test:cov
+# 覆盖率
+pnpm test:cov
 ```
 
 ## Deployment

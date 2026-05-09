@@ -25,7 +25,7 @@ class AiCatalogDao {
     final catalog = loadFromCache();
     final path = catalog?['avatarUrl'] as String?;
     if (path == null || path.isEmpty) return '';
-    return Uri.http(BackendConst.host, path).toString();
+    return BackendConst.buildUri(path).toString();
   }
 
   /// 从后端异步拉取，写入缓存。失败/未登录/403 均静默返回 null
@@ -34,7 +34,7 @@ class AiCatalogDao {
     if (token == null) return null;
 
     try {
-      final uri = Uri.http(BackendConst.host, '/uapi/ai/catalog');
+      final uri = BackendConst.buildUri('/uapi/ai/catalog');
       final headers = <String, String>{
         'Content-Type': 'application/json',
         'Authorization': 'Bearer $token',

@@ -64,9 +64,9 @@ class _ConversationPageState extends State<ConversationPage> {
         title: Text(_title),
       );
 
-  late String _aiName;
+  String _aiName = '';
 
-  String get _title => _sendBtnEnable ? '与$_aiName的会话' : '对方正在输入...';
+  String get _title => _sendBtnEnable && _aiName.isNotEmpty ? '与$_aiName的会话' : '对方正在输入...';
 
   _inputWidget() {
     return MessageInputWidget(

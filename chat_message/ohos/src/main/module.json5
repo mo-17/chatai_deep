@@ -1,0 +1,10 @@
+{
+  "module": {
+    "name": "chat_message",
+    "type": "har",
+    "deviceTypes": [
+      "default",
+      "tablet"
+    ]
+  }
+}

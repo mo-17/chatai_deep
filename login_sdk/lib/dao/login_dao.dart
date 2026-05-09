@@ -3,6 +3,7 @@ import 'dart:convert';
 import 'package:flutter/cupertino.dart';
 import 'package:flutter_hi_cache/flutter_hi_cache.dart';
 import 'package:http/http.dart' as http;
+import 'package:login_sdk/dao/backend_host.dart';
 import 'package:login_sdk/dao/header_util.dart';
 import 'package:login_sdk/util/navigator_util.dart';
 
@@ -23,7 +24,7 @@ class LoginDao {
     Map<String, String> paramsMap = {};
     paramsMap['userName'] = userName;
     paramsMap['password'] = password;
-    var uri = Uri.http('localhost:3000', '/uapi/user/login', paramsMap);
+    var uri = BackendConfig.buildUri('/uapi/user/login', paramsMap);
     final response = await http.post(uri, headers: hiHeaders());
     Utf8Decoder utf8decoder = const Utf8Decoder(); //fix 中文乱码
     String bodyString = utf8decoder.convert(response.bodyBytes);
