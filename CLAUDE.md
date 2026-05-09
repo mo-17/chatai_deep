@@ -6,7 +6,8 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 This is a multi-package monorepo for a Flutter ChatGPT client (course project from imooc.com class 672) plus its NestJS backend. Packages live as siblings under the repo root and are wired together via `pubspec.yaml` `path:` dependencies.
 
-- `chatgpt_flutter/` — main Flutter app (entry point). Depends via local path on `login_sdk`, `hi_download`, `chat_message`, `openai_flutter`. Pull all five into the same parent directory before running.
+- `chatgpt_flutter/` — main Flutter app (entry point). Depends via local path on `chatgpt_app_core`, `login_sdk`, `hi_download`, `chat_message`, `openai_flutter`. Pull all six into the same parent directory before running.
+- `chatgpt_app_core/` — core app logic (pages, DAOs, DB, widgets, providers). Entry point is `lib/app.dart:runChatGptApp`; `chatgpt_flutter/lib/main.dart` is a thin shell that calls it.
 - `openai_flutter/` — OpenAI Chat Completions SDK (`AIConfigBuilder`, `AICompletion`, `AIHttp`).
 - `chat_message/` — chat-bubble UI + `ChatController` that drives a `Stream<List<MessageModel>>` for the message list.
 - `login_sdk/` — login/registration UI + `LoginDao` (account hash, boarding pass) + `hiHeaders()` for backend calls.
@@ -63,8 +64,8 @@ The backend expects a local Postgres (`host: localhost`, `port: 5432`, `username
 
 `HiDBManager.getAccountHash()` falls back to `"test"` when no account is logged in — this makes it possible to run the app pre-login but means data written then is shared.
 
-### Conversation context (`lib/util/conversation_context_helper.dart`, `lib/dao/completion_dao.dart`)
-Chat history is sent to OpenAI as a `Q:/A:` transcript appended to the new prompt. `CompletionDao.createCompletions` strips the leading `A:` and the first `\n\n` from the model reply before storing it. If you change the prompt format, update both `getPromptContext` and the response-stripping code together.
+### Conversation context (`lib/dao/completion_dao.dart`)
+Chat history is sent to the AI as a standard OpenAI `messages[]` array (`_buildHistory()` maps `MessageModel` → `{role, content}`). Non-streaming and streaming paths both use this same format via `ChatService.chat` / `ChatService.chatStream`.
 
 ### Networking
 - OpenAI/DeepSeek calls go through `openai_flutter/lib/http/ai_http.dart` with per-instance `AIConfigBuilder`.
@@ -84,7 +85,7 @@ Chat history is sent to OpenAI as a `Q:/A:` transcript appended to the new promp
 
 ## Conventions worth preserving
 
-- Path dependencies in `pubspec.yaml` use `../<package>` — keep all five Flutter packages siblings.
+- Path dependencies in `pubspec.yaml` use `../<package>` — keep all six Flutter packages siblings.
 - Comments in Dart files are predominantly Chinese. Match the existing language when adding comments.
 - DAOs follow an "interface + impl in one file" pattern (e.g. `IConversationList` / `ConversationListDao`). Keep that shape when adding new tables.
 - `ITable` is a marker mixin from `lib/db/table_name.dart`; every Dao that owns a table implements it and assigns `tableName` in its constructor — also where the `CREATE TABLE IF NOT EXISTS` runs.
