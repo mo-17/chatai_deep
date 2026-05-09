@@ -1,0 +1,37 @@
+name: ci
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  node:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: huangzhibin
+          POSTGRES_DB: chatgpt_flutter
+          POSTGRES_HOST_AUTH_METHOD: trust
+        ports: ['5432:5432']
+        options: --health-cmd pg_isready --health-interval 10s --health-timeout 5s --health-retries 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with: { version: 10 }
+      - uses: actions/setup-node@v4
+        with: { node-version: 22, cache: 'pnpm' }
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm node:lint
+      - run: pnpm --filter chatgpt_backend run build
+      - run: pnpm --filter chatgpt_backend run test -- --runInBand
+      - run: pnpm --filter chatgpt_admin run typecheck
+      - run: pnpm --filter chatgpt_admin run build
+        env:
+          NEXT_PUBLIC_BACKEND: http://localhost:3000
+
+  flutter:
+    runs-on: ubuntu-latest
+    if: false
+    steps: []

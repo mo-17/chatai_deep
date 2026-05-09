@@ -1,3 +1,6 @@
 packages:
   - chatgpt_backend
   - chatgpt_admin
+catalog:
+  typescript: ^5.7.3
+  '@types/node': ^22.0.0

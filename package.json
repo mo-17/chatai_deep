@@ -5,8 +5,20 @@
   "scripts": {
     "backend:dev": "pnpm --filter chatgpt_backend run start:dev",
     "backend:build": "pnpm --filter chatgpt_backend run build",
+    "backend:lint": "pnpm --filter chatgpt_backend run lint",
     "backend:test": "pnpm --filter chatgpt_backend run test",
     "admin:dev": "pnpm --filter chatgpt_admin run dev",
-    "admin:build": "pnpm --filter chatgpt_admin run build"
+    "admin:build": "pnpm --filter chatgpt_admin run build",
+    "admin:lint": "pnpm --filter chatgpt_admin run lint",
+    "admin:typecheck": "pnpm --filter chatgpt_admin run typecheck",
+    "node:lint": "pnpm -r --filter ./chatgpt_backend --filter ./chatgpt_admin run lint",
+    "node:build": "pnpm -r --filter ./chatgpt_backend --filter ./chatgpt_admin run build",
+    "prepare": "husky"
+  },
+  "devDependencies": {
+    "@commitlint/cli": "^21.0.0",
+    "@commitlint/config-conventional": "^21.0.0",
+    "husky": "^9.1.7",
+    "lint-staged": "^17.0.3"
   }
 }

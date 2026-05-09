@@ -1,0 +1,5 @@
+{
+  "chatgpt_backend/**/*.{ts,tsx}": "pnpm --filter chatgpt_backend exec eslint --fix",
+  "chatgpt_admin/**/*.{ts,tsx}": "pnpm --filter chatgpt_admin exec eslint --fix",
+  "*.md": []
+}

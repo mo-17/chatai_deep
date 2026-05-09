@@ -1,0 +1,10 @@
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "extends": ["config:base", ":semanticCommits"],
+  "rangeStrategy": "bump",
+  "packageRules": [
+    { "matchPackagePatterns": ["^@nestjs/"], "groupName": "nestjs" },
+    { "matchPackagePatterns": ["^@nextui-org/"], "groupName": "nextui" },
+    { "matchPackagePatterns": ["^@tanstack/"], "groupName": "tanstack" }
+  ]
+}
