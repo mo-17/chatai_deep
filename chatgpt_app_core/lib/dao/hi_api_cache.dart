@@ -1,8 +1,9 @@
 import 'package:flutter_hi_cache/flutter_hi_cache.dart';
 import 'package:openai_flutter/utils/ai_logger.dart';
 
-///接口缓存
+///接口缓存，通过 HiCache 持久化 key 索引，确保登出/重启后可清理残留
 class HiAPICache {
+  static const _kIndexKey = '_apiCacheIndex';
   late HiCache _hiCache;
   final Set<String> _keys = {};
 
@@ -18,15 +19,29 @@ class HiAPICache {
   }
 
   static init(HiCache hiCache) {
-    getInstance()._hiCache = hiCache;
+    final self = getInstance();
+    self._hiCache = hiCache;
+    // 恢复上次会话写入的缓存 key 列表
+    final saved = hiCache.get(_kIndexKey);
+    if (saved != null && saved is List) {
+      for (final k in saved) {
+        if (k is String) self._keys.add(k);
+      }
+    }
   }
 
-  /// 清除所有缓存
+  /// 清除所有缓存（登出时调用）
   void clearAll() {
     for (final key in _keys.toList()) {
       _hiCache.remove(key);
     }
     _keys.clear();
+    // 同步清除持久化的索引
+    _hiCache.setStringList(_kIndexKey, []);
+  }
+
+  void _persistIndex() {
+    _hiCache.setStringList(_kIndexKey, _keys.toList());
   }
 
   /// 获取缓存
@@ -44,6 +59,7 @@ class HiAPICache {
       ///移除过期的缓存
       _hiCache.remove(key);
       _keys.remove(key);
+      _persistIndex();
       AILogger.log('remove key$key .');
       return null;
     }
@@ -54,6 +70,7 @@ class HiAPICache {
     final key = _fixedKey(url);
     _keys.add(key);
     _hiCache.setStringList(key, ['$_timeNow', cache]);
+    _persistIndex();
   }
 
   ///统一缓存前缀

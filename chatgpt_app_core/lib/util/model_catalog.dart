@@ -55,17 +55,18 @@ class ModelCatalog {
   static void loadFromCache() {
     final data = AiCatalogDao.loadFromCache();
     if (data == null) return;
-    _applyRemote(data);
+    applyRemote(data);
   }
 
   /// 异步从后端拉取，失败不报错、不弹窗
   static Future<void> refreshFromBackend() async {
     final data = await AiCatalogDao.fetchRemote();
     if (data == null) return;
-    _applyRemote(data);
+    applyRemote(data);
   }
 
-  static void _applyRemote(Map<String, dynamic> data) {
+  // visibleForTesting
+  static void applyRemote(Map<String, dynamic> data) {
     final models = data['models'] as List?;
     if (models == null || models.isEmpty) return;
 
