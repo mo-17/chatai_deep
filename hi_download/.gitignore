@@ -24,6 +24,31 @@ pubspec.lock
 .flutter-plugins-dependencies
 **/doc/api/
 
+# 各平台脚手架自动生成文件（pub get 会重写，不应入库）
+android/local.properties
+android/.gradle/
+android/captures/
+android/gradlew
+android/gradlew.bat
+android/gradle/wrapper/gradle-wrapper.jar
+**/GeneratedPluginRegistrant.java
+**/GeneratedPluginRegistrant.h
+**/GeneratedPluginRegistrant.m
+**/GeneratedPluginRegistrant.swift
+**/generated_plugin_registrant.cc
+**/generated_plugin_registrant.h
+**/generated_plugins.cmake
+ios/Flutter/Generated.xcconfig
+ios/Flutter/flutter_export_environment.sh
+ios/Flutter/App.framework/
+ios/Flutter/Flutter.framework/
+ios/Flutter/Flutter.podspec
+ios/Flutter/ephemeral/
+linux/flutter/ephemeral/
+macos/Flutter/ephemeral/
+macos/Flutter/Flutter-Generated.xcconfig
+windows/flutter/ephemeral/
+
 # Symbolication / Obfuscation
 app.*.symbols
 app.*.map.json
