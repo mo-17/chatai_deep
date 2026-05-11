@@ -6,7 +6,7 @@ import { useSearchParams, useRouter } from 'next/navigation';
 import {
   Table, TableHeader, TableColumn, TableBody, TableRow, TableCell,
   Input, Button, Pagination, Select, SelectItem,
-} from '@nextui-org/react';
+} from '@heroui/react';
 import { usageApi } from '@/lib/api/usage';
 import { fmtTokens, fmtDate } from '@/lib/utils/format';
 
@@ -76,8 +76,11 @@ export default function UsagePage() {
         />
         <Select
           label="Provider"
-          selectedKey={provider}
-          onSelectionChange={(k) => setProvider((k as string) || '')}
+          selectedKeys={provider ? [provider] : []}
+          onSelectionChange={(keys) => {
+            const first = keys === 'all' ? '' : (Array.from(keys)[0] as string | undefined);
+            setProvider(first ?? '');
+          }}
           className="max-w-36"
         >
           <SelectItem key="">全部</SelectItem>

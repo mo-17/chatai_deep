@@ -3,7 +3,7 @@
 import { useEffect, useState, useMemo, useRef } from 'react';
 import {
   Card, CardBody, CardHeader, Button, Select, SelectItem, Switch, Spinner,
-} from '@nextui-org/react';
+} from '@heroui/react';
 import { Upload } from 'lucide-react';
 import { useGlobalConfig, useProviders, useModels, useAiMutations } from '@/hooks/useAi';
 import { aiApi } from '@/lib/api/ai';
@@ -26,8 +26,11 @@ export default function AiGlobalPage() {
 
   useEffect(() => {
     if (config) {
+      // eslint-disable-next-line react-hooks/set-state-in-effect
       setProviderCode(config.defaultProviderCode);
+      // eslint-disable-next-line react-hooks/set-state-in-effect
       setModelId(config.defaultModelId);
+      // eslint-disable-next-line react-hooks/set-state-in-effect
       setCatalogPublic(config.catalogPublic);
     }
   }, [config]);

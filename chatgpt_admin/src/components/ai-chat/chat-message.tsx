@@ -1,7 +1,7 @@
 'use client';
 
 import React from 'react';
-import { Avatar, cn } from '@nextui-org/react';
+import { Avatar, cn } from '@heroui/react';
 
 export interface ChatMessageProps {
   avatar: string;
@@ -9,6 +9,7 @@ export interface ChatMessageProps {
   message: string;
   time?: string;
   isAI?: boolean;
+  className?: string;
   classNames?: Record<'base', string>;
 }
 

@@ -1,7 +1,7 @@
 'use client';
 
 import { useState, useEffect } from 'react';
-import { Button, Switch, Input, Spinner } from '@nextui-org/react';
+import { Button, Switch, Input, Spinner } from '@heroui/react';
 import { fetchAuthSettings, updateAuthSettings } from '@/lib/api/auth-admin';
 import type { AuthSettings } from '@/lib/api/auth-admin';
 

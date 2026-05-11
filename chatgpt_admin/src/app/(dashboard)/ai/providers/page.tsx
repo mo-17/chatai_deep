@@ -3,8 +3,8 @@
 import { useState } from 'react';
 import {
   Table, TableHeader, TableColumn, TableBody, TableRow, TableCell,
-  Button, Chip, Switch, Spinner, Tooltip, Modal, ModalContent, ModalHeader, ModalBody, ModalFooter,
-} from '@nextui-org/react';
+  Button, Chip, Switch, Tooltip, Modal, ModalContent, ModalHeader, ModalBody, ModalFooter,
+} from '@heroui/react';
 import { Eye, EyeOff, Wrench, Pencil, Trash2 } from 'lucide-react';
 import { useProviders, useModels, useAiMutations } from '@/hooks/useAi';
 import { ProviderForm } from '@/components/ai/ProviderForm';
@@ -212,7 +212,7 @@ export default function AiProvidersPage() {
         open={isCreate}
         isCreate
         onClose={() => setIsCreate(false)}
-        onSave={handleCreate}
+        onSave={(data) => handleCreate(data as ProviderCreateForm)}
         loading={createProvider.isPending}
       />
 

@@ -7,6 +7,8 @@ import { IEmailSender } from './email-sender.interface';
  */
 export class EmailSmtpSender implements IEmailSender {
   private transporter: nodemailer.Transporter;
+  private fromAddress: string;
+  private fromName: string;
 
   constructor(config: {
     host: string;
@@ -17,6 +19,8 @@ export class EmailSmtpSender implements IEmailSender {
     fromName: string;
     fromAddress: string;
   }) {
+    this.fromName = config.fromName;
+    this.fromAddress = config.fromAddress;
     this.transporter = nodemailer.createTransport({
       host: config.host,
       port: config.port,
@@ -26,12 +30,10 @@ export class EmailSmtpSender implements IEmailSender {
   }
 
   async send(to: string, subject: string, html: string): Promise<void> {
-    await this.transporter.sendMail({
-      from:
-        this.transporter.options.from ?? `"${this.transporter.options.from}"`,
-      to,
-      subject,
-      html,
-    });
+    const from =
+      this.fromName
+        ? `"${this.fromName}" <${this.fromAddress}>`
+        : this.fromAddress;
+    await this.transporter.sendMail({ from, to, subject, html });
   }
 }

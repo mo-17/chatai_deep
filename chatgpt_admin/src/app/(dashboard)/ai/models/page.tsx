@@ -5,7 +5,7 @@ import {
   Table, TableHeader, TableColumn, TableBody, TableRow, TableCell,
   Button, Chip, Switch, Select, SelectItem, Input, Tooltip, Spinner,
   Modal, ModalContent, ModalHeader, ModalBody, ModalFooter,
-} from '@nextui-org/react';
+} from '@heroui/react';
 import { Pencil, Trash2, Circle, CheckCircle } from 'lucide-react';
 import { useModels, useProviders, useAiMutations } from '@/hooks/useAi';
 import { ModelForm } from '@/components/ai/ModelForm';
@@ -122,10 +122,12 @@ export default function AiModelsPage() {
             setFilters((f) => ({ ...f, providerId: val === 'all' ? undefined : val }));
           }}
         >
-          <SelectItem key="all">全部</SelectItem>
-          {(providers || []).map((p) => (
-            <SelectItem key={String(p.id)}>{p.displayName}</SelectItem>
-          ))}
+          {[
+            <SelectItem key="all">全部</SelectItem>,
+            ...(providers || []).map((p) => (
+              <SelectItem key={String(p.id)}>{p.displayName}</SelectItem>
+            )),
+          ]}
         </Select>
         <Select
           label="状态"

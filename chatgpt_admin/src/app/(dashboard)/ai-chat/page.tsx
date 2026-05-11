@@ -8,7 +8,7 @@ import {
   cn,
   Select,
   SelectItem,
-} from '@nextui-org/react';
+} from '@heroui/react';
 import { ArrowUp, Paperclip, Mic, Menu } from 'lucide-react';
 
 import ChatSidebar from '@/components/ai-chat/chat-sidebar';
@@ -40,6 +40,7 @@ export default function AiChatPage() {
   const [models, setModels] = useState<{ key: string; label: string }[]>([]);
   const [listening, setListening] = useState(false);
   const [speechSupported, setSpeechSupported] = useState(false);
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const recognitionRef = useRef<any>(null);
   const promptBeforeSpeech = useRef('');
   const listeningRef = useRef(false);
@@ -48,14 +49,17 @@ export default function AiChatPage() {
   // 初始化语音识别
   useEffect(() => {
     const SpeechRecognition =
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
       (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
     if (!SpeechRecognition) return;
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     setSpeechSupported(true);
 
     const recognition = new SpeechRecognition();
     recognition.lang = 'zh-CN';
     recognition.interimResults = true;
 
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     recognition.onresult = (event: any) => {
       // 从 0 遍历全部 results，保证间隔后的识别追加而非覆盖
       let transcript = '';
@@ -79,6 +83,7 @@ export default function AiChatPage() {
       }
     };
 
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     recognition.onerror = (event: any) => {
       if (event?.error === 'aborted' && listeningRef.current) {
         setPrompt((prev) => {

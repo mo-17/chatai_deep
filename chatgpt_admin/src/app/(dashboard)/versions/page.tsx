@@ -6,7 +6,7 @@ import {
   Table, TableHeader, TableColumn, TableBody, TableRow, TableCell,
   Button, Chip, Modal, ModalContent, ModalHeader, ModalBody, ModalFooter,
   Input, Switch, Pagination,
-} from '@nextui-org/react';
+} from '@heroui/react';
 import { versionApi } from '@/lib/api/version';
 import { useForm } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
@@ -151,7 +151,7 @@ export default function VersionsPage() {
           </ModalBody>
           <ModalFooter>
             <Button variant="flat" onPress={() => { setEditId(null); setIsCreate(false); form.reset(); }}>取消</Button>
-            <Button color="primary" isLoading={saveMutation.isPending} onPress={form.handleSubmit((d) => saveMutation.mutate(d))}>保存</Button>
+            <Button color="primary" isLoading={saveMutation.isPending} onPress={() => form.handleSubmit((d) => saveMutation.mutate(d))()}>保存</Button>
           </ModalFooter>
         </ModalContent>
       </Modal>

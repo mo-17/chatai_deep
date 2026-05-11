@@ -6,7 +6,7 @@ import { zodResolver } from '@hookform/resolvers/zod';
 import {
   Modal, ModalContent, ModalHeader, ModalBody, ModalFooter,
   Button, Input, Switch,
-} from '@nextui-org/react';
+} from '@heroui/react';
 import { providerCreateSchema, providerUpdateSchema, type ProviderCreateForm, type ProviderUpdateForm } from '@/schemas/ai';
 import type { AiProvider } from '@/types/ai';
 
@@ -21,6 +21,7 @@ interface Props {
 
 export function ProviderForm({ open, isCreate, provider, onClose, onSave, loading }: Props) {
   const schema = isCreate ? providerCreateSchema : providerUpdateSchema;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const { control, handleSubmit, reset, formState: { errors } } = useForm<any>({
     resolver: zodResolver(schema),
   });
@@ -163,7 +164,7 @@ export function ProviderForm({ open, isCreate, provider, onClose, onSave, loadin
           <Button
             color="primary"
             isLoading={loading}
-            onPress={handleSubmit((d) => onSave(d))}
+            onPress={() => handleSubmit((d) => onSave(d))()}
           >
             保存
           </Button>

@@ -7,7 +7,7 @@ import {
   ScrollShadow,
   Spacer,
   cn,
-} from '@nextui-org/react';
+} from '@heroui/react';
 import {
   MessageCircle,
   Plus,

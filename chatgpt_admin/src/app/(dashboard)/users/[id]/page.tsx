@@ -2,7 +2,7 @@
 
 import { useParams } from 'next/navigation';
 import { useQuery } from '@tanstack/react-query';
-import { Card, CardBody, CardHeader, Chip, Skeleton, Table, TableHeader, TableColumn, TableBody, TableRow, TableCell } from '@nextui-org/react';
+import { Card, CardBody, CardHeader, Chip, Skeleton, Table, TableHeader, TableColumn, TableBody, TableRow, TableCell } from '@heroui/react';
 import { userApi } from '@/lib/api/user';
 import { usageApi } from '@/lib/api/usage';
 import { fmtTokens, fmtDate } from '@/lib/utils/format';

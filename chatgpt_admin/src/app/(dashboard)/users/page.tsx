@@ -22,8 +22,7 @@ import {
   ModalFooter,
   Select,
   SelectItem,
-  addToast,
-} from '@nextui-org/react';
+} from '@heroui/react';
 import { userApi } from '@/lib/api/user';
 import { useForm } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
@@ -107,8 +106,11 @@ export default function UsersPage() {
         />
         <Select
           label="角色"
-          selectedKey={role}
-          onSelectionChange={(k) => setRole((k as string) || '')}
+          selectedKeys={role ? [role] : []}
+          onSelectionChange={(keys) => {
+            const first = keys === 'all' ? '' : (Array.from(keys)[0] as string | undefined);
+            setRole(first ?? '');
+          }}
           className="max-w-32"
         >
           <SelectItem key="">全部</SelectItem>
@@ -117,8 +119,11 @@ export default function UsersPage() {
         </Select>
         <Select
           label="状态"
-          selectedKey={banned}
-          onSelectionChange={(k) => setBanned((k as string) || '')}
+          selectedKeys={banned ? [banned] : []}
+          onSelectionChange={(keys) => {
+            const first = keys === 'all' ? '' : (Array.from(keys)[0] as string | undefined);
+            setBanned(first ?? '');
+          }}
           className="max-w-32"
         >
           <SelectItem key="">全部</SelectItem>
@@ -148,6 +153,8 @@ export default function UsersPage() {
           <TableColumn>ID</TableColumn>
           <TableColumn>头像</TableColumn>
           <TableColumn>用户名</TableColumn>
+          <TableColumn>邮箱</TableColumn>
+          <TableColumn>手机号</TableColumn>
           <TableColumn>角色</TableColumn>
           <TableColumn>状态</TableColumn>
           <TableColumn>操作</TableColumn>
@@ -166,6 +173,10 @@ export default function UsersPage() {
                 ) : null}
               </TableCell>
               <TableCell>{user.userName}</TableCell>
+              <TableCell className="text-xs">{user.email || '-'}</TableCell>
+              <TableCell className="text-xs">
+                {user.phoneNumber ? `${user.countryCode ?? ''} ${user.phoneNumber}` : '-'}
+              </TableCell>
               <TableCell>
                 <Chip size="sm" color={user.role === 'admin' ? 'warning' : 'default'}>
                   {user.role === 'admin' ? '管理员' : '用户'}

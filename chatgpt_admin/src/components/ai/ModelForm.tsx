@@ -6,7 +6,7 @@ import { zodResolver } from '@hookform/resolvers/zod';
 import {
   Modal, ModalContent, ModalHeader, ModalBody, ModalFooter,
   Button, Input, Switch, Select, SelectItem, Textarea,
-} from '@nextui-org/react';
+} from '@heroui/react';
 import { modelSchema, type ModelForm as ModelFormType } from '@/schemas/ai';
 import { useProviders } from '@/hooks/useAi';
 import type { AiModel } from '@/types/ai';
@@ -163,7 +163,7 @@ export function ModelForm({ open, isCreate, model, onClose, onSave, loading }: P
           <Button
             color="primary"
             isLoading={loading}
-            onPress={handleSubmit((d) => onSave(d))}
+            onPress={() => handleSubmit((d) => onSave(d))()}
           >
             保存
           </Button>

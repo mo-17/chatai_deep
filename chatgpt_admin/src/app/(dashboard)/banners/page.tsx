@@ -1,14 +1,15 @@
 'use client';
 
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import {
   Table, TableHeader, TableColumn, TableBody, TableRow, TableCell,
   Button, Chip, Modal, ModalContent, ModalHeader, ModalBody, ModalFooter,
   Input, Switch, Pagination,
-} from '@nextui-org/react';
+} from '@heroui/react';
+import { addToast } from '@heroui/react';
 import { bannerApi } from '@/lib/api/banner';
-import { useForm } from 'react-hook-form';
+import { useForm, Controller } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
 import { bannerSchema, type BannerForm } from '@/schemas/banner';
 import { fmtDate } from '@/lib/utils/format';
@@ -25,7 +26,11 @@ export default function BannersPage() {
     queryFn: () => bannerApi.list({ page, pageSize: 10 }),
   });
 
-  const form = useForm({ resolver: zodResolver(bannerSchema) });
+  const form = useForm<BannerForm>({
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    resolver: zodResolver(bannerSchema) as any,
+    defaultValues: { title: '', subtitle: '', cover: '', url: '', sticky: 0, enabled: true, type: 'banner' },
+  });
 
   const { data: editData } = useQuery({
     queryKey: ['banner', editId],
@@ -33,44 +38,47 @@ export default function BannersPage() {
     enabled: editId !== null && !isCreate,
   });
 
-  // Load edit data into form
-  if (editData && editId !== null && !isCreate) {
-    form.reset({
-      title: editData.title,
-      subtitle: editData.subtitle || '',
-      cover: editData.cover || '',
-      url: editData.url || '',
-      sticky: editData.sticky,
-      enabled: editData.enabled,
-      type: editData.type,
-    });
-  }
+  useEffect(() => {
+    if (editData && editId !== null && !isCreate) {
+      form.reset({
+        title: editData.title,
+        subtitle: editData.subtitle || '',
+        cover: editData.cover || '',
+        url: editData.url || '',
+        sticky: editData.sticky,
+        enabled: editData.enabled,
+        type: editData.type,
+      });
+    }
+  }, [editData, editId, isCreate, form]);
 
   const saveMutation = useMutation({
     mutationFn: (body: BannerForm) =>
       isCreate ? bannerApi.create(body) : bannerApi.edit(editId!, body),
     onSuccess: () => {
-      console.log(isCreate ? '创建成功' : '编辑成功');
+      addToast({ title: isCreate ? '创建成功' : '编辑成功', severity: 'success' });
       queryClient.invalidateQueries({ queryKey: ['banners'] });
       setEditId(null);
       setIsCreate(false);
       form.reset();
     },
+    onError: (e: Error) => addToast({ title: e.message, severity: 'danger' }),
   });
 
   const deleteMutation = useMutation({
     mutationFn: (id: number) => bannerApi.delete(id),
     onSuccess: () => {
-      console.log('删除成功');
+      addToast({ title: '删除成功', severity: 'success' });
       queryClient.invalidateQueries({ queryKey: ['banners'] });
       setDeleteId(null);
     },
+    onError: (e: Error) => addToast({ title: e.message, severity: 'danger' }),
   });
 
   const openCreate = () => {
     form.reset({ title: '', subtitle: '', cover: '', url: '', sticky: 0, enabled: true, type: 'banner' });
     setIsCreate(true);
-    setEditId(-1); // trigger modal open
+    setEditId(-1);
   };
 
   const openEdit = (id: number) => {
@@ -144,13 +152,19 @@ export default function BannersPage() {
               <Input label="副标题" {...form.register('subtitle')} />
               <Input label="封面 URL" {...form.register('cover')} />
               <Input label="链接 URL" {...form.register('url')} />
-              <Input label="置顶权重" type="number" {...form.register('sticky')} />
-              <Switch {...form.register('enabled')}>启用</Switch>
+              <Input label="置顶权重" type="number" {...form.register('sticky', { valueAsNumber: true })} />
+              <Controller
+                name="enabled"
+                control={form.control}
+                render={({ field }) => (
+                  <Switch isSelected={field.value} onValueChange={field.onChange}>启用</Switch>
+                )}
+              />
             </form>
           </ModalBody>
           <ModalFooter>
             <Button variant="flat" onPress={() => { setEditId(null); setIsCreate(false); form.reset(); }}>取消</Button>
-            <Button color="primary" isLoading={saveMutation.isPending} onPress={form.handleSubmit((d) => saveMutation.mutate(d))}>保存</Button>
+            <Button color="primary" isLoading={saveMutation.isPending} onPress={() => form.handleSubmit((d) => saveMutation.mutate(d))()}>保存</Button>
           </ModalFooter>
         </ModalContent>
       </Modal>

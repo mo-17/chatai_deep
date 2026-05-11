@@ -5,7 +5,7 @@ import { useRouter } from 'next/navigation';
 import { useEffect, useState } from 'react';
 import { Sidebar } from '@/components/layout/Sidebar';
 import { Topbar } from '@/components/layout/Topbar';
-import { Spinner } from '@nextui-org/react';
+import { Spinner } from '@heroui/react';
 
 export default function DashboardLayout({
   children,
@@ -14,22 +14,18 @@ export default function DashboardLayout({
 }) {
   const token = useAuthStore((s) => s.token);
   const router = useRouter();
-  const [hydrated, setHydrated] = useState(false);
+  // Zustand persist 的 hydration 是异步的，使用懒初始化检查是否已完成
+  const [hydrated, setHydrated] = useState(() => useAuthStore.persist.hasHydrated());
 
   useEffect(() => {
-    // Zustand persist 的 hydration 是异步的，即使在客户端也可能尚未完成。
-    // 使用 onFinishHydration 监听 hydration 完成事件。
-    if (useAuthStore.persist.hasHydrated()) {
-      setHydrated(true);
-      return;
-    }
+    if (hydrated) return;
     const unsub = useAuthStore.persist.onFinishHydration(() => {
       setHydrated(true);
     });
     // 兜底：如果 hydration 未运行（例如 SSR 跳过了），手动触发
     useAuthStore.persist.rehydrate();
     return () => unsub();
-  }, []);
+  }, [hydrated]);
 
   useEffect(() => {
     if (hydrated && !token) router.replace('/login');

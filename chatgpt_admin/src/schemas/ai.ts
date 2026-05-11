@@ -23,7 +23,7 @@ export const providerUpdateSchema = z.object({
 });
 
 export const modelSchema = z.object({
-  providerId: z.number({ required_error: '请选择服务商' }),
+  providerId: z.number({ error: (iss) => iss.input === undefined ? '请选择服务商' : '请输入有效数字' }),
   modelId: z.string().min(1, '请输入模型 ID'),
   displayName: z.string().min(1, '请输入显示名称'),
   description: z.string().optional().default(''),
@@ -40,5 +40,5 @@ export const globalSchema = z.object({
 
 export type ProviderCreateForm = z.infer<typeof providerCreateSchema>;
 export type ProviderUpdateForm = z.infer<typeof providerUpdateSchema>;
-export type ModelForm = z.infer<typeof modelSchema>;
+export type ModelForm = z.input<typeof modelSchema>;
 export type GlobalForm = z.infer<typeof globalSchema>;

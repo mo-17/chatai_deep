@@ -6,8 +6,9 @@ import {
   Button, Chip, Modal, ModalContent, ModalHeader, ModalBody, ModalFooter,
   Input, Switch, Autocomplete, AutocompleteItem, AutocompleteSection,
   Spinner,
-} from '@nextui-org/react';
-import { Wrench, Pencil, CircleCheck, CircleAlert, ExternalLink } from 'lucide-react';
+} from '@heroui/react';
+import { Wrench, Pencil, CircleAlert, ExternalLink } from 'lucide-react';
+import { addToast } from '@heroui/react';
 import {
   fetchProviders, updateProvider, activateProvider, testProvider,
   type SmtpProvider, type SmtpProviderKey,
@@ -68,7 +69,6 @@ export default function AuthProvidersPage() {
   const [providers, setProviders] = useState<SmtpProvider[]>([]);
   const [loading, setLoading] = useState(true);
   const [busyKey, setBusyKey] = useState<SmtpProviderKey | null>(null);
-  const [feedback, setFeedback] = useState<{ kind: 'ok' | 'err'; text: string } | null>(null);
 
   // 编辑弹窗
   const [editorMeta, setEditorMeta] = useState<SlotMeta | null>(null);
@@ -87,7 +87,7 @@ export default function AuthProvidersPage() {
   useEffect(() => {
     fetchProviders()
       .then(setProviders)
-      .catch((e: Error) => setFeedback({ kind: 'err', text: `加载失败：${e.message}` }))
+      .catch((e: Error) => addToast({ title: `加载失败：${e.message}`, severity: 'danger' }))
       .finally(() => setLoading(false));
   }, [refreshKey]);
 
@@ -166,12 +166,12 @@ export default function AuthProvidersPage() {
         fromName: form.fromName,
         port: form.port,
       });
-      setFeedback({ kind: 'err', text: `以下字段为必填：${missing.join('、')}` });
+      addToast({ title: `以下字段为必填：${missing.join('、')}`, severity: 'danger' });
       return;
     }
     const existing = providerByKey.get(editorMeta.key);
     if (!existing && !password) {
-      setFeedback({ kind: 'err', text: '首次配置必须填写 SMTP 密码' });
+      addToast({ title: '首次配置必须填写 SMTP 密码', severity: 'danger' });
       return;
     }
     setSaving(true);
@@ -188,10 +188,10 @@ export default function AuthProvidersPage() {
         displayName: form.displayName ?? editorMeta.displayName,
       });
       setEditorMeta(null);
-      setFeedback({ kind: 'ok', text: '已保存' });
+      addToast({ title: '已保存', severity: 'success' });
       reload();
     } catch (e) {
-      setFeedback({ kind: 'err', text: e instanceof Error ? e.message : String(e) });
+      addToast({ title: e instanceof Error ? e.message : String(e), severity: 'danger' });
     } finally {
       setSaving(false);
     }
@@ -201,10 +201,10 @@ export default function AuthProvidersPage() {
     setBusyKey(key);
     try {
       await activateProvider(key);
-      setFeedback({ kind: 'ok', text: '已切换启用的服务商' });
+      addToast({ title: '已切换启用的服务商', severity: 'success' });
       reload();
     } catch (e) {
-      setFeedback({ kind: 'err', text: e instanceof Error ? e.message : String(e) });
+      addToast({ title: e instanceof Error ? e.message : String(e), severity: 'danger' });
     } finally {
       setBusyKey(null);
     }
@@ -216,15 +216,15 @@ export default function AuthProvidersPage() {
     try {
       const r = await testProvider(testMeta.key, testTo);
       if (r.status === 'ok') {
-        setFeedback({ kind: 'ok', text: `测试邮件已发送到 ${testTo}` });
+        addToast({ title: `测试邮件已发送到 ${testTo}`, severity: 'success' });
         setTestMeta(null);
         setTestTo('');
       } else {
-        setFeedback({ kind: 'err', text: `测试失败：${r.error ?? '未知错误'}` });
+        addToast({ title: `测试失败：${r.error ?? '未知错误'}`, severity: 'danger' });
       }
       reload();
     } catch (e) {
-      setFeedback({ kind: 'err', text: e instanceof Error ? e.message : String(e) });
+      addToast({ title: e instanceof Error ? e.message : String(e), severity: 'danger' });
     } finally {
       setTesting(false);
     }
@@ -240,16 +240,6 @@ export default function AuthProvidersPage() {
           </p>
         </div>
       </div>
-
-      {feedback && (
-        <div className={`p-3 rounded text-sm flex items-start gap-2 ${
-          feedback.kind === 'ok' ? 'bg-success-50 text-success-700' : 'bg-danger-50 text-danger-700'
-        }`}>
-          {feedback.kind === 'ok' ? <CircleCheck size={16} className="mt-0.5 shrink-0" /> : <CircleAlert size={16} className="mt-0.5 shrink-0" />}
-          <span className="flex-1">{feedback.text}</span>
-          <button onClick={() => setFeedback(null)} className="text-xs underline">关闭</button>
-        </div>
-      )}
 
       {loading ? (
         <div className="flex justify-center py-12"><Spinner /></div>

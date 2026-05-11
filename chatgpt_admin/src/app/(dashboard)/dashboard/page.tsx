@@ -1,7 +1,7 @@
 'use client';
 
 import { useQuery } from '@tanstack/react-query';
-import { Card, CardBody, Skeleton } from '@nextui-org/react';
+import { Card, CardBody, Skeleton } from '@heroui/react';
 import { usageApi } from '@/lib/api/usage';
 import { fmtTokens, fmtNum } from '@/lib/utils/format';
 import {

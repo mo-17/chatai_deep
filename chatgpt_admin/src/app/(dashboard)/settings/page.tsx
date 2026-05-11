@@ -3,7 +3,7 @@
 import { useForm } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
 import { z } from 'zod';
-import { Card, CardBody, CardHeader, Input, Button } from '@nextui-org/react';
+import { Card, CardBody, CardHeader, Input, Button } from '@heroui/react';
 import { useMutation } from '@tanstack/react-query';
 import { authApi } from '@/lib/api/auth';
 import { useAuthStore } from '@/store/authStore';

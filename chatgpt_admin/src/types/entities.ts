@@ -11,6 +11,9 @@ export interface AppUser {
   imoocId?: string;
   role: 'user' | 'admin';
   banned: boolean;
+  email?: string | null;
+  countryCode?: string | null;
+  phoneNumber?: string | null;
 }
 
 export interface Banner {
