@@ -1,4 +1,4 @@
-import { Injectable, Logger } from '@nestjs/common';
+import { Injectable, Logger, OnModuleInit } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { SmtpProvider } from '../entities/smtp-provider.entity';
@@ -8,12 +8,39 @@ import { EmailAliyunSender } from './email-aliyun.sender';
 import { EmailTencentSender } from './email-tencent.sender';
 import * as crypto from 'crypto';
 
+/** 启动时为 ak_smtp_providers 预置的 3 个 slot（仅当对应 key 不存在时插入）。 */
+const PROVIDER_SEEDS: Array<
+  Pick<SmtpProvider, 'key' | 'displayName' | 'host' | 'port' | 'secure'>
+> = [
+  {
+    key: 'generic',
+    displayName: '通用 SMTP',
+    host: '',
+    port: 587,
+    secure: false,
+  },
+  {
+    key: 'aliyun_dm',
+    displayName: '阿里云邮件推送',
+    host: 'smtpdm.aliyun.com',
+    port: 465,
+    secure: true,
+  },
+  {
+    key: 'tencent_ses',
+    displayName: '腾讯云 SES',
+    host: 'smtp.ses.tencent-cloud.com',
+    port: 465,
+    secure: true,
+  },
+];
+
 /**
  * 邮件发送管理器 —— 运行时根据 smtp_providers.enabled=true 的记录路由到具体实现。
  * 切换服务商时调用 activate(key) 在事务内切换 enabled 状态。
  */
 @Injectable()
-export class EmailSenderManager {
+export class EmailSenderManager implements OnModuleInit {
   private readonly logger = new Logger('EmailSenderManager');
   private cachedSender: { key: string; sender: IEmailSender } | null = null;
   private readonly appSecret: Buffer;
@@ -24,10 +51,32 @@ export class EmailSenderManager {
   ) {
     const appSecretKey =
       process.env.APP_SECRET_KEY ?? 'CHANGE_ME_CHANGE_ME_CHANGE_ME_32B';
-    if (!appSecretKey || appSecretKey.length < 32) {
-      throw new Error('APP_SECRET_KEY 必须配置且 ≥ 32 字节');
+    if (!appSecretKey || appSecretKey.length < 16) {
+      throw new Error('APP_SECRET_KEY 必须配置且 ≥ 16 字符');
     }
-    this.appSecret = Buffer.from(appSecretKey, 'utf-8');
+    this.appSecret = crypto.createHash('sha256').update(appSecretKey).digest();
+  }
+
+  /** 启动时确保 3 个 slot 都存在；缺哪条补哪条，已有的不动。 */
+  async onModuleInit(): Promise<void> {
+    const existing = await this.smtpRepo.find({ select: ['key'] });
+    const existingKeys = new Set(existing.map((p) => p.key));
+    const toCreate = PROVIDER_SEEDS.filter((s) => !existingKeys.has(s.key));
+    if (toCreate.length === 0) return;
+    const rows = toCreate.map((s) =>
+      this.smtpRepo.create({
+        ...s,
+        username: '',
+        passwordEncrypted: '',
+        fromName: '',
+        fromAddress: '',
+        enabled: false,
+      }),
+    );
+    await this.smtpRepo.save(rows);
+    this.logger.log(
+      `已补齐 SMTP 服务商占位记录: ${toCreate.map((s) => s.key).join(', ')}`,
+    );
   }
 
   /** 获取当前启用的发送器 */

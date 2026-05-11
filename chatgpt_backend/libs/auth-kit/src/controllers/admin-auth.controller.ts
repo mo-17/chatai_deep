@@ -66,7 +66,10 @@ export class AdminAuthController {
     private readonly emailManager: EmailSenderManager,
     @Inject(AUTH_KIT_OPTIONS) options: AuthKitModuleOptions,
   ) {
-    this.appSecret = Buffer.from(options.appSecretKey, 'utf-8');
+    this.appSecret = crypto
+      .createHash('sha256')
+      .update(options.appSecretKey)
+      .digest();
   }
 
   // ---- SMTP 服务商 ----
