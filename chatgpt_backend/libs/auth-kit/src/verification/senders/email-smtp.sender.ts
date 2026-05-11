@@ -30,10 +30,9 @@ export class EmailSmtpSender implements IEmailSender {
   }
 
   async send(to: string, subject: string, html: string): Promise<void> {
-    const from =
-      this.fromName
-        ? `"${this.fromName}" <${this.fromAddress}>`
-        : this.fromAddress;
+    const from = this.fromName
+      ? `"${this.fromName}" <${this.fromAddress}>`
+      : this.fromAddress;
     await this.transporter.sendMail({ from, to, subject, html });
   }
 }

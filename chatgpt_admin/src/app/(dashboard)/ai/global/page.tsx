@@ -28,9 +28,9 @@ export default function AiGlobalPage() {
     if (config) {
       // eslint-disable-next-line react-hooks/set-state-in-effect
       setProviderCode(config.defaultProviderCode);
-      // eslint-disable-next-line react-hooks/set-state-in-effect
+       
       setModelId(config.defaultModelId);
-      // eslint-disable-next-line react-hooks/set-state-in-effect
+       
       setCatalogPublic(config.catalogPublic);
     }
   }, [config]);
