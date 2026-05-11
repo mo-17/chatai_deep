@@ -18,6 +18,11 @@ import {
   Boxes,
   Settings2,
   MessageCircle,
+  Shield,
+  Mail,
+  KeyRound,
+  FileText,
+  Lock,
 } from 'lucide-react';
 import { clsx } from 'clsx';
 
@@ -34,6 +39,13 @@ const aiMenuItems = [
   { href: '/ai/providers', label: '服务商', icon: Server },
   { href: '/ai/models', label: '模型', icon: Boxes },
   { href: '/ai/global', label: '全局配置', icon: Settings2 },
+];
+
+const authMenuItems = [
+  { href: '/auth/providers', label: 'SMTP 服务商', icon: Mail },
+  { href: '/auth/codes', label: '验证码记录', icon: KeyRound },
+  { href: '/auth/settings', label: '认证策略', icon: Lock },
+  { href: '/auth/templates', label: '邮件模板', icon: FileText },
 ];
 
 export function Sidebar() {
@@ -92,6 +104,31 @@ export function Sidebar() {
         )}
         {collapsed && <div className="border-t border-default-200 mx-2 my-2" />}
         {aiMenuItems.map((item) => {
+          const active = pathname.startsWith(item.href);
+          return (
+            <Link
+              key={item.href}
+              href={item.href}
+              className={clsx(
+                'flex items-center gap-3 px-3 py-2.5 mx-2 rounded-lg text-sm transition-colors',
+                active
+                  ? 'bg-primary text-white'
+                  : 'text-default-700 hover:bg-default-200',
+              )}
+            >
+              <item.icon size={18} />
+              {!collapsed && <span>{item.label}</span>}
+            </Link>
+          );
+        })}
+
+        {!collapsed && (
+          <div className="px-3 pt-3 pb-1 text-xs font-semibold text-default-400 uppercase tracking-wide">
+            认证管理
+          </div>
+        )}
+        {collapsed && <div className="border-t border-default-200 mx-2 my-2" />}
+        {authMenuItems.map((item) => {
           const active = pathname.startsWith(item.href);
           return (
             <Link
