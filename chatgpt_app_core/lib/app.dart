@@ -11,6 +11,7 @@ import 'package:chatgpt_app_core/util/model_catalog.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_hi_cache/flutter_hi_cache.dart';
 import 'package:login_sdk/dao/login_dao.dart';
+import 'package:login_sdk/dao/public_config_dao.dart';
 import 'package:login_sdk/login_sdk.dart';
 import 'package:login_sdk/pages/login_page.dart';
 import 'package:provider/provider.dart';
@@ -123,6 +124,9 @@ class _MyAppState extends State<MyApp> {
     ModelCatalog.loadFromCache();
     unawaited(ModelCatalog.refreshFromBackend());
 
+    // 预加载公开配置（Apple/华为按钮显隐等），不阻塞启动
+    unawaited(PublicConfigLoader.load());
+
     // 已登录状态预加载 AI 设置，避免 BottomNavigator 首帧读到默认值
     if (LoginDao.getBoardingPass() != null) {
       AISettingsDao.load();
@@ -134,8 +138,10 @@ class _MyAppState extends State<MyApp> {
         HiDBManager.closeAll();
       });
       LoginDao.addLogoutHook(() {
-        AISettingsDao.clear();
-        AISettingsProvider.resetToDefaults();
+        final reset = AISettingsProvider.instance?.settings.resetOnLogout ?? true;
+        if (reset) {
+          AISettingsProvider.resetToDefaults();
+        }
       });
       LoginDao.addLogoutHook(() {
         HiAPICache.getInstance().clearAll();

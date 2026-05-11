@@ -33,6 +33,7 @@ class AISettings {
   ProviderConfig deepseek;
   String backendModel;
   bool streamEnabled;
+  bool resetOnLogout;
 
   AISettings({
     required this.mode,
@@ -41,6 +42,7 @@ class AISettings {
     required this.deepseek,
     required this.backendModel,
     required this.streamEnabled,
+    required this.resetOnLogout,
   });
 
   factory AISettings.defaults() => AISettings(
@@ -58,6 +60,7 @@ class AISettings {
         ),
         backendModel: 'deepseek-chat',
         streamEnabled: true,
+        resetOnLogout: true,
       );
 
   factory AISettings.fromJson(Map<String, dynamic> j) => AISettings(
@@ -77,6 +80,7 @@ class AISettings {
                 model: 'deepseek-chat'),
         backendModel: j['backendModel'] as String? ?? 'deepseek-chat',
         streamEnabled: j['streamEnabled'] as bool? ?? true,
+        resetOnLogout: j['resetOnLogout'] as bool? ?? true,
       );
 
   Map<String, dynamic> toJson() => {
@@ -86,6 +90,7 @@ class AISettings {
         'deepseek': deepseek.toJson(),
         'backendModel': backendModel,
         'streamEnabled': streamEnabled,
+        'resetOnLogout': resetOnLogout,
       };
 
   /// 当前生效的 provider 配置（仅 mode=local 时调用方应使用）

@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 
 class AISettingsProvider extends ChangeNotifier {
   static AISettingsProvider? _instance;
+  static AISettingsProvider? get instance => _instance;
 
   AISettings _settings = AISettingsDao.load();
   AISettings get settings => _settings;
@@ -27,11 +28,13 @@ class AISettingsProvider extends ChangeNotifier {
     notifyListeners();
   }
 
-  ///登出时重置 in-memory 设置为默认值，避免下一个用户读到上一个用户的设置
+  ///登出时根据用户设置决定是否重置 AI 配置
   static void resetToDefaults() {
     if (_instance != null) {
-      _instance!._settings = AISettings.defaults();
-      _instance!.notifyListeners();
+      if (_instance!._settings.resetOnLogout) {
+        _instance!._settings = AISettings.defaults();
+        _instance!.notifyListeners();
+      }
     }
   }
 

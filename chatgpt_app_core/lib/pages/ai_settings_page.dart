@@ -28,6 +28,7 @@ class _AISettingsPageState extends State<AISettingsPage> {
   bool _obscureDeepseek = true;
   bool _saving = false;
   late bool _streamEnabled;
+  late bool _resetOnLogout;
 
   @override
   void initState() {
@@ -43,6 +44,7 @@ class _AISettingsPageState extends State<AISettingsPage> {
     _deepseekUrlCtl = TextEditingController(text: s.deepseek.baseUrl);
     _backendModel = s.backendModel;
     _streamEnabled = s.streamEnabled;
+    _resetOnLogout = s.resetOnLogout;
   }
 
   @override
@@ -71,6 +73,7 @@ class _AISettingsPageState extends State<AISettingsPage> {
         ),
         backendModel: _backendModel,
         streamEnabled: _streamEnabled,
+        resetOnLogout: _resetOnLogout,
       );
 
   Future<void> _save() async {
@@ -122,6 +125,8 @@ class _AISettingsPageState extends State<AISettingsPage> {
           _buildModeCard(),
           const SizedBox(height: 16),
           _buildStreamCard(),
+          const SizedBox(height: 16),
+          _buildResetOnLogoutCard(),
           const SizedBox(height: 16),
           if (_mode == AIMode.local) ...[
             _buildProviderCard(),
@@ -194,6 +199,17 @@ class _AISettingsPageState extends State<AISettingsPage> {
         subtitle: const Text('开启后逐字显示 AI 回复，关闭则等待完整回复一次性展示'),
         value: _streamEnabled,
         onChanged: (v) => setState(() => _streamEnabled = v),
+      ),
+    );
+  }
+
+  Widget _buildResetOnLogoutCard() {
+    return Card(
+      child: SwitchListTile(
+        title: const Text('退出登录时重置 AI 配置'),
+        subtitle: const Text('开启后退出登录会清空 API Key 等设置，关闭则保留'),
+        value: _resetOnLogout,
+        onChanged: (v) => setState(() => _resetOnLogout = v),
       ),
     );
   }

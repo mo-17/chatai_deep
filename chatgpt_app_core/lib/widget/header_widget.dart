@@ -66,16 +66,37 @@ class HeaderWidget extends StatelessWidget {
           _avatar,
           15.paddingWidth,
           _rightLayout,
-          _logoutBtn(color),
+          _logoutBtn(context, color),
           20.paddingWidth,
         ],
       ),
     );
   }
 
-  _logoutBtn(MaterialColor color) {
+  _logoutBtn(BuildContext context, MaterialColor color) {
     return GestureDetector(
-      onTap: () => LoginDao.logOut(),
+      onTap: () async {
+        final ok = await showDialog<bool>(
+          context: context,
+          builder: (ctx) => AlertDialog(
+            title: const Text('退出登录'),
+            content: const Text('确定要退出登录吗？'),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.pop(ctx, false),
+                child: const Text('取消'),
+              ),
+              TextButton(
+                onPressed: () => Navigator.pop(ctx, true),
+                child: const Text('确定'),
+              ),
+            ],
+          ),
+        );
+        if (ok == true && context.mounted) {
+          LoginDao.logOut();
+        }
+      },
       child: Icon(
         Icons.logout,
         color: color,
