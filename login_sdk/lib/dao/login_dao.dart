@@ -177,6 +177,21 @@ class LoginDao {
     return null;
   }
 
+  /// 新多通道认证登录成功后保存 token（兼容 auth_kit_flutter LoginResult）
+  static void saveAuthToken(String token, {String? userName, String? avatar, String? imoocId}) {
+    _saveUserInfo(
+      boardingPass: token,
+      userName: userName ?? '',
+      avatar: avatar ?? '',
+      imoocId: imoocId ?? '',
+    );
+    for (final cb in _onLoginHooks) {
+      try {
+        cb();
+      } catch (_) {}
+    }
+  }
+
   ///登出
   static void logOut() {
     for (final cb in _onLogoutHooks) {

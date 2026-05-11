@@ -1,13 +1,11 @@
+import 'package:auth_kit_flutter/auth_kit_flutter.dart';
 import 'package:flutter/material.dart';
+import 'package:login_sdk/dao/auth_dao.dart';
 import 'package:login_sdk/dao/login_dao.dart';
 import 'package:login_sdk/util/navigator_util.dart';
 import 'package:login_sdk/util/padding_extension.dart';
-import 'package:login_sdk/widget/input_widget.dart';
-import 'package:login_sdk/widget/login_widget.dart';
 
-import '../util/string_util.dart';
-
-///注册页（Flutter Native，不再跳浏览器）
+/// 注册页：邮箱 / 手机号 + 验证码 + 可选密码
 class RegisterPage extends StatefulWidget {
   const RegisterPage({Key? key}) : super(key: key);
 
@@ -16,84 +14,11 @@ class RegisterPage extends StatefulWidget {
 }
 
 class _RegisterPageState extends State<RegisterPage> {
-  bool _registerEnable = false;
-  String? _userName;
-  String? _password;
-  String? _confirmPassword;
-  bool _loading = false;
+  String _channel = 'email';
 
-  bool get _passwordMatch =>
-      isNotEmpty(_password) && _password == _confirmPassword;
-
-  get _background {
-    return [
-      Positioned.fill(
-          child: Image.network(
-              'https://o.devio.org/images/bg_cover/robot.webp',
-              fit: BoxFit.cover)),
-      Positioned.fill(
-          child: Container(
-        decoration: const BoxDecoration(color: Colors.black54),
-      ))
-    ];
-  }
-
-  get _content {
-    return Positioned.fill(
-        left: 25,
-        right: 25,
-        child: ListView(
-          children: [
-            100.paddingHeight,
-            const Text(
-              '注册账号',
-              style: TextStyle(fontSize: 26, color: Colors.white),
-            ),
-            const Padding(padding: EdgeInsets.only(top: 40)),
-            InputWidget(
-              hint: '请输入账号（3-64 位）',
-              onChanged: (text) {
-                _userName = text;
-                _checkInput();
-              },
-            ),
-            40.paddingHeight,
-            InputWidget(
-              hint: '请输入密码',
-              obscureText: true,
-              onChanged: (text) {
-                _password = text;
-                _checkInput();
-              },
-            ),
-            40.paddingHeight,
-            InputWidget(
-              hint: '请确认密码',
-              obscureText: true,
-              onChanged: (text) {
-                _confirmPassword = text;
-                _checkInput();
-              },
-            ),
-            45.paddingHeight,
-            LoginButton(
-              '注册',
-              enable: _registerEnable && !_loading,
-              onPressed: _loading ? null : () => _register(context),
-            ),
-            15.paddingHeight,
-            Align(
-              alignment: Alignment.centerRight,
-              child: InkWell(
-                onTap: () => Navigator.pop(context),
-                child: const Text(
-                  '返回登录',
-                  style: TextStyle(color: Colors.white),
-                ),
-              ),
-            ),
-          ],
-        ));
+  void _onSuccess(LoginResult r) {
+    LoginDao.saveAuthToken(r.token);
+    if (mounted) NavigatorUtil.goToHome(context);
   }
 
   @override
@@ -101,49 +26,75 @@ class _RegisterPageState extends State<RegisterPage> {
     return Scaffold(
       resizeToAvoidBottomInset: false,
       body: Stack(
-        children: [..._background, _content],
+        children: [
+          Positioned.fill(
+            child: Image.network('https://o.devio.org/images/bg_cover/robot.webp', fit: BoxFit.cover),
+          ),
+          Positioned.fill(
+            child: Container(decoration: const BoxDecoration(color: Colors.black54)),
+          ),
+          Positioned.fill(
+            left: 25,
+            right: 25,
+            child: ListView(
+              children: [
+                100.paddingHeight,
+                const Text('注册账号', style: TextStyle(fontSize: 26, color: Colors.white)),
+                const Padding(padding: EdgeInsets.only(top: 40)),
+                // 通道选择
+                Row(
+                  children: [
+                    _ChannelChip(label: '邮箱', selected: _channel == 'email',
+                        onTap: () => setState(() => _channel = 'email')),
+                    const SizedBox(width: 12),
+                    _ChannelChip(label: '手机号', selected: _channel == 'sms',
+                        onTap: () => setState(() => _channel = 'sms')),
+                  ],
+                ),
+                const SizedBox(height: 16),
+                CodeLoginPage(
+                  authDao: AuthDaoBridge.instance,
+                  channel: _channel,
+                  purpose: 'register',
+                  theme: AuthKitTheme.dark(),
+                  onSuccess: _onSuccess,
+                ),
+                15.paddingHeight,
+                Align(
+                  alignment: Alignment.centerRight,
+                  child: InkWell(
+                    onTap: () => Navigator.pop(context),
+                    child: const Text('返回登录', style: TextStyle(color: Colors.white)),
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ],
       ),
     );
   }
+}
 
-  void _checkInput() {
-    bool enable = false;
-    if (isNotEmpty(_userName) &&
-        isNotEmpty(_password) &&
-        isNotEmpty(_confirmPassword)) {
-      if (_userName!.length >= 3 &&
-          _userName!.length <= 64 &&
-          _password!.length <= 64 &&
-          _passwordMatch) {
-        enable = true;
-      }
-    }
-    if (enable != _registerEnable) {
-      setState(() {
-        _registerEnable = enable;
-      });
-    }
-  }
+class _ChannelChip extends StatelessWidget {
+  final String label;
+  final bool selected;
+  final VoidCallback onTap;
+  const _ChannelChip({required this.label, required this.selected, required this.onTap});
 
-  void _register(BuildContext context) async {
-    setState(() => _loading = true);
-    try {
-      await LoginDao.register(
-          userName: _userName!, password: _password!);
-      if (context.mounted) {
-        NavigatorUtil.goToHome(context);
-      }
-    } catch (e) {
-      if (context.mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text('注册失败: $e'),
-            backgroundColor: Colors.red,
-          ),
-        );
-      }
-    } finally {
-      if (mounted) setState(() => _loading = false);
-    }
+  @override
+  Widget build(BuildContext context) {
+    return GestureDetector(
+      onTap: onTap,
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+        decoration: BoxDecoration(
+          color: selected ? Colors.white24 : Colors.white12,
+          borderRadius: BorderRadius.circular(20),
+          border: Border.all(color: selected ? Colors.white : Colors.white30),
+        ),
+        child: Text(label, style: TextStyle(color: selected ? Colors.white : Colors.white60, fontSize: 13)),
+      ),
+    );
   }
 }

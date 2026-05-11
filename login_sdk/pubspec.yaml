@@ -13,6 +13,8 @@ dependencies:
   flutter_hi_cache: ^0.0.1
   http: ^1.0.0
   url_launcher: ^6.1.10
+  auth_kit_flutter:
+    path: ../auth_kit_flutter
 
 dev_dependencies:
   flutter_test:
