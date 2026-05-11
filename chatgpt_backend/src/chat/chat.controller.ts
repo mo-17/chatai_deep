@@ -52,7 +52,11 @@ export class ChatController {
     @Param('id') id: string,
     @Body() body: { title: string },
   ) {
-    await this.svc.updateConversation(req.user!.userId, parseInt(id), body.title);
+    await this.svc.updateConversation(
+      req.user!.userId,
+      parseInt(id),
+      body.title,
+    );
     return { code: 0, data: null };
   }
 
@@ -80,7 +84,8 @@ export class ChatController {
   @UseGuards(AdminGuard)
   async saveMessages(
     @Param('id') id: string,
-    @Body() body: { messages: { role: 'user' | 'assistant'; content: string }[] },
+    @Body()
+    body: { messages: { role: 'user' | 'assistant'; content: string }[] },
   ) {
     await this.svc.saveMessages(parseInt(id), body.messages || []);
     return { code: 0, data: null };

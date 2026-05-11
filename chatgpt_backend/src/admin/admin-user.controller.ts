@@ -44,19 +44,13 @@ export class AdminUserController {
   }
 
   @Patch(':id')
-  async edit(
-    @Param('id') id: string,
-    @Body() body: UpdateUserDto,
-  ) {
+  async edit(@Param('id') id: string, @Body() body: UpdateUserDto) {
     const data = await this.svc.edit(parseInt(id, 10), body);
     return { code: 0, data };
   }
 
   @Post(':id/reset-password')
-  async resetPassword(
-    @Param('id') id: string,
-    @Body() body: ResetPasswordDto,
-  ) {
+  async resetPassword(@Param('id') id: string, @Body() body: ResetPasswordDto) {
     await this.svc.resetPassword(parseInt(id, 10), body.password);
     return { code: 0, data: null };
   }
@@ -64,6 +58,30 @@ export class AdminUserController {
   @Delete(':id')
   async delete(@Param('id') id: string) {
     await this.svc.delete(parseInt(id, 10));
+    return { code: 0, data: null };
+  }
+
+  @Post(':id/unbind-email')
+  async unbindEmail(@Param('id') id: string) {
+    await this.svc.unbindEmail(parseInt(id, 10));
+    return { code: 0, data: null };
+  }
+
+  @Post(':id/unbind-phone')
+  async unbindPhone(@Param('id') id: string) {
+    await this.svc.unbindPhone(parseInt(id, 10));
+    return { code: 0, data: null };
+  }
+
+  @Post(':id/unbind-huawei')
+  async unbindHuawei(@Param('id') id: string) {
+    await this.svc.unbindHuawei(parseInt(id, 10));
+    return { code: 0, data: null };
+  }
+
+  @Post(':id/unbind-apple')
+  async unbindApple(@Param('id') id: string) {
+    await this.svc.unbindApple(parseInt(id, 10));
     return { code: 0, data: null };
   }
 }

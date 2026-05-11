@@ -1,5 +1,10 @@
+// 必须在任何业务模块导入之前加载 .env，
+// 否则 jwt.const.ts 等在导入阶段读取 process.env 的常量会取到 undefined。
+import 'dotenv/config';
+
 import { NestFactory, Reflector } from '@nestjs/core';
-import { ValidationPipe, ClassSerializerInterceptor, Logger } from '@nestjs/common';
+import { ValidationPipe, ClassSerializerInterceptor } from '@nestjs/common';
+import { Logger } from 'nestjs-pino';
 import { NestExpressApplication } from '@nestjs/platform-express';
 import { json } from 'express';
 import { AppModule } from './app.module';
@@ -8,8 +13,12 @@ import { join } from 'path';
 import { existsSync, mkdirSync } from 'fs';
 
 async function bootstrap() {
-  const origins = (process.env.CORS_ORIGINS ?? 'http://localhost:3001,http://localhost:5173')
-    .split(',').map((s) => s.trim()).filter(Boolean);
+  const origins = (
+    process.env.CORS_ORIGINS ?? 'http://localhost:3001,http://localhost:5173'
+  )
+    .split(',')
+    .map((s) => s.trim())
+    .filter(Boolean);
 
   const app = await NestFactory.create<NestExpressApplication>(AppModule, {
     cors: {
@@ -33,7 +42,8 @@ async function bootstrap() {
   app.useStaticAssets(uploadsDir, { prefix: '/uploads/' });
 
   await app.listen(process.env.PORT ?? 3000);
-  const logger = new Logger('Bootstrap');
-  logger.log(`Backend running on http://localhost:${process.env.PORT ?? 3000}`);
+  app
+    .get(Logger)
+    .log(`Backend running on http://localhost:${process.env.PORT ?? 3000}`);
 }
-bootstrap();
+void bootstrap();

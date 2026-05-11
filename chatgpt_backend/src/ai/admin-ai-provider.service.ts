@@ -67,7 +67,6 @@ export class AdminAiProviderService {
       await manager.delete(AiModel, { providerId: id });
       await manager.remove(provider);
       if (modelCount > 0) {
-        // eslint-disable-next-line no-console
         console.warn(
           `已删除服务商 ${provider.code} 及其 ${modelCount} 个模型。全局默认 provider 可能已不可用，请到全局配置页修改。`,
         );

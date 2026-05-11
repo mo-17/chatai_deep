@@ -38,6 +38,9 @@ export class AdminAuthController {
     if (user.banned) {
       throw new BadRequestException('账号已被封禁');
     }
+    if (!user.password) {
+      throw new BadRequestException('账号或密码错误');
+    }
     const valid = await bcrypt.compare(password, user.password);
     if (!valid) {
       throw new BadRequestException('账号或密码错误');
@@ -81,8 +84,8 @@ export class AdminAuthController {
     const user = await this.userRepo.findOne({
       where: { id: req.user.userId },
     });
-    if (!user) {
-      throw new BadRequestException('用户不存在');
+    if (!user || !user.password) {
+      throw new BadRequestException('用户不存在或未设置密码');
     }
     const valid = await bcrypt.compare(oldPassword, user.password);
     if (!valid) {

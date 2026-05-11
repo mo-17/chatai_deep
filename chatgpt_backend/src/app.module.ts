@@ -12,6 +12,13 @@ import { ChatModule } from './chat/chat.module';
 import { AdminModule } from './admin/admin.module';
 import { AiModule } from './ai/ai.module';
 import { HealthModule } from './health/health.module';
+import { AuthModule } from './auth/auth.module';
+import {
+  VerificationCode,
+  SmtpProvider,
+  AuthSettings,
+  EmailTemplate,
+} from '@auth-kit';
 
 @Module({
   imports: [
@@ -55,7 +62,13 @@ import { HealthModule } from './health/health.module';
         username: cfg.get<string>('DB_USER', 'huangzhibin'),
         password: cfg.get<string>('DB_PASSWORD', ''),
         database: cfg.get<string>('DB_NAME', 'chatgpt_flutter'),
-        entities: [__dirname + '/**/*.entity{.ts,.js}'],
+        entities: [
+          __dirname + '/**/*.entity{.ts,.js}',
+          VerificationCode,
+          SmtpProvider,
+          AuthSettings,
+          EmailTemplate,
+        ],
         synchronize: cfg.get<string>('NODE_ENV') !== 'production',
         logging:
           cfg.get<string>('DB_LOGGING') === 'true'
@@ -72,6 +85,7 @@ import { HealthModule } from './health/health.module';
     AdminModule,
     AiModule,
     HealthModule,
+    AuthModule,
   ],
   providers: [{ provide: APP_GUARD, useClass: ThrottlerGuard }],
 })

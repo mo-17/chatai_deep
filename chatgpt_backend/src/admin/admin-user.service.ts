@@ -36,7 +36,23 @@ export class AdminUserService {
 
     const [list, total] = await this.userRepo.findAndCount({
       where,
-      select: ['id', 'userName', 'avatar', 'imoocId', 'role', 'banned'],
+      select: [
+        'id',
+        'userName',
+        'avatar',
+        'imoocId',
+        'role',
+        'banned',
+        'email',
+        'emailVerifiedAt',
+        'countryCode',
+        'phoneNumber',
+        'phoneVerifiedAt',
+        'huaweiUnionId',
+        'huaweiOpenId',
+        'appleSubject',
+        'appleEmailRelay',
+      ],
       take: pageSize,
       skip: (page - 1) * pageSize,
       order: { id: 'DESC' },
@@ -48,7 +64,23 @@ export class AdminUserService {
   async detail(id: number) {
     const user = await this.userRepo.findOne({
       where: { id },
-      select: ['id', 'userName', 'avatar', 'imoocId', 'role', 'banned'],
+      select: [
+        'id',
+        'userName',
+        'avatar',
+        'imoocId',
+        'role',
+        'banned',
+        'email',
+        'emailVerifiedAt',
+        'countryCode',
+        'phoneNumber',
+        'phoneVerifiedAt',
+        'huaweiUnionId',
+        'huaweiOpenId',
+        'appleSubject',
+        'appleEmailRelay',
+      ],
     });
     if (!user) throw new NotFoundException('用户不存在');
     return user;
@@ -84,6 +116,43 @@ export class AdminUserService {
       await manager.delete(Usage, { userId: id });
       await manager.delete(User, { id });
     });
+    return null;
+  }
+
+  async unbindEmail(id: number) {
+    const user = await this.userRepo.findOne({ where: { id } });
+    if (!user) throw new NotFoundException('用户不存在');
+    user.email = null;
+    user.emailVerifiedAt = null;
+    await this.userRepo.save(user);
+    return null;
+  }
+
+  async unbindPhone(id: number) {
+    const user = await this.userRepo.findOne({ where: { id } });
+    if (!user) throw new NotFoundException('用户不存在');
+    user.countryCode = null;
+    user.phoneNumber = null;
+    user.phoneVerifiedAt = null;
+    await this.userRepo.save(user);
+    return null;
+  }
+
+  async unbindHuawei(id: number) {
+    const user = await this.userRepo.findOne({ where: { id } });
+    if (!user) throw new NotFoundException('用户不存在');
+    user.huaweiUnionId = null;
+    user.huaweiOpenId = null;
+    await this.userRepo.save(user);
+    return null;
+  }
+
+  async unbindApple(id: number) {
+    const user = await this.userRepo.findOne({ where: { id } });
+    if (!user) throw new NotFoundException('用户不存在');
+    user.appleSubject = null;
+    user.appleEmailRelay = null;
+    await this.userRepo.save(user);
     return null;
   }
 }

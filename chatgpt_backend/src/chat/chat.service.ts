@@ -17,6 +17,14 @@ export interface CompletionBody {
 }
 
 export interface UpstreamResponse {
+  choices?: Array<{
+    message?: {
+      content?: string;
+      reasoning_content?: string;
+      role?: string;
+    };
+  }>;
+  model?: string;
   usage?: {
     prompt_tokens?: number;
     completion_tokens?: number;
@@ -107,7 +115,6 @@ export class ChatService {
           totalTokens: data.usage.total_tokens || 0,
         })
         .catch((e) => {
-          // eslint-disable-next-line no-console
           console.error('[usage] save failed', e);
         });
     }
@@ -156,14 +163,13 @@ export class ChatService {
         );
       }
 
-      // eslint-disable-next-line no-console
       console.log(
         `[upstream] ${provider.code}/${body.model} ${Date.now() - t0}ms tokens=${data.usage?.total_tokens ?? '?'}`,
       );
       return data;
     } catch (e) {
       if (e instanceof BadGatewayException) throw e;
-      // eslint-disable-next-line no-console
+
       console.warn(
         `[upstream] ${provider.code}/${body.model} ${Date.now() - t0}ms FAIL: ${(e as Error).message}`,
       );
@@ -173,11 +179,7 @@ export class ChatService {
 
   // --- SSE streaming completion ---
 
-  async completeStream(
-    userId: number,
-    body: CompletionBody,
-    res: Response,
-  ) {
+  async completeStream(userId: number, body: CompletionBody, res: Response) {
     const provider = await this.resolveProvider(body.model);
 
     if (!provider.apiKey) {
@@ -206,10 +208,7 @@ export class ChatService {
         Authorization: `Bearer ${provider.apiKey}`,
       },
       body: JSON.stringify(streamBody),
-      signal: AbortSignal.any([
-        controller.signal,
-        AbortSignal.timeout(60_000),
-      ]),
+      signal: AbortSignal.any([controller.signal, AbortSignal.timeout(60_000)]),
     });
 
     if (!upstreamResp.ok) {
@@ -245,9 +244,7 @@ export class ChatService {
         let idx: number;
         while ((idx = buffer.search(SSE_SEP)) !== -1) {
           const block = buffer.slice(0, idx);
-          buffer = buffer.slice(
-            idx + (buffer[idx] === '\r' ? 4 : 2),
-          );
+          buffer = buffer.slice(idx + (buffer[idx] === '\r' ? 4 : 2));
 
           // Parse SSE block for usage info
           const lines = block.split(/\r?\n/);
@@ -312,7 +309,6 @@ export class ChatService {
           totalTokens: lastUsage.total_tokens || 0,
         })
         .catch((e) => {
-          // eslint-disable-next-line no-console
           console.error('[usage] save failed', e);
         });
     }
@@ -367,7 +363,7 @@ export class ChatService {
     if (!fallback) {
       throw new BadGatewayException('没有可用的 AI 服务商');
     }
-    // eslint-disable-next-line no-console
+
     console.warn(
       `model "${model}" 未匹配任何 provider，fallback to default provider: ${defaultCode}`,
     );

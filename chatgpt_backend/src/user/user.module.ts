@@ -20,8 +20,14 @@ export class UserSeedService implements OnApplicationBootstrap {
     if (adminCount === 0) {
       const username = process.env.ADMIN_DEFAULT_USERNAME || 'admin';
       const password = process.env.ADMIN_DEFAULT_PASSWORD || 'admin123';
-      if (process.env.NODE_ENV === 'production' && (!process.env.ADMIN_DEFAULT_PASSWORD || process.env.ADMIN_DEFAULT_PASSWORD === 'admin123')) {
-        throw new Error('生产环境必须设置 ADMIN_DEFAULT_PASSWORD，且不能等于默认值');
+      if (
+        process.env.NODE_ENV === 'production' &&
+        (!process.env.ADMIN_DEFAULT_PASSWORD ||
+          process.env.ADMIN_DEFAULT_PASSWORD === 'admin123')
+      ) {
+        throw new Error(
+          '生产环境必须设置 ADMIN_DEFAULT_PASSWORD，且不能等于默认值',
+        );
       }
       const hashed = await bcrypt.hash(password, BCRYPT_ROUNDS);
       await this.userRepo.save(

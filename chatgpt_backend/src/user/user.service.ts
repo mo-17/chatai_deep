@@ -63,6 +63,9 @@ export class UserService {
     if (user.banned) {
       throw new BadRequestException('账号已被封禁');
     }
+    if (!user.password) {
+      throw new BadRequestException('该账号未设置密码，请使用验证码登录');
+    }
     const valid = await bcrypt.compare(password, user.password);
     if (!valid) {
       throw new BadRequestException('用户名或密码错误');

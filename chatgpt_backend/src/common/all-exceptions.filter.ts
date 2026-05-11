@@ -18,7 +18,9 @@ export class AllExceptionsFilter implements ExceptionFilter {
 
     const isHttp = exception instanceof HttpException;
     const status = isHttp ? exception.getStatus() : 500;
-    const body = isHttp ? exception.getResponse() : { message: '服务器内部错误' };
+    const body = isHttp
+      ? exception.getResponse()
+      : { message: '服务器内部错误' };
 
     const payload =
       typeof body === 'object'
