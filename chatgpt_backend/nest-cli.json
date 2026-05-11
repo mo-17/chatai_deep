@@ -3,6 +3,21 @@
   "collection": "@nestjs/schematics",
   "sourceRoot": "src",
   "compilerOptions": {
-    "deleteOutDir": true
+    "deleteOutDir": true,
+    "tsConfigPath": "tsconfig.json"
+  },
+  "projects": {
+    "chatgpt_backend": {
+      "type": "application",
+      "root": ".",
+      "entryFile": "src/main",
+      "sourceRoot": "src"
+    },
+    "auth-kit": {
+      "type": "library",
+      "root": "libs/auth-kit",
+      "entryFile": "index",
+      "sourceRoot": "libs/auth-kit/src"
+    }
   }
 }

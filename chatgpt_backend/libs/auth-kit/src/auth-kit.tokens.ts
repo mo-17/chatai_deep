@@ -1,0 +1,1 @@
+export const AUTH_KIT_OPTIONS = 'AUTH_KIT_OPTIONS';

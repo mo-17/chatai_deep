@@ -1,0 +1,8 @@
+{
+  "name": "@chatgpt/auth-kit",
+  "version": "1.0.0",
+  "private": true,
+  "description": "可复用的多通道认证库 — 验证码 / SMTP 多服务商 / 第三方登录",
+  "main": "./src/index.ts",
+  "types": "./src/index.ts"
+}
