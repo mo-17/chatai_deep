@@ -1,0 +1,21 @@
+name: auth_kit_flutter
+description: 可复用的多通道认证 Flutter 组件库 — 验证码/区号选择/第三方登录绑定页/主题/l10n
+version: 1.0.0
+publish_to: none
+
+environment:
+  sdk: ^3.5.0
+  flutter: '>=3.3.0'
+
+dependencies:
+  flutter:
+    sdk: flutter
+  http: ^1.0.0
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^5.0.0
+
+flutter:
+  uses-material-design: true
