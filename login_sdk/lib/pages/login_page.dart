@@ -349,6 +349,52 @@ class _LoginPageState extends State<LoginPage> {
 
   Widget _buildBg() {
     final bgMeta = loginBackgroundFor(_activeBgVariant, _theme.primaryColor);
+    final cardRadius =
+        (_theme.borderRadius + 4).clamp(16, double.infinity).toDouble();
+
+    // Card surface — paper has its own warm palette; dark backgrounds use a
+    // translucent white frosted card; light backgrounds use a high-opacity
+    // white card for legibility.
+    final cardColor = bgMeta.isPaper
+        ? const Color(0xFFFBF6EA)
+        : bgMeta.isDarkBg
+            ? Colors.white.withValues(alpha: 0.10)
+            : (_isDark
+                ? Colors.white.withValues(alpha: 0.08)
+                : Colors.white.withValues(alpha: 0.65));
+    final cardBorderColor = bgMeta.isPaper
+        ? const Color(0xFFD9C89A)
+        : bgMeta.isDarkBg
+            ? Colors.white.withValues(alpha: 0.18)
+            : Colors.white.withValues(alpha: 0.60);
+
+    final card = Container(
+      padding: const EdgeInsets.fromLTRB(18, 18, 18, 16),
+      decoration: BoxDecoration(
+        color: cardColor,
+        borderRadius: BorderRadius.circular(cardRadius),
+        border: Border.all(color: cardBorderColor),
+        boxShadow: [
+          BoxShadow(
+            blurRadius: 40,
+            offset: const Offset(0, 10),
+            color: bgMeta.isDarkBg
+                ? const Color(0x40000000)
+                : const Color(0x14000000),
+          ),
+        ],
+      ),
+      child: Column(
+        children: [
+          _buildTabHeader(),
+          if (_tab == 'email') _buildEmailModeSwitcher(),
+          _buildForm(),
+          if (_tab == 'email') _buildHelperLinks(),
+          if (_tab == 'phone') _buildPhoneHint(),
+        ],
+      ),
+    );
+
     return Scaffold(
       backgroundColor: Colors.transparent,
       resizeToAvoidBottomInset: true,
@@ -362,48 +408,19 @@ class _LoginPageState extends State<LoginPage> {
                   const SizedBox(height: 28),
                   _buildBrand(),
                   const SizedBox(height: 8),
-                  // Glass card
+                  // Glass card — skip backdrop blur for paper (looks wrong on
+                  // a flat sepia surface).
                   Padding(
                     padding: const EdgeInsets.symmetric(horizontal: 18),
                     child: ClipRRect(
-                      borderRadius: BorderRadius.circular(
-                        (_theme.borderRadius + 4).clamp(16, double.infinity),
-                      ),
-                      child: BackdropFilter(
-                        filter: ui.ImageFilter.blur(sigmaX: 24, sigmaY: 24),
-                        child: Container(
-                          padding: const EdgeInsets.fromLTRB(18, 18, 18, 16),
-                          decoration: BoxDecoration(
-                            color: _isDark
-                                ? Colors.white.withValues(alpha: 0.08)
-                                : Colors.white.withValues(alpha: 0.65),
-                            borderRadius: BorderRadius.circular(
-                              (_theme.borderRadius + 4).clamp(16, double.infinity),
+                      borderRadius: BorderRadius.circular(cardRadius),
+                      child: bgMeta.isPaper
+                          ? card
+                          : BackdropFilter(
+                              filter: ui.ImageFilter.blur(
+                                  sigmaX: 24, sigmaY: 24),
+                              child: card,
                             ),
-                            border: Border.all(
-                              color: _isDark
-                                  ? Colors.white.withValues(alpha: 0.18)
-                                  : Colors.white.withValues(alpha: 0.6),
-                            ),
-                            boxShadow: const [
-                              BoxShadow(
-                                blurRadius: 40,
-                                offset: Offset(0, 10),
-                                color: Color(0x14000000),
-                              ),
-                            ],
-                          ),
-                          child: Column(
-                            children: [
-                              _buildTabHeader(),
-                              if (_tab == 'email') _buildEmailModeSwitcher(),
-                              _buildForm(),
-                              if (_tab == 'email') _buildHelperLinks(),
-                              if (_tab == 'phone') _buildPhoneHint(),
-                            ],
-                          ),
-                        ),
-                      ),
                     ),
                   ),
                   // Outside card
@@ -447,7 +464,30 @@ class _LoginPageState extends State<LoginPage> {
 
   String get _debugPillLabel {
     if (_activeStyle == LoginPageStyle.tabs) return 'T';
-    return ['M', 'A', 'B', 'P'][_activeBgVariant.index];
+    // Short code per variant, matched to LoginBgVariant ordering.
+    const labels = [
+      'M', // mesh
+      'A', // aurora
+      'B', // blueprint
+      'P', // botanical
+      'S', // sunset
+      'C', // citylight
+      'Pa', // paper
+      'R', // retrowave
+      'L', // liquid
+      'Ri', // ribbon
+      'To', // topo
+      'Do', // dotmap
+      'W', // wave
+      'O', // origami
+      'Bd', // band
+      'Du', // duotone
+      'Mb', // marble
+      'Ph', // photo
+      'Ap', // aperture
+      'Mx', // matrix
+    ];
+    return labels[_activeBgVariant.index];
   }
 
   Widget _buildDebugPill() {
