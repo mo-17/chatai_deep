@@ -1,14 +1,15 @@
 import 'dart:convert';
 
 import 'package:flutter/cupertino.dart';
-import 'package:flutter_hi_cache/flutter_hi_cache.dart';
 import 'package:http/http.dart' as http;
+import 'package:login_sdk/config/login_sdk_config.dart';
 import 'package:login_sdk/dao/backend_host.dart';
 import 'package:login_sdk/dao/header_util.dart';
-import 'package:login_sdk/util/navigator_util.dart';
 
 ///登录接口
 class LoginDao {
+  /// 同步存储读取的 key。与 [HiCacheTokenStorage._kUserInfo] 保持一致，
+  /// 用作仍直接读 HiCache 的老代码兜底，新增逻辑请通过 [LoginSdkConfig.instance.storage]。
   static const kUserInfo = 'user_info';
 
   static final List<VoidCallback> _onLogoutHooks = [];
@@ -20,19 +21,29 @@ class LoginDao {
     _onLogoutHooks.add(cb);
   }
 
-  ///注册登录成功钩子，在 _saveUserInfo 之后触发
+  ///注册登录成功钩子，在保存登录信息之后触发
   static void addLoginHook(VoidCallback cb) {
     _onLoginHooks.add(cb);
   }
 
   ///登录
-  static login({required String userName, required String password}) async {
-    return _authRequest('/uapi/user/login', userName, password);
+  static Future<void> login({
+    required String userName,
+    required String password,
+  }) async {
+    return _authRequest(LoginSdkConfig.instance.routes.login, userName, password);
   }
 
   ///注册（注册成功后自动登录）
-  static register({required String userName, required String password}) async {
-    return _authRequest('/uapi/user/registration', userName, password);
+  static Future<void> register({
+    required String userName,
+    required String password,
+  }) async {
+    return _authRequest(
+      LoginSdkConfig.instance.routes.register,
+      userName,
+      password,
+    );
   }
 
   ///发送认证请求并处理响应（login / register 共用）
@@ -41,7 +52,8 @@ class LoginDao {
     String userName,
     String password,
   ) async {
-    var uri = BackendConfig.buildUri(path);
+    final cfg = LoginSdkConfig.instance;
+    final uri = BackendConfig.buildUri(path);
     final headers = <String, String>{
       ...hiHeaders(),
       'Content-Type': 'application/json',
@@ -51,30 +63,25 @@ class LoginDao {
       headers: headers,
       body: jsonEncode({'userName': userName, 'password': password}),
     );
-    Utf8Decoder utf8decoder = const Utf8Decoder(); //fix 中文乱码
-    String bodyString = utf8decoder.convert(response.bodyBytes);
+    final bodyString = const Utf8Decoder().convert(response.bodyBytes);
     debugPrint(bodyString);
-    if (response.statusCode == 200) {
-      var result = json.decode(bodyString);
-      if (result['code'] == 0 && result['data'] != null) {
-        Map<String, dynamic> extra = result['extra'];
-        //保存登录信息
-        _saveUserInfo(
-            boardingPass: result['data'],
-            userName: extra['userName'],
-            avatar: extra['avatar'],
-            imoocId: extra['imoocId']);
-        // 触发登录成功钩子（AISettingsProvider.reload 等）
-        for (final cb in _onLoginHooks) {
-          try {
-            cb();
-          } catch (_) {}
-        }
-      } else {
-        throw Exception(bodyString);
-      }
-    } else {
+    if (response.statusCode != 200) {
       throw Exception(bodyString);
+    }
+    final json = jsonDecode(bodyString) as Map<String, dynamic>;
+    final result = cfg.responseAdapter.parseLogin(json);
+
+    await cfg.storage.writeProfile(
+      token: result.token,
+      userName: result.userName,
+      avatar: result.avatar,
+      extras: result.extras,
+    );
+
+    for (final cb in _onLoginHooks) {
+      try {
+        cb();
+      } catch (_) {}
     }
   }
 
@@ -82,7 +89,8 @@ class LoginDao {
   static Future<Map<String, dynamic>> requestPasswordReset(
     String userName,
   ) async {
-    var uri = BackendConfig.buildUri('/uapi/user/forgot-password/request');
+    final uri =
+        BackendConfig.buildUri(LoginSdkConfig.instance.routes.forgotPasswordRequest);
     final headers = <String, String>{
       ...hiHeaders(),
       'Content-Type': 'application/json',
@@ -92,10 +100,9 @@ class LoginDao {
       headers: headers,
       body: jsonEncode({'userName': userName}),
     );
-    Utf8Decoder utf8decoder = const Utf8Decoder();
-    String bodyString = utf8decoder.convert(response.bodyBytes);
+    final bodyString = const Utf8Decoder().convert(response.bodyBytes);
     if (response.statusCode == 200) {
-      return json.decode(bodyString) as Map<String, dynamic>;
+      return jsonDecode(bodyString) as Map<String, dynamic>;
     }
     throw Exception(bodyString);
   }
@@ -106,7 +113,8 @@ class LoginDao {
     String code,
     String newPassword,
   ) async {
-    var uri = BackendConfig.buildUri('/uapi/user/forgot-password/confirm');
+    final cfg = LoginSdkConfig.instance;
+    final uri = BackendConfig.buildUri(cfg.routes.forgotPasswordConfirm);
     final headers = <String, String>{
       ...hiHeaders(),
       'Content-Type': 'application/json',
@@ -120,70 +128,47 @@ class LoginDao {
         'newPassword': newPassword,
       }),
     );
-    Utf8Decoder utf8decoder = const Utf8Decoder();
-    String bodyString = utf8decoder.convert(response.bodyBytes);
-    if (response.statusCode == 200) {
-      var result = json.decode(bodyString);
-      if (result['code'] != 0) {
-        throw Exception(result['message'] ?? '重置失败');
-      }
-      return;
+    final bodyString = const Utf8Decoder().convert(response.bodyBytes);
+    if (response.statusCode != 200) {
+      throw Exception(bodyString);
     }
-    throw Exception(bodyString);
-  }
-
-  ///保存登录用户信息
-  static void _saveUserInfo(
-      {required boardingPass,
-      required userName,
-      required avatar,
-      required imoocId}) {
-    var map = {
-      'boardingPass': boardingPass,
-      'avatar': avatar,
-      'imoocId': imoocId,
-      'userName': userName,
-      'accountHash': userName.hashCode,
-    };
-    HiCache.getInstance().setString(kUserInfo, jsonEncode(map));
+    cfg.responseAdapter.checkOk(jsonDecode(bodyString) as Map<String, dynamic>);
   }
 
   ///获取当前登录用户的信息
   static Map<String, dynamic>? getUserInfo() {
-    var result = HiCache.getInstance().get(kUserInfo);
-    if (result != null) {
-      return jsonDecode(result);
-    }
-    return null;
+    return LoginSdkConfig.instance.storage.readProfileSync();
   }
 
   ///获取登录token
   static String? getBoardingPass() {
-    var result = HiCache.getInstance().get(kUserInfo);
-    if (result != null) {
-      var map = jsonDecode(result);
-      return map['boardingPass'];
-    }
-    return null;
+    return LoginSdkConfig.instance.storage.readTokenSync();
   }
 
   ///获取用于创建多账号数据的账号标识
   static String? getAccountHash() {
-    var result = HiCache.getInstance().get(kUserInfo);
-    if (result != null) {
-      var map = jsonDecode(result);
-      return map['accountHash'].toString();
-    }
-    return null;
+    final profile = LoginSdkConfig.instance.storage.readProfileSync();
+    return profile?['accountHash']?.toString();
   }
 
-  /// 新多通道认证登录成功后保存 token（兼容 auth_kit_flutter LoginResult）
-  static void saveAuthToken(String token, {String? userName, String? avatar, String? imoocId}) {
-    _saveUserInfo(
-      boardingPass: token,
+  /// 多通道认证（auth_kit_flutter）登录成功后写 token。
+  /// `extras` 用于扩展字段（如 imoocId、phone 等）。
+  static Future<void> saveAuthToken(
+    String token, {
+    String? userName,
+    String? avatar,
+    String? imoocId,
+    Map<String, dynamic> extras = const {},
+  }) async {
+    final merged = <String, dynamic>{
+      if (imoocId != null) 'imoocId': imoocId,
+      ...extras,
+    };
+    await LoginSdkConfig.instance.storage.writeProfile(
+      token: token,
       userName: userName ?? '',
-      avatar: avatar ?? '',
-      imoocId: imoocId ?? '',
+      avatar: avatar,
+      extras: merged,
     );
     for (final cb in _onLoginHooks) {
       try {
@@ -193,14 +178,13 @@ class LoginDao {
   }
 
   ///登出
-  static void logOut() {
+  static Future<void> logOut() async {
     for (final cb in _onLogoutHooks) {
       try {
         cb();
       } catch (_) {}
     }
-    //移除登录保存的信息
-    HiCache.getInstance().remove(kUserInfo);
-    NavigatorUtil.goToLogin();
+    await LoginSdkConfig.instance.storage.clear();
+    LoginSdkConfig.instance.onLogoutNavigate();
   }
 }
