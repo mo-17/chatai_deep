@@ -3,155 +3,172 @@ import 'package:chat_message/models/message_model.dart';
 import 'package:chat_message/widget/chat_list.dart';
 import 'package:flutter/material.dart';
 
-void main() {
-  runApp(const MyApp());
-}
+void main() => runApp(const ExampleApp());
 
-class MyApp extends StatelessWidget {
-  const MyApp({super.key});
+class ExampleApp extends StatelessWidget {
+  const ExampleApp({super.key});
 
-  // This widget is the root of your application.
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
-      title: 'ChatMessage Example',
+      title: 'chat_message example',
+      debugShowCheckedModeBanner: false,
       theme: ThemeData(
-        // This is the theme of your application.
-        //
-        // Try running your application with "flutter run". You'll see the
-        // application has a blue toolbar. Then, without quitting the app, try
-        // changing the primarySwatch below to Colors.green and then invoke
-        // "hot reload" (press "r" in the console where you ran "flutter run",
-        // or simply save your changes to "hot reload" in a Flutter IDE).
-        // Notice that the counter didn't reset back to zero; the application
-        // is not restarted.
-        primarySwatch: Colors.blue,
+        colorScheme: ColorScheme.fromSeed(seedColor: const Color(0xFF0F3460)),
+        useMaterial3: true,
       ),
-      home: const MyHomePage(title: 'ChatMessage Example'),
+      home: const ChatDemoPage(),
     );
   }
 }
 
-class MyHomePage extends StatefulWidget {
-  const MyHomePage({super.key, required this.title});
-
-  final String title;
+class ChatDemoPage extends StatefulWidget {
+  const ChatDemoPage({super.key});
 
   @override
-  State<MyHomePage> createState() => _MyHomePageState();
+  State<ChatDemoPage> createState() => _ChatDemoPageState();
 }
 
-class _MyHomePageState extends State<MyHomePage> {
-  int count = 0;
-  final List<MessageModel> _messageList = [
+class _ChatDemoPageState extends State<ChatDemoPage> {
+  late final ChatController _controller;
+  final _inputCtrl = TextEditingController();
+  int _counter = 0;
+
+  // mock 历史消息
+  final _seed = <MessageModel>[
     MessageModel(
-        ownerType: OwnerType.receiver,
-        content: 'ChatGPT是由OpenAI研发的聊天机器人程序',
-        createdAt: 1772058683000,
-        id: 2,
-        avatar: 'https://o.devio.org/images/o_as/avatar/tx2.jpeg',
-        ownerName: 'ChatGPT'),
-    MessageModel(
-        ownerType: OwnerType.receiver,
-        content: '介绍一下ChatGPT',
-        createdAt: 1771058683000,
-        id: 1,
-        avatar: 'https://o.devio.org/images/o_as/avatar/tx18.jpeg',
-        ownerName: 'Imooc')
+      ownerType: OwnerType.receiver,
+      ownerName: 'Bot',
+      content: 'Welcome! Type a message below — I will echo it after a short delay.',
+      createdAt: DateTime.now().millisecondsSinceEpoch - 60000,
+    ),
   ];
-  late ChatController chatController;
+
+  @override
+  void initState() {
+    super.initState();
+    _controller = ChatController(
+      initialMessageList: _seed,
+      scrollController: ScrollController(),
+      timePellet: 60,
+    );
+  }
+
+  @override
+  void dispose() {
+    _inputCtrl.dispose();
+    super.dispose();
+  }
+
+  void _send() {
+    final text = _inputCtrl.text.trim();
+    if (text.isEmpty) return;
+    _inputCtrl.clear();
+
+    // 1) 立刻插入用户消息
+    _controller.addMessage(MessageModel(
+      ownerType: OwnerType.sender,
+      ownerName: 'Me',
+      content: text,
+      createdAt: DateTime.now().millisecondsSinceEpoch,
+    ));
+
+    // 2) 1.2s 后 bot 回复（模拟异步响应）
+    Future.delayed(const Duration(milliseconds: 1200), () {
+      if (!mounted) return;
+      _controller.addMessage(MessageModel(
+        ownerType: OwnerType.receiver,
+        ownerName: 'Bot',
+        content: 'You said: "$text"  (#${++_counter})',
+        createdAt: DateTime.now().millisecondsSinceEpoch,
+      ));
+    });
+  }
+
+  void _loadMore() {
+    final now = DateTime.now().millisecondsSinceEpoch;
+    _controller.loadMoreData([
+      MessageModel(
+        ownerType: OwnerType.receiver,
+        ownerName: 'Bot',
+        content: 'Older message #${DateTime.now().microsecond}',
+        createdAt: now - 600000,
+      ),
+      MessageModel(
+        ownerType: OwnerType.sender,
+        ownerName: 'Me',
+        content: 'Another archived line',
+        createdAt: now - 605000,
+      ),
+    ]);
+  }
 
   @override
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
-        title: Text(widget.title),
-      ),
-      body: Column(
-        children: [
-          Expanded(
-              child: ChatList(
-            chatController: chatController,
-            onBubbleLongPress: (MessageModel message, BuildContext ancestor) {
-              debugPrint('onBubbleLongPress:${message.content}');
-            },
-          )),
-          Row(
-            mainAxisAlignment: MainAxisAlignment.spaceAround,
-            children: [
-              ElevatedButton(
-                  onPressed: _loadMore, child: const Text('loadMore')),
-              ElevatedButton(onPressed: _send, child: const Text('Send'))
-            ],
+        title: const Text('chat_message · example'),
+        actions: [
+          IconButton(
+            tooltip: 'Prepend older messages',
+            icon: const Icon(Icons.history),
+            onPressed: _loadMore,
           ),
-          const SizedBox(
-            height: 20,
-          )
         ],
+      ),
+      body: SafeArea(
+        child: Column(
+          children: [
+            Expanded(
+              child: Container(
+                color: const Color(0xFFF5F5F7),
+                child: ChatList(
+                  chatController: _controller,
+                  padding: const EdgeInsets.symmetric(vertical: 12),
+                  onBubbleTap: (msg, _) =>
+                      ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+                    content: Text('Tapped: ${msg.content}'),
+                    duration: const Duration(milliseconds: 800),
+                  )),
+                ),
+              ),
+            ),
+            _inputBar(),
+          ],
+        ),
       ),
     );
   }
 
-  @override
-  void initState() {
-    super.initState();
-    chatController = ChatController(
-        initialMessageList: _messageList,
-        // messageWidgetBuilder: _diyMessageWidget,
-        scrollController: ScrollController(),
-        timePellet: 60);
-  }
-
-  void _send() {
-    chatController.addMessage(MessageModel(
-        ownerType: OwnerType.sender,
-        content: 'Hello ${count++}',
-        createdAt: DateTime.now().millisecondsSinceEpoch,
-        avatar: 'https://o.devio.org/images/o_as/avatar/tx2.jpeg',
-        ownerName: 'Imooc'));
-    Future.delayed(const Duration(milliseconds: 2000), () {
-      chatController.addMessage(
-        MessageModel(
-            ownerType: OwnerType.receiver,
-            content: 'Nice',
-            createdAt: DateTime.now().millisecondsSinceEpoch,
-            avatar: 'https://o.devio.org/images/o_as/avatar/tx2.jpeg',
-            ownerName: 'ChatGPT'),
-      );
-    });
-  }
-
-  int _counter = 0;
-
-  void _loadMore() {
-    var tl = 1772058683000;
-    tl = tl - ++_counter * 1000000;
-    final List<MessageModel> messageList = [
-      MessageModel(
-          ownerType: OwnerType.sender,
-          content: 'Hello ${_counter++}',
-          createdAt: DateTime.now().millisecondsSinceEpoch,
-          avatar: 'https://o.devio.org/images/o_as/avatar/tx2.jpeg',
-          ownerName: 'Imooc'),
-      MessageModel(
-          ownerType: OwnerType.receiver,
-          content: 'Nice',
-          createdAt: DateTime.now().millisecondsSinceEpoch,
-          avatar: 'https://o.devio.org/images/o_as/avatar/tx2.jpeg',
-          ownerName: 'ChatGPT')
-    ];
-    chatController.loadMoreData(messageList);
-  }
-
-  Widget _diyMessageWidget(MessageModel message) {
+  Widget _inputBar() {
     return Container(
-      margin: const EdgeInsets.only(top: 10, bottom: 10),
-      padding: const EdgeInsets.only(top: 30, bottom: 30),
-      decoration: BoxDecoration(
-          color: message.ownerType == OwnerType.sender
-              ? Colors.amberAccent
-              : Colors.redAccent),
-      child: Text('${message.ownerName}: ${message.content}'),
+      padding: const EdgeInsets.fromLTRB(12, 8, 8, 12),
+      decoration: const BoxDecoration(
+        color: Colors.white,
+        border: Border(top: BorderSide(color: Color(0x1A000000))),
+      ),
+      child: Row(
+        children: [
+          Expanded(
+            child: TextField(
+              controller: _inputCtrl,
+              onSubmitted: (_) => _send(),
+              decoration: InputDecoration(
+                hintText: 'Type a message…',
+                isDense: true,
+                contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+                border: OutlineInputBorder(
+                  borderRadius: BorderRadius.circular(20),
+                ),
+              ),
+            ),
+          ),
+          IconButton.filled(
+            icon: const Icon(Icons.send),
+            onPressed: _send,
+          ),
+        ],
+      ),
     );
   }
 }
