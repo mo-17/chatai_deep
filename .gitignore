@@ -3,6 +3,12 @@ TASKS_OPT_*.md
 TASKS_OPTIMIZATION_INDEX.md
 task_backup
 
+# 本地备份压缩包（仅根目录，子目录里的 .zip 资源不受影响）
+/*.zip
+
+# Dart 工具链生成产物
+**/.dart_tool/
+
 # Flutter 各平台脚手架自动生成产物（pub get 会重写，不应入库）
 **/android/local.properties
 **/GeneratedPluginRegistrant.java
