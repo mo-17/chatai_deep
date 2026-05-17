@@ -21,11 +21,9 @@ class MatrixBgPainter extends CustomPainter {
         if (y < -22 || y > size.height + 22) continue;
         final ch = chars[(col * 3 + i) % chars.length];
         final isHead = i == len - 1;
-        final opacity =
-            isHead ? 1.0 : (0.7 - i * 0.05).clamp(0.1, 1.0);
-        final color = isHead
-            ? const Color(0xFFD6FFE6)
-            : const Color(0xFF00FF66);
+        final opacity = isHead ? 1.0 : (0.7 - i * 0.05).clamp(0.1, 1.0);
+        final color =
+            isHead ? const Color(0xFFD6FFE6) : const Color(0xFF00FF66);
         final tp = TextPainter(
           text: TextSpan(
             text: ch,

@@ -10,6 +10,7 @@ import 'package:login_sdk/pages/forgot_password_page.dart';
 import 'package:login_sdk/pages/register_page.dart';
 import 'package:login_sdk/util/navigator_util.dart';
 import 'package:login_sdk/widget/login_backgrounds/login_background.dart';
+import 'package:login_sdk/widget/login_palette.dart';
 
 enum LoginPageStyle { tabs, bg }
 
@@ -85,10 +86,22 @@ class _LoginPageState extends State<LoginPage> {
 
   bool get _isDark => MediaQuery.of(context).platformBrightness == Brightness.dark;
 
-  // Extended tokens not in AuthKitTheme
-  Color get _faint => _theme.subtitleColor.withValues(alpha: 0.62);
-  Color get _divider => _theme.borderColor.withValues(alpha: 0.6);
-  Color get _invText => _isDark ? const Color(0xFF0C0D0E) : Colors.white;
+  // Background metadata + derived palette. Recomputed at the top of build()
+  // so every builder reads bg-aware colors instead of raw `_theme` tokens.
+  LoginBackgroundMeta? _bgMeta;
+  late LoginPalette _p;
+
+  AuthKitTheme get _themeForInputs => AuthKitTheme(
+        primaryColor: _theme.primaryColor,
+        backgroundColor: _p.inputBg,
+        surfaceColor: _p.modeOuterBg,
+        textColor: _p.cardText,
+        subtitleColor: _p.cardSub,
+        borderColor: _p.cardBorderSoft,
+        errorColor: _p.errorColor,
+        borderRadius: _theme.borderRadius,
+        inputHeight: _theme.inputHeight,
+      );
 
   @override
   void dispose() {
@@ -308,8 +321,12 @@ class _LoginPageState extends State<LoginPage> {
   @override
   Widget build(BuildContext context) {
     if (_activeStyle == LoginPageStyle.bg) {
+      _bgMeta = loginBackgroundFor(_activeBgVariant, _theme.primaryColor);
+      _p = LoginPalette.forBg(_theme, _isDark, _bgMeta!);
       return _buildBg();
     }
+    _bgMeta = null;
+    _p = LoginPalette.forTabs(_theme, _isDark);
     return _buildTabs();
   }
 
@@ -334,7 +351,7 @@ class _LoginPageState extends State<LoginPage> {
                     _buildDivider(),
                     _buildPlatformMandatory(),
                     _buildSocialDots(),
-                    if (_activeStyle == LoginPageStyle.tabs) _buildAgreement(),
+                    _buildAgreement(),
                     const SizedBox(height: 80),
                   ],
                 ),
@@ -348,39 +365,21 @@ class _LoginPageState extends State<LoginPage> {
   }
 
   Widget _buildBg() {
-    final bgMeta = loginBackgroundFor(_activeBgVariant, _theme.primaryColor);
+    final bgMeta = _bgMeta!;
     final cardRadius =
         (_theme.borderRadius + 4).clamp(16, double.infinity).toDouble();
-
-    // Card surface — paper has its own warm palette; dark backgrounds use a
-    // translucent white frosted card; light backgrounds use a high-opacity
-    // white card for legibility.
-    final cardColor = bgMeta.isPaper
-        ? const Color(0xFFFBF6EA)
-        : bgMeta.isDarkBg
-            ? Colors.white.withValues(alpha: 0.10)
-            : (_isDark
-                ? Colors.white.withValues(alpha: 0.08)
-                : Colors.white.withValues(alpha: 0.65));
-    final cardBorderColor = bgMeta.isPaper
-        ? const Color(0xFFD9C89A)
-        : bgMeta.isDarkBg
-            ? Colors.white.withValues(alpha: 0.18)
-            : Colors.white.withValues(alpha: 0.60);
 
     final card = Container(
       padding: const EdgeInsets.fromLTRB(18, 18, 18, 16),
       decoration: BoxDecoration(
-        color: cardColor,
+        color: _p.cardBg,
         borderRadius: BorderRadius.circular(cardRadius),
-        border: Border.all(color: cardBorderColor),
+        border: Border.all(color: _p.cardBorder),
         boxShadow: [
           BoxShadow(
             blurRadius: 40,
             offset: const Offset(0, 10),
-            color: bgMeta.isDarkBg
-                ? const Color(0x40000000)
-                : const Color(0x14000000),
+            color: _p.cardShadow,
           ),
         ],
       ),
@@ -408,13 +407,13 @@ class _LoginPageState extends State<LoginPage> {
                   const SizedBox(height: 28),
                   _buildBrand(),
                   const SizedBox(height: 8),
-                  // Glass card — skip backdrop blur for paper (looks wrong on
-                  // a flat sepia surface).
+                  // Glass card — skip backdrop blur for the literal paper bg
+                  // (glass-on-printed-paper reads wrong).
                   Padding(
                     padding: const EdgeInsets.symmetric(horizontal: 18),
                     child: ClipRRect(
                       borderRadius: BorderRadius.circular(cardRadius),
-                      child: bgMeta.isPaper
+                      child: bgMeta.isSolidCard
                           ? card
                           : BackdropFilter(
                               filter: ui.ImageFilter.blur(
@@ -431,6 +430,7 @@ class _LoginPageState extends State<LoginPage> {
                         _buildDivider(),
                         _buildPlatformMandatory(),
                         _buildSocialDots(),
+                        _buildAgreement(),
                         const SizedBox(height: 80),
                       ],
                     ),
@@ -464,30 +464,7 @@ class _LoginPageState extends State<LoginPage> {
 
   String get _debugPillLabel {
     if (_activeStyle == LoginPageStyle.tabs) return 'T';
-    // Short code per variant, matched to LoginBgVariant ordering.
-    const labels = [
-      'M', // mesh
-      'A', // aurora
-      'B', // blueprint
-      'P', // botanical
-      'S', // sunset
-      'C', // citylight
-      'Pa', // paper
-      'R', // retrowave
-      'L', // liquid
-      'Ri', // ribbon
-      'To', // topo
-      'Do', // dotmap
-      'W', // wave
-      'O', // origami
-      'Bd', // band
-      'Du', // duotone
-      'Mb', // marble
-      'Ph', // photo
-      'Ap', // aperture
-      'Mx', // matrix
-    ];
-    return labels[_activeBgVariant.index];
+    return kLoginBgPillLabels[_activeBgVariant.index];
   }
 
   Widget _buildDebugPill() {
@@ -522,39 +499,58 @@ class _LoginPageState extends State<LoginPage> {
   }
 
   Widget _buildBrand() {
+    final inBg = _activeStyle == LoginPageStyle.bg;
+    final onColor = _bgMeta?.isDarkBg ?? false;
+    final logoSize = inBg ? 52.0 : 44.0;
     return Column(
       children: [
         Container(
-          width: 44,
-          height: 44,
+          width: logoSize,
+          height: logoSize,
           decoration: BoxDecoration(
             borderRadius: BorderRadius.circular(14),
-            gradient: LinearGradient(
-              begin: Alignment.topLeft,
-              end: Alignment.bottomRight,
-              colors: [_theme.primaryColor, _theme.subtitleColor],
-            ),
+            // On dark backgrounds the brand mark uses a translucent white
+            // tile (à la iOS native sign-in tile) instead of the primary
+            // gradient — keeps it readable on any photo/glow image.
+            color: onColor ? Colors.white.withValues(alpha: 0.18) : null,
+            border: onColor
+                ? Border.all(color: Colors.white.withValues(alpha: 0.35))
+                : null,
+            gradient: onColor
+                ? null
+                : LinearGradient(
+                    begin: Alignment.topLeft,
+                    end: Alignment.bottomRight,
+                    colors: [_theme.primaryColor, _theme.subtitleColor],
+                  ),
           ),
           alignment: Alignment.center,
-          child: const Text(
+          child: Text(
             '艾',
             style: TextStyle(
               color: Colors.white,
-              fontSize: 24,
+              fontSize: logoSize * 0.46,
               fontWeight: FontWeight.w700,
             ),
           ),
         ),
-        const SizedBox(height: 22),
+        SizedBox(height: inBg ? 12 : 22),
         Text(
           '艾普 · Demo',
           style: TextStyle(
-            fontSize: 15,
+            fontSize: inBg ? 16 : 15,
             fontWeight: FontWeight.w600,
-            color: _theme.textColor,
+            color: _p.heroText,
           ),
         ),
-        const SizedBox(height: 18),
+        if (inBg) ...[
+          const SizedBox(height: 4),
+          Text(
+            '登录以继续',
+            style: TextStyle(fontSize: 11, color: _p.heroSub),
+          ),
+        ],
+        SizedBox(height: inBg ? 10 : 18),
       ],
     );
   }
@@ -574,7 +570,7 @@ class _LoginPageState extends State<LoginPage> {
         ),
         Container(
           height: 1,
-          color: _divider,
+          color: _p.cardDivider,
         ),
         const SizedBox(height: 18),
       ],
@@ -590,7 +586,7 @@ class _LoginPageState extends State<LoginPage> {
         decoration: BoxDecoration(
           border: Border(
             bottom: BorderSide(
-              color: active ? _theme.primaryColor : Colors.transparent,
+              color: active ? _p.tabActive : Colors.transparent,
               width: 2,
             ),
           ),
@@ -600,7 +596,7 @@ class _LoginPageState extends State<LoginPage> {
           style: TextStyle(
             fontSize: 15,
             fontWeight: active ? FontWeight.w600 : FontWeight.w400,
-            color: active ? _theme.textColor : _theme.subtitleColor,
+            color: active ? _p.cardText : _p.cardSub,
           ),
         ),
       ),
@@ -613,7 +609,7 @@ class _LoginPageState extends State<LoginPage> {
       child: Container(
         padding: const EdgeInsets.all(3),
         decoration: BoxDecoration(
-          color: _theme.surfaceColor,
+          color: _p.modeOuterBg,
           borderRadius: BorderRadius.circular(999),
         ),
         child: Row(
@@ -634,7 +630,7 @@ class _LoginPageState extends State<LoginPage> {
       child: Container(
         padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 5),
         decoration: BoxDecoration(
-          color: active ? _theme.backgroundColor : Colors.transparent,
+          color: active ? _p.modeChipActiveBg : Colors.transparent,
           borderRadius: BorderRadius.circular(999),
           boxShadow: active
               ? [const BoxShadow(blurRadius: 2, color: Color(0x0F000000), offset: Offset(0, 1))]
@@ -644,7 +640,7 @@ class _LoginPageState extends State<LoginPage> {
           label,
           style: TextStyle(
             fontSize: 13,
-            color: active ? _theme.textColor : _theme.subtitleColor,
+            color: active ? _p.modeChipActiveFg : _p.modeChipInactiveFg,
           ),
         ),
       ),
@@ -652,13 +648,14 @@ class _LoginPageState extends State<LoginPage> {
   }
 
   Widget _buildForm() {
+    final inputsTheme = _themeForInputs;
     return Column(
       children: [
         if (_tab == 'email') ...[
           IdentifierField(
             channel: 'email',
             controller: _identifierCtrl,
-            theme: _theme,
+            theme: inputsTheme,
           ),
         ] else ...[
           Row(
@@ -666,14 +663,14 @@ class _LoginPageState extends State<LoginPage> {
               CountryCodePicker(
                 selected: _countryCode,
                 onChanged: (cc) => setState(() => _countryCode = cc),
-                theme: _theme,
+                theme: inputsTheme,
               ),
               const SizedBox(width: 8),
               Expanded(
                 child: TextField(
                   controller: _identifierCtrl,
                   keyboardType: TextInputType.phone,
-                  style: TextStyle(fontSize: 14, color: _theme.textColor),
+                  style: TextStyle(fontSize: 14, color: _p.cardText),
                   decoration: _inputDecoration(AuthKitL10n.instance.phoneHint),
                 ),
               ),
@@ -685,14 +682,14 @@ class _LoginPageState extends State<LoginPage> {
           TextField(
             controller: _passwordCtrl,
             obscureText: true,
-            style: TextStyle(fontSize: 14, color: _theme.textColor),
+            style: TextStyle(fontSize: 14, color: _p.cardText),
             decoration: _inputDecoration(AuthKitL10n.instance.passwordHint),
           ),
         ] else ...[
           VerificationCodeInput(
             onCompleted: _onCodeCompleted,
             onSendCode: _handleSendCode,
-            theme: _theme,
+            theme: inputsTheme,
           ),
         ],
         const SizedBox(height: 10),
@@ -702,8 +699,7 @@ class _LoginPageState extends State<LoginPage> {
           height: _theme.inputHeight,
           child: ElevatedButton(
             onPressed: _loading ? null : () {
-              if (_activeStyle == LoginPageStyle.tabs &&
-                  !_agreementChecked) {
+              if (!_agreementChecked) {
                 ScaffoldMessenger.of(context).showSnackBar(
                   const SnackBar(
                     content: Text('请先阅读并同意用户协议和隐私政策'),
@@ -715,19 +711,19 @@ class _LoginPageState extends State<LoginPage> {
               _handleSubmit();
             },
             style: ElevatedButton.styleFrom(
-              backgroundColor: _theme.primaryColor,
-              foregroundColor: _invText,
+              backgroundColor: _p.submitBg,
+              foregroundColor: _p.submitFg,
               shape: RoundedRectangleBorder(
                 borderRadius: BorderRadius.circular(_theme.borderRadius),
               ),
             ),
             child: _loading
-                ? const SizedBox(
+                ? SizedBox(
                     width: 20,
                     height: 20,
                     child: CircularProgressIndicator(
                       strokeWidth: 2,
-                      color: Colors.white,
+                      color: _p.submitFg,
                     ),
                   )
                 : Text(
@@ -740,7 +736,7 @@ class _LoginPageState extends State<LoginPage> {
           const SizedBox(height: 10),
           Text(
             _error!,
-            style: TextStyle(color: _theme.errorColor, fontSize: 13),
+            style: TextStyle(color: _p.errorColor, fontSize: 13),
           ),
         ],
       ],
@@ -750,19 +746,21 @@ class _LoginPageState extends State<LoginPage> {
   InputDecoration _inputDecoration(String hint) {
     return InputDecoration(
       hintText: hint,
-      hintStyle: TextStyle(fontSize: 14, color: _theme.subtitleColor),
+      hintStyle: TextStyle(fontSize: 14, color: _p.cardSub),
+      filled: _p.inputBg.a > 0,
+      fillColor: _p.inputBg,
       contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
       border: OutlineInputBorder(
         borderRadius: BorderRadius.circular(_theme.borderRadius),
-        borderSide: BorderSide(color: _theme.borderColor),
+        borderSide: BorderSide(color: _p.cardBorderSoft),
       ),
       enabledBorder: OutlineInputBorder(
         borderRadius: BorderRadius.circular(_theme.borderRadius),
-        borderSide: BorderSide(color: _theme.borderColor),
+        borderSide: BorderSide(color: _p.cardBorderSoft),
       ),
       focusedBorder: OutlineInputBorder(
         borderRadius: BorderRadius.circular(_theme.borderRadius),
-        borderSide: BorderSide(color: _theme.primaryColor, width: 2),
+        borderSide: BorderSide(color: _p.tabActive, width: 2),
       ),
     );
   }
@@ -782,7 +780,7 @@ class _LoginPageState extends State<LoginPage> {
             },
             child: Text(
               _emailMode == 'password' ? '忘记密码？' : '收不到验证码？',
-              style: TextStyle(fontSize: 12, color: _theme.subtitleColor),
+              style: TextStyle(fontSize: 12, color: _p.cardSub),
             ),
           ),
           GestureDetector(
@@ -794,7 +792,11 @@ class _LoginPageState extends State<LoginPage> {
             },
             child: Text(
               '注册新账号',
-              style: TextStyle(fontSize: 12, color: _theme.primaryColor),
+              style: TextStyle(
+                fontSize: 12,
+                color: _p.linkColor,
+                fontWeight: FontWeight.w500,
+              ),
             ),
           ),
         ],
@@ -807,7 +809,7 @@ class _LoginPageState extends State<LoginPage> {
       padding: const EdgeInsets.only(top: 12),
       child: Text(
         '未注册的手机号将自动创建账号',
-        style: TextStyle(fontSize: 11, color: _theme.subtitleColor),
+        style: TextStyle(fontSize: 11, color: _p.cardSub),
         textAlign: TextAlign.center,
       ),
     );
@@ -818,14 +820,14 @@ class _LoginPageState extends State<LoginPage> {
       padding: const EdgeInsets.fromLTRB(0, 34, 0, 14),
       child: Row(
         children: [
-          Expanded(child: Container(height: 1, color: _divider)),
+          Expanded(child: Container(height: 1, color: _p.outsideDivider)),
           const SizedBox(width: 10),
           Text(
             '其他方式登录',
-            style: TextStyle(fontSize: 11, color: _faint),
+            style: TextStyle(fontSize: 11, color: _p.outsideFaint),
           ),
           const SizedBox(width: 10),
-          Expanded(child: Container(height: 1, color: _divider)),
+          Expanded(child: Container(height: 1, color: _p.outsideDivider)),
         ],
       ),
     );
@@ -858,6 +860,7 @@ class _LoginPageState extends State<LoginPage> {
         onTap = () => _showUnavailableToast('Google');
     }
 
+    final mandatoryBorder = _p.mandatoryBorder;
     return Column(
       children: [
         SizedBox(
@@ -871,10 +874,14 @@ class _LoginPageState extends State<LoginPage> {
               style: const TextStyle(fontSize: 14, fontWeight: FontWeight.w500),
             ),
             style: ElevatedButton.styleFrom(
-              backgroundColor: _theme.textColor,
-              foregroundColor: _theme.backgroundColor,
+              backgroundColor: _p.mandatoryBg,
+              foregroundColor: _p.mandatoryFg,
+              elevation: mandatoryBorder == null ? null : 0,
               shape: RoundedRectangleBorder(
                 borderRadius: BorderRadius.circular(_theme.borderRadius),
+                side: mandatoryBorder == null
+                    ? BorderSide.none
+                    : BorderSide(color: mandatoryBorder),
               ),
             ),
           ),
@@ -882,7 +889,7 @@ class _LoginPageState extends State<LoginPage> {
         const SizedBox(height: 6),
         Text(
           hint,
-          style: TextStyle(fontSize: 10, color: _faint),
+          style: TextStyle(fontSize: 10, color: _p.outsideFaint),
           textAlign: TextAlign.center,
         ),
       ],
@@ -901,6 +908,8 @@ class _LoginPageState extends State<LoginPage> {
   }
 
   Widget _buildSocialDot(_SocialItem item) {
+    final border = _p.socialBorder;
+    final iconColor = _bgMeta?.isDarkBg == true ? Colors.white : item.color;
     return GestureDetector(
       onTap: item.onTap,
       child: Column(
@@ -909,16 +918,17 @@ class _LoginPageState extends State<LoginPage> {
             width: 38,
             height: 38,
             decoration: BoxDecoration(
-              color: _theme.surfaceColor,
+              color: _p.socialBg,
               shape: BoxShape.circle,
+              border: border == null ? null : Border.all(color: border),
             ),
             alignment: Alignment.center,
-            child: Icon(item.icon, size: 18, color: item.color),
+            child: Icon(item.icon, size: 18, color: iconColor),
           ),
           const SizedBox(height: 4),
           Text(
             item.label,
-            style: TextStyle(fontSize: 10, color: _theme.subtitleColor),
+            style: TextStyle(fontSize: 10, color: _p.socialLabel),
           ),
         ],
       ),
@@ -956,6 +966,9 @@ class _LoginPageState extends State<LoginPage> {
   }
 
   Widget _buildAgreement() {
+    final checked = _agreementChecked;
+    final boxBorder = checked ? _p.agreementBoxBorder : _p.cardBorderSoft;
+    final boxFill = checked ? _p.agreementBoxBg : Colors.transparent;
     return Padding(
       padding: const EdgeInsets.only(top: 14),
       child: GestureDetector(
@@ -968,30 +981,31 @@ class _LoginPageState extends State<LoginPage> {
               height: 14,
               decoration: BoxDecoration(
                 borderRadius: BorderRadius.circular(3),
-                border: Border.all(
-                  color: _agreementChecked ? _theme.primaryColor : _theme.borderColor,
-                ),
-                color: _agreementChecked ? _theme.primaryColor : Colors.transparent,
+                border: Border.all(color: boxBorder),
+                color: boxFill,
               ),
               alignment: Alignment.center,
-              child: _agreementChecked
-                  ? const Icon(Icons.check, size: 10, color: Colors.white)
+              child: checked
+                  ? Icon(Icons.check, size: 10, color: _p.agreementCheck)
                   : null,
             ),
             const SizedBox(width: 6),
             Text.rich(
               TextSpan(
-                style: TextStyle(fontSize: 11, color: _theme.subtitleColor, height: 1.5),
+                style: TextStyle(
+                    fontSize: 11, color: _p.agreementText, height: 1.5),
                 children: [
                   const TextSpan(text: '已阅读并同意'),
                   TextSpan(
                     text: '《用户协议》',
-                    style: TextStyle(color: _theme.primaryColor),
+                    style: TextStyle(
+                        color: _p.agreementLink, fontWeight: FontWeight.w500),
                   ),
                   const TextSpan(text: '和'),
                   TextSpan(
                     text: '《隐私政策》',
-                    style: TextStyle(color: _theme.primaryColor),
+                    style: TextStyle(
+                        color: _p.agreementLink, fontWeight: FontWeight.w500),
                   ),
                 ],
               ),

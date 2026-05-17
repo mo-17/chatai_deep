@@ -47,14 +47,18 @@ class LoginBackgroundMeta {
   final Widget widget;
   // Background is dark enough that foreground text should be white-on-overlay.
   final bool isDarkBg;
-  // Sepia/paper-tone background. Suppresses glass blur and uses warm browns
-  // for foreground text so the design feels like a vintage document.
+  // Sepia/paper-tone palette — warm browns for text, cream card surface.
+  // Used by both 'paper' and 'marble' (the design treats them identically).
   final bool isPaper;
+  // Skip BackdropFilter on the card. Only true for the literal paper bg —
+  // glass-on-printed-paper looks wrong; marble still wants the blur.
+  final bool isSolidCard;
 
   const LoginBackgroundMeta({
     required this.widget,
     required this.isDarkBg,
     this.isPaper = false,
+    this.isSolidCard = false,
   });
 }
 
@@ -113,6 +117,7 @@ LoginBackgroundMeta loginBackgroundFor(LoginBgVariant variant, Color primaryColo
         ),
         isDarkBg: false,
         isPaper: true,
+        isSolidCard: true,
       );
     case LoginBgVariant.retrowave:
       return const LoginBackgroundMeta(
@@ -193,6 +198,7 @@ LoginBackgroundMeta loginBackgroundFor(LoginBgVariant variant, Color primaryColo
           child: const SizedBox.expand(),
         ),
         isDarkBg: false,
+        isPaper: true,
       );
     case LoginBgVariant.photo:
       return const LoginBackgroundMeta(
