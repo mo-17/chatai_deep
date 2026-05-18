@@ -56,35 +56,36 @@ class _LoginPageState extends State<LoginPage> {
   final _huaweiService = HuaweiLoginUnavailable();
 
   static const _lightTheme = AuthKitTheme(
-        primaryColor: Color(0xFF0F3460),
-        backgroundColor: Colors.white,
-        surfaceColor: Color(0xFFF7F8FA),
-        textColor: Color(0xFF0F1115),
-        subtitleColor: Color(0x940F1115),
-        borderColor: Color(0x1A0F1115),
-        errorColor: Color(0xFFE53935),
-        borderRadius: 12,
-        inputHeight: 48,
-      );
+    primaryColor: Color(0xFF0F3460),
+    backgroundColor: Colors.white,
+    surfaceColor: Color(0xFFF7F8FA),
+    textColor: Color(0xFF0F1115),
+    subtitleColor: Color(0x940F1115),
+    borderColor: Color(0x1A0F1115),
+    errorColor: Color(0xFFE53935),
+    borderRadius: 12,
+    inputHeight: 48,
+  );
 
   static const _darkTheme = AuthKitTheme(
-        primaryColor: Color(0xFF64B5F6),
-        backgroundColor: Color(0xFF111315),
-        surfaceColor: Color(0xFF191C1F),
-        textColor: Color(0xFFF3F4F6),
-        subtitleColor: Color(0x8CF3F4F6),
-        borderColor: Color(0x1AFFFFFF),
-        errorColor: Color(0xFFEF5350),
-        borderRadius: 12,
-        inputHeight: 48,
-      );
+    primaryColor: Color(0xFF64B5F6),
+    backgroundColor: Color(0xFF111315),
+    surfaceColor: Color(0xFF191C1F),
+    textColor: Color(0xFFF3F4F6),
+    subtitleColor: Color(0x8CF3F4F6),
+    borderColor: Color(0x1AFFFFFF),
+    errorColor: Color(0xFFEF5350),
+    borderRadius: 12,
+    inputHeight: 48,
+  );
 
   AuthKitTheme get _theme {
     final brightness = MediaQuery.of(context).platformBrightness;
     return brightness == Brightness.dark ? _darkTheme : _lightTheme;
   }
 
-  bool get _isDark => MediaQuery.of(context).platformBrightness == Brightness.dark;
+  bool get _isDark =>
+      MediaQuery.of(context).platformBrightness == Brightness.dark;
 
   // Background metadata + derived palette. Recomputed at the top of build()
   // so every builder reads bg-aware colors instead of raw `_theme` tokens.
@@ -126,7 +127,10 @@ class _LoginPageState extends State<LoginPage> {
       setState(() => _error = '请输入邮箱地址和密码');
       return;
     }
-    setState(() { _loading = true; _error = null; });
+    setState(() {
+      _loading = true;
+      _error = null;
+    });
     try {
       final result = await AuthDaoBridge.instance.loginByPassword(
         channel: 'email',
@@ -152,7 +156,10 @@ class _LoginPageState extends State<LoginPage> {
     }
     final channel = _tab == 'email' ? 'email' : 'sms';
     final fullId = channel == 'sms' ? _fullPhoneIdentifier : identifier;
-    setState(() { _loading = true; _error = null; });
+    setState(() {
+      _loading = true;
+      _error = null;
+    });
     try {
       await AuthDaoBridge.instance.sendCode(
         channel: channel,
@@ -182,7 +189,10 @@ class _LoginPageState extends State<LoginPage> {
     }
     final channel = _tab == 'email' ? 'email' : 'sms';
     final fullId = channel == 'sms' ? _fullPhoneIdentifier : identifier;
-    setState(() { _loading = true; _error = null; });
+    setState(() {
+      _loading = true;
+      _error = null;
+    });
     try {
       final result = await AuthDaoBridge.instance.loginByCode(
         channel: channel,
@@ -243,7 +253,8 @@ class _LoginPageState extends State<LoginPage> {
     } catch (e) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('Apple 登录暂未接入'), backgroundColor: Colors.orange),
+          const SnackBar(
+              content: Text('Apple 登录暂未接入'), backgroundColor: Colors.orange),
         );
       }
     }
@@ -280,7 +291,8 @@ class _LoginPageState extends State<LoginPage> {
     } catch (e) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('华为登录暂未接入'), backgroundColor: Colors.orange),
+          const SnackBar(
+              content: Text('华为登录暂未接入'), backgroundColor: Colors.orange),
         );
       }
     }
@@ -416,8 +428,8 @@ class _LoginPageState extends State<LoginPage> {
                       child: bgMeta.isSolidCard
                           ? card
                           : BackdropFilter(
-                              filter: ui.ImageFilter.blur(
-                                  sigmaX: 24, sigmaY: 24),
+                              filter:
+                                  ui.ImageFilter.blur(sigmaX: 24, sigmaY: 24),
                               child: card,
                             ),
                     ),
@@ -480,7 +492,10 @@ class _LoginPageState extends State<LoginPage> {
             shape: BoxShape.circle,
             color: Colors.black54,
             boxShadow: [
-              BoxShadow(blurRadius: 8, color: Color(0x40000000), offset: Offset(0, 2)),
+              BoxShadow(
+                  blurRadius: 8,
+                  color: Color(0x40000000),
+                  offset: Offset(0, 2)),
             ],
           ),
           child: Center(
@@ -558,15 +573,12 @@ class _LoginPageState extends State<LoginPage> {
   Widget _buildTabHeader() {
     return Column(
       children: [
-        SizedBox(
-          height: 36,
-          child: Row(
-            children: [
-              _buildTabItem('email', '邮箱'),
-              const SizedBox(width: 22),
-              _buildTabItem('phone', '手机号'),
-            ],
-          ),
+        Row(
+          children: [
+            _buildTabItem('email', '邮箱'),
+            const SizedBox(width: 22),
+            _buildTabItem('phone', '手机号'),
+          ],
         ),
         Container(
           height: 1,
@@ -626,14 +638,22 @@ class _LoginPageState extends State<LoginPage> {
   Widget _buildModeChip(String key, String label) {
     final active = _emailMode == key;
     return GestureDetector(
-      onTap: () => setState(() { _emailMode = key; _code = ''; }),
+      onTap: () => setState(() {
+        _emailMode = key;
+        _code = '';
+      }),
       child: Container(
         padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 5),
         decoration: BoxDecoration(
           color: active ? _p.modeChipActiveBg : Colors.transparent,
           borderRadius: BorderRadius.circular(999),
           boxShadow: active
-              ? [const BoxShadow(blurRadius: 2, color: Color(0x0F000000), offset: Offset(0, 1))]
+              ? [
+                  const BoxShadow(
+                      blurRadius: 2,
+                      color: Color(0x0F000000),
+                      offset: Offset(0, 1))
+                ]
               : null,
         ),
         child: Text(
@@ -698,18 +718,20 @@ class _LoginPageState extends State<LoginPage> {
           width: double.infinity,
           height: _theme.inputHeight,
           child: ElevatedButton(
-            onPressed: _loading ? null : () {
-              if (!_agreementChecked) {
-                ScaffoldMessenger.of(context).showSnackBar(
-                  const SnackBar(
-                    content: Text('请先阅读并同意用户协议和隐私政策'),
-                    backgroundColor: Colors.orange,
-                  ),
-                );
-                return;
-              }
-              _handleSubmit();
-            },
+            onPressed: _loading
+                ? null
+                : () {
+                    if (!_agreementChecked) {
+                      ScaffoldMessenger.of(context).showSnackBar(
+                        const SnackBar(
+                          content: Text('请先阅读并同意用户协议和隐私政策'),
+                          backgroundColor: Colors.orange,
+                        ),
+                      );
+                      return;
+                    }
+                    _handleSubmit();
+                  },
             style: ElevatedButton.styleFrom(
               backgroundColor: _p.submitBg,
               foregroundColor: _p.submitFg,
@@ -728,7 +750,8 @@ class _LoginPageState extends State<LoginPage> {
                   )
                 : Text(
                     _tab == 'phone' ? '登录 / 注册' : '登录',
-                    style: const TextStyle(fontSize: 14, fontWeight: FontWeight.w500),
+                    style: const TextStyle(
+                        fontSize: 14, fontWeight: FontWeight.w500),
                   ),
           ),
         ),
@@ -940,26 +963,39 @@ class _LoginPageState extends State<LoginPage> {
     switch (platform) {
       case 'ios':
         return [
-          _SocialItem('华为', Icons.phone_android, const Color(0xFFCF0A2C), () => _showUnavailableToast('华为')),
-          _SocialItem('微信', Icons.chat, const Color(0xFF07C160), () => _showUnavailableToast('微信')),
-          _SocialItem('QQ', Icons.forum, const Color(0xFF12B7F5), () => _showUnavailableToast('QQ')),
-          _SocialItem('微博', Icons.alternate_email, const Color(0xFFE6162D), () => _showUnavailableToast('微博')),
-          _SocialItem('Google', Icons.g_mobiledata, const Color(0xFF4285F4), () => _showUnavailableToast('Google')),
+          _SocialItem('华为', Icons.phone_android, const Color(0xFFCF0A2C),
+              () => _showUnavailableToast('华为')),
+          _SocialItem('微信', Icons.chat, const Color(0xFF07C160),
+              () => _showUnavailableToast('微信')),
+          _SocialItem('QQ', Icons.forum, const Color(0xFF12B7F5),
+              () => _showUnavailableToast('QQ')),
+          _SocialItem('微博', Icons.alternate_email, const Color(0xFFE6162D),
+              () => _showUnavailableToast('微博')),
+          _SocialItem('Google', Icons.g_mobiledata, const Color(0xFF4285F4),
+              () => _showUnavailableToast('Google')),
         ];
       case 'harmony':
         return [
-          _SocialItem('微信', Icons.chat, const Color(0xFF07C160), () => _showUnavailableToast('微信')),
-          _SocialItem('QQ', Icons.forum, const Color(0xFF12B7F5), () => _showUnavailableToast('QQ')),
-          _SocialItem('微博', Icons.alternate_email, const Color(0xFFE6162D), () => _showUnavailableToast('微博')),
+          _SocialItem('微信', Icons.chat, const Color(0xFF07C160),
+              () => _showUnavailableToast('微信')),
+          _SocialItem('QQ', Icons.forum, const Color(0xFF12B7F5),
+              () => _showUnavailableToast('QQ')),
+          _SocialItem('微博', Icons.alternate_email, const Color(0xFFE6162D),
+              () => _showUnavailableToast('微博')),
           _SocialItem('Apple', Icons.apple, Colors.black, _handleAppleLogin),
-          _SocialItem('Google', Icons.g_mobiledata, const Color(0xFF4285F4), () => _showUnavailableToast('Google')),
+          _SocialItem('Google', Icons.g_mobiledata, const Color(0xFF4285F4),
+              () => _showUnavailableToast('Google')),
         ];
       default: // android
         return [
-          _SocialItem('华为', Icons.phone_android, const Color(0xFFCF0A2C), () => _showUnavailableToast('华为')),
-          _SocialItem('微信', Icons.chat, const Color(0xFF07C160), () => _showUnavailableToast('微信')),
-          _SocialItem('QQ', Icons.forum, const Color(0xFF12B7F5), () => _showUnavailableToast('QQ')),
-          _SocialItem('微博', Icons.alternate_email, const Color(0xFFE6162D), () => _showUnavailableToast('微博')),
+          _SocialItem('华为', Icons.phone_android, const Color(0xFFCF0A2C),
+              () => _showUnavailableToast('华为')),
+          _SocialItem('微信', Icons.chat, const Color(0xFF07C160),
+              () => _showUnavailableToast('微信')),
+          _SocialItem('QQ', Icons.forum, const Color(0xFF12B7F5),
+              () => _showUnavailableToast('QQ')),
+          _SocialItem('微博', Icons.alternate_email, const Color(0xFFE6162D),
+              () => _showUnavailableToast('微博')),
           _SocialItem('Apple', Icons.apple, Colors.black, _handleAppleLogin),
         ];
     }
