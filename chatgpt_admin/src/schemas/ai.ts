@@ -30,6 +30,11 @@ export const modelSchema = z.object({
   enabled: z.boolean().default(true),
   isDefault: z.boolean().default(false),
   sortOrder: z.number().int().default(0),
+  // 能力位（默认 false）。客户端做加法覆盖，只需标注启发式判不出的能力。
+  supportsVision: z.boolean().default(false),
+  supportsTool: z.boolean().default(false),
+  supportsReasoning: z.boolean().default(false),
+  supportsPdf: z.boolean().default(false),
 });
 
 export const globalSchema = z.object({

@@ -37,6 +37,10 @@ export function ModelForm({ open, isCreate, model, onClose, onSave, loading }: P
           enabled: true,
           isDefault: false,
           sortOrder: 0,
+          supportsVision: false,
+          supportsTool: false,
+          supportsReasoning: false,
+          supportsPdf: false,
         });
       } else {
         reset({
@@ -47,6 +51,10 @@ export function ModelForm({ open, isCreate, model, onClose, onSave, loading }: P
           enabled: model.enabled,
           isDefault: model.isDefault,
           sortOrder: model.sortOrder,
+          supportsVision: model.supportsVision,
+          supportsTool: model.supportsTool,
+          supportsReasoning: model.supportsReasoning,
+          supportsPdf: model.supportsPdf,
         });
       }
     }
@@ -155,6 +163,62 @@ export function ModelForm({ open, isCreate, model, onClose, onSave, loading }: P
                   />
                 )}
               />
+            </div>
+            {/* 能力位：客户端在 modelId 家族启发式之上做加法覆盖，只需标注启发式判不出的能力 */}
+            <div className="space-y-1">
+              <p className="text-xs text-default-400">
+                能力位（仅向上覆盖启发式，留空则由模型名自动推断）
+              </p>
+              <div className="flex flex-wrap gap-6">
+                <Controller
+                  name="supportsVision"
+                  control={control}
+                  render={({ field }) => (
+                    <Switch
+                      isSelected={field.value}
+                      onValueChange={field.onChange}
+                    >
+                      视觉
+                    </Switch>
+                  )}
+                />
+                <Controller
+                  name="supportsTool"
+                  control={control}
+                  render={({ field }) => (
+                    <Switch
+                      isSelected={field.value}
+                      onValueChange={field.onChange}
+                    >
+                      工具调用
+                    </Switch>
+                  )}
+                />
+                <Controller
+                  name="supportsReasoning"
+                  control={control}
+                  render={({ field }) => (
+                    <Switch
+                      isSelected={field.value}
+                      onValueChange={field.onChange}
+                    >
+                      推理
+                    </Switch>
+                  )}
+                />
+                <Controller
+                  name="supportsPdf"
+                  control={control}
+                  render={({ field }) => (
+                    <Switch
+                      isSelected={field.value}
+                      onValueChange={field.onChange}
+                    >
+                      PDF
+                    </Switch>
+                  )}
+                />
+              </div>
             </div>
           </form>
         </ModalBody>

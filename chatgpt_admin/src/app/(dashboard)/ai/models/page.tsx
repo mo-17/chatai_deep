@@ -161,6 +161,7 @@ export default function AiModelsPage() {
           <TableColumn>模型</TableColumn>
           <TableColumn>服务商</TableColumn>
           <TableColumn>描述</TableColumn>
+          <TableColumn>能力</TableColumn>
           <TableColumn>状态</TableColumn>
           <TableColumn>默认</TableColumn>
           <TableColumn>排序</TableColumn>
@@ -182,6 +183,28 @@ export default function AiModelsPage() {
                 <div className="max-w-48 text-sm text-default-500 line-clamp-2">
                   {m.description || '-'}
                 </div>
+              </TableCell>
+              <TableCell>
+                {(() => {
+                  const caps = [
+                    m.supportsVision && '视觉',
+                    m.supportsTool && '工具',
+                    m.supportsReasoning && '推理',
+                    m.supportsPdf && 'PDF',
+                  ].filter(Boolean) as string[];
+                  if (caps.length === 0) {
+                    return <span className="text-xs text-default-300">-</span>;
+                  }
+                  return (
+                    <div className="flex flex-wrap gap-1">
+                      {caps.map((cap) => (
+                        <Chip key={cap} size="sm" variant="flat" color="secondary">
+                          {cap}
+                        </Chip>
+                      ))}
+                    </div>
+                  );
+                })()}
               </TableCell>
               <TableCell>
                 <Switch

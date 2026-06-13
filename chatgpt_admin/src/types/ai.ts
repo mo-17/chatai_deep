@@ -20,6 +20,11 @@ export interface AiModel {
   enabled: boolean;
   isDefault: boolean;
   sortOrder: number;
+  // 能力位：客户端在家族启发式之上做加法覆盖（强制打开，不会因 false 关位）。
+  supportsVision: boolean;
+  supportsTool: boolean;
+  supportsReasoning: boolean;
+  supportsPdf: boolean;
   providerCode?: string;
   inputPrice?: number;
   outputPrice?: number;
@@ -52,6 +57,10 @@ export interface AiCatalog {
     providerCode: string;
     isDefault: boolean;
     sortOrder: number;
+    supportsVision: boolean;
+    supportsTool: boolean;
+    supportsReasoning: boolean;
+    supportsPdf: boolean;
   }[];
   default: { providerCode: string; modelId: string };
 }
