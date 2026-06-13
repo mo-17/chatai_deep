@@ -364,6 +364,7 @@ class _LoginPageState extends State<LoginPage> {
                     _buildPlatformMandatory(),
                     _buildSocialDots(),
                     _buildAgreement(),
+                    _buildGuestEntry(),
                     const SizedBox(height: 80),
                   ],
                 ),
@@ -443,6 +444,7 @@ class _LoginPageState extends State<LoginPage> {
                         _buildPlatformMandatory(),
                         _buildSocialDots(),
                         _buildAgreement(),
+                        _buildGuestEntry(),
                         const SizedBox(height: 80),
                       ],
                     ),
@@ -786,6 +788,35 @@ class _LoginPageState extends State<LoginPage> {
         borderSide: BorderSide(color: _p.tabActive, width: 2),
       ),
     );
+  }
+
+  /// 游客模式入口：不访问后端、直接进主界面（数据落在独立的 guest 账号下）。
+  /// 不要求勾选协议 —— 游客不创建账号；正式注册/登录时仍会校验。
+  Widget _buildGuestEntry() {
+    return Padding(
+      padding: const EdgeInsets.only(top: 14),
+      child: GestureDetector(
+        onTap: _handleGuestLogin,
+        child: Text(
+          '游客模式，暂不登录 →',
+          style: TextStyle(
+            fontSize: 13,
+            color: _p.linkColor,
+            fontWeight: FontWeight.w500,
+          ),
+        ),
+      ),
+    );
+  }
+
+  Future<void> _handleGuestLogin() async {
+    await LoginDao.loginAsGuest();
+    if (mounted) {
+      widget.onLoginSuccess?.call();
+      if (widget.onLoginSuccess == null) {
+        NavigatorUtil.goToHome(context);
+      }
+    }
   }
 
   Widget _buildHelperLinks() {

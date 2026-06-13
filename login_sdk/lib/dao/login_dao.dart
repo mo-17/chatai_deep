@@ -177,6 +177,29 @@ class LoginDao {
     }
   }
 
+  /// 游客模式的哨兵 token。纯本地、不会被后端接受 —— 游客的后端调用
+  /// 会得到 401/失败，相关功能（后端代理等）应由宿主在 UI 层屏蔽。
+  static const kGuestToken = 'guest-mode';
+
+  ///游客模式登录：**不访问后端**，写入本地哨兵 token + 游客资料即可进入主界面。
+  ///accountHash 固定为 'guest'（extras 覆盖默认的 userName.hashCode），
+  ///游客的本地数据（会话库 / AI 设置）独立于任何正式账号。
+  static Future<void> loginAsGuest() async {
+    await LoginSdkConfig.instance.storage.writeProfile(
+      token: kGuestToken,
+      userName: '游客',
+      extras: const {'accountHash': 'guest', 'guest': true},
+    );
+    for (final cb in _onLoginHooks) {
+      try {
+        cb();
+      } catch (_) {}
+    }
+  }
+
+  ///当前是否处于游客模式
+  static bool isGuest() => getUserInfo()?['guest'] == true;
+
   ///登出
   static Future<void> logOut() async {
     for (final cb in _onLogoutHooks) {
