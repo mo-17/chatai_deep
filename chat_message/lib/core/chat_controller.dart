@@ -12,6 +12,10 @@ class ChatController implements IChatController {
   ///Provide MessageWidgetBuilder to customize your bubble style.
   final MessageWidgetBuilder? messageWidgetBuilder;
 
+  ///只定制气泡「内部内容」（保留头像/气泡外壳/时间/长按）。
+  ///返回 null 时回退到默认的文本/图片渲染。用于块化消息渲染。
+  final MessageContentBuilder? messageContentBuilder;
+
   ///展示时间的间隔，单位秒
   final int timePellet;
   List<int> pelletShow = [];
@@ -19,7 +23,8 @@ class ChatController implements IChatController {
   ChatController({required this.initialMessageList,
     required this.scrollController,
     required this.timePellet,
-    this.messageWidgetBuilder}) {
+    this.messageWidgetBuilder,
+    this.messageContentBuilder}) {
     for (var message in initialMessageList.reversed) {
       inflateMessage(message);
     }

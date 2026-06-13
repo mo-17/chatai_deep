@@ -138,6 +138,10 @@ class _MyAppState extends State<MyApp> {
         HiDBManager.closeAll();
       });
       LoginDao.addLogoutHook(() {
+        // 游客「去登录」不清其本地 AI 配置：游客设置存在独立的 guest key 下，
+        // 保留它，下次回到游客模式时 key 还在（钩子先于 storage.clear() 执行，
+        // 此刻仍可判断 isGuest）。
+        if (LoginDao.isGuest()) return;
         final reset = AISettingsProvider.instance?.settings.resetOnLogout ?? true;
         if (reset) {
           AISettingsProvider.resetToDefaults();

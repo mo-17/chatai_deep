@@ -29,6 +29,9 @@ class _ChatListState extends State<ChatList> {
   MessageWidgetBuilder? get messageWidgetBuilder =>
       chatController.messageWidgetBuilder;
 
+  MessageContentBuilder? get messageContentBuilder =>
+      chatController.messageContentBuilder;
+
   ScrollController get scrollController => chatController.scrollController;
 
   Widget get _chatStreamBuilder => StreamBuilder<List<MessageModel>>(
@@ -48,6 +51,7 @@ class _ChatListState extends State<ChatList> {
                     key: model.key,
                     message: model,
                     messageWidget: messageWidgetBuilder,
+                    contentBuilder: messageContentBuilder,
                     onBubbleTap: widget.onBubbleTap,
                     onBubbleLongPress: widget.onBubbleLongPress,
                   );

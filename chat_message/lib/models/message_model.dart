@@ -52,7 +52,8 @@ class MessageModel {
     required this.createdAt,
     this.imagePaths,
     this.imageUrlsOrB64,
-  }) : key = GlobalKey();
+    GlobalKey? key,
+  }) : key = key ?? GlobalKey();
 
   factory MessageModel.fromJson(Map<String, dynamic> json) {
     List<String>? parseImages(String? raw) {
@@ -102,5 +103,8 @@ class MessageModel {
         avatar: avatar,
         imagePaths: imagePaths ?? this.imagePaths,
         imageUrlsOrB64: imageUrlsOrB64 ?? this.imageUrlsOrB64,
+        // 复用同一 GlobalKey：内容更新（如流式收尾落库）不应让 ListView 重建
+        // 整个气泡子树 —— 否则块化渲染里展开的思考块会被销毁、计时器/展开态丢失。
+        key: key,
       );
 }

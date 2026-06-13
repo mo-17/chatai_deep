@@ -11,6 +11,11 @@ typedef MessageWidgetBuilder = Widget Function(MessageModel message);
 typedef OnBubbleClick = void Function(
     MessageModel message, BuildContext ancestor);
 
+/// 只定制气泡「内部内容」的构造器。返回 null 时回退到默认文本/图片渲染。
+/// 气泡外壳（头像、气泡形状、时间、长按菜单）仍由 [DefaultMessageWidget] 提供。
+typedef MessageContentBuilder = Widget? Function(
+    BuildContext context, MessageModel message);
+
 class DefaultMessageWidget extends StatelessWidget {
   final MessageModel message;
 
@@ -29,6 +34,9 @@ class DefaultMessageWidget extends StatelessWidget {
   /// Background color of the message
   final Color? backgroundColor;
   final MessageWidgetBuilder? messageWidget;
+
+  /// 只替换气泡内部内容（块化渲染）；返回 null 时回退默认渲染。
+  final MessageContentBuilder? contentBuilder;
   final OnBubbleClick? onBubbleTap;
   final OnBubbleClick? onBubbleLongPress;
 
@@ -41,6 +49,7 @@ class DefaultMessageWidget extends StatelessWidget {
       this.backgroundColor,
       this.avatarSize = 40,
       this.messageWidget,
+      this.contentBuilder,
       this.onBubbleTap,
       this.onBubbleLongPress})
       : super(key: key);
@@ -126,7 +135,7 @@ class DefaultMessageWidget extends StatelessWidget {
               nip: BubbleNip.leftTop,
               color: backgroundColor ?? const Color.fromRGBO(233, 232, 252, 10),
               alignment: Alignment.topLeft,
-              child: _buildContentText(TextAlign.left, context)),
+              child: _bubbleChild(TextAlign.left, context)),
         ),
       ],
     );
@@ -145,10 +154,23 @@ class DefaultMessageWidget extends StatelessWidget {
               nip: BubbleNip.rightTop,
               color: backgroundColor ?? Colors.white,
               alignment: Alignment.topRight,
-              child: _buildContentText(TextAlign.left, context)),
+              child: _bubbleChild(TextAlign.left, context)),
         ),
         _buildCircleAvatar
       ],
+    );
+  }
+
+  /// 气泡内部内容：优先用 [contentBuilder]（块化渲染），回退默认文本/图片。
+  /// 自定义内容外包一层手势，保留气泡级 点击/长按 菜单。
+  Widget _bubbleChild(TextAlign align, BuildContext context) {
+    final custom = contentBuilder?.call(context, message);
+    if (custom == null) return _buildContentText(align, context);
+    return InkWell(
+      onTap: () => onBubbleTap != null ? onBubbleTap!(message, context) : null,
+      onLongPress: () =>
+          onBubbleLongPress != null ? onBubbleLongPress!(message, context) : null,
+      child: custom,
     );
   }
 
