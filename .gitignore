@@ -3,6 +3,9 @@ TASKS_OPT_*.md
 TASKS_OPTIMIZATION_INDEX.md
 task_backup
 
+# Claude Code 本地配置 / 工作流 / worktree（本地环境，不入库）
+.claude/
+
 # 本地备份压缩包（仅根目录，子目录里的 .zip 资源不受影响）
 /*.zip
 
