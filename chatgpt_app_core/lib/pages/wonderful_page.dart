@@ -1,3 +1,4 @@
+import 'package:chatgpt_app_core/backup/backup_service.dart';
 import 'package:chatgpt_app_core/db/favorite_dao.dart';
 import 'package:chatgpt_app_core/db/hi_db_manager.dart';
 import 'package:chatgpt_app_core/model/favorite_model.dart';
@@ -33,6 +34,14 @@ class _WonderfulPageState extends State<WonderfulPage> {
   void initState() {
     super.initState();
     _doInit();
+    // 备份导入后重新加载收藏列表（页面常驻，不会再走 initState）。
+    BackupService.restoreTick.addListener(_loadData);
+  }
+
+  @override
+  void dispose() {
+    BackupService.restoreTick.removeListener(_loadData);
+    super.dispose();
   }
 
   @override

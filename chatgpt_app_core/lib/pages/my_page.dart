@@ -4,6 +4,8 @@ import 'dart:io';
 import 'package:chatgpt_app_core/dao/apk_update_dao.dart';
 import 'package:chatgpt_app_core/model/apk_model.dart';
 import 'package:chatgpt_app_core/pages/ai_settings_page.dart';
+import 'package:chatgpt_app_core/pages/assistant_list_page.dart';
+import 'package:chatgpt_app_core/pages/backup_restore_page.dart';
 import 'package:chatgpt_app_core/provider/theme_provider.dart';
 import 'package:chatgpt_app_core/util/hi_dialog.dart';
 import 'package:chatgpt_app_core/util/hi_progress_dialog.dart';
@@ -61,12 +63,35 @@ class _MyPageState extends State<MyPage> {
           ),
           20.paddingHeight,
           const Divider(),
+          // 游客模式：醒目的登录入口（走标准登出流程清掉游客态并跳登录页）。
+          if (LoginDao.isGuest())
+            ..._itemWidget(
+                color: color,
+                title: '登录 / 注册',
+                icon: Icons.login,
+                onTap: () => LoginDao.logOut()),
           ..._itemWidget(
               color: color,
               title: 'AI 服务设置',
               icon: Icons.smart_toy,
               onTap: () => Navigator.push(context,
                   MaterialPageRoute(builder: (_) => const AISettingsPage()))),
+          ..._itemWidget(
+              color: color,
+              title: '助手管理',
+              icon: Icons.support_agent,
+              onTap: () => Navigator.push(
+                  context,
+                  MaterialPageRoute(
+                      builder: (_) => const AssistantListPage()))),
+          ..._itemWidget(
+              color: color,
+              title: '备份与恢复',
+              icon: Icons.backup_outlined,
+              onTap: () => Navigator.push(
+                  context,
+                  MaterialPageRoute(
+                      builder: (_) => const BackupRestorePage()))),
           ..._itemWidget(
               color: color,
               title: '检测更新',
