@@ -1,8 +1,10 @@
+import 'package:chatgpt_app_core/backup/backup_service.dart';
 import 'package:chatgpt_app_core/dao/ai_catalog_dao.dart';
 import 'package:chatgpt_app_core/db/conversation_dao.dart';
 import 'package:chatgpt_app_core/db/message_dao.dart';
 import 'package:chatgpt_app_core/model/conversation_model.dart';
 import 'package:chatgpt_app_core/pages/conversation_page.dart';
+import 'package:chatgpt_app_core/widget/assistant_picker.dart';
 import 'package:flutter/material.dart';
 import 'package:login_sdk/util/navigator_util.dart';
 import 'package:openai_flutter/utils/ai_logger.dart';
@@ -34,6 +36,19 @@ class _ConversationListPageState extends State<ConversationListPage>
   void initState() {
     super.initState();
     _doInit();
+    // 备份导入后重新加载（页面 keepAlive 常驻，不会再走 initState）。
+    BackupService.restoreTick.addListener(_onRestore);
+  }
+
+  @override
+  void dispose() {
+    BackupService.restoreTick.removeListener(_onRestore);
+    super.dispose();
+  }
+
+  void _onRestore() {
+    _loadStickData();
+    _loadData();
   }
 
   @override
@@ -62,12 +77,14 @@ class _ConversationListPageState extends State<ConversationListPage>
     );
   }
 
-  ///创建新的会话
-  void _createConversation() {
+  ///创建新的会话。先选助手（阶段七）：没有任何助手时选择器零打扰直接放行。
+  void _createConversation() async {
+    final pick = await showAssistantPicker(context);
+    if (pick == null || !mounted) return; // 用户取消
     int cid = DateTime.now().millisecondsSinceEpoch;
     final avatar = AiCatalogDao.avatarUrl();
     _jumpToConversation(ConversationModel(
-        cid: cid, icon: avatar));
+        cid: cid, icon: avatar, assistantId: pick.assistant?.id));
   }
 
   _conversationWidget(int pos) {

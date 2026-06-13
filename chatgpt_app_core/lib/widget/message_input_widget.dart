@@ -1,6 +1,8 @@
 import 'dart:io';
 
+import 'package:chatgpt_app_core/chat/application/file_processor.dart';
 import 'package:chatgpt_app_core/provider/theme_provider.dart';
+import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:provider/provider.dart';
@@ -35,6 +37,18 @@ class MessageInputWidget extends StatefulWidget {
   final ValueChanged<int>? onRemoveImage;
   final bool imagesEnabled;
   final String imagesDisabledReason;
+
+  /// 待发送的文件（阶段四）。文件入口不按能力位关闭 —— 模型不支持原生
+  /// 文件时走「抽文本拼 prompt」降级路径，任何模型都可用。
+  final ValueChanged<List<String>>? onFilesPicked;
+  final List<String> pendingFiles;
+  final ValueChanged<int>? onRemoveFile;
+
+  /// 联网搜索开关（阶段五）。独立于模型能力位 —— 搜索结果以上下文回填，
+  /// 任何模型都可用；仅在配置了搜索 API Key 时展示（[showWebSearch]）。
+  final bool showWebSearch;
+  final bool webSearchEnabled;
+  final VoidCallback? onToggleWebSearch;
   final String hint;
   final bool enable;
   final bool isStreaming;
@@ -50,6 +64,12 @@ class MessageInputWidget extends StatefulWidget {
     this.onRemoveImage,
     this.imagesEnabled = true,
     this.imagesDisabledReason = '当前模型不支持图片',
+    this.onFilesPicked,
+    this.pendingFiles = const [],
+    this.onRemoveFile,
+    this.showWebSearch = false,
+    this.webSearchEnabled = false,
+    this.onToggleWebSearch,
     this.enable = true,
     this.isStreaming = false,
   }) : super(key: key);
@@ -241,7 +261,37 @@ class _MessageInputWidgetState extends State<MessageInputWidget> {
   bool get _showPhotoBtn =>
       Platform.operatingSystem != 'ohos'; // image_picker 暂未支持鸿蒙
 
+  bool get _showFileBtn =>
+      Platform.operatingSystem != 'ohos'; // file_picker 暂未支持鸿蒙
+
   bool get _hasPendingImages => widget.pendingImages.isNotEmpty;
+
+  bool get _hasPendingFiles => widget.pendingFiles.isNotEmpty;
+
+  Future<void> _onFileTap() async {
+    if (widget.pendingFiles.length >= 3) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('最多选择 3 个文件')),
+      );
+      return;
+    }
+    try {
+      final result = await FilePicker.pickFiles(
+        type: FileType.custom,
+        allowedExtensions: FileProcessor.pickerExtensions,
+      );
+      final path = result?.files.single.path;
+      if (path != null && mounted) {
+        widget.onFilesPicked?.call([...widget.pendingFiles, path]);
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('选取文件失败: $e')),
+        );
+      }
+    }
+  }
 
   @override
   void dispose() {
@@ -251,6 +301,18 @@ class _MessageInputWidgetState extends State<MessageInputWidget> {
     super.dispose();
   }
 
+  get _fileBtn => GestureDetector(
+        onTap: _onFileTap,
+        child: Container(
+          margin: const EdgeInsets.only(right: 6),
+          child: const Icon(
+            Icons.attach_file,
+            color: Colors.grey,
+            size: 24,
+          ),
+        ),
+      );
+
   get _photoBtn => GestureDetector(
         onTap: _onPhotoTap,
         child: Container(
@@ -259,6 +321,19 @@ class _MessageInputWidgetState extends State<MessageInputWidget> {
             Icons.add_photo_alternate,
             color: widget.imagesEnabled ? Colors.grey : Colors.grey.shade300,
             size: 26,
+          ),
+        ),
+      );
+
+  /// 联网搜索开关：开启时用主题色高亮。
+  Widget _webSearchBtn(Color themeColor) => GestureDetector(
+        onTap: widget.onToggleWebSearch,
+        child: Container(
+          margin: const EdgeInsets.only(right: 6),
+          child: Icon(
+            Icons.travel_explore,
+            color: widget.webSearchEnabled ? themeColor : Colors.grey,
+            size: 24,
           ),
         ),
       );
@@ -337,6 +412,54 @@ class _MessageInputWidgetState extends State<MessageInputWidget> {
     );
   }
 
+  /// 待发送文件条（图标 + 文件名 + 删除）。
+  Widget _buildFileBar() {
+    if (!_hasPendingFiles) return const SizedBox.shrink();
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 4),
+      child: Wrap(
+        spacing: 6,
+        runSpacing: 4,
+        children: [
+          for (var i = 0; i < widget.pendingFiles.length; i++)
+            Container(
+              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+              decoration: BoxDecoration(
+                color: Colors.white,
+                borderRadius: BorderRadius.circular(6),
+              ),
+              child: Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  const Icon(Icons.insert_drive_file_outlined,
+                      size: 16, color: Colors.black54),
+                  const SizedBox(width: 4),
+                  ConstrainedBox(
+                    constraints: const BoxConstraints(maxWidth: 160),
+                    child: Text(
+                      widget.pendingFiles[i]
+                          .split(Platform.pathSeparator)
+                          .last,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: const TextStyle(
+                          fontSize: 12, color: Colors.black87),
+                    ),
+                  ),
+                  const SizedBox(width: 4),
+                  GestureDetector(
+                    onTap: () => widget.onRemoveFile?.call(i),
+                    child: const Icon(Icons.close,
+                        size: 14, color: Colors.black54),
+                  ),
+                ],
+              ),
+            ),
+        ],
+      ),
+    );
+  }
+
   get _input => Expanded(
         child: TextField(
           focusNode: _focusNode,
@@ -380,11 +503,14 @@ class _MessageInputWidgetState extends State<MessageInputWidget> {
         mainAxisSize: MainAxisSize.min,
         children: [
           _buildThumbnailBar(),
+          _buildFileBar(),
           SizedBox(
             height: 45,
             child: Row(
               children: [
+                if (widget.showWebSearch) _webSearchBtn(color),
                 if (_showPhotoBtn) _photoBtn,
+                if (_showFileBtn) _fileBtn,
                 _micBtn,
                 _input,
                 if (_showSend || widget.isStreaming) _sendBtn(color),
@@ -404,6 +530,8 @@ class _MessageInputWidgetState extends State<MessageInputWidget> {
   }
 
   void _onSend() {
+    // 流式进行中或被禁用时（如回车键触发），忽略发送，避免并发请求。
+    if (widget.isStreaming || !widget.enable) return;
     if (widget.onSend != null) {
       widget.onSend!();
       _controller.clear();
