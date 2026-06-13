@@ -29,6 +29,9 @@ dependencies:
   open_filex: ^4.7.0
   speech_to_text: ^7.0.0
   image_picker: ^1.1.2
+  file_picker: ^11.0.2
+  syncfusion_flutter_pdf: ^33.2.12
+  archive: ^4.0.9
 
 dev_dependencies:
   flutter_test:
