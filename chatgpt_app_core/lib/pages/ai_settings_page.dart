@@ -1,8 +1,10 @@
 import 'package:chatgpt_app_core/dao/chat/chat_service.dart';
 import 'package:chatgpt_app_core/model/ai_settings.dart';
 import 'package:chatgpt_app_core/provider/ai_settings_provider.dart';
+import 'package:chatgpt_app_core/util/hi_dialog.dart';
 import 'package:chatgpt_app_core/util/model_catalog.dart';
 import 'package:flutter/material.dart';
+import 'package:login_sdk/dao/login_dao.dart';
 import 'package:provider/provider.dart';
 
 class AISettingsPage extends StatefulWidget {
@@ -23,9 +25,23 @@ class _AISettingsPageState extends State<AISettingsPage> {
   late TextEditingController _deepseekModelCtl;
   late TextEditingController _deepseekUrlCtl;
   late String _backendModel;
+  late TextEditingController _tavilyKeyCtl;
+  late TextEditingController _exaKeyCtl;
+  late TextEditingController _bochaKeyCtl;
+  late TextEditingController _zhipuKeyCtl;
+
+  // 联网搜索：当前服务商 + 三项通用配置（对照源项目 WebSearchState）
+  late String _searchProviderId;
+  late bool _searchWithTime;
+  late TextEditingController _searchCountCtl;
+  late TextEditingController _searchLimitCtl;
+
+  // 最大输出 token（空 = 不限制）
+  late TextEditingController _maxTokensCtl;
 
   bool _obscureOpenai = true;
   bool _obscureDeepseek = true;
+  bool _obscureSearchKey = true;
   bool _saving = false;
   late bool _streamEnabled;
   late bool _resetOnLogout;
@@ -43,6 +59,18 @@ class _AISettingsPageState extends State<AISettingsPage> {
     _deepseekModelCtl = TextEditingController(text: s.deepseek.model);
     _deepseekUrlCtl = TextEditingController(text: s.deepseek.baseUrl);
     _backendModel = s.backendModel;
+    _tavilyKeyCtl = TextEditingController(text: s.tavilyApiKey);
+    _exaKeyCtl = TextEditingController(text: s.exaApiKey);
+    _bochaKeyCtl = TextEditingController(text: s.bochaApiKey);
+    _zhipuKeyCtl = TextEditingController(text: s.zhipuApiKey);
+    _searchProviderId = s.webSearchProviderId;
+    _searchWithTime = s.searchWithTime;
+    _searchCountCtl =
+        TextEditingController(text: s.searchMaxResults.toString());
+    _searchLimitCtl = TextEditingController(
+        text: s.searchContentLimit > 0 ? s.searchContentLimit.toString() : '');
+    _maxTokensCtl = TextEditingController(
+        text: s.maxOutputTokens > 0 ? s.maxOutputTokens.toString() : '');
     _streamEnabled = s.streamEnabled;
     _resetOnLogout = s.resetOnLogout;
   }
@@ -55,8 +83,19 @@ class _AISettingsPageState extends State<AISettingsPage> {
     _deepseekKeyCtl.dispose();
     _deepseekModelCtl.dispose();
     _deepseekUrlCtl.dispose();
+    _tavilyKeyCtl.dispose();
+    _exaKeyCtl.dispose();
+    _bochaKeyCtl.dispose();
+    _zhipuKeyCtl.dispose();
+    _searchCountCtl.dispose();
+    _searchLimitCtl.dispose();
+    _maxTokensCtl.dispose();
     super.dispose();
   }
+
+  ///解析数字输入；空/非法返回 [fallback]。
+  int _parseInt(String text, {int fallback = 0}) =>
+      int.tryParse(text.trim()) ?? fallback;
 
   AISettings _buildSettings() => AISettings(
         mode: _mode,
@@ -74,6 +113,19 @@ class _AISettingsPageState extends State<AISettingsPage> {
         backendModel: _backendModel,
         streamEnabled: _streamEnabled,
         resetOnLogout: _resetOnLogout,
+        tavilyApiKey: _tavilyKeyCtl.text.trim(),
+        // 联网开关在会话页切换，这里保留当前值不动。
+        webSearchEnabled:
+            context.read<AISettingsProvider>().settings.webSearchEnabled,
+        webSearchProviderId: _searchProviderId,
+        exaApiKey: _exaKeyCtl.text.trim(),
+        bochaApiKey: _bochaKeyCtl.text.trim(),
+        zhipuApiKey: _zhipuKeyCtl.text.trim(),
+        searchWithTime: _searchWithTime,
+        searchMaxResults:
+            _parseInt(_searchCountCtl.text, fallback: 5).clamp(1, 20),
+        searchContentLimit: _parseInt(_searchLimitCtl.text),
+        maxOutputTokens: _parseInt(_maxTokensCtl.text),
       );
 
   Future<void> _save() async {
@@ -126,7 +178,11 @@ class _AISettingsPageState extends State<AISettingsPage> {
           const SizedBox(height: 16),
           _buildStreamCard(),
           const SizedBox(height: 16),
+          _buildMaxTokensCard(),
+          const SizedBox(height: 16),
           _buildResetOnLogoutCard(),
+          const SizedBox(height: 16),
+          _buildWebSearchCard(),
           const SizedBox(height: 16),
           if (_mode == AIMode.local) ...[
             _buildProviderCard(),
@@ -184,8 +240,21 @@ class _AISettingsPageState extends State<AISettingsPage> {
                     tooltip: '统一服务，可能收费'),
               ],
               selected: {_mode},
-              onSelectionChanged: (s) => setState(() => _mode = s.first),
+              onSelectionChanged: (s) {
+                // 游客模式没有后端凭证（哨兵 token 会被拒），只能本地直连。
+                if (s.first == AIMode.backend && LoginDao.isGuest()) {
+                  HiDialog.showSnackBar(
+                      context, '游客模式仅支持本地直连，登录后可使用后端代理');
+                  return;
+                }
+                setState(() => _mode = s.first);
+              },
             ),
+            if (LoginDao.isGuest()) ...[
+              const SizedBox(height: 8),
+              Text('游客模式：请在下方填入自己的 OpenAI / DeepSeek API Key',
+                  style: TextStyle(fontSize: 12, color: Colors.grey[600])),
+            ],
           ],
         ),
       ),
@@ -210,6 +279,150 @@ class _AISettingsPageState extends State<AISettingsPage> {
         subtitle: const Text('开启后退出登录会清空 API Key 等设置，关闭则保留'),
         value: _resetOnLogout,
         onChanged: (v) => setState(() => _resetOnLogout = v),
+      ),
+    );
+  }
+
+  /// 联网搜索服务商清单（与源项目 WebSearchProviderFactory 实际启用的一致）。
+  static const _searchProviders = <(String, String, String)>[
+    ('tavily', 'Tavily', '在 tavily.com 免费申请'),
+    ('exa', 'Exa', '在 dashboard.exa.ai 申请'),
+    ('bocha', '博查', '在 open.bochaai.com 申请'),
+    ('zhipu', '智谱', '在 open.bigmodel.cn 申请'),
+  ];
+
+  TextEditingController get _activeSearchKeyCtl {
+    switch (_searchProviderId) {
+      case 'exa':
+        return _exaKeyCtl;
+      case 'bocha':
+        return _bochaKeyCtl;
+      case 'zhipu':
+        return _zhipuKeyCtl;
+      default:
+        return _tavilyKeyCtl;
+    }
+  }
+
+  /// 联网搜索（阶段五 + 本次扩展）：服务商选择 + 各自 API Key +
+  /// 三项通用配置（结果条数 / 内容长度限制 / 附带日期，对照源项目）。
+  Widget _buildWebSearchCard() {
+    final active =
+        _searchProviders.firstWhere((p) => p.$1 == _searchProviderId,
+            orElse: () => _searchProviders.first);
+    return Card(
+      child: Padding(
+        padding: const EdgeInsets.all(16),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const Text('联网搜索',
+                style: TextStyle(fontSize: 16, fontWeight: FontWeight.w600)),
+            const SizedBox(height: 12),
+            InputDecorator(
+              decoration: const InputDecoration(
+                labelText: '搜索服务商',
+                border: OutlineInputBorder(),
+              ),
+              child: DropdownButtonHideUnderline(
+                child: DropdownButton<String>(
+                  value: active.$1,
+                  isDense: true,
+                  isExpanded: true,
+                  items: [
+                    for (final p in _searchProviders)
+                      DropdownMenuItem(value: p.$1, child: Text(p.$2)),
+                  ],
+                  onChanged: (v) {
+                    if (v != null) setState(() => _searchProviderId = v);
+                  },
+                ),
+              ),
+            ),
+            const SizedBox(height: 12),
+            TextField(
+              // key 跟随服务商切换，避免复用旧输入框状态
+              key: ValueKey('search_key_${active.$1}'),
+              controller: _activeSearchKeyCtl,
+              obscureText: _obscureSearchKey,
+              decoration: InputDecoration(
+                labelText: '${active.$2} API Key',
+                helperText: 'ⓘ ${active.$3}；配置后会话页输入栏出现联网开关',
+                border: const OutlineInputBorder(),
+                suffixIcon: IconButton(
+                  icon: Icon(_obscureSearchKey
+                      ? Icons.visibility
+                      : Icons.visibility_off),
+                  onPressed: () =>
+                      setState(() => _obscureSearchKey = !_obscureSearchKey),
+                ),
+              ),
+            ),
+            const SizedBox(height: 12),
+            Row(
+              children: [
+                Expanded(
+                  child: TextField(
+                    controller: _searchCountCtl,
+                    keyboardType: TextInputType.number,
+                    decoration: const InputDecoration(
+                      labelText: '搜索结果个数',
+                      hintText: '5',
+                      border: OutlineInputBorder(),
+                    ),
+                  ),
+                ),
+                const SizedBox(width: 12),
+                Expanded(
+                  child: TextField(
+                    controller: _searchLimitCtl,
+                    keyboardType: TextInputType.number,
+                    decoration: const InputDecoration(
+                      labelText: '内容长度限制',
+                      hintText: '留空不限制',
+                      border: OutlineInputBorder(),
+                    ),
+                  ),
+                ),
+              ],
+            ),
+            SwitchListTile(
+              contentPadding: EdgeInsets.zero,
+              title: const Text('搜索词附带当前日期'),
+              subtitle: const Text('提升「最新 / 今天」类问题的搜索质量'),
+              value: _searchWithTime,
+              onChanged: (v) => setState(() => _searchWithTime = v),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  /// 最大输出长度（方案2）：默认不限制（不发 max_tokens，用上游默认），
+  /// 需要控费时再设上限。修复此前写死 1000 token 导致长回复被截断的问题。
+  Widget _buildMaxTokensCard() {
+    return Card(
+      child: Padding(
+        padding: const EdgeInsets.all(16),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const Text('最大输出长度',
+                style: TextStyle(fontSize: 16, fontWeight: FontWeight.w600)),
+            const SizedBox(height: 12),
+            TextField(
+              controller: _maxTokensCtl,
+              keyboardType: TextInputType.number,
+              decoration: const InputDecoration(
+                labelText: 'max_tokens',
+                hintText: '留空不限制（推荐）',
+                helperText: 'ⓘ 设置过小会导致回复被截断；推理模型的思考过程也计入',
+                border: OutlineInputBorder(),
+              ),
+            ),
+          ],
+        ),
       ),
     );
   }
