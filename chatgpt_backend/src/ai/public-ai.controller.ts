@@ -42,6 +42,11 @@ export class PublicAiController {
       providerCode: providerMap.get(m.providerId) || '',
       isDefault: m.isDefault,
       sortOrder: m.sortOrder,
+      // 能力位：客户端在家族启发式之上做加法覆盖（见 ModelCatalog.capabilitiesFor）。
+      supportsVision: m.supportsVision,
+      supportsTool: m.supportsTool,
+      supportsReasoning: m.supportsReasoning,
+      supportsPdf: m.supportsPdf,
     }));
 
     return {

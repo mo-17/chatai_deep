@@ -71,6 +71,7 @@ export class AiSeedService implements OnApplicationBootstrap {
           enabled: true,
           isDefault: false,
           sortOrder: 10,
+          supportsTool: true,
         },
         {
           providerId: openai.id,
@@ -80,6 +81,9 @@ export class AiSeedService implements OnApplicationBootstrap {
           enabled: true,
           isDefault: true,
           sortOrder: 20,
+          supportsVision: true,
+          supportsTool: true,
+          supportsPdf: true,
         },
         {
           providerId: openai.id,
@@ -89,6 +93,9 @@ export class AiSeedService implements OnApplicationBootstrap {
           enabled: true,
           isDefault: false,
           sortOrder: 30,
+          supportsVision: true,
+          supportsTool: true,
+          supportsPdf: true,
         },
         {
           providerId: openai.id,
@@ -98,6 +105,8 @@ export class AiSeedService implements OnApplicationBootstrap {
           enabled: true,
           isDefault: false,
           sortOrder: 40,
+          supportsVision: true,
+          supportsTool: true,
         },
         {
           providerId: openai.id,
@@ -107,6 +116,7 @@ export class AiSeedService implements OnApplicationBootstrap {
           enabled: true,
           isDefault: false,
           sortOrder: 50,
+          supportsReasoning: true,
         },
         {
           providerId: openai.id,
@@ -116,6 +126,9 @@ export class AiSeedService implements OnApplicationBootstrap {
           enabled: true,
           isDefault: false,
           sortOrder: 60,
+          supportsVision: true,
+          supportsTool: true,
+          supportsReasoning: true,
         },
       ];
       models.push(...openaiModels);
@@ -131,6 +144,7 @@ export class AiSeedService implements OnApplicationBootstrap {
           enabled: true,
           isDefault: true,
           sortOrder: 10,
+          supportsTool: true,
         },
         {
           providerId: deepseek.id,
@@ -140,6 +154,7 @@ export class AiSeedService implements OnApplicationBootstrap {
           enabled: true,
           isDefault: false,
           sortOrder: 20,
+          supportsReasoning: true,
         },
       ];
       models.push(...deepseekModels);

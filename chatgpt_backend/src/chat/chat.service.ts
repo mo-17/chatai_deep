@@ -14,6 +14,8 @@ export interface CompletionBody {
   model: string;
   messages: Record<string, unknown>[];
   max_tokens?: number;
+  // 工具调用声明（阶段六）：随 body 展开原样转发给上游。
+  tools?: Record<string, unknown>[];
 }
 
 export interface UpstreamResponse {

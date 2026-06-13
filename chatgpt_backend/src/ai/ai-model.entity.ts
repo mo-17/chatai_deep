@@ -40,6 +40,21 @@ export class AiModel {
   @Column({ type: 'decimal', precision: 10, scale: 6, nullable: true })
   outputPrice: number;
 
+  // 能力位：显式下发给客户端做能力探测（catalog）。默认 false（synchronize 自动加列）。
+  // 语义为「加法覆盖」——客户端在 modelId 家族启发式之上把这些位强制打开，
+  // 故迁移后存量模型即使全为 false 也不会丢失启发式已识别的能力。
+  @Column({ default: false })
+  supportsVision: boolean;
+
+  @Column({ default: false })
+  supportsTool: boolean;
+
+  @Column({ default: false })
+  supportsReasoning: boolean;
+
+  @Column({ default: false })
+  supportsPdf: boolean;
+
   @CreateDateColumn()
   createTime: Date;
 
