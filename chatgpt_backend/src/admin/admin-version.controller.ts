@@ -11,6 +11,7 @@ import {
 } from '@nestjs/common';
 import { AdminVersionService } from './admin-version.service';
 import { AdminGuard } from '../auth/admin.guard';
+import { AppVersion } from '../update/version.entity';
 
 @Controller('uapi/admin/versions')
 @UseGuards(AdminGuard)
@@ -36,13 +37,13 @@ export class AdminVersionController {
   }
 
   @Post()
-  async create(@Body() body: any) {
+  async create(@Body() body: Partial<AppVersion>) {
     const data = await this.svc.create(body);
     return { code: 0, data };
   }
 
   @Patch(':id')
-  async edit(@Param('id') id: string, @Body() body: any) {
+  async edit(@Param('id') id: string, @Body() body: Partial<AppVersion>) {
     const data = await this.svc.edit(parseInt(id, 10), body);
     return { code: 0, data };
   }

@@ -100,7 +100,7 @@ export class AdminUsageService {
         .createQueryBuilder('usage')
         .select('COUNT(DISTINCT "userId")', 'cnt')
         .where('usage.createdAt >= :start', { start: todayStart })
-        .getRawOne()
+        .getRawOne<{ cnt: string | number }>()
         .then((r) => toInt(r?.cnt)),
     ]);
 
@@ -120,7 +120,7 @@ export class AdminUsageService {
       .select('COALESCE(SUM("totalTokens"), 0)', 'tokens')
       .addSelect('COUNT(*)', 'calls')
       .where('usage.createdAt >= :start', { start: since })
-      .getRawOne();
+      .getRawOne<{ tokens: string; calls: string }>();
     return {
       tokens: toInt(result?.tokens),
       calls: toInt(result?.calls),
@@ -142,12 +142,12 @@ export class AdminUsageService {
       .andWhere('usage.createdAt <= :to', { to: toDate })
       .groupBy('DATE("createdAt")')
       .orderBy('date', 'ASC')
-      .getRawMany();
+      .getRawMany<{ date: string; tokens: string; calls: string }>();
 
     // Fill missing dates with zero
     const dateMap = new Map(
       rows.map((r) => [
-        r.date as string,
+        r.date,
         { tokens: toInt(r.tokens), calls: toInt(r.calls) },
       ]),
     );
@@ -173,7 +173,7 @@ export class AdminUsageService {
       .addSelect('COALESCE(SUM("totalTokens"), 0)', 'tokens')
       .addSelect('COUNT(*)', 'calls')
       .groupBy('provider')
-      .getRawMany();
+      .getRawMany<{ provider: string; tokens: string; calls: string }>();
 
     return {
       list: rows.map((r) => ({
@@ -197,7 +197,7 @@ export class AdminUsageService {
       .groupBy('usage.userId')
       .orderBy('tokens', 'DESC')
       .limit(limit)
-      .getRawMany();
+      .getRawMany<{ userId: number; tokens: string; calls: string }>();
 
     const userIds = rows.map((r) => r.userId);
     const users = userIds.length

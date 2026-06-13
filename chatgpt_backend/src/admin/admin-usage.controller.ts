@@ -3,6 +3,15 @@ import type { Response } from 'express';
 import { AdminUsageService } from './admin-usage.service';
 import { AdminGuard } from '../auth/admin.guard';
 
+/// 导出 CSV 的查询参数（全部可选，均为 query string）。
+interface ExportUsageQuery {
+  userId?: string;
+  provider?: string;
+  model?: string;
+  from?: string;
+  to?: string;
+}
+
 @Controller('uapi/admin/usage')
 @UseGuards(AdminGuard)
 export class AdminUsageController {
@@ -58,7 +67,7 @@ export class AdminUsageController {
   }
 
   @Get('export')
-  async exportCsv(@Query() query: any, @Res() res: Response) {
+  async exportCsv(@Query() query: ExportUsageQuery, @Res() res: Response) {
     const { userId, provider, model, from, to } = query;
     const csv = await this.svc.exportCsv({ userId, provider, model, from, to });
     const now = new Date();
