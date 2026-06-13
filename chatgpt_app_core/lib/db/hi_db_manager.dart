@@ -34,6 +34,14 @@ class HiDBManager {
     _storageMap[_dbName] = this;
   }
 
+  ///仅供测试：用现成的 [Database]（如 sqflite_common_ffi 内存库）构造，
+  ///不注册多实例缓存、不走平台初始化，便于各 Dao 走真实代码路径做单测。
+  @visibleForTesting
+  HiDBManager.test(Database db, {String dbName = ':memory:'})
+      : _dbName = dbName {
+    _db = db;
+  }
+
   /// 当前数据库 schema 版本
   static const int _kSchemaVersion = 2;
 

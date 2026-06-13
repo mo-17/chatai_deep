@@ -9,6 +9,9 @@ class ConversationModel {
   int? messageCount;
   String? lastMessage;
 
+  ///绑定的助手 id（阶段七，tb_assistant.id）。null = 未绑定助手。
+  int? assistantId;
+
   ///会话消息是否有变化
   bool hadChanged = false;
 
@@ -20,7 +23,8 @@ class ConversationModel {
       this.updateAt,
       this.stickTime = 0,
       this.messageCount,
-      this.lastMessage});
+      this.lastMessage,
+      this.assistantId});
 
   factory ConversationModel.fromJson(Map<String, dynamic> json) =>
       ConversationModel(
@@ -31,7 +35,8 @@ class ConversationModel {
           updateAt: json['updateAt'],
           stickTime: json['stickTime'],
           messageCount: json['messageCount'],
-          lastMessage: json['lastMessage']);
+          lastMessage: json['lastMessage'],
+          assistantId: json['assistantId']);
 
   Map<String, dynamic> toJson() {
     final Map<String, dynamic> data = <String, dynamic>{};
@@ -43,6 +48,7 @@ class ConversationModel {
     data['stickTime'] = stickTime;
     data['messageCount'] = messageCount;
     data['lastMessage'] = lastMessage;
+    data['assistantId'] = assistantId;
     return data;
   }
 }

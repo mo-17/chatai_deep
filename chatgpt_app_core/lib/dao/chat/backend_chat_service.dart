@@ -1,9 +1,14 @@
 import 'dart:async';
 import 'dart:convert';
 
+import 'package:chatgpt_app_core/chat/application/tool_call_accumulator.dart';
+import 'package:chatgpt_app_core/chat/domain/chat_attachments.dart';
+import 'package:chatgpt_app_core/chat/domain/model_capabilities.dart';
+import 'package:chatgpt_app_core/chat/domain/stream_event.dart';
 import 'package:chatgpt_app_core/dao/chat/chat_service.dart';
 import 'package:chatgpt_app_core/model/ai_settings.dart';
 import 'package:chatgpt_app_core/util/hi_const.dart';
+import 'package:chatgpt_app_core/util/model_catalog.dart';
 import 'package:http/http.dart' as http;
 import 'package:login_sdk/dao/login_dao.dart';
 import 'package:openai_flutter/utils/ai_logger.dart';
@@ -14,19 +19,43 @@ class BackendChatService implements ChatService {
   BackendChatService(this._settings);
 
   @override
+  ModelCapabilities get capabilities =>
+      // 后端模式不知道厂商，交给清单按 modelId 反查 providerCode + supportsVision。
+      ModelCatalog.capabilitiesFor(_settings.effectiveModel);
+
+  /// 组装当前轮消息：附件（图片/原生文件/降级文本）收敛进 user content；
+  /// [extraMessages]（工具回灌）追加在 user 之后。
+  /// 后端 /uapi/chat/completions 透传 OpenAI 兼容 body，多模态数组原样转发。
+  List<Map<String, dynamic>> _buildMessages(
+    String prompt,
+    List<Map<String, dynamic>> history,
+    ChatAttachments? attachments, [
+    List<Map<String, dynamic>> extraMessages = const [],
+  ]) =>
+      [
+        ...history,
+        {
+          'role': 'user',
+          'content': (attachments ?? const ChatAttachments())
+              .buildUserContent(prompt),
+        },
+        ...extraMessages,
+      ];
+
+  @override
   Future<String?> chat({
     required String prompt,
     required List<Map<String, dynamic>> history,
+    ChatAttachments? attachments,
   }) async {
     final uri = BackendConst.buildUri('/uapi/chat/completions');
-    final messages = [
-      ...history,
-      {'role': 'user', 'content': prompt},
-    ];
+    final messages = _buildMessages(prompt, history, attachments);
     final body = {
       'model': _settings.effectiveModel,
       'messages': messages,
-      'max_tokens': 1000,
+      // 0 = 不限制：不带 max_tokens，用上游默认（避免长回复被截断）。
+      if (_settings.maxOutputTokens > 0)
+        'max_tokens': _settings.maxOutputTokens,
     };
     final token = LoginDao.getBoardingPass();
     final headers = <String, String>{
@@ -69,16 +98,29 @@ class BackendChatService implements ChatService {
   Stream<String> chatStream({
     required String prompt,
     required List<Map<String, dynamic>> history,
+    ChatAttachments? attachments,
+  }) =>
+      chatStreamEvents(
+              prompt: prompt, history: history, attachments: attachments)
+          .map((e) => e.delta);
+
+  @override
+  Stream<StreamEvent> chatStreamEvents({
+    required String prompt,
+    required List<Map<String, dynamic>> history,
+    ChatAttachments? attachments,
+    List<Map<String, dynamic>>? tools,
+    List<Map<String, dynamic>> extraMessages = const [],
   }) async* {
     final uri = BackendConst.buildUri('/uapi/chat/completions/stream');
-    final messages = [
-      ...history,
-      {'role': 'user', 'content': prompt},
-    ];
+    final messages = _buildMessages(prompt, history, attachments, extraMessages);
     final body = {
       'model': _settings.effectiveModel,
       'messages': messages,
-      'max_tokens': 1000,
+      // 0 = 不限制：不带 max_tokens，用上游默认（避免长回复被截断）。
+      if (_settings.maxOutputTokens > 0)
+        'max_tokens': _settings.maxOutputTokens,
+      if (tools != null && tools.isNotEmpty) 'tools': tools,
     };
     final token = LoginDao.getBoardingPass();
 
@@ -110,6 +152,8 @@ class BackendChatService implements ChatService {
           .transform(const Utf8Decoder())
           .transform(const LineSplitter());
 
+      // 工具调用分片按 index 累积，流结束后再发完整 toolCall 事件（阶段六）。
+      final toolAcc = ToolCallAccumulator();
       await for (final line in lineStream) {
         if (!line.startsWith('data: ')) continue;
         final data = line.substring(6);
@@ -122,20 +166,36 @@ class BackendChatService implements ChatService {
             if (choice is! Map<String, dynamic>) continue;
             final delta = choice['delta'];
             if (delta is! Map<String, dynamic>) continue;
+            // 推理内容增量 (DeepSeek reasoning models)：先于正文到达。
+            final reasoning = delta['reasoning_content'];
+            if (reasoning is String && reasoning.isNotEmpty) {
+              yield StreamEvent.reasoning(reasoning);
+            }
             // 常规内容增量
             final content = delta['content'];
             if (content is String && content.isNotEmpty) {
-              yield content;
+              yield StreamEvent.text(content);
             }
-            // 推理内容增量 (DeepSeek reasoning models)
-            final reasoning = delta['reasoning_content'];
-            if (reasoning is String && reasoning.isNotEmpty) {
-              yield reasoning;
+            // 工具调用增量（后端原样中继上游 SSE，分片格式同 OpenAI）。
+            final toolCalls = delta['tool_calls'];
+            if (toolCalls is List) {
+              for (final tc in toolCalls.whereType<Map>()) {
+                final fn = tc['function'];
+                toolAcc.feed(
+                  index: tc['index'] as int? ?? 0,
+                  id: tc['id'] as String?,
+                  name: fn is Map ? fn['name'] as String? : null,
+                  argsDelta: fn is Map ? fn['arguments'] as String? : null,
+                );
+              }
             }
           }
         } catch (_) {
           // 忽略无法解析的行
         }
+      }
+      for (final e in toolAcc.flush()) {
+        yield e;
       }
     } finally {
       httpClient.close();

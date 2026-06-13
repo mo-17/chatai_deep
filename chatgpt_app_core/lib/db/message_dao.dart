@@ -1,4 +1,5 @@
 import 'package:chat_message/models/message_model.dart';
+import 'package:chatgpt_app_core/chat/application/chat_block_store.dart';
 import 'package:chatgpt_app_core/db/hi_db_manager.dart';
 import 'package:chatgpt_app_core/db/table_name.dart';
 
@@ -36,13 +37,21 @@ class MessageDao implements IMessage, ITable {
         'create table if not exists tb_messages (id integer primary key autoincrement'
             ', cid integer not null, content text, createdAt integer'
             ', ownerName text, ownerType text, avatar text'
-            ', images text)');
+            ', images text, blocks text)');
     await storage.db.execute(
         'create index if not exists tb_messages_cid_id_idx on tb_messages(cid, id desc)');
     // 兼容旧表：无 images 列时自动新增
     try {
       await storage.db.execute(
           'alter table tb_messages add column images text');
+    } catch (_) {
+      // 列已存在，忽略
+    }
+    // 兼容旧表：无 blocks 列时自动新增（块化消息系统）。
+    // blocks 存一条消息的块列表 JSON；content 仍存「主文本」用于历史上下文与预览。
+    try {
+      await storage.db.execute(
+          'alter table tb_messages add column blocks text');
     } catch (_) {
       // 列已存在，忽略
     }
@@ -94,6 +103,43 @@ class MessageDao implements IMessage, ITable {
     final data = model.toJson();
     data['cid'] = cid;
     storage.db.insert(tableName, data);
+  }
+
+  /// 保存一条带块列表的消息（assistant 块化消息用）。
+  /// [blocksJson] 为 `MessageBlock.encodeList(...)` 的结果。返回新行 id。
+  Future<int> saveMessageWithBlocks(MessageModel model,
+      {String? blocksJson}) {
+    final data = model.toJson();
+    data['cid'] = cid;
+    if (blocksJson != null && blocksJson.isNotEmpty) {
+      data['blocks'] = blocksJson;
+    }
+    return storage.db.insert(tableName, data);
+  }
+
+  /// 按 createdAt 批量读取这些消息的块列表 JSON。
+  /// 返回 `chatMessageKey(createdAt) -> blocksJson`，只含有块的消息。
+  /// 用于历史会话恢复时给 [ChatBlockStore] 做 seed。
+  Future<Map<String, String>> getBlocksByCreatedAt(
+      Iterable<int> createdAts) async {
+    final ids = createdAts.toList();
+    if (ids.isEmpty) return const {};
+    final placeholders = List.filled(ids.length, '?').join(',');
+    final rows = await storage.db.query(
+      tableName,
+      columns: ['createdAt', 'blocks'],
+      where: 'cid = ? and createdAt in ($placeholders)',
+      whereArgs: [cid, ...ids],
+    );
+    final map = <String, String>{};
+    for (final r in rows) {
+      final blocks = r['blocks'] as String?;
+      final createdAt = r['createdAt'] as int?;
+      if (blocks != null && blocks.isNotEmpty && createdAt != null) {
+        map[chatMessageKey(createdAt)] = blocks;
+      }
+    }
+    return map;
   }
 
   @override

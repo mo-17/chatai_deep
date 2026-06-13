@@ -34,9 +34,17 @@ class ConversationListDao implements IConversationList, ITable {
     await storage.db.execute(
         'create table if not exists $_kTableName (id integer primary key autoincrement'
         ', cid integer, title	text, icon	text, updateAt	integer'
-        ', messageCount	integer, lastMessage	text, stickTime	integer);');
+        ', messageCount	integer, lastMessage	text, stickTime	integer'
+        ', assistantId	integer);');
     await storage.db.execute(
         'create unique index if not exists ${_kTableName}_cid_idx on $_kTableName (cid);');
+    // 兼容旧表：无 assistantId 列时自动新增（阶段七 会话绑定助手）。
+    try {
+      await storage.db.execute(
+          'alter table $_kTableName add column assistantId integer');
+    } catch (_) {
+      // 列已存在，忽略
+    }
     //复合索引：置顶+更新时间排序优化
     await storage.db.execute(
         'create index if not exists ${_kTableName}_stick_update_idx on $_kTableName(stickTime, updateAt desc);');
