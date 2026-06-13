@@ -6,6 +6,7 @@ import 'package:http/http.dart' as http;
 import 'package:http/io_client.dart';
 import 'package:openai_flutter/http/ai_config.dart';
 import 'package:openai_flutter/http/ai_exception.dart';
+import 'package:openai_flutter/model/ai_stream_chunk.dart';
 import 'package:openai_flutter/utils/ai_logger.dart';
 
 ///HTTP请求工具类
@@ -60,8 +61,21 @@ class AIHttp {
     }
   }
 
-  /// SSE 流式 POST 请求，逐 token yield
+  /// SSE 流式 POST 请求，逐 token yield（仅文本，保留向后兼容）。
+  ///
+  /// 正文与推理增量都会被 yield 成纯字符串、无法区分。需要区分思考/正文时
+  /// 改用 [postStreamEvents]。
   static Stream<String> postStream({
+    required AIConfigBuilder config,
+    required String url,
+    Map<String, dynamic>? body,
+  }) =>
+      postStreamEvents(config: config, url: url, body: body)
+          .map((chunk) => chunk.text);
+
+  /// SSE 流式 POST 请求，逐增量 yield 「带类型」的片段
+  /// （区分 `delta.content` 正文 与 `delta.reasoning_content` 推理）。
+  static Stream<AIStreamChunk> postStreamEvents({
     required AIConfigBuilder config,
     required String url,
     Map<String, dynamic>? body,
@@ -122,15 +136,30 @@ class AIHttp {
           if (choice is! Map<String, dynamic>) continue;
           final delta = choice['delta'];
           if (delta is! Map<String, dynamic>) continue;
+          // 推理内容增量 (DeepSeek reasoning models: deepseek-reasoner)
+          // 注意：推理先于正文到达，先 yield 推理再 yield 正文。
+          final reasoning = delta['reasoning_content'];
+          if (reasoning is String && reasoning.isNotEmpty) {
+            yield AIStreamChunk.reasoning(reasoning);
+          }
           // 常规内容增量 (DeepSeek / OpenAI)
           final content = delta['content'];
           if (content is String && content.isNotEmpty) {
-            yield content;
+            yield AIStreamChunk.content(content);
           }
-          // 推理内容增量 (DeepSeek reasoning models: deepseek-reasoner)
-          final reasoning = delta['reasoning_content'];
-          if (reasoning is String && reasoning.isNotEmpty) {
-            yield reasoning;
+          // 工具调用增量（阶段六）：id/name 先到、arguments 分片到达，
+          // 原样 yield 分片，由上层按 index 累积成完整调用。
+          final toolCalls = delta['tool_calls'];
+          if (toolCalls is List) {
+            for (final tc in toolCalls.whereType<Map>()) {
+              final fn = tc['function'];
+              yield AIStreamChunk.toolCall(
+                toolIndex: tc['index'] as int? ?? 0,
+                toolId: tc['id'] as String?,
+                toolName: fn is Map ? fn['name'] as String? : null,
+                toolArgsDelta: fn is Map ? fn['arguments'] as String? : null,
+              );
+            }
           }
         }
       } catch (_) {

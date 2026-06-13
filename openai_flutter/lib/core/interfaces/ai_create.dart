@@ -4,7 +4,7 @@ abstract class AICreateInterface {
   Future<AIResponse> createChat(
       {String model = 'gpt-3.5-turbo',
       dynamic prompt,
-      int? maxTokens = 200,
+      int? maxTokens,
       double? temperature,
       double? topP,
       int? n,
