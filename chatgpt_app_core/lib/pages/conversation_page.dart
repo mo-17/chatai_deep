@@ -231,7 +231,11 @@ class _ConversationPageState extends State<ConversationPage> {
   Widget? _buildBlockContent(BuildContext context, MessageModel message) {
     final key = chatMessageKey(message.createdAt);
     if (!_blockStore.hasBlocks(key)) return null;
-    return BlockMessageContent(messageKey: key);
+    // 仅 assistant 回复显示生成字数（流式中实时累加）。
+    return BlockMessageContent(
+      messageKey: key,
+      showCharCount: message.ownerType == OwnerType.receiver,
+    );
   }
 
   ///不用_inputMessage是因为在结果回来之前_inputMessage可能会变
@@ -818,10 +822,25 @@ class _ConversationPageState extends State<ConversationPage> {
     }
   }
 
+  /// 是否可对该消息「重新生成」：必须是 assistant 回复、当前无流式进行、
+  /// 且为会话最新一条（仅支持重生成最后一次回复，保证历史回退正确）。
+  bool _canRegenerate(MessageModel message) {
+    if (message.ownerType != OwnerType.receiver || _isStreaming) return false;
+    final list = chatController.initialMessageList;
+    return list.isNotEmpty && list.first.createdAt == message.createdAt;
+  }
+
   void _onBubbleLongPress(MessageModel message, BuildContext ancestor) {
     bool left = message.ownerType == OwnerType.receiver ? true : false;
     double offsetX = left ? -100 : 50;
     HiDialog.showPopMenu(ancestor, offsetX: offsetX, items: [
+      if (_canRegenerate(message))
+        PopupMenuItem(
+          child: const Text('重新生成'),
+          onTap: () {
+            _regenerate(message);
+          },
+        ),
       PopupMenuItem(
         child: const Text('设为精彩'),
         onTap: () {
@@ -864,6 +883,69 @@ class _ConversationPageState extends State<ConversationPage> {
 
   void _copyMessage(MessageModel message) async {
     HiUtils.copyMessage(message.content, context);
+  }
+
+  /// 重新生成最后一条 assistant 回复：删除旧回复，回退该轮历史，用对应的用户
+  /// 提问重新发起一次请求。仅支持最新一条回复（见 [_canRegenerate]）。
+  void _regenerate(MessageModel assistantMessage) async {
+    if (!_canRegenerate(assistantMessage)) return;
+    // 找到该回复对应的用户提问：列表新→旧，紧邻其后的第一条 sender 消息。
+    final list = chatController.initialMessageList;
+    final idx = list.indexWhere((m) => m.createdAt == assistantMessage.createdAt);
+    MessageModel? userMessage;
+    for (var i = idx + 1; i >= 0 && i < list.length; i++) {
+      if (list[i].ownerType == OwnerType.sender) {
+        userMessage = list[i];
+        break;
+      }
+    }
+    if (userMessage == null) {
+      HiDialog.showSnackBar(context, '找不到对应的提问，无法重新生成');
+      return;
+    }
+
+    setState(() => _isStreaming = true);
+
+    // 删除旧的 assistant 回复（UI + DB + 块仓库）。
+    try {
+      if (assistantMessage.id != null) {
+        await messageDao.deleteMessage(assistantMessage.id!);
+      }
+    } catch (e) {
+      AILogger.log('regenerate: delete old reply failed: $e');
+    }
+    chatController.deleteMessage(assistantMessage);
+    _blockStore.removeMessage(chatMessageKey(assistantMessage.createdAt));
+
+    // 回退 completionDao 历史里这一轮，避免把同一用户提问既留在历史又作为
+    // 当前 prompt 重发；收尾时由 _persistAssistant 再次配对入历史。
+    completionDao.dropLastTurn();
+    _lastUserModel = userMessage;
+    _lastUserFileText = '';
+
+    // 复用当前设置/助手构造请求（与 _onSend 尾部选路一致）。
+    final settings = _effective(_currentSettings);
+    final caps = ChatService.capabilitiesFor(settings);
+    // 复原原提问的图片附件（若有）；文件降级文本不重建（少见，从简）。
+    final images = userMessage.imageUrlsOrB64 ?? const <String>[];
+    final attachments = ChatAttachments(images: images);
+    final webSearch = settings.webSearchEnabled && settings.webSearchConfigured;
+    final allowTools = _assistant?.useTools ?? true;
+    final registry = ToolRegistry.fromAssistant(settings, _assistant?.toolIds,
+        forceWebSearch: webSearch,
+        actions:
+            ToolActionContext.forCurrentAccount(confirm: _confirmToolAction));
+    final tools =
+        caps.tool && settings.streamEnabled && allowTools && !registry.isEmpty
+            ? registry
+            : null;
+    if (settings.streamEnabled) {
+      await _onSendStream(userMessage.content, attachments,
+          webSearch: webSearch && tools == null, tools: tools);
+    } else {
+      await _onSendNonStream(userMessage.content, attachments,
+          webSearch: webSearch);
+    }
   }
 
   _deleteMessage(MessageModel message) async {

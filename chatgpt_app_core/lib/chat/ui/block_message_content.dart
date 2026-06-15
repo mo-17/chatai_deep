@@ -21,11 +21,15 @@ class BlockMessageContent extends StatelessWidget {
   final Color textColor;
   final double fontSize;
 
+  /// 是否在正文下方显示「字数」（仅 assistant 回复用）。流式中随正文增长实时更新。
+  final bool showCharCount;
+
   const BlockMessageContent({
     super.key,
     required this.messageKey,
     this.textColor = Colors.black,
     this.fontSize = 16,
+    this.showCharCount = false,
   });
 
   @override
@@ -39,7 +43,39 @@ class BlockMessageContent extends StatelessWidget {
           children: [
             for (final id in blockIds)
               _BlockView(blockId: id, textColor: textColor, fontSize: fontSize),
+            if (showCharCount) _CharCount(messageKey: messageKey),
           ],
+        );
+      },
+    );
+  }
+}
+
+/// 字数页脚：精确订阅「该消息所有正文块的总字符数」，仅在数字变化时重建。
+class _CharCount extends StatelessWidget {
+  final String messageKey;
+
+  const _CharCount({required this.messageKey});
+
+  @override
+  Widget build(BuildContext context) {
+    return Selector<ChatBlockStore, int>(
+      selector: (_, store) {
+        var n = 0;
+        for (final b in store.blocksFor(messageKey)) {
+          if (b is MainTextBlock) n += b.content.characters.length;
+          if (b is TranslationBlock) n += b.content.characters.length;
+        }
+        return n;
+      },
+      builder: (_, count, __) {
+        if (count <= 0) return const SizedBox.shrink();
+        return Padding(
+          padding: const EdgeInsets.only(top: 4),
+          child: Text(
+            '字数：$count',
+            style: const TextStyle(fontSize: 11, color: Colors.black38),
+          ),
         );
       },
     );

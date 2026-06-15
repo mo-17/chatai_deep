@@ -90,6 +90,25 @@ class CompletionDao {
     }
   }
 
+  ///回退最近一轮（user + assistant），用于「重新生成」：把该轮从历史里摘掉，
+  ///使其用户消息可作为新 prompt 重发、不与历史重复。同时清掉该轮在工具/附件
+  ///历史里的记录。仅当末尾确为「user 后接 assistant」时才回退，返回被移除的
+  ///用户消息；否则不动并返回 null。
+  MessageModel? dropLastTurn() {
+    if (_messageList.length < 2) return null;
+    final assistant = _messageList.last;
+    final user = _messageList[_messageList.length - 2];
+    if (assistant.ownerType != OwnerType.receiver ||
+        user.ownerType != OwnerType.sender) {
+      return null;
+    }
+    _messageList.removeLast();
+    _messageList.removeLast();
+    _toolHistory.remove(assistant.createdAt);
+    _fileHistory.remove(user.createdAt);
+    return user;
+  }
+
   ///和 AI 进行会话。[attachments] 为当前轮附件（阶段四：图片/文件）。
   Future<String?> createCompletions(
       {required String prompt, ChatAttachments? attachments}) async {
