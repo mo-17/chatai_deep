@@ -65,7 +65,7 @@ class _ConversationListPageState extends State<ConversationListPage>
     super.build(context);
     return Scaffold(
       appBar: AppBar(
-        title: const Text('ChatGPT'),
+        title: const Text('艾普'),
         centerTitle: true,
         actions: [
           IconButton(
