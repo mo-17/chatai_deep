@@ -1,0 +1,10 @@
+name: google_mlkit_text_recognition
+description: >-
+  HarmonyOS 空实现 stub。上游 google_mlkit_text_recognition 无 OHOS 原生实现，
+  OHOS 壳通过 dependency_overrides 覆盖到本包，使共享核心可编译；运行时由
+  OcrService.isSupported（Platform.isAndroid || isIOS）守卫，OHOS 上永不调用。
+version: 0.15.1
+publish_to: 'none'
+
+environment:
+  sdk: '>=3.0.0 <4.0.0'

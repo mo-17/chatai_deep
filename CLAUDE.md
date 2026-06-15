@@ -122,6 +122,7 @@ Chat history is sent to the AI as a standard OpenAI `messages[]` array (`_buildH
 
 ### HarmonyOS variant specifics (`chatgpt_flutter_ohos/`)
 - All platform-impl plugins that don't yet have OHOS support are swapped via `dependency_overrides` to the `openharmony-sig` forks on gitee. Don't bump these to upstream stock versions — the OHOS impls don't exist there.
+- Plugins with **no** OHOS fork either (OCR: `google_mlkit_text_recognition`, `pdfx`) are overridden to **local no-op stub packages** under `ohos_stubs/` (same package name, Dart-only API that throws `UnsupportedError`). They keep the shared core compiling on OHOS; the feature is runtime-guarded (`OcrService.isSupported` → Android/iOS only). Keep a stub's public API in sync with whatever the core actually calls.
 - Build artifacts (`.dart_tool/`, `build/`) are gitignored at the repo level; do not re-track them.
 - The shell sets `BackendConfig.host` directly to a LAN IP because OHOS devices can't reach the host's `localhost`.
 

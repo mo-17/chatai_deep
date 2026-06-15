@@ -39,6 +39,12 @@ dependency_overrides:
       path: packages/shared_preferences/shared_preferences
       ref: master
   # package_info_plus: 暂无鸿蒙实现，通过 §6.4 运行时分支兜底
+  # OCR 插件无鸿蒙实现：覆盖到本地空实现 stub，使共享核心可编译；
+  # 运行时由 OcrService.isSupported（仅 Android/iOS）守卫，OHOS 上永不调用。
+  google_mlkit_text_recognition:
+    path: ../ohos_stubs/google_mlkit_text_recognition
+  pdfx:
+    path: ../ohos_stubs/pdfx
 
 dev_dependencies:
   flutter_lints: ^2.0.0

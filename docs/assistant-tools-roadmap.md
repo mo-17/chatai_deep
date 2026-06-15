@@ -269,8 +269,11 @@ await，但要设计好「拒绝」回灌话术）；③ 仅在支持 tool 的�
 - 新增依赖：`google_mlkit_text_recognition` + `pdfx`。
 - ⚠️ **平台限制**：**仅 Android / iOS 有原生实现**，由 `OcrService.isSupported`
   （`Platform.isAndroid || isIOS`）守卫，桌面 / web 调用时优雅提示「当前平台不支持 OCR」。
-  **HarmonyOS 壳（chatgpt_flutter_ohos）需注意**：这两个插件无 OHOS 实现，可能影响其构建；
-  若 OHOS 构建报错，需在该壳用 `dependency_overrides` 处理或将 OCR 入口在 OHOS 上隐藏。
+- **HarmonyOS 壳已处理**：这两个插件无 OHOS 原生实现，故在 `ohos_stubs/` 新增同名**空实现
+  stub 包**（仅 `OcrService` 用到的 Dart API 形状，调用即抛 `UnsupportedError`），
+  `chatgpt_flutter_ohos/pubspec.yaml` 用 `dependency_overrides` 覆盖到它们 → OHOS 共享核心可
+  编译；运行时 `isSupported` 在 OHOS 为 false，stub 永不触发。已用标准 flutter 把核心覆盖到
+  stub 验证 `OcrService` 编译通过（OHOS 真机构建需在该环境另行确认）。
 - 测试：`test/ocr_service_test.dart` 4 例（`pdfNeedsOcr` 判定 + imageExtensions）；原生识别需
   真机，未在单测覆盖。全套 **219** 测试通过。
 
