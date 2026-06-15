@@ -53,7 +53,15 @@ class _ChatListState extends State<ChatList> {
                 itemPositionsListener: itemPositionsListener,
                 itemCount: snapshot.data?.length ?? 0,
                 itemBuilder: (BuildContext context, int index) {
-                  var model = snapshot.data![index];
+                  // ScrollablePositionedList 以内部 positionedIndex 为锚把列表拆成
+                  // 三段 sliver；动画 scrollTo 期间（尤其列表刚从 0→1 条、reverse
+                  // 下）锚点可能瞬时为 -1，使 itemBuilder 收到越界 index。
+                  // 不防护会 data![-1] 抛 RangeError 红屏，故越界时渲染空盒。
+                  final data = snapshot.data;
+                  if (data == null || index < 0 || index >= data.length) {
+                    return const SizedBox.shrink();
+                  }
+                  final model = data[index];
                   return DefaultMessageWidget(
                     key: model.key,
                     message: model,
