@@ -1,3 +1,5 @@
+import 'dart:io';
+
 import 'package:chatgpt_app_core/chat/application/file_processor.dart';
 import 'package:chatgpt_app_core/chat/application/ocr_service.dart';
 import 'package:chatgpt_app_core/db/hi_db_manager.dart';
@@ -51,11 +53,13 @@ class _KnowledgeBasePageState extends State<KnowledgeBasePage> {
         title: const Text('知识库'),
         centerTitle: true,
         actions: [
-          IconButton(
-            icon: const Icon(Icons.upload_file_outlined),
-            tooltip: '导入文件（PDF / 文本 / 图片，扫描件与图片走 OCR）',
-            onPressed: _importFile,
-          ),
+          // file_picker 暂无鸿蒙实现，OHOS 隐藏文件导入入口（粘贴文本仍可用）。
+          if (Platform.operatingSystem != 'ohos')
+            IconButton(
+              icon: const Icon(Icons.upload_file_outlined),
+              tooltip: '导入文件（PDF / 文本 / 图片，扫描件与图片走 OCR）',
+              onPressed: _importFile,
+            ),
         ],
       ),
       body: _docs.isEmpty ? _emptyView : _listView,

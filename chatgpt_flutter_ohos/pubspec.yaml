@@ -45,6 +45,10 @@ dependency_overrides:
     path: ../ohos_stubs/google_mlkit_text_recognition
   pdfx:
     path: ../ohos_stubs/pdfx
+  # file_picker 无鸿蒙实现：覆盖到本地空实现 stub（方法返回 null ≈ 取消）；
+  # 各调用点以 Platform.operatingSystem == 'ohos' 守卫隐藏入口。
+  file_picker:
+    path: ../ohos_stubs/file_picker
 
 dev_dependencies:
   flutter_lints: ^2.0.0

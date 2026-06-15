@@ -1,0 +1,11 @@
+name: file_picker
+description: >-
+  HarmonyOS 空实现 stub。上游 file_picker 无 OHOS 原生实现，OHOS 壳通过
+  dependency_overrides 覆盖到本包，使共享核心可编译。各调用点已用
+  `Platform.operatingSystem == 'ohos'` 守卫（隐藏入口）；stub 方法等价「用户取消」
+  返回，不抛异常。
+version: 11.0.2
+publish_to: 'none'
+
+environment:
+  sdk: '>=3.0.0 <4.0.0'
