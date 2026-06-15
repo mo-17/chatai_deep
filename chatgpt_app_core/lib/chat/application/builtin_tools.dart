@@ -5,6 +5,7 @@ import 'package:chatgpt_app_core/chat/application/tool_registry.dart';
 import 'package:chatgpt_app_core/db/conversation_dao.dart';
 import 'package:chatgpt_app_core/db/favorite_dao.dart';
 import 'package:chatgpt_app_core/db/hi_db_manager.dart';
+import 'package:chatgpt_app_core/db/knowledge_dao.dart';
 import 'package:chatgpt_app_core/db/message_dao.dart';
 import 'package:chatgpt_app_core/model/conversation_model.dart';
 import 'package:chatgpt_app_core/model/favorite_model.dart';
@@ -307,6 +308,39 @@ class BuiltinTools {
                   'role': r['ownerType'] == 'sender' ? 'user' : 'assistant',
                   'content': _cap((r['content'] as String? ?? ''), 1000),
                 },
+            ]),
+          );
+        },
+      );
+
+  // ── L4a 知识库检索（只读）───────────────────────────────
+  /// 在用户导入的知识库里按关键词检索相关片段（RAG 关键词版）。
+  static ChatTool knowledgeSearch(ToolActionContext ctx) => ChatTool(
+        name: ToolRegistry.knowledgeSearchId,
+        description: '在用户导入的知识库（私有文档）里按关键词检索相关内容。'
+            '当问题可能在用户的资料/文档里有答案时调用；回答时基于检索片段并注明来源标题。',
+        parameters: const {
+          'type': 'object',
+          'properties': {
+            'query': {'type': 'string', 'description': '检索关键词（可多词，空格分隔，均需命中）'},
+            'limit': {'type': 'integer', 'description': '返回片段数上限（默认 6，最多 50）'},
+          },
+          'required': ['query'],
+        },
+        execute: (args) async {
+          final q = (args['query'] as String? ?? '').trim();
+          if (q.isEmpty) return const ToolOutcome(content: '错误：缺少 query 参数');
+          final limit = _intArg(args['limit'], 6);
+          final storage = await ctx.openStorage();
+          final dao = await KnowledgeDao.create(storage);
+          final hits = await dao.search(q, limit: limit);
+          if (hits.isEmpty) {
+            return ToolOutcome(content: '知识库里没有找到与「$q」相关的内容');
+          }
+          return ToolOutcome(
+            content: jsonEncode([
+              for (final h in hits)
+                {'source': h.docTitle, 'content': _cap(h.content, 1000)},
             ]),
           );
         },

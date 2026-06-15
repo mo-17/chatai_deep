@@ -1,0 +1,164 @@
+import 'package:chatgpt_app_core/db/hi_db_manager.dart';
+import 'package:chatgpt_app_core/db/knowledge_dao.dart';
+import 'package:chatgpt_app_core/model/knowledge_model.dart';
+import 'package:chatgpt_app_core/util/hi_dialog.dart';
+import 'package:flutter/material.dart';
+
+/// 知识库管理页（L4a）：导入文档（粘贴文本）/ 列表 / 删除。
+/// 导入的文档供绑定了「知识库检索」工具的助手按关键词检索作答。
+class KnowledgeBasePage extends StatefulWidget {
+  const KnowledgeBasePage({Key? key}) : super(key: key);
+
+  @override
+  State<KnowledgeBasePage> createState() => _KnowledgeBasePageState();
+}
+
+class _KnowledgeBasePageState extends State<KnowledgeBasePage> {
+  KnowledgeDao? _dao;
+  List<KnowledgeDoc> _docs = [];
+
+  @override
+  void initState() {
+    super.initState();
+    _doInit();
+  }
+
+  @override
+  void setState(VoidCallback fn) {
+    if (!mounted) return;
+    super.setState(fn);
+  }
+
+  void _doInit() async {
+    final dbManager =
+        await HiDBManager.instance(dbName: HiDBManager.getAccountHash());
+    _dao = await KnowledgeDao.create(dbManager);
+    await _loadData();
+  }
+
+  Future<void> _loadData() async {
+    final list = await _dao!.getDocuments();
+    setState(() => _docs = list);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(title: const Text('知识库'), centerTitle: true),
+      body: _docs.isEmpty ? _emptyView : _listView,
+      floatingActionButton: FloatingActionButton(
+        onPressed: _addDocument,
+        tooltip: '导入文档',
+        child: const Icon(Icons.add),
+      ),
+    );
+  }
+
+  Widget get _emptyView => Center(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const Text('📚', style: TextStyle(fontSize: 48)),
+            const SizedBox(height: 12),
+            Text('还没有文档。点右下角导入一段资料，\n再给助手绑定「知识库检索」工具即可问答。',
+                style: TextStyle(color: Colors.grey[600]),
+                textAlign: TextAlign.center),
+          ],
+        ),
+      );
+
+  Widget get _listView => ListView.builder(
+        itemCount: _docs.length,
+        itemBuilder: (context, index) {
+          final d = _docs[index];
+          return ListTile(
+            leading: const CircleAvatar(child: Icon(Icons.description_outlined)),
+            title: Text(d.title, maxLines: 1, overflow: TextOverflow.ellipsis),
+            subtitle: Text('${d.chunkCount} 个片段'),
+            trailing: IconButton(
+              icon: const Icon(Icons.delete_outline),
+              tooltip: '删除',
+              onPressed: () => _delete(d),
+            ),
+          );
+        },
+      );
+
+  void _addDocument() async {
+    final titleCtl = TextEditingController();
+    final contentCtl = TextEditingController();
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('导入文档'),
+        content: SingleChildScrollView(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              TextField(
+                controller: titleCtl,
+                decoration: const InputDecoration(
+                  labelText: '标题',
+                  hintText: '如：产品手册 / 退款政策',
+                ),
+              ),
+              const SizedBox(height: 12),
+              TextField(
+                controller: contentCtl,
+                minLines: 5,
+                maxLines: 12,
+                decoration: const InputDecoration(
+                  labelText: '内容（粘贴文本）',
+                  border: OutlineInputBorder(),
+                  alignLabelWithHint: true,
+                ),
+              ),
+            ],
+          ),
+        ),
+        actions: [
+          TextButton(
+              onPressed: () => Navigator.pop(ctx, false),
+              child: const Text('取消')),
+          FilledButton(
+              onPressed: () => Navigator.pop(ctx, true),
+              child: const Text('导入')),
+        ],
+      ),
+    );
+    if (ok != true) return;
+    final text = contentCtl.text.trim();
+    if (text.isEmpty) {
+      if (mounted) HiDialog.showSnackBar(context, '内容不能为空');
+      return;
+    }
+    final docId = await _dao!.addDocument(titleCtl.text, text);
+    if (!mounted) return;
+    HiDialog.showSnackBar(
+        context, docId == null ? '导入失败' : '已导入「${titleCtl.text.trim().isEmpty ? '未命名文档' : titleCtl.text.trim()}」');
+    await _loadData();
+  }
+
+  void _delete(KnowledgeDoc d) async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('删除文档'),
+        content: Text('确定删除「${d.title}」及其全部片段吗？'),
+        actions: [
+          TextButton(
+              onPressed: () => Navigator.pop(ctx, false),
+              child: const Text('取消')),
+          TextButton(
+              onPressed: () => Navigator.pop(ctx, true),
+              child: const Text('删除')),
+        ],
+      ),
+    );
+    if (confirmed != true || d.id == null) return;
+    await _dao!.deleteDocument(d.id!);
+    if (!mounted) return;
+    HiDialog.showSnackBar(context, '已删除「${d.title}」');
+    await _loadData();
+  }
+}

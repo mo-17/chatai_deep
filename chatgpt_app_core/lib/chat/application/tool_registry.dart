@@ -83,8 +83,10 @@ class ToolRegistry {
   static const saveFavoriteId = 'save_favorite';
   static const createConversationId = 'create_conversation';
   static const stickConversationId = 'stick_conversation';
+  // L4a 知识库检索。
+  static const knowledgeSearchId = 'knowledge_search';
 
-  /// 需要账号数据访问（[ToolActionContext]）的工具 id（L3a 只读 + L3b 写）。
+  /// 需要账号数据访问（[ToolActionContext]）的工具 id（L3a 只读 + L3b 写 + L4a 检索）。
   static const Set<String> _dataToolIds = {
     searchHistoryId,
     listConversationsId,
@@ -93,6 +95,7 @@ class ToolRegistry {
     saveFavoriteId,
     createConversationId,
     stickConversationId,
+    knowledgeSearchId,
   };
 
   /// 可绑定工具清单（L1/L2/L3a）。助手编辑页据此渲染多选；新增工具在此登记。
@@ -155,6 +158,11 @@ class ToolRegistry {
       label: '置顶会话',
       description: '让助手置顶/取消置顶会话（会修改数据，执行前需你确认）',
       sideEffect: true,
+    ),
+    ToolDescriptor(
+      id: knowledgeSearchId,
+      label: '知识库检索',
+      description: '让助手在你导入的知识库（私有文档）里检索作答（只读）',
     ),
   ];
 
@@ -241,6 +249,9 @@ class ToolRegistry {
       }
       if (selected.contains(getConversationMessagesId)) {
         tools.add(BuiltinTools.getConversationMessages(actions));
+      }
+      if (selected.contains(knowledgeSearchId)) {
+        tools.add(BuiltinTools.knowledgeSearch(actions));
       }
       // L3b 写工具（执行前 await confirm）。
       if (selected.contains(saveFavoriteId)) {

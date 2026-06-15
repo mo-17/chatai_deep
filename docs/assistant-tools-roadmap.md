@@ -211,3 +211,51 @@ await，但要设计好「拒绝」回灌话术）；③ 仅在支持 tool 的�
 `flutter analyze` 改动文件无问题（顺手把 L3a 误用的 `sqflite_common` 直接导入换成 `sqflite`）。
 
 **暂缓项（按 L3 评估）**：改设置类（敏感）、删除类（不可逆）暂不做；如需，删除类应走双重确认。
+
+## 6. L4 知识库（RAG）
+
+给助手挂一批私有文档，提问时先检索相关片段再连同问题喂给模型作答，答案有出处。完整 RAG
+要补「导入切分 → embedding → 向量存储/检索 → 回填」一条链；本仓库用 sqflite、无向量索引，
+故分两步：
+
+- **L4a 关键词版**（已落地）：文档切块存 sqflite，SQL `LIKE` 关键词检索。零新依赖、能快速出
+  效果，召回不如向量。
+- **L4b 向量版**（待定）：加 embedding（调 API）+ 余弦相似检索，召回更好，但要处理 key/联网/
+  向量存储/HarmonyOS 兼容。
+
+### ✅ 实施记录 · L4a（关键词知识库）
+
+已落地（2026-06-15）。
+
+**引擎**：
+
+- `data/knowledge_chunker.dart`：`KnowledgeChunker.split`——按段落聚合到 ~600 字上限、超长段
+  硬切。纯函数。
+- `model/knowledge_model.dart`：`KnowledgeDoc`（标题/片段数/时间）。
+- `db/knowledge_dao.dart`：两表 `tb_kb_doc` + `tb_kb_chunk`（账号库内，懒建表 + docId 索引）。
+  `addDocument`（切块落库）/ `getDocuments` / `deleteDocument`（连 chunk 删）/ `search`
+  （空格分词的多词「与」LIKE 检索，返回 `KnowledgeHit{docTitle, content}`）。
+
+**工具接入**（复用 L1~L3 机制）：
+
+- `builtin_tools.dart`：`knowledge_search(query, limit?)`——只读，经 `ToolActionContext` 开
+  账号库 → `KnowledgeDao.search` → 返回 `[{source, content}]`，提示模型注明来源。
+- `tool_registry.dart`：加 `knowledgeSearchId` + 并入 `_dataToolIds` + catalog 一条（只读）
+  + `fromAssistant` 装配。助手编辑页多选自动展示。
+
+**管理 UI**：`pages/knowledge_base_page.dart`（导入粘贴文本 / 列表 / 删除）；「我的」页加
+「知识库」入口。
+
+**用法**：我的 → 知识库导入资料 → 给某助手绑定「知识库检索」工具 → 该助手用支持工具的模型 +
+流式时即可基于你的文档作答。
+
+**测试**：新增 `test/knowledge_base_test.dart` 8 例（切分器空/聚合/硬切、DAO 增删检索全链路、
+多词与、空文本不建、工具 execute 命中/未命中、catalog + `fromAssistant` 装配），全套 **212**
+测试通过；`flutter analyze` 改动文件无新增问题（仅 1 条与全仓库一致的 `use_super_parameters`）。
+
+**已知限制 / 下一步**：
+
+- 仅关键词检索（同义/语义召回弱）；导入仅「粘贴文本」，PDF/文件导入可后续复用 `FileProcessor`。
+- 知识库目前对**所有绑定该工具的助手共享**（按账号一个库）；如需「每个助手独立知识库」，
+  要在表上加 `assistantId` 维度并在工具/UI 串起来。
+- **L4b**：把 `search` 换/并入向量检索（embedding API + 余弦相似），catalog 与 UI 不变。

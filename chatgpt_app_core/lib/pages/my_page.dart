@@ -6,6 +6,7 @@ import 'package:chatgpt_app_core/model/apk_model.dart';
 import 'package:chatgpt_app_core/pages/ai_settings_page.dart';
 import 'package:chatgpt_app_core/pages/assistant_list_page.dart';
 import 'package:chatgpt_app_core/pages/backup_restore_page.dart';
+import 'package:chatgpt_app_core/pages/knowledge_base_page.dart';
 import 'package:chatgpt_app_core/provider/theme_provider.dart';
 import 'package:chatgpt_app_core/util/hi_dialog.dart';
 import 'package:chatgpt_app_core/util/hi_progress_dialog.dart';
@@ -84,6 +85,14 @@ class _MyPageState extends State<MyPage> {
                   context,
                   MaterialPageRoute(
                       builder: (_) => const AssistantListPage()))),
+          ..._itemWidget(
+              color: color,
+              title: '知识库',
+              icon: Icons.menu_book_outlined,
+              onTap: () => Navigator.push(
+                  context,
+                  MaterialPageRoute(
+                      builder: (_) => const KnowledgeBasePage()))),
           ..._itemWidget(
               color: color,
               title: '备份与恢复',
