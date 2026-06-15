@@ -49,7 +49,8 @@ class _ChatDemoPageState extends State<ChatDemoPage> {
     super.initState();
     _controller = ChatController(
       initialMessageList: _seed,
-      scrollController: ScrollController(),
+      itemScrollController: ItemScrollController(),
+      itemPositionsListener: ItemPositionsListener.create(),
       timePellet: 60,
     );
   }

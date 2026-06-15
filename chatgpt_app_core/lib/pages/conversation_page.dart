@@ -26,12 +26,15 @@ import 'package:chatgpt_app_core/model/favorite_model.dart';
 import 'package:chatgpt_app_core/provider/ai_settings_provider.dart';
 import 'package:chatgpt_app_core/util/hi_dialog.dart';
 import 'package:chatgpt_app_core/util/hi_utils.dart';
+import 'package:chatgpt_app_core/util/scroll_jump.dart';
 import 'package:chatgpt_app_core/widget/assistant_picker.dart';
 import 'package:chatgpt_app_core/widget/message_input_widget.dart';
 import 'package:flutter/material.dart';
 import 'package:login_sdk/dao/login_dao.dart';
 import 'package:openai_flutter/utils/ai_logger.dart';
 import 'package:provider/provider.dart';
+// ItemScrollController / ItemPositionsListener 经 chat_message 的 chat_controller.dart
+// 再导出（见该文件顶部 export），无需直接依赖 scrollable_positioned_list。
 
 typedef OnConversationUpdate = void Function(
     ConversationModel conversationModel);
@@ -62,7 +65,22 @@ class _ConversationPageState extends State<ConversationPage> {
   late FavoriteDao favoriteDao;
   late ChatController chatController;
   late CompletionDao completionDao;
-  final ScrollController _scrollController = ScrollController();
+  /// 按 index 精确跳转（置顶/置底 + 对话目录跳转）。
+  final ItemScrollController _itemScrollController = ItemScrollController();
+
+  /// 列表项可见性监听：驱动分页加载与按钮可见性。
+  final ItemPositionsListener _itemPositionsListener =
+      ItemPositionsListener.create();
+
+  /// 「回到顶部 / 回到底部」悬浮按钮的可见性（仅在未到对应端点时显示）。
+  bool _showJumpTop = false;
+  bool _showJumpBottom = false;
+
+  /// 分页防抖：避免一次到顶触发多次加载更多。
+  bool _isLoadingMore = false;
+
+  /// 已无更早历史：到顶后不再反复空查 DB。
+  bool _noMoreHistory = false;
 
   /// 块化消息系统：规范化的块仓库（每页一个，随页面生命周期销毁）。
   final ChatBlockStore _blockStore = ChatBlockStore();
@@ -100,17 +118,233 @@ class _ConversationPageState extends State<ConversationPage> {
   String get _effectiveModelId => _effective(_currentSettings).effectiveModel;
 
   get _chatList => Expanded(
-          child: Padding(
-        padding: const EdgeInsets.only(left: 10, right: 10),
-        child: ChatList(
-          chatController: chatController,
-          onBubbleLongPress: _onBubbleLongPress,
+        child: Stack(
+          children: [
+            Padding(
+              padding: const EdgeInsets.only(left: 10, right: 10),
+              child: ChatList(
+                chatController: chatController,
+                onBubbleLongPress: _onBubbleLongPress,
+              ),
+            ),
+            // 置顶/置底悬浮按钮：叠在对话区右下角，不占输入框空间。
+            Positioned(right: 12, bottom: 12, child: _scrollJumpButtons()),
+          ],
         ),
+      );
+
+  /// 右下角的「回到顶部 / 回到底部」按钮组：按可见性按需出现，都隐藏时为空盒。
+  Widget _scrollJumpButtons() {
+    final children = <Widget>[];
+    if (_showJumpTop) {
+      children.add(_jumpButton(
+        icon: Icons.keyboard_double_arrow_up_rounded,
+        tooltip: '回到顶部',
+        onTap: _scrollToTop,
       ));
+    }
+    if (_showJumpBottom) {
+      if (children.isNotEmpty) children.add(const SizedBox(height: 10));
+      children.add(_jumpButton(
+        icon: Icons.keyboard_double_arrow_down_rounded,
+        tooltip: '回到底部',
+        onTap: _scrollToBottom,
+      ));
+    }
+    return Column(mainAxisSize: MainAxisSize.min, children: children);
+  }
+
+  Widget _jumpButton({
+    required IconData icon,
+    required String tooltip,
+    required VoidCallback onTap,
+  }) {
+    final cs = Theme.of(context).colorScheme;
+    return Material(
+      color: cs.surfaceContainerHighest.withValues(alpha: 0.92),
+      shape: const CircleBorder(),
+      elevation: 2,
+      shadowColor: Colors.black26,
+      child: InkWell(
+        customBorder: const CircleBorder(),
+        onTap: onTap,
+        child: Tooltip(
+          message: tooltip,
+          child: Padding(
+            padding: const EdgeInsets.all(9),
+            child: Icon(icon, size: 22, color: cs.onSurfaceVariant),
+          ),
+        ),
+      ),
+    );
+  }
+
+  /// reverse:true 下 index 0 = 最新消息（最底部）。
+  void _scrollToBottom() {
+    if (!_itemScrollController.isAttached) return;
+    _itemScrollController.scrollTo(
+        index: 0,
+        duration: const Duration(milliseconds: 300),
+        curve: Curves.easeOut);
+  }
+
+  /// 跳到当前已加载的最旧一条（index 最大）。若上面还有未加载历史，停在顶部时
+  /// 会顺带触发分页加载更多（见 [_onPositionsChanged]）。
+  void _scrollToTop() {
+    if (!_itemScrollController.isAttached) return;
+    final last = chatController.initialMessageList.length - 1;
+    if (last < 0) return;
+    _itemScrollController.scrollTo(
+        index: last,
+        duration: const Duration(milliseconds: 300),
+        curve: Curves.easeOut);
+  }
+
+  /// 列表项可见性变化回调：刷新按钮可见性 + 到顶时分页加载更多。
+  void _onPositionsChanged() {
+    if (!mounted) return;
+    final positions = _itemPositionsListener.itemPositions.value;
+    final itemCount = chatController.initialMessageList.length;
+    final edges = computeChatListEdges(
+      visibleIndices: positions.map((p) => p.index),
+      itemCount: itemCount,
+    );
+    // 到达最旧的已加载项 -> 加载更早一页。
+    if (edges.atTop && itemCount > 0) _maybeLoadMore();
+    final showTop = !edges.atTop;
+    final showBottom = !edges.atBottom;
+    if (showTop != _showJumpTop || showBottom != _showJumpBottom) {
+      setState(() {
+        _showJumpTop = showTop;
+        _showJumpBottom = showBottom;
+      });
+    }
+  }
+
+  /// 加载更早一页（带防抖与「无更多」短路），返回是否真的有新数据。
+  Future<bool> _maybeLoadMore() async {
+    if (_isLoadingMore || _noMoreHistory) return false;
+    _isLoadingMore = true;
+    try {
+      final list = await _loadData(loadMore: true);
+      if (list.isEmpty) {
+        _noMoreHistory = true;
+        return false;
+      }
+      return true;
+    } finally {
+      _isLoadingMore = false;
+    }
+  }
+
+  /// 把整段会话的历史全部加载进来（对话目录跳转前调用，保证任意提问都能按 index 跳到）。
+  Future<void> _loadAllHistory() async {
+    while (!_noMoreHistory) {
+      final before = chatController.initialMessageList.length;
+      final got = await _maybeLoadMore();
+      if (!got || chatController.initialMessageList.length == before) break;
+    }
+  }
+
+  /// 打开「对话目录」：先把历史加载全，再用底部弹窗列出全部提问，点选跳转。
+  Future<void> _openOutline() async {
+    // 加载全量历史时给个轻提示（长会话可能要查几页）。
+    final messenger = ScaffoldMessenger.of(context);
+    messenger.showSnackBar(const SnackBar(
+        content: Text('正在整理对话目录…'), duration: Duration(milliseconds: 600)));
+    await _loadAllHistory();
+    if (!mounted) return;
+
+    // initialMessageList：index 0 = 最新。目录按时间正序（旧→新）展示，跳转用原 index。
+    final list = chatController.initialMessageList;
+    final entries = <({int index, String text})>[];
+    for (var i = list.length - 1; i >= 0; i--) {
+      final m = list[i];
+      if (m.ownerType != OwnerType.sender) continue;
+      final text = m.content.trim().replaceAll('\n', ' ');
+      if (text.isEmpty) continue;
+      entries.add((index: i, text: text));
+    }
+
+    if (entries.isEmpty) {
+      messenger.showSnackBar(const SnackBar(content: Text('还没有提问可定位')));
+      return;
+    }
+
+    final picked = await showModalBottomSheet<int>(
+      context: context,
+      showDragHandle: true,
+      isScrollControlled: true,
+      builder: (ctx) => _outlineSheet(ctx, entries),
+    );
+    if (picked != null && _itemScrollController.isAttached) {
+      _itemScrollController.scrollTo(
+        index: picked,
+        // 让选中的提问落在偏上位置，下方紧跟它的回答。
+        alignment: 0.08,
+        duration: const Duration(milliseconds: 350),
+        curve: Curves.easeOut,
+      );
+    }
+  }
+
+  Widget _outlineSheet(
+      BuildContext ctx, List<({int index, String text})> entries) {
+    final maxH = MediaQuery.of(ctx).size.height * 0.6;
+    return SafeArea(
+      child: ConstrainedBox(
+        constraints: BoxConstraints(maxHeight: maxH),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Padding(
+              padding: const EdgeInsets.fromLTRB(16, 4, 16, 8),
+              child: Row(
+                children: [
+                  const Icon(Icons.format_list_bulleted, size: 20),
+                  const SizedBox(width: 8),
+                  Text('对话目录 · ${entries.length} 个提问',
+                      style: Theme.of(ctx).textTheme.titleMedium),
+                ],
+              ),
+            ),
+            const Divider(height: 1),
+            Flexible(
+              child: ListView.separated(
+                shrinkWrap: true,
+                itemCount: entries.length,
+                separatorBuilder: (_, __) => const Divider(height: 1),
+                itemBuilder: (_, i) {
+                  final e = entries[i];
+                  return ListTile(
+                    dense: true,
+                    leading: CircleAvatar(
+                      radius: 13,
+                      child: Text('${i + 1}',
+                          style: const TextStyle(fontSize: 11)),
+                    ),
+                    title: Text(e.text,
+                        maxLines: 2, overflow: TextOverflow.ellipsis),
+                    onTap: () => Navigator.of(ctx).pop(e.index),
+                  );
+                },
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
 
   get _appBar => AppBar(
         title: Text(_title),
         actions: [
+          // 对话目录：列出本会话的全部提问，点选跳转到该条。
+          IconButton(
+            icon: const Icon(Icons.format_list_bulleted),
+            tooltip: '对话目录',
+            onPressed: _openOutline,
+          ),
           // 会话内切换助手（阶段七）。
           IconButton(
             icon: const Icon(Icons.support_agent),
@@ -185,6 +419,7 @@ class _ConversationPageState extends State<ConversationPage> {
     final c = _streamCompleter;
     if (c != null && !c.isCompleted) c.complete();
     _activeEventSub?.cancel();
+    _itemPositionsListener.itemPositions.removeListener(_onPositionsChanged);
     _blockStore.dispose();
     _updateConversation();
     super.dispose();
@@ -683,16 +918,12 @@ class _ConversationPageState extends State<ConversationPage> {
     userInfo = LoginDao.getUserInfo()!;
     chatController = ChatController(
         initialMessageList: [],
-        scrollController: _scrollController,
+        itemScrollController: _itemScrollController,
+        itemPositionsListener: _itemPositionsListener,
         timePellet: 60,
         messageContentBuilder: _buildBlockContent);
-    //下拉触发加载更多
-    _scrollController.addListener(() {
-      if (_scrollController.position.pixels ==
-          _scrollController.position.maxScrollExtent) {
-        _loadData(loadMore: true);
-      }
-    });
+    // 列表项可见性变化 -> 分页加载更多 + 刷新置顶/置底按钮可见性。
+    _itemPositionsListener.itemPositions.addListener(_onPositionsChanged);
     final settings = context.read<AISettingsProvider>().settings;
     _currentSettings = settings;
     _aiName = settings.aiDisplayName;
@@ -709,6 +940,9 @@ class _ConversationPageState extends State<ConversationPage> {
     }
     var list = await _loadData();
     chatController.loadMoreData(list);
+    // 首帧布局完成后算一次按钮可见性（打开长会话时立即出现「回到顶部」）。
+    WidgetsBinding.instance
+        .addPostFrameCallback((_) => _onPositionsChanged());
     _daoAssistant = _assistant;
     // 从持久化块恢复工具调用历史（遗留项 2）+ 附件文本历史（遗留项 6），
     // 使重开会话后工具调用与文件上下文仍跨轮可见。

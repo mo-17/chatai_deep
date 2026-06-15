@@ -1,5 +1,6 @@
 import 'package:chat_message/widget/default_message_widget.dart';
 import 'package:flutter/material.dart';
+import 'package:scrollable_positioned_list/scrollable_positioned_list.dart';
 
 import '../core/chat_controller.dart';
 import '../models/message_model.dart';
@@ -7,7 +8,8 @@ import '../models/message_model.dart';
 class ChatList extends StatefulWidget {
   ///ChatList的控制器
   final ChatController chatController;
-  final EdgeInsetsGeometry? padding;
+  // ScrollablePositionedList 的 padding 要求 EdgeInsets（非 Geometry）。
+  final EdgeInsets? padding;
   final OnBubbleClick? onBubbleTap;
   final OnBubbleClick? onBubbleLongPress;
 
@@ -32,18 +34,23 @@ class _ChatListState extends State<ChatList> {
   MessageContentBuilder? get messageContentBuilder =>
       chatController.messageContentBuilder;
 
-  ScrollController get scrollController => chatController.scrollController;
+  ItemScrollController get itemScrollController =>
+      chatController.itemScrollController;
+
+  ItemPositionsListener get itemPositionsListener =>
+      chatController.itemPositionsListener;
 
   Widget get _chatStreamBuilder => StreamBuilder<List<MessageModel>>(
       stream: chatController.messageStreamController.stream,
       builder:
           (BuildContext context, AsyncSnapshot<List<MessageModel>> snapshot) {
         return snapshot.connectionState == ConnectionState.active
-            ? ListView.builder(
+            ? ScrollablePositionedList.builder(
                 shrinkWrap: true,
                 reverse: true,
                 padding: widget.padding,
-                controller: scrollController,
+                itemScrollController: itemScrollController,
+                itemPositionsListener: itemPositionsListener,
                 itemCount: snapshot.data?.length ?? 0,
                 itemBuilder: (BuildContext context, int index) {
                   var model = snapshot.data![index];
@@ -80,19 +87,5 @@ class _ChatListState extends State<ChatList> {
   void dispose() {
     chatController.dispose();
     super.dispose();
-  }
-
-  Widget _buildMessageWidget(
-      {required GlobalKey<State<StatefulWidget>> key,
-      required MessageModel message}) {
-    return Container(
-      margin: const EdgeInsets.all(5),
-      padding: const EdgeInsets.only(top: 15, bottom: 15),
-      decoration: BoxDecoration(
-          color: message.ownerType == OwnerType.receiver
-              ? Colors.amberAccent
-              : Colors.blue),
-      child: Text('${message.ownerName} ${message.content} ${message.avatar}'),
-    );
   }
 }
