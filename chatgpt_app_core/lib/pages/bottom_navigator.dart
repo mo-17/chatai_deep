@@ -43,7 +43,7 @@ class _BottomNavigatorState extends State<BottomNavigator> {
       builder: (ctx) => AlertDialog(
         title: const Text('导入游客数据'),
         content: const Text('检测到你在游客模式下的会话记录和 AI 服务设置，'
-            '是否导入当前账号？'),
+            '是否合并到当前账号？（追加导入，不影响账号已有数据）'),
         actions: [
           TextButton(
             onPressed: () => Navigator.pop(ctx, false),
@@ -67,8 +67,9 @@ class _BottomNavigatorState extends State<BottomNavigator> {
       if (!mounted) return;
       await context.read<AISettingsProvider>().load();
       if (!mounted) return;
+      final note = result.settingsImported ? '，并已套用游客的 AI 设置' : '';
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('已导入 ${result.conversations} 个会话')),
+        SnackBar(content: Text('已导入 ${result.conversations} 个会话$note')),
       );
     } catch (e) {
       // 失败不置标记，下次仍可重试。
