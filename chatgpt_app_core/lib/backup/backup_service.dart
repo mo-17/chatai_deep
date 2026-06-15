@@ -78,10 +78,15 @@ class BackupService {
 
     final exportedSettings = settings.clone();
     if (!includeApiKeys) {
+      // 脱敏导出：清空全部服务商 key + 联网搜索各家 key。
+      for (final p in exportedSettings.providers) {
+        p.apiKey = '';
+      }
       exportedSettings
-        ..openai.apiKey = ''
-        ..deepseek.apiKey = ''
-        ..tavilyApiKey = '';
+        ..tavilyApiKey = ''
+        ..exaApiKey = ''
+        ..bochaApiKey = ''
+        ..zhipuApiKey = '';
     }
 
     final manifest = {

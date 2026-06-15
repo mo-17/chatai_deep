@@ -131,9 +131,9 @@ class _AssistantEditPageState extends State<AssistantEditPage> {
     final settings = context.watch<AISettingsProvider>().settings;
     final options = settings.mode == AIMode.backend
         ? ModelCatalog.backendAll()
-        : (settings.localProvider == LocalProvider.openai
-            ? ModelCatalog.openai
-            : ModelCatalog.deepseek);
+        : settings.activeProvider.models
+            .map((m) => ModelOption(m.id, m.description, displayLabel: m.name))
+            .toList();
 
     final items = <DropdownMenuItem<String>>[
       const DropdownMenuItem(

@@ -48,10 +48,10 @@ abstract class ChatService {
         providerCode: providerCodeFor(s), maxOutputTokens: s.maxOutputTokens);
   }
 
-  /// providerCode 派生规则的唯一出处：本地模式用所选服务商 code，
+  /// providerCode 派生规则的唯一出处：本地模式用激活服务商的 code，
   /// 后端模式不传（由 ModelCatalog 按 modelId 从清单反查）。
   static String? providerCodeFor(AISettings s) =>
-      s.mode == AIMode.local ? s.localProvider.name : null;
+      s.mode == AIMode.local ? s.activeProviderCode : null;
 
   /// 从 [AISettings] 直接算能力位（与 `ChatService.from(s).capabilities` 同源）。
   /// UI 在 build 里同步调用它即可随 settings 变化实时刷新入口开关。

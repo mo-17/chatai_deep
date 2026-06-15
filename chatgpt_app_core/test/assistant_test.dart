@@ -78,9 +78,8 @@ void main() {
     });
 
     test('能力位联动：覆盖为 gpt-4o 后 capabilitiesFor 算出 vision', () {
-      final s = AISettings.defaults()
-        ..localProvider = LocalProvider.openai
-        ..openai.model = 'gpt-3.5-turbo';
+      final s = AISettings.defaults()..activeProviderId = 'openai';
+      s.setActiveModel('gpt-3.5-turbo');
       final base = ChatService.capabilitiesFor(s);
       expect(base.image, isFalse);
       final a = AssistantModel(name: 'a', model: 'gpt-4o');

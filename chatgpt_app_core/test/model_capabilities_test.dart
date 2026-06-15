@@ -11,32 +11,17 @@ import 'package:flutter_test/flutter_test.dart';
 /// - 能力只由「当前模型」决定，从 ChatService 暴露，切换模型/厂商即变，
 ///   UI 与分发层不需要改（同一个 capabilitiesFor 是唯一来源）。
 void main() {
-  AISettings localSettings(LocalProvider provider, String model) {
-    final cfg = ProviderConfig(apiKey: 'k', baseUrl: 'http://x', model: model);
-    return AISettings(
-      mode: AIMode.local,
-      localProvider: provider,
-      openai: provider == LocalProvider.openai
-          ? cfg
-          : ProviderConfig(apiKey: '', baseUrl: '', model: 'gpt-4o'),
-      deepseek: provider == LocalProvider.deepseek
-          ? cfg
-          : ProviderConfig(apiKey: '', baseUrl: '', model: 'deepseek-chat'),
-      backendModel: 'deepseek-chat',
-      streamEnabled: true,
-      resetOnLogout: true,
-    );
+  // 激活指定预设服务商并设其生效模型；能力探测只依赖 model + providerCode。
+  AISettings localSettings(String providerId, String model) {
+    final s = AISettings.defaults()..activeProviderId = providerId;
+    s.setActiveModel(model);
+    s.activeProvider.apiKey = 'k';
+    return s;
   }
 
-  AISettings backendSettings(String model) => AISettings(
-        mode: AIMode.backend,
-        localProvider: LocalProvider.deepseek,
-        openai: ProviderConfig(apiKey: '', baseUrl: '', model: 'gpt-4o'),
-        deepseek: ProviderConfig(apiKey: '', baseUrl: '', model: 'deepseek-chat'),
-        backendModel: model,
-        streamEnabled: true,
-        resetOnLogout: true,
-      );
+  AISettings backendSettings(String model) => AISettings.defaults()
+    ..mode = AIMode.backend
+    ..backendModel = model;
 
   group('ModelCapabilities.heuristic 按家族推断', () {
     test('gpt-4o：图片 + 工具，不输出思考', () {
@@ -149,21 +134,21 @@ void main() {
   group('ChatService 暴露 capabilities（统一来源，切换即变）', () {
     test('本地 OpenAI + gpt-4o：image=true（图片入口可开）', () {
       final caps =
-          ChatService.from(localSettings(LocalProvider.openai, 'gpt-4o'))
+          ChatService.from(localSettings('openai', 'gpt-4o'))
               .capabilities;
       expect(caps.image, isTrue);
     });
 
     test('本地 OpenAI + gpt-3.5-turbo：image=false（图片入口关）', () {
       final caps =
-          ChatService.from(localSettings(LocalProvider.openai, 'gpt-3.5-turbo'))
+          ChatService.from(localSettings('openai', 'gpt-3.5-turbo'))
               .capabilities;
       expect(caps.image, isFalse);
     });
 
     test('本地 DeepSeek + deepseek-reasoner：reasoning=true，tool=false', () {
       final caps = ChatService.from(
-              localSettings(LocalProvider.deepseek, 'deepseek-reasoner'))
+              localSettings('deepseek', 'deepseek-reasoner'))
           .capabilities;
       expect(caps.reasoning, isTrue);
       expect(caps.tool, isFalse);
@@ -176,10 +161,10 @@ void main() {
 
     test('切换模型即改变能力：UI 只读 capabilities 无需分支', () {
       final visionCaps =
-          ChatService.from(localSettings(LocalProvider.openai, 'gpt-4o'))
+          ChatService.from(localSettings('openai', 'gpt-4o'))
               .capabilities;
       final textCaps =
-          ChatService.from(localSettings(LocalProvider.openai, 'gpt-3.5-turbo'))
+          ChatService.from(localSettings('openai', 'gpt-3.5-turbo'))
               .capabilities;
       expect(visionCaps.image, isTrue);
       expect(textCaps.image, isFalse);
@@ -187,7 +172,7 @@ void main() {
 
     test('ChatService.capabilities 与静态 capabilitiesFor 同源（UI 与服务一致）', () {
       final viaService =
-          ChatService.from(localSettings(LocalProvider.openai, 'gpt-4o'))
+          ChatService.from(localSettings('openai', 'gpt-4o'))
               .capabilities;
       final viaResolver =
           ModelCatalog.capabilitiesFor('gpt-4o', providerCode: 'openai');
@@ -201,9 +186,9 @@ void main() {
   group('阶段三遗留 2：providerCode 派生规则收口到 ChatService', () {
     test('ChatService.from(s).capabilities == ChatService.capabilitiesFor(s)（防回归）', () {
       final cases = [
-        localSettings(LocalProvider.openai, 'gpt-4o'),
-        localSettings(LocalProvider.openai, 'gpt-3.5-turbo'),
-        localSettings(LocalProvider.deepseek, 'deepseek-reasoner'),
+        localSettings('openai', 'gpt-4o'),
+        localSettings('openai', 'gpt-3.5-turbo'),
+        localSettings('deepseek', 'deepseek-reasoner'),
         backendSettings('gpt-4o'),
         backendSettings('deepseek-chat'),
       ];
@@ -217,11 +202,11 @@ void main() {
     test('providerCodeFor：local 用服务商 code，backend 不传', () {
       expect(
           ChatService.providerCodeFor(
-              localSettings(LocalProvider.openai, 'gpt-4o')),
+              localSettings('openai', 'gpt-4o')),
           'openai');
       expect(
           ChatService.providerCodeFor(
-              localSettings(LocalProvider.deepseek, 'deepseek-chat')),
+              localSettings('deepseek', 'deepseek-chat')),
           'deepseek');
       expect(ChatService.providerCodeFor(backendSettings('gpt-4o')), isNull);
     });
