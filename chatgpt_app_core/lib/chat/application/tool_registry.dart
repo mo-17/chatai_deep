@@ -53,11 +53,16 @@ class ToolDescriptor {
   /// 是否依赖已配置的联网搜索 key（未配置时 UI 应置灰）。
   final bool requiresSearchKey;
 
+  /// 是否会修改用户数据（L3b 写工具）。UI 据此标注「会修改数据」，
+  /// 运行时这类工具执行前会弹确认框。
+  final bool sideEffect;
+
   const ToolDescriptor({
     required this.id,
     required this.label,
     required this.description,
     this.requiresSearchKey = false,
+    this.sideEffect = false,
   });
 }
 
@@ -74,13 +79,20 @@ class ToolRegistry {
   static const listConversationsId = 'list_conversations';
   static const listFavoritesId = 'list_favorites';
   static const getConversationMessagesId = 'get_conversation_messages';
+  // L3b 追加写工具（需确认）。
+  static const saveFavoriteId = 'save_favorite';
+  static const createConversationId = 'create_conversation';
+  static const stickConversationId = 'stick_conversation';
 
-  /// 需要账号数据访问（[ToolActionContext]）的工具 id（L3a 只读）。
+  /// 需要账号数据访问（[ToolActionContext]）的工具 id（L3a 只读 + L3b 写）。
   static const Set<String> _dataToolIds = {
     searchHistoryId,
     listConversationsId,
     listFavoritesId,
     getConversationMessagesId,
+    saveFavoriteId,
+    createConversationId,
+    stickConversationId,
   };
 
   /// 可绑定工具清单（L1/L2/L3a）。助手编辑页据此渲染多选；新增工具在此登记。
@@ -125,6 +137,24 @@ class ToolRegistry {
       id: getConversationMessagesId,
       label: '读取会话内容',
       description: '让助手读取指定会话的消息，用于总结/回顾（只读）',
+    ),
+    ToolDescriptor(
+      id: saveFavoriteId,
+      label: '收藏内容',
+      description: '让助手把文本存入你的收藏夹（会修改数据，执行前需你确认）',
+      sideEffect: true,
+    ),
+    ToolDescriptor(
+      id: createConversationId,
+      label: '新建会话',
+      description: '让助手为你新建一个会话（会修改数据，执行前需你确认）',
+      sideEffect: true,
+    ),
+    ToolDescriptor(
+      id: stickConversationId,
+      label: '置顶会话',
+      description: '让助手置顶/取消置顶会话（会修改数据，执行前需你确认）',
+      sideEffect: true,
     ),
   ];
 
@@ -211,6 +241,16 @@ class ToolRegistry {
       }
       if (selected.contains(getConversationMessagesId)) {
         tools.add(BuiltinTools.getConversationMessages(actions));
+      }
+      // L3b 写工具（执行前 await confirm）。
+      if (selected.contains(saveFavoriteId)) {
+        tools.add(BuiltinTools.saveFavorite(actions));
+      }
+      if (selected.contains(createConversationId)) {
+        tools.add(BuiltinTools.createConversation(actions));
+      }
+      if (selected.contains(stickConversationId)) {
+        tools.add(BuiltinTools.stickConversation(actions));
       }
     }
     return ToolRegistry(tools);

@@ -1,24 +1,36 @@
 import 'dart:convert';
 
+import 'package:chatgpt_app_core/backup/backup_service.dart';
 import 'package:chatgpt_app_core/chat/application/tool_registry.dart';
 import 'package:chatgpt_app_core/db/conversation_dao.dart';
 import 'package:chatgpt_app_core/db/favorite_dao.dart';
 import 'package:chatgpt_app_core/db/hi_db_manager.dart';
 import 'package:chatgpt_app_core/db/message_dao.dart';
+import 'package:chatgpt_app_core/model/conversation_model.dart';
+import 'package:chatgpt_app_core/model/favorite_model.dart';
 import 'package:http/http.dart' as http;
-import 'package:sqflite_common/sqlite_api.dart';
+import 'package:sqflite/sqflite.dart';
 
-/// 动作工具的运行上下文（L3）：提供「按当前账号打开数据库」的能力。
-/// 只读工具（L3a）用它访问会话/消息/收藏；可注入 [openStorage] 便于单测。
+/// 动作工具的运行上下文（L3）：提供「按当前账号打开数据库」+「写操作前确认」。
+/// 只读工具（L3a）用 [openStorage]；写工具（L3b）执行前先 `await` [confirm]，
+/// 由 UI 层弹框征得用户同意。两者都可注入便于单测。
 class ToolActionContext {
   final Future<HiDBManager> Function() openStorage;
 
-  const ToolActionContext({required this.openStorage});
+  /// 写操作前的人工确认回调：返回 true 放行、false 拒绝。
+  /// **null = 无 UI**：写工具一律拒绝（安全兜底，防提示注入下的静默写入）。
+  final Future<bool> Function(String title, String detail)? confirm;
 
-  /// 默认实现：打开当前登录账号（或游客）的库。
-  factory ToolActionContext.forCurrentAccount() => ToolActionContext(
+  const ToolActionContext({required this.openStorage, this.confirm});
+
+  /// 默认实现：打开当前登录账号（或游客）的库。[confirm] 由 UI 层注入。
+  factory ToolActionContext.forCurrentAccount({
+    Future<bool> Function(String title, String detail)? confirm,
+  }) =>
+      ToolActionContext(
         openStorage: () =>
             HiDBManager.instance(dbName: HiDBManager.getAccountHash()),
+        confirm: confirm,
       );
 }
 
@@ -297,6 +309,116 @@ class BuiltinTools {
                 },
             ]),
           );
+        },
+      );
+
+  // ── L3b 追加写工具（需人工确认）─────────────────────────
+  // 让助手能「写」用户数据，但每次写都先 await ctx.confirm 征得同意；
+  // 缺 confirm（无 UI）一律拒绝，防提示注入下的静默写入。
+
+  /// 写前确认：confirm 为 null（无 UI）时拒绝。
+  static Future<bool> _confirm(
+      ToolActionContext ctx, String title, String detail) async {
+    final c = ctx.confirm;
+    if (c == null) return false;
+    return c(title, detail);
+  }
+
+  static const _denied = ToolOutcome(content: '用户拒绝了该操作，未做任何修改');
+
+  /// 收藏一段文本到收藏夹。
+  static ChatTool saveFavorite(ToolActionContext ctx) => ChatTool(
+        name: ToolRegistry.saveFavoriteId,
+        description: '把一段文本保存到用户的收藏夹。当用户说「收藏这段/记下来」时调用。'
+            '执行前会请用户确认。',
+        parameters: const {
+          'type': 'object',
+          'properties': {
+            'content': {'type': 'string', 'description': '要收藏的文本内容'},
+          },
+          'required': ['content'],
+        },
+        execute: (args) async {
+          final content = (args['content'] as String? ?? '').trim();
+          if (content.isEmpty) return const ToolOutcome(content: '错误：缺少 content 参数');
+          if (!await _confirm(ctx, '收藏内容', '助手想把以下内容存入收藏夹：\n${_cap(content, 200)}')) {
+            return _denied;
+          }
+          final storage = await ctx.openStorage();
+          final dao = await FavoriteDao.create(storage);
+          await dao.addFavorite(FavoriteModel(
+              ownerName: 'AI',
+              content: content,
+              createdAt: DateTime.now().millisecondsSinceEpoch));
+          return const ToolOutcome(content: '已收藏');
+        },
+      );
+
+  /// 新建一个（带标题的）会话。
+  static ChatTool createConversation(ToolActionContext ctx) => ChatTool(
+        name: ToolRegistry.createConversationId,
+        description: '为用户新建一个会话（可带标题）。当用户说「新开一个话题/会话」时调用。'
+            '执行前会请用户确认。',
+        parameters: const {
+          'type': 'object',
+          'properties': {
+            'title': {'type': 'string', 'description': '新会话标题'},
+          },
+          'required': ['title'],
+        },
+        execute: (args) async {
+          final title = (args['title'] as String? ?? '').trim();
+          if (title.isEmpty) return const ToolOutcome(content: '错误：缺少 title 参数');
+          if (!await _confirm(ctx, '新建会话', '助手想新建会话「$title」')) {
+            return _denied;
+          }
+          final storage = await ctx.openStorage();
+          final dao = await ConversationListDao.create(storage);
+          final cid = DateTime.now().millisecondsSinceEpoch;
+          await dao.saveConversation(ConversationModel(cid: cid, icon: '')
+            ..title = title
+            ..stickTime = 0
+            ..messageCount = 0
+            ..updateAt = cid);
+          BackupService.restoreTick.value++; // 刷新会话列表
+          return ToolOutcome(content: '已新建会话「$title」（cid=$cid）');
+        },
+      );
+
+  /// 置顶 / 取消置顶一个会话。
+  static ChatTool stickConversation(ToolActionContext ctx) => ChatTool(
+        name: ToolRegistry.stickConversationId,
+        description: '置顶或取消置顶指定会话（cid 来自 list_conversations）。'
+            '执行前会请用户确认。',
+        parameters: const {
+          'type': 'object',
+          'properties': {
+            'cid': {'type': 'integer', 'description': '会话 id（cid）'},
+            'stick': {'type': 'boolean', 'description': 'true 置顶，false 取消置顶（默认 true）'},
+          },
+          'required': ['cid'],
+        },
+        execute: (args) async {
+          final cid = args['cid'] is int
+              ? args['cid'] as int
+              : int.tryParse('${args['cid'] ?? ''}');
+          if (cid == null) return const ToolOutcome(content: '错误：缺少有效的 cid 参数');
+          final stick = args['stick'] is bool ? args['stick'] as bool : true;
+          final action = stick ? '置顶' : '取消置顶';
+          if (!await _confirm(ctx, '$action会话', '助手想$action会话 #$cid')) {
+            return _denied;
+          }
+          final storage = await ctx.openStorage();
+          await ConversationListDao.create(storage); // 确保表存在
+          final count = await storage.db.update(
+            'tb_conversation_list',
+            {'stickTime': stick ? DateTime.now().millisecondsSinceEpoch : 0},
+            where: 'cid = ?',
+            whereArgs: [cid],
+          );
+          if (count == 0) return ToolOutcome(content: '没有找到会话 #$cid');
+          BackupService.restoreTick.value++;
+          return ToolOutcome(content: '已$action会话 #$cid');
         },
       );
 }

@@ -183,6 +183,31 @@ await，但要设计好「拒绝」回灌话术）；③ 仅在支持 tool 的�
 **测试**：新增 `test/assistant_data_tools_test.dart` 8 例（四工具命中/未命中/排序/role 映射 +
 `fromAssistant` 有/无 actions 装配），全套 **195** 测试通过；`flutter analyze` 改动文件无新增问题。
 
-**下一步（L3b）**：追加写工具（建会话 / 存收藏 / 置顶）+ 确认框——给 `ToolDescriptor` 加
-`sideEffect` 标记，`fromAssistant` 给这类工具的 execute 包一层「先 await confirm(描述)，拒绝
-则返回『用户已拒绝』文本」，confirm 回调由 `conversation_page` 注入弹 `AlertDialog`。
+### ✅ 实施记录 · L3b（追加写工具 + 确认）
+
+已落地（2026-06-15）。让助手能「写」用户数据，但**每次写都先人工确认**，破坏性操作不开放。
+
+**新增工具**（`builtin_tools.dart`，均 sideEffect）：
+
+- `save_favorite(content)`：把文本存入收藏夹。
+- `create_conversation(title)`：新建带标题的会话（写后 `restoreTick++` 刷新列表）。
+- `stick_conversation(cid, stick?)`：置顶 / 取消置顶（`stickTime = now / 0`）。
+
+**确认机制（防提示注入的核心）**：
+
+- `ToolActionContext` 加 `confirm(title, detail)` 回调。写工具 execute 里先
+  `await _confirm(...)`，拒绝则回灌「用户拒绝了该操作，未做任何修改」，不碰库。
+- **`confirm == null`（无 UI 上下文）一律拒绝**——安全兜底，防止网页正文里藏的指令
+  （L2 `fetch_url`）触发静默写入。
+- `conversation_page` 注入 `_confirmToolAction`：弹 `AlertDialog`（允许 / 拒绝）。
+  工具执行在 `ToolLoopRunner` 里是 `await` 的，弹框时流式回复自然挂起等待。
+
+**接线**：`ToolDescriptor` 加 `sideEffect` 标记；`tool_registry` 加 3 个 id（并入
+`_dataToolIds`）+ catalog 3 条 + `fromAssistant` 装配；助手编辑页对 sideEffect 工具加橙色
+`edit_note` 角标。
+
+**测试**：新增 `test/assistant_write_tools_test.dart` 9 例（确认后写入 / 拒绝不写 / 无 confirm
+拒绝 / 不存在 cid / catalog sideEffect / fromAssistant 装配），全套 **204** 测试通过；
+`flutter analyze` 改动文件无问题（顺手把 L3a 误用的 `sqflite_common` 直接导入换成 `sqflite`）。
+
+**暂缓项（按 L3 评估）**：改设置类（敏感）、删除类（不可逆）暂不做；如需，删除类应走双重确认。

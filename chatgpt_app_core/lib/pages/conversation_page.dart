@@ -310,7 +310,7 @@ class _ConversationPageState extends State<ConversationPage> {
     final allowTools = _assistant?.useTools ?? true;
     final registry = ToolRegistry.fromAssistant(settings, _assistant?.toolIds,
         forceWebSearch: webSearch,
-        actions: ToolActionContext.forCurrentAccount());
+        actions: ToolActionContext.forCurrentAccount(confirm: _confirmToolAction));
     final tools =
         caps.tool && settings.streamEnabled && allowTools && !registry.isEmpty
             ? registry
@@ -322,6 +322,27 @@ class _ConversationPageState extends State<ConversationPage> {
       // 非流式保持阶段五意图编排（工具回路仅接流式路径，见指南 §7 实施记录）。
       await _onSendNonStream(inputMessage, attachments, webSearch: webSearch);
     }
+  }
+
+  /// L3b 写工具的人工确认：助手要修改数据前弹框征得同意（防提示注入静默写入）。
+  Future<bool> _confirmToolAction(String title, String detail) async {
+    if (!mounted) return false;
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: Text(title),
+        content: Text(detail),
+        actions: [
+          TextButton(
+              onPressed: () => Navigator.pop(ctx, false),
+              child: const Text('拒绝')),
+          FilledButton(
+              onPressed: () => Navigator.pop(ctx, true),
+              child: const Text('允许')),
+        ],
+      ),
+    );
+    return ok == true;
   }
 
   /// 带文件的用户消息：把图片/文件/文本组装成块，seed 进块仓库并连块落库。

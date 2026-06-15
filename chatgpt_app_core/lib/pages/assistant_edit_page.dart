@@ -157,7 +157,16 @@ class _AssistantEditPageState extends State<AssistantEditPage> {
       dense: true,
       controlAffinity: ListTileControlAffinity.leading,
       value: selected,
-      title: Text(d.label),
+      title: Row(
+        children: [
+          Text(d.label),
+          if (d.sideEffect)
+            const Padding(
+              padding: EdgeInsets.only(left: 6),
+              child: Icon(Icons.edit_note, size: 16, color: Colors.orange),
+            ),
+        ],
+      ),
       subtitle: Text(
           available ? d.description : '${d.description}（需先在 AI 设置里配置搜索 key）'),
       // 未满足依赖时禁用勾选。
