@@ -268,21 +268,41 @@ class _MessageInputWidgetState extends State<MessageInputWidget> {
 
   bool get _hasPendingFiles => widget.pendingFiles.isNotEmpty;
 
+  /// 最多可同时携带的文件数（与下游 FileProcessor 处理多文件同口径）。
+  static const int _maxFiles = 10;
+
   Future<void> _onFileTap() async {
-    if (widget.pendingFiles.length >= 3) {
+    final remaining = _maxFiles - widget.pendingFiles.length;
+    if (remaining <= 0) {
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('最多选择 3 个文件')),
+        const SnackBar(content: Text('最多选择 $_maxFiles 个文件')),
       );
       return;
     }
     try {
+      // allowMultiple：一次可勾选多个文件；再按剩余配额截断并去重。
       final result = await FilePicker.pickFiles(
         type: FileType.custom,
         allowedExtensions: FileProcessor.pickerExtensions,
+        allowMultiple: true,
       );
-      final path = result?.files.single.path;
-      if (path != null && mounted) {
-        widget.onFilesPicked?.call([...widget.pendingFiles, path]);
+      if (result == null || !mounted) return;
+      // 去重：跳过已在待发送列表里的、以及本批内重复的路径。
+      final seen = widget.pendingFiles.toSet();
+      final picked = <String>[];
+      for (final f in result.files) {
+        final p = f.path;
+        if (p == null || !seen.add(p)) continue;
+        picked.add(p);
+      }
+      if (picked.isEmpty) return;
+      final accepted =
+          picked.length > remaining ? picked.sublist(0, remaining) : picked;
+      widget.onFilesPicked?.call([...widget.pendingFiles, ...accepted]);
+      if (accepted.length < picked.length) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('最多选择 $_maxFiles 个文件，多余的已忽略')),
+        );
       }
     } catch (e) {
       if (mounted) {

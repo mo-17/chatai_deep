@@ -57,13 +57,16 @@ class DefaultMessageWidget extends StatelessWidget {
   double get contentMargin => avatarSize + 10;
 
   String get senderInitials {
-    if (message.ownerName == null) return "";
-    List<String> chars = message.ownerName!.split(" ");
-    if (chars.length > 1) {
-      return chars[0];
-    } else {
-      return message.ownerName![0];
+    // ownerName 可能为 null，也可能是空串（后端登录响应缺 userName 时，
+    // login_sdk 会把它存成 ''）。空串若直接取 [0] 会抛 RangeError，导致气泡
+    // build 期间崩溃红屏，故先 trim 判空，再取首个字素（兼容 emoji/中文）。
+    final name = message.ownerName?.trim() ?? "";
+    if (name.isEmpty) return "";
+    final parts = name.split(" ");
+    if (parts.length > 1) {
+      return parts[0];
     }
+    return name.characters.first;
   }
 
   ///校验是否为合法的 http/https URL，避免 Image.network 把空串/相对路径
