@@ -214,6 +214,8 @@ void main() {
       expect(ctx, contains('来源：https://a.com'));
       expect(ctx, contains('[2] T2'));
       expect(ctx, contains('[编号]'));
+      // 回填上下文须锚定今天日期，否则主 LLM 用训练截止日期理解时效问题。
+      expect(ctx, contains('今天的日期是 ${SearchOrchestrator.today()}'));
     });
 
     test('搜索上下文走 extraText 通路，拼在当前轮 prompt 之后', () {

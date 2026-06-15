@@ -121,14 +121,18 @@ class SearchOrchestrator {
     return merged;
   }
 
+  /// 当前本地日期，格式 `yyyy-MM-dd`。意图改写与结果回填都用它锚定「今天」，
+  /// 避免主 LLM 用训练截止日期理解时效问题。
+  static String today() {
+    final now = DateTime.now();
+    return '${now.year}-${now.month.toString().padLeft(2, '0')}-${now.day.toString().padLeft(2, '0')}';
+  }
+
   /// 意图识别的指令模板。要求只输出 JSON（解析端仍带容错 + fallback）。
   static String buildIntentPrompt(String prompt) {
-    final now = DateTime.now();
-    final today =
-        '${now.year}-${now.month.toString().padLeft(2, '0')}-${now.day.toString().padLeft(2, '0')}';
     return '''
 你是联网搜索意图分析器。判断回答下面的「用户问题」是否需要检索互联网上的最新信息，并在需要时把问题改写成 1~3 个适合搜索引擎的查询词。
-今天的日期：$today。
+今天的日期：${today()}。
 规则：
 - 闲聊、写作、翻译、数学、代码等不依赖时效信息或外部事实的问题，不需要搜索；
 - 新闻、时事、天气、价格、赛事比分、最新发布的产品/版本、具体人物或机构的近况等，需要搜索；
@@ -170,7 +174,8 @@ $prompt
   /// 回填模板：把搜索结果编号排版成上下文，交给主 LLM 总结（拼进当前轮
   /// prompt 之后，走 [ChatAttachments.extraText] 同款通路）。
   static String buildSearchContext(List<WebSearchResult> results) {
-    final buf = StringBuffer('以下是与用户问题相关的联网搜索结果：\n');
+    final buf = StringBuffer('今天的日期是 ${today()}，请以此理解用户问题中的「今天」「最近」等时间词。\n')
+      ..write('以下是与用户问题相关的联网搜索结果：\n');
     for (var i = 0; i < results.length; i++) {
       final r = results[i];
       buf

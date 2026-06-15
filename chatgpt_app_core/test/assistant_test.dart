@@ -96,22 +96,28 @@ void main() {
       {'role': 'assistant', 'content': 'hello'},
     ];
 
-    test('非空提示词插在头部', () {
+    test('非空提示词插在头部，且前置当前日期', () {
       final out = CompletionDao.injectSystemPrompt(history, '你是猫娘');
       expect(out.length, 3);
-      expect(out.first, {'role': 'system', 'content': '你是猫娘'});
+      expect(out.first['role'], 'system');
+      expect(out.first['content'],
+          '${CompletionDao.dateSystemPrompt()}\n\n你是猫娘');
       expect(out[1]['role'], 'user');
     });
 
-    test('空/null/全空白时原样返回（不插 system）', () {
-      expect(CompletionDao.injectSystemPrompt(history, null), same(history));
-      expect(CompletionDao.injectSystemPrompt(history, ''), same(history));
-      expect(CompletionDao.injectSystemPrompt(history, '  \n'), same(history));
+    test('空/null/全空白时仍注入当前日期 system', () {
+      for (final p in [null, '', '  \n']) {
+        final out = CompletionDao.injectSystemPrompt(history, p);
+        expect(out.length, 3);
+        expect(out.first, {'role': 'system', 'content': CompletionDao.dateSystemPrompt()});
+        expect(out[1]['role'], 'user');
+      }
     });
 
     test('提示词首尾空白被 trim', () {
       final out = CompletionDao.injectSystemPrompt(history, '  你是猫娘 \n');
-      expect(out.first['content'], '你是猫娘');
+      expect(out.first['content'],
+          '${CompletionDao.dateSystemPrompt()}\n\n你是猫娘');
     });
   });
 

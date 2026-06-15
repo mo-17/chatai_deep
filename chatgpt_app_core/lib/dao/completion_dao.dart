@@ -187,18 +187,24 @@ class CompletionDao {
         .withExtraText(SearchOrchestrator.buildSearchContext(results));
   }
 
-  ///把助手系统提示词应用到 history（无提示词时原样返回）。
+  ///把助手系统提示词 + 当前日期应用到 history（始终至少注入日期 system）。
   List<Map<String, dynamic>> _withSystem(List<Map<String, dynamic>> history) =>
       injectSystemPrompt(history, _systemPrompt);
 
-  /// 阶段七：把 [systemPrompt] 作为 system 消息插在 [history] 头部。
-  /// 空/全空白时原样返回。静态纯函数，便于单测。
+  /// 始终注入的「当前日期」系统提示。让主 LLM 理解「今天/最近/最新」等时间词，
+  /// 不至于退回训练截止日期——普通对话也生效，不依赖联网搜索回填。
+  static String dateSystemPrompt() =>
+      '当前日期：${SearchOrchestrator.today()}（用户本地时区）。回答涉及「今天」「最近」「最新」等时间概念时以此为准。';
+
+  /// 阶段七：把 [systemPrompt] 作为 system 消息插在 [history] 头部，
+  /// 并始终在最前面附上当前日期（见 [dateSystemPrompt]）。助手提示词为空时
+  /// 仅注入日期。静态纯函数，便于单测。
   static List<Map<String, dynamic>> injectSystemPrompt(
       List<Map<String, dynamic>> history, String? systemPrompt) {
     final p = systemPrompt?.trim() ?? '';
-    if (p.isEmpty) return history;
+    final content = p.isEmpty ? dateSystemPrompt() : '${dateSystemPrompt()}\n\n$p';
     return [
-      {'role': 'system', 'content': p},
+      {'role': 'system', 'content': content},
       ...history,
     ];
   }
