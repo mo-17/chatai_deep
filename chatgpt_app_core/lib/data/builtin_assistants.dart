@@ -14,12 +14,17 @@ class BuiltinAssistant {
   final String prompt;
   final bool useTools;
 
+  /// 预绑定工具 id（L1）。默认不绑定（null）；需要默认带某工具的模板在此声明，
+  /// 如 `toolIds: ['web_search']`。
+  final List<String>? toolIds;
+
   const BuiltinAssistant({
     required this.category,
     required this.name,
     required this.emoji,
     required this.prompt,
     this.useTools = true,
+    this.toolIds,
   });
 
   /// 转成可落库的 [AssistantModel]（id 为 null -> saveAssistant 走插入）。
@@ -29,6 +34,7 @@ class BuiltinAssistant {
         emoji: emoji,
         prompt: prompt,
         useTools: useTools,
+        toolIds: toolIds == null ? null : List<String>.from(toolIds!),
       );
 }
 

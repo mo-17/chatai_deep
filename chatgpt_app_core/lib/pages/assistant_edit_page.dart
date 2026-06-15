@@ -1,3 +1,4 @@
+import 'package:chatgpt_app_core/chat/application/tool_registry.dart';
 import 'package:chatgpt_app_core/db/assistant_dao.dart';
 import 'package:chatgpt_app_core/db/hi_db_manager.dart';
 import 'package:chatgpt_app_core/model/ai_settings.dart';
@@ -28,6 +29,10 @@ class _AssistantEditPageState extends State<AssistantEditPage> {
   ///模型覆盖（'' = 跟随全局设置）。
   String _model = '';
   bool _useTools = true;
+
+  /// 助手绑定的工具 id 集合（L1）。旧助手 toolIds 为 null 时按空集处理，
+  /// 保存后变为显式列表（语义不变：未勾选 = 不绑定）。
+  late final Set<String> _toolIds;
   bool _saving = false;
 
   /// 「新建」以是否已有持久化 id 判定：从助手市场预填的模板 id 为 null，
@@ -43,6 +48,7 @@ class _AssistantEditPageState extends State<AssistantEditPage> {
     _promptCtl = TextEditingController(text: a?.prompt ?? '');
     _model = a?.model ?? '';
     _useTools = a?.useTools ?? true;
+    _toolIds = {...?a?.toolIds};
   }
 
   @override
@@ -110,10 +116,11 @@ class _AssistantEditPageState extends State<AssistantEditPage> {
             SwitchListTile(
               contentPadding: EdgeInsets.zero,
               title: const Text('允许工具调用'),
-              subtitle: const Text('关闭后联网搜索回落意图编排路径'),
+              subtitle: const Text('总开关；关闭后一律不调用工具，联网回落意图编排'),
               value: _useTools,
               onChanged: (v) => setState(() => _useTools = v),
             ),
+            if (_useTools) _buildToolsSection(),
             const SizedBox(height: 8),
             FilledButton(
               onPressed: _saving ? null : _save,
@@ -122,6 +129,47 @@ class _AssistantEditPageState extends State<AssistantEditPage> {
           ],
         ),
       ),
+    );
+  }
+
+  /// 工具绑定多选（L1）：列出 [ToolRegistry.catalog]，勾选即写入助手 toolIds。
+  /// 依赖搜索 key 的工具在未配置时置灰并提示；只有支持工具的模型 + 流式才会真正生效。
+  Widget _buildToolsSection() {
+    final settings = context.watch<AISettingsProvider>().settings;
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        const Padding(
+          padding: EdgeInsets.only(top: 4, bottom: 4),
+          child: Text('可用工具（绑定后该助手始终向模型暴露）',
+              style: TextStyle(fontSize: 12, color: Colors.grey)),
+        ),
+        for (final d in ToolRegistry.catalog)
+          _buildToolTile(d, ToolRegistry.isAvailable(settings, d.id)),
+      ],
+    );
+  }
+
+  Widget _buildToolTile(ToolDescriptor d, bool available) {
+    final selected = _toolIds.contains(d.id);
+    return CheckboxListTile(
+      contentPadding: EdgeInsets.zero,
+      dense: true,
+      controlAffinity: ListTileControlAffinity.leading,
+      value: selected,
+      title: Text(d.label),
+      subtitle: Text(
+          available ? d.description : '${d.description}（需先在 AI 设置里配置搜索 key）'),
+      // 未满足依赖时禁用勾选。
+      onChanged: available
+          ? (v) => setState(() {
+                if (v == true) {
+                  _toolIds.add(d.id);
+                } else {
+                  _toolIds.remove(d.id);
+                }
+              })
+          : null,
     );
   }
 
@@ -216,7 +264,8 @@ class _AssistantEditPageState extends State<AssistantEditPage> {
       ..emoji = _emojiCtl.text.trim().isEmpty ? '🤖' : _emojiCtl.text.trim()
       ..prompt = _promptCtl.text.trim()
       ..model = _model.trim()
-      ..useTools = _useTools;
+      ..useTools = _useTools
+      ..toolIds = _toolIds.toList();
     final dbManager =
         await HiDBManager.instance(dbName: HiDBManager.getAccountHash());
     final dao = await AssistantDao.create(dbManager);

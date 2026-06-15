@@ -301,14 +301,18 @@ class _ConversationPageState extends State<ConversationPage> {
     );
     // 联网搜索（阶段五）：用户开关 + 当前服务商 key 已配置才启用。
     final webSearch = settings.webSearchEnabled && settings.webSearchConfigured;
-    // 选路（阶段六决策）：模型支持工具调用（caps.tool）-> 把联网搜索注册成
-    // 工具、由模型自主决定是否调用（ToolLoopRunner）；否则回落阶段五的
-    // 意图编排。两条路互斥，引用来源（CitationBlock）体验一致。
-    // 阶段七：助手关闭了工具开关时同样回落意图编排路径。
+    // 选路（阶段六决策）：模型支持工具调用（caps.tool）-> 注册工具、由模型
+    // 自主决定是否调用（ToolLoopRunner）；否则回落阶段五的意图编排。两条路
+    // 互斥，引用来源（CitationBlock）体验一致。阶段七：助手关了工具开关回落。
+    // L1：注册表由所绑助手的 toolIds 拼；会话联网开关经 forceWebSearch 兼容旧行为
+    // （助手显式绑定 web_search 时，即使联网开关关着也暴露给模型）。
     final allowTools = _assistant?.useTools ?? true;
-    final tools = webSearch && caps.tool && settings.streamEnabled && allowTools
-        ? ToolRegistry.fromSettings(settings)
-        : null;
+    final registry = ToolRegistry.fromAssistant(settings, _assistant?.toolIds,
+        forceWebSearch: webSearch);
+    final tools =
+        caps.tool && settings.streamEnabled && allowTools && !registry.isEmpty
+            ? registry
+            : null;
     if (settings.streamEnabled) {
       await _onSendStream(inputMessage, attachments,
           webSearch: webSearch && tools == null, tools: tools);

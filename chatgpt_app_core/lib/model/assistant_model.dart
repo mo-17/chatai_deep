@@ -1,3 +1,5 @@
+import 'dart:convert';
+
 import 'package:chatgpt_app_core/model/ai_settings.dart';
 
 /// 助手（阶段七）。对应源项目 `src/types/assistant.ts` 的 Assistant 精简版：
@@ -21,9 +23,15 @@ class AssistantModel {
   /// 当前生效路径上的模型（见 [applyTo]），能力位随之重算。
   String model;
 
-  /// 是否允许工具调用（阶段六 ToolLoopRunner 路径）。关闭后联网搜索
-  /// 回落阶段五意图编排，与「模型不支持工具」同一条路。
+  /// 是否允许工具调用（阶段六 ToolLoopRunner 路径）的**总开关**。关闭后一律无
+  /// 工具，联网搜索回落阶段五意图编排，与「模型不支持工具」同一条路。
   bool useTools;
+
+  /// 助手绑定的工具 id 列表（L1）。`null` = 旧数据 / 未绑定：不主动暴露任何工具，
+  /// 联网搜索仍只由会话页联网开关驱动（`ToolRegistry.fromAssistant` 的 forceWebSearch）。
+  /// 显式包含某工具 id（如 `'web_search'`）时，该助手始终把它暴露给模型。
+  /// 持久化为 `tb_assistant.tools`（JSON 文本列）。
+  List<String>? toolIds;
 
   int createdAt;
   int updatedAt;
@@ -35,6 +43,7 @@ class AssistantModel {
     this.prompt = '',
     this.model = '',
     this.useTools = true,
+    this.toolIds,
     this.createdAt = 0,
     this.updatedAt = 0,
   });
@@ -47,9 +56,22 @@ class AssistantModel {
         prompt: json['prompt'] as String? ?? '',
         model: json['model'] as String? ?? '',
         useTools: (json['useTools'] as int? ?? 1) != 0,
+        toolIds: _decodeToolIds(json['tools']),
         createdAt: json['createdAt'] as int? ?? 0,
         updatedAt: json['updatedAt'] as int? ?? 0,
       );
+
+  /// `tools` 列：JSON 数组文本 -> List<String>。null/空/解析失败 -> null（视为未绑定）。
+  static List<String>? _decodeToolIds(Object? raw) {
+    if (raw is! String || raw.trim().isEmpty) return null;
+    try {
+      final decoded = jsonDecode(raw);
+      if (decoded is! List) return null;
+      return [for (final e in decoded) if (e is String) e];
+    } catch (_) {
+      return null;
+    }
+  }
 
   Map<String, dynamic> toJson() => {
         'id': id,
@@ -58,6 +80,8 @@ class AssistantModel {
         'prompt': prompt,
         'model': model,
         'useTools': useTools ? 1 : 0,
+        // null 保持 null（旧语义）；非 null（含空列表）编码为 JSON 文本。
+        'tools': toolIds == null ? null : jsonEncode(toolIds),
         'createdAt': createdAt,
         'updatedAt': updatedAt,
       };

@@ -29,7 +29,13 @@ class AssistantDao implements IAssistant, ITable {
     await storage.db.execute(
         'create table if not exists $_kTableName (id integer primary key autoincrement'
         ', name text, emoji text, prompt text, model text'
-        ', useTools integer, createdAt integer, updatedAt integer);');
+        ', useTools integer, tools text, createdAt integer, updatedAt integer);');
+    // 兼容旧表：无 tools 列时自动新增（L1 助手绑定工具）。
+    try {
+      await storage.db.execute('alter table $_kTableName add column tools text');
+    } catch (_) {
+      // 列已存在，忽略
+    }
     return AssistantDao._(storage);
   }
 

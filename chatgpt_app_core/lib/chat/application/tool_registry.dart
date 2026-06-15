@@ -42,9 +42,47 @@ class ChatTool {
       };
 }
 
+/// 一个可绑定工具的元信息（L1）。供助手编辑页展示「可选工具清单」用，
+/// 与实际执行体 [ChatTool] 解耦（执行体在 [ToolRegistry] 工厂里按需构造）。
+class ToolDescriptor {
+  /// 工具 id（与 [ChatTool.name] 一致，也是助手 `toolIds` 里存的值）。
+  final String id;
+  final String label;
+  final String description;
+
+  /// 是否依赖已配置的联网搜索 key（未配置时 UI 应置灰）。
+  final bool requiresSearchKey;
+
+  const ToolDescriptor({
+    required this.id,
+    required this.label,
+    required this.description,
+    this.requiresSearchKey = false,
+  });
+}
+
 /// 工具注册表（阶段六）。对应源项目 `src/aiCore/tools/`：
 /// 把「联网搜索」「知识库检索」等注册成工具，由模型决定调用。
 class ToolRegistry {
+  /// 联网搜索工具 id。
+  static const webSearchId = 'web_search';
+
+  /// 可绑定工具清单（L1）。助手编辑页据此渲染多选；新增工具在此登记。
+  static const List<ToolDescriptor> catalog = [
+    ToolDescriptor(
+      id: webSearchId,
+      label: '联网搜索',
+      description: '让助手能检索互联网最新信息（需已配置搜索 key）',
+      requiresSearchKey: true,
+    ),
+  ];
+
+  /// 某工具在当前设置下是否可用（依赖条件已满足）。
+  static bool isAvailable(AISettings s, String id) {
+    if (id == webSearchId) return s.webSearchConfigured;
+    return catalog.any((d) => d.id == id);
+  }
+
   final List<ChatTool> tools;
 
   const ToolRegistry(this.tools);
@@ -83,6 +121,26 @@ class ToolRegistry {
     return ToolRegistry([
       if (provider != null) webSearchTool(provider),
     ]);
+  }
+
+  /// 工厂（L1）：按助手绑定的 [toolIds] + 当前设置组装注册表。
+  /// - [toolIds] 为 null/空 = 助手未绑定任何工具；
+  /// - [forceWebSearch] = 会话页联网开关打开时强制纳入 web_search（保持旧行为）；
+  /// - 只纳入「依赖条件已满足」的工具（如 web_search 需已配置搜索 key）。
+  static ToolRegistry fromAssistant(
+    AISettings s,
+    List<String>? toolIds, {
+    bool forceWebSearch = false,
+  }) {
+    final selected = <String>{...?toolIds};
+    if (forceWebSearch) selected.add(webSearchId);
+
+    final tools = <ChatTool>[];
+    if (selected.contains(webSearchId)) {
+      final provider = WebSearchProvider.fromSettings(s);
+      if (provider != null) tools.add(webSearchTool(provider));
+    }
+    return ToolRegistry(tools);
   }
 
   /// 联网搜索工具：复用阶段五的 [WebSearchProvider]（Tavily 等）。
