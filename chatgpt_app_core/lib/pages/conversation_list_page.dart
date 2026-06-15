@@ -67,13 +67,15 @@ class _ConversationListPageState extends State<ConversationListPage>
       appBar: AppBar(
         title: const Text('ChatGPT'),
         centerTitle: true,
+        actions: [
+          IconButton(
+            onPressed: _createConversation,
+            tooltip: '新建会话',
+            icon: const Icon(Icons.add),
+          ),
+        ],
       ),
       body: _listView,
-      floatingActionButton: FloatingActionButton(
-        onPressed: _createConversation,
-        tooltip: '新建会话',
-        child: const Icon(Icons.add),
-      ),
     );
   }
 
