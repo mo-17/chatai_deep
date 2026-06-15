@@ -69,8 +69,21 @@ class ToolRegistry {
   static const calculatorId = 'calculator';
   static const dateTimeId = 'datetime';
   static const fetchUrlId = 'fetch_url';
+  // L3a 只读上下文工具。
+  static const searchHistoryId = 'search_chat_history';
+  static const listConversationsId = 'list_conversations';
+  static const listFavoritesId = 'list_favorites';
+  static const getConversationMessagesId = 'get_conversation_messages';
 
-  /// 可绑定工具清单（L1/L2）。助手编辑页据此渲染多选；新增工具在此登记。
+  /// 需要账号数据访问（[ToolActionContext]）的工具 id（L3a 只读）。
+  static const Set<String> _dataToolIds = {
+    searchHistoryId,
+    listConversationsId,
+    listFavoritesId,
+    getConversationMessagesId,
+  };
+
+  /// 可绑定工具清单（L1/L2/L3a）。助手编辑页据此渲染多选；新增工具在此登记。
   static const List<ToolDescriptor> catalog = [
     ToolDescriptor(
       id: webSearchId,
@@ -92,6 +105,26 @@ class ToolRegistry {
       id: fetchUrlId,
       label: '网页抓取',
       description: '抓取一个网页 URL 并返回其正文文本',
+    ),
+    ToolDescriptor(
+      id: searchHistoryId,
+      label: '搜索聊天记录',
+      description: '让助手按关键词检索你的历史聊天消息（只读）',
+    ),
+    ToolDescriptor(
+      id: listConversationsId,
+      label: '列出会话',
+      description: '让助手列出你最近的会话概览（只读）',
+    ),
+    ToolDescriptor(
+      id: listFavoritesId,
+      label: '读取收藏',
+      description: '让助手读取你收藏的消息（只读）',
+    ),
+    ToolDescriptor(
+      id: getConversationMessagesId,
+      label: '读取会话内容',
+      description: '让助手读取指定会话的消息，用于总结/回顾（只读）',
     ),
   ];
 
@@ -142,14 +175,16 @@ class ToolRegistry {
     ]);
   }
 
-  /// 工厂（L1）：按助手绑定的 [toolIds] + 当前设置组装注册表。
+  /// 工厂（L1/L2/L3a）：按助手绑定的 [toolIds] + 当前设置组装注册表。
   /// - [toolIds] 为 null/空 = 助手未绑定任何工具；
   /// - [forceWebSearch] = 会话页联网开关打开时强制纳入 web_search（保持旧行为）；
-  /// - 只纳入「依赖条件已满足」的工具（如 web_search 需已配置搜索 key）。
+  /// - 只纳入「依赖条件已满足」的工具（如 web_search 需已配置搜索 key）；
+  /// - [actions]（L3a）= 只读上下文工具的运行上下文；为 null 时这些工具不装配。
   static ToolRegistry fromAssistant(
     AISettings s,
     List<String>? toolIds, {
     bool forceWebSearch = false,
+    ToolActionContext? actions,
   }) {
     final selected = <String>{...?toolIds};
     if (forceWebSearch) selected.add(webSearchId);
@@ -162,6 +197,22 @@ class ToolRegistry {
     if (selected.contains(calculatorId)) tools.add(BuiltinTools.calculator());
     if (selected.contains(dateTimeId)) tools.add(BuiltinTools.dateTime());
     if (selected.contains(fetchUrlId)) tools.add(BuiltinTools.fetchUrl());
+
+    // L3a 只读上下文工具：需要账号数据访问，缺 actions 则跳过。
+    if (actions != null && selected.any(_dataToolIds.contains)) {
+      if (selected.contains(searchHistoryId)) {
+        tools.add(BuiltinTools.searchChatHistory(actions));
+      }
+      if (selected.contains(listConversationsId)) {
+        tools.add(BuiltinTools.listConversations(actions));
+      }
+      if (selected.contains(listFavoritesId)) {
+        tools.add(BuiltinTools.listFavorites(actions));
+      }
+      if (selected.contains(getConversationMessagesId)) {
+        tools.add(BuiltinTools.getConversationMessages(actions));
+      }
+    }
     return ToolRegistry(tools);
   }
 

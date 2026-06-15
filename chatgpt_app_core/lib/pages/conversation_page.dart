@@ -6,6 +6,7 @@ import 'package:chat_message/widget/chat_list.dart';
 import 'package:chatgpt_app_core/chat/application/chat_block_store.dart';
 import 'package:chatgpt_app_core/chat/application/file_processor.dart';
 import 'package:chatgpt_app_core/chat/application/stream_dispatcher.dart';
+import 'package:chatgpt_app_core/chat/application/builtin_tools.dart';
 import 'package:chatgpt_app_core/chat/application/tool_registry.dart';
 import 'package:chatgpt_app_core/chat/domain/chat_attachments.dart';
 import 'package:chatgpt_app_core/chat/domain/message_block.dart';
@@ -308,7 +309,8 @@ class _ConversationPageState extends State<ConversationPage> {
     // （助手显式绑定 web_search 时，即使联网开关关着也暴露给模型）。
     final allowTools = _assistant?.useTools ?? true;
     final registry = ToolRegistry.fromAssistant(settings, _assistant?.toolIds,
-        forceWebSearch: webSearch);
+        forceWebSearch: webSearch,
+        actions: ToolActionContext.forCurrentAccount());
     final tools =
         caps.tool && settings.streamEnabled && allowTools && !registry.isEmpty
             ? registry

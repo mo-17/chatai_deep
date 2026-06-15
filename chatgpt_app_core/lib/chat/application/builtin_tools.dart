@@ -1,7 +1,26 @@
 import 'dart:convert';
 
 import 'package:chatgpt_app_core/chat/application/tool_registry.dart';
+import 'package:chatgpt_app_core/db/conversation_dao.dart';
+import 'package:chatgpt_app_core/db/favorite_dao.dart';
+import 'package:chatgpt_app_core/db/hi_db_manager.dart';
+import 'package:chatgpt_app_core/db/message_dao.dart';
 import 'package:http/http.dart' as http;
+import 'package:sqflite_common/sqlite_api.dart';
+
+/// 动作工具的运行上下文（L3）：提供「按当前账号打开数据库」的能力。
+/// 只读工具（L3a）用它访问会话/消息/收藏；可注入 [openStorage] 便于单测。
+class ToolActionContext {
+  final Future<HiDBManager> Function() openStorage;
+
+  const ToolActionContext({required this.openStorage});
+
+  /// 默认实现：打开当前登录账号（或游客）的库。
+  factory ToolActionContext.forCurrentAccount() => ToolActionContext(
+        openStorage: () =>
+            HiDBManager.instance(dbName: HiDBManager.getAccountHash()),
+      );
+}
 
 /// L2 内置工具：无需配置、纯客户端执行的声明式工具（计算器 / 日期时间 / 抓取网页）。
 /// 与 `web_search` 一样是 [ChatTool]，由助手通过 `toolIds` 绑定、模型自主调用。
@@ -114,6 +133,172 @@ class BuiltinTools {
 
   static String _cap(String s, int max) =>
       s.length <= max ? s : '${s.substring(0, max)}…（已截断）';
+
+  // ── L3a 只读上下文工具 ───────────────────────────────────
+  // 让助手能「读」用户自己的本地数据（会话/消息/收藏），无副作用、无需确认。
+
+  /// 限制 [raw] 到 [min, max] 区间的整数参数，缺省 [fallback]。
+  static int _intArg(Object? raw, int fallback, {int min = 1, int max = 50}) {
+    final n = raw is int ? raw : int.tryParse('${raw ?? ''}');
+    if (n == null) return fallback;
+    return n.clamp(min, max);
+  }
+
+  /// 打开账号库并确保四张读表存在（懒建表，空账号也安全）。
+  static Future<Database> _readyDb(ToolActionContext ctx) async {
+    final storage = await ctx.openStorage();
+    await ConversationListDao.create(storage);
+    await MessageDao.create(storage, cid: 0);
+    await FavoriteDao.create(storage);
+    return storage.db;
+  }
+
+  /// 按关键词检索历史聊天消息（跨所有会话）。
+  static ChatTool searchChatHistory(ToolActionContext ctx) => ChatTool(
+        name: ToolRegistry.searchHistoryId,
+        description: '在用户的历史聊天记录里按关键词检索消息。当用户提到「我之前聊过/'
+            '问过」「找一下关于…的对话」等需要回顾历史时调用。',
+        parameters: const {
+          'type': 'object',
+          'properties': {
+            'query': {'type': 'string', 'description': '检索关键词'},
+            'limit': {'type': 'integer', 'description': '返回条数上限（默认 10，最多 50）'},
+          },
+          'required': ['query'],
+        },
+        execute: (args) async {
+          final q = (args['query'] as String? ?? '').trim();
+          if (q.isEmpty) return const ToolOutcome(content: '错误：缺少 query 参数');
+          final limit = _intArg(args['limit'], 10);
+          final db = await _readyDb(ctx);
+          final rows = await db.rawQuery(
+            'select m.cid as cid, m.content as content, m.createdAt as createdAt'
+            ', m.ownerType as ownerType, c.title as title '
+            'from tb_messages m '
+            'left join tb_conversation_list c on c.cid = m.cid '
+            'where m.content like ? order by m.createdAt desc limit ?',
+            ['%$q%', limit],
+          );
+          if (rows.isEmpty) {
+            return ToolOutcome(content: '没有找到包含「$q」的历史消息');
+          }
+          return ToolOutcome(
+            content: jsonEncode([
+              for (final r in rows)
+                {
+                  'cid': r['cid'],
+                  'conversation': r['title'] ?? '(未命名会话)',
+                  'role': r['ownerType'] == 'sender' ? 'user' : 'assistant',
+                  'snippet': _cap((r['content'] as String? ?? ''), 300),
+                },
+            ]),
+          );
+        },
+      );
+
+  /// 列出最近的会话（概览）。
+  static ChatTool listConversations(ToolActionContext ctx) => ChatTool(
+        name: ToolRegistry.listConversationsId,
+        description: '列出用户最近的会话（标题、消息数、最后更新）。当用户问'
+            '「我最近聊了什么」「列一下我的会话」时调用。',
+        parameters: const {
+          'type': 'object',
+          'properties': {
+            'limit': {'type': 'integer', 'description': '返回条数上限（默认 20，最多 50）'},
+          },
+        },
+        execute: (args) async {
+          final limit = _intArg(args['limit'], 20);
+          final db = await _readyDb(ctx);
+          final rows = await db.query('tb_conversation_list',
+              columns: ['cid', 'title', 'messageCount', 'updateAt'],
+              orderBy: 'updateAt desc',
+              limit: limit);
+          if (rows.isEmpty) return const ToolOutcome(content: '当前账号还没有任何会话');
+          return ToolOutcome(
+            content: jsonEncode([
+              for (final r in rows)
+                {
+                  'cid': r['cid'],
+                  'title': r['title'] ?? '(未命名会话)',
+                  'messageCount': r['messageCount'] ?? 0,
+                },
+            ]),
+          );
+        },
+      );
+
+  /// 列出收藏的消息。
+  static ChatTool listFavorites(ToolActionContext ctx) => ChatTool(
+        name: ToolRegistry.listFavoritesId,
+        description: '列出用户收藏的消息内容。当用户问「我收藏了什么」「从我的收藏里找…」'
+            '时调用。',
+        parameters: const {
+          'type': 'object',
+          'properties': {
+            'limit': {'type': 'integer', 'description': '返回条数上限（默认 20，最多 50）'},
+          },
+        },
+        execute: (args) async {
+          final limit = _intArg(args['limit'], 20);
+          final db = await _readyDb(ctx);
+          final rows = await db.query('tb_favorite',
+              columns: ['content', 'ownerName', 'createdAt'],
+              orderBy: 'id desc',
+              limit: limit);
+          if (rows.isEmpty) return const ToolOutcome(content: '收藏夹是空的');
+          return ToolOutcome(
+            content: jsonEncode([
+              for (final r in rows)
+                {
+                  'owner': r['ownerName'],
+                  'content': _cap((r['content'] as String? ?? ''), 500),
+                },
+            ]),
+          );
+        },
+      );
+
+  /// 读取某个会话（按 cid）的消息正文。
+  static ChatTool getConversationMessages(ToolActionContext ctx) => ChatTool(
+        name: ToolRegistry.getConversationMessagesId,
+        description: '读取指定会话（cid）的消息内容，用于总结/回顾某次对话。'
+            'cid 可来自 search_chat_history 或 list_conversations 的结果。',
+        parameters: const {
+          'type': 'object',
+          'properties': {
+            'cid': {'type': 'integer', 'description': '会话 id（cid）'},
+            'limit': {'type': 'integer', 'description': '返回消息条数上限（默认 30，最多 50）'},
+          },
+          'required': ['cid'],
+        },
+        execute: (args) async {
+          final cid = args['cid'] is int
+              ? args['cid'] as int
+              : int.tryParse('${args['cid'] ?? ''}');
+          if (cid == null) return const ToolOutcome(content: '错误：缺少有效的 cid 参数');
+          final limit = _intArg(args['limit'], 30);
+          final db = await _readyDb(ctx);
+          final rows = await db.query('tb_messages',
+              columns: ['content', 'ownerType', 'ownerName', 'createdAt'],
+              where: 'cid = ?',
+              whereArgs: [cid],
+              orderBy: 'id asc',
+              limit: limit);
+          if (rows.isEmpty) {
+            return ToolOutcome(content: '会话 $cid 没有消息（可能已删除）');
+          }
+          return ToolOutcome(
+            content: jsonEncode([
+              for (final r in rows)
+                {
+                  'role': r['ownerType'] == 'sender' ? 'user' : 'assistant',
+                  'content': _cap((r['content'] as String? ?? ''), 1000),
+                },
+            ]),
+          );
+        },
+      );
 }
 
 /// 极简算术求值（递归下降）。支持：整数/小数、`+ - * / %`、乘方 `^`（右结合）、

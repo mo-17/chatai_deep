@@ -132,5 +132,57 @@
 HTML 提取、各工具 execute、注册表登记与 `fromAssistant` 装配），全套 **187** 测试通过；
 `flutter analyze` 改动文件无问题。
 
-**下一步（L3）**：App 动作工具（建会话 / 存收藏 / 查历史 / 改设置），有副作用，需确认 UI +
-权限，是与「纯声明式工具」不同的一档，单独评估。
+**下一步（L3）**：App 动作工具（建会话 / 存收藏 / 查历史 / 改设置），见下方 L3 评估。
+
+## 5. L3 评估：App 动作工具
+
+**可行性：可行，接入点干净。** `registry.execute()` 在 `ToolLoopRunner` 里是 `await` 的
+（工具执行在 App async 上下文中），所以工具可 `await` 一个确认弹框再返回，流式回复会等待；
+弹框出口有现成的全局 `NavigatorUtil._context`（首页 `BottomNavigator` 赋值）。动作面 DAO
+（会话 / 收藏 / 设置 / 消息）均现成。唯一结构改动：`fromAssistant` 引入 `ToolActionContext`
+（在 `conversation_page` 注入 DAO/账号/确认回调）。
+
+**工具分档（按风险定确认策略）**：
+
+| 档 | 工具示例 | 副作用 | 确认 |
+|---|---|---|---|
+| **只读** | 搜历史 / 列会话 / 列收藏 / 读会话消息 | 无 | 不需要 |
+| **追加写** | 建会话 / 存收藏 / 置顶 | 有（可加不毁） | 每次确认（可「本会话允许」） |
+| **改设置** | 切模型 / 模式 / 联网开关 | 敏感 | 强确认 + 限范围 |
+| **破坏性** | 删会话 / 删收藏 | 不可逆 | 暂不做，或双重确认 |
+
+**主要风险**：① **提示注入**最关键——L2 的 `fetch_url` 抓回的网页正文可能藏「删光会话」之类
+指令，模型可能照做 → **所有写操作必须人工确认，破坏性操作不开放**；② 中途弹框 UX（已天然
+await，但要设计好「拒绝」回灌话术）；③ 仅在支持 tool 的模型 + 流式下生效；④ 动作必须落到
+当前账号 hash；⑤ 导航副作用（建会话是否跳转/刷新）。
+
+**落地路径**：先 **L3a 只读上下文工具**（零确认、零破坏），再 **L3b 追加写 + 确认框**；改设置 /
+删除暂缓。
+
+### ✅ 实施记录 · L3a（只读上下文工具）
+
+已落地（2026-06-15）。让助手能「读」用户自己的本地数据，无副作用、无需确认。
+
+**新增工具**（`builtin_tools.dart`，均只读）：
+
+- `search_chat_history(query, limit?)`：跨所有会话按关键词检索消息，返回会话标题 + 片段（联表
+  `tb_messages`/`tb_conversation_list`）。
+- `list_conversations(limit?)`：最近会话概览（标题 / cid / 消息数）。
+- `list_favorites(limit?)`：收藏内容。
+- `get_conversation_messages(cid, limit?)`：读某会话消息（role 映射 user/assistant），cid 来自前两者。
+
+**运行上下文**：新增 `ToolActionContext`（`openStorage` 可注入便于单测；
+`forCurrentAccount()` 默认按 `HiDBManager.getAccountHash()` 开库）。`_readyDb` 懒建四表，
+空账号也安全。
+
+**接线**（`tool_registry.dart`）：加 4 个 id + `_dataToolIds` 集合 + catalog 4 条（只读）；
+`fromAssistant` 增 `actions` 参数——**仅当传入 `actions` 时**装配这些工具（缺则跳过）。
+`conversation_page` 构造 registry 时传 `ToolActionContext.forCurrentAccount()`。
+助手编辑页多选自动展示这 4 个新工具，无需改 UI。
+
+**测试**：新增 `test/assistant_data_tools_test.dart` 8 例（四工具命中/未命中/排序/role 映射 +
+`fromAssistant` 有/无 actions 装配），全套 **195** 测试通过；`flutter analyze` 改动文件无新增问题。
+
+**下一步（L3b）**：追加写工具（建会话 / 存收藏 / 置顶）+ 确认框——给 `ToolDescriptor` 加
+`sideEffect` 标记，`fromAssistant` 给这类工具的 execute 包一层「先 await confirm(描述)，拒绝
+则返回『用户已拒绝』文本」，confirm 回调由 `conversation_page` 注入弹 `AlertDialog`。
