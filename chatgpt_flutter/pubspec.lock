@@ -277,6 +277,13 @@ packages:
     description: flutter
     source: sdk
     version: "0.0.0"
+  google_mlkit_text_recognition:
+    dependency: "direct overridden"
+    description:
+      path: "../ohos_stubs/google_mlkit_text_recognition"
+      relative: true
+    source: path
+    version: "0.15.1"
   hi_download:
     dependency: transitive
     description:
@@ -594,6 +601,13 @@ packages:
       url: "https://pub.dev"
     source: hosted
     version: "2.3.0"
+  pdfx:
+    dependency: "direct overridden"
+    description:
+      path: "../ohos_stubs/pdfx"
+      relative: true
+    source: path
+    version: "2.9.2"
   pedantic:
     dependency: transitive
     description:

@@ -1,4 +1,5 @@
-platform :osx, '10.15'
+# speech_to_text 要求 macOS 部署目标 ≥ 11.0
+platform :osx, '11.0'
 
 # CocoaPods analytics sends network stats synchronously affecting flutter build latency.
 ENV['COCOAPODS_DISABLE_STATS'] = 'true'
