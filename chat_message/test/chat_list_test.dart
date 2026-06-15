@@ -43,7 +43,7 @@ void main() {
     expect(tester.takeException(), isNull);
   });
 
-  testWidgets('新建空会话后发首条消息（addMessage 触发 scrollTo）不红屏',
+  testWidgets('新建空会话发首条消息后不红屏，且消息可见（不滚到空白）',
       (tester) async {
     final c = _controller([]);
     await tester.pumpWidget(_host(c));
@@ -56,8 +56,19 @@ void main() {
         MessageModel(ownerType: OwnerType.sender, content: '第一条', createdAt: 2000));
     await tester.pump();
     c.addMessage(
-        MessageModel(ownerType: OwnerType.receiver, content: '', createdAt: 2001));
+        MessageModel(ownerType: OwnerType.receiver, content: '回复', createdAt: 2001));
+    await tester.pump();
+    // 跑过滚动动画到稳态（对应真机滚完后的状态）。注意：不能用 pumpAndSettle —
+    // 它会多跑若干帧把空白掩盖掉；这里固定步进到动画结束的那一帧。
     await tester.pump(const Duration(milliseconds: 300));
     expect(tester.takeException(), isNull);
+    // 关键断言：消息真的渲染出来了。修复前锚点 positionedIndex=-1 只建中段
+    // 空 sliver，首条消息不渲染 -> 滚到空白，这两个断言会 findsNothing。
+    expect(find.text('第一条'), findsOneWidget);
+    expect(find.text('回复'), findsOneWidget);
+    // 最新消息（index 0）应在可见项里，而不是滚到空白处。
+    final visible =
+        c.itemPositionsListener.itemPositions.value.map((p) => p.index);
+    expect(visible, contains(0));
   });
 }

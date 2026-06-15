@@ -109,15 +109,21 @@ class ChatController implements IChatController {
   }
 
   void scrollToLastMessage() {
-    //fix controller not attached to any scroll views.
-    if (!itemScrollController.isAttached) {
-      return;
-    }
-    //reverse:true 下 index 0 = 最新消息（最底部）。
-    itemScrollController.scrollTo(
-        index: 0,
-        duration: const Duration(milliseconds: 200),
-        curve: Curves.easeIn);
+    // 延后到下一帧再滚：addMessage 里 sink.add 触发的列表重建是异步的，
+    // 若此刻同步 scrollTo，SPL 仍按旧 itemCount（新建会话时为 0）定位，
+    // 锚点 positionedIndex 落到 -1，列表滚到空白、首条消息不渲染
+    // （要靠目录跳转 / 退出重进才恢复）。等新数据完成布局后再滚，
+    // index 0（最新，reverse:true 下在最底部）才是有效锚点。
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      //fix controller not attached to any scroll views.
+      if (!itemScrollController.isAttached || initialMessageList.isEmpty) {
+        return;
+      }
+      itemScrollController.scrollTo(
+          index: 0,
+          duration: const Duration(milliseconds: 200),
+          curve: Curves.easeIn);
+    });
   }
 
   ///设置消息的时间是否可以展示
