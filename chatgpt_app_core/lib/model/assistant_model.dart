@@ -77,7 +77,7 @@ class AssistantModel {
     if (next.mode == AIMode.backend) {
       next.backendModel = m;
     } else {
-      next.activeLocal.model = m;
+      next.setActiveModel(m);
     }
     return next;
   }

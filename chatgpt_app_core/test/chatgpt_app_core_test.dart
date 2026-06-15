@@ -16,21 +16,22 @@ void main() {
       final restored = AISettings.fromJson(json);
 
       expect(restored.mode, original.mode);
-      expect(restored.localProvider, original.localProvider);
+      expect(restored.activeProviderId, original.activeProviderId);
       expect(restored.streamEnabled, original.streamEnabled);
-      expect(restored.openai.apiKey, original.openai.apiKey);
-      expect(restored.openai.baseUrl, original.openai.baseUrl);
-      expect(restored.openai.model, original.openai.model);
-      expect(restored.deepseek.apiKey, original.deepseek.apiKey);
+      expect(restored.providers.length, original.providers.length);
+      expect(restored.activeProvider.id, original.activeProvider.id);
+      expect(restored.effectiveModel, original.effectiveModel);
       expect(restored.backendModel, original.backendModel);
     });
 
-    test('fromJson handles missing fields gracefully', () {
+    test('fromJson handles missing fields gracefully (seeds presets)', () {
       final settings = AISettings.fromJson({});
       expect(settings.mode, AIMode.local);
-      expect(settings.localProvider, LocalProvider.deepseek);
+      expect(settings.activeProviderId, 'deepseek');
       expect(settings.streamEnabled, isTrue);
-      expect(settings.openai.apiKey, '');
+      expect(settings.providers, isNotEmpty);
+      expect(settings.providers.firstWhere((p) => p.id == 'deepseek').enabled,
+          isTrue);
     });
 
     test('fromJson parses backend mode correctly', () {
@@ -40,6 +41,70 @@ void main() {
       final settings = AISettings.fromJson(json);
       expect(settings.mode, AIMode.backend);
       expect(settings.effectiveModel, 'gpt-4o');
+    });
+
+    test('legacy format migrates openai/deepseek keys into providers', () {
+      final legacy = {
+        'mode': 'local',
+        'localProvider': 'openai',
+        'openai': {
+          'apiKey': 'sk-legacy',
+          'baseUrl': 'https://api.openai.com/v1/chat/completions',
+          'model': 'gpt-4o',
+        },
+        'deepseek': {
+          'apiKey': 'dk-legacy',
+          'baseUrl': 'https://api.deepseek.com/chat/completions',
+          'model': 'deepseek-chat',
+        },
+      };
+      final s = AISettings.fromJson(legacy);
+      expect(s.activeProviderId, 'openai');
+      final openai = s.providers.firstWhere((p) => p.id == 'openai');
+      expect(openai.apiKey, 'sk-legacy');
+      expect(openai.selectedModelId, 'gpt-4o');
+      expect(openai.enabled, isTrue);
+      expect(s.providers.firstWhere((p) => p.id == 'deepseek').apiKey,
+          'dk-legacy');
+      // 迁移后 activeLocal 仍能派生出可用的直连配置。
+      expect(s.activeLocal.apiKey, 'sk-legacy');
+      expect(s.activeLocal.model, 'gpt-4o');
+      expect(s.activeLocal.baseUrl, contains('/chat/completions'));
+    });
+  });
+
+  group('迁移后直连 URL 正确性（审查回归）', () {
+    test('旧自定义代理 baseUrl 逐字保留，不被强插 /v1', () {
+      final s = AISettings.fromJson({
+        'mode': 'local',
+        'localProvider': 'openai',
+        'openai': {
+          'apiKey': 'sk-x',
+          'baseUrl': 'https://myproxy.com/chat/completions',
+          'model': 'gpt-4o',
+        },
+      });
+      expect(s.activeLocal.baseUrl, 'https://myproxy.com/chat/completions');
+    });
+
+    test('旧 DeepSeek 默认端点（无 /v1）精确保留', () {
+      final s = AISettings.fromJson({
+        'mode': 'local',
+        'localProvider': 'deepseek',
+        'deepseek': {
+          'apiKey': 'dk',
+          'baseUrl': 'https://api.deepseek.com/chat/completions',
+          'model': 'deepseek-chat',
+        },
+      });
+      expect(s.activeLocal.baseUrl, 'https://api.deepseek.com/chat/completions');
+    });
+
+    test('apiHost 留空时回落到预设默认地址', () {
+      final s = AISettings.defaults()..activeProviderId = 'openai';
+      s.activeProvider.apiHost = '';
+      expect(
+          s.activeLocal.baseUrl, 'https://api.openai.com/v1/chat/completions');
     });
   });
 

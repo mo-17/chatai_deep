@@ -65,7 +65,9 @@ void main() {
     test('数据完整往返：会话/消息(blocks)/助手/收藏/设置', () async {
       final src = await newDb();
       final aid = await seed(src);
-      final settings = AISettings.defaults()..openai.apiKey = 'sk-secret';
+      final settings = AISettings.defaults();
+      settings.providers.firstWhere((p) => p.id == 'openai').apiKey =
+          'sk-secret';
 
       final bytes = await BackupService(src).exportArchive(
           settings: settings, accountHash: 'acc1', includeApiKeys: true);
@@ -82,7 +84,9 @@ void main() {
       expect(result.assistants, 1);
       expect(result.favorites, 1);
       expect(result.warnings, isEmpty);
-      expect(result.settings!.openai.apiKey, 'sk-secret');
+      expect(
+          result.settings!.providers.firstWhere((p) => p.id == 'openai').apiKey,
+          'sk-secret');
       expect(BackupService.restoreTick.value, tickBefore + 1);
 
       // 会话与助手的绑定关系保留（原始 id 不变）
@@ -119,10 +123,11 @@ void main() {
 
     test('默认脱敏：includeApiKeys=false 时备份里的 key 为空', () async {
       final src = await newDb();
-      final settings = AISettings.defaults()
-        ..openai.apiKey = 'sk-secret'
-        ..deepseek.apiKey = 'dk-secret'
-        ..tavilyApiKey = 'tv-secret';
+      final settings = AISettings.defaults()..tavilyApiKey = 'tv-secret';
+      settings.providers.firstWhere((p) => p.id == 'openai').apiKey =
+          'sk-secret';
+      settings.providers.firstWhere((p) => p.id == 'deepseek').apiKey =
+          'dk-secret';
       final bytes = await BackupService(src)
           .exportArchive(settings: settings, accountHash: 'acc1');
       await src.db.close();
@@ -130,11 +135,15 @@ void main() {
       final dst = await newDb();
       final result = await BackupService(dst)
           .importArchive(bytes, accountHash: 'acc1');
-      expect(result.settings!.openai.apiKey, '');
-      expect(result.settings!.deepseek.apiKey, '');
-      expect(result.settings!.tavilyApiKey, '');
+      final restored = result.settings!;
+      expect(
+          restored.providers.firstWhere((p) => p.id == 'openai').apiKey, '');
+      expect(
+          restored.providers.firstWhere((p) => p.id == 'deepseek').apiKey, '');
+      expect(restored.tavilyApiKey, '');
       // 原设置对象不被改动（导出用的是 clone）
-      expect(settings.openai.apiKey, 'sk-secret');
+      expect(settings.providers.firstWhere((p) => p.id == 'openai').apiKey,
+          'sk-secret');
       await dst.db.close();
     });
 

@@ -1,7 +1,10 @@
+import 'package:chatgpt_app_core/data/provider_presets.dart';
+import 'package:chatgpt_app_core/model/ai_provider.dart';
+
 enum AIMode { local, backend }
 
-enum LocalProvider { openai, deepseek }
-
+/// 「当前生效服务商」解析出的直连配置（DirectChatService 直接消费）。
+/// 由 [AISettings.activeLocal] 从激活的 [AiProvider] 派生而来。
 class ProviderConfig {
   String apiKey;
   String baseUrl;
@@ -12,25 +15,17 @@ class ProviderConfig {
     required this.baseUrl,
     required this.model,
   });
-
-  factory ProviderConfig.fromJson(Map<String, dynamic> j) => ProviderConfig(
-        apiKey: j['apiKey'] as String? ?? '',
-        baseUrl: j['baseUrl'] as String? ?? '',
-        model: j['model'] as String? ?? '',
-      );
-
-  Map<String, dynamic> toJson() => {
-        'apiKey': apiKey,
-        'baseUrl': baseUrl,
-        'model': model,
-      };
 }
 
 class AISettings {
   AIMode mode;
-  LocalProvider localProvider;
-  ProviderConfig openai;
-  ProviderConfig deepseek;
+
+  /// 灵活的服务商列表（迁移自 Cherry Studio）。取代旧版写死的 openai+deepseek。
+  List<AiProvider> providers;
+
+  /// 当前激活的本地服务商 id（mode=local 时生效）。
+  String activeProviderId;
+
   String backendModel;
   bool streamEnabled;
   bool resetOnLogout;
@@ -62,14 +57,12 @@ class AISettings {
   int searchContentLimit;
 
   /// 最大输出 token 数，0 = 不限制（请求体不带 max_tokens，用上游默认）。
-  /// 之前各 ChatService 写死 1000 导致长回复被截断 —— 现在默认不限。
   int maxOutputTokens;
 
   AISettings({
     required this.mode,
-    required this.localProvider,
-    required this.openai,
-    required this.deepseek,
+    required this.providers,
+    required this.activeProviderId,
     required this.backendModel,
     required this.streamEnabled,
     required this.resetOnLogout,
@@ -87,57 +80,92 @@ class AISettings {
 
   factory AISettings.defaults() => AISettings(
         mode: AIMode.local,
-        localProvider: LocalProvider.deepseek,
-        openai: ProviderConfig(
-          apiKey: '',
-          baseUrl: 'https://api.openai.com/v1/chat/completions',
-          model: 'gpt-3.5-turbo',
-        ),
-        deepseek: ProviderConfig(
-          apiKey: '',
-          baseUrl: 'https://api.deepseek.com/chat/completions',
-          model: 'deepseek-chat',
-        ),
+        providers: ProviderPresets.all(),
+        activeProviderId: ProviderPresets.defaultActiveId,
         backendModel: 'deepseek-chat',
         streamEnabled: true,
         resetOnLogout: true,
       );
 
-  factory AISettings.fromJson(Map<String, dynamic> j) => AISettings(
-        mode: _parseMode(j['mode'] as String?),
-        localProvider: _parseLocalProvider(j['localProvider'] as String?),
-        openai: j['openai'] != null
-            ? ProviderConfig.fromJson(j['openai'] as Map<String, dynamic>)
-            : ProviderConfig(
-                apiKey: '',
-                baseUrl: 'https://api.openai.com/v1/chat/completions',
-                model: 'gpt-3.5-turbo'),
-        deepseek: j['deepseek'] != null
-            ? ProviderConfig.fromJson(j['deepseek'] as Map<String, dynamic>)
-            : ProviderConfig(
-                apiKey: '',
-                baseUrl: 'https://api.deepseek.com/chat/completions',
-                model: 'deepseek-chat'),
-        backendModel: j['backendModel'] as String? ?? 'deepseek-chat',
-        streamEnabled: j['streamEnabled'] as bool? ?? true,
-        resetOnLogout: j['resetOnLogout'] as bool? ?? true,
-        tavilyApiKey: j['tavilyApiKey'] as String? ?? '',
-        webSearchEnabled: j['webSearchEnabled'] as bool? ?? false,
-        webSearchProviderId: j['webSearchProviderId'] as String? ?? 'tavily',
-        exaApiKey: j['exaApiKey'] as String? ?? '',
-        bochaApiKey: j['bochaApiKey'] as String? ?? '',
-        zhipuApiKey: j['zhipuApiKey'] as String? ?? '',
-        searchWithTime: j['searchWithTime'] as bool? ?? true,
-        searchMaxResults: j['searchMaxResults'] as int? ?? 5,
-        searchContentLimit: j['searchContentLimit'] as int? ?? 2000,
-        maxOutputTokens: j['maxOutputTokens'] as int? ?? 0,
-      );
+  factory AISettings.fromJson(Map<String, dynamic> j) {
+    final List<AiProvider> providers;
+    final String activeId;
+
+    if (j['providers'] is List) {
+      // 新格式：直读，并把缺失的新预设补进来（app 升级后能看到新服务商）。
+      providers = (j['providers'] as List)
+          .map((e) => AiProvider.fromJson(e as Map<String, dynamic>))
+          .toList();
+      final existing = providers.map((p) => p.id).toSet();
+      for (final preset in ProviderPresets.all()) {
+        if (!existing.contains(preset.id)) providers.add(preset);
+      }
+      activeId =
+          j['activeProviderId'] as String? ?? ProviderPresets.defaultActiveId;
+    } else {
+      // 旧格式迁移：从预设起步，把旧 openai/deepseek 的 key/model/baseUrl 注入。
+      providers = ProviderPresets.all();
+      _migrateLegacyProvider(
+          providers, 'openai', j['openai'] as Map<String, dynamic>?);
+      _migrateLegacyProvider(
+          providers, 'deepseek', j['deepseek'] as Map<String, dynamic>?);
+      activeId =
+          (j['localProvider'] as String?) == 'openai' ? 'openai' : 'deepseek';
+    }
+
+    return AISettings(
+      mode: _parseMode(j['mode'] as String?),
+      providers: providers,
+      activeProviderId: activeId,
+      backendModel: j['backendModel'] as String? ?? 'deepseek-chat',
+      streamEnabled: j['streamEnabled'] as bool? ?? true,
+      resetOnLogout: j['resetOnLogout'] as bool? ?? true,
+      tavilyApiKey: j['tavilyApiKey'] as String? ?? '',
+      webSearchEnabled: j['webSearchEnabled'] as bool? ?? false,
+      webSearchProviderId: j['webSearchProviderId'] as String? ?? 'tavily',
+      exaApiKey: j['exaApiKey'] as String? ?? '',
+      bochaApiKey: j['bochaApiKey'] as String? ?? '',
+      zhipuApiKey: j['zhipuApiKey'] as String? ?? '',
+      searchWithTime: j['searchWithTime'] as bool? ?? true,
+      searchMaxResults: j['searchMaxResults'] as int? ?? 5,
+      searchContentLimit: j['searchContentLimit'] as int? ?? 2000,
+      maxOutputTokens: j['maxOutputTokens'] as int? ?? 0,
+    );
+  }
+
+  /// 把旧版 `ProviderConfig{apiKey,baseUrl,model}` 注入预设里同名服务商。
+  static void _migrateLegacyProvider(
+      List<AiProvider> providers, String id, Map<String, dynamic>? legacy) {
+    if (legacy == null) return;
+    final idx = providers.indexWhere((p) => p.id == id);
+    if (idx < 0) return;
+    final p = providers[idx];
+    final apiKey = legacy['apiKey'] as String? ?? '';
+    final model = legacy['model'] as String? ?? '';
+    final baseUrl = legacy['baseUrl'] as String? ?? '';
+    if (apiKey.isNotEmpty) p.apiKey = apiKey;
+    if (model.isNotEmpty) {
+      // 旧模型若不在预设清单里，补进去，保证用户原选项不丢。
+      if (!p.models.any((m) => m.id == model)) {
+        p.models.insert(0, AiModel(id: model));
+      }
+      p.selectedModelId = model;
+    }
+    if (baseUrl.isNotEmpty) {
+      // 旧版把「完整 completions URL」逐字 POST（DirectChatService 直接用
+      // baseUrl）。这里必须原样保留，否则自定义代理（如
+      // https://myproxy.com/chat/completions，无 /v1）会被 chatCompletionsUrl
+      // 强插 /v1/chat/completions 而改成另一个端点。含 `/chat/completions` 的串
+      // 会被 chatCompletionsUrl 原样透传，故精确还原用户原端点。
+      p.apiHost = baseUrl;
+    }
+    p.enabled = true;
+  }
 
   Map<String, dynamic> toJson() => {
         'mode': mode.name,
-        'localProvider': localProvider.name,
-        'openai': openai.toJson(),
-        'deepseek': deepseek.toJson(),
+        'providers': providers.map((p) => p.toJson()).toList(),
+        'activeProviderId': activeProviderId,
         'backendModel': backendModel,
         'streamEnabled': streamEnabled,
         'resetOnLogout': resetOnLogout,
@@ -157,13 +185,53 @@ class AISettings {
   /// 保证 provider 监听方的 identity 比较能感知变化。
   AISettings clone() => AISettings.fromJson(toJson());
 
-  /// 当前生效的 provider 配置（仅 mode=local 时调用方应使用）
-  ProviderConfig get activeLocal =>
-      localProvider == LocalProvider.openai ? openai : deepseek;
+  /// 当前激活的服务商。找不到时回退首个启用 / 首个 / 兜底空壳。
+  AiProvider get activeProvider {
+    for (final p in providers) {
+      if (p.id == activeProviderId) return p;
+    }
+    for (final p in providers) {
+      if (p.enabled) return p;
+    }
+    if (providers.isNotEmpty) return providers.first;
+    return AiProvider(id: 'none', type: 'openai', name: '未配置');
+  }
 
-  /// 当前实际要发给上游的模型名
+  /// 启用中的服务商（UI「可切换」清单）。
+  List<AiProvider> get enabledProviders =>
+      providers.where((p) => p.enabled).toList();
+
+  /// 当前生效的直连配置（仅 mode=local 时调用方应使用）。
+  /// host 留空时回落到预设默认地址（兑现详情页「留空用默认」的承诺）。
+  ProviderConfig get activeLocal {
+    final p = activeProvider;
+    final host = p.apiHost.trim().isEmpty
+        ? (ProviderPresets.byId(p.id)?.apiHost ?? '')
+        : p.apiHost;
+    return ProviderConfig(
+      apiKey: p.apiKey,
+      baseUrl: AiProvider.buildChatCompletionsUrl(host),
+      model: p.effectiveModelId,
+    );
+  }
+
+  /// 能力探测用的 providerCode（mode=local 时取激活服务商）。
+  String get activeProviderCode => activeProvider.providerCode;
+
+  /// 把模型覆盖写回当前激活服务商（assistant 模型覆盖路径用）。
+  void setActiveModel(String model) {
+    final m = model.trim();
+    if (m.isEmpty) return;
+    final p = activeProvider;
+    if (!p.models.any((e) => e.id == m)) {
+      p.models.insert(0, AiModel(id: m));
+    }
+    p.selectedModelId = m;
+  }
+
+  /// 当前实际要发给上游的模型名。
   String get effectiveModel =>
-      mode == AIMode.backend ? backendModel : activeLocal.model;
+      mode == AIMode.backend ? backendModel : activeProvider.effectiveModelId;
 
   /// 当前所选联网搜索服务商的 API Key。
   String get activeSearchApiKey {
@@ -182,12 +250,12 @@ class AISettings {
   /// 联网搜索是否已配置（当前服务商有 key）。会话页据此显隐联网开关。
   bool get webSearchConfigured => activeSearchApiKey.isNotEmpty;
 
-  /// AI 服务商显示名称
+  /// AI 服务商显示名称。
   String get aiDisplayName {
     if (mode == AIMode.local) {
-      return localProvider == LocalProvider.openai ? 'ChatGPT' : 'DeepSeek';
+      return activeProvider.name;
     }
-    // 后端模式：按模型名前缀判断
+    // 后端模式：按模型名前缀判断。
     final m = backendModel.toLowerCase();
     if (m.startsWith('gpt-') || m.startsWith('o1-') || m.startsWith('chatgpt-')) {
       return 'ChatGPT';
@@ -201,10 +269,5 @@ class AISettings {
   static AIMode _parseMode(String? s) {
     if (s == 'backend') return AIMode.backend;
     return AIMode.local;
-  }
-
-  static LocalProvider _parseLocalProvider(String? s) {
-    if (s == 'openai') return LocalProvider.openai;
-    return LocalProvider.deepseek;
   }
 }

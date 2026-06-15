@@ -198,15 +198,20 @@ class _BackupRestorePageState extends State<BackupRestorePage> {
     if (incoming == null) return;
     final provider = context.read<AISettingsProvider>();
     final local = provider.settings;
-    if (incoming.openai.apiKey.isEmpty) {
-      incoming.openai.apiKey = local.openai.apiKey;
-    }
-    if (incoming.deepseek.apiKey.isEmpty) {
-      incoming.deepseek.apiKey = local.deepseek.apiKey;
+    // 按服务商 id 把缺失的 key 用本地已配置的补上。
+    for (final p in incoming.providers) {
+      if (p.apiKey.isNotEmpty) continue;
+      final matches = local.providers.where((e) => e.id == p.id);
+      if (matches.isNotEmpty && matches.first.apiKey.isNotEmpty) {
+        p.apiKey = matches.first.apiKey;
+      }
     }
     if (incoming.tavilyApiKey.isEmpty) {
       incoming.tavilyApiKey = local.tavilyApiKey;
     }
+    if (incoming.exaApiKey.isEmpty) incoming.exaApiKey = local.exaApiKey;
+    if (incoming.bochaApiKey.isEmpty) incoming.bochaApiKey = local.bochaApiKey;
+    if (incoming.zhipuApiKey.isEmpty) incoming.zhipuApiKey = local.zhipuApiKey;
     provider.update(incoming);
   }
 
