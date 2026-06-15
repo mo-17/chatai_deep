@@ -49,7 +49,10 @@ class CompletionDao {
       : chatService = ChatService.from(settings),
         _settings = settings,
         _systemPrompt = systemPrompt?.trim() ?? '',
-        _messageList = messages ?? [],
+        // 防御性拷贝成可增删的 growable 列表：调用方常把上一个 dao 的
+        // `currentMessages`（List.unmodifiable）传进来重建，若直接持有该引用，
+        // 后续 _messageList.add/removeLast 会抛 "Cannot add to an unmodifiable list"。
+        _messageList = messages == null ? <MessageModel>[] : List<MessageModel>.of(messages),
         _toolHistory = {...?toolHistory},
         _fileHistory = {...?fileHistory} {
     AILogger.log('init finish, loaded ${_messageList.length} messages');

@@ -3,11 +3,21 @@ import 'dart:async';
 import 'package:chat_message/models/message_model.dart';
 import 'package:chat_message/widget/default_message_widget.dart';
 import 'package:flutter/widgets.dart';
+import 'package:scrollable_positioned_list/scrollable_positioned_list.dart';
+
+// 让 chat_message 的使用方无需直接依赖 scrollable_positioned_list 即可拿到这些类型。
+export 'package:scrollable_positioned_list/scrollable_positioned_list.dart'
+    show ItemScrollController, ItemPositionsListener, ItemPosition;
 
 class ChatController implements IChatController {
   ///初始化数据
   final List<MessageModel> initialMessageList;
-  final ScrollController scrollController;
+
+  ///按 index 跳转的控制器（支持「对话目录」精确跳到某条消息）。
+  final ItemScrollController itemScrollController;
+
+  ///列表项可见性监听（分页加载更多、置顶/置底按钮可见性都基于它）。
+  final ItemPositionsListener itemPositionsListener;
 
   ///Provide MessageWidgetBuilder to customize your bubble style.
   final MessageWidgetBuilder? messageWidgetBuilder;
@@ -21,7 +31,8 @@ class ChatController implements IChatController {
   List<int> pelletShow = [];
 
   ChatController({required this.initialMessageList,
-    required this.scrollController,
+    required this.itemScrollController,
+    required this.itemPositionsListener,
     required this.timePellet,
     this.messageWidgetBuilder,
     this.messageContentBuilder}) {
@@ -34,9 +45,9 @@ class ChatController implements IChatController {
   StreamController();
 
   /// Used to dispose stream.
+  /// 注：ItemScrollController / ItemPositionsListener 无需手动 dispose。
   void dispose() {
     messageStreamController.close();
-    scrollController.dispose();
   }
 
   ///ChatList is init ok
@@ -98,12 +109,15 @@ class ChatController implements IChatController {
   }
 
   void scrollToLastMessage() {
-    //fix ScrollController not attached to any scroll views.
-    if (!scrollController.hasClients) {
+    //fix controller not attached to any scroll views.
+    if (!itemScrollController.isAttached) {
       return;
     }
-    scrollController.animateTo(0,
-        duration: const Duration(milliseconds: 200), curve: Curves.easeIn);
+    //reverse:true 下 index 0 = 最新消息（最底部）。
+    itemScrollController.scrollTo(
+        index: 0,
+        duration: const Duration(milliseconds: 200),
+        curve: Curves.easeIn);
   }
 
   ///设置消息的时间是否可以展示
