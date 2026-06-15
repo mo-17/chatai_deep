@@ -1,4 +1,5 @@
 import 'package:chatgpt_app_core/chat/application/file_processor.dart';
+import 'package:chatgpt_app_core/chat/application/ocr_service.dart';
 import 'package:chatgpt_app_core/db/hi_db_manager.dart';
 import 'package:chatgpt_app_core/db/knowledge_dao.dart';
 import 'package:chatgpt_app_core/model/knowledge_model.dart';
@@ -52,7 +53,7 @@ class _KnowledgeBasePageState extends State<KnowledgeBasePage> {
         actions: [
           IconButton(
             icon: const Icon(Icons.upload_file_outlined),
-            tooltip: '导入文件（PDF / 文本）',
+            tooltip: '导入文件（PDF / 文本 / 图片，扫描件与图片走 OCR）',
             onPressed: _importFile,
           ),
         ],
@@ -97,13 +98,16 @@ class _KnowledgeBasePageState extends State<KnowledgeBasePage> {
         },
       );
 
-  /// 导入文件（PDF / 文本类）：选文件 → 抽正文 → 切块落库。文件名作标题。
+  /// 导入文件（PDF / 文本 / 图片）：选文件 → 抽正文（图片或扫描件走 OCR）→ 切块落库。
   void _importFile() async {
     String? path;
     try {
       final result = await FilePicker.pickFiles(
         type: FileType.custom,
-        allowedExtensions: FileProcessor.pickerExtensions,
+        allowedExtensions: [
+          ...FileProcessor.pickerExtensions,
+          ...OcrService.imageExtensions,
+        ],
       );
       path = result?.files.single.path;
     } catch (e) {
@@ -112,10 +116,37 @@ class _KnowledgeBasePageState extends State<KnowledgeBasePage> {
     }
     if (path == null) return;
     final name = path.split(RegExp(r'[/\\]')).last;
-    final text = await FileProcessor.extractTextForImport(path);
+    final ext = name.contains('.') ? name.split('.').last.toLowerCase() : '';
+    final isImage = OcrService.imageExtensions.contains(ext);
+
+    String? text;
+    try {
+      if (isImage) {
+        // 图片：必须 OCR。
+        if (!OcrService.isSupported) {
+          if (mounted) HiDialog.showSnackBar(context, '当前平台不支持 OCR（仅 Android/iOS）');
+          return;
+        }
+        text = await _withLoading('正在识别图片…',
+            () => OcrService.recognizeImageFile(path!));
+      } else {
+        // PDF / 文本：先抽文本层；PDF 像扫描件且支持 OCR 时回退逐页 OCR。
+        text = await FileProcessor.extractTextForImport(path);
+        if (ext == 'pdf' &&
+            OcrService.isSupported &&
+            OcrService.pdfNeedsOcr(text)) {
+          text = await _withLoading('扫描件，正在 OCR 识别…',
+              () => OcrService.recognizePdf(path!));
+        }
+      }
+    } catch (e) {
+      if (mounted) HiDialog.showSnackBar(context, '识别失败：$e');
+      return;
+    }
+
     if (!mounted) return;
     if (text == null || text.trim().isEmpty) {
-      HiDialog.showSnackBar(context, '无法从「$name」提取文本');
+      HiDialog.showSnackBar(context, '未能从「$name」提取到文字');
       return;
     }
     final title = name.contains('.')
@@ -126,6 +157,32 @@ class _KnowledgeBasePageState extends State<KnowledgeBasePage> {
     HiDialog.showSnackBar(
         context, docId == null ? '导入失败（无可用内容）' : '已导入「$title」');
     await _loadData();
+  }
+
+  /// 执行一个耗时任务并显示模态加载框（OCR 可能较慢）。
+  Future<T> _withLoading<T>(String label, Future<T> Function() task) async {
+    showDialog(
+      context: context,
+      barrierDismissible: false,
+      builder: (_) => Dialog(
+        child: Padding(
+          padding: const EdgeInsets.all(20),
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              const CircularProgressIndicator(),
+              const SizedBox(width: 16),
+              Flexible(child: Text(label)),
+            ],
+          ),
+        ),
+      ),
+    );
+    try {
+      return await task();
+    } finally {
+      if (mounted) Navigator.of(context, rootNavigator: true).pop();
+    }
   }
 
   void _addDocument() async {

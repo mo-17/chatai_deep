@@ -255,10 +255,24 @@ await，但要设计好「拒绝」回灌话术）；③ 仅在支持 tool 的�
 
 **导入方式**（粘贴文本 + 文件，2026-06-15 补）：
 
-- 知识库页：右下角 FAB「粘贴文本导入」；右上角「导入文件」选 PDF / 文本类文件
-  （`FileProcessor.pickerExtensions`），复用 `FileProcessor.extractTextForImport`
-  （PDF 限页抽取、文本类直读，返回**纯正文**不带附件包裹标记），文件名作标题 → 切块落库。
-  扫描件 PDF 抽不出文本属预期。
+- 知识库页：右下角 FAB「粘贴文本导入」；右上角「导入文件」选 PDF / 文本类 / 图片文件
+  （`FileProcessor.pickerExtensions` + `OcrService.imageExtensions`），文件名作标题 → 切块落库：
+  - 文本类：`FileProcessor.extractTextForImport` 直读；
+  - PDF：先抽文本层；**扫描件**（`OcrService.pdfNeedsOcr` 判定空/过短/占位提示）回退逐页 OCR；
+  - 图片：直接 OCR。
+
+**端上 OCR**（2026-06-15 补，ML Kit）：
+
+- `chat/application/ocr_service.dart`：`OcrService`——`google_mlkit_text_recognition`（中文脚本）
+  识别图片；`pdfx` 把扫描件 PDF 逐页 2x 渲染成图再识别（限 20 页）。`pdfNeedsOcr` 为纯函数
+  （可单测）；耗时识别在 UI 用模态加载框。
+- 新增依赖：`google_mlkit_text_recognition` + `pdfx`。
+- ⚠️ **平台限制**：**仅 Android / iOS 有原生实现**，由 `OcrService.isSupported`
+  （`Platform.isAndroid || isIOS`）守卫，桌面 / web 调用时优雅提示「当前平台不支持 OCR」。
+  **HarmonyOS 壳（chatgpt_flutter_ohos）需注意**：这两个插件无 OHOS 实现，可能影响其构建；
+  若 OHOS 构建报错，需在该壳用 `dependency_overrides` 处理或将 OCR 入口在 OHOS 上隐藏。
+- 测试：`test/ocr_service_test.dart` 4 例（`pdfNeedsOcr` 判定 + imageExtensions）；原生识别需
+  真机，未在单测覆盖。全套 **219** 测试通过。
 
 **已知限制 / 下一步**：
 
