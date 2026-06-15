@@ -253,9 +253,16 @@ await，但要设计好「拒绝」回灌话术）；③ 仅在支持 tool 的�
 多词与、空文本不建、工具 execute 命中/未命中、catalog + `fromAssistant` 装配），全套 **212**
 测试通过；`flutter analyze` 改动文件无新增问题（仅 1 条与全仓库一致的 `use_super_parameters`）。
 
+**导入方式**（粘贴文本 + 文件，2026-06-15 补）：
+
+- 知识库页：右下角 FAB「粘贴文本导入」；右上角「导入文件」选 PDF / 文本类文件
+  （`FileProcessor.pickerExtensions`），复用 `FileProcessor.extractTextForImport`
+  （PDF 限页抽取、文本类直读，返回**纯正文**不带附件包裹标记），文件名作标题 → 切块落库。
+  扫描件 PDF 抽不出文本属预期。
+
 **已知限制 / 下一步**：
 
-- 仅关键词检索（同义/语义召回弱）；导入仅「粘贴文本」，PDF/文件导入可后续复用 `FileProcessor`。
+- 仅关键词检索（同义/语义召回弱）。
 - 知识库目前对**所有绑定该工具的助手共享**（按账号一个库）；如需「每个助手独立知识库」，
   要在表上加 `assistantId` 维度并在工具/UI 串起来。
 - **L4b**：把 `search` 换/并入向量检索（embedding API + 余弦相似），catalog 与 UI 不变。

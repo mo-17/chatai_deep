@@ -176,6 +176,16 @@ class FileProcessor {
 
   static String _wrapFileText(String name, String content) =>
       '[附件「$name」内容开始]\n$content\n[附件「$name」内容结束]';
+
+  /// 知识库导入用：从一个本地文件抽**纯正文**（不带附件包裹标记）。
+  /// 支持 PDF（限页抽取）与文本类扩展名；其它类型返回 null。
+  /// 复用 [_extractPdfText]/[_readTextFile]，解析失败由它们返回提示文案而不抛。
+  static Future<String?> extractTextForImport(String path) async {
+    final ext = path.split('.').last.toLowerCase();
+    if (ext == 'pdf') return _extractPdfText(File(path));
+    if (_textExts.contains(ext)) return _readTextFile(File(path));
+    return null;
+  }
 }
 
 /// [FileProcessor.process] 的产物。

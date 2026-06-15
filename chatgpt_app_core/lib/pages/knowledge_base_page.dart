@@ -1,10 +1,12 @@
+import 'package:chatgpt_app_core/chat/application/file_processor.dart';
 import 'package:chatgpt_app_core/db/hi_db_manager.dart';
 import 'package:chatgpt_app_core/db/knowledge_dao.dart';
 import 'package:chatgpt_app_core/model/knowledge_model.dart';
 import 'package:chatgpt_app_core/util/hi_dialog.dart';
+import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 
-/// 知识库管理页（L4a）：导入文档（粘贴文本）/ 列表 / 删除。
+/// 知识库管理页（L4a）：导入文档（粘贴文本 / PDF、文本文件）/ 列表 / 删除。
 /// 导入的文档供绑定了「知识库检索」工具的助手按关键词检索作答。
 class KnowledgeBasePage extends StatefulWidget {
   const KnowledgeBasePage({Key? key}) : super(key: key);
@@ -44,11 +46,21 @@ class _KnowledgeBasePageState extends State<KnowledgeBasePage> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      appBar: AppBar(title: const Text('知识库'), centerTitle: true),
+      appBar: AppBar(
+        title: const Text('知识库'),
+        centerTitle: true,
+        actions: [
+          IconButton(
+            icon: const Icon(Icons.upload_file_outlined),
+            tooltip: '导入文件（PDF / 文本）',
+            onPressed: _importFile,
+          ),
+        ],
+      ),
       body: _docs.isEmpty ? _emptyView : _listView,
       floatingActionButton: FloatingActionButton(
         onPressed: _addDocument,
-        tooltip: '导入文档',
+        tooltip: '粘贴文本导入',
         child: const Icon(Icons.add),
       ),
     );
@@ -60,7 +72,8 @@ class _KnowledgeBasePageState extends State<KnowledgeBasePage> {
           children: [
             const Text('📚', style: TextStyle(fontSize: 48)),
             const SizedBox(height: 12),
-            Text('还没有文档。点右下角导入一段资料，\n再给助手绑定「知识库检索」工具即可问答。',
+            Text('还没有文档。右下角粘贴文本、或右上角导入 PDF/文本文件，\n'
+                '再给助手绑定「知识库检索」工具即可问答。',
                 style: TextStyle(color: Colors.grey[600]),
                 textAlign: TextAlign.center),
           ],
@@ -83,6 +96,37 @@ class _KnowledgeBasePageState extends State<KnowledgeBasePage> {
           );
         },
       );
+
+  /// 导入文件（PDF / 文本类）：选文件 → 抽正文 → 切块落库。文件名作标题。
+  void _importFile() async {
+    String? path;
+    try {
+      final result = await FilePicker.pickFiles(
+        type: FileType.custom,
+        allowedExtensions: FileProcessor.pickerExtensions,
+      );
+      path = result?.files.single.path;
+    } catch (e) {
+      if (mounted) HiDialog.showSnackBar(context, '选取文件失败：$e');
+      return;
+    }
+    if (path == null) return;
+    final name = path.split(RegExp(r'[/\\]')).last;
+    final text = await FileProcessor.extractTextForImport(path);
+    if (!mounted) return;
+    if (text == null || text.trim().isEmpty) {
+      HiDialog.showSnackBar(context, '无法从「$name」提取文本');
+      return;
+    }
+    final title = name.contains('.')
+        ? name.substring(0, name.lastIndexOf('.'))
+        : name;
+    final docId = await _dao!.addDocument(title, text);
+    if (!mounted) return;
+    HiDialog.showSnackBar(
+        context, docId == null ? '导入失败（无可用内容）' : '已导入「$title」');
+    await _loadData();
+  }
 
   void _addDocument() async {
     final titleCtl = TextEditingController();
