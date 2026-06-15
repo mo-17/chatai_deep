@@ -17,18 +17,22 @@ import 'package:login_sdk/pages/login_page.dart';
 import 'package:provider/provider.dart';
 
 Future<void> runChatGptApp() async {
-  WidgetsFlutterBinding.ensureInitialized();
-
-  // 全局错误上报 hook（后续接入 Sentry / 自建上报时替换此处）
-  FlutterError.onError = (FlutterErrorDetails details) {
-    FlutterError.presentError(details);
-    // ignore: avoid_print
-    debugPrint('FlutterError: ${details.exceptionAsString()}');
-    // TODO: 接入错误上报服务
-  };
-
+  // 必须把 ensureInitialized 与 runApp 放进同一个 Zone，否则平台通道回调
+  // （含文本输入）跨 Zone 投递会出错——桌面端表现为输入框打不进字（Zone mismatch）。
   runZonedGuarded(
-    () => runApp(const MyApp()),
+    () {
+      WidgetsFlutterBinding.ensureInitialized();
+
+      // 全局错误上报 hook（后续接入 Sentry / 自建上报时替换此处）
+      FlutterError.onError = (FlutterErrorDetails details) {
+        FlutterError.presentError(details);
+        // ignore: avoid_print
+        debugPrint('FlutterError: ${details.exceptionAsString()}');
+        // TODO: 接入错误上报服务
+      };
+
+      runApp(const MyApp());
+    },
     (Object error, StackTrace stack) {
       // ignore: avoid_print
       debugPrint('uncaught error: $error\n$stack');
