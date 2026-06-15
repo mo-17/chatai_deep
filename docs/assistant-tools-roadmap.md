@@ -105,3 +105,32 @@
 - 绑了工具但用了不支持工具 / 非流式的模型会静默回落，UI 暂未提示（后续可在编辑页或
   会话页补一行说明）。
 - 内置模板尚未预绑定工具；需要「默认带联网」的模板时，给其 `toolIds: ['web_search']` 即可。
+
+## ✅ 实施记录 · L2
+
+已落地（2026-06-15）。新增 3 个**无需配置**的纯 Dart 工具，通过 L1 机制即可被助手绑定。
+
+**新增工具**（`chat/application/builtin_tools.dart`）：
+
+- `calculator` 计算器：算术表达式求值（`+ - * / %`、乘方 `^` 右结合、一元正负、括号）。
+  自带递归下降求值器 `Arithmetic.eval`，**零第三方依赖**（整数指数走快速幂，非整指数用
+  exp/ln 级数近似），除零 / 语法错误抛 `FormatException` → 工具返回友好报错。
+- `datetime` 日期时间：返回设备本地 `date / time / weekday / iso`（JSON）。
+- `fetch_url` 网页抓取：GET 一个 http(s) URL，`HtmlText.extract` 去标签/剔除
+  script+style/解码常见实体/压缩空白，截断到 4000 字。`http.Client` 可注入便于测试。
+
+**接线**（`chat/application/tool_registry.dart`）：
+
+- 加 id 常量 `calculatorId/dateTimeId/fetchUrlId`，`catalog` 增 3 条（`requiresSearchKey=false`）。
+- `isAvailable`：非 web_search 工具恒可用（无需 key）。
+- `fromAssistant`：按 `toolIds` 装配这三个工具。
+- 顺手移除该文件一处历史遗留的未用 import（`search_orchestrator`）。
+
+助手编辑页的工具多选（L1 已实现）自动展示这三个新工具，无需改 UI。
+
+**测试**：新增 `test/builtin_tools_test.dart` 11 例（算术优先级/右结合/小数/取模/非法输入、
+HTML 提取、各工具 execute、注册表登记与 `fromAssistant` 装配），全套 **187** 测试通过；
+`flutter analyze` 改动文件无问题。
+
+**下一步（L3）**：App 动作工具（建会话 / 存收藏 / 查历史 / 改设置），有副作用，需确认 UI +
+权限，是与「纯声明式工具」不同的一档，单独评估。

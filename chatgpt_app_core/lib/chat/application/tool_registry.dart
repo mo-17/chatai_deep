@@ -1,6 +1,6 @@
 import 'dart:convert';
 
-import 'package:chatgpt_app_core/chat/application/search_orchestrator.dart';
+import 'package:chatgpt_app_core/chat/application/builtin_tools.dart';
 import 'package:chatgpt_app_core/chat/application/web_search_provider.dart';
 import 'package:chatgpt_app_core/chat/domain/message_block.dart';
 import 'package:chatgpt_app_core/model/ai_settings.dart';
@@ -64,10 +64,13 @@ class ToolDescriptor {
 /// 工具注册表（阶段六）。对应源项目 `src/aiCore/tools/`：
 /// 把「联网搜索」「知识库检索」等注册成工具，由模型决定调用。
 class ToolRegistry {
-  /// 联网搜索工具 id。
+  /// 工具 id。
   static const webSearchId = 'web_search';
+  static const calculatorId = 'calculator';
+  static const dateTimeId = 'datetime';
+  static const fetchUrlId = 'fetch_url';
 
-  /// 可绑定工具清单（L1）。助手编辑页据此渲染多选；新增工具在此登记。
+  /// 可绑定工具清单（L1/L2）。助手编辑页据此渲染多选；新增工具在此登记。
   static const List<ToolDescriptor> catalog = [
     ToolDescriptor(
       id: webSearchId,
@@ -75,9 +78,25 @@ class ToolRegistry {
       description: '让助手能检索互联网最新信息（需已配置搜索 key）',
       requiresSearchKey: true,
     ),
+    ToolDescriptor(
+      id: calculatorId,
+      label: '计算器',
+      description: '精确计算数学表达式（加减乘除、取模、乘方、括号）',
+    ),
+    ToolDescriptor(
+      id: dateTimeId,
+      label: '日期时间',
+      description: '获取设备当前的本地日期、时间与星期',
+    ),
+    ToolDescriptor(
+      id: fetchUrlId,
+      label: '网页抓取',
+      description: '抓取一个网页 URL 并返回其正文文本',
+    ),
   ];
 
   /// 某工具在当前设置下是否可用（依赖条件已满足）。
+  /// 仅 web_search 依赖搜索 key；其余 L2 工具无需配置，恒可用。
   static bool isAvailable(AISettings s, String id) {
     if (id == webSearchId) return s.webSearchConfigured;
     return catalog.any((d) => d.id == id);
@@ -140,6 +159,9 @@ class ToolRegistry {
       final provider = WebSearchProvider.fromSettings(s);
       if (provider != null) tools.add(webSearchTool(provider));
     }
+    if (selected.contains(calculatorId)) tools.add(BuiltinTools.calculator());
+    if (selected.contains(dateTimeId)) tools.add(BuiltinTools.dateTime());
+    if (selected.contains(fetchUrlId)) tools.add(BuiltinTools.fetchUrl());
     return ToolRegistry(tools);
   }
 
