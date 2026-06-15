@@ -1,3 +1,4 @@
+import 'package:chatgpt_app_core/migration/guest_migration_service.dart';
 import 'package:chatgpt_app_core/pages/conversation_list_page.dart';
 import 'package:chatgpt_app_core/pages/my_page.dart';
 import 'package:chatgpt_app_core/pages/study_page.dart';
@@ -26,9 +27,56 @@ class _BottomNavigatorState extends State<BottomNavigator> {
   void initState() {
     super.initState();
     // 确保每次进入主页按当前账号加载 AI 设置
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      context.read<AISettingsProvider>().load();
+    WidgetsBinding.instance.addPostFrameCallback((_) async {
+      await context.read<AISettingsProvider>().load();
+      if (!mounted) return;
+      await _maybeMigrateGuestData();
     });
+  }
+
+  /// 正式账号首次进入主页时，若检测到游客模式攒下的数据，弹窗询问是否导入。
+  /// 每个账号只问一次（导入或拒绝后置位标记）。
+  Future<void> _maybeMigrateGuestData() async {
+    if (!await GuestMigrationService.shouldPrompt() || !mounted) return;
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('导入游客数据'),
+        content: const Text('检测到你在游客模式下的会话记录和 AI 服务设置，'
+            '是否导入当前账号？'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, false),
+            child: const Text('不导入'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(ctx, true),
+            child: const Text('导入'),
+          ),
+        ],
+      ),
+    );
+    if (!mounted) return;
+    if (confirmed != true) {
+      // 拒绝：标记已处理，下次不再询问。
+      await GuestMigrationService.markDone();
+      return;
+    }
+    try {
+      final result = await GuestMigrationService.migrate();
+      if (!mounted) return;
+      await context.read<AISettingsProvider>().load();
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('已导入 ${result.conversations} 个会话')),
+      );
+    } catch (e) {
+      // 失败不置标记，下次仍可重试。
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('导入失败：$e')),
+      );
+    }
   }
 
   @override

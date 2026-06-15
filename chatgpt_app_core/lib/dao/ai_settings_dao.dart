@@ -8,9 +8,24 @@ import 'package:login_sdk/dao/login_dao.dart';
 class AISettingsDao {
   static const _kOldKey = 'ai_settings_v1';
 
-  static String _key() {
-    final hash = LoginDao.getAccountHash() ?? 'guest';
-    return 'ai_settings_v1_$hash';
+  /// 指定账号 hash 的 HiCache key。游客固定为 'guest'。
+  static String keyFor(String hash) => 'ai_settings_v1_$hash';
+
+  static String _key() => keyFor(LoginDao.getAccountHash() ?? 'guest');
+
+  /// 指定账号是否已存过 AI 设置（用于游客迁移判断目标账号是否「空」）。
+  static bool hasSettings(String hash) =>
+      HiCache.getInstance().get(keyFor(hash)) != null;
+
+  /// 读取指定账号 hash 的 AI 设置（不依赖当前登录态）。无记录则返回默认。
+  static AISettings loadFor(String hash) {
+    final raw = HiCache.getInstance().get(keyFor(hash));
+    if (raw == null) return AISettings.defaults();
+    try {
+      return AISettings.fromJson(jsonDecode(raw) as Map<String, dynamic>);
+    } catch (_) {
+      return AISettings.defaults();
+    }
   }
 
   ///同步读取当前账号的 AI 设置（HiCache 内存读是同步的）
