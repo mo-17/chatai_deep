@@ -1,9 +1,14 @@
+import 'dart:io';
+
 import 'package:chatgpt_app_core/db/assistant_dao.dart';
 import 'package:chatgpt_app_core/db/hi_db_manager.dart';
+import 'package:chatgpt_app_core/db/knowledge_dao.dart';
 import 'package:chatgpt_app_core/model/assistant_model.dart';
 import 'package:chatgpt_app_core/pages/assistant_edit_page.dart';
 import 'package:chatgpt_app_core/pages/assistant_market_page.dart';
+import 'package:chatgpt_app_core/skill/skill_import_service.dart';
 import 'package:chatgpt_app_core/util/hi_dialog.dart';
+import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 
 ///助手管理页（阶段七）：列表 + 新建 / 编辑 / 删除。
@@ -50,6 +55,13 @@ class _AssistantListPageState extends State<AssistantListPage> {
         title: const Text('助手管理'),
         centerTitle: true,
         actions: [
+          // file_picker 暂无鸿蒙实现，OHOS 隐藏 zip 导入入口。
+          if (Platform.operatingSystem != 'ohos')
+            IconButton(
+              icon: const Icon(Icons.archive_outlined),
+              tooltip: '导入技能（.zip，含 SKILL.md）',
+              onPressed: _importSkillZip,
+            ),
           IconButton(
             icon: const Icon(Icons.storefront_outlined),
             tooltip: '助手市场',
@@ -118,6 +130,99 @@ class _AssistantListPageState extends State<AssistantListPage> {
         MaterialPageRoute(
             builder: (_) => AssistantEditPage(assistant: assistant)));
     if (changed == true) _loadData();
+  }
+
+  /// 导入技能 zip（Agent Skill：SKILL.md + references/）：解析成
+  /// 「助手（正文→系统提示词）+ 知识库文档（references→RAG）」并落库。
+  /// 仅适用纯指令型 skill；带脚本/需沙箱的 skill 在移动端无法执行。
+  void _importSkillZip() async {
+    // 选 zip 文件。
+    String? path;
+    String? pickedName;
+    try {
+      final result = await FilePicker.pickFiles(
+        type: FileType.custom,
+        allowedExtensions: const ['zip'],
+      );
+      path = result?.files.single.path;
+      pickedName = result?.files.single.name;
+    } catch (e) {
+      if (mounted) HiDialog.showSnackBar(context, '选取文件失败：$e');
+      return;
+    }
+    if (path == null) return;
+
+    // 解析。
+    SkillPackage pkg;
+    try {
+      final bytes = await File(path).readAsBytes();
+      final fallback = (pickedName != null && pickedName.contains('.'))
+          ? pickedName.substring(0, pickedName.lastIndexOf('.'))
+          : pickedName;
+      pkg = SkillImportService.parseArchive(bytes, fallbackName: fallback);
+    } catch (e) {
+      if (!mounted) return;
+      HiDialog.showSnackBar(
+          context, e is FormatException ? e.message : '解析失败：$e');
+      return;
+    }
+
+    // 预览确认。
+    if (!mounted) return;
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: Text('${pkg.emoji} 导入技能「${pkg.name}」'),
+        content: SingleChildScrollView(
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              if (pkg.description.isNotEmpty) ...[
+                Text(pkg.description,
+                    style: TextStyle(color: Colors.grey[700], fontSize: 13)),
+                const SizedBox(height: 12),
+              ],
+              Text('将新建助手：${pkg.name}'),
+              Text('系统提示词：约 ${pkg.systemPrompt.length} 字'),
+              Text(pkg.references.isEmpty
+                  ? '参考资料：无'
+                  : '参考资料：${pkg.references.length} 篇 → 导入知识库，'
+                      '并自动绑定「知识库检索」工具\n'
+                      '· ${pkg.references.map((r) => r.title).join('\n· ')}'),
+            ],
+          ),
+        ),
+        actions: [
+          TextButton(
+              onPressed: () => Navigator.pop(ctx, false),
+              child: const Text('取消')),
+          FilledButton(
+              onPressed: () => Navigator.pop(ctx, true),
+              child: const Text('导入')),
+        ],
+      ),
+    );
+    if (ok != true) return;
+
+    // 落库。
+    try {
+      final dbManager =
+          await HiDBManager.instance(dbName: HiDBManager.getAccountHash());
+      final kbDao = await KnowledgeDao.create(dbManager);
+      final result = await SkillImportService.import(
+        pkg,
+        assistantDao: _dao!,
+        knowledgeDao: kbDao,
+      );
+      if (!mounted) return;
+      final extra =
+          result.docCount > 0 ? '，${result.docCount} 篇资料进知识库' : '';
+      HiDialog.showSnackBar(context, '已导入技能「${result.name}」$extra');
+      await _loadData();
+    } catch (e) {
+      if (mounted) HiDialog.showSnackBar(context, '导入失败：$e');
+    }
   }
 
   ///助手市场（遗留项 9）：浏览内置模板并添加。关闭后刷新列表（可能已添加几个）。
