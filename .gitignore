@@ -42,3 +42,6 @@ task_backup
 */example/test/
 */example/*.iml
 */example/pubspec.lock
+
+/docs/
+/docs_main_old_backup/
