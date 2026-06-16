@@ -63,6 +63,14 @@ class MessageDao implements IMessage, ITable {
     return storage.db.delete(tableName, where: 'id = ?', whereArgs: [id]);
   }
 
+  /// 按 createdAt 删除本会话内的一条消息。
+  /// 本次会话内新发送/接收的消息，其内存模型还没有数据库自增 id（id 为 null），
+  /// 无法走 [deleteMessage]；createdAt 在单个会话内唯一，用 cid + createdAt 定位即可。
+  Future<int> deleteMessageByCreatedAt(int createdAt) {
+    return storage.db.delete(tableName,
+        where: 'cid = ? and createdAt = ?', whereArgs: [cid, createdAt]);
+  }
+
   @override
   Future<List<MessageModel>> getAllMessage() async {
     var results = await storage.db.query(tableName,

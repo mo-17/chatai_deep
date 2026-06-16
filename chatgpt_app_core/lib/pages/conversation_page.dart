@@ -1144,6 +1144,10 @@ class _ConversationPageState extends State<ConversationPage> {
     try {
       if (assistantMessage.id != null) {
         await messageDao.deleteMessage(assistantMessage.id!);
+      } else {
+        // 刚流式生成的回复还没有数据库 id，按 createdAt 删除旧行，
+        // 否则旧回复会残留在 DB，重进会话时出现重复。
+        await messageDao.deleteMessageByCreatedAt(assistantMessage.createdAt);
       }
     } catch (e) {
       AILogger.log('regenerate: delete old reply failed: $e');
@@ -1184,7 +1188,11 @@ class _ConversationPageState extends State<ConversationPage> {
 
   _deleteMessage(MessageModel message) async {
     try {
-      var result = await messageDao.deleteMessage(message.id!);
+      // 本次会话内新消息的内存模型可能没有数据库 id（id 为 null），
+      // 此时按 createdAt 删除，避免 message.id! 空断言抛异常导致删除「不生效」。
+      var result = message.id != null
+          ? await messageDao.deleteMessage(message.id!)
+          : await messageDao.deleteMessageByCreatedAt(message.createdAt);
       if (result > 0) {
         chatController.deleteMessage(message);
         _blockStore.removeMessage(chatMessageKey(message.createdAt));
