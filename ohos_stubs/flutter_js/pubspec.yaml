@@ -1,0 +1,8 @@
+name: flutter_js
+description: OHOS 空实现 stub —— flutter_js 无鸿蒙原生实现。共享核心引用的符号在此提供，
+  运行时由 JsRuntimeService.isSupported（非 OHOS）守卫，OHOS 上永不调用真正的执行。
+version: 0.0.1
+publish_to: 'none'
+
+environment:
+  sdk: '>=3.0.0 <4.0.0'

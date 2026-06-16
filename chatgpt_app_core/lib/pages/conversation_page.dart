@@ -8,6 +8,7 @@ import 'package:chatgpt_app_core/chat/application/file_processor.dart';
 import 'package:chatgpt_app_core/chat/application/stream_dispatcher.dart';
 import 'package:chatgpt_app_core/chat/application/builtin_tools.dart';
 import 'package:chatgpt_app_core/chat/application/tool_registry.dart';
+import 'package:chatgpt_app_core/skill/js_runtime_service.dart';
 import 'package:chatgpt_app_core/chat/domain/chat_attachments.dart';
 import 'package:chatgpt_app_core/chat/domain/message_block.dart';
 import 'package:chatgpt_app_core/chat/domain/model_capabilities.dart';
@@ -113,6 +114,16 @@ class _ConversationPageState extends State<ConversationPage> {
   /// 应用助手的模型覆盖后的设置 —— 能力位与请求构造都用它，
   /// 保证「助手指定了模型时，capabilitiesFor 用覆盖后的模型算」。
   AISettings _effective(AISettings s) => _assistant?.applyTo(s) ?? s;
+
+  /// 工具运行上下文：注入确认回调 + 当前助手 id（run_script 据此查脚本）
+  /// + JS 执行钩子（仅支持的平台注入，OHOS/Web 为 null → run_script 优雅跳过）。
+  ToolActionContext _toolActions() => ToolActionContext.forCurrentAccount(
+        confirm: _confirmToolAction,
+        assistantId: _assistant?.id,
+        runJs: JsRuntimeService.isSupported
+            ? (code, input) => const JsRuntimeService().run(code, input: input)
+            : null,
+      );
 
   /// 块上记录的 modelId（覆盖后实际生效的模型）。
   String get _effectiveModelId => _effective(_currentSettings).effectiveModel;
@@ -549,7 +560,7 @@ class _ConversationPageState extends State<ConversationPage> {
     final allowTools = _assistant?.useTools ?? true;
     final registry = ToolRegistry.fromAssistant(settings, _assistant?.toolIds,
         forceWebSearch: webSearch,
-        actions: ToolActionContext.forCurrentAccount(confirm: _confirmToolAction));
+        actions: _toolActions());
     final tools =
         caps.tool && settings.streamEnabled && allowTools && !registry.isEmpty
             ? registry
@@ -1171,8 +1182,7 @@ class _ConversationPageState extends State<ConversationPage> {
     final allowTools = _assistant?.useTools ?? true;
     final registry = ToolRegistry.fromAssistant(settings, _assistant?.toolIds,
         forceWebSearch: webSearch,
-        actions:
-            ToolActionContext.forCurrentAccount(confirm: _confirmToolAction));
+        actions: _toolActions());
     final tools =
         caps.tool && settings.streamEnabled && allowTools && !registry.isEmpty
             ? registry

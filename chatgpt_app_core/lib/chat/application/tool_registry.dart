@@ -85,8 +85,10 @@ class ToolRegistry {
   static const stickConversationId = 'stick_conversation';
   // L4a 知识库检索。
   static const knowledgeSearchId = 'knowledge_search';
+  // 技能脚本执行（导入的 scripts/*.js，沙箱 + 审计 + 确认）。
+  static const runScriptId = 'run_script';
 
-  /// 需要账号数据访问（[ToolActionContext]）的工具 id（L3a 只读 + L3b 写 + L4a 检索）。
+  /// 需要账号数据访问（[ToolActionContext]）的工具 id（L3a 只读 + L3b 写 + L4a 检索 + 脚本）。
   static const Set<String> _dataToolIds = {
     searchHistoryId,
     listConversationsId,
@@ -96,6 +98,7 @@ class ToolRegistry {
     createConversationId,
     stickConversationId,
     knowledgeSearchId,
+    runScriptId,
   };
 
   /// 可绑定工具清单（L1/L2/L3a）。助手编辑页据此渲染多选；新增工具在此登记。
@@ -163,6 +166,12 @@ class ToolRegistry {
       id: knowledgeSearchId,
       label: '知识库检索',
       description: '让助手在你导入的知识库（私有文档）里检索作答（只读）',
+    ),
+    ToolDescriptor(
+      id: runScriptId,
+      label: '运行脚本',
+      description: '让助手运行技能随包的 JS 脚本做确定性处理（沙箱执行，执行前需你确认）',
+      sideEffect: true,
     ),
   ];
 
@@ -262,6 +271,10 @@ class ToolRegistry {
       }
       if (selected.contains(stickConversationId)) {
         tools.add(BuiltinTools.stickConversation(actions));
+      }
+      // 技能脚本执行（运行前在工具内部做审计展示 + confirm）。
+      if (selected.contains(runScriptId)) {
+        tools.add(BuiltinTools.runScript(actions));
       }
     }
     return ToolRegistry(tools);

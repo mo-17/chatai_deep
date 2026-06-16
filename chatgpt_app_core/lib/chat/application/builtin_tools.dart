@@ -7,8 +7,11 @@ import 'package:chatgpt_app_core/db/favorite_dao.dart';
 import 'package:chatgpt_app_core/db/hi_db_manager.dart';
 import 'package:chatgpt_app_core/db/knowledge_dao.dart';
 import 'package:chatgpt_app_core/db/message_dao.dart';
+import 'package:chatgpt_app_core/db/skill_script_dao.dart';
 import 'package:chatgpt_app_core/model/conversation_model.dart';
 import 'package:chatgpt_app_core/model/favorite_model.dart';
+import 'package:chatgpt_app_core/model/skill_script.dart';
+import 'package:chatgpt_app_core/skill/js_exec_result.dart';
 import 'package:http/http.dart' as http;
 import 'package:sqflite/sqflite.dart';
 
@@ -22,16 +25,32 @@ class ToolActionContext {
   /// **null = 无 UI**：写工具一律拒绝（安全兜底，防提示注入下的静默写入）。
   final Future<bool> Function(String title, String detail)? confirm;
 
-  const ToolActionContext({required this.openStorage, this.confirm});
+  /// 当前会话绑定的助手 id（run_script 据此查该助手的技能脚本）。null = 无。
+  final int? assistantId;
 
-  /// 默认实现：打开当前登录账号（或游客）的库。[confirm] 由 UI 层注入。
+  /// JS 执行钩子（注入式）：避免工具层硬依赖原生引擎，便于单测与 OHOS 编译。
+  /// null = 当前环境不支持执行脚本（run_script 会优雅跳过）。
+  final Future<JsExecResult> Function(String code, String input)? runJs;
+
+  const ToolActionContext({
+    required this.openStorage,
+    this.confirm,
+    this.assistantId,
+    this.runJs,
+  });
+
+  /// 默认实现：打开当前登录账号（或游客）的库。[confirm] / [runJs] 由 UI 层注入。
   factory ToolActionContext.forCurrentAccount({
     Future<bool> Function(String title, String detail)? confirm,
+    int? assistantId,
+    Future<JsExecResult> Function(String code, String input)? runJs,
   }) =>
       ToolActionContext(
         openStorage: () =>
             HiDBManager.instance(dbName: HiDBManager.getAccountHash()),
         confirm: confirm,
+        assistantId: assistantId,
+        runJs: runJs,
       );
 }
 
@@ -455,6 +474,68 @@ class BuiltinTools {
           return ToolOutcome(content: '已$action会话 #$cid');
         },
       );
+
+  // ── 运行技能脚本（run_script）─────────────────────────────
+  // 执行技能随包导入的 scripts/*.js。安全分三层：QuickJS 沙箱（无文件/网络）兜底、
+  // 导入时的 AI 审计结论、执行前展示审计+代码预览并 await confirm（缺 confirm 一律拒绝）。
+  static ChatTool runScript(ToolActionContext ctx) => ChatTool(
+        name: ToolRegistry.runScriptId,
+        description: '运行当前技能随包的脚本（scripts 里的 .js），用于确定性的文本/数据处理。'
+            '按脚本文件名调用；input 为传给脚本的文本（脚本里以全局 INPUT 读取）。'
+            '执行前会请用户确认。',
+        parameters: const {
+          'type': 'object',
+          'properties': {
+            'name': {
+              'type': 'string',
+              'description': '脚本文件名，如 normalize-punctuation.js',
+            },
+            'input': {'type': 'string', 'description': '传给脚本的输入文本（可选）'},
+          },
+          'required': ['name'],
+        },
+        execute: (args) async {
+          final name = (args['name'] as String? ?? '').trim();
+          final input = args['input'] as String? ?? '';
+          if (name.isEmpty) return const ToolOutcome(content: '错误：缺少 name 参数');
+          final aid = ctx.assistantId;
+          if (aid == null) {
+            return const ToolOutcome(content: '当前会话未绑定技能助手，无法运行脚本');
+          }
+          final storage = await ctx.openStorage();
+          final dao = await SkillScriptDao.create(storage);
+          final script = await dao.getScript(aid, name);
+          if (script == null) return ToolOutcome(content: '未找到脚本「$name」');
+          if (ctx.runJs == null) {
+            return const ToolOutcome(
+                content: '当前环境不支持执行脚本（已跳过），请用文字方式近似完成');
+          }
+          final summary =
+              script.auditSummary.isNotEmpty ? '（${script.auditSummary}）' : '';
+          final detail = '安全审计：${_auditLabel(script.auditLevel)}$summary\n'
+              '代码预览：\n${_cap(script.code, 400)}';
+          if (!await _confirm(ctx, '运行脚本「$name」', detail)) return _denied;
+          final r = await ctx.runJs!(script.code, input);
+          if (!r.ok) return ToolOutcome(content: '脚本执行失败：${r.error}');
+          return ToolOutcome(content: r.output.isEmpty ? '(脚本无输出)' : r.output);
+        },
+      );
+
+  /// 审计等级 → 中文标签（确认框展示用）。
+  static String _auditLabel(String level) {
+    switch (level) {
+      case SkillScript.levelSafe:
+        return '安全';
+      case SkillScript.levelWarn:
+        return '可疑';
+      case SkillScript.levelDanger:
+        return '危险';
+      case SkillScript.levelPending:
+        return '未审计';
+      default:
+        return '未知';
+    }
+  }
 }
 
 /// 极简算术求值（递归下降）。支持：整数/小数、`+ - * / %`、乘方 `^`（右结合）、

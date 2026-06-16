@@ -35,6 +35,10 @@ dependencies:
   # OCR（仅 Android/iOS 有原生实现；其它平台运行时由 OcrService.isSupported 守卫）
   google_mlkit_text_recognition: ^0.15.0
   pdfx: ^2.9.1
+  # JS 引擎（QuickJS via flutter_js）：执行技能自带的 scripts/*.js（纯计算沙箱）。
+  # 无鸿蒙原生实现，OHOS shell 用 ohos_stubs/flutter_js override；
+  # 运行时由 JsRuntimeService.isSupported（非 OHOS/非 Web）守卫。
+  flutter_js: ^0.8.2
 
 dev_dependencies:
   flutter_test:

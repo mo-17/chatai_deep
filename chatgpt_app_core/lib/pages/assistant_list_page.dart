@@ -3,6 +3,7 @@ import 'dart:io';
 import 'package:chatgpt_app_core/db/assistant_dao.dart';
 import 'package:chatgpt_app_core/db/hi_db_manager.dart';
 import 'package:chatgpt_app_core/db/knowledge_dao.dart';
+import 'package:chatgpt_app_core/db/skill_script_dao.dart';
 import 'package:chatgpt_app_core/model/assistant_model.dart';
 import 'package:chatgpt_app_core/pages/assistant_edit_page.dart';
 import 'package:chatgpt_app_core/pages/assistant_market_page.dart';
@@ -190,6 +191,13 @@ class _AssistantListPageState extends State<AssistantListPage> {
                   : '参考资料：${pkg.references.length} 篇 → 导入知识库，'
                       '并自动绑定「知识库检索」工具\n'
                       '· ${pkg.references.map((r) => r.title).join('\n· ')}'),
+              if (pkg.scripts.isNotEmpty)
+                Text(
+                  '脚本：${pkg.scripts.length} 个 → 绑定「运行脚本」工具，'
+                  '运行前在沙箱执行并需你确认（仅 Android/iOS 等支持，鸿蒙不可执行）\n'
+                  '· ${pkg.scripts.map((s) => s.name).join('\n· ')}',
+                  style: TextStyle(color: Colors.orange[800], fontSize: 13),
+                ),
             ],
           ),
         ),
@@ -210,14 +218,21 @@ class _AssistantListPageState extends State<AssistantListPage> {
       final dbManager =
           await HiDBManager.instance(dbName: HiDBManager.getAccountHash());
       final kbDao = await KnowledgeDao.create(dbManager);
+      final scriptDao = await SkillScriptDao.create(dbManager);
+      // 导入时 AI 安全审计的实时 LLM 调用（auditCall）暂留待接入聊天路径；
+      // 现以 pending 入库，执行时由 run_script 工具展示代码预览 + 用户确认兜底。
       final result = await SkillImportService.import(
         pkg,
         assistantDao: _dao!,
         knowledgeDao: kbDao,
+        scriptDao: scriptDao,
       );
       if (!mounted) return;
-      final extra =
-          result.docCount > 0 ? '，${result.docCount} 篇资料进知识库' : '';
+      final parts = <String>[
+        if (result.docCount > 0) '${result.docCount} 篇资料进知识库',
+        if (result.scriptCount > 0) '${result.scriptCount} 个脚本',
+      ];
+      final extra = parts.isEmpty ? '' : '，${parts.join('、')}';
       HiDialog.showSnackBar(context, '已导入技能「${result.name}」$extra');
       await _loadData();
     } catch (e) {

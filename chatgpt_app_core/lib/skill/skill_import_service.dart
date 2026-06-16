@@ -3,7 +3,10 @@ import 'dart:convert';
 import 'package:archive/archive.dart';
 import 'package:chatgpt_app_core/db/assistant_dao.dart';
 import 'package:chatgpt_app_core/db/knowledge_dao.dart';
+import 'package:chatgpt_app_core/db/skill_script_dao.dart';
 import 'package:chatgpt_app_core/model/assistant_model.dart';
+import 'package:chatgpt_app_core/model/skill_script.dart';
+import 'package:chatgpt_app_core/skill/skill_script_auditor.dart';
 import 'package:openai_flutter/utils/ai_logger.dart';
 
 /// 技能包里的一篇参考资料（`references/*.md` 等）。导入后进知识库。
@@ -35,12 +38,16 @@ class SkillPackage {
   /// `references/` 下的参考资料，逐篇进知识库。
   final List<SkillReference> references;
 
+  /// `scripts/` 下的 `.js` 脚本（assistantId 占位 0，导入时回填）。
+  final List<SkillScript> scripts;
+
   const SkillPackage({
     required this.name,
     required this.emoji,
     required this.description,
     required this.systemPrompt,
     required this.references,
+    this.scripts = const [],
   });
 }
 
@@ -55,11 +62,15 @@ class SkillImportResult {
   /// 进知识库的总切块数。
   final int chunkTotal;
 
+  /// 落库的脚本数。
+  final int scriptCount;
+
   const SkillImportResult({
     required this.assistantId,
     required this.name,
     required this.docCount,
     required this.chunkTotal,
+    this.scriptCount = 0,
   });
 }
 
@@ -122,25 +133,48 @@ class SkillImportService {
       refs.add(SkillReference(title: _stripExt(base), text: text));
     }
 
+    // 脚本：同前缀下的 `.js`（含 scripts/）。带包脚本，导入后经审计 + 确认才执行。
+    final scripts = <SkillScript>[];
+    for (final f in archive.files) {
+      if (!f.isFile) continue;
+      if (identical(f, skillFile)) continue;
+      final n = f.name;
+      if (prefix.isNotEmpty && !n.startsWith(prefix)) continue;
+      final base = _basename(n.substring(prefix.length));
+      if (base.startsWith('.')) continue;
+      if (_extOf(base) != 'js') continue;
+      final code = _decode(f).trim();
+      if (code.isEmpty) continue;
+      scripts.add(SkillScript(assistantId: 0, name: base, code: code));
+    }
+
     return SkillPackage(
       name: name,
       emoji: '🧩',
       description: parsed.description.trim(),
       systemPrompt: parsed.body.trim(),
       references: refs,
+      scripts: scripts,
     );
   }
 
   // ---------------------------------------------------------------- 导入
 
   /// 把技能包落库：新建一个助手（正文进系统提示词，有参考资料时绑定
-  /// 「知识库检索」工具），并把每篇参考资料切块进知识库。
+  /// 「知识库检索」工具、有脚本时绑定「运行脚本」工具），参考资料切块进知识库，
+  /// 脚本（可选审计后）存入 [scriptDao]。
+  /// - [scriptDao]：为 null 时丢弃脚本（不落库）；
+  /// - [auditCall]：提供时在导入阶段对每个脚本做一次 AI 安全审计并存结论；
+  ///   为 null（如未配置 API key）时脚本以 `pending` 入库，执行时再由用户确认。
   static Future<SkillImportResult> import(
     SkillPackage pkg, {
     required AssistantDao assistantDao,
     required KnowledgeDao knowledgeDao,
+    SkillScriptDao? scriptDao,
+    ScriptAuditCaller? auditCall,
   }) async {
     final hasRefs = pkg.references.isNotEmpty;
+    final hasScripts = pkg.scripts.isNotEmpty && scriptDao != null;
 
     // 参考资料进知识库（标题加技能名前缀，便于辨识与检索）。
     var docCount = 0;
@@ -157,8 +191,8 @@ class SkillImportService {
     // chunkTotal 仅作展示，按文档已落库为准（不再二次查询）。
     chunkTotal = docCount;
 
-    // 正文为系统提示词；有参考资料时追加一句「桥接说明」，提示模型走知识库
-    // 检索而不是去读文件（移动端没有 Agent 的文件系统）。
+    // 正文为系统提示词；有参考资料/脚本时追加「桥接说明」，提示模型走知识库
+    // 检索、走工具执行脚本，而不是去读/跑文件（移动端没有 Agent 的文件系统）。
     var prompt = pkg.systemPrompt;
     if (hasRefs) {
       final titles = pkg.references.map((r) => r.title).join('、');
@@ -166,24 +200,50 @@ class SkillImportService {
           '（本技能的参考资料已导入知识库：$titles。'
           '需要时请用「知识库检索」工具按关键词查询，而不是尝试读取文件。）';
     }
+    if (hasScripts) {
+      final names = pkg.scripts.map((s) => s.name).join('、');
+      prompt = '$prompt\n\n（本技能含脚本：$names。需要运行时请用「运行脚本」工具'
+          '按文件名调用，执行前会经安全审计并请用户确认；'
+          '若当前环境不支持执行，请用文字方式近似完成对应步骤。）';
+    }
 
+    // 按携带内容绑定工具：参考资料 → 知识库检索；脚本 → 运行脚本。
+    final toolIds = <String>[
+      if (hasRefs) 'knowledge_search',
+      if (hasScripts) 'run_script',
+    ];
     final assistant = AssistantModel(
       name: pkg.name,
       emoji: pkg.emoji,
       prompt: prompt,
       useTools: true,
-      // 有参考资料才暴露知识库检索工具；否则不主动绑定任何工具。
-      toolIds: hasRefs ? const ['knowledge_search'] : null,
+      toolIds: toolIds.isEmpty ? null : toolIds,
     );
     final id = await assistantDao.saveAssistant(assistant);
+
+    // 脚本：回填 assistantId，（有 caller 时）审计，再落库。
+    var scriptCount = 0;
+    if (hasScripts && id != null) {
+      for (final s in pkg.scripts) {
+        s.assistantId = id;
+        if (auditCall != null) {
+          final v = await SkillScriptAuditor.audit(s.name, s.code, auditCall);
+          s.auditLevel = v.level;
+          s.auditSummary = v.summary;
+        }
+        await scriptDao.saveScript(s);
+        scriptCount++;
+      }
+    }
     AILogger.log('skill import "${pkg.name}" -> assistant#$id'
-        ', $docCount kb docs');
+        ', $docCount kb docs, $scriptCount scripts');
 
     return SkillImportResult(
       assistantId: id ?? -1,
       name: pkg.name,
       docCount: docCount,
       chunkTotal: chunkTotal,
+      scriptCount: scriptCount,
     );
   }
 
