@@ -5,6 +5,7 @@ import 'package:chatgpt_app_core/db/message_dao.dart';
 import 'package:chatgpt_app_core/model/conversation_model.dart';
 import 'package:chatgpt_app_core/pages/conversation_page.dart';
 import 'package:chatgpt_app_core/widget/assistant_picker.dart';
+import 'package:chatgpt_app_core/util/app_events.dart';
 import 'package:flutter/material.dart';
 import 'package:login_sdk/util/navigator_util.dart';
 import 'package:openai_flutter/utils/ai_logger.dart';
@@ -38,11 +39,14 @@ class _ConversationListPageState extends State<ConversationListPage>
     _doInit();
     // 备份导入后重新加载（页面 keepAlive 常驻，不会再走 initState）。
     BackupService.restoreTick.addListener(_onRestore);
+    // 转发写入/新建会话后刷新（同样因 keepAlive 不会自动重载）。
+    AppEvents.conversationsChanged.addListener(_onRestore);
   }
 
   @override
   void dispose() {
     BackupService.restoreTick.removeListener(_onRestore);
+    AppEvents.conversationsChanged.removeListener(_onRestore);
     super.dispose();
   }
 

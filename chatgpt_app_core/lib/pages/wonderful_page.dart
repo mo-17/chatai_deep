@@ -8,6 +8,7 @@ import 'package:flutter/material.dart';
 import 'package:login_sdk/util/navigator_util.dart';
 
 import '../widget/favorite_widget.dart';
+import '../widget/forward_sheet.dart';
 import 'meessage_detail_page.dart';
 
 ///收藏的消息页面
@@ -80,11 +81,7 @@ class _WonderfulPageState extends State<WonderfulPage> {
       ),
       PopupMenuItem(
         child: const Text('转发'),
-        onTap: () => HiDialog.showSnackBar(context, '敬请期待...'),
-      ),
-      PopupMenuItem(
-        child: const Text('更多'),
-        onTap: () => HiDialog.showSnackBar(context, '敬请期待...'),
+        onTap: () => showForwardSheet(context, content: model.content),
       )
     ]);
   }

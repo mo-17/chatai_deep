@@ -1,0 +1,11 @@
+name: share_plus
+description: >-
+  HarmonyOS 空实现 stub。上游 share_plus 无 OHOS 原生实现，OHOS 壳通过
+  dependency_overrides 覆盖到本包，使共享核心可编译。调用点（转发面板）已用
+  `Platform.operatingSystem == 'ohos'` 守卫，降级为复制到剪贴板，不会触达本 stub；
+  stub.share 仅返回「unavailable」结果，不抛异常。
+version: 12.0.2
+publish_to: 'none'
+
+environment:
+  sdk: '>=3.0.0 <4.0.0'

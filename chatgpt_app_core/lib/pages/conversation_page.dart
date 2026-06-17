@@ -29,6 +29,7 @@ import 'package:chatgpt_app_core/util/hi_dialog.dart';
 import 'package:chatgpt_app_core/util/hi_utils.dart';
 import 'package:chatgpt_app_core/util/scroll_jump.dart';
 import 'package:chatgpt_app_core/widget/assistant_picker.dart';
+import 'package:chatgpt_app_core/widget/forward_sheet.dart';
 import 'package:chatgpt_app_core/widget/message_input_widget.dart';
 import 'package:flutter/material.dart';
 import 'package:login_sdk/dao/login_dao.dart';
@@ -1104,9 +1105,7 @@ class _ConversationPageState extends State<ConversationPage> {
       ),
       PopupMenuItem(
         child: const Text('转发'),
-        onTap: () {
-          //todo
-        },
+        onTap: () => showForwardSheet(context, content: message.content),
       )
     ]);
   }

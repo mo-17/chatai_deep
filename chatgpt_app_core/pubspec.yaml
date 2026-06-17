@@ -39,6 +39,7 @@ dependencies:
   # 无鸿蒙原生实现，OHOS shell 用 ohos_stubs/flutter_js override；
   # 运行时由 JsRuntimeService.isSupported（非 OHOS/非 Web）守卫。
   flutter_js: ^0.8.2
+  share_plus: ^12.0.2
 
 dev_dependencies:
   flutter_test:

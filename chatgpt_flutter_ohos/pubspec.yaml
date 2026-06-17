@@ -53,6 +53,10 @@ dependency_overrides:
   # 运行时由 JsRuntimeService.isSupported（非 OHOS）守卫，脚本执行永不触达。
   flutter_js:
     path: ../ohos_stubs/flutter_js
+  # share_plus 无鸿蒙实现：覆盖到本地空实现 stub；
+  # 转发面板以 Platform.operatingSystem == 'ohos' 守卫，降级为复制到剪贴板。
+  share_plus:
+    path: ../ohos_stubs/share_plus
 
 dev_dependencies:
   flutter_lints: ^2.0.0
