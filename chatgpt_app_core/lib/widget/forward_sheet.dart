@@ -6,10 +6,12 @@ import 'package:chatgpt_app_core/db/conversation_dao.dart';
 import 'package:chatgpt_app_core/db/hi_db_manager.dart';
 import 'package:chatgpt_app_core/db/message_dao.dart';
 import 'package:chatgpt_app_core/model/conversation_model.dart';
+import 'package:chatgpt_app_core/pages/conversation_page.dart';
 import 'package:chatgpt_app_core/util/app_events.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:login_sdk/dao/login_dao.dart';
+import 'package:login_sdk/util/navigator_util.dart';
 import 'package:openai_flutter/utils/ai_logger.dart';
 import 'package:share_plus/share_plus.dart';
 
@@ -18,8 +20,8 @@ import 'package:share_plus/share_plus.dart';
 /// - 新建对话并转发：建一个新会话，把 [content] 作为一条「发送方」消息写入。
 /// - 转发到已有对话：把 [content] 追加进所选会话。
 ///
-/// 写入只落库 + 发 [AppEvents.notifyConversationsChanged]（会话列表页 keepAlive，
-/// 据此刷新），不强行跳转——用户回到会话列表即可看到。
+/// 转发到对话（新建或已有）后会**直接打开该会话**，让用户看到内容落地、可立即续聊；
+/// 写入同时发 [AppEvents.notifyConversationsChanged]，会话列表（keepAlive）据此刷新。
 Future<void> showForwardSheet(BuildContext context,
     {required String content}) async {
   final text = content.trim();
@@ -43,7 +45,8 @@ Future<void> showForwardSheet(BuildContext context,
   }
   if (!context.mounted) return;
 
-  await showModalBottomSheet<void>(
+  // 分享/取消 -> 返回 null（分享在面板内就地完成）；转发 -> 返回去向。
+  final target = await showModalBottomSheet<_ForwardTarget>(
     context: context,
     showDragHandle: true,
     isScrollControlled: true,
@@ -53,25 +56,34 @@ Future<void> showForwardSheet(BuildContext context,
     builder: (_) => _ForwardSheet(
       content: text,
       conversations: conversations,
-      storage: storage,
-      convDao: convDao,
       messenger: messenger,
     ),
   );
+  if (target == null || !context.mounted) return;
+
+  // 用「原始页面 context」做跳转（面板已关闭，其 context 已失效）。
+  if (target.existing != null) {
+    await _forwardToConversation(
+        context, storage, convDao, target.existing!, text, messenger);
+  } else {
+    await _forwardToNewConversation(context, storage, convDao, text, messenger);
+  }
+}
+
+/// 转发去向：[existing] 为 null 表示「新建对话」。
+class _ForwardTarget {
+  final ConversationModel? existing;
+  const _ForwardTarget(this.existing);
 }
 
 class _ForwardSheet extends StatelessWidget {
   final String content;
   final List<ConversationModel> conversations;
-  final HiDBManager storage;
-  final ConversationListDao convDao;
   final ScaffoldMessengerState messenger;
 
   const _ForwardSheet({
     required this.content,
     required this.conversations,
-    required this.storage,
-    required this.convDao,
     required this.messenger,
   });
 
@@ -82,8 +94,8 @@ class _ForwardSheet extends StatelessWidget {
     return SafeArea(
       top: false,
       child: ConstrainedBox(
-        constraints: BoxConstraints(
-            maxHeight: MediaQuery.of(context).size.height * 0.7),
+        constraints:
+            BoxConstraints(maxHeight: MediaQuery.of(context).size.height * 0.7),
         child: Column(
           mainAxisSize: MainAxisSize.min,
           crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -95,11 +107,13 @@ class _ForwardSheet extends StatelessWidget {
             ListTile(
               leading: CircleAvatar(
                 backgroundColor: cs.primaryContainer,
-                child: Icon(Icons.ios_share_rounded, color: cs.onPrimaryContainer),
+                child:
+                    Icon(Icons.ios_share_rounded, color: cs.onPrimaryContainer),
               ),
               title: const Text('分享到其他应用'),
               subtitle: const Text('通过系统分享到微信 / QQ / 备忘录等'),
               onTap: () async {
+                // 分享就地完成（面板内 context 的 RenderBox 供 iPad 锚点）。
                 await _shareToOtherApps(context, content, messenger);
                 if (context.mounted) Navigator.pop(context);
               },
@@ -111,11 +125,7 @@ class _ForwardSheet extends StatelessWidget {
                     color: cs.onSecondaryContainer),
               ),
               title: const Text('新建对话并转发'),
-              onTap: () async {
-                Navigator.pop(context);
-                await _forwardToNewConversation(
-                    storage, convDao, content, messenger);
-              },
+              onTap: () => Navigator.pop(context, const _ForwardTarget(null)),
             ),
             const Divider(height: 1),
             Padding(
@@ -149,11 +159,7 @@ class _ForwardSheet extends StatelessWidget {
                           ? Text(c.lastMessage!,
                               maxLines: 1, overflow: TextOverflow.ellipsis)
                           : null,
-                      onTap: () async {
-                        Navigator.pop(context);
-                        await _forwardToConversation(
-                            storage, convDao, c, content, messenger);
-                      },
+                      onTap: () => Navigator.pop(context, _ForwardTarget(c)),
                     );
                   },
                 ),
@@ -194,9 +200,9 @@ Rect? _shareOrigin(BuildContext context) {
   return box.localToGlobal(Offset.zero) & box.size;
 }
 
-/// 新建会话并写入转发内容（作为一条发送方消息）。
-Future<void> _forwardToNewConversation(HiDBManager storage,
-    ConversationListDao convDao, String content,
+/// 新建会话并写入转发内容（作为一条发送方消息），随后直接打开该会话。
+Future<void> _forwardToNewConversation(BuildContext context,
+    HiDBManager storage, ConversationListDao convDao, String content,
     ScaffoldMessengerState messenger) async {
   try {
     final now = DateTime.now().millisecondsSinceEpoch;
@@ -210,35 +216,59 @@ Future<void> _forwardToNewConversation(HiDBManager storage,
     );
     await convDao.saveConversation(conv);
     final msgDao = await MessageDao.create(storage, cid: now);
-    msgDao.saveMessage(_forwardMessage(content, now));
+    // await 落库后再跳转，确保会话页 initState 能读到这条消息。
+    await msgDao.saveMessageWithBlocks(_forwardMessage(content, now));
     AppEvents.notifyConversationsChanged();
-    messenger.showSnackBar(const SnackBar(content: Text('已新建对话并转发')));
+    if (context.mounted) _openConversation(context, storage, conv);
   } catch (e) {
     AILogger.log('forward to new conversation failed: $e');
     messenger.showSnackBar(SnackBar(content: Text('转发失败：$e')));
   }
 }
 
-/// 把转发内容追加进已有会话（作为一条发送方消息），并刷新该会话的预览/时间。
-Future<void> _forwardToConversation(HiDBManager storage,
+/// 把转发内容追加进已有会话（作为一条发送方消息），刷新其预览/时间后打开该会话。
+Future<void> _forwardToConversation(BuildContext context, HiDBManager storage,
     ConversationListDao convDao, ConversationModel conv, String content,
     ScaffoldMessengerState messenger) async {
   try {
     final now = DateTime.now().millisecondsSinceEpoch;
     final msgDao = await MessageDao.create(storage, cid: conv.cid);
-    msgDao.saveMessage(_forwardMessage(content, now));
+    await msgDao.saveMessageWithBlocks(_forwardMessage(content, now));
     conv.lastMessage = content;
     conv.updateAt = now;
     conv.messageCount = (conv.messageCount ?? 0) + 1;
     conv.title ??= _previewTitle(content);
     await convDao.saveConversation(conv);
     AppEvents.notifyConversationsChanged();
-    messenger
-        .showSnackBar(SnackBar(content: Text('已转发到「${conv.title ?? '对话'}」')));
+    if (context.mounted) _openConversation(context, storage, conv);
   } catch (e) {
     AILogger.log('forward to conversation failed: $e');
     messenger.showSnackBar(SnackBar(content: Text('转发失败：$e')));
   }
+}
+
+/// 打开目标会话；返回时持久化其元信息并刷新会话列表（对齐 ConversationListPage 的
+/// 「push().then(_doUpdate)」约定）。
+void _openConversation(
+    BuildContext context, HiDBManager storage, ConversationModel conv) {
+  NavigatorUtil.push(
+    context,
+    ConversationPage(
+      conversationModel: conv,
+      conversationUpdate: (m) => _persistConversation(storage, m),
+    ),
+  ).then((_) => _persistConversation(storage, conv));
+}
+
+/// 持久化会话元信息（消息数随实际记录刷新）并通知列表重载。
+Future<void> _persistConversation(
+    HiDBManager storage, ConversationModel model) async {
+  if (model.title == null) return;
+  final msgDao = await MessageDao.create(storage, cid: model.cid);
+  model.messageCount = await msgDao.getMessageCount();
+  final convDao = await ConversationListDao.create(storage);
+  await convDao.saveConversation(model);
+  AppEvents.notifyConversationsChanged();
 }
 
 /// 转发消息统一构造成「发送方」消息（带上当前登录用户的昵称/头像）。
