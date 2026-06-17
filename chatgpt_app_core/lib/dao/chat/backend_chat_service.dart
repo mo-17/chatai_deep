@@ -56,6 +56,8 @@ class BackendChatService implements ChatService {
       // 0 = 不限制：不带 max_tokens，用上游默认（避免长回复被截断）。
       if (_settings.maxOutputTokens > 0)
         'max_tokens': _settings.maxOutputTokens,
+      // null = 不带 temperature，用上游默认。
+      if (_settings.temperature != null) 'temperature': _settings.temperature,
     };
     final token = LoginDao.getBoardingPass();
     final headers = <String, String>{
@@ -120,6 +122,8 @@ class BackendChatService implements ChatService {
       // 0 = 不限制：不带 max_tokens，用上游默认（避免长回复被截断）。
       if (_settings.maxOutputTokens > 0)
         'max_tokens': _settings.maxOutputTokens,
+      // null = 不带 temperature，用上游默认。
+      if (_settings.temperature != null) 'temperature': _settings.temperature,
       if (tools != null && tools.isNotEmpty) 'tools': tools,
     };
     final token = LoginDao.getBoardingPass();

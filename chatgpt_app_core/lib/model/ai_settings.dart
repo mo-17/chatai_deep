@@ -59,6 +59,11 @@ class AISettings {
   /// 最大输出 token 数，0 = 不限制（请求体不带 max_tokens，用上游默认）。
   int maxOutputTokens;
 
+  /// 采样温度（temperature）。null = 不发送该参数，用上游默认；否则按
+  /// [0.0, 2.0] 随请求发送（OpenAI / 各兼容服务商通用）。0.0 是有效值
+  /// （更确定），故用 null 而非 0 作「未设置」哨兵。
+  double? temperature;
+
   AISettings({
     required this.mode,
     required this.providers,
@@ -76,6 +81,7 @@ class AISettings {
     this.searchMaxResults = 5,
     this.searchContentLimit = 2000,
     this.maxOutputTokens = 0,
+    this.temperature,
   });
 
   factory AISettings.defaults() => AISettings(
@@ -130,6 +136,7 @@ class AISettings {
       searchMaxResults: j['searchMaxResults'] as int? ?? 5,
       searchContentLimit: j['searchContentLimit'] as int? ?? 2000,
       maxOutputTokens: j['maxOutputTokens'] as int? ?? 0,
+      temperature: (j['temperature'] as num?)?.toDouble(),
     );
   }
 
@@ -179,6 +186,7 @@ class AISettings {
         'searchMaxResults': searchMaxResults,
         'searchContentLimit': searchContentLimit,
         'maxOutputTokens': maxOutputTokens,
+        'temperature': temperature,
       };
 
   /// 深拷贝（JSON 往返）。用于「改一个字段再 update」时产生新实例，

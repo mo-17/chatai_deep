@@ -45,7 +45,9 @@ abstract class ChatService {
     if (s.mode == AIMode.backend) return BackendChatService(s);
     // 把本地服务商 code（'openai'/'deepseek'）一并传入，供能力探测按厂商区分。
     return DirectChatService(s.activeLocal,
-        providerCode: providerCodeFor(s), maxOutputTokens: s.maxOutputTokens);
+        providerCode: providerCodeFor(s),
+        maxOutputTokens: s.maxOutputTokens,
+        temperature: s.temperature);
   }
 
   /// providerCode 派生规则的唯一出处：本地模式用激活服务商的 code，

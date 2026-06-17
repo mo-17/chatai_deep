@@ -359,6 +359,19 @@ class _AISettingsPageState extends State<AISettingsPage> {
               const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
           onTap: _editMaxTokens,
         ),
+        ListTile(
+          title: const Text('采样温度'),
+          subtitle: Text(
+              s.temperature == null
+                  ? '默认（不发送）'
+                  : 'temperature ${s.temperature!.toStringAsFixed(1)}',
+              style: tt.bodySmall?.copyWith(color: cs.onSurfaceVariant)),
+          trailing:
+              Icon(Icons.edit_rounded, size: 18, color: cs.onSurfaceVariant),
+          contentPadding:
+              const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
+          onTap: _editTemperature,
+        ),
         SwitchListTile(
           value: s.resetOnLogout,
           onChanged: (v) => _patch((x) => x.resetOnLogout = v),
@@ -404,6 +417,80 @@ class _AISettingsPageState extends State<AISettingsPage> {
     );
     if (ok == true) {
       _patch((s) => s.maxOutputTokens = _parseInt(ctl.text));
+    }
+  }
+
+  /// 采样温度编辑：开关 + 0.0~2.0 滑块。关闭则置 null（请求不带 temperature）。
+  Future<void> _editTemperature() async {
+    final current = _store.settings.temperature;
+    bool enabled = current != null;
+    double value = current ?? 1.0;
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (_) => StatefulBuilder(
+        builder: (ctx, setLocal) {
+          final cs = Theme.of(ctx).colorScheme;
+          final tt = Theme.of(ctx).textTheme;
+          return AlertDialog(
+            title: const Text('采样温度'),
+            content: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                SwitchListTile(
+                  contentPadding: EdgeInsets.zero,
+                  title: const Text('启用温度调节'),
+                  subtitle: const Text('关闭则不发送 temperature，用模型默认'),
+                  value: enabled,
+                  onChanged: (v) => setLocal(() => enabled = v),
+                ),
+                Opacity(
+                  opacity: enabled ? 1 : 0.4,
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Row(
+                        mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                        children: [
+                          Text('temperature', style: tt.bodyMedium),
+                          Text(value.toStringAsFixed(1),
+                              style: tt.titleMedium
+                                  ?.copyWith(color: cs.primary)),
+                        ],
+                      ),
+                      Slider(
+                        value: value,
+                        min: 0.0,
+                        max: 2.0,
+                        divisions: 20,
+                        label: value.toStringAsFixed(1),
+                        onChanged: enabled
+                            ? (v) => setLocal(() => value = v)
+                            : null,
+                      ),
+                    ],
+                  ),
+                ),
+                const SizedBox(height: 4),
+                Text('低（如 0.2）更确定、稳定；高（如 1.0+）更发散、有创意。',
+                    style: tt.bodySmall
+                        ?.copyWith(color: cs.onSurfaceVariant)),
+              ],
+            ),
+            actions: [
+              TextButton(
+                  onPressed: () => Navigator.pop(ctx, false),
+                  child: const Text('取消')),
+              TextButton(
+                  onPressed: () => Navigator.pop(ctx, true),
+                  child: const Text('确定')),
+            ],
+          );
+        },
+      ),
+    );
+    if (ok == true) {
+      _patch((s) => s.temperature = enabled ? value : null);
     }
   }
 

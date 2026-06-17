@@ -11,7 +11,7 @@ import 'package:http/testing.dart';
 /// 最大输出 token 设置的验收测试。
 void main() {
   group('AISettings 新字段', () {
-    test('toJson/fromJson 往返（搜索配置 + maxOutputTokens）', () {
+    test('toJson/fromJson 往返（搜索配置 + maxOutputTokens + temperature）', () {
       final s = AISettings.defaults()
         ..webSearchProviderId = 'bocha'
         ..exaApiKey = 'ek'
@@ -20,7 +20,8 @@ void main() {
         ..searchWithTime = false
         ..searchMaxResults = 8
         ..searchContentLimit = 0
-        ..maxOutputTokens = 4096;
+        ..maxOutputTokens = 4096
+        ..temperature = 0.7;
       final r = AISettings.fromJson(s.toJson());
       expect(r.webSearchProviderId, 'bocha');
       expect(r.exaApiKey, 'ek');
@@ -30,15 +31,24 @@ void main() {
       expect(r.searchMaxResults, 8);
       expect(r.searchContentLimit, 0);
       expect(r.maxOutputTokens, 4096);
+      expect(r.temperature, 0.7);
     });
 
-    test('缺省值：maxOutputTokens=0（不限制）、tavily、searchWithTime 开', () {
+    test('缺省值：maxOutputTokens=0（不限制）、temperature=null、tavily、searchWithTime 开',
+        () {
       final s = AISettings.fromJson({});
       expect(s.maxOutputTokens, 0);
+      expect(s.temperature, isNull);
       expect(s.webSearchProviderId, 'tavily');
       expect(s.searchWithTime, isTrue);
       expect(s.searchMaxResults, 5);
       expect(s.searchContentLimit, 2000);
+    });
+
+    test('temperature=0.0 不被当作未设置丢失（null 哨兵而非 0）', () {
+      final s = AISettings.defaults()..temperature = 0.0;
+      final r = AISettings.fromJson(s.toJson());
+      expect(r.temperature, 0.0);
     });
 
     test('activeSearchApiKey / webSearchConfigured 跟随所选服务商', () {

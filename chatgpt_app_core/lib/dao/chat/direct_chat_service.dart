@@ -19,9 +19,14 @@ class DirectChatService implements ChatService {
   /// 之前写死 1000 会截断长回复（推理模型的思考也计入），现由设置驱动。
   final int _maxOutputTokens;
 
-  DirectChatService(this._cfg, {String? providerCode, int maxOutputTokens = 0})
+  /// 采样温度，null = 不发送（用上游默认）。0.0 是有效值，故用 null 作哨兵。
+  final double? _temperature;
+
+  DirectChatService(this._cfg,
+      {String? providerCode, int maxOutputTokens = 0, double? temperature})
       : _providerCode = providerCode,
-        _maxOutputTokens = maxOutputTokens;
+        _maxOutputTokens = maxOutputTokens,
+        _temperature = temperature;
 
   int? get _maxTokensOrNull => _maxOutputTokens > 0 ? _maxOutputTokens : null;
 
@@ -70,6 +75,7 @@ class DirectChatService implements ChatService {
       model: _cfg.model,
       messages: messages,
       maxTokens: _maxTokensOrNull,
+      temperature: _temperature,
     );
     final choices = response.choices?.first;
     return choices?.message?.content;
@@ -92,6 +98,7 @@ class DirectChatService implements ChatService {
       model: _cfg.model,
       messages: messages,
       maxTokens: _maxTokensOrNull,
+      temperature: _temperature,
     );
   }
 
@@ -116,6 +123,7 @@ class DirectChatService implements ChatService {
       model: _cfg.model,
       messages: messages,
       maxTokens: _maxTokensOrNull,
+      temperature: _temperature,
       tools: tools,
     )) {
       switch (chunk.kind) {
