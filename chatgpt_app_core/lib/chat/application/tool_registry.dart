@@ -226,12 +226,15 @@ class ToolRegistry {
   /// - [toolIds] 为 null/空 = 助手未绑定任何工具；
   /// - [forceWebSearch] = 会话页联网开关打开时强制纳入 web_search（保持旧行为）；
   /// - 只纳入「依赖条件已满足」的工具（如 web_search 需已配置搜索 key）；
-  /// - [actions]（L3a）= 只读上下文工具的运行上下文；为 null 时这些工具不装配。
+  /// - [actions]（L3a）= 只读上下文工具的运行上下文；为 null 时这些工具不装配；
+  /// - [extraTools] = 运行时动态发现、不在内置目录里的工具（如 MCP 工具），
+  ///   直接并入注册表，与内置工具共用同一工具回路。
   static ToolRegistry fromAssistant(
     AISettings s,
     List<String>? toolIds, {
     bool forceWebSearch = false,
     ToolActionContext? actions,
+    List<ChatTool> extraTools = const [],
   }) {
     final selected = <String>{...?toolIds};
     if (forceWebSearch) selected.add(webSearchId);
@@ -277,6 +280,8 @@ class ToolRegistry {
         tools.add(BuiltinTools.runScript(actions));
       }
     }
+    // 动态工具（MCP 等）：不在内置目录里，由调用方在运行时发现后并入。
+    tools.addAll(extraTools);
     return ToolRegistry(tools);
   }
 

@@ -14,16 +14,21 @@ export default function DashboardLayout({
 }) {
   const token = useAuthStore((s) => s.token);
   const router = useRouter();
-  // Zustand persist 的 hydration 是异步的，使用懒初始化检查是否已完成
-  const [hydrated, setHydrated] = useState(() => useAuthStore.persist.hasHydrated());
+  // Zustand persist 的 hydration 是异步的，使用懒初始化检查是否已完成。
+  // SSR 期间 persist API 尚未就绪（且无 sessionStorage），用 ?. 守卫避免整页 500。
+  const [hydrated, setHydrated] = useState(
+    () => useAuthStore.persist?.hasHydrated() ?? false,
+  );
 
   useEffect(() => {
     if (hydrated) return;
-    const unsub = useAuthStore.persist.onFinishHydration(() => {
+    const persist = useAuthStore.persist;
+    if (!persist) return;
+    const unsub = persist.onFinishHydration(() => {
       setHydrated(true);
     });
     // 兜底：如果 hydration 未运行（例如 SSR 跳过了），手动触发
-    useAuthStore.persist.rehydrate();
+    persist.rehydrate();
     return () => unsub();
   }, [hydrated]);
 

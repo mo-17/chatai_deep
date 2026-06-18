@@ -1,3 +1,4 @@
+import 'package:chatgpt_app_core/chat/application/mcp/mcp_types.dart';
 import 'package:chatgpt_app_core/data/provider_presets.dart';
 import 'package:chatgpt_app_core/model/ai_provider.dart';
 
@@ -64,6 +65,17 @@ class AISettings {
   /// （更确定），故用 null 而非 0 作「未设置」哨兵。
   double? temperature;
 
+  /// MCP 直连 server 列表（方案 A）：客户端直连远程 Streamable HTTP 型 server，
+  /// 其工具与内置工具一并装配进工具回路。
+  List<McpServerConfig> mcpServers;
+
+  /// 是否启用「后端 MCP Host」（方案 B）：开启后拉取后端聚合的 MCP 工具，
+  /// 工具执行经 /uapi/mcp/call 由后端代理（可用上 stdio 型 server）。
+  bool mcpBackendEnabled;
+
+  /// 后端 MCP 工具是否信任（信任则调用免确认）。默认 false。
+  bool mcpBackendTrusted;
+
   AISettings({
     required this.mode,
     required this.providers,
@@ -82,7 +94,10 @@ class AISettings {
     this.searchContentLimit = 2000,
     this.maxOutputTokens = 0,
     this.temperature,
-  });
+    List<McpServerConfig>? mcpServers,
+    this.mcpBackendEnabled = false,
+    this.mcpBackendTrusted = false,
+  }) : mcpServers = mcpServers ?? [];
 
   factory AISettings.defaults() => AISettings(
         mode: AIMode.local,
@@ -137,6 +152,13 @@ class AISettings {
       searchContentLimit: j['searchContentLimit'] as int? ?? 2000,
       maxOutputTokens: j['maxOutputTokens'] as int? ?? 0,
       temperature: (j['temperature'] as num?)?.toDouble(),
+      mcpServers: (j['mcpServers'] as List?)
+              ?.map((e) =>
+                  McpServerConfig.fromJson((e as Map).cast<String, dynamic>()))
+              .toList() ??
+          [],
+      mcpBackendEnabled: j['mcpBackendEnabled'] as bool? ?? false,
+      mcpBackendTrusted: j['mcpBackendTrusted'] as bool? ?? false,
     );
   }
 
@@ -187,6 +209,9 @@ class AISettings {
         'searchContentLimit': searchContentLimit,
         'maxOutputTokens': maxOutputTokens,
         'temperature': temperature,
+        'mcpServers': mcpServers.map((e) => e.toJson()).toList(),
+        'mcpBackendEnabled': mcpBackendEnabled,
+        'mcpBackendTrusted': mcpBackendTrusted,
       };
 
   /// 深拷贝（JSON 往返）。用于「改一个字段再 update」时产生新实例，
@@ -257,6 +282,14 @@ class AISettings {
 
   /// 联网搜索是否已配置（当前服务商有 key）。会话页据此显隐联网开关。
   bool get webSearchConfigured => activeSearchApiKey.isNotEmpty;
+
+  /// 启用中的 MCP 直连 server（方案 A）。
+  List<McpServerConfig> get enabledMcpServers =>
+      mcpServers.where((s) => s.enabled && s.url.trim().isNotEmpty).toList();
+
+  /// 是否启用了任一 MCP 来源（直连 server 或后端 Host）。
+  bool get mcpConfigured =>
+      mcpBackendEnabled || enabledMcpServers.isNotEmpty;
 
   /// AI 服务商显示名称。
   String get aiDisplayName {

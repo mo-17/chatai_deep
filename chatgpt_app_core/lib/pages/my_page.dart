@@ -7,6 +7,7 @@ import 'package:chatgpt_app_core/pages/ai_settings_page.dart';
 import 'package:chatgpt_app_core/pages/assistant_list_page.dart';
 import 'package:chatgpt_app_core/pages/backup_restore_page.dart';
 import 'package:chatgpt_app_core/pages/knowledge_base_page.dart';
+import 'package:chatgpt_app_core/pages/mcp_settings_page.dart';
 import 'package:chatgpt_app_core/provider/theme_provider.dart';
 import 'package:chatgpt_app_core/util/hi_dialog.dart';
 import 'package:chatgpt_app_core/util/hi_progress_dialog.dart';
@@ -77,6 +78,12 @@ class _MyPageState extends State<MyPage> {
               icon: Icons.smart_toy,
               onTap: () => Navigator.push(context,
                   MaterialPageRoute(builder: (_) => const AISettingsPage()))),
+          ..._itemWidget(
+              color: color,
+              title: 'MCP 服务',
+              icon: Icons.extension_outlined,
+              onTap: () => Navigator.push(context,
+                  MaterialPageRoute(builder: (_) => const McpSettingsPage()))),
           ..._itemWidget(
               color: color,
               title: '助手管理',

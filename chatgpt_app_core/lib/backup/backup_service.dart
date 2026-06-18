@@ -87,6 +87,11 @@ class BackupService {
         ..exaApiKey = ''
         ..bochaApiKey = ''
         ..zhipuApiKey = '';
+      // MCP 直连 server 的请求头可能含鉴权 token，一并脱敏。
+      for (var i = 0; i < exportedSettings.mcpServers.length; i++) {
+        exportedSettings.mcpServers[i] =
+            exportedSettings.mcpServers[i].copyWith(headers: const {});
+      }
     }
 
     final manifest = {

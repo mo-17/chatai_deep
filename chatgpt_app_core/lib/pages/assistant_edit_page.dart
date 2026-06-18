@@ -1,3 +1,4 @@
+import 'package:chatgpt_app_core/chat/application/mcp/mcp_tool_source.dart';
 import 'package:chatgpt_app_core/chat/application/tool_registry.dart';
 import 'package:chatgpt_app_core/db/assistant_dao.dart';
 import 'package:chatgpt_app_core/db/hi_db_manager.dart';
@@ -31,9 +32,13 @@ class _AssistantEditPageState extends State<AssistantEditPage> {
   bool _useTools = true;
 
   /// 助手绑定的工具 id 集合（L1）。旧助手 toolIds 为 null 时按空集处理，
-  /// 保存后变为显式列表（语义不变：未勾选 = 不绑定）。
+  /// 保存后变为显式列表（语义不变：未勾选 = 不绑定）。MCP 工具名（mcp__…）
+  /// 也存进同一集合，与内置工具一视同仁（item 5）。
   late final Set<String> _toolIds;
   bool _saving = false;
+
+  /// MCP 工具发现（item 5）：缓存 Future，避免每次 rebuild 重新发现。
+  Future<List<McpToolBindSpec>>? _mcpSpecs;
 
   /// 「新建」以是否已有持久化 id 判定：从助手市场预填的模板 id 为 null，
   /// 同样视为新建（保存即插入），标题/按钮显示「新建/创建」（遗留项 9）。
@@ -146,7 +151,86 @@ class _AssistantEditPageState extends State<AssistantEditPage> {
         ),
         for (final d in ToolRegistry.catalog)
           _buildToolTile(d, ToolRegistry.isAvailable(settings, d.id)),
+        if (settings.mcpConfigured) _buildMcpToolsSection(settings),
       ],
+    );
+  }
+
+  /// MCP 工具绑定（item 5）：发现当前设置下的 MCP 工具，勾选写入 toolIds。
+  /// 未勾选的 MCP 工具不会暴露给该助手（与内置工具一致）。
+  Widget _buildMcpToolsSection(AISettings settings) {
+    _mcpSpecs ??= McpToolSource.listSpecs(settings);
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        const Padding(
+          padding: EdgeInsets.only(top: 12, bottom: 4),
+          child: Text('MCP 工具（来自已配置的 MCP 服务）',
+              style: TextStyle(fontSize: 12, color: Colors.grey)),
+        ),
+        FutureBuilder<List<McpToolBindSpec>>(
+          future: _mcpSpecs,
+          builder: (context, snap) {
+            if (snap.connectionState == ConnectionState.waiting) {
+              return const Padding(
+                padding: EdgeInsets.symmetric(vertical: 8),
+                child: Row(children: [
+                  SizedBox(
+                      width: 16,
+                      height: 16,
+                      child: CircularProgressIndicator(strokeWidth: 2)),
+                  SizedBox(width: 8),
+                  Text('正在发现 MCP 工具…',
+                      style: TextStyle(fontSize: 12, color: Colors.grey)),
+                ]),
+              );
+            }
+            if (snap.hasError) {
+              return Text('MCP 工具发现失败：${snap.error}',
+                  style: const TextStyle(fontSize: 12, color: Colors.redAccent));
+            }
+            final specs = snap.data ?? const [];
+            if (specs.isEmpty) {
+              return const Text('未发现可用的 MCP 工具',
+                  style: TextStyle(fontSize: 12, color: Colors.grey));
+            }
+            return Column(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [for (final spec in specs) _buildMcpToolTile(spec)],
+            );
+          },
+        ),
+      ],
+    );
+  }
+
+  Widget _buildMcpToolTile(McpToolBindSpec spec) {
+    final selected = _toolIds.contains(spec.name);
+    return CheckboxListTile(
+      contentPadding: EdgeInsets.zero,
+      dense: true,
+      controlAffinity: ListTileControlAffinity.leading,
+      value: selected,
+      title: Row(
+        children: [
+          const Icon(Icons.extension, size: 14, color: Colors.blueGrey),
+          const SizedBox(width: 6),
+          Expanded(
+            child: Text(spec.name,
+                style: const TextStyle(fontSize: 13),
+                overflow: TextOverflow.ellipsis),
+          ),
+        ],
+      ),
+      subtitle:
+          spec.description.isEmpty ? null : Text(spec.description, maxLines: 2),
+      onChanged: (v) => setState(() {
+        if (v == true) {
+          _toolIds.add(spec.name);
+        } else {
+          _toolIds.remove(spec.name);
+        }
+      }),
     );
   }
 

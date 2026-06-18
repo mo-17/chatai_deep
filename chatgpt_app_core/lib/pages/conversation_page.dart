@@ -7,6 +7,7 @@ import 'package:chatgpt_app_core/chat/application/chat_block_store.dart';
 import 'package:chatgpt_app_core/chat/application/file_processor.dart';
 import 'package:chatgpt_app_core/chat/application/stream_dispatcher.dart';
 import 'package:chatgpt_app_core/chat/application/builtin_tools.dart';
+import 'package:chatgpt_app_core/chat/application/mcp/mcp_tool_source.dart';
 import 'package:chatgpt_app_core/chat/application/tool_registry.dart';
 import 'package:chatgpt_app_core/skill/js_runtime_service.dart';
 import 'package:chatgpt_app_core/chat/domain/chat_attachments.dart';
@@ -125,6 +126,22 @@ class _ConversationPageState extends State<ConversationPage> {
             ? (code, input) => const JsRuntimeService().run(code, input: input)
             : null,
       );
+
+  /// 发现当前设置下的 MCP 工具（方案 A 直连 + 方案 B 后端 Host）。MCP 工具
+  /// 来自外部不可信，执行前经 [_confirmToolAction] 确认（信任源除外）。任何
+  /// 来源失败都只返回已成功部分，绝不阻断发送。未配置 MCP 时直接返回空。
+  ///
+  /// 按助手绑定过滤（item 5）：绑定了助手时，只暴露该助手 toolIds 里勾选的
+  /// MCP 工具（与内置工具一致）；无助手的临时会话则暴露全部（受设置开关约束）。
+  Future<List<ChatTool>> _discoverMcpTools(AISettings settings) async {
+    if (!settings.mcpConfigured) return const [];
+    final all =
+        await McpToolSource.discover(settings, confirm: _confirmToolAction);
+    final assistant = _assistant;
+    if (assistant == null) return all;
+    final bound = {...?assistant.toolIds};
+    return all.where((t) => bound.contains(t.name)).toList();
+  }
 
   /// 块上记录的 modelId（覆盖后实际生效的模型）。
   String get _effectiveModelId => _effective(_currentSettings).effectiveModel;
@@ -559,9 +576,14 @@ class _ConversationPageState extends State<ConversationPage> {
     // L1：注册表由所绑助手的 toolIds 拼；会话联网开关经 forceWebSearch 兼容旧行为
     // （助手显式绑定 web_search 时，即使联网开关关着也暴露给模型）。
     final allowTools = _assistant?.useTools ?? true;
+    // MCP 工具（方案 A/B）：仅当工具回路可能启用时才去发现，省掉无谓网络往返。
+    final mcpTools = (caps.tool && settings.streamEnabled && allowTools)
+        ? await _discoverMcpTools(settings)
+        : const <ChatTool>[];
     final registry = ToolRegistry.fromAssistant(settings, _assistant?.toolIds,
         forceWebSearch: webSearch,
-        actions: _toolActions());
+        actions: _toolActions(),
+        extraTools: mcpTools);
     final tools =
         caps.tool && settings.streamEnabled && allowTools && !registry.isEmpty
             ? registry
@@ -1179,9 +1201,13 @@ class _ConversationPageState extends State<ConversationPage> {
     final attachments = ChatAttachments(images: images);
     final webSearch = settings.webSearchEnabled && settings.webSearchConfigured;
     final allowTools = _assistant?.useTools ?? true;
+    final mcpTools = (caps.tool && settings.streamEnabled && allowTools)
+        ? await _discoverMcpTools(settings)
+        : const <ChatTool>[];
     final registry = ToolRegistry.fromAssistant(settings, _assistant?.toolIds,
         forceWebSearch: webSearch,
-        actions: _toolActions());
+        actions: _toolActions(),
+        extraTools: mcpTools);
     final tools =
         caps.tool && settings.streamEnabled && allowTools && !registry.isEmpty
             ? registry

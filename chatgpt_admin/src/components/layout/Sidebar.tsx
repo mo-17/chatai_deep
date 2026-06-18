@@ -17,6 +17,7 @@ import {
   Server,
   Boxes,
   Settings2,
+  Plug,
   MessageCircle,
   Shield,
   Mail,
@@ -39,6 +40,7 @@ const aiMenuItems = [
   { href: '/ai/providers', label: '服务商', icon: Server },
   { href: '/ai/models', label: '模型', icon: Boxes },
   { href: '/ai/global', label: '全局配置', icon: Settings2 },
+  { href: '/mcp', label: 'MCP 服务', icon: Plug },
 ];
 
 const authMenuItems = [

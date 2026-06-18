@@ -45,6 +45,8 @@ dev_dependencies:
   flutter_test:
     sdk: flutter
   flutter_lints: ^4.0.0
+  # 仅测试用：在 widget 测试里 mock HiCache 背后的 SharedPreferences。
+  shared_preferences: ^2.5.5
 
 flutter:
   uses-material-design: true
