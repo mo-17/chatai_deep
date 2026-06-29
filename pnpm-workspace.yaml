@@ -1,6 +1,11 @@
 packages:
   - chatgpt_backend
   - chatgpt_admin
+allowBuilds:
+  '@heroui/shared-utils': true
+  '@nestjs/core': true
+  sharp: true
+  unrs-resolver: true
 catalog:
   typescript: ^5.7.3
   '@types/node': ^22.0.0

@@ -392,4 +392,34 @@ void main() {
     expect(result.single.conversationTitle, '正确会话');
     await storage.db.close();
   });
+
+  test('搜索会话：支持更新时间上下界与双边界组合', () async {
+    final storage = await newDb();
+    final convDao = await ConversationListDao.create(storage);
+    await MessageDao.create(storage, cid: 41);
+    for (final item in [
+      (cid: 41, title: 'Alpha 旧会话', updateAt: 1000),
+      (cid: 42, title: 'Alpha 中间会话', updateAt: 2000),
+      (cid: 43, title: 'Alpha 新会话', updateAt: 3000),
+    ]) {
+      await convDao.saveConversation(ConversationModel(cid: item.cid, icon: '')
+        ..title = item.title
+        ..lastMessage = 'Alpha'
+        ..stickTime = 0
+        ..updateAt = item.updateAt);
+    }
+
+    final after =
+        await convDao.searchConversations('Alpha', updatedAfter: 2000);
+    expect(after.map((e) => e.conversation.cid), [43, 42]);
+
+    final before =
+        await convDao.searchConversations('Alpha', updatedBefore: 2000);
+    expect(before.map((e) => e.conversation.cid), [42, 41]);
+
+    final between = await convDao.searchConversations('Alpha',
+        updatedAfter: 1500, updatedBefore: 2500);
+    expect(between.single.conversation.cid, 42);
+    await storage.db.close();
+  });
 }

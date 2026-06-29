@@ -15,6 +15,18 @@ enum McpAuthKind {
   oauth,
 }
 
+/// MCP 条目的移动端接入建议。
+enum McpAccessKind {
+  /// 免费、低权限、适合 App 端直接添加。
+  freeDirect,
+
+  /// 需要注册 / API Key / 免费额度，适合在商店中预填入口，由用户补 Key。
+  keyRequired,
+
+  /// OAuth 或付费/企业能力，不在移动端直接落直连配置，只展示入口与风险提示。
+  externalEntry,
+}
+
 /// MCP 服务商店的一条精选条目。对应「助手市场」的 [BuiltinAssistant]：
 /// 一份纯静态、可扩展、便于单测的精选目录。两端共用同一份内容（admin 侧
 /// 有等价的 TS 版本 `chatgpt_admin/src/lib/mcpStore.ts`，改这里时一并更新）。
@@ -42,6 +54,8 @@ class McpStoreEntry {
 
   final McpAuthKind auth;
 
+  final McpAccessKind access;
+
   /// 鉴权/配置提示（展示给用户，如「在请求头填 Authorization: Bearer <你的 token>」）。
   final String authHint;
 
@@ -59,6 +73,7 @@ class McpStoreEntry {
     this.command = '',
     this.args = const [],
     this.auth = McpAuthKind.none,
+    this.access = McpAccessKind.freeDirect,
     this.authHint = '',
     this.homepage = '',
   });
@@ -67,7 +82,7 @@ class McpStoreEntry {
   bool get isStdio => transport == 'stdio';
 
   /// 客户端能否直接「一键添加」（方案 A 仅支持 HTTP，且非 OAuth）。
-  bool get directAddable => isHttp && auth != McpAuthKind.oauth;
+  bool get directAddable => isHttp && access != McpAccessKind.externalEntry;
 
   /// 预填一个直连 server 配置（用户在添加对话框里再补鉴权头 / 替换占位）。
   McpServerConfig toServerConfig() => McpServerConfig(
@@ -189,6 +204,7 @@ class McpStore {
       transport: 'http',
       url: 'https://mcp.tavily.com/mcp/?tavilyApiKey={API_KEY}',
       auth: McpAuthKind.apiKeyInUrl,
+      access: McpAccessKind.keyRequired,
       authHint:
           '在 app.tavily.com 免费注册获取 tvly- 开头的 API Key（每月 1000 次免费），替换 URL 中的 {API_KEY}。',
       homepage: 'https://tavily.com',
@@ -202,6 +218,7 @@ class McpStore {
       transport: 'http',
       url: 'https://mcp.kagi.com/mcp',
       auth: McpAuthKind.header,
+      access: McpAccessKind.keyRequired,
       authHint:
           '在 kagi.com/settings?p=api 生成 API Token，请求头填 Authorization: Bearer <token>。',
       homepage: 'https://kagi.com',
@@ -215,7 +232,9 @@ class McpStore {
       transport: 'http',
       url: 'https://mcp.serpapi.com/{API_KEY}/mcp',
       auth: McpAuthKind.apiKeyInUrl,
-      authHint: '在 serpapi.com/manage-api-key 获取 API Key，替换 URL 路径中的 {API_KEY}。',
+      access: McpAccessKind.keyRequired,
+      authHint:
+          '在 serpapi.com/manage-api-key 获取 API Key，替换 URL 路径中的 {API_KEY}。',
       homepage: 'https://serpapi.com',
     ),
 
@@ -243,6 +262,7 @@ class McpStore {
       transport: 'http',
       url: 'https://mcp.firecrawl.dev/{API_KEY}/mcp',
       auth: McpAuthKind.apiKeyInUrl,
+      access: McpAccessKind.keyRequired,
       authHint: '保存前把 URL 中的 {API_KEY} 替换为你的 Firecrawl API Key。',
       homepage: 'https://firecrawl.dev',
     ),
@@ -255,6 +275,7 @@ class McpStore {
       transport: 'http',
       url: 'https://mcp.jina.ai/v1',
       auth: McpAuthKind.header,
+      access: McpAccessKind.keyRequired,
       authHint:
           '在 jina.ai/api-dashboard 获取 API Key，请求头填 Authorization: Bearer <key>。',
       homepage: 'https://jina.ai',
@@ -282,9 +303,70 @@ class McpStore {
       transport: 'http',
       url: 'https://mcp.supermemory.ai/mcp',
       auth: McpAuthKind.header,
+      access: McpAccessKind.keyRequired,
       authHint:
           '在 app.supermemory.ai 获取 sm_ 开头的 API Key，请求头填 Authorization: Bearer sm_<key>。',
       homepage: 'https://supermemory.ai/mcp/',
+    ),
+
+    // ── 账号与工作流（高权限入口，不默认直连）────────────────
+    McpStoreEntry(
+      category: '账号与工作流',
+      id: 'github_remote',
+      name: 'GitHub',
+      emoji: 'GH',
+      description: '官方远程 MCP：读取仓库、Issue、PR、Actions，也可能执行写操作；适合开发者工作流。',
+      transport: 'http',
+      url: 'https://api.githubcopilot.com/mcp/',
+      auth: McpAuthKind.oauth,
+      access: McpAccessKind.externalEntry,
+      authHint:
+          '需要 GitHub OAuth 或 PAT。移动端建议只作为入口展示，配置前请确认 token 权限最小化，并保留工具调用确认。',
+      homepage: 'https://github.com/github/github-mcp-server',
+    ),
+    McpStoreEntry(
+      category: '账号与工作流',
+      id: 'notion_remote',
+      name: 'Notion',
+      emoji: 'NO',
+      description: '官方 hosted MCP：搜索、读取并可写入 Notion workspace，适合个人知识库与项目文档。',
+      transport: 'http',
+      url: 'https://mcp.notion.com/mcp',
+      auth: McpAuthKind.oauth,
+      access: McpAccessKind.externalEntry,
+      authHint:
+          '需要 Notion OAuth，且可能获得 workspace 读写权限。移动端仅放入口，正式接入前需权限说明和写操作确认。',
+      homepage: 'https://developers.notion.com/guides/mcp/overview',
+    ),
+    McpStoreEntry(
+      category: '账号与工作流',
+      id: 'stripe_remote',
+      name: 'Stripe',
+      emoji: 'ST',
+      description: '官方远程 MCP：查支付、客户、订阅、退款与 Stripe 文档；商业/运营场景价值高。',
+      transport: 'http',
+      url: 'https://mcp.stripe.com',
+      auth: McpAuthKind.oauth,
+      access: McpAccessKind.externalEntry,
+      authHint:
+          '需要 Stripe OAuth 或 restricted API key。涉及支付和退款，必须保留人工确认，不写入默认直连列表。',
+      homepage: 'https://docs.stripe.com/mcp',
+    ),
+    McpStoreEntry(
+      category: '账号与工作流',
+      id: 'cloudflare_api',
+      name: 'Cloudflare API',
+      emoji: 'CF',
+      description:
+          'Cloudflare 官方产品 MCP 入口集合：Workers、日志、DNS、AI Gateway、GraphQL 等。',
+      transport: 'http',
+      url: 'https://bindings.mcp.cloudflare.com/mcp',
+      auth: McpAuthKind.oauth,
+      access: McpAccessKind.externalEntry,
+      authHint:
+          'Cloudflare 提供多个产品远程 MCP，需要 OAuth/API Token。这里只放官方目录入口，不默认添加高权限端点。',
+      homepage:
+          'https://developers.cloudflare.com/agents/model-context-protocol/cloudflare/servers-for-cloudflare/',
     ),
 
     // ── 数据与金融 ─────────────────────────────────────────
@@ -309,6 +391,7 @@ class McpStore {
       transport: 'http',
       url: 'https://mcp.md.coinapi.io/mcp',
       auth: McpAuthKind.header,
+      access: McpAccessKind.keyRequired,
       authHint:
           '在 coinapi.io 免费注册获取 API Key（含 \$25 额度）；请求头改用 X-CoinAPI-Key: <key>（删掉预填的 Authorization 行）。',
       homepage: 'https://www.coinapi.io/mcp',
@@ -324,6 +407,7 @@ class McpStore {
       transport: 'http',
       url: 'https://mcp.apify.com',
       auth: McpAuthKind.header,
+      access: McpAccessKind.keyRequired,
       authHint: '在请求头填 Authorization: Bearer <你的 Apify Token>。',
       homepage: 'https://apify.com',
     ),
@@ -336,6 +420,7 @@ class McpStore {
       transport: 'http',
       url: 'https://api.tally.so/mcp',
       auth: McpAuthKind.header,
+      access: McpAccessKind.keyRequired,
       authHint: '在请求头填 Authorization: Bearer <你的 Tally Token>。',
       homepage: 'https://tally.so',
     ),
@@ -442,7 +527,7 @@ class McpStore {
 
   /// 适合客户端直连（方案 A）的条目：仅远程 HTTP。
   static List<McpStoreEntry> get httpEntries =>
-      all.where((e) => e.isHttp).toList();
+      all.where((e) => e.directAddable).toList();
 
   /// 按分类分组（保持收录顺序）。[onlyHttp] 为 true 时只含可直连的 HTTP 条目。
   static Map<String, List<McpStoreEntry>> grouped({bool onlyHttp = false}) {

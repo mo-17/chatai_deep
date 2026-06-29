@@ -979,6 +979,7 @@ class ConversationSearchPage extends StatefulWidget {
     int? assistantId,
     String? modelId,
     int? updatedAfter,
+    int? updatedBefore,
   })? searchConversations;
   final Future<List<FavoriteSearchResult>> Function(String query)?
       searchFavorites;
@@ -1002,9 +1003,12 @@ class _ConversationSearchPageState extends State<ConversationSearchPage> {
   List<ConversationSearchResult> _results = const [];
   List<FavoriteSearchResult> _favoriteResults = const [];
   bool _loading = false;
+  String? _errorText;
   int? _assistantId;
   String? _modelId;
   int? _updatedAfter;
+  int? _updatedBefore;
+  int _searchSeq = 0;
 
   @override
   void dispose() {
@@ -1013,59 +1017,84 @@ class _ConversationSearchPageState extends State<ConversationSearchPage> {
   }
 
   Future<void> _search(String value) async {
+    final seq = ++_searchSeq;
     final query = value.trim();
     if (query.isEmpty) {
       setState(() {
         _results = const [];
         _favoriteResults = const [];
         _loading = false;
+        _errorText = null;
       });
       return;
     }
-    setState(() => _loading = true);
-    final conversations = widget.searchConversations == null
-        ? await widget.dao!.searchConversations(
-            query,
-            projectId: widget.projectId,
-            uncategorized: widget.uncategorized,
-            assistantId: _assistantId,
-            modelId: _modelId,
-            updatedAfter: _updatedAfter,
-          )
-        : await widget.searchConversations!(
-            query,
-            projectId: widget.projectId,
-            uncategorized: widget.uncategorized,
-            assistantId: _assistantId,
-            modelId: _modelId,
-            updatedAfter: _updatedAfter,
-          );
-    final favorites = await (widget.searchFavorites ??
-            (String q) async {
-              final favoriteDao = await FavoriteDao.create(widget.dao!.storage);
-              return favoriteDao.searchFavoriteResults(q);
-            })
-        .call(query);
-    if (!mounted) return;
     setState(() {
-      _results = conversations;
-      _favoriteResults = favorites;
-      _loading = false;
+      _loading = true;
+      _errorText = null;
     });
+    try {
+      final conversations = widget.searchConversations == null
+          ? await widget.dao!.searchConversations(
+              query,
+              projectId: widget.projectId,
+              uncategorized: widget.uncategorized,
+              assistantId: _assistantId,
+              modelId: _modelId,
+              updatedAfter: _updatedAfter,
+              updatedBefore: _updatedBefore,
+            )
+          : await widget.searchConversations!(
+              query,
+              projectId: widget.projectId,
+              uncategorized: widget.uncategorized,
+              assistantId: _assistantId,
+              modelId: _modelId,
+              updatedAfter: _updatedAfter,
+              updatedBefore: _updatedBefore,
+            );
+      final favorites = await (widget.searchFavorites ??
+              (String q) async {
+                final favoriteDao =
+                    await FavoriteDao.create(widget.dao!.storage);
+                return favoriteDao.searchFavoriteResults(q);
+              })
+          .call(query);
+      if (!mounted || seq != _searchSeq) return;
+      setState(() {
+        _results = conversations;
+        _favoriteResults = favorites;
+        _loading = false;
+      });
+    } catch (e) {
+      if (!mounted || seq != _searchSeq) return;
+      setState(() {
+        _results = const [];
+        _favoriteResults = const [];
+        _loading = false;
+        _errorText = '搜索失败：$e';
+      });
+    }
   }
 
   bool get _hasFilters =>
       _assistantId != null ||
       _modelId?.trim().isNotEmpty == true ||
-      _updatedAfter != null;
+      _updatedAfter != null ||
+      _updatedBefore != null;
 
   Future<void> _editFilters() async {
     final modelController = TextEditingController(text: _modelId ?? '');
     var assistantId = _assistantId;
     var updatedAfter = _updatedAfter;
+    var updatedBefore = _updatedBefore;
     final now = DateTime.now();
     final picked = await showModalBottomSheet<
-        ({int? assistantId, String? modelId, int? updatedAfter})>(
+        ({
+          int? assistantId,
+          String? modelId,
+          int? updatedAfter,
+          int? updatedBefore
+        })>(
       context: context,
       showDragHandle: true,
       builder: (ctx) => StatefulBuilder(
@@ -1090,28 +1119,67 @@ class _ConversationSearchPageState extends State<ConversationSearchPage> {
                 children: [
                   FilterChip(
                     label: const Text('全部时间'),
-                    selected: updatedAfter == null,
-                    onSelected: (_) => setSheetState(() => updatedAfter = null),
+                    selected: updatedAfter == null && updatedBefore == null,
+                    onSelected: (_) => setSheetState(() {
+                      updatedAfter = null;
+                      updatedBefore = null;
+                    }),
                   ),
                   FilterChip(
                     label: const Text('最近 7 天'),
                     selected: updatedAfter ==
-                        now
-                            .subtract(const Duration(days: 7))
-                            .millisecondsSinceEpoch,
-                    onSelected: (_) => setSheetState(() => updatedAfter = now
-                        .subtract(const Duration(days: 7))
-                        .millisecondsSinceEpoch),
+                            now
+                                .subtract(const Duration(days: 7))
+                                .millisecondsSinceEpoch &&
+                        updatedBefore == null,
+                    onSelected: (_) => setSheetState(() {
+                      updatedAfter = now
+                          .subtract(const Duration(days: 7))
+                          .millisecondsSinceEpoch;
+                      updatedBefore = null;
+                    }),
                   ),
                   FilterChip(
                     label: const Text('最近 30 天'),
                     selected: updatedAfter ==
-                        now
-                            .subtract(const Duration(days: 30))
-                            .millisecondsSinceEpoch,
-                    onSelected: (_) => setSheetState(() => updatedAfter = now
-                        .subtract(const Duration(days: 30))
-                        .millisecondsSinceEpoch),
+                            now
+                                .subtract(const Duration(days: 30))
+                                .millisecondsSinceEpoch &&
+                        updatedBefore == null,
+                    onSelected: (_) => setSheetState(() {
+                      updatedAfter = now
+                          .subtract(const Duration(days: 30))
+                          .millisecondsSinceEpoch;
+                      updatedBefore = null;
+                    }),
+                  ),
+                  FilterChip(
+                    label: const Text('7 天前'),
+                    selected: updatedAfter == null &&
+                        updatedBefore ==
+                            now
+                                .subtract(const Duration(days: 7))
+                                .millisecondsSinceEpoch,
+                    onSelected: (_) => setSheetState(() {
+                      updatedAfter = null;
+                      updatedBefore = now
+                          .subtract(const Duration(days: 7))
+                          .millisecondsSinceEpoch;
+                    }),
+                  ),
+                  FilterChip(
+                    label: const Text('30 天前'),
+                    selected: updatedAfter == null &&
+                        updatedBefore ==
+                            now
+                                .subtract(const Duration(days: 30))
+                                .millisecondsSinceEpoch,
+                    onSelected: (_) => setSheetState(() {
+                      updatedAfter = null;
+                      updatedBefore = now
+                          .subtract(const Duration(days: 30))
+                          .millisecondsSinceEpoch;
+                    }),
                   ),
                 ],
               ),
@@ -1138,6 +1206,7 @@ class _ConversationSearchPageState extends State<ConversationSearchPage> {
                       assistantId: null,
                       modelId: null,
                       updatedAfter: null,
+                      updatedBefore: null,
                     )),
                     child: const Text('清空'),
                   ),
@@ -1149,6 +1218,7 @@ class _ConversationSearchPageState extends State<ConversationSearchPage> {
                         assistantId: assistantId,
                         modelId: model.isEmpty ? null : model,
                         updatedAfter: updatedAfter,
+                        updatedBefore: updatedBefore,
                       ));
                     },
                     child: const Text('应用'),
@@ -1166,6 +1236,7 @@ class _ConversationSearchPageState extends State<ConversationSearchPage> {
       _assistantId = picked.assistantId;
       _modelId = picked.modelId;
       _updatedAfter = picked.updatedAfter;
+      _updatedBefore = picked.updatedBefore;
     });
     if (_controller.text.trim().isNotEmpty) {
       await _search(_controller.text);
@@ -1178,6 +1249,7 @@ class _ConversationSearchPageState extends State<ConversationSearchPage> {
       appBar: AppBar(
         titleSpacing: 0,
         title: TextField(
+          key: const ValueKey('conversation_search_input'),
           controller: _controller,
           autofocus: true,
           textInputAction: TextInputAction.search,
@@ -1189,12 +1261,14 @@ class _ConversationSearchPageState extends State<ConversationSearchPage> {
         ),
         actions: [
           IconButton(
+            key: const ValueKey('conversation_search_filter'),
             tooltip: '筛选',
             onPressed: _editFilters,
             icon: Icon(
                 _hasFilters ? Icons.filter_alt : Icons.filter_alt_outlined),
           ),
           IconButton(
+            key: const ValueKey('conversation_search_submit'),
             tooltip: '搜索',
             onPressed: () => _search(_controller.text),
             icon: const Icon(Icons.search),
@@ -1202,78 +1276,104 @@ class _ConversationSearchPageState extends State<ConversationSearchPage> {
         ],
       ),
       body: _loading
-          ? const Center(child: CircularProgressIndicator())
-          : _results.isEmpty && _favoriteResults.isEmpty
+          ? const Center(
+              key: ValueKey('conversation_search_loading'),
+              child: CircularProgressIndicator(),
+            )
+          : _errorText != null
               ? Center(
-                  child: Text(
-                    _controller.text.trim().isEmpty ? '输入关键词搜索' : '没有找到相关内容',
-                    style: TextStyle(color: Colors.grey[600]),
+                  key: const ValueKey('conversation_search_error'),
+                  child: Padding(
+                    padding: const EdgeInsets.all(24),
+                    child: Text(
+                      _errorText!,
+                      textAlign: TextAlign.center,
+                      style:
+                          TextStyle(color: Theme.of(context).colorScheme.error),
+                    ),
                   ),
                 )
-              : ListView(
-                  children: [
-                    if (_results.isNotEmpty)
-                      Padding(
-                        padding: const EdgeInsets.fromLTRB(16, 14, 16, 6),
-                        child: Text('会话',
-                            style: Theme.of(context).textTheme.labelLarge),
+              : _results.isEmpty && _favoriteResults.isEmpty
+                  ? Center(
+                      key: const ValueKey('conversation_search_empty'),
+                      child: Text(
+                        _controller.text.trim().isEmpty
+                            ? '输入关键词搜索'
+                            : '没有找到相关内容',
+                        style: TextStyle(color: Colors.grey[600]),
                       ),
-                    for (final item in _results) ...[
-                      ListTile(
-                        title: Text(item.conversation.title ?? '(未命名会话)'),
-                        subtitle: _HighlightedText(
-                          text: item.snippet,
-                          query: _controller.text,
-                          maxLines: 2,
-                        ),
-                        trailing: const Icon(Icons.chevron_right),
-                        onTap: () => Navigator.pop(context, item.conversation),
-                      ),
-                      const Divider(height: 1),
-                    ],
-                    if (_favoriteResults.isNotEmpty)
-                      Padding(
-                        padding: const EdgeInsets.fromLTRB(16, 14, 16, 6),
-                        child: Text('收藏',
-                            style: Theme.of(context).textTheme.labelLarge),
-                      ),
-                    for (final item in _favoriteResults) ...[
-                      ListTile(
-                        leading: const Icon(Icons.star_border),
-                        title: Text(item.favorite.ownerName ?? '收藏'),
-                        subtitle: _HighlightedText(
-                          text: item.favorite.content,
-                          query: _controller.text,
-                          maxLines: 3,
-                        ),
-                        trailing: item.cid == null
-                            ? IconButton(
-                                tooltip: '复制',
-                                icon: const Icon(Icons.copy),
-                                onPressed: () async {
-                                  await Clipboard.setData(ClipboardData(
-                                      text: item.favorite.content));
-                                  if (!context.mounted) return;
-                                  ScaffoldMessenger.of(context).showSnackBar(
-                                      const SnackBar(content: Text('收藏内容已复制')));
-                                },
-                              )
-                            : const Icon(Icons.chevron_right),
-                        onTap: item.cid == null
-                            ? null
-                            : () => Navigator.pop(
-                                  context,
-                                  ConversationModel(
-                                    cid: item.cid!,
-                                    icon: '',
-                                    title: item.conversationTitle,
-                                  ),
-                                ),
-                      ),
-                      const Divider(height: 1),
-                    ],
-                  ],
-                ),
+                    )
+                  : ListView(
+                      key: const ValueKey('conversation_search_results'),
+                      children: [
+                        if (_results.isNotEmpty)
+                          Padding(
+                            key: const ValueKey(
+                                'conversation_search_conversations'),
+                            padding: const EdgeInsets.fromLTRB(16, 14, 16, 6),
+                            child: Text('会话',
+                                style: Theme.of(context).textTheme.labelLarge),
+                          ),
+                        for (final item in _results) ...[
+                          ListTile(
+                            title: Text(item.conversation.title ?? '(未命名会话)'),
+                            subtitle: _HighlightedText(
+                              text: item.snippet,
+                              query: _controller.text,
+                              maxLines: 2,
+                            ),
+                            trailing: const Icon(Icons.chevron_right),
+                            onTap: () =>
+                                Navigator.pop(context, item.conversation),
+                          ),
+                          const Divider(height: 1),
+                        ],
+                        if (_favoriteResults.isNotEmpty)
+                          Padding(
+                            key:
+                                const ValueKey('conversation_search_favorites'),
+                            padding: const EdgeInsets.fromLTRB(16, 14, 16, 6),
+                            child: Text('收藏',
+                                style: Theme.of(context).textTheme.labelLarge),
+                          ),
+                        for (final item in _favoriteResults) ...[
+                          ListTile(
+                            leading: const Icon(Icons.star_border),
+                            title: Text(item.favorite.ownerName ?? '收藏'),
+                            subtitle: _HighlightedText(
+                              text: item.favorite.content,
+                              query: _controller.text,
+                              maxLines: 3,
+                            ),
+                            trailing: item.cid == null
+                                ? IconButton(
+                                    tooltip: '复制',
+                                    icon: const Icon(Icons.copy),
+                                    onPressed: () async {
+                                      await Clipboard.setData(ClipboardData(
+                                          text: item.favorite.content));
+                                      if (!context.mounted) return;
+                                      ScaffoldMessenger.of(context)
+                                          .showSnackBar(const SnackBar(
+                                              content: Text('收藏内容已复制')));
+                                    },
+                                  )
+                                : const Icon(Icons.chevron_right),
+                            onTap: item.cid == null
+                                ? null
+                                : () => Navigator.pop(
+                                      context,
+                                      ConversationModel(
+                                        cid: item.cid!,
+                                        icon: '',
+                                        title: item.conversationTitle,
+                                      ),
+                                    ),
+                          ),
+                          const Divider(height: 1),
+                        ],
+                      ],
+                    ),
     );
   }
 }
