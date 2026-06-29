@@ -34,6 +34,40 @@ void main() {
           isTrue);
     });
 
+    test('model test result fields round-trip and stay backward compatible',
+        () {
+      final settings = AISettings.defaults();
+      final model = settings.providers.first.models.first;
+      expect(model.lastTestStatus, 'unknown');
+      expect(model.lastTestAt, isNull);
+
+      model.markTestResult(success: false, error: 'model not found');
+      model.markUsed();
+      model.applyCapabilityHints(vision: true, tool: true);
+      final restored = AISettings.fromJson(settings.toJson());
+      final restoredModel = restored.providers.first.models.first;
+      expect(restoredModel.lastTestStatus, 'failure');
+      expect(restoredModel.lastTestError, 'model not found');
+      expect(restoredModel.lastTestAt, isNotNull);
+      expect(restoredModel.lastUsedAt, isNotNull);
+      expect(restoredModel.vision, isTrue);
+      expect(restoredModel.tool, isTrue);
+
+      final legacy = restored.toJson();
+      final modelJson = ((legacy['providers'] as List).first
+          as Map<String, dynamic>)['models'] as List;
+      (modelJson.first as Map<String, dynamic>)
+        ..remove('lastTestAt')
+        ..remove('lastTestStatus')
+        ..remove('lastTestError')
+        ..remove('lastUsedAt');
+      final legacyRestored = AISettings.fromJson(legacy);
+      expect(legacyRestored.providers.first.models.first.lastTestStatus,
+          'unknown');
+      expect(legacyRestored.providers.first.models.first.lastTestAt, isNull);
+      expect(legacyRestored.providers.first.models.first.lastUsedAt, isNull);
+    });
+
     test('fromJson parses backend mode correctly', () {
       final json = AISettings.defaults().toJson();
       json['mode'] = 'backend';
@@ -97,7 +131,8 @@ void main() {
           'model': 'deepseek-chat',
         },
       });
-      expect(s.activeLocal.baseUrl, 'https://api.deepseek.com/chat/completions');
+      expect(
+          s.activeLocal.baseUrl, 'https://api.deepseek.com/chat/completions');
     });
 
     test('apiHost 留空时回落到预设默认地址', () {
@@ -220,7 +255,8 @@ void main() {
 
       await db.delete('tb_messages', where: 'id = ?', whereArgs: [id]);
 
-      final remaining = await db.query('tb_messages', where: 'cid = ?', whereArgs: [testCid]);
+      final remaining =
+          await db.query('tb_messages', where: 'cid = ?', whereArgs: [testCid]);
       expect(remaining.length, 0);
     });
 
@@ -237,7 +273,8 @@ void main() {
 
       await db.delete('tb_messages', where: 'cid = ?', whereArgs: [testCid]);
 
-      final remaining = await db.query('tb_messages', where: 'cid = ?', whereArgs: [testCid]);
+      final remaining =
+          await db.query('tb_messages', where: 'cid = ?', whereArgs: [testCid]);
       expect(remaining.length, 0);
     });
   });
@@ -262,18 +299,22 @@ void main() {
       await db.close();
     });
 
-    test('insert and paginate conversations, ordered by updateAt desc', () async {
+    test('insert and paginate conversations, ordered by updateAt desc',
+        () async {
       final now = DateTime.now().millisecondsSinceEpoch;
       for (var i = 0; i < 30; i++) {
-        await db.insert(tableName, {
-          'cid': 1000 + i,
-          'title': 'Conv $i',
-          'icon': '',
-          'updateAt': now + i,
-          'lastMessage': 'last $i',
-          'messageCount': i,
-          'stickTime': 0,
-        }, conflictAlgorithm: ConflictAlgorithm.replace);
+        await db.insert(
+            tableName,
+            {
+              'cid': 1000 + i,
+              'title': 'Conv $i',
+              'icon': '',
+              'updateAt': now + i,
+              'lastMessage': 'last $i',
+              'messageCount': i,
+              'stickTime': 0,
+            },
+            conflictAlgorithm: ConflictAlgorithm.replace);
       }
 
       // Paginate — most recent first
@@ -283,26 +324,33 @@ void main() {
           limit: 10,
           offset: 0);
       expect(page1.length, 10);
-      expect((page1.first['updateAt'] as int) > (page1.last['updateAt'] as int), isTrue);
+      expect((page1.first['updateAt'] as int) > (page1.last['updateAt'] as int),
+          isTrue);
     });
 
     test('sticky conversations appear in stick list', () async {
       final now = DateTime.now().millisecondsSinceEpoch;
       // Insert sticky
-      await db.insert(tableName, {
-        'cid': 2001,
-        'title': 'Sticky',
-        'updateAt': now,
-        'stickTime': now, // non-zero = sticky
-      }, conflictAlgorithm: ConflictAlgorithm.replace);
+      await db.insert(
+          tableName,
+          {
+            'cid': 2001,
+            'title': 'Sticky',
+            'updateAt': now,
+            'stickTime': now, // non-zero = sticky
+          },
+          conflictAlgorithm: ConflictAlgorithm.replace);
 
       // Insert normal
-      await db.insert(tableName, {
-        'cid': 2002,
-        'title': 'Normal',
-        'updateAt': now,
-        'stickTime': 0,
-      }, conflictAlgorithm: ConflictAlgorithm.replace);
+      await db.insert(
+          tableName,
+          {
+            'cid': 2002,
+            'title': 'Normal',
+            'updateAt': now,
+            'stickTime': 0,
+          },
+          conflictAlgorithm: ConflictAlgorithm.replace);
 
       final stickList = await db.query(tableName,
           where: 'stickTime > 0', orderBy: 'stickTime desc');
@@ -318,22 +366,29 @@ void main() {
     test('saveConversation uses ConflictAlgorithm.replace (upsert)', () async {
       final now = DateTime.now().millisecondsSinceEpoch;
       // Insert
-      await db.insert(tableName, {
-        'cid': 3001,
-        'title': 'Original Title',
-        'updateAt': now,
-      }, conflictAlgorithm: ConflictAlgorithm.replace);
+      await db.insert(
+          tableName,
+          {
+            'cid': 3001,
+            'title': 'Original Title',
+            'updateAt': now,
+          },
+          conflictAlgorithm: ConflictAlgorithm.replace);
 
-      var result = await db.query(tableName, where: 'cid = ?', whereArgs: [3001]);
+      var result =
+          await db.query(tableName, where: 'cid = ?', whereArgs: [3001]);
       expect(result.length, 1);
       expect(result.first['title'], 'Original Title');
 
       // Upsert with same cid
-      await db.insert(tableName, {
-        'cid': 3001,
-        'title': 'Updated Title',
-        'updateAt': now + 1,
-      }, conflictAlgorithm: ConflictAlgorithm.replace);
+      await db.insert(
+          tableName,
+          {
+            'cid': 3001,
+            'title': 'Updated Title',
+            'updateAt': now + 1,
+          },
+          conflictAlgorithm: ConflictAlgorithm.replace);
 
       result = await db.query(tableName, where: 'cid = ?', whereArgs: [3001]);
       expect(result.length, 1);

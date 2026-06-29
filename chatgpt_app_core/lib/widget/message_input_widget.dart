@@ -49,6 +49,8 @@ class MessageInputWidget extends StatefulWidget {
   final bool showWebSearch;
   final bool webSearchEnabled;
   final VoidCallback? onToggleWebSearch;
+  final String? modelLabel;
+  final VoidCallback? onModelTap;
   final String hint;
   final bool enable;
   final bool isStreaming;
@@ -70,6 +72,8 @@ class MessageInputWidget extends StatefulWidget {
     this.showWebSearch = false,
     this.webSearchEnabled = false,
     this.onToggleWebSearch,
+    this.modelLabel,
+    this.onModelTap,
     this.enable = true,
     this.isStreaming = false,
   }) : super(key: key);
@@ -117,8 +121,7 @@ class _MessageInputWidgetState extends State<MessageInputWidget> {
       return;
     }
     if (_isBrokenIosSimulator()) {
-      debugPrint(
-          'skip speech_to_text init: iOS 17.0–17.4 simulator audio bug');
+      debugPrint('skip speech_to_text init: iOS 17.0–17.4 simulator audio bug');
       if (mounted) setState(() => _hasSpeech = false);
       return;
     }
@@ -374,8 +377,7 @@ class _MessageInputWidgetState extends State<MessageInputWidget> {
         margin: const EdgeInsets.only(left: 10),
         width: 65,
         child: MaterialButton(
-          shape:
-              RoundedRectangleBorder(borderRadius: BorderRadius.circular(6)),
+          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(6)),
           height: 35,
           disabledColor: color.withValues(alpha: 0.6),
           color: widget.isStreaming ? Colors.red : color,
@@ -421,7 +423,8 @@ class _MessageInputWidgetState extends State<MessageInputWidget> {
                       color: Colors.black54,
                       shape: BoxShape.circle,
                     ),
-                    child: const Icon(Icons.close, size: 16, color: Colors.white),
+                    child:
+                        const Icon(Icons.close, size: 16, color: Colors.white),
                   ),
                 ),
               ),
@@ -457,13 +460,11 @@ class _MessageInputWidgetState extends State<MessageInputWidget> {
                   ConstrainedBox(
                     constraints: const BoxConstraints(maxWidth: 160),
                     child: Text(
-                      widget.pendingFiles[i]
-                          .split(Platform.pathSeparator)
-                          .last,
+                      widget.pendingFiles[i].split(Platform.pathSeparator).last,
                       maxLines: 1,
                       overflow: TextOverflow.ellipsis,
-                      style: const TextStyle(
-                          fontSize: 12, color: Colors.black87),
+                      style:
+                          const TextStyle(fontSize: 12, color: Colors.black87),
                     ),
                   ),
                   const SizedBox(width: 4),
@@ -476,6 +477,45 @@ class _MessageInputWidgetState extends State<MessageInputWidget> {
               ),
             ),
         ],
+      ),
+    );
+  }
+
+  Widget _buildModelBar(Color color) {
+    final label = widget.modelLabel;
+    if (label == null || label.isEmpty) return const SizedBox.shrink();
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 5),
+      child: Align(
+        alignment: Alignment.centerLeft,
+        child: InkWell(
+          borderRadius: BorderRadius.circular(14),
+          onTap: widget.onModelTap,
+          child: Container(
+            padding: const EdgeInsets.symmetric(horizontal: 9, vertical: 4),
+            decoration: BoxDecoration(
+              color: Colors.white.withValues(alpha: 0.88),
+              borderRadius: BorderRadius.circular(14),
+              border: Border.all(color: color.withValues(alpha: 0.25)),
+            ),
+            child: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Icon(Icons.tune, size: 14, color: color),
+                const SizedBox(width: 4),
+                ConstrainedBox(
+                  constraints: const BoxConstraints(maxWidth: 240),
+                  child: Text(
+                    label,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: const TextStyle(fontSize: 12, color: Colors.black87),
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
       ),
     );
   }
@@ -522,6 +562,7 @@ class _MessageInputWidgetState extends State<MessageInputWidget> {
       child: Column(
         mainAxisSize: MainAxisSize.min,
         children: [
+          _buildModelBar(color),
           _buildThumbnailBar(),
           _buildFileBar(),
           SizedBox(

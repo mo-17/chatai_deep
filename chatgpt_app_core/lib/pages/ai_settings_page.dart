@@ -2,6 +2,7 @@ import 'dart:async';
 
 import 'package:chatgpt_app_core/dao/chat/chat_service.dart';
 import 'package:chatgpt_app_core/model/ai_settings.dart';
+import 'package:chatgpt_app_core/pages/ai_health_check_page.dart';
 import 'package:chatgpt_app_core/pages/ai_provider_list_page.dart';
 import 'package:chatgpt_app_core/provider/ai_settings_provider.dart';
 import 'package:chatgpt_app_core/util/hi_dialog.dart';
@@ -126,7 +127,19 @@ class _AISettingsPageState extends State<AISettingsPage> {
     context.watch<AISettingsProvider>();
     final s = _store.settings;
     return Scaffold(
-      appBar: AppBar(title: const Text('AI 设置')),
+      appBar: AppBar(
+        title: const Text('AI 设置'),
+        actions: [
+          IconButton(
+            tooltip: '服务商健康检查',
+            icon: const Icon(Icons.health_and_safety_outlined),
+            onPressed: () => Navigator.push(
+              context,
+              MaterialPageRoute(builder: (_) => const AiHealthCheckPage()),
+            ),
+          ),
+        ],
+      ),
       body: ListView(
         padding: const EdgeInsets.symmetric(vertical: 16),
         children: [
@@ -181,8 +194,7 @@ class _AISettingsPageState extends State<AISettingsPage> {
                 selected: {s.mode},
                 onSelectionChanged: (sel) {
                   if (sel.first == AIMode.backend && LoginDao.isGuest()) {
-                    HiDialog.showSnackBar(
-                        context, '游客模式仅支持本地直连，登录后可使用后端代理');
+                    HiDialog.showSnackBar(context, '游客模式仅支持本地直连，登录后可使用后端代理');
                     return;
                   }
                   _patch((x) => x.mode = sel.first);
@@ -218,8 +230,8 @@ class _AISettingsPageState extends State<AISettingsPage> {
             ProviderAvatar(providerId: active.id, name: active.name, size: 40),
       ),
       title: const Text('AI 服务商'),
-      subtitle: Text(active.name,
-          style: tt.bodySmall?.copyWith(color: cs.primary)),
+      subtitle:
+          Text(active.name, style: tt.bodySmall?.copyWith(color: cs.primary)),
       trailing: Row(
         mainAxisSize: MainAxisSize.min,
         children: [
@@ -230,8 +242,7 @@ class _AISettingsPageState extends State<AISettingsPage> {
               borderRadius: BorderRadius.circular(8),
             ),
             child: Text('$enabledCount 已启用',
-                style:
-                    tt.labelSmall?.copyWith(color: cs.onSurfaceVariant)),
+                style: tt.labelSmall?.copyWith(color: cs.onSurfaceVariant)),
           ),
           const SizedBox(width: 4),
           Icon(Icons.chevron_right_rounded,
@@ -454,8 +465,8 @@ class _AISettingsPageState extends State<AISettingsPage> {
                         children: [
                           Text('temperature', style: tt.bodyMedium),
                           Text(value.toStringAsFixed(1),
-                              style: tt.titleMedium
-                                  ?.copyWith(color: cs.primary)),
+                              style:
+                                  tt.titleMedium?.copyWith(color: cs.primary)),
                         ],
                       ),
                       Slider(
@@ -464,17 +475,15 @@ class _AISettingsPageState extends State<AISettingsPage> {
                         max: 2.0,
                         divisions: 20,
                         label: value.toStringAsFixed(1),
-                        onChanged: enabled
-                            ? (v) => setLocal(() => value = v)
-                            : null,
+                        onChanged:
+                            enabled ? (v) => setLocal(() => value = v) : null,
                       ),
                     ],
                   ),
                 ),
                 const SizedBox(height: 4),
                 Text('低（如 0.2）更确定、稳定；高（如 1.0+）更发散、有创意。',
-                    style: tt.bodySmall
-                        ?.copyWith(color: cs.onSurfaceVariant)),
+                    style: tt.bodySmall?.copyWith(color: cs.onSurfaceVariant)),
               ],
             ),
             actions: [
@@ -620,8 +629,7 @@ class _AISettingsPageState extends State<AISettingsPage> {
         content: Text(result),
         actions: [
           TextButton(
-              onPressed: () => Navigator.pop(context),
-              child: const Text('确定')),
+              onPressed: () => Navigator.pop(context), child: const Text('确定')),
         ],
       ),
     );

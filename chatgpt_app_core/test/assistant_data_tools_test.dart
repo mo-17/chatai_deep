@@ -20,7 +20,8 @@ void main() {
 
   late HiDBManager storage;
   // 工具上下文：始终返回这套已 seed 的内存库。
-  ToolActionContext ctx() => ToolActionContext(openStorage: () async => storage);
+  ToolActionContext ctx() =>
+      ToolActionContext(openStorage: () async => storage);
 
   setUp(() async {
     storage = HiDBManager.test(
@@ -79,6 +80,27 @@ void main() {
     expect(list.first['cid'], 100);
   });
 
+  test('list_conversations：支持按 projectId 过滤', () async {
+    await storage.db.update(
+      'tb_conversation_list',
+      {'projectId': 1},
+      where: 'cid = ?',
+      whereArgs: [100],
+    );
+    await storage.db.update(
+      'tb_conversation_list',
+      {'projectId': 2},
+      where: 'cid = ?',
+      whereArgs: [101],
+    );
+
+    final out =
+        await BuiltinTools.listConversations(ctx()).execute({'projectId': 1});
+    final list = jsonDecode(out.content) as List;
+    expect(list.length, 1);
+    expect(list.single['cid'], 100);
+  });
+
   test('list_favorites：返回收藏内容', () async {
     final out = await BuiltinTools.listFavorites(ctx()).execute({});
     final list = jsonDecode(out.content) as List;
@@ -86,8 +108,8 @@ void main() {
   });
 
   test('get_conversation_messages：按 cid 返回消息（role 映射）', () async {
-    final out = await BuiltinTools.getConversationMessages(ctx())
-        .execute({'cid': 100});
+    final out =
+        await BuiltinTools.getConversationMessages(ctx()).execute({'cid': 100});
     final list = jsonDecode(out.content) as List;
     expect(list.length, 2);
     expect(list.first['role'], 'user');
@@ -95,9 +117,44 @@ void main() {
   });
 
   test('get_conversation_messages：cid 无消息时提示', () async {
-    final out = await BuiltinTools.getConversationMessages(ctx())
-        .execute({'cid': 999});
+    final out =
+        await BuiltinTools.getConversationMessages(ctx()).execute({'cid': 999});
     expect(out.content, contains('没有消息'));
+  });
+
+  test('search_chat_history：支持按 projectId 过滤', () async {
+    await storage.db.update(
+      'tb_conversation_list',
+      {'projectId': 1},
+      where: 'cid = ?',
+      whereArgs: [100],
+    );
+    await storage.db.update(
+      'tb_conversation_list',
+      {'projectId': 2},
+      where: 'cid = ?',
+      whereArgs: [101],
+    );
+    await storage.db.insert('tb_messages', {
+      'cid': 101,
+      'content': 'Pod 是另一个项目里提到的内容',
+      'createdAt': 4,
+      'ownerName': 'user',
+      'ownerType': 'sender',
+    });
+
+    final out1 = await BuiltinTools.searchChatHistory(ctx())
+        .execute({'query': 'Pod', 'projectId': 1});
+    final list1 = jsonDecode(out1.content) as List;
+    expect(list1.length, 2);
+    expect(list1.any((e) => e['cid'] == 100), isTrue);
+    expect(list1.every((e) => e['projectId'] == 1), isTrue);
+
+    final out2 = await BuiltinTools.searchChatHistory(ctx())
+        .execute({'query': 'Pod', 'projectId': 2});
+    final list2 = jsonDecode(out2.content) as List;
+    expect(list2.length, 1);
+    expect(list2.single['cid'], 101);
   });
 
   test('fromAssistant：绑定只读工具且提供 actions 时装配', () {

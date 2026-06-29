@@ -46,8 +46,8 @@ void main() {
     tearDown(() async => storage.db.close());
 
     test('导入 -> 列表 -> 检索 -> 删除 全链路', () async {
-      final id = await dao.addDocument(
-          '退款政策', '我们的退款政策：7 天内无理由退款。\n\n运费由买家承担。');
+      final id =
+          await dao.addDocument('退款政策', '我们的退款政策：7 天内无理由退款。\n\n运费由买家承担。');
       expect(id, isNotNull);
 
       final docs = await dao.getDocuments();
@@ -69,6 +69,19 @@ void main() {
       await dao.addDocument('B', '只有苹果');
       expect((await dao.search('苹果 香蕉')).length, 1); // 仅 A 同时含两词
       expect((await dao.search('苹果')).length, 2);
+    });
+
+    test('项目绑定文档后优先按项目范围检索，未绑定项目回退全局', () async {
+      final docA = await dao.addDocument('项目 A 手册', 'Pod 属于项目 A 的部署方案');
+      await dao.addDocument('项目 B 手册', 'Pod 属于项目 B 的部署方案');
+      await dao.setProjectDocIds(7, [docA!]);
+
+      final scoped = await dao.search('Pod', projectId: 7);
+      expect(scoped.length, 1);
+      expect(scoped.single.docTitle, '项目 A 手册');
+
+      final fallback = await dao.search('Pod', projectId: 8);
+      expect(fallback.length, 2);
     });
 
     test('空文本不建文档', () async {
@@ -93,14 +106,32 @@ void main() {
       expect(list.first['source'], '手册');
       expect((list.first['content'] as String).contains('Pod'), isTrue);
 
-      final miss = await BuiltinTools.knowledgeSearch(ctx)
-          .execute({'query': '不存在zzz'});
+      final miss =
+          await BuiltinTools.knowledgeSearch(ctx).execute({'query': '不存在zzz'});
       expect(miss.content, contains('没有找到'));
       await storage.db.close();
     });
 
+    test('execute：带 projectId 时优先检索项目绑定文档', () async {
+      final storage = HiDBManager.test(
+          await databaseFactoryFfi.openDatabase(inMemoryDatabasePath));
+      final dao = await KnowledgeDao.create(storage);
+      final docA = await dao.addDocument('项目 A', 'Pod 是 A 项目的部署单元');
+      await dao.addDocument('项目 B', 'Pod 是 B 项目的部署单元');
+      await dao.setProjectDocIds(1, [docA!]);
+
+      final out = await BuiltinTools.knowledgeSearch(
+        ToolActionContext(openStorage: () async => storage, projectId: 1),
+      ).execute({'query': 'Pod'});
+      final list = jsonDecode(out.content) as List;
+      expect(list.length, 1);
+      expect(list.single['source'], '项目 A');
+      await storage.db.close();
+    });
+
     test('catalog 含 knowledge_search（只读）+ fromAssistant 装配', () async {
-      expect(ToolRegistry.catalog.any((d) => d.id == 'knowledge_search'), isTrue);
+      expect(
+          ToolRegistry.catalog.any((d) => d.id == 'knowledge_search'), isTrue);
       final storage = HiDBManager.test(
           await databaseFactoryFfi.openDatabase(inMemoryDatabasePath));
       final r = ToolRegistry.fromAssistant(
@@ -112,8 +143,7 @@ void main() {
       // 缺 actions 不装配。
       expect(
           ToolRegistry.fromAssistant(
-                  AISettings.defaults(), const ['knowledge_search'])
-              .isEmpty,
+              AISettings.defaults(), const ['knowledge_search']).isEmpty,
           isTrue);
       await storage.db.close();
     });

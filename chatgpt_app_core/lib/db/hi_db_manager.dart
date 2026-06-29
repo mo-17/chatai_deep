@@ -1,5 +1,6 @@
 import 'dart:io';
 
+import 'package:chatgpt_app_core/db/db_migration.dart';
 import 'package:flutter/cupertino.dart';
 import 'package:login_sdk/dao/login_dao.dart';
 import 'package:sqflite_common_ffi/sqflite_ffi.dart';
@@ -65,51 +66,26 @@ class HiDBManager {
     } else {
       _db = await openDatabase(_dbName,
           version: _kSchemaVersion,
-          onUpgrade: _onUpgrade,
-          onCreate: (db, version) async {
-            await db.execute(
-                'create table if not exists tb_messages (id integer primary key autoincrement'
-                ', cid integer not null, content text, createdAt integer'
-                ', ownerName text, ownerType text, avatar text)');
-            await db.execute(
-                'create index if not exists tb_messages_cid_id_idx on tb_messages(cid, id desc)');
-          });
+          onUpgrade: _onUpgrade, onCreate: (db, version) async {
+        await db.execute(
+            'create table if not exists tb_messages (id integer primary key autoincrement'
+            ', cid integer not null, content text, createdAt integer'
+            ', ownerName text, ownerType text, avatar text)');
+        await db.execute(
+            'create index if not exists tb_messages_cid_id_idx on tb_messages(cid, id desc)');
+      });
     }
+    await DbMigration.run(_db);
     return this;
   }
 
   /// 迁移：将旧的 tb_<cid> 表合并到 tb_messages
-  static Future<void> _onUpgrade(Database db, int oldVersion, int newVersion) async {
+  static Future<void> _onUpgrade(
+      Database db, int oldVersion, int newVersion) async {
     if (oldVersion < 2) {
-      // 检测并迁移旧的 per-cid 消息表
-      final tables = await db.rawQuery(
-          "select name from sqlite_master where type='table' and name like 'tb\\_%' escape '\\'");
-      final knownTables = {'tb_conversation_list', 'tb_favorite', 'tb_messages'};
-      // 确保 tb_messages 存在
-      await db.execute(
-          'create table if not exists tb_messages (id integer primary key autoincrement'
-          ', cid integer not null, content text, createdAt integer'
-          ', ownerName text, ownerType text, avatar text)');
-      await db.execute(
-          'create index if not exists tb_messages_cid_id_idx on tb_messages(cid, id desc)');
-      for (final row in tables) {
-        final name = row['name'] as String;
-        if (knownTables.contains(name)) continue;
-        // tb_<cid> 格式
-        final cidStr = name.substring(3); // 去掉 'tb_' 前缀
-        final cid = int.tryParse(cidStr);
-        if (cid == null) continue;
-        try {
-          await db.rawInsert(
-              'insert into tb_messages (cid, content, createdAt, ownerName, ownerType, avatar) '
-              'select $cid, content, createdAt, ownerName, ownerType, avatar from "$name"');
-          await db.execute('drop table if exists "$name"');
-          debugPrint('migrated table $name -> tb_messages');
-        } catch (e) {
-          debugPrint('migrate $name failed: $e');
-        }
-      }
+      await DbMigration.migrateLegacyMessageTables(db);
     }
+    await DbMigration.run(db);
   }
 
   ///销毁数据库

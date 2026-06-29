@@ -28,6 +28,9 @@ class ToolActionContext {
   /// 当前会话绑定的助手 id（run_script 据此查该助手的技能脚本）。null = 无。
   final int? assistantId;
 
+  /// 当前会话所属项目。知识库检索会优先使用项目绑定文档；null = 全局知识库。
+  final int? projectId;
+
   /// JS 执行钩子（注入式）：避免工具层硬依赖原生引擎，便于单测与 OHOS 编译。
   /// null = 当前环境不支持执行脚本（run_script 会优雅跳过）。
   final Future<JsExecResult> Function(String code, String input)? runJs;
@@ -36,6 +39,7 @@ class ToolActionContext {
     required this.openStorage,
     this.confirm,
     this.assistantId,
+    this.projectId,
     this.runJs,
   });
 
@@ -43,6 +47,7 @@ class ToolActionContext {
   factory ToolActionContext.forCurrentAccount({
     Future<bool> Function(String title, String detail)? confirm,
     int? assistantId,
+    int? projectId,
     Future<JsExecResult> Function(String code, String input)? runJs,
   }) =>
       ToolActionContext(
@@ -50,6 +55,7 @@ class ToolActionContext {
             HiDBManager.instance(dbName: HiDBManager.getAccountHash()),
         confirm: confirm,
         assistantId: assistantId,
+        projectId: projectId,
         runJs: runJs,
       );
 }
@@ -139,8 +145,7 @@ class BuiltinTools {
           }
           final c = client ?? http.Client();
           try {
-            final resp =
-                await c.get(uri).timeout(const Duration(seconds: 15));
+            final resp = await c.get(uri).timeout(const Duration(seconds: 15));
             if (resp.statusCode != 200) {
               return ToolOutcome(content: '抓取失败：HTTP ${resp.statusCode}');
             }
@@ -176,6 +181,17 @@ class BuiltinTools {
     return n.clamp(min, max);
   }
 
+  static int? _nullableIntArg(Object? raw) {
+    if (raw == null) return null;
+    if (raw is int) return raw;
+    return int.tryParse('$raw');
+  }
+
+  static Future<bool> _conversationHasProjectId(Database db) async {
+    final rows = await db.rawQuery('pragma table_info(tb_conversation_list)');
+    return rows.any((r) => (r['name'] ?? '').toString() == 'projectId');
+  }
+
   /// 打开账号库并确保四张读表存在（懒建表，空账号也安全）。
   static Future<Database> _readyDb(ToolActionContext ctx) async {
     final storage = await ctx.openStorage();
@@ -194,6 +210,10 @@ class BuiltinTools {
           'type': 'object',
           'properties': {
             'query': {'type': 'string', 'description': '检索关键词'},
+            'projectId': {
+              'type': 'integer',
+              'description': '按项目 ID 过滤（可选，不传则查全部）',
+            },
             'limit': {'type': 'integer', 'description': '返回条数上限（默认 10，最多 50）'},
           },
           'required': ['query'],
@@ -203,13 +223,24 @@ class BuiltinTools {
           if (q.isEmpty) return const ToolOutcome(content: '错误：缺少 query 参数');
           final limit = _intArg(args['limit'], 10);
           final db = await _readyDb(ctx);
+          final hasProjectColumn = await _conversationHasProjectId(db);
+          final projectId = _nullableIntArg(args['projectId']);
+          final projectClause = hasProjectColumn && projectId != null
+              ? ' and c.projectId = ?'
+              : '';
+          final projectSelect =
+              hasProjectColumn ? ', c.projectId as projectId' : '';
           final rows = await db.rawQuery(
             'select m.cid as cid, m.content as content, m.createdAt as createdAt'
-            ', m.ownerType as ownerType, c.title as title '
+            ', m.ownerType as ownerType, c.title as title$projectSelect '
             'from tb_messages m '
             'left join tb_conversation_list c on c.cid = m.cid '
-            'where m.content like ? order by m.createdAt desc limit ?',
-            ['%$q%', limit],
+            'where m.content like ?$projectClause order by m.createdAt desc limit ?',
+            [
+              '%$q%',
+              if (projectId != null && hasProjectColumn) projectId,
+              limit
+            ],
           );
           if (rows.isEmpty) {
             return ToolOutcome(content: '没有找到包含「$q」的历史消息');
@@ -222,6 +253,7 @@ class BuiltinTools {
                   'conversation': r['title'] ?? '(未命名会话)',
                   'role': r['ownerType'] == 'sender' ? 'user' : 'assistant',
                   'snippet': _cap((r['content'] as String? ?? ''), 300),
+                  if (hasProjectColumn) 'projectId': r['projectId'],
                 },
             ]),
           );
@@ -237,13 +269,30 @@ class BuiltinTools {
           'type': 'object',
           'properties': {
             'limit': {'type': 'integer', 'description': '返回条数上限（默认 20，最多 50）'},
+            'projectId': {
+              'type': 'integer',
+              'description': '按项目 ID 过滤（可选，不传则查全部）'
+            },
           },
         },
         execute: (args) async {
           final limit = _intArg(args['limit'], 20);
           final db = await _readyDb(ctx);
+          final hasProjectColumn = await _conversationHasProjectId(db);
+          final projectId = _nullableIntArg(args['projectId']);
           final rows = await db.query('tb_conversation_list',
-              columns: ['cid', 'title', 'messageCount', 'updateAt'],
+              columns: [
+                'cid',
+                'title',
+                'messageCount',
+                'updateAt',
+                if (hasProjectColumn) 'projectId'
+              ],
+              where: hasProjectColumn && projectId != null
+                  ? 'projectId = ?'
+                  : null,
+              whereArgs:
+                  hasProjectColumn && projectId != null ? [projectId] : null,
               orderBy: 'updateAt desc',
               limit: limit);
           if (rows.isEmpty) return const ToolOutcome(content: '当前账号还没有任何会话');
@@ -254,6 +303,7 @@ class BuiltinTools {
                   'cid': r['cid'],
                   'title': r['title'] ?? '(未命名会话)',
                   'messageCount': r['messageCount'] ?? 0,
+                  if (hasProjectColumn) 'projectId': r['projectId'],
                 },
             ]),
           );
@@ -300,7 +350,10 @@ class BuiltinTools {
           'type': 'object',
           'properties': {
             'cid': {'type': 'integer', 'description': '会话 id（cid）'},
-            'limit': {'type': 'integer', 'description': '返回消息条数上限（默认 30，最多 50）'},
+            'limit': {
+              'type': 'integer',
+              'description': '返回消息条数上限（默认 30，最多 50）'
+            },
           },
           'required': ['cid'],
         },
@@ -352,7 +405,8 @@ class BuiltinTools {
           final limit = _intArg(args['limit'], 6);
           final storage = await ctx.openStorage();
           final dao = await KnowledgeDao.create(storage);
-          final hits = await dao.search(q, limit: limit);
+          final hits =
+              await dao.search(q, limit: limit, projectId: ctx.projectId);
           if (hits.isEmpty) {
             return ToolOutcome(content: '知识库里没有找到与「$q」相关的内容');
           }
@@ -393,8 +447,11 @@ class BuiltinTools {
         },
         execute: (args) async {
           final content = (args['content'] as String? ?? '').trim();
-          if (content.isEmpty) return const ToolOutcome(content: '错误：缺少 content 参数');
-          if (!await _confirm(ctx, '收藏内容', '助手想把以下内容存入收藏夹：\n${_cap(content, 200)}')) {
+          if (content.isEmpty) {
+            return const ToolOutcome(content: '错误：缺少 content 参数');
+          }
+          if (!await _confirm(
+              ctx, '收藏内容', '助手想把以下内容存入收藏夹：\n${_cap(content, 200)}')) {
             return _denied;
           }
           final storage = await ctx.openStorage();
@@ -421,7 +478,9 @@ class BuiltinTools {
         },
         execute: (args) async {
           final title = (args['title'] as String? ?? '').trim();
-          if (title.isEmpty) return const ToolOutcome(content: '错误：缺少 title 参数');
+          if (title.isEmpty) {
+            return const ToolOutcome(content: '错误：缺少 title 参数');
+          }
           if (!await _confirm(ctx, '新建会话', '助手想新建会话「$title」')) {
             return _denied;
           }
@@ -447,7 +506,10 @@ class BuiltinTools {
           'type': 'object',
           'properties': {
             'cid': {'type': 'integer', 'description': '会话 id（cid）'},
-            'stick': {'type': 'boolean', 'description': 'true 置顶，false 取消置顶（默认 true）'},
+            'stick': {
+              'type': 'boolean',
+              'description': 'true 置顶，false 取消置顶（默认 true）'
+            },
           },
           'required': ['cid'],
         },
@@ -507,8 +569,7 @@ class BuiltinTools {
           final script = await dao.getScript(aid, name);
           if (script == null) return ToolOutcome(content: '未找到脚本「$name」');
           if (ctx.runJs == null) {
-            return const ToolOutcome(
-                content: '当前环境不支持执行脚本（已跳过），请用文字方式近似完成');
+            return const ToolOutcome(content: '当前环境不支持执行脚本（已跳过），请用文字方式近似完成');
           }
           final summary =
               script.auditSummary.isNotEmpty ? '（${script.auditSummary}）' : '';
@@ -738,12 +799,11 @@ class HtmlText {
   static String extract(String html) {
     var s = html;
     s = s.replaceAll(
-        RegExp(r'<(script|style)[^>]*>[\s\S]*?</\1>',
-            caseSensitive: false),
+        RegExp(r'<(script|style)[^>]*>[\s\S]*?</\1>', caseSensitive: false),
         ' ');
     s = s.replaceAll(RegExp(r'<br\s*/?>', caseSensitive: false), '\n');
-    s = s.replaceAll(RegExp(r'</(p|div|li|h[1-6]|tr)>', caseSensitive: false),
-        '\n');
+    s = s.replaceAll(
+        RegExp(r'</(p|div|li|h[1-6]|tr)>', caseSensitive: false), '\n');
     s = s.replaceAll(RegExp(r'<[^>]+>'), ' ');
     s = _decodeEntities(s);
     // 压缩空白：行内多空格 -> 单空格；多空行 -> 单空行。

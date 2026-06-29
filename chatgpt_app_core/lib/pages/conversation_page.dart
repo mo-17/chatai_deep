@@ -18,8 +18,10 @@ import 'package:chatgpt_app_core/chat/ui/block_message_content.dart';
 import 'package:chatgpt_app_core/dao/chat/chat_service.dart';
 import 'package:chatgpt_app_core/dao/completion_dao.dart';
 import 'package:chatgpt_app_core/model/ai_settings.dart';
+import 'package:chatgpt_app_core/model/ai_provider.dart';
 import 'package:chatgpt_app_core/model/assistant_model.dart';
 import 'package:chatgpt_app_core/db/assistant_dao.dart';
+import 'package:chatgpt_app_core/db/conversation_dao.dart';
 import 'package:chatgpt_app_core/db/favorite_dao.dart';
 import 'package:chatgpt_app_core/db/hi_db_manager.dart';
 import 'package:chatgpt_app_core/db/message_dao.dart';
@@ -41,6 +43,10 @@ import 'package:provider/provider.dart';
 
 typedef OnConversationUpdate = void Function(
     ConversationModel conversationModel);
+
+enum _ConversationModelTestState { idle, running, success, failure }
+
+enum _ModelFilter { all, available, image, tool, reasoning }
 
 ///聊天对话框页面
 class ConversationPage extends StatefulWidget {
@@ -66,8 +72,10 @@ class _ConversationPageState extends State<ConversationPage> {
   bool _isStreaming = false;
   late MessageDao messageDao;
   late FavoriteDao favoriteDao;
+  late ConversationListDao conversationListDao;
   late ChatController chatController;
   late CompletionDao completionDao;
+
   /// 按 index 精确跳转（置顶/置底 + 对话目录跳转）。
   final ItemScrollController _itemScrollController = ItemScrollController();
 
@@ -111,17 +119,39 @@ class _ConversationPageState extends State<ConversationPage> {
 
   /// 构建当前 completionDao 时所用的助手，用于「切换助手后重建 Dao」的判断。
   AssistantModel? _daoAssistant;
+  String? _daoModelProviderId;
+  String? _daoModelId;
   AssistantDao? _assistantDao;
 
   /// 应用助手的模型覆盖后的设置 —— 能力位与请求构造都用它，
   /// 保证「助手指定了模型时，capabilitiesFor 用覆盖后的模型算」。
-  AISettings _effective(AISettings s) => _assistant?.applyTo(s) ?? s;
+  AISettings _effective(AISettings s) {
+    final next = (_assistant?.applyTo(s) ?? s).clone();
+    final webSearchOverride = widget.conversationModel.webSearchEnabled;
+    if (webSearchOverride != null) {
+      next.webSearchEnabled = webSearchOverride;
+    }
+    final modelId = widget.conversationModel.modelId?.trim() ?? '';
+    if (modelId.isEmpty) return next;
+    if (next.mode == AIMode.backend) {
+      next.backendModel = modelId;
+      return next;
+    }
+    final providerId = widget.conversationModel.modelProviderId;
+    if (providerId != null &&
+        next.providers.any((p) => p.id == providerId && p.enabled)) {
+      next.activeProviderId = providerId;
+    }
+    next.setActiveModel(modelId);
+    return next;
+  }
 
   /// 工具运行上下文：注入确认回调 + 当前助手 id（run_script 据此查脚本）
   /// + JS 执行钩子（仅支持的平台注入，OHOS/Web 为 null → run_script 优雅跳过）。
   ToolActionContext _toolActions() => ToolActionContext.forCurrentAccount(
         confirm: _confirmToolAction,
         assistantId: _assistant?.id,
+        projectId: widget.conversationModel.projectId,
         runJs: JsRuntimeService.isSupported
             ? (code, input) => const JsRuntimeService().run(code, input: input)
             : null,
@@ -142,6 +172,9 @@ class _ConversationPageState extends State<ConversationPage> {
     final bound = {...?assistant.toolIds};
     return all.where((t) => bound.contains(t.name)).toList();
   }
+
+  List<String>? get _effectiveToolIds =>
+      widget.conversationModel.toolIds ?? _assistant?.toolIds;
 
   /// 块上记录的 modelId（覆盖后实际生效的模型）。
   String get _effectiveModelId => _effective(_currentSettings).effectiveModel;
@@ -391,6 +424,14 @@ class _ConversationPageState extends State<ConversationPage> {
     return 'ChatGPT';
   }
 
+  String _modelLabel(AISettings settings) {
+    final effective = _effective(settings);
+    final model = effective.effectiveModel;
+    final prefix = widget.conversationModel.modelId == null ? '跟随全局' : '当前模型';
+    if (effective.mode == AIMode.backend) return '$prefix：$model';
+    return '$prefix：${effective.activeProvider.name} · $model';
+  }
+
   _inputWidget(ModelCapabilities caps, AISettings settings) {
     return MessageInputWidget(
       '请输入',
@@ -404,11 +445,11 @@ class _ConversationPageState extends State<ConversationPage> {
       showWebSearch: settings.webSearchConfigured,
       webSearchEnabled: settings.webSearchEnabled,
       onToggleWebSearch: _toggleWebSearch,
+      modelLabel: _modelLabel(settings),
+      onModelTap: _switchModel,
       pendingImages: _pendingImages,
       imagesEnabled: caps.image,
-      imagesDisabledReason: caps.image
-          ? ''
-          : '当前模型不支持图片，请切换 gpt-4o 等多模态模型',
+      imagesDisabledReason: caps.image ? '' : '当前模型不支持图片，请切换 gpt-4o 等多模态模型',
       onImagesPicked: (images) => setState(() => _pendingImages = images),
       onRemoveImage: (index) {
         setState(() {
@@ -479,14 +520,16 @@ class _ConversationPageState extends State<ConversationPage> {
     );
   }
 
-  /// 切换联网搜索开关（持久化到 AI 设置，所有会话共享，与 Cherry 一致）。
-  void _toggleWebSearch() {
-    final provider = context.read<AISettingsProvider>();
-    final next = provider.settings.clone()
-      ..webSearchEnabled = !provider.settings.webSearchEnabled;
-    provider.update(next);
-    HiDialog.showSnackBar(
-        context, next.webSearchEnabled ? '已开启联网搜索' : '已关闭联网搜索');
+  /// 切换联网搜索开关：当前会话优先覆盖，避免改动全局 AI 设置影响其它会话。
+  void _toggleWebSearch() async {
+    final effective = _effective(context.read<AISettingsProvider>().settings);
+    final enabled = !effective.webSearchEnabled;
+    setState(() => widget.conversationModel.webSearchEnabled = enabled);
+    widget.conversationModel.hadChanged = true;
+    await conversationListDao.updateWebSearchOverride(
+        widget.conversationModel, enabled);
+    if (!mounted) return;
+    HiDialog.showSnackBar(context, enabled ? '当前会话已开启联网搜索' : '当前会话已关闭联网搜索');
   }
 
   /// 气泡内部内容构造器（注入给 chat_message 包）：
@@ -516,9 +559,16 @@ class _ConversationPageState extends State<ConversationPage> {
     // 仅在 settings / 助手变更时重建 CompletionDao，避免每次发送都新建实例。
     // CompletionDao 用「应用助手模型覆盖后」的设置 + 助手系统提示词（阶段七）。
     final rawSettings = context.read<AISettingsProvider>().settings;
-    if (rawSettings != _currentSettings || !identical(_assistant, _daoAssistant)) {
+    final modelChanged =
+        _daoModelProviderId != widget.conversationModel.modelProviderId ||
+            _daoModelId != widget.conversationModel.modelId;
+    if (rawSettings != _currentSettings ||
+        !identical(_assistant, _daoAssistant) ||
+        modelChanged) {
       _currentSettings = rawSettings;
       _daoAssistant = _assistant;
+      _daoModelProviderId = widget.conversationModel.modelProviderId;
+      _daoModelId = widget.conversationModel.modelId;
       completionDao = CompletionDao(
           settings: _effective(rawSettings),
           systemPrompt: _assistant?.prompt,
@@ -580,7 +630,7 @@ class _ConversationPageState extends State<ConversationPage> {
     final mcpTools = (caps.tool && settings.streamEnabled && allowTools)
         ? await _discoverMcpTools(settings)
         : const <ChatTool>[];
-    final registry = ToolRegistry.fromAssistant(settings, _assistant?.toolIds,
+    final registry = ToolRegistry.fromAssistant(settings, _effectiveToolIds,
         forceWebSearch: webSearch,
         actions: _toolActions(),
         extraTools: mcpTools);
@@ -697,7 +747,8 @@ class _ConversationPageState extends State<ConversationPage> {
     if (c != null && !c.isCompleted) c.complete();
   }
 
-  Future<void> _onSendNonStream(String inputMessage, ChatAttachments attachments,
+  Future<void> _onSendNonStream(
+      String inputMessage, ChatAttachments attachments,
       {bool webSearch = false}) async {
     String? response = "";
     var webResults = const <WebSearchResult>[];
@@ -742,9 +793,9 @@ class _ConversationPageState extends State<ConversationPage> {
     final messageKey = chatMessageKey(receiverModel.createdAt);
 
     // 先建占位块，再把气泡加入列表 —— 这样气泡首次构建时即走块化渲染分支。
-    final dispatcher = StreamDispatcher(_blockStore, messageKey,
-        modelId: _effectiveModelId)
-      ..start();
+    final dispatcher =
+        StreamDispatcher(_blockStore, messageKey, modelId: _effectiveModelId)
+          ..start();
     chatController.addMessage(receiverModel);
 
     _userStopped = false;
@@ -963,7 +1014,9 @@ class _ConversationPageState extends State<ConversationPage> {
     _aiName = settings.aiDisplayName;
     var dbManager =
         await HiDBManager.instance(dbName: HiDBManager.getAccountHash());
-    messageDao = await MessageDao.create(dbManager, cid: widget.conversationModel.cid);
+    conversationListDao = await ConversationListDao.create(dbManager);
+    messageDao =
+        await MessageDao.create(dbManager, cid: widget.conversationModel.cid);
     favoriteDao = await FavoriteDao.create(dbManager);
     // 阶段七：加载会话绑定的助手（先于 CompletionDao 构造，使首轮即带
     // 系统提示词与模型覆盖）。助手已删除时回落 null。
@@ -975,9 +1028,10 @@ class _ConversationPageState extends State<ConversationPage> {
     var list = await _loadData();
     chatController.loadMoreData(list);
     // 首帧布局完成后算一次按钮可见性（打开长会话时立即出现「回到顶部」）。
-    WidgetsBinding.instance
-        .addPostFrameCallback((_) => _onPositionsChanged());
+    WidgetsBinding.instance.addPostFrameCallback((_) => _onPositionsChanged());
     _daoAssistant = _assistant;
+    _daoModelProviderId = widget.conversationModel.modelProviderId;
+    _daoModelId = widget.conversationModel.modelId;
     // 从持久化块恢复工具调用历史（遗留项 2）+ 附件文本历史（遗留项 6），
     // 使重开会话后工具调用与文件上下文仍跨轮可见。
     final blockHistory = await _loadBlockHistory(list);
@@ -1003,11 +1057,486 @@ class _ConversationPageState extends State<ConversationPage> {
       widget.conversationModel.assistantId = pick.assistant?.id;
     });
     widget.conversationModel.hadChanged = true;
-    HiDialog.showSnackBar(
-        context,
-        pick.assistant == null
-            ? '已取消助手绑定'
-            : '已切换助手：${pick.assistant!.name}');
+    HiDialog.showSnackBar(context,
+        pick.assistant == null ? '已取消助手绑定' : '已切换助手：${pick.assistant!.name}');
+  }
+
+  void _switchModel() async {
+    final rawSettings = context.read<AISettingsProvider>().settings;
+    final picked = rawSettings.mode == AIMode.backend
+        ? await _pickBackendModel(rawSettings)
+        : await _pickLocalModel(rawSettings);
+    if (picked == null || !mounted) return;
+    setState(() {
+      widget.conversationModel.modelProviderId = picked.providerId;
+      widget.conversationModel.modelId = picked.modelId;
+    });
+    widget.conversationModel.hadChanged = true;
+    await conversationListDao.updateModelOverride(
+        widget.conversationModel, picked.providerId, picked.modelId);
+    if (picked.providerId != null && picked.modelId != null) {
+      await _recordModelUsed(picked.providerId!, picked.modelId!);
+    }
+    if (!mounted) return;
+    final label = picked.modelId == null ? '跟随全局设置' : picked.modelId!;
+    HiDialog.showSnackBar(context, '当前会话模型：$label');
+  }
+
+  Future<void> _testConversationModel(
+    AISettings settings, {
+    String? providerId,
+    required String modelId,
+  }) async {
+    final model = modelId.trim();
+    if (model.isEmpty) {
+      throw Exception('请输入模型 ID');
+    }
+    final next = settings.clone();
+    if (next.mode == AIMode.backend) {
+      next.backendModel = model;
+    } else {
+      final id = providerId ?? next.activeProvider.id;
+      next.activeProviderId = id;
+      final providers = next.providers.where((p) => p.id == id);
+      if (providers.isEmpty) {
+        throw Exception('服务商不存在或已停用');
+      }
+      final provider = providers.first;
+      provider.selectedModelId = model;
+      if (!provider.models.any((m) => m.id == model)) {
+        provider.models.insert(0, AiModel(id: model));
+      }
+    }
+    await ChatService.from(next).chat(prompt: 'ping', history: []);
+  }
+
+  void _recordConversationModelTestResult(
+    String providerId,
+    String modelId, {
+    required bool success,
+    String? error,
+  }) {
+    final store = context.read<AISettingsProvider>();
+    final providers = store.settings.providers.where((p) => p.id == providerId);
+    if (providers.isEmpty) return;
+    final provider = providers.first;
+    final models = provider.models.where((m) => m.id == modelId);
+    if (models.isEmpty) return;
+    models.first.markTestResult(success: success, error: error);
+    if (success) {
+      final caps = ModelCapabilities.heuristic(models.first.id,
+          providerCode: provider.providerCode);
+      models.first.applyCapabilityHints(
+        vision: caps.image,
+        tool: caps.tool,
+        reasoning: caps.reasoning,
+      );
+    }
+    store.updateProvider(provider);
+  }
+
+  Future<void> _recordModelUsed(String providerId, String modelId) async {
+    final store = context.read<AISettingsProvider>();
+    final providers = store.settings.providers.where((p) => p.id == providerId);
+    if (providers.isEmpty) return;
+    final provider = providers.first;
+    final models = provider.models.where((m) => m.id == modelId);
+    if (models.isEmpty) return;
+    models.first.markUsed();
+    await store.updateProvider(provider);
+  }
+
+  String _modelTestTimeLabel(int? millis) {
+    if (millis == null || millis <= 0) return '';
+    final dt = DateTime.fromMillisecondsSinceEpoch(millis);
+    String two(int v) => v.toString().padLeft(2, '0');
+    return '${dt.year}-${two(dt.month)}-${two(dt.day)} '
+        '${two(dt.hour)}:${two(dt.minute)}';
+  }
+
+  Future<({String? providerId, String? modelId})?> _pickLocalModel(
+      AISettings settings) async {
+    final currentProviderId =
+        widget.conversationModel.modelProviderId ?? settings.activeProvider.id;
+    final currentModelId =
+        widget.conversationModel.modelId ?? _effective(settings).effectiveModel;
+    final testStates = <String, _ConversationModelTestState>{};
+    final testErrors = <String, String>{};
+    final searchController = TextEditingController();
+    var filter = _ModelFilter.all;
+    final picked =
+        await showModalBottomSheet<({String? providerId, String? modelId})>(
+      context: context,
+      showDragHandle: true,
+      isScrollControlled: true,
+      builder: (ctx) => StatefulBuilder(
+        builder: (ctx, setSheetState) {
+          final cs = Theme.of(ctx).colorScheme;
+          final tt = Theme.of(ctx).textTheme;
+          final query = searchController.text.trim().toLowerCase();
+          return SafeArea(
+            child: ConstrainedBox(
+              constraints: BoxConstraints(
+                  maxHeight: MediaQuery.of(ctx).size.height * 0.72),
+              child: ListView(
+                shrinkWrap: true,
+                children: [
+                  Padding(
+                    padding: const EdgeInsets.fromLTRB(16, 4, 16, 10),
+                    child: TextField(
+                      controller: searchController,
+                      decoration: const InputDecoration(
+                        prefixIcon: Icon(Icons.search),
+                        hintText: '搜索模型或服务商',
+                        border: OutlineInputBorder(),
+                        isDense: true,
+                      ),
+                      onChanged: (_) => setSheetState(() {}),
+                    ),
+                  ),
+                  Padding(
+                    padding: const EdgeInsets.fromLTRB(16, 0, 16, 8),
+                    child: Wrap(
+                      spacing: 8,
+                      runSpacing: 4,
+                      children: [
+                        _modelFilterChip(ctx, '全部', _ModelFilter.all, filter,
+                            (v) => setSheetState(() => filter = v)),
+                        _modelFilterChip(ctx, '可用', _ModelFilter.available,
+                            filter, (v) => setSheetState(() => filter = v)),
+                        _modelFilterChip(ctx, '图片', _ModelFilter.image, filter,
+                            (v) => setSheetState(() => filter = v)),
+                        _modelFilterChip(ctx, '工具', _ModelFilter.tool, filter,
+                            (v) => setSheetState(() => filter = v)),
+                        _modelFilterChip(ctx, '推理', _ModelFilter.reasoning,
+                            filter, (v) => setSheetState(() => filter = v)),
+                      ],
+                    ),
+                  ),
+                  ListTile(
+                    leading: const Icon(Icons.public),
+                    title: const Text('跟随全局设置'),
+                    subtitle: Text(settings.effectiveModel),
+                    trailing: widget.conversationModel.modelId == null
+                        ? const Icon(Icons.check)
+                        : null,
+                    onTap: () =>
+                        Navigator.pop(ctx, (providerId: null, modelId: null)),
+                  ),
+                  const Divider(height: 1),
+                  for (final provider in settings.enabledProviders)
+                    if (_visibleModels(provider, query, filter).isNotEmpty) ...[
+                      Padding(
+                        padding: const EdgeInsets.fromLTRB(16, 14, 16, 6),
+                        child: Text(provider.name, style: tt.labelLarge),
+                      ),
+                      for (final model
+                          in _visibleModels(provider, query, filter))
+                        _modelPickTile(
+                          ctx,
+                          cs,
+                          tt,
+                          provider: provider,
+                          model: model,
+                          selected: currentProviderId == provider.id &&
+                              currentModelId == model.id,
+                          stateKey: '${provider.id}:${model.id}',
+                          testStates: testStates,
+                          testErrors: testErrors,
+                          setSheetState: setSheetState,
+                          settings: settings,
+                        ),
+                    ],
+                  if (settings.enabledProviders
+                      .every((p) => _visibleModels(p, query, filter).isEmpty))
+                    Padding(
+                      padding: const EdgeInsets.all(24),
+                      child: Center(
+                        child: Text('没有匹配的模型',
+                            style: tt.bodyMedium
+                                ?.copyWith(color: cs.onSurfaceVariant)),
+                      ),
+                    ),
+                ],
+              ),
+            ),
+          );
+        },
+      ),
+    );
+    searchController.dispose();
+    return picked;
+  }
+
+  Widget _modelFilterChip(
+    BuildContext context,
+    String label,
+    _ModelFilter value,
+    _ModelFilter selected,
+    ValueChanged<_ModelFilter> onSelected,
+  ) =>
+      FilterChip(
+        label: Text(label),
+        selected: selected == value,
+        onSelected: (_) => onSelected(value),
+        visualDensity: VisualDensity.compact,
+      );
+
+  List<AiModel> _visibleModels(
+      AiProvider provider, String query, _ModelFilter filter) {
+    final models = [
+      for (final model in provider.models)
+        if (_modelMatches(provider, model, query, filter)) model,
+    ];
+    models.sort((a, b) => (b.lastUsedAt ?? 0).compareTo(a.lastUsedAt ?? 0));
+    return models;
+  }
+
+  bool _modelMatches(
+      AiProvider provider, AiModel model, String query, _ModelFilter filter) {
+    if (query.isNotEmpty) {
+      final text = '${provider.name} ${provider.id} ${model.name} ${model.id}'
+          .toLowerCase();
+      if (!text.contains(query)) return false;
+    }
+    final caps = _modelCaps(provider, model);
+    return switch (filter) {
+      _ModelFilter.all => true,
+      _ModelFilter.available => model.lastTestStatus == 'success',
+      _ModelFilter.image => caps.image,
+      _ModelFilter.tool => caps.tool,
+      _ModelFilter.reasoning => caps.reasoning,
+    };
+  }
+
+  ModelCapabilities _modelCaps(AiProvider provider, AiModel model) {
+    final base = ModelCapabilities.heuristic(model.id,
+        providerCode: provider.providerCode);
+    return base.copyWith(
+      image: base.image || model.vision,
+      tool: base.tool || model.tool,
+      reasoning: base.reasoning || model.reasoning,
+    );
+  }
+
+  Widget _modelPickTile(
+    BuildContext ctx,
+    ColorScheme cs,
+    TextTheme tt, {
+    required AiProvider provider,
+    required AiModel model,
+    required bool selected,
+    required String stateKey,
+    required Map<String, _ConversationModelTestState> testStates,
+    required Map<String, String> testErrors,
+    required StateSetter setSheetState,
+    required AISettings settings,
+  }) {
+    final persistedState = switch (model.lastTestStatus) {
+      'success' => _ConversationModelTestState.success,
+      'failure' => _ConversationModelTestState.failure,
+      _ => _ConversationModelTestState.idle,
+    };
+    final state = testStates[stateKey] ?? persistedState;
+    final error = testErrors[stateKey] ?? model.lastTestError;
+    final testTime = _modelTestTimeLabel(model.lastTestAt);
+    final usedTime = _modelTestTimeLabel(model.lastUsedAt);
+    final caps = _modelCaps(provider, model);
+    return ListTile(
+      dense: true,
+      title: Text(model.name),
+      subtitle: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          if (model.id != model.name) Text(model.id),
+          Wrap(
+            spacing: 4,
+            runSpacing: 2,
+            children: [
+              if (caps.image) _miniModelChip(cs, '图片'),
+              if (caps.tool) _miniModelChip(cs, '工具'),
+              if (caps.reasoning) _miniModelChip(cs, '推理'),
+              if (caps.pdf) _miniModelChip(cs, 'PDF'),
+            ],
+          ),
+          if (state == _ConversationModelTestState.success)
+            Text('可用', style: tt.bodySmall?.copyWith(color: cs.primary)),
+          if (state == _ConversationModelTestState.failure && error != null)
+            Text(
+              '不可用：$error',
+              maxLines: 2,
+              overflow: TextOverflow.ellipsis,
+              style: tt.bodySmall?.copyWith(color: cs.error),
+            ),
+          if (testTime.isNotEmpty)
+            Text('上次测试：$testTime',
+                style: tt.bodySmall
+                    ?.copyWith(color: cs.onSurfaceVariant, fontSize: 11)),
+          if (usedTime.isNotEmpty)
+            Text('最近使用：$usedTime',
+                style: tt.bodySmall
+                    ?.copyWith(color: cs.onSurfaceVariant, fontSize: 11)),
+        ],
+      ),
+      trailing: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          if (selected) const Icon(Icons.check),
+          IconButton(
+            tooltip: '测试模型',
+            icon: state == _ConversationModelTestState.running
+                ? const SizedBox(
+                    width: 18,
+                    height: 18,
+                    child: CircularProgressIndicator(strokeWidth: 2),
+                  )
+                : const Icon(Icons.network_check_rounded),
+            onPressed: state == _ConversationModelTestState.running
+                ? null
+                : () async {
+                    setSheetState(() {
+                      testStates[stateKey] =
+                          _ConversationModelTestState.running;
+                      testErrors.remove(stateKey);
+                    });
+                    try {
+                      await _testConversationModel(settings,
+                          providerId: provider.id, modelId: model.id);
+                      if (!ctx.mounted) return;
+                      _recordConversationModelTestResult(provider.id, model.id,
+                          success: true);
+                      setSheetState(() {
+                        testStates[stateKey] =
+                            _ConversationModelTestState.success;
+                      });
+                    } catch (e) {
+                      if (!ctx.mounted) return;
+                      _recordConversationModelTestResult(provider.id, model.id,
+                          success: false, error: '$e');
+                      setSheetState(() {
+                        testStates[stateKey] =
+                            _ConversationModelTestState.failure;
+                        testErrors[stateKey] = '$e';
+                      });
+                    }
+                  },
+          ),
+        ],
+      ),
+      onTap: () =>
+          Navigator.pop(ctx, (providerId: provider.id, modelId: model.id)),
+    );
+  }
+
+  Widget _miniModelChip(ColorScheme cs, String label) => Container(
+        padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+        decoration: BoxDecoration(
+          color: cs.secondaryContainer,
+          borderRadius: BorderRadius.circular(6),
+        ),
+        child: Text(label,
+            style: TextStyle(
+                fontSize: 10, height: 1, color: cs.onSecondaryContainer)),
+      );
+
+  Widget _backendModelTestStatus(
+      _ConversationModelTestState state, String? error) {
+    final cs = Theme.of(context).colorScheme;
+    final tt = Theme.of(context).textTheme;
+    if (state == _ConversationModelTestState.idle) {
+      return const SizedBox.shrink();
+    }
+    if (state == _ConversationModelTestState.running) {
+      return const Padding(
+        padding: EdgeInsets.only(top: 12),
+        child: LinearProgressIndicator(minHeight: 2),
+      );
+    }
+    final success = state == _ConversationModelTestState.success;
+    return Padding(
+      padding: const EdgeInsets.only(top: 12),
+      child: Text(
+        success ? '模型可用' : '模型不可用：${error ?? ''}',
+        maxLines: 3,
+        overflow: TextOverflow.ellipsis,
+        style: tt.bodySmall?.copyWith(color: success ? cs.primary : cs.error),
+      ),
+    );
+  }
+
+  Future<({String? providerId, String? modelId})?> _pickBackendModel(
+      AISettings settings) async {
+    final controller = TextEditingController(
+        text: widget.conversationModel.modelId ?? settings.backendModel);
+    var testState = _ConversationModelTestState.idle;
+    String? testError;
+    return showDialog<({String? providerId, String? modelId})>(
+      context: context,
+      builder: (ctx) => StatefulBuilder(
+        builder: (ctx, setDialogState) => AlertDialog(
+          title: const Text('切换模型'),
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              TextField(
+                controller: controller,
+                autofocus: true,
+                decoration: const InputDecoration(hintText: '模型 ID'),
+                onChanged: (_) {
+                  if (testState == _ConversationModelTestState.idle) return;
+                  setDialogState(() {
+                    testState = _ConversationModelTestState.idle;
+                    testError = null;
+                  });
+                },
+              ),
+              _backendModelTestStatus(testState, testError),
+            ],
+          ),
+          actions: [
+            TextButton(
+                onPressed: () => Navigator.pop(ctx), child: const Text('取消')),
+            TextButton(
+                onPressed: () =>
+                    Navigator.pop(ctx, (providerId: null, modelId: null)),
+                child: const Text('跟随全局')),
+            TextButton(
+                onPressed: testState == _ConversationModelTestState.running
+                    ? null
+                    : () async {
+                        setDialogState(() {
+                          testState = _ConversationModelTestState.running;
+                          testError = null;
+                        });
+                        try {
+                          await _testConversationModel(settings,
+                              modelId: controller.text);
+                          if (!ctx.mounted) return;
+                          setDialogState(() =>
+                              testState = _ConversationModelTestState.success);
+                        } catch (e) {
+                          if (!ctx.mounted) return;
+                          setDialogState(() {
+                            testState = _ConversationModelTestState.failure;
+                            testError = '$e';
+                          });
+                        }
+                      },
+                child: const Text('测试')),
+            FilledButton(
+                onPressed: () {
+                  final model = controller.text.trim();
+                  Navigator.pop(
+                      ctx,
+                      model.isEmpty
+                          ? null
+                          : (providerId: null, modelId: model));
+                },
+                child: const Text('保存')),
+          ],
+        ),
+      ),
+    );
   }
 
   void _addMessage(MessageModel model) {
@@ -1157,7 +1686,8 @@ class _ConversationPageState extends State<ConversationPage> {
     if (!_canRegenerate(assistantMessage)) return;
     // 找到该回复对应的用户提问：列表新→旧，紧邻其后的第一条 sender 消息。
     final list = chatController.initialMessageList;
-    final idx = list.indexWhere((m) => m.createdAt == assistantMessage.createdAt);
+    final idx =
+        list.indexWhere((m) => m.createdAt == assistantMessage.createdAt);
     MessageModel? userMessage;
     for (var i = idx + 1; i >= 0 && i < list.length; i++) {
       if (list[i].ownerType == OwnerType.sender) {
@@ -1204,7 +1734,7 @@ class _ConversationPageState extends State<ConversationPage> {
     final mcpTools = (caps.tool && settings.streamEnabled && allowTools)
         ? await _discoverMcpTools(settings)
         : const <ChatTool>[];
-    final registry = ToolRegistry.fromAssistant(settings, _assistant?.toolIds,
+    final registry = ToolRegistry.fromAssistant(settings, _effectiveToolIds,
         forceWebSearch: webSearch,
         actions: _toolActions(),
         extraTools: mcpTools);

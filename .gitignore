@@ -45,3 +45,5 @@ task_backup
 
 /docs/
 /docs_main_old_backup/
+
+.DS_Store

@@ -1,3 +1,5 @@
+import 'dart:io';
+
 import 'package:cached_network_image/cached_network_image.dart';
 import 'package:chat_message/util/wechat_date_format.dart';
 import 'package:chatgpt_app_core/model/conversation_model.dart';
@@ -17,6 +19,8 @@ class ConversationWidget extends StatelessWidget {
   final ConversationModel model;
   final ConversationCallBack? onPressed;
   final ConversationCallBack? onDelete;
+  final ConversationCallBack? onMoveProject;
+  final ConversationCallBack? onAvatar;
   final ConversationStickCallBack? onStick;
 
   const ConversationWidget(
@@ -24,6 +28,8 @@ class ConversationWidget extends StatelessWidget {
       required this.model,
       this.onPressed,
       this.onDelete,
+      this.onMoveProject,
+      this.onAvatar,
       this.onStick})
       : super(key: key);
 
@@ -39,8 +45,8 @@ class ConversationWidget extends StatelessWidget {
   get _itemBackgroundColor =>
       model.stickTime > 0 ? Colors.grey.withValues(alpha: 0.2) : Colors.white;
 
-  bool get _hasValidIcon => model.icon.isNotEmpty &&
-      Uri.tryParse(model.icon)?.hasScheme == true;
+  bool get _hasValidIcon =>
+      model.icon.isNotEmpty && Uri.tryParse(model.icon)?.hasScheme == true;
 
   /// 仅当 icon URL 与后端同源时才注入 Authorization，避免泄漏 Bearer Token 到第三方 CDN
   bool get _isSameOrigin {
@@ -64,21 +70,51 @@ class ConversationWidget extends StatelessWidget {
         ),
       );
 
-  get _icon => _hasValidIcon
-      ? ClipRRect(
-          borderRadius: BorderRadius.circular(5),
-          child: CachedNetworkImage(
-            imageUrl: model.icon,
-            height: 50,
-            width: 50,
-            httpHeaders: _isSameOrigin && LoginDao.getBoardingPass() != null
-                ? {'Authorization': 'Bearer ${LoginDao.getBoardingPass()}'}
-                : null,
-            errorWidget: (_, __, ___) => _aiFallback,
-            placeholder: (_, __) => _aiFallback,
-          ),
-        )
-      : _aiFallback;
+  Widget _emojiAvatar(String emoji) => ClipRRect(
+        borderRadius: BorderRadius.circular(5),
+        child: Container(
+          height: 50,
+          width: 50,
+          color: const Color(0xFFE8F5E9),
+          alignment: Alignment.center,
+          child: Text(emoji, style: const TextStyle(fontSize: 28)),
+        ),
+      );
+
+  Widget _localImageAvatar(String path) {
+    final file = File(path);
+    if (!file.existsSync()) return _aiFallback;
+    return ClipRRect(
+      borderRadius: BorderRadius.circular(5),
+      child: Image.file(file, height: 50, width: 50, fit: BoxFit.cover),
+    );
+  }
+
+  get _icon {
+    final avatarType = model.avatarType;
+    final avatarValue = model.avatarValue?.trim() ?? '';
+    if (avatarType == 'emoji' && avatarValue.isNotEmpty) {
+      return _emojiAvatar(avatarValue);
+    }
+    if (avatarType == 'image' && avatarValue.isNotEmpty) {
+      return _localImageAvatar(avatarValue);
+    }
+    return _hasValidIcon
+        ? ClipRRect(
+            borderRadius: BorderRadius.circular(5),
+            child: CachedNetworkImage(
+              imageUrl: model.icon,
+              height: 50,
+              width: 50,
+              httpHeaders: _isSameOrigin && LoginDao.getBoardingPass() != null
+                  ? {'Authorization': 'Bearer ${LoginDao.getBoardingPass()}'}
+                  : null,
+              errorWidget: (_, __, ___) => _aiFallback,
+              placeholder: (_, __) => _aiFallback,
+            ),
+          )
+        : _aiFallback;
+  }
 
   get _rightLayout => Expanded(
           child: Column(
@@ -139,6 +175,18 @@ class ConversationWidget extends StatelessWidget {
         child: Text(showStick),
         onTap: () {
           if (onStick != null) onStick!(model, isStick: !isStick);
+        },
+      ),
+      PopupMenuItem(
+        child: const Text('移动到项目'),
+        onTap: () {
+          if (onMoveProject != null) onMoveProject!(model);
+        },
+      ),
+      PopupMenuItem(
+        child: const Text('设置头像'),
+        onTap: () {
+          if (onAvatar != null) onAvatar!(model);
         },
       ),
       PopupMenuItem(

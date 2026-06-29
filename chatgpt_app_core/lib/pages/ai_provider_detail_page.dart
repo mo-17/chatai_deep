@@ -2,6 +2,7 @@ import 'dart:async';
 
 import 'package:chatgpt_app_core/data/provider_presets.dart';
 import 'package:chatgpt_app_core/dao/chat/chat_service.dart';
+import 'package:chatgpt_app_core/chat/domain/model_capabilities.dart';
 import 'package:chatgpt_app_core/model/ai_provider.dart';
 import 'package:chatgpt_app_core/model/ai_settings.dart';
 import 'package:chatgpt_app_core/provider/ai_settings_provider.dart';
@@ -32,12 +33,15 @@ class _AiProviderDetailPageState extends State<AiProviderDetailPage> {
 
   _TestState _testState = _TestState.idle;
   String? _testError;
+  final Map<String, _TestState> _modelTestStates = {};
+  final Map<String, String> _modelTestErrors = {};
 
   // initState 时缓存，避免 dispose 里再用 context.read。
   late final AISettingsProvider _store = context.read<AISettingsProvider>();
 
   AiProvider? get _provider {
-    final list = _store.settings.providers.where((p) => p.id == widget.providerId);
+    final list =
+        _store.settings.providers.where((p) => p.id == widget.providerId);
     return list.isEmpty ? null : list.first;
   }
 
@@ -68,8 +72,16 @@ class _AiProviderDetailPageState extends State<AiProviderDetailPage> {
   void _flush({bool notify = true}) {
     final p = _provider;
     if (p == null) return;
-    p.apiKey = _keyCtl.text.trim();
-    p.apiHost = _hostCtl.text.trim();
+    final nextKey = _keyCtl.text.trim();
+    final nextHost = _hostCtl.text.trim();
+    final configChanged = p.apiKey != nextKey || p.apiHost != nextHost;
+    p.apiKey = nextKey;
+    p.apiHost = nextHost;
+    if (configChanged) {
+      for (final model in p.models) {
+        model.clearTestResult();
+      }
+    }
     if (notify) {
       _store.updateProvider(p);
     } else {
@@ -77,7 +89,8 @@ class _AiProviderDetailPageState extends State<AiProviderDetailPage> {
     }
   }
 
-  String get _defaultHost => ProviderPresets.byId(widget.providerId)?.apiHost ?? '';
+  String get _defaultHost =>
+      ProviderPresets.byId(widget.providerId)?.apiHost ?? '';
 
   String get _apiKeyUrl =>
       ProviderPresets.apiKeyUrls[widget.providerId] ??
@@ -116,6 +129,63 @@ class _AiProviderDetailPageState extends State<AiProviderDetailPage> {
     }
   }
 
+  Future<void> _runModelTest(String modelId) async {
+    _flush();
+    setState(() {
+      _modelTestStates[modelId] = _TestState.running;
+      _modelTestErrors.remove(modelId);
+    });
+    final s = _store.settings.clone()
+      ..mode = AIMode.local
+      ..activeProviderId = widget.providerId;
+    final p = s.providers.firstWhere((e) => e.id == widget.providerId);
+    p.selectedModelId = modelId;
+    if (!p.models.any((m) => m.id == modelId)) {
+      p.models.insert(0, AiModel(id: modelId));
+    }
+    try {
+      await ChatService.from(s).chat(prompt: 'ping', history: []);
+      if (!mounted) return;
+      _recordModelTestResult(modelId, success: true);
+      setState(() => _modelTestStates[modelId] = _TestState.success);
+    } catch (e) {
+      if (!mounted) return;
+      _recordModelTestResult(modelId, success: false, error: '$e');
+      setState(() {
+        _modelTestStates[modelId] = _TestState.failure;
+        _modelTestErrors[modelId] = '$e';
+      });
+    }
+  }
+
+  void _recordModelTestResult(String modelId,
+      {required bool success, String? error}) {
+    final p = _provider;
+    if (p == null) return;
+    final models = p.models.where((m) => m.id == modelId);
+    if (models.isEmpty) return;
+    final model = models.first;
+    model.markTestResult(success: success, error: error);
+    if (success) {
+      final caps =
+          ModelCapabilities.heuristic(model.id, providerCode: p.providerCode);
+      model.applyCapabilityHints(
+        vision: caps.image,
+        tool: caps.tool,
+        reasoning: caps.reasoning,
+      );
+    }
+    _store.updateProvider(p);
+  }
+
+  String _testTimeLabel(int? millis) {
+    if (millis == null || millis <= 0) return '';
+    final dt = DateTime.fromMillisecondsSinceEpoch(millis);
+    String two(int v) => v.toString().padLeft(2, '0');
+    return '${dt.year}-${two(dt.month)}-${two(dt.day)} '
+        '${two(dt.hour)}:${two(dt.minute)}';
+  }
+
   void _setActive() {
     _store.setActiveProvider(widget.providerId);
   }
@@ -124,6 +194,8 @@ class _AiProviderDetailPageState extends State<AiProviderDetailPage> {
     final p = _provider;
     if (p == null) return;
     p.selectedModelId = modelId;
+    final models = p.models.where((m) => m.id == modelId);
+    if (models.isNotEmpty) models.first.markUsed();
     _store.updateProvider(p);
   }
 
@@ -131,6 +203,8 @@ class _AiProviderDetailPageState extends State<AiProviderDetailPage> {
     final p = _provider;
     if (p == null) return;
     p.models.removeWhere((m) => m.id == modelId);
+    _modelTestStates.remove(modelId);
+    _modelTestErrors.remove(modelId);
     if (p.selectedModelId == modelId) {
       p.selectedModelId = p.models.isNotEmpty ? p.models.first.id : '';
     }
@@ -271,8 +345,7 @@ class _AiProviderDetailPageState extends State<AiProviderDetailPage> {
               ListTile(
                 title: const Text('协议类型'),
                 trailing: Text(p.type,
-                    style:
-                        tt.bodyMedium?.copyWith(color: cs.onSurfaceVariant)),
+                    style: tt.bodyMedium?.copyWith(color: cs.onSurfaceVariant)),
                 contentPadding:
                     const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
               ),
@@ -297,7 +370,8 @@ class _AiProviderDetailPageState extends State<AiProviderDetailPage> {
                 child: Row(
                   mainAxisSize: MainAxisSize.min,
                   children: [
-                    Icon(Icons.open_in_new_rounded, size: 14, color: cs.primary),
+                    Icon(Icons.open_in_new_rounded,
+                        size: 14, color: cs.primary),
                     const SizedBox(width: 4),
                     Text('去申请 API Key',
                         style: tt.labelMedium?.copyWith(color: cs.primary)),
@@ -373,8 +447,7 @@ class _AiProviderDetailPageState extends State<AiProviderDetailPage> {
                   child: Center(child: Text('暂无模型，点「添加模型」')),
                 )
               else
-                for (final m in p.models)
-                  _buildModelTile(p, m, cs, tt),
+                for (final m in p.models) _buildModelTile(p, m, cs, tt),
             ],
           ),
           const SizedBox(height: 32),
@@ -391,8 +464,7 @@ class _AiProviderDetailPageState extends State<AiProviderDetailPage> {
         children: [
           Hero(
             tag: 'provider-avatar-${p.id}',
-            child:
-                ProviderAvatar(providerId: p.id, name: p.name, size: 56),
+            child: ProviderAvatar(providerId: p.id, name: p.name, size: 56),
           ),
           const SizedBox(width: 16),
           Expanded(
@@ -402,8 +474,8 @@ class _AiProviderDetailPageState extends State<AiProviderDetailPage> {
                 Text(p.name, style: tt.headlineSmall),
                 const SizedBox(height: 6),
                 if (isActive && p.enabled)
-                  _statusPill('✓ 当前服务商', cs.primaryContainer,
-                      cs.onPrimaryContainer, tt)
+                  _statusPill(
+                      '✓ 当前服务商', cs.primaryContainer, cs.onPrimaryContainer, tt)
                 else if (p.enabled)
                   TextButton(
                     onPressed: _setActive,
@@ -495,13 +567,33 @@ class _AiProviderDetailPageState extends State<AiProviderDetailPage> {
       AiProvider p, AiModel m, ColorScheme cs, TextTheme tt) {
     final selected = p.selectedModelId == m.id ||
         (p.selectedModelId.isEmpty && p.models.first.id == m.id);
+    final persistedState = switch (m.lastTestStatus) {
+      'success' => _TestState.success,
+      'failure' => _TestState.failure,
+      _ => _TestState.idle,
+    };
+    final testState = _modelTestStates[m.id] ?? persistedState;
+    final testError = _modelTestErrors[m.id] ?? m.lastTestError;
+    final testTime = _testTimeLabel(m.lastTestAt);
     final chips = <Widget>[
-      if (m.vision) const CapabilityChip(label: '视觉', icon: Icons.image_outlined),
+      if (m.vision)
+        const CapabilityChip(label: '视觉', icon: Icons.image_outlined),
       if (m.tool) const CapabilityChip(label: '工具', icon: Icons.build_outlined),
       if (m.reasoning)
         const CapabilityChip(label: '推理', icon: Icons.lightbulb_outline),
       if (m.web)
         const CapabilityChip(label: '联网', icon: Icons.travel_explore_outlined),
+    ];
+    final statusChips = <Widget>[
+      ...chips,
+      if (testState == _TestState.success)
+        const CapabilityChip(label: '可用', icon: Icons.check_circle_outline),
+      if (testState == _TestState.failure)
+        CapabilityChip(
+            label: '不可用',
+            icon: Icons.error_outline,
+            color: cs.errorContainer,
+            textColor: cs.onErrorContainer),
     ];
     return ListTile(
       contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 2),
@@ -512,16 +604,56 @@ class _AiProviderDetailPageState extends State<AiProviderDetailPage> {
         color: selected ? cs.primary : cs.onSurfaceVariant,
       ),
       title: Text(m.name, style: tt.bodyMedium),
-      subtitle: chips.isEmpty
+      subtitle: statusChips.isEmpty && testError == null
           ? null
-          : Padding(
-              padding: const EdgeInsets.only(top: 4),
-              child: Wrap(spacing: 4, runSpacing: 4, children: chips),
+          : Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                if (statusChips.isNotEmpty)
+                  Padding(
+                    padding: const EdgeInsets.only(top: 4),
+                    child:
+                        Wrap(spacing: 4, runSpacing: 4, children: statusChips),
+                  ),
+                if (testError != null)
+                  Padding(
+                    padding: const EdgeInsets.only(top: 4),
+                    child: Text(testError,
+                        maxLines: 2,
+                        overflow: TextOverflow.ellipsis,
+                        style: tt.bodySmall?.copyWith(color: cs.error)),
+                  ),
+                if (testTime.isNotEmpty)
+                  Padding(
+                    padding: const EdgeInsets.only(top: 3),
+                    child: Text('上次测试：$testTime',
+                        style: tt.bodySmall?.copyWith(
+                            color: cs.onSurfaceVariant, fontSize: 11)),
+                  ),
+              ],
             ),
-      trailing: IconButton(
-        icon: Icon(Icons.remove_circle_outline_rounded, color: cs.error),
-        tooltip: '移除',
-        onPressed: () => _removeModel(m.id),
+      trailing: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          IconButton(
+            icon: testState == _TestState.running
+                ? const SizedBox(
+                    width: 18,
+                    height: 18,
+                    child: CircularProgressIndicator(strokeWidth: 2),
+                  )
+                : const Icon(Icons.network_check_rounded),
+            tooltip: '测试模型',
+            onPressed: testState == _TestState.running
+                ? null
+                : () => _runModelTest(m.id),
+          ),
+          IconButton(
+            icon: Icon(Icons.remove_circle_outline_rounded, color: cs.error),
+            tooltip: '移除',
+            onPressed: () => _removeModel(m.id),
+          ),
+        ],
       ),
       onTap: () => _selectModel(m.id),
     );

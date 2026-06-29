@@ -5,9 +5,11 @@ import 'package:chatgpt_app_core/db/conversation_dao.dart';
 import 'package:chatgpt_app_core/db/favorite_dao.dart';
 import 'package:chatgpt_app_core/db/hi_db_manager.dart';
 import 'package:chatgpt_app_core/db/message_dao.dart';
+import 'package:chatgpt_app_core/db/project_dao.dart';
 import 'package:flutter_hi_cache/flutter_hi_cache.dart';
 import 'package:login_sdk/dao/login_dao.dart';
 import 'package:openai_flutter/utils/ai_logger.dart';
+import 'package:sqflite/sqflite.dart';
 
 /// 一次迁移的统计。
 class GuestMigrationResult {
@@ -15,6 +17,7 @@ class GuestMigrationResult {
   final int messages;
   final int assistants;
   final int favorites;
+  final int projects;
 
   /// 是否套用了游客的 AI 设置（仅在账号原本没有设置时才会）。
   final bool settingsImported;
@@ -24,6 +27,7 @@ class GuestMigrationResult {
     this.messages = 0,
     this.assistants = 0,
     this.favorites = 0,
+    this.projects = 0,
     this.settingsImported = false,
   });
 }
@@ -75,7 +79,8 @@ class GuestMigrationService {
 
     // AI 设置：仅当账号原本没有设置时才套用游客设置（含 key，不脱敏）。
     var settingsImported = false;
-    if (!AISettingsDao.hasSettings(hash) && AISettingsDao.hasSettings(guestHash)) {
+    if (!AISettingsDao.hasSettings(hash) &&
+        AISettingsDao.hasSettings(guestHash)) {
       await AISettingsDao.save(AISettingsDao.loadFor(guestHash));
       settingsImported = true;
     }
@@ -85,12 +90,14 @@ class GuestMigrationService {
     await markDone();
     AILogger.log('guest migration done -> $hash: '
         '${counts.conversations} conversations, ${counts.messages} messages, '
+        '${counts.projects} projects, '
         'settings=$settingsImported');
     return GuestMigrationResult(
       conversations: counts.conversations,
       messages: counts.messages,
       assistants: counts.assistants,
       favorites: counts.favorites,
+      projects: counts.projects,
       settingsImported: settingsImported,
     );
   }
@@ -115,6 +122,12 @@ class GuestMigrationService {
     final conversations = await from.db.query('tb_conversation_list');
     final messages = await from.db.query('tb_messages');
     final favorites = await from.db.query('tb_favorite');
+    final projects = await from.db.query('tb_project');
+    final hasProjectIdColumn =
+        await _hasColumn(to.db, 'tb_conversation_list', 'projectId');
+    final normalizedConversations = conversations
+        .map((c) => _normalizeConversationRow(c, hasProjectIdColumn))
+        .toList();
 
     // 账号现有 cid，用于冲突检测 + 生成新 cid。
     final existing =
@@ -123,7 +136,8 @@ class GuestMigrationService {
       for (final r in existing)
         if (r['cid'] != null) r['cid'] as int,
     };
-    var maxCid = usedCids.isEmpty ? 0 : usedCids.reduce((a, b) => a > b ? a : b);
+    var maxCid =
+        usedCids.isEmpty ? 0 : usedCids.reduce((a, b) => a > b ? a : b);
     int freshCid() {
       maxCid++;
       while (usedCids.contains(maxCid)) {
@@ -132,7 +146,7 @@ class GuestMigrationService {
       return maxCid;
     }
 
-    var conv = 0, msg = 0, ast = 0, fav = 0;
+    var conv = 0, msg = 0, ast = 0, fav = 0, prj = 0;
     await to.db.transaction((txn) async {
       // 助手：丢弃原 id，自增插入，记录 旧id→新id。
       final assistantIdMap = <int, int>{};
@@ -144,9 +158,23 @@ class GuestMigrationService {
         ast++;
       }
 
+      // 项目：丢弃原 id，自增插入，记录 旧id→新id。
+      final projectIdMap = <int, int>{};
+      for (final p in projects) {
+        final row = Map<String, Object?>.from(p);
+        final oldId = row.remove('id') as int?;
+        final defaultAssistantId = row['defaultAssistantId'] as int?;
+        if (defaultAssistantId != null) {
+          row['defaultAssistantId'] = assistantIdMap[defaultAssistantId];
+        }
+        final newId = await txn.insert('tb_project', row);
+        if (oldId != null) projectIdMap[oldId] = newId;
+        prj++;
+      }
+
       // 会话：cid 冲突重映射，assistantId 按助手映射改写，丢弃自增 id。
       final cidMap = <int, int>{};
-      for (final c in conversations) {
+      for (final c in normalizedConversations) {
         final row = Map<String, Object?>.from(c);
         row.remove('id');
         final oldCid = row['cid'] as int?;
@@ -160,6 +188,11 @@ class GuestMigrationService {
         if (aid != null) {
           // 找不到对应助手时回落「无助手」而不是悬空引用。
           row['assistantId'] = assistantIdMap[aid];
+        }
+        final pid = row['projectId'] as int?;
+        if (pid != null) {
+          // 找不到对应项目时回落「未分类」。
+          row['projectId'] = projectIdMap[pid];
         }
         await txn.insert('tb_conversation_list', row);
         conv++;
@@ -191,6 +224,7 @@ class GuestMigrationService {
       messages: msg,
       assistants: ast,
       favorites: fav,
+      projects: prj,
     );
   }
 
@@ -200,6 +234,41 @@ class GuestMigrationService {
     await MessageDao.create(storage, cid: 0);
     await AssistantDao.create(storage);
     await FavoriteDao.create(storage);
+    await ProjectDao.create(storage);
+    await _ensureConversationProjectIdColumn(storage.db);
+  }
+
+  static Future<void> _ensureConversationProjectIdColumn(Database db) async {
+    if (await _hasColumn(db, 'tb_conversation_list', 'projectId')) return;
+    try {
+      await db.execute(
+          'alter table tb_conversation_list add column projectId integer');
+    } catch (_) {
+      // 列已存在时 SQLite 报 duplicate column，可忽略。
+    }
+  }
+
+  static Future<bool> _hasColumn(
+      Database db, String table, String column) async {
+    final rows = await db.rawQuery('pragma table_info($table)');
+    return rows.any((r) => (r['name'] ?? '').toString() == column);
+  }
+
+  static Map<String, Object?> _normalizeConversationRow(
+    Map<String, dynamic> row,
+    bool hasProjectIdColumn,
+  ) {
+    final r = Map<String, Object?>.from(row);
+    if (!hasProjectIdColumn) {
+      r.remove('projectId');
+      return r;
+    }
+    if (r.containsKey('projectId') && r['projectId'] != null) {
+      final rawProjectId = r['projectId'];
+      r['projectId'] =
+          rawProjectId is int ? rawProjectId : int.tryParse('$rawProjectId');
+    }
+    return r;
   }
 
   static Future<int> _conversationCount(HiDBManager storage) async {

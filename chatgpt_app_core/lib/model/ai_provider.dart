@@ -29,6 +29,14 @@ class AiModel {
   bool tool;
   bool web;
 
+  /// 最近一次连通性测试结果。null/unknown = 未测试或配置变更后已过期。
+  int? lastTestAt;
+  String lastTestStatus;
+  String? lastTestError;
+
+  /// 最近一次被用户选为当前模型的时间。用于会话模型选择器优先展示常用模型。
+  int? lastUsedAt;
+
   AiModel({
     required this.id,
     String? name,
@@ -38,6 +46,10 @@ class AiModel {
     this.reasoning = false,
     this.tool = false,
     this.web = false,
+    this.lastTestAt,
+    this.lastTestStatus = 'unknown',
+    this.lastTestError,
+    this.lastUsedAt,
   }) : name = (name == null || name.isEmpty) ? id : name;
 
   factory AiModel.fromJson(Map<String, dynamic> j) => AiModel(
@@ -49,6 +61,10 @@ class AiModel {
         reasoning: j['reasoning'] as bool? ?? false,
         tool: j['tool'] as bool? ?? false,
         web: j['web'] as bool? ?? false,
+        lastTestAt: j['lastTestAt'] as int?,
+        lastTestStatus: j['lastTestStatus'] as String? ?? 'unknown',
+        lastTestError: j['lastTestError'] as String?,
+        lastUsedAt: j['lastUsedAt'] as int?,
       );
 
   Map<String, dynamic> toJson() => {
@@ -60,12 +76,44 @@ class AiModel {
         'reasoning': reasoning,
         'tool': tool,
         'web': web,
+        if (lastTestAt != null) 'lastTestAt': lastTestAt,
+        'lastTestStatus': lastTestStatus,
+        if (lastTestError != null) 'lastTestError': lastTestError,
+        if (lastUsedAt != null) 'lastUsedAt': lastUsedAt,
       };
 
   AiModel copy() => AiModel.fromJson(toJson());
 
   /// 是否带任意能力标签（决定详情页是否渲染标签行）。
   bool get hasAnyCapability => vision || reasoning || tool || web;
+
+  void markTestResult({required bool success, String? error}) {
+    lastTestAt = DateTime.now().millisecondsSinceEpoch;
+    lastTestStatus = success ? 'success' : 'failure';
+    lastTestError = success ? null : error;
+  }
+
+  void clearTestResult() {
+    lastTestAt = null;
+    lastTestStatus = 'unknown';
+    lastTestError = null;
+  }
+
+  void markUsed() {
+    lastUsedAt = DateTime.now().millisecondsSinceEpoch;
+  }
+
+  void applyCapabilityHints({
+    bool vision = false,
+    bool reasoning = false,
+    bool tool = false,
+    bool web = false,
+  }) {
+    this.vision = this.vision || vision;
+    this.reasoning = this.reasoning || reasoning;
+    this.tool = this.tool || tool;
+    this.web = this.web || web;
+  }
 }
 
 class AiProvider {

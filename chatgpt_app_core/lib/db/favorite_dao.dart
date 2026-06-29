@@ -10,6 +10,23 @@ abstract class IFavorite {
   Future<int?> removeFavorite(FavoriteModel model);
 
   Future<List<FavoriteModel>> getFavoriteList();
+
+  Future<List<FavoriteModel>> searchFavorites(String query, {int limit = 50});
+
+  Future<List<FavoriteSearchResult>> searchFavoriteResults(String query,
+      {int limit = 50});
+}
+
+class FavoriteSearchResult {
+  final FavoriteModel favorite;
+  final int? cid;
+  final String? conversationTitle;
+
+  const FavoriteSearchResult({
+    required this.favorite,
+    this.cid,
+    this.conversationTitle,
+  });
 }
 
 class FavoriteDao implements IFavorite, ITable {
@@ -36,15 +53,55 @@ class FavoriteDao implements IFavorite, ITable {
 
   @override
   Future<List<FavoriteModel>> getFavoriteList() async {
-    var results =
-        await storage.db.query(tableName, orderBy: 'id desc');
+    var results = await storage.db.query(tableName, orderBy: 'id desc');
     var list = results.map((item) => FavoriteModel.fromJson(item)).toList();
     return list;
   }
 
   @override
+  Future<List<FavoriteModel>> searchFavorites(String query,
+      {int limit = 50}) async {
+    final q = query.trim();
+    if (q.isEmpty) return const [];
+    final rows = await storage.db.query(
+      tableName,
+      where: 'content like ? or ownerName like ?',
+      whereArgs: ['%$q%', '%$q%'],
+      orderBy: 'id desc',
+      limit: limit.clamp(1, 100),
+    );
+    return rows.map((item) => FavoriteModel.fromJson(item)).toList();
+  }
+
+  @override
+  Future<List<FavoriteSearchResult>> searchFavoriteResults(String query,
+      {int limit = 50}) async {
+    final q = query.trim();
+    if (q.isEmpty) return const [];
+    final rows = await storage.db.rawQuery(
+      'select f.*, m.cid as cid, c.title as conversationTitle '
+      'from $tableName f '
+      'left join tb_messages m on m.createdAt = f.createdAt and m.content = f.content '
+      'left join tb_conversation_list c on c.cid = m.cid '
+      'where f.content like ? or f.ownerName like ? '
+      'group by f.id '
+      'order by f.id desc limit ?',
+      ['%$q%', '%$q%', limit.clamp(1, 100)],
+    );
+    return [
+      for (final row in rows)
+        FavoriteSearchResult(
+          favorite: FavoriteModel.fromJson(row),
+          cid: row['cid'] as int?,
+          conversationTitle: row['conversationTitle'] as String?,
+        ),
+    ];
+  }
+
+  @override
   Future<int?> removeFavorite(FavoriteModel model) async {
-    var result = await storage.db.delete(tableName, where: 'id = ?', whereArgs: [model.id]);
+    var result = await storage.db
+        .delete(tableName, where: 'id = ?', whereArgs: [model.id]);
     return result;
   }
 }

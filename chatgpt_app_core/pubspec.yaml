@@ -30,6 +30,7 @@ dependencies:
   speech_to_text: ^7.0.0
   image_picker: ^1.1.2
   file_picker: ^11.0.2
+  path_provider: ^2.1.5
   syncfusion_flutter_pdf: ^33.2.12
   archive: ^4.0.9
   # OCR（仅 Android/iOS 有原生实现；其它平台运行时由 OcrService.isSupported 守卫）
