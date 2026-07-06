@@ -181,7 +181,8 @@ class StoryContextBuilder {
       final recursiveInput = [
         latestInput,
         ...recentTexts,
-        for (final hit in all) hit.content,
+        for (final hit in all)
+          if (!hit.excludeFromRecursion) hit.content,
       ].join('\n');
       final nextHits = AssistantRoleCardService.matchMemoryEntries(
         normalized,
@@ -238,6 +239,7 @@ class StoryContextBuilder {
       position: hit.position,
       depth: hit.depth,
       probability: hit.probability,
+      excludeFromRecursion: hit.excludeFromRecursion,
     );
   }
 

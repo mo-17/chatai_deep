@@ -1174,6 +1174,47 @@ void main() {
     expect(hits.map((item) => item.content), ['常驻设定。']);
   });
 
+  test('SillyTavern 世界书防递归字段会保留', () {
+    final imported = AssistantRoleCardService.importJson(jsonEncode({
+      'spec': 'chara_card_v2',
+      'data': {
+        'name': '防递归角色',
+        'description': '角色设定正文。',
+        'first_mes': '你好。',
+        'character_book': {
+          'entries': [
+            {
+              'keys': ['镜子'],
+              'content': '镜子背后藏着暗门。',
+              'excludeRecursion': true,
+            },
+            {
+              'keys': ['暗门'],
+              'content': '暗门后通向地下书库。',
+              'extensions': {
+                'prevent_recursion': 'yes',
+              },
+            },
+          ],
+        },
+      },
+    }));
+
+    expect(
+      imported.memoryBook,
+      [
+        '[norec] 镜子 => 镜子背后藏着暗门。',
+        '[norec] 暗门 => 暗门后通向地下书库。',
+      ].join('\n'),
+    );
+    final hits = AssistantRoleCardService.matchMemoryEntries(
+      imported.memoryBook,
+      '我看见了镜子。',
+    );
+    expect(hits.single.excludeFromRecursion, isTrue);
+    expect(hits.single.label, '镜子 · 不参与递归');
+  });
+
   test('SillyTavern 世界书 order 字段可兜底为移动端优先级', () {
     final imported = AssistantRoleCardService.importJson(jsonEncode({
       'spec': 'chara_card_v2',

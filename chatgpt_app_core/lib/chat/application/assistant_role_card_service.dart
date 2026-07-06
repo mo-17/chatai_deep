@@ -460,6 +460,7 @@ class AssistantRoleCardService {
           position: meta.position,
           depth: meta.depth,
           probability: meta.probability,
+          excludeFromRecursion: meta.excludeFromRecursion,
         ));
         continue;
       }
@@ -484,6 +485,7 @@ class AssistantRoleCardService {
         position: meta.position,
         depth: meta.depth,
         probability: meta.probability,
+        excludeFromRecursion: meta.excludeFromRecursion,
       ));
     }
     return entries;
@@ -995,6 +997,7 @@ class AssistantRoleCardService {
     String position = '';
     int? depth;
     int? probability;
+    var excludeFromRecursion = false;
     var changed = true;
     while (changed && rest.startsWith('[')) {
       changed = false;
@@ -1053,6 +1056,14 @@ class AssistantRoleCardService {
                 probability;
         rest = rest.substring(end + 1).trimLeft();
         changed = true;
+      } else if (tag == 'norec' ||
+          tag == 'nonrec' ||
+          tag == 'no_recursion' ||
+          tag == 'exclude_recursion' ||
+          tag == 'prevent_recursion') {
+        excludeFromRecursion = true;
+        rest = rest.substring(end + 1).trimLeft();
+        changed = true;
       }
     }
     return _MemoryPreviewMeta(
@@ -1067,6 +1078,7 @@ class AssistantRoleCardService {
       position: position,
       depth: depth,
       probability: probability,
+      excludeFromRecursion: excludeFromRecursion,
     );
   }
 
@@ -1655,6 +1667,7 @@ class AssistantRoleCardService {
     if (depth != null) parts.add('[depth=$depth]');
     final probability = _tavernEntryProbability(item);
     if (probability != null) parts.add('[prob=$probability]');
+    if (_tavernEntryExcludeFromRecursion(item)) parts.add('[norec]');
     return parts.isEmpty ? '' : '${parts.join(' ')} ';
   }
 
@@ -1745,6 +1758,16 @@ class AssistantRoleCardService {
 
   static bool _tavernEntryConstant(Map<String, dynamic> item) {
     return _tavernBool(item, const ['constant']) == true;
+  }
+
+  static bool _tavernEntryExcludeFromRecursion(Map<String, dynamic> item) {
+    return _tavernBool(item, const [
+          'excludeRecursion',
+          'exclude_recursion',
+          'preventRecursion',
+          'prevent_recursion',
+        ]) ==
+        true;
   }
 
   static bool? _tavernBool(Map<String, dynamic> item, List<String> keys) {
@@ -2056,6 +2079,7 @@ class AssistantMemoryEntryPreview {
   final String position;
   final int? depth;
   final int? probability;
+  final bool excludeFromRecursion;
 
   const AssistantMemoryEntryPreview({
     required this.keywords,
@@ -2071,6 +2095,7 @@ class AssistantMemoryEntryPreview {
     this.position = '',
     this.depth,
     this.probability,
+    this.excludeFromRecursion = false,
   });
 
   factory AssistantMemoryEntryPreview.fromJson(Map<String, dynamic> json) {
@@ -2097,6 +2122,7 @@ class AssistantMemoryEntryPreview {
       position: json['position'] as String? ?? '',
       depth: json['depth'] as int?,
       probability: json['probability'] as int?,
+      excludeFromRecursion: json['excludeFromRecursion'] as bool? ?? false,
     );
   }
 
@@ -2114,6 +2140,7 @@ class AssistantMemoryEntryPreview {
         'position': position,
         'depth': depth,
         'probability': probability,
+        'excludeFromRecursion': excludeFromRecursion,
       };
 
   String get label {
@@ -2133,8 +2160,9 @@ class AssistantMemoryEntryPreview {
     final positionLabel = position.isEmpty ? '' : ' · pos=$position';
     final depthLabel = depth == null ? '' : ' · depth=$depth';
     final probabilityLabel = probability == null ? '' : ' · prob=$probability';
+    final recursionLabel = excludeFromRecursion ? ' · 不参与递归' : '';
     final enabledLabel = enabled ? '' : ' · 已禁用';
-    return '$base$secondaryLabel$excludeLabel$caseLabel$wholeWordsLabel$priorityLabel$positionLabel$depthLabel$probabilityLabel$enabledLabel';
+    return '$base$secondaryLabel$excludeLabel$caseLabel$wholeWordsLabel$priorityLabel$positionLabel$depthLabel$probabilityLabel$recursionLabel$enabledLabel';
   }
 }
 
@@ -2150,6 +2178,7 @@ class _MemoryPreviewMeta {
   final String position;
   final int? depth;
   final int? probability;
+  final bool excludeFromRecursion;
 
   const _MemoryPreviewMeta({
     required this.body,
@@ -2163,5 +2192,6 @@ class _MemoryPreviewMeta {
     this.position = '',
     this.depth,
     this.probability,
+    this.excludeFromRecursion = false,
   });
 }
