@@ -306,6 +306,29 @@ void main() {
     expect(saved.single, assistant.memoryBook);
   });
 
+  testWidgets('世界书页编辑时保留 Tavern 高级元信息', (tester) async {
+    final assistant = AssistantModel(
+      id: 1,
+      name: '艾琳',
+      memoryBook:
+          '[re] [cs] [ww] [sec=潮汐|浮岛] [exclude=白天] [p=12] [pos=after_char] [depth=3] [prob=40] [norec] [group=bell] [gw=7] 钟声 || Bell\\s+\\d+ => 钟声代表潮汐',
+    );
+    final saved = <String>[];
+    await pumpPage(tester, assistant, saved: saved);
+
+    await tester.tap(find.text('钟声代表潮汐'));
+    await tester.pump(const Duration(milliseconds: 300));
+    await tester.enterText(find.widgetWithText(TextField, '设定内容'), '钟声代表新的潮汐');
+    await tester.tap(find.widgetWithText(FilledButton, '保存'));
+    await tester.pump(const Duration(milliseconds: 300));
+
+    expect(
+      assistant.memoryBook,
+      '[re] [cs] [ww] [sec=潮汐|浮岛] [p=12] [exclude=白天] [pos=after_char] [depth=3] [prob=40] [norec] [group=bell] [gw=7] 钟声 || Bell\\s+\\d+ => 钟声代表新的潮汐',
+    );
+    expect(saved.single, assistant.memoryBook);
+  });
+
   testWidgets('世界书页编辑原设定保持同内容时允许保存', (tester) async {
     final assistant = AssistantModel(
       id: 1,

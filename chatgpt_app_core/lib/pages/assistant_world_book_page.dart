@@ -398,9 +398,16 @@ class _WorldBookEntry {
   final bool enabled;
   final int priority;
   final List<String> excludeKeywords;
+  final List<String> secondaryKeywords;
+  final bool regex;
+  final bool caseSensitive;
+  final bool wholeWords;
   final String position;
   final int? depth;
   final int? probability;
+  final bool excludeFromRecursion;
+  final String group;
+  final int groupWeight;
 
   const _WorldBookEntry({
     required this.lineIndex,
@@ -409,9 +416,16 @@ class _WorldBookEntry {
     this.enabled = true,
     this.priority = 0,
     this.excludeKeywords = const [],
+    this.secondaryKeywords = const [],
+    this.regex = false,
+    this.caseSensitive = false,
+    this.wholeWords = false,
     this.position = '',
     this.depth,
     this.probability,
+    this.excludeFromRecursion = false,
+    this.group = '',
+    this.groupWeight = 0,
   });
 
   bool get alwaysOn => keywords.isEmpty;
@@ -419,11 +433,18 @@ class _WorldBookEntry {
     final parts = <String>[
       enabled ? '启用' : '已禁用',
       alwaysOn ? '常驻设定' : keywords.join(' / '),
+      if (secondaryKeywords.isNotEmpty) '二级 ${secondaryKeywords.join(' / ')}',
       if (priority != 0) '优先级 $priority',
       if (excludeKeywords.isNotEmpty) '排除 ${excludeKeywords.join(' / ')}',
+      if (regex) '正则',
+      if (caseSensitive) '区分大小写',
+      if (wholeWords) '整词',
       if (position.isNotEmpty) '位置 $position',
       if (depth != null) '深度 $depth',
       if (probability != null) '概率 $probability%',
+      if (excludeFromRecursion) '不递归',
+      if (group.isNotEmpty) '组 $group',
+      if (groupWeight != 0) '组权重 $groupWeight',
     ];
     return parts.join(' · ');
   }
@@ -431,13 +452,21 @@ class _WorldBookEntry {
   String toLine() {
     final prefixes = <String>[
       if (!enabled) '[off]',
+      if (regex) '[re]',
+      if (caseSensitive) '[cs]',
+      if (wholeWords) '[ww]',
+      if (secondaryKeywords.isNotEmpty) '[sec=${secondaryKeywords.join('|')}]',
       if (priority != 0) '[p=$priority]',
       if (excludeKeywords.isNotEmpty) '[exclude=${excludeKeywords.join('|')}]',
       if (position.isNotEmpty) '[pos=$position]',
       if (depth != null) '[depth=$depth]',
       if (probability != null) '[prob=$probability]',
+      if (excludeFromRecursion) '[norec]',
+      if (group.isNotEmpty) '[group=$group]',
+      if (groupWeight != 0) '[gw=$groupWeight]',
     ];
-    final body = alwaysOn ? content : '${keywords.join(', ')} => $content';
+    final keywordText = regex ? keywords.join(' || ') : keywords.join(', ');
+    final body = alwaysOn ? content : '$keywordText => $content';
     return [...prefixes, body].join(' ');
   }
 
@@ -455,19 +484,21 @@ class _WorldBookEntry {
         enabled: meta.enabled,
         priority: meta.priority,
         excludeKeywords: meta.excludeKeywords,
+        secondaryKeywords: meta.secondaryKeywords,
+        regex: meta.regex,
+        caseSensitive: meta.caseSensitive,
+        wholeWords: meta.wholeWords,
         position: meta.position,
         depth: meta.depth,
         probability: meta.probability,
+        excludeFromRecursion: meta.excludeFromRecursion,
+        group: meta.group,
+        groupWeight: meta.groupWeight,
       );
     }
     final content = body.substring(idx + 2).trim();
     if (content.isEmpty) return null;
-    final keywords = body
-        .substring(0, idx)
-        .split(RegExp(r'[,，、|/ ]+'))
-        .map((e) => e.trim())
-        .where((e) => e.isNotEmpty)
-        .toList();
+    final keywords = _splitKeywords(body.substring(0, idx), regex: meta.regex);
     if (keywords.isEmpty) return null;
     return _WorldBookEntry(
       lineIndex: lineIndex,
@@ -476,9 +507,16 @@ class _WorldBookEntry {
       enabled: meta.enabled,
       priority: meta.priority,
       excludeKeywords: meta.excludeKeywords,
+      secondaryKeywords: meta.secondaryKeywords,
+      regex: meta.regex,
+      caseSensitive: meta.caseSensitive,
+      wholeWords: meta.wholeWords,
       position: meta.position,
       depth: meta.depth,
       probability: meta.probability,
+      excludeFromRecursion: meta.excludeFromRecursion,
+      group: meta.group,
+      groupWeight: meta.groupWeight,
     );
   }
 
@@ -487,9 +525,16 @@ class _WorldBookEntry {
     var enabled = true;
     var priority = 0;
     var excludeKeywords = const <String>[];
+    var secondaryKeywords = const <String>[];
+    var regex = false;
+    var caseSensitive = false;
+    var wholeWords = false;
     var position = '';
     int? depth;
     int? probability;
+    var excludeFromRecursion = false;
+    var group = '';
+    var groupWeight = 0;
     var changed = true;
     while (changed && rest.startsWith('[')) {
       changed = false;
@@ -507,6 +552,23 @@ class _WorldBookEntry {
         changed = true;
       } else if (tag.startsWith('p=')) {
         priority = int.tryParse(tag.substring(2).trim()) ?? priority;
+        rest = rest.substring(end + 1).trimLeft();
+        changed = true;
+      } else if (tag == 're' || tag == 'regex') {
+        regex = true;
+        rest = rest.substring(end + 1).trimLeft();
+        changed = true;
+      } else if (tag == 'cs' || tag == 'case') {
+        caseSensitive = true;
+        rest = rest.substring(end + 1).trimLeft();
+        changed = true;
+      } else if (tag == 'ww' || tag == 'whole') {
+        wholeWords = true;
+        rest = rest.substring(end + 1).trimLeft();
+        changed = true;
+      } else if (tag.startsWith('sec=') || tag.startsWith('secondary=')) {
+        final rawValue = rawTag.substring(rawTag.indexOf('=') + 1);
+        secondaryKeywords = _splitKeywords(rawValue, regex: regex);
         rest = rest.substring(end + 1).trimLeft();
         changed = true;
       } else if (tag.startsWith('exclude=') ||
@@ -531,6 +593,24 @@ class _WorldBookEntry {
                 probability;
         rest = rest.substring(end + 1).trimLeft();
         changed = true;
+      } else if (tag == 'norec' ||
+          tag == 'nonrec' ||
+          tag == 'no_recursion' ||
+          tag == 'exclude_recursion' ||
+          tag == 'prevent_recursion') {
+        excludeFromRecursion = true;
+        rest = rest.substring(end + 1).trimLeft();
+        changed = true;
+      } else if (tag.startsWith('group=')) {
+        group = rawTag.substring(rawTag.indexOf('=') + 1).trim();
+        rest = rest.substring(end + 1).trimLeft();
+        changed = true;
+      } else if (tag.startsWith('gw=') || tag.startsWith('groupweight=')) {
+        groupWeight =
+            int.tryParse(rawTag.substring(rawTag.indexOf('=') + 1).trim()) ??
+                groupWeight;
+        rest = rest.substring(end + 1).trimLeft();
+        changed = true;
       }
     }
     return _WorldBookMeta(
@@ -538,13 +618,27 @@ class _WorldBookEntry {
       enabled: enabled,
       priority: priority,
       excludeKeywords: excludeKeywords,
+      secondaryKeywords: secondaryKeywords,
+      regex: regex,
+      caseSensitive: caseSensitive,
+      wholeWords: wholeWords,
       position: position,
       depth: depth,
       probability: probability,
+      excludeFromRecursion: excludeFromRecursion,
+      group: group,
+      groupWeight: groupWeight,
     );
   }
 
-  static List<String> _splitKeywords(String raw) {
+  static List<String> _splitKeywords(String raw, {bool regex = false}) {
+    if (regex) {
+      return raw
+          .split(RegExp(r'\s*\|\|\s*'))
+          .map((item) => item.trim())
+          .where((item) => item.isNotEmpty)
+          .toList();
+    }
     return raw
         .split(RegExp(r'[,，、|/]+'))
         .map((item) => item.trim())
@@ -559,9 +653,16 @@ class _WorldBookEditResult {
   final bool enabled;
   final int priority;
   final String excludeKeywords;
+  final List<String> secondaryKeywords;
+  final bool regex;
+  final bool caseSensitive;
+  final bool wholeWords;
   final String position;
   final int? depth;
   final int? probability;
+  final bool excludeFromRecursion;
+  final String group;
+  final int groupWeight;
 
   const _WorldBookEditResult({
     required this.keywords,
@@ -569,9 +670,16 @@ class _WorldBookEditResult {
     this.enabled = true,
     this.priority = 0,
     this.excludeKeywords = '',
+    this.secondaryKeywords = const [],
+    this.regex = false,
+    this.caseSensitive = false,
+    this.wholeWords = false,
     this.position = '',
     this.depth,
     this.probability,
+    this.excludeFromRecursion = false,
+    this.group = '',
+    this.groupWeight = 0,
   });
 
   String toLine() {
@@ -579,15 +687,31 @@ class _WorldBookEditResult {
     final c = content.trim();
     final prefixes = <String>[
       if (!enabled) '[off]',
+      if (regex) '[re]',
+      if (caseSensitive) '[cs]',
+      if (wholeWords) '[ww]',
+      if (secondaryKeywords.isNotEmpty) '[sec=${secondaryKeywords.join('|')}]',
       if (priority != 0) '[p=$priority]',
       if (excludeKeywords.trim().isNotEmpty)
         '[exclude=${_normalizeKeywordList(excludeKeywords)}]',
       if (position.trim().isNotEmpty) '[pos=${position.trim()}]',
       if (depth != null) '[depth=$depth]',
       if (probability != null) '[prob=$probability]',
+      if (excludeFromRecursion) '[norec]',
+      if (group.trim().isNotEmpty) '[group=${group.trim()}]',
+      if (groupWeight != 0) '[gw=$groupWeight]',
     ];
-    final body = k.isEmpty ? c : '$k => $c';
+    final keywordText = regex ? _normalizeRegexKeywordList(k) : k;
+    final body = keywordText.isEmpty ? c : '$keywordText => $c';
     return [...prefixes, body].join(' ');
+  }
+
+  String _normalizeRegexKeywordList(String raw) {
+    return raw
+        .split(RegExp(r'\s*\|\|\s*|[,，、/]+'))
+        .map((item) => item.trim())
+        .where((item) => item.isNotEmpty)
+        .join(' || ');
   }
 
   String _normalizeKeywordList(String raw) {
@@ -604,18 +728,32 @@ class _WorldBookMeta {
   final bool enabled;
   final int priority;
   final List<String> excludeKeywords;
+  final List<String> secondaryKeywords;
+  final bool regex;
+  final bool caseSensitive;
+  final bool wholeWords;
   final String position;
   final int? depth;
   final int? probability;
+  final bool excludeFromRecursion;
+  final String group;
+  final int groupWeight;
 
   const _WorldBookMeta({
     required this.body,
     required this.enabled,
     required this.priority,
     this.excludeKeywords = const [],
+    this.secondaryKeywords = const [],
+    this.regex = false,
+    this.caseSensitive = false,
+    this.wholeWords = false,
     this.position = '',
     this.depth,
     this.probability,
+    this.excludeFromRecursion = false,
+    this.group = '',
+    this.groupWeight = 0,
   });
 }
 
@@ -793,9 +931,16 @@ class _WorldBookEditDialogState extends State<_WorldBookEditDialog> {
         enabled: _enabled,
         priority: int.tryParse(_priorityCtl.text.trim()) ?? 0,
         excludeKeywords: _excludeCtl.text,
+        secondaryKeywords: widget.entry?.secondaryKeywords ?? const [],
+        regex: widget.entry?.regex ?? false,
+        caseSensitive: widget.entry?.caseSensitive ?? false,
+        wholeWords: widget.entry?.wholeWords ?? false,
         position: _position,
         depth: _optionalInt(_depthCtl.text),
         probability: _optionalClampedInt(_probabilityCtl.text, 0, 100),
+        excludeFromRecursion: widget.entry?.excludeFromRecursion ?? false,
+        group: widget.entry?.group ?? '',
+        groupWeight: widget.entry?.groupWeight ?? 0,
       ),
     );
   }
