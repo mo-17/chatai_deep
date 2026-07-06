@@ -243,6 +243,38 @@ void main() {
       expect(system, contains('【本轮命中世界书 / 角色后置】'));
       expect(system, contains('Chandra 会优先判断战况'));
     });
+
+    test('批量导入酒馆房间会自动生成多角色开场', () async {
+      db = await databaseFactoryFfi.openDatabase(inMemoryDatabasePath);
+      final dao = await StoryRoomDao.create(HiDBManager.test(db));
+      final fuka = AssistantModel(name: 'Fuka')..openingMessage = '她抱紧书本，站在门边。';
+      final chandra = AssistantModel(name: 'Chandra')
+        ..openingMessage = '火焰在她掌心亮起。';
+      final silent = AssistantModel(name: 'Silent');
+
+      final roomId =
+          await StoryRoomRoleCardImportService(dao).importBatchAsTavernRoom(
+        [
+          AssistantRoleCardImportResult(assistant: fuka),
+          AssistantRoleCardImportResult(assistant: chandra),
+          AssistantRoleCardImportResult(assistant: silent),
+        ],
+        title: 'Imported Tavern',
+      );
+
+      final messages = await dao.getMessages(roomId);
+      expect(messages, hasLength(1));
+      expect(
+        messages.single.content,
+        [
+          '【Fuka】',
+          '她抱紧书本，站在门边。',
+          '',
+          '【Chandra】',
+          '火焰在她掌心亮起。',
+        ].join('\n'),
+      );
+    });
   });
 
   group('StoryContextBuilder', () {

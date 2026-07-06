@@ -174,6 +174,21 @@ class StoryRoomRoleCardImporter {
     return assistant.openingMessage.trim();
   }
 
+  static String initialBatchSceneMessage(
+    List<AssistantRoleCardImportResult> results,
+  ) {
+    final lines = <String>[];
+    for (final result in results) {
+      final assistant = result.assistant;
+      final opening = assistant.openingMessage.trim();
+      if (opening.isEmpty) continue;
+      final name =
+          assistant.name.trim().isEmpty ? '未命名角色' : assistant.name.trim();
+      lines.add('【$name】\n$opening');
+    }
+    return lines.join('\n\n');
+  }
+
   static List<StoryParticipantModel> parseMemoryBookParticipants(
     String memoryBook, {
     required int roomId,
@@ -367,7 +382,9 @@ class StoryRoomRoleCardImportService {
       participant.roomId = roomId;
       await dao.saveParticipant(participant);
     }
-    final opening = initialOpening?.trim() ?? '';
+    final opening = initialOpening?.trim().isNotEmpty == true
+        ? initialOpening!.trim()
+        : StoryRoomRoleCardImporter.initialBatchSceneMessage(results);
     if (opening.isNotEmpty) {
       await dao.saveMessage(StoryMessageModel(
         roomId: roomId,
