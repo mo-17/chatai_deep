@@ -156,6 +156,26 @@ class AssistantRoleCardService {
         specVersion: _string(decoded['spec_version']).isNotEmpty
             ? _string(decoded['spec_version'])
             : _string(tavernData['spec_version']),
+        creator: _firstTavernText(tavernData, name, const [
+          'creator',
+          'created_by',
+          'createdBy',
+        ]),
+        creatorNotes: _firstTavernText(tavernData, name, const [
+          'creator_notes',
+          'creatorcomment',
+          'creator_comment',
+          'creatorNotes',
+          'creator_notes_multilingual',
+          'creator_notes_i18n',
+          'creatorNotesMultilingual',
+          'creatorCommentMultilingual',
+        ]),
+        systemPrompt: _tavernLocalizedText(tavernData['system_prompt'], name),
+        postHistoryInstructions: _tavernLocalizedText(
+          tavernData['post_history_instructions'],
+          name,
+        ),
         tags: _tavernTags(tavernData['tags']),
         alternateGreetings: _tavernAlternateGreetings(
           tavernData['alternate_greetings'],
@@ -2111,6 +2131,10 @@ class AssistantRoleCardImportResult {
 class AssistantRoleCardTavernMeta {
   final String spec;
   final String specVersion;
+  final String creator;
+  final String creatorNotes;
+  final String systemPrompt;
+  final String postHistoryInstructions;
   final List<String> tags;
   final List<String> alternateGreetings;
   final String characterBookName;
@@ -2122,6 +2146,10 @@ class AssistantRoleCardTavernMeta {
   const AssistantRoleCardTavernMeta({
     this.spec = '',
     this.specVersion = '',
+    this.creator = '',
+    this.creatorNotes = '',
+    this.systemPrompt = '',
+    this.postHistoryInstructions = '',
     this.tags = const [],
     this.alternateGreetings = const [],
     this.characterBookName = '',
@@ -2134,6 +2162,10 @@ class AssistantRoleCardTavernMeta {
   bool get isEmpty =>
       spec.isEmpty &&
       specVersion.isEmpty &&
+      creator.isEmpty &&
+      creatorNotes.isEmpty &&
+      systemPrompt.isEmpty &&
+      postHistoryInstructions.isEmpty &&
       tags.isEmpty &&
       alternateGreetings.isEmpty &&
       characterBookName.isEmpty &&

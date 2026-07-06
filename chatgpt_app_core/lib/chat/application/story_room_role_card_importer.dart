@@ -341,7 +341,12 @@ class StoryRoomRoleCardImporter {
           meta.spec,
           meta.specVersion
         ].where((e) => e.isNotEmpty).join(' / ')}',
+      if (meta.creator.isNotEmpty) '作者：${meta.creator}',
       if (meta.tags.isNotEmpty) '标签：${meta.tags.join('、')}',
+      if (meta.creatorNotes.isNotEmpty) '作者备注：${meta.creatorNotes}',
+      if (meta.systemPrompt.isNotEmpty) '系统提示：${meta.systemPrompt}',
+      if (meta.postHistoryInstructions.isNotEmpty)
+        '后续指令：${meta.postHistoryInstructions}',
       if (meta.characterBookName.isNotEmpty) '世界书：${meta.characterBookName}',
       if (meta.characterBookEntryCount > 0)
         '世界书条目：${meta.characterBookEntryCount}',

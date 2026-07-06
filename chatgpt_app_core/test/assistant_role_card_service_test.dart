@@ -180,6 +180,57 @@ void main() {
     expect(sanitized.toolIds, isNull);
   });
 
+  test('导入 Tavern V2 时保留原卡作者与提示元信息', () {
+    const json = '''
+{
+  "spec": "chara_card_v2",
+  "spec_version": "2.0",
+  "data": {
+    "name": "Fuka",
+    "description": "{{char}} 是图书委员。",
+    "creator": "card maker",
+    "creator_notes": "{{char}} 的作者备注。",
+    "system_prompt": "保持角色沉浸。",
+    "post_history_instructions": "延续上一轮情绪。",
+    "tags": ["school", "shy"],
+    "alternate_greetings": ["{{char}} 抱着书站在门边。"],
+    "character_book": {
+      "name": "Fuka Lore",
+      "scan_depth": 3,
+      "token_budget": 400,
+      "recursive_scanning": true,
+      "entries": [
+        {
+          "keys": ["图书馆"],
+          "content": "{{char}} 熟悉每一排书架。"
+        }
+      ]
+    }
+  }
+}
+''';
+
+    final result = AssistantRoleCardService.importPackageBytes(
+      utf8.encode(json),
+      filename: 'fuka.json',
+    );
+    final meta = result.tavernMeta!;
+
+    expect(meta.spec, 'chara_card_v2');
+    expect(meta.specVersion, '2.0');
+    expect(meta.creator, 'card maker');
+    expect(meta.creatorNotes, 'Fuka 的作者备注。');
+    expect(meta.systemPrompt, '保持角色沉浸。');
+    expect(meta.postHistoryInstructions, '延续上一轮情绪。');
+    expect(meta.tags, ['school', 'shy']);
+    expect(meta.alternateGreetings, ['Fuka 抱着书站在门边。']);
+    expect(meta.characterBookName, 'Fuka Lore');
+    expect(meta.characterBookScanDepth, 3);
+    expect(meta.characterBookTokenBudget, 400);
+    expect(meta.characterBookRecursiveScanning, isTrue);
+    expect(meta.characterBookEntryCount, 1);
+  });
+
   test('可导出 SillyTavern 常用 PNG 角色卡并从 PNG 元数据导回', () {
     final assistant = AssistantModel(
       name: 'Fuka Shikuzaki',

@@ -155,6 +155,10 @@ void main() {
         tavernMeta: const AssistantRoleCardTavernMeta(
           spec: 'chara_card_v2',
           specVersion: '2.0',
+          creator: 'card maker',
+          creatorNotes: '作者建议慢热推进。',
+          systemPrompt: '保持沉浸。',
+          postHistoryInstructions: '延续上一幕情绪。',
           tags: ['Multiple Characters', 'Scenario'],
           alternateGreetings: ['Alt opening A', 'Alt opening B'],
           characterBookName: 'YMLv2',
@@ -172,6 +176,10 @@ void main() {
       expect(room?.publicContext, contains('高奇幻王国'));
       expect(room?.publicContext, contains('Florin'));
       expect(room?.publicContext, contains('chara_card_v2 / 2.0'));
+      expect(room?.publicContext, contains('作者：card maker'));
+      expect(room?.publicContext, contains('作者备注：作者建议慢热推进。'));
+      expect(room?.publicContext, contains('系统提示：保持沉浸。'));
+      expect(room?.publicContext, contains('后续指令：延续上一幕情绪。'));
       expect(room?.publicContext, contains('世界书：YMLv2'));
       expect(room?.publicContext, contains('扫描深度：50'));
       expect(room?.publicContext, contains('Alt opening A'));
