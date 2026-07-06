@@ -52,6 +52,8 @@ class StoryRoomRoleCardImporter {
     final participants = parseMemoryBookParticipants(
       assistant.memoryBook,
       roomId: roomId,
+      defaultAvatarType: assistant.avatarType,
+      defaultAvatarValue: assistant.avatarValue,
     );
     if (participants.isEmpty) {
       participants.add(StoryParticipantModel(
@@ -113,6 +115,8 @@ class StoryRoomRoleCardImporter {
       final parsed = parseMemoryBookParticipants(
         assistant.memoryBook,
         roomId: roomId,
+        defaultAvatarType: assistant.avatarType,
+        defaultAvatarValue: assistant.avatarValue,
       );
       if (parsed.length >= 2) {
         for (final participant in parsed) {
@@ -203,6 +207,8 @@ class StoryRoomRoleCardImporter {
   static List<StoryParticipantModel> parseMemoryBookParticipants(
     String memoryBook, {
     required int roomId,
+    String? defaultAvatarType,
+    String? defaultAvatarValue,
   }) {
     final participants = <StoryParticipantModel>[];
     var sortOrder = 0;
@@ -217,6 +223,8 @@ class StoryRoomRoleCardImporter {
         role: StoryParticipantRole.assistant,
         name: name,
         prompt: content,
+        avatarType: defaultAvatarType,
+        avatarValue: defaultAvatarValue,
         sortOrder: sortOrder++,
       ));
     }

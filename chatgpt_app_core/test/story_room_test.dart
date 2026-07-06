@@ -122,6 +122,8 @@ void main() {
         name: 'Yes, My Liege',
         description: 'Multiple Characters · Scenario · Sandbox',
         prompt: '[角色设定]\n高奇幻王国正在遭遇多线危机。',
+        avatarType: 'image',
+        avatarValue: '/cards/yes-my-liege.png',
       )
         ..openingMessage = 'Florin. Your home.'
         ..memoryBook = [
@@ -197,6 +199,12 @@ void main() {
         'Medli',
         'The Ice Queen',
       ]);
+      expect(participants.every((item) => item.avatarType == 'image'), isTrue);
+      expect(
+        participants
+            .every((item) => item.avatarValue == '/cards/yes-my-liege.png'),
+        isTrue,
+      );
       expect(participants.first.prompt, contains('passionate'));
       final messages = await dao.getMessages(roomId);
       expect(messages, hasLength(1));
