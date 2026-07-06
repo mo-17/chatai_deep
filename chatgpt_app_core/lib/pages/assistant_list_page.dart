@@ -5,6 +5,7 @@ import 'package:chatgpt_app_core/chat/application/assistant_conversation_factory
 import 'package:chatgpt_app_core/chat/application/assistant_role_card_service.dart';
 import 'package:chatgpt_app_core/chat/application/assistant_role_card_translation_service.dart';
 import 'package:chatgpt_app_core/chat/application/story_room_role_card_importer.dart';
+import 'package:chatgpt_app_core/chat/application/tavern_room_import_preparer.dart';
 import 'package:chatgpt_app_core/dao/ai_catalog_dao.dart';
 import 'package:chatgpt_app_core/dao/chat/chat_service.dart';
 import 'package:chatgpt_app_core/db/assistant_dao.dart';
@@ -962,38 +963,23 @@ class _AssistantListPageState extends State<AssistantListPage> {
     try {
       final settings = context.read<AISettingsProvider>().settings.clone();
       final chatService = ChatService.from(settings);
-      final translated = <AssistantRoleCardImportResult>[];
-      for (var i = 0; i < results.length; i++) {
-        final result = results[i];
-        progress.value = _TavernTranslationProgress(
-          current: i + 1,
-          total: results.length,
-          name: result.assistant.name,
-          stage: '等待 AI 翻译返回',
-        );
-        final assistant = await AssistantRoleCardTranslationService
-            .translateToSimplifiedChinese(
-          result.assistant,
-          complete: (prompt) => chatService.chat(
-            prompt: prompt,
-            history: const [],
-            timeout: const Duration(minutes: 2),
-          ),
-        );
-        translated.add(AssistantRoleCardImportResult(
-          assistant: assistant,
-          avatarPngBytes: result.avatarPngBytes,
-          sourceName: result.sourceName,
-          tavernMeta: result.tavernMeta?.syncTranslatedOpenings(assistant),
-        ));
-        progress.value = _TavernTranslationProgress(
-          current: i + 1,
-          total: results.length,
-          name: assistant.name,
-          stage: '已翻译',
-        );
-      }
-      return translated;
+      return await TavernRoomImportPreparer.prepare(
+        results,
+        translateToSimplifiedChinese: true,
+        complete: (prompt) => chatService.chat(
+          prompt: prompt,
+          history: const [],
+          timeout: const Duration(minutes: 2),
+        ),
+        onProgress: (value) {
+          progress.value = _TavernTranslationProgress(
+            current: value.current,
+            total: value.total,
+            name: value.name,
+            stage: value.stage,
+          );
+        },
+      );
     } on FormatException catch (e) {
       if (mounted) HiDialog.showSnackBar(context, '翻译失败：${e.message}');
       return null;
