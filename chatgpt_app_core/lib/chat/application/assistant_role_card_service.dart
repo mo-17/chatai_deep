@@ -1704,13 +1704,31 @@ class AssistantRoleCardService {
   }
 
   static String _tavernEntryComment(Map<String, dynamic> item, String name) {
-    for (final key in const ['comment', 'comments', 'note', 'notes']) {
+    for (final key in const [
+      'comment',
+      'comments',
+      'note',
+      'notes',
+      'name',
+      'title',
+      'displayName',
+      'display_name',
+    ]) {
       final text = _normalizeTavernText(item[key], name);
       if (text.isNotEmpty) return text;
     }
     final extensions = item['extensions'];
     if (extensions is Map) {
-      for (final key in const ['comment', 'comments', 'note', 'notes']) {
+      for (final key in const [
+        'comment',
+        'comments',
+        'note',
+        'notes',
+        'name',
+        'title',
+        'displayName',
+        'display_name',
+      ]) {
         final text = _normalizeTavernText(extensions[key], name);
         if (text.isNotEmpty) return text;
       }

@@ -1552,6 +1552,31 @@ void main() {
     expect(entries.single.content, '镜子背后藏着暗门。');
   });
 
+  test('SillyTavern 世界书条目标题会保留为注释', () {
+    final imported = AssistantRoleCardService.importJson(jsonEncode({
+      'spec': 'chara_card_v2',
+      'data': {
+        'name': '标题世界书',
+        'description': '角色设定正文。',
+        'first_mes': '你好。',
+        'character_book': {
+          'entries': [
+            {
+              'keys': ['Medli'],
+              'content': 'Type: character\nPersonality: gentle scout.',
+              'name': 'Medli',
+            },
+          ],
+        },
+      },
+    }));
+
+    expect(
+      imported.memoryBook,
+      '# Medli\nMedli => Type: character\nPersonality: gentle scout.',
+    );
+  });
+
   test('兼容 PNG tEXt chara 元数据中的 base64 角色卡', () {
     final cardJson = jsonEncode({
       'spec': 'chara_card_v2',

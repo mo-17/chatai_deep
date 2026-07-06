@@ -249,9 +249,15 @@ class StoryRoomRoleCardImporter {
   static List<_MemoryBookEntry> _parseMemoryBookEntries(String memoryBook) {
     final entries = <_MemoryBookEntry>[];
     _MemoryBookEntry? current;
+    final pendingComments = <String>[];
     for (final rawLine in memoryBook.replaceAll('\r\n', '\n').split('\n')) {
       final line = rawLine.trimRight();
-      if (line.trimLeft().startsWith('#')) continue;
+      final trimmedLeft = line.trimLeft();
+      if (trimmedLeft.startsWith('#')) {
+        final comment = trimmedLeft.substring(1).trim();
+        if (comment.isNotEmpty) pendingComments.add(comment);
+        continue;
+      }
       final split = line.indexOf('=>');
       if (split >= 0) {
         if (current != null) entries.add(current);
@@ -261,14 +267,18 @@ class StoryRoomRoleCardImporter {
           keywords: _cleanKeywords(left),
           metaPrefix: _metaPrefix(left),
           contentLines: [right],
+          comments: List<String>.from(pendingComments),
         );
+        pendingComments.clear();
       } else if (current != null) {
         current.contentLines.add(line);
       } else if (line.trim().isNotEmpty) {
         current = _MemoryBookEntry(
           keywords: const [],
           contentLines: [line],
+          comments: List<String>.from(pendingComments),
         );
+        pendingComments.clear();
       }
     }
     if (current != null) entries.add(current);
@@ -297,7 +307,23 @@ class StoryRoomRoleCardImporter {
       final name = nameMatch.group(1)?.trim() ?? '';
       if (name.isNotEmpty) return name;
     }
+    for (final comment in entry.comments) {
+      final name = _participantNameFromComment(comment);
+      if (name.isNotEmpty) return name;
+    }
     return entry.keywords.isEmpty ? '' : entry.keywords.first;
+  }
+
+  static String _participantNameFromComment(String comment) {
+    final fieldMatch = RegExp(
+      r'^\s*(?:Name|Character|角色|名称|姓名|名字)\s*[:：]\s*(.+?)\s*$',
+      caseSensitive: false,
+    ).firstMatch(comment);
+    final value =
+        fieldMatch == null ? comment.trim() : fieldMatch.group(1)!.trim();
+    if (value.isEmpty || value.length > 40) return '';
+    if (RegExp(r'[。！？.!?]').hasMatch(value)) return '';
+    return value;
   }
 
   static bool _looksLikeParticipantEntry(String content) {
@@ -377,11 +403,13 @@ class _MemoryBookEntry {
   final List<String> keywords;
   final String metaPrefix;
   final List<String> contentLines;
+  final List<String> comments;
 
   const _MemoryBookEntry({
     required this.keywords,
     this.metaPrefix = '',
     required this.contentLines,
+    this.comments = const [],
   });
 
   String get content => contentLines.join('\n').trim();

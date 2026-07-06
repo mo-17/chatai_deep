@@ -366,6 +366,24 @@ void main() {
       expect(participants.first.prompt, contains('proud general'));
       expect(participants.last.prompt, contains('温柔但坚定'));
     });
+
+    test('多角色世界书可用条目标题补全角色名', () {
+      final participants =
+          StoryRoomRoleCardImporter.parseMemoryBookParticipants(
+        [
+          '# Medli',
+          'companion => Type: character',
+          'Personality: gentle scout.',
+          '',
+          '# 这个条目用于镜厅谜题。',
+          '镜子 => 镜子背后藏着暗门。',
+        ].join('\n'),
+        roomId: 1,
+      );
+
+      expect(participants.map((item) => item.name), ['Medli']);
+      expect(participants.single.prompt, contains('gentle scout'));
+    });
   });
 
   group('StoryContextBuilder', () {
