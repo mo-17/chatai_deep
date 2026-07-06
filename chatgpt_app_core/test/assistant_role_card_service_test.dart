@@ -189,6 +189,10 @@ void main() {
     "name": "Fuka",
     "description": "{{char}} 是图书委员。",
     "creator": "card maker",
+    "character_version": "1.2.3",
+    "create_date": "2026-07-01",
+    "update_date": "2026-07-02",
+    "source": "https://example.com/cards/fuka",
     "creator_notes": "{{char}} 的作者备注。",
     "system_prompt": "保持角色沉浸。",
     "post_history_instructions": "延续上一轮情绪。",
@@ -219,6 +223,10 @@ void main() {
     expect(meta.spec, 'chara_card_v2');
     expect(meta.specVersion, '2.0');
     expect(meta.creator, 'card maker');
+    expect(meta.characterVersion, '1.2.3');
+    expect(meta.createDate, '2026-07-01');
+    expect(meta.updateDate, '2026-07-02');
+    expect(meta.source, 'https://example.com/cards/fuka');
     expect(meta.creatorNotes, 'Fuka 的作者备注。');
     expect(meta.systemPrompt, '保持角色沉浸。');
     expect(meta.postHistoryInstructions, '延续上一轮情绪。');

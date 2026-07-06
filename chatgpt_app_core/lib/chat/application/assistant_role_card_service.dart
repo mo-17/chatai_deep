@@ -161,6 +161,28 @@ class AssistantRoleCardService {
           'created_by',
           'createdBy',
         ]),
+        characterVersion: _firstTavernText(tavernData, name, const [
+          'character_version',
+          'characterVersion',
+          'version',
+        ]),
+        createDate: _firstTavernText(tavernData, name, const [
+          'create_date',
+          'createDate',
+          'created_at',
+          'createdAt',
+        ]),
+        updateDate: _firstTavernText(tavernData, name, const [
+          'update_date',
+          'updateDate',
+          'updated_at',
+          'updatedAt',
+        ]),
+        source: _firstTavernText(tavernData, name, const [
+          'source',
+          'source_url',
+          'sourceUrl',
+        ]),
         creatorNotes: _firstTavernText(tavernData, name, const [
           'creator_notes',
           'creatorcomment',
@@ -2132,6 +2154,10 @@ class AssistantRoleCardTavernMeta {
   final String spec;
   final String specVersion;
   final String creator;
+  final String characterVersion;
+  final String createDate;
+  final String updateDate;
+  final String source;
   final String creatorNotes;
   final String systemPrompt;
   final String postHistoryInstructions;
@@ -2147,6 +2173,10 @@ class AssistantRoleCardTavernMeta {
     this.spec = '',
     this.specVersion = '',
     this.creator = '',
+    this.characterVersion = '',
+    this.createDate = '',
+    this.updateDate = '',
+    this.source = '',
     this.creatorNotes = '',
     this.systemPrompt = '',
     this.postHistoryInstructions = '',
@@ -2163,6 +2193,10 @@ class AssistantRoleCardTavernMeta {
       spec.isEmpty &&
       specVersion.isEmpty &&
       creator.isEmpty &&
+      characterVersion.isEmpty &&
+      createDate.isEmpty &&
+      updateDate.isEmpty &&
+      source.isEmpty &&
       creatorNotes.isEmpty &&
       systemPrompt.isEmpty &&
       postHistoryInstructions.isEmpty &&

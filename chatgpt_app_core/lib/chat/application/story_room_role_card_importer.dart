@@ -342,6 +342,10 @@ class StoryRoomRoleCardImporter {
           meta.specVersion
         ].where((e) => e.isNotEmpty).join(' / ')}',
       if (meta.creator.isNotEmpty) '作者：${meta.creator}',
+      if (meta.characterVersion.isNotEmpty) '角色版本：${meta.characterVersion}',
+      if (meta.createDate.isNotEmpty) '创建时间：${meta.createDate}',
+      if (meta.updateDate.isNotEmpty) '更新时间：${meta.updateDate}',
+      if (meta.source.isNotEmpty) '来源：${meta.source}',
       if (meta.tags.isNotEmpty) '标签：${meta.tags.join('、')}',
       if (meta.creatorNotes.isNotEmpty) '作者备注：${meta.creatorNotes}',
       if (meta.systemPrompt.isNotEmpty) '系统提示：${meta.systemPrompt}',

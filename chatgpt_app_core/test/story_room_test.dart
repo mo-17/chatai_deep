@@ -156,6 +156,10 @@ void main() {
           spec: 'chara_card_v2',
           specVersion: '2.0',
           creator: 'card maker',
+          characterVersion: '1.2.3',
+          createDate: '2026-07-01',
+          updateDate: '2026-07-02',
+          source: 'https://example.com/cards/yml',
           creatorNotes: '作者建议慢热推进。',
           systemPrompt: '保持沉浸。',
           postHistoryInstructions: '延续上一幕情绪。',
@@ -177,6 +181,10 @@ void main() {
       expect(room?.publicContext, contains('Florin'));
       expect(room?.publicContext, contains('chara_card_v2 / 2.0'));
       expect(room?.publicContext, contains('作者：card maker'));
+      expect(room?.publicContext, contains('角色版本：1.2.3'));
+      expect(room?.publicContext, contains('创建时间：2026-07-01'));
+      expect(room?.publicContext, contains('更新时间：2026-07-02'));
+      expect(room?.publicContext, contains('来源：https://example.com/cards/yml'));
       expect(room?.publicContext, contains('作者备注：作者建议慢热推进。'));
       expect(room?.publicContext, contains('系统提示：保持沉浸。'));
       expect(room?.publicContext, contains('后续指令：延续上一幕情绪。'));
