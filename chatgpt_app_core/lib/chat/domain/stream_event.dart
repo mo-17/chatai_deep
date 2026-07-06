@@ -26,6 +26,9 @@ enum StreamEventType {
 
   /// 引用来源（阶段五：联网搜索 grounding）
   citation,
+
+  /// 流式收尾 usage（prompt/completion token 真实统计）
+  usage,
 }
 
 class StreamEvent {
@@ -46,6 +49,11 @@ class StreamEvent {
   /// 引用事件（阶段五）：联网搜索的来源列表。
   final List<WebSearchResult>? webResults;
 
+  /// usage 事件：上游在流式收尾返回的真实 token 统计。
+  final int? promptTokens;
+  final int? cachedPromptTokens;
+  final int? completionTokens;
+
   const StreamEvent._(
     this.type, {
     this.delta = '',
@@ -55,6 +63,9 @@ class StreamEvent {
     this.toolContent,
     this.imageUrl,
     this.webResults,
+    this.promptTokens,
+    this.cachedPromptTokens,
+    this.completionTokens,
   });
 
   factory StreamEvent.text(String delta) =>
@@ -92,4 +103,17 @@ class StreamEvent {
   /// 引用来源（阶段五）：联网搜索结果，到达即完整、无增量。
   factory StreamEvent.citation(List<WebSearchResult> results) =>
       StreamEvent._(StreamEventType.citation, webResults: results);
+
+  /// 流式 usage 收尾事件，到达即完整、无 UI 渲染。
+  factory StreamEvent.usage({
+    int? promptTokens,
+    int? cachedPromptTokens,
+    int? completionTokens,
+  }) =>
+      StreamEvent._(
+        StreamEventType.usage,
+        promptTokens: promptTokens,
+        cachedPromptTokens: cachedPromptTokens,
+        completionTokens: completionTokens,
+      );
 }

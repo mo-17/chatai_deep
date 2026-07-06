@@ -96,9 +96,8 @@ class _McpSettingsPageState extends State<McpSettingsPage> {
       children: [
         SwitchListTile(
           value: s.mcpBackendEnabled,
-          onChanged: guest
-              ? null
-              : (v) => _patch((x) => x.mcpBackendEnabled = v),
+          onChanged:
+              guest ? null : (v) => _patch((x) => x.mcpBackendEnabled = v),
           title: const Text('启用后端 MCP'),
           subtitle: Text(
             guest ? '游客模式不可用，登录后开启' : '工具由后端聚合，执行经 /uapi/mcp/call 代理',
@@ -165,7 +164,9 @@ class _McpSettingsPageState extends State<McpSettingsPage> {
               value: server.enabled,
               onChanged: (v) => _patch((x) {
                 final i = x.mcpServers.indexWhere((e) => e.id == server.id);
-                if (i >= 0) x.mcpServers[i] = x.mcpServers[i].copyWith(enabled: v);
+                if (i >= 0) {
+                  x.mcpServers[i] = x.mcpServers[i].copyWith(enabled: v);
+                }
               }),
             ),
             title: Row(
@@ -253,6 +254,8 @@ class _McpSettingsPageState extends State<McpSettingsPage> {
         headers: _parseHeaders(result.headersText),
         enabled: existing?.enabled ?? true,
         trusted: result.trusted,
+        permission: result.permission,
+        enabledProjectIds: existing?.enabledProjectIds ?? const [],
       );
       final i = x.mcpServers.indexWhere((e) => e.id == cfg.id);
       if (i >= 0) {
@@ -300,8 +303,7 @@ class _McpSettingsPageState extends State<McpSettingsPage> {
         content: SingleChildScrollView(child: Text(msg)),
         actions: [
           TextButton(
-              onPressed: () => Navigator.pop(context),
-              child: const Text('确定')),
+              onPressed: () => Navigator.pop(context), child: const Text('确定')),
         ],
       ),
     );
@@ -314,11 +316,13 @@ class _ServerEditResult {
   final String url;
   final String headersText;
   final bool trusted;
+  final McpToolPermission permission;
   const _ServerEditResult({
     required this.name,
     required this.url,
     required this.headersText,
     required this.trusted,
+    required this.permission,
   });
 }
 
@@ -341,6 +345,7 @@ class _ServerEditDialogState extends State<_ServerEditDialog> {
   late final TextEditingController _urlCtl;
   late final TextEditingController _headersCtl;
   late bool _trusted;
+  late McpToolPermission _permission;
 
   @override
   void initState() {
@@ -355,6 +360,7 @@ class _ServerEditDialogState extends State<_ServerEditDialog> {
         : (p?.auth == McpAuthKind.header ? 'Authorization: Bearer ' : '');
     _headersCtl = TextEditingController(text: headersText);
     _trusted = e?.trusted ?? false;
+    _permission = e?.permission ?? McpToolPermission.confirmWrite;
   }
 
   @override
@@ -421,13 +427,32 @@ class _ServerEditDialogState extends State<_ServerEditDialog> {
               value: _trusted,
               onChanged: (v) => setState(() => _trusted = v),
             ),
+            const SizedBox(height: 4),
+            DropdownButtonFormField<McpToolPermission>(
+              initialValue: _permission,
+              decoration: const InputDecoration(
+                labelText: '工具权限',
+                border: OutlineInputBorder(),
+              ),
+              items: const [
+                DropdownMenuItem(
+                  value: McpToolPermission.confirmWrite,
+                  child: Text('可调用工具（写入需确认）'),
+                ),
+                DropdownMenuItem(
+                  value: McpToolPermission.readOnly,
+                  child: Text('仅资源/提示词只读'),
+                ),
+              ],
+              onChanged: (v) => setState(
+                  () => _permission = v ?? McpToolPermission.confirmWrite),
+            ),
           ],
         ),
       ),
       actions: [
         TextButton(
-            onPressed: () => Navigator.pop(context),
-            child: const Text('取消')),
+            onPressed: () => Navigator.pop(context), child: const Text('取消')),
         TextButton(
           onPressed: () => Navigator.pop(
             context,
@@ -436,6 +461,7 @@ class _ServerEditDialogState extends State<_ServerEditDialog> {
               url: _urlCtl.text,
               headersText: _headersCtl.text,
               trusted: _trusted,
+              permission: _permission,
             ),
           ),
           child: const Text('保存'),

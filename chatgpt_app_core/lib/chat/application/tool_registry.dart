@@ -15,6 +15,17 @@ class ToolOutcome {
   const ToolOutcome({required this.content, this.webResults = const []});
 }
 
+class ToolRetryPolicy {
+  final int maxAttempts;
+
+  const ToolRetryPolicy({this.maxAttempts = 1})
+      : assert(maxAttempts >= 1, 'maxAttempts must be >= 1');
+
+  const ToolRetryPolicy.none() : maxAttempts = 1;
+
+  bool get enabled => maxAttempts > 1;
+}
+
 /// 一个可供模型调用的工具：OpenAI function 声明 + 客户端执行函数。
 class ChatTool {
   final String name;
@@ -183,8 +194,10 @@ class ToolRegistry {
   }
 
   final List<ChatTool> tools;
+  final ToolRetryPolicy retryPolicy;
 
-  const ToolRegistry(this.tools);
+  const ToolRegistry(this.tools,
+      {this.retryPolicy = const ToolRetryPolicy.none()});
 
   bool get isEmpty => tools.isEmpty;
 
@@ -206,11 +219,18 @@ class ToolRegistry {
     if (tool == null) {
       return ToolOutcome(content: '错误：未注册的工具 "$name"');
     }
-    try {
-      return await tool.execute(args);
-    } catch (e) {
-      return ToolOutcome(content: '工具 "$name" 执行失败：$e');
+    Object? lastError;
+    for (var attempt = 1; attempt <= retryPolicy.maxAttempts; attempt++) {
+      try {
+        return await tool.execute(args);
+      } catch (e) {
+        lastError = e;
+        if (attempt >= retryPolicy.maxAttempts) break;
+      }
     }
+    final retryNote =
+        retryPolicy.enabled ? '，已重试 ${retryPolicy.maxAttempts - 1} 次' : '';
+    return ToolOutcome(content: '工具 "$name" 执行失败$retryNote：$lastError');
   }
 
   /// 工厂：按用户设置组装可用工具。目前只有联网搜索（配置了搜索 key 且
@@ -282,7 +302,12 @@ class ToolRegistry {
     }
     // 动态工具（MCP 等）：不在内置目录里，由调用方在运行时发现后并入。
     tools.addAll(extraTools);
-    return ToolRegistry(tools);
+    return ToolRegistry(
+      tools,
+      retryPolicy: extraTools.isEmpty
+          ? const ToolRetryPolicy.none()
+          : const ToolRetryPolicy(maxAttempts: 2),
+    );
   }
 
   /// 联网搜索工具：复用阶段五的 [WebSearchProvider]（Tavily 等）。

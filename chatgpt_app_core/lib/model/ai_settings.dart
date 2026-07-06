@@ -18,6 +18,278 @@ class ProviderConfig {
   });
 }
 
+class UsageCostRate {
+  final double? cachedInputCostPer1K;
+  final double inputCostPer1K;
+  final double outputCostPer1K;
+
+  const UsageCostRate({
+    this.cachedInputCostPer1K,
+    this.inputCostPer1K = 0,
+    this.outputCostPer1K = 0,
+  });
+
+  double get effectiveCachedInputCostPer1K =>
+      cachedInputCostPer1K ?? inputCostPer1K;
+
+  bool get isZero =>
+      effectiveCachedInputCostPer1K == 0 &&
+      inputCostPer1K == 0 &&
+      outputCostPer1K == 0;
+
+  double costFor({
+    required int promptTokens,
+    int cachedPromptTokens = 0,
+    required int completionTokens,
+  }) {
+    final cached = cachedPromptTokens.clamp(0, promptTokens).toInt();
+    final uncached = promptTokens - cached;
+    return cached / 1000000 * effectiveCachedInputCostPer1K +
+        uncached / 1000000 * inputCostPer1K +
+        completionTokens / 1000000 * outputCostPer1K;
+  }
+
+  factory UsageCostRate.fromJson(Map<String, dynamic>? j) => UsageCostRate(
+        cachedInputCostPer1K: (j?['cachedInputCostPer1K'] as num?)?.toDouble(),
+        inputCostPer1K: (j?['inputCostPer1K'] as num?)?.toDouble() ?? 0,
+        outputCostPer1K: (j?['outputCostPer1K'] as num?)?.toDouble() ?? 0,
+      );
+
+  Map<String, dynamic> toJson() => {
+        'cachedInputCostPer1K': cachedInputCostPer1K,
+        'inputCostPer1K': inputCostPer1K,
+        'outputCostPer1K': outputCostPer1K,
+      };
+
+  bool sameValue(UsageCostRate other) =>
+      cachedInputCostPer1K == other.cachedInputCostPer1K &&
+      inputCostPer1K == other.inputCostPer1K &&
+      outputCostPer1K == other.outputCostPer1K;
+}
+
+class UsageCostTimeRule {
+  final String key;
+  final int startMinute;
+  final int endMinute;
+  final int timezoneOffsetMinutes;
+  final UsageCostRate rate;
+
+  const UsageCostTimeRule({
+    required this.key,
+    required this.startMinute,
+    required this.endMinute,
+    required this.rate,
+    this.timezoneOffsetMinutes = 480,
+  });
+
+  bool matches({
+    String? providerId,
+    required String modelId,
+    required DateTime at,
+  }) {
+    if (!_matchesKey(providerId: providerId, modelId: modelId)) return false;
+    final local = at.toUtc().add(Duration(minutes: timezoneOffsetMinutes));
+    final minute = local.hour * 60 + local.minute;
+    if (startMinute == endMinute) return true;
+    if (startMinute < endMinute) {
+      return minute >= startMinute && minute < endMinute;
+    }
+    return minute >= startMinute || minute < endMinute;
+  }
+
+  bool _matchesKey({String? providerId, required String modelId}) {
+    final provider = providerId?.trim();
+    final model = modelId.trim();
+    if (provider == null || provider.isEmpty) return false;
+    return key == '$provider/$model' || key == '$provider/*';
+  }
+
+  factory UsageCostTimeRule.fromJson(Map<String, dynamic> j) =>
+      UsageCostTimeRule(
+        key: j['key'] as String? ?? '',
+        startMinute: j['startMinute'] as int? ?? 0,
+        endMinute: j['endMinute'] as int? ?? 0,
+        timezoneOffsetMinutes: j['timezoneOffsetMinutes'] as int? ?? 480,
+        rate: UsageCostRate.fromJson(
+            (j['rate'] as Map?)?.cast<String, dynamic>()),
+      );
+
+  Map<String, dynamic> toJson() => {
+        'key': key,
+        'startMinute': startMinute,
+        'endMinute': endMinute,
+        'timezoneOffsetMinutes': timezoneOffsetMinutes,
+        'rate': rate.toJson(),
+      };
+
+  bool sameValue(UsageCostTimeRule other) =>
+      key == other.key &&
+      startMinute == other.startMinute &&
+      endMinute == other.endMinute &&
+      timezoneOffsetMinutes == other.timezoneOffsetMinutes &&
+      rate.sameValue(other.rate);
+}
+
+class UsageCostConfig {
+  final UsageCostRate defaultRate;
+  final Map<String, UsageCostRate> overrides;
+  final List<UsageCostTimeRule> timeRules;
+
+  static const Map<String, UsageCostRate> builtinOverrides = {
+    // DeepSeek V4 平时价格，单位：元 / 1M tokens。
+    'deepseek/deepseek-v4-pro': UsageCostRate(
+      cachedInputCostPer1K: 0.025,
+      inputCostPer1K: 3,
+      outputCostPer1K: 6,
+    ),
+    'deepseek/deepseek-v4-flash': UsageCostRate(
+      cachedInputCostPer1K: 0.02,
+      inputCostPer1K: 1,
+      outputCostPer1K: 2,
+    ),
+  };
+
+  static const List<UsageCostTimeRule> builtinTimeRules = [
+    UsageCostTimeRule(
+      key: 'deepseek/deepseek-v4-pro',
+      startMinute: 9 * 60,
+      endMinute: 12 * 60,
+      rate: UsageCostRate(
+        cachedInputCostPer1K: 0.05,
+        inputCostPer1K: 6,
+        outputCostPer1K: 12,
+      ),
+    ),
+    UsageCostTimeRule(
+      key: 'deepseek/deepseek-v4-pro',
+      startMinute: 14 * 60,
+      endMinute: 18 * 60,
+      rate: UsageCostRate(
+        cachedInputCostPer1K: 0.05,
+        inputCostPer1K: 6,
+        outputCostPer1K: 12,
+      ),
+    ),
+    UsageCostTimeRule(
+      key: 'deepseek/deepseek-v4-flash',
+      startMinute: 9 * 60,
+      endMinute: 12 * 60,
+      rate: UsageCostRate(
+        cachedInputCostPer1K: 0.04,
+        inputCostPer1K: 2,
+        outputCostPer1K: 4,
+      ),
+    ),
+    UsageCostTimeRule(
+      key: 'deepseek/deepseek-v4-flash',
+      startMinute: 14 * 60,
+      endMinute: 18 * 60,
+      rate: UsageCostRate(
+        cachedInputCostPer1K: 0.04,
+        inputCostPer1K: 2,
+        outputCostPer1K: 4,
+      ),
+    ),
+  ];
+
+  static const UsageCostConfig builtinDefaults =
+      UsageCostConfig(overrides: builtinOverrides, timeRules: builtinTimeRules);
+
+  const UsageCostConfig({
+    this.defaultRate = const UsageCostRate(),
+    this.overrides = const {},
+    this.timeRules = const [],
+  });
+
+  const UsageCostConfig.zero() : this();
+
+  UsageCostRate rateFor({
+    String? providerId,
+    required String modelId,
+    DateTime? at,
+  }) {
+    final provider = providerId?.trim();
+    final model = modelId.trim();
+    if (provider != null && provider.isNotEmpty && model.isNotEmpty) {
+      final exact = overrides['$provider/$model'];
+      if (exact != null && !_isBuiltinOverride('$provider/$model', exact)) {
+        return exact;
+      }
+    }
+    if (provider != null && provider.isNotEmpty) {
+      final providerRate = overrides['$provider/*'];
+      if (providerRate != null &&
+          !_isBuiltinOverride('$provider/*', providerRate)) {
+        return providerRate;
+      }
+    }
+    if (at != null) {
+      for (final rule in timeRules) {
+        if (rule.matches(providerId: providerId, modelId: modelId, at: at)) {
+          return rule.rate;
+        }
+      }
+    }
+    if (provider != null && provider.isNotEmpty && model.isNotEmpty) {
+      final exact = overrides['$provider/$model'];
+      if (exact != null) return exact;
+    }
+    if (provider != null && provider.isNotEmpty) {
+      final providerRate = overrides['$provider/*'];
+      if (providerRate != null) return providerRate;
+    }
+    return defaultRate;
+  }
+
+  factory UsageCostConfig.fromJson(Map<String, dynamic>? j) {
+    if (j == null) return builtinDefaults;
+    final rawOverrides = j['overrides'] as Map?;
+    final rawTimeRules = j['timeRules'] as List?;
+    final customOverrides = rawOverrides == null
+        ? const <String, UsageCostRate>{}
+        : rawOverrides.map((key, value) => MapEntry(
+              '$key',
+              UsageCostRate.fromJson((value as Map?)?.cast<String, dynamic>()),
+            ));
+    final customTimeRules = rawTimeRules
+            ?.map((e) =>
+                UsageCostTimeRule.fromJson((e as Map).cast<String, dynamic>()))
+            .toList() ??
+        const <UsageCostTimeRule>[];
+    return UsageCostConfig(
+      defaultRate: UsageCostRate.fromJson(
+          (j['defaultRate'] as Map?)?.cast<String, dynamic>()),
+      overrides: {
+        ...builtinOverrides,
+        ...customOverrides,
+      },
+      timeRules: [
+        ...builtinTimeRules,
+        ...customTimeRules,
+      ],
+    );
+  }
+
+  Map<String, dynamic> toJson() => {
+        'defaultRate': defaultRate.toJson(),
+        'overrides': Map.fromEntries(overrides.entries
+            .where((entry) => !_isBuiltinOverride(entry.key, entry.value))
+            .map((entry) => MapEntry(entry.key, entry.value.toJson()))),
+        'timeRules': timeRules
+            .where((rule) => !_isBuiltinTimeRule(rule))
+            .map((e) => e.toJson())
+            .toList(),
+      };
+
+  static bool _isBuiltinOverride(String key, UsageCostRate rate) {
+    final builtin = builtinOverrides[key];
+    return builtin != null && builtin.sameValue(rate);
+  }
+
+  static bool _isBuiltinTimeRule(UsageCostTimeRule rule) =>
+      builtinTimeRules.any((builtin) => builtin.sameValue(rule));
+}
+
 class AISettings {
   AIMode mode;
 
@@ -76,6 +348,9 @@ class AISettings {
   /// 后端 MCP 工具是否信任（信任则调用免确认）。默认 false。
   bool mcpBackendTrusted;
 
+  /// 用户侧用量成本估算口径。旧配置缺省时全为 0，只统计 token。
+  UsageCostConfig usageCostConfig;
+
   AISettings({
     required this.mode,
     required this.providers,
@@ -97,7 +372,9 @@ class AISettings {
     List<McpServerConfig>? mcpServers,
     this.mcpBackendEnabled = false,
     this.mcpBackendTrusted = false,
-  }) : mcpServers = mcpServers ?? [];
+    UsageCostConfig? usageCostConfig,
+  })  : mcpServers = mcpServers ?? [],
+        usageCostConfig = usageCostConfig ?? UsageCostConfig.builtinDefaults;
 
   factory AISettings.defaults() => AISettings(
         mode: AIMode.local,
@@ -159,6 +436,8 @@ class AISettings {
           [],
       mcpBackendEnabled: j['mcpBackendEnabled'] as bool? ?? false,
       mcpBackendTrusted: j['mcpBackendTrusted'] as bool? ?? false,
+      usageCostConfig: UsageCostConfig.fromJson(
+          (j['usageCostConfig'] as Map?)?.cast<String, dynamic>()),
     );
   }
 
@@ -212,6 +491,7 @@ class AISettings {
         'mcpServers': mcpServers.map((e) => e.toJson()).toList(),
         'mcpBackendEnabled': mcpBackendEnabled,
         'mcpBackendTrusted': mcpBackendTrusted,
+        'usageCostConfig': usageCostConfig.toJson(),
       };
 
   /// 深拷贝（JSON 往返）。用于「改一个字段再 update」时产生新实例，
@@ -288,8 +568,7 @@ class AISettings {
       mcpServers.where((s) => s.enabled && s.url.trim().isNotEmpty).toList();
 
   /// 是否启用了任一 MCP 来源（直连 server 或后端 Host）。
-  bool get mcpConfigured =>
-      mcpBackendEnabled || enabledMcpServers.isNotEmpty;
+  bool get mcpConfigured => mcpBackendEnabled || enabledMcpServers.isNotEmpty;
 
   /// AI 服务商显示名称。
   String get aiDisplayName {
@@ -298,7 +577,9 @@ class AISettings {
     }
     // 后端模式：按模型名前缀判断。
     final m = backendModel.toLowerCase();
-    if (m.startsWith('gpt-') || m.startsWith('o1-') || m.startsWith('chatgpt-')) {
+    if (m.startsWith('gpt-') ||
+        m.startsWith('o1-') ||
+        m.startsWith('chatgpt-')) {
       return 'ChatGPT';
     }
     if (m.startsWith('deepseek-')) {

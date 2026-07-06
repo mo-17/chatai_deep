@@ -28,13 +28,40 @@ class AssistantDao implements IAssistant, ITable {
   static Future<AssistantDao> create(HiDBManager storage) async {
     await storage.db.execute(
         'create table if not exists $_kTableName (id integer primary key autoincrement'
-        ', name text, emoji text, prompt text, model text'
+        ', name text, emoji text, avatarType text, avatarValue text'
+        ', prompt text, description text'
+        ', openingMessage text, exampleDialogs text, memoryBook text'
+        ', defaultVoiceStyle text'
+        ', providerId text, model text'
         ', useTools integer, tools text, createdAt integer, updatedAt integer);');
     // 兼容旧表：无 tools 列时自动新增（L1 助手绑定工具）。
     try {
-      await storage.db.execute('alter table $_kTableName add column tools text');
+      await storage.db
+          .execute('alter table $_kTableName add column tools text');
     } catch (_) {
       // 列已存在，忽略
+    }
+    // 兼容旧表：无 providerId 列时自动新增（MVP 级助手模型供应商覆盖）。
+    try {
+      await storage.db
+          .execute('alter table $_kTableName add column providerId text');
+    } catch (_) {
+      // 列已存在，忽略
+    }
+    for (final column in const [
+      'description text',
+      'openingMessage text',
+      'exampleDialogs text',
+      'memoryBook text',
+      'defaultVoiceStyle text',
+      'avatarType text',
+      'avatarValue text',
+    ]) {
+      try {
+        await storage.db.execute('alter table $_kTableName add column $column');
+      } catch (_) {
+        // 列已存在，忽略
+      }
     }
     return AssistantDao._(storage);
   }

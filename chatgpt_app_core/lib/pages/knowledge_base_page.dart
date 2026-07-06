@@ -1,6 +1,7 @@
 import 'dart:io';
 
 import 'package:chatgpt_app_core/chat/application/file_processor.dart';
+import 'package:chatgpt_app_core/chat/application/knowledge_file_importer.dart';
 import 'package:chatgpt_app_core/chat/application/ocr_service.dart';
 import 'package:chatgpt_app_core/db/hi_db_manager.dart';
 import 'package:chatgpt_app_core/db/knowledge_dao.dart';
@@ -12,7 +13,7 @@ import 'package:flutter/material.dart';
 /// 知识库管理页（L4a）：导入文档（粘贴文本 / PDF、文本文件）/ 列表 / 删除。
 /// 导入的文档供绑定了「知识库检索」工具的助手按关键词检索作答。
 class KnowledgeBasePage extends StatefulWidget {
-  const KnowledgeBasePage({Key? key}) : super(key: key);
+  const KnowledgeBasePage({super.key});
 
   @override
   State<KnowledgeBasePage> createState() => _KnowledgeBasePageState();
@@ -53,6 +54,11 @@ class _KnowledgeBasePageState extends State<KnowledgeBasePage> {
         title: const Text('知识库'),
         centerTitle: true,
         actions: [
+          IconButton(
+            icon: const Icon(Icons.manage_search_outlined),
+            tooltip: '重建检索索引',
+            onPressed: _rebuildVectorIndex,
+          ),
           // file_picker 暂无鸿蒙实现，OHOS 隐藏文件导入入口（粘贴文本仍可用）。
           if (Platform.operatingSystem != 'ohos')
             IconButton(
@@ -77,7 +83,8 @@ class _KnowledgeBasePageState extends State<KnowledgeBasePage> {
           children: [
             const Text('📚', style: TextStyle(fontSize: 48)),
             const SizedBox(height: 12),
-            Text('还没有文档。右下角粘贴文本、或右上角导入 PDF/文本文件，\n'
+            Text(
+                '还没有文档。右下角粘贴文本、或右上角导入 PDF/文本文件，\n'
                 '再给助手绑定「知识库检索」工具即可问答。',
                 style: TextStyle(color: Colors.grey[600]),
                 textAlign: TextAlign.center),
@@ -90,7 +97,8 @@ class _KnowledgeBasePageState extends State<KnowledgeBasePage> {
         itemBuilder: (context, index) {
           final d = _docs[index];
           return ListTile(
-            leading: const CircleAvatar(child: Icon(Icons.description_outlined)),
+            leading:
+                const CircleAvatar(child: Icon(Icons.description_outlined)),
             title: Text(d.title, maxLines: 1, overflow: TextOverflow.ellipsis),
             subtitle: Text('${d.chunkCount} 个片段'),
             trailing: IconButton(
@@ -102,65 +110,67 @@ class _KnowledgeBasePageState extends State<KnowledgeBasePage> {
         },
       );
 
-  /// 导入文件（PDF / 文本 / 图片）：选文件 → 抽正文（图片或扫描件走 OCR）→ 切块落库。
+  /// 导入文件（PDF / 文本 / 图片）：可多选 → 抽正文（图片或扫描件走 OCR）→ 切块落库。
   void _importFile() async {
-    String? path;
+    List<String> paths;
     try {
       final result = await FilePicker.pickFiles(
         type: FileType.custom,
+        allowMultiple: true,
         allowedExtensions: [
           ...FileProcessor.pickerExtensions,
           ...OcrService.imageExtensions,
         ],
       );
-      path = result?.files.single.path;
+      paths = [
+        for (final file in result?.files ?? const <PlatformFile>[])
+          if (file.path != null) file.path!,
+      ];
     } catch (e) {
       if (mounted) HiDialog.showSnackBar(context, '选取文件失败：$e');
       return;
     }
-    if (path == null) return;
-    final name = path.split(RegExp(r'[/\\]')).last;
-    final ext = name.contains('.') ? name.split('.').last.toLowerCase() : '';
-    final isImage = OcrService.imageExtensions.contains(ext);
-
-    String? text;
-    try {
-      if (isImage) {
-        // 图片：必须 OCR。
-        if (!OcrService.isSupported) {
-          if (mounted) HiDialog.showSnackBar(context, '当前平台不支持 OCR（仅 Android/iOS）');
-          return;
-        }
-        text = await _withLoading('正在识别图片…',
-            () => OcrService.recognizeImageFile(path!));
-      } else {
-        // PDF / 文本：先抽文本层；PDF 像扫描件且支持 OCR 时回退逐页 OCR。
-        text = await FileProcessor.extractTextForImport(path);
-        if (ext == 'pdf' &&
-            OcrService.isSupported &&
-            OcrService.pdfNeedsOcr(text)) {
-          text = await _withLoading('扫描件，正在 OCR 识别…',
-              () => OcrService.recognizePdf(path!));
-        }
-      }
-    } catch (e) {
-      if (mounted) HiDialog.showSnackBar(context, '识别失败：$e');
-      return;
-    }
-
+    if (paths.isEmpty) return;
     if (!mounted) return;
-    if (text == null || text.trim().isEmpty) {
-      HiDialog.showSnackBar(context, '未能从「$name」提取到文字');
-      return;
-    }
-    final title = name.contains('.')
-        ? name.substring(0, name.lastIndexOf('.'))
-        : name;
-    final docId = await _dao!.addDocument(title, text);
+    final result = await _withLoading(
+      paths.length == 1 ? '正在导入文件…' : '正在导入 ${paths.length} 个文件…',
+      () => KnowledgeFileImporter(_dao!).importPaths(paths),
+    );
+    if (!mounted) return;
+    HiDialog.showSnackBar(context, result.message);
+    if (result.failedItems.isNotEmpty) _showImportDetails(result);
+    if (result.imported > 0) await _loadData();
+  }
+
+  void _rebuildVectorIndex() async {
+    if (_dao == null) return;
+    final stats = await _withLoading(
+      '正在重建检索索引…',
+      () => _dao!.rebuildVectorIndex(),
+    );
     if (!mounted) return;
     HiDialog.showSnackBar(
-        context, docId == null ? '导入失败（无可用内容）' : '已导入「$title」');
-    await _loadData();
+      context,
+      stats.chunks == 0
+          ? '暂无可索引片段'
+          : '已重建 ${stats.indexed}/${stats.chunks} 个检索片段',
+    );
+  }
+
+  void _showImportDetails(KnowledgeFileImportResult result) {
+    showDialog<void>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('部分文件未导入'),
+        content: SingleChildScrollView(child: Text(result.detailMessage)),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx),
+            child: const Text('知道了'),
+          ),
+        ],
+      ),
+    );
   }
 
   /// 执行一个耗时任务并显示模态加载框（OCR 可能较慢）。
@@ -240,7 +250,10 @@ class _KnowledgeBasePageState extends State<KnowledgeBasePage> {
     final docId = await _dao!.addDocument(titleCtl.text, text);
     if (!mounted) return;
     HiDialog.showSnackBar(
-        context, docId == null ? '导入失败' : '已导入「${titleCtl.text.trim().isEmpty ? '未命名文档' : titleCtl.text.trim()}」');
+        context,
+        docId == null
+            ? '导入失败'
+            : '已导入「${titleCtl.text.trim().isEmpty ? '未命名文档' : titleCtl.text.trim()}」');
     await _loadData();
   }
 

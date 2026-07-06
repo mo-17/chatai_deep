@@ -6,6 +6,28 @@ import 'package:chatgpt_app_core/dao/chat/direct_chat_service.dart';
 import 'package:chatgpt_app_core/model/ai_settings.dart';
 import 'package:chatgpt_app_core/util/model_catalog.dart';
 
+class ChatCompletionResult {
+  final String? content;
+  final int? promptTokens;
+  final int? cachedPromptTokens;
+  final int? completionTokens;
+
+  /// 该轮 token 是否为估算：true 说明未拿到 provider 真实 usage。
+  final bool estimated;
+
+  /// 该轮的成本估算值（当前由成本估算模型给出）
+  final double cost;
+
+  const ChatCompletionResult({
+    required this.content,
+    this.promptTokens,
+    this.cachedPromptTokens,
+    this.completionTokens,
+    this.estimated = false,
+    this.cost = 0,
+  });
+}
+
 abstract class ChatService {
   /// 当前生效模型的能力探测结果（阶段三）。UI 据此开关图片/PDF/工具入口，
   /// 上层无需关心背后是 OpenAI / DeepSeek / 后端代理。
@@ -16,6 +38,7 @@ abstract class ChatService {
     required String prompt,
     required List<Map<String, dynamic>> history,
     ChatAttachments? attachments,
+    Duration? timeout,
   });
 
   /// 仅文本的流式（保留向后兼容）。新的块化分发请用 [chatStreamEvents]。
@@ -40,6 +63,24 @@ abstract class ChatService {
     List<Map<String, dynamic>>? tools,
     List<Map<String, dynamic>> extraMessages = const [],
   });
+
+  /// 非流式带 usage 的调用。
+  ///
+  /// 约定是「按调用成功回传文本 + prompt / completion token」；
+  /// 不支持的 provider 或 SDK 版本可直接返回 content，usage 留空。
+  /// [estimated] 表示 usage 由本地估算而非 provider 实际返回。
+  Future<ChatCompletionResult> chatWithUsage({
+    required String prompt,
+    required List<Map<String, dynamic>> history,
+    ChatAttachments? attachments,
+  }) async {
+    final content = await chat(
+      prompt: prompt,
+      history: history,
+      attachments: attachments,
+    );
+    return ChatCompletionResult(content: content, estimated: true);
+  }
 
   factory ChatService.from(AISettings s) {
     if (s.mode == AIMode.backend) return BackendChatService(s);

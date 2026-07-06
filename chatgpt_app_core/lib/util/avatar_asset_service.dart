@@ -1,12 +1,16 @@
 import 'dart:io';
 
 import 'package:chatgpt_app_core/db/hi_db_manager.dart';
+import 'package:flutter/foundation.dart';
 import 'package:path_provider/path_provider.dart';
 
 /// 会话头像资源托管：把相册临时路径复制到应用 Documents，避免原路径失效。
 class AvatarAssetService {
   static const imageType = 'image';
   static const _rootDirName = 'chat_avatar';
+
+  @visibleForTesting
+  static Future<Directory> Function()? debugDocumentsDirectoryResolver;
 
   static Future<String> saveConversationAvatar({
     required String sourcePath,
@@ -25,6 +29,43 @@ class AvatarAssetService {
     return dest.path;
   }
 
+  static Future<String> saveAssistantAvatarBytes({
+    required List<int> bytes,
+    required String assistantName,
+    String extension = '.png',
+    String? accountHash,
+  }) async {
+    if (bytes.isEmpty) {
+      throw Exception('头像文件为空');
+    }
+    final dir = await avatarDir(accountHash: accountHash);
+    final safeName = _safeSegment(assistantName);
+    final ext = extension.startsWith('.') ? extension : '.$extension';
+    final dest = File(
+        '${dir.path}/assistant_${safeName}_${DateTime.now().millisecondsSinceEpoch}$ext');
+    await dest.writeAsBytes(bytes, flush: true);
+    return dest.path;
+  }
+
+  static Future<String> saveAssistantAvatar({
+    required String sourcePath,
+    required String assistantName,
+    String? accountHash,
+  }) async {
+    final source = File(sourcePath);
+    if (!await source.exists()) {
+      throw Exception('头像文件不存在');
+    }
+    if (isManagedPath(sourcePath)) return sourcePath;
+    final bytes = await source.readAsBytes();
+    return saveAssistantAvatarBytes(
+      bytes: bytes,
+      assistantName: assistantName,
+      extension: _extension(sourcePath),
+      accountHash: accountHash,
+    );
+  }
+
   static Future<void> deleteConversationAvatar(String? path) async {
     if (!isManagedPath(path)) return;
     try {
@@ -37,8 +78,12 @@ class AvatarAssetService {
     }
   }
 
+  static Future<void> deleteAssistantAvatar(String? path) =>
+      deleteConversationAvatar(path);
+
   static Future<Directory> avatarDir({String? accountHash}) async {
-    final root = await getApplicationDocumentsDirectory();
+    final root = await (debugDocumentsDirectoryResolver ??
+        getApplicationDocumentsDirectory)();
     final hash = _safeSegment(accountHash ?? HiDBManager.getAccountHash());
     final dir = Directory('${root.path}/$_rootDirName/$hash');
     if (!await dir.exists()) {

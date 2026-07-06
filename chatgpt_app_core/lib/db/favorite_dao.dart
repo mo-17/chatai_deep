@@ -13,8 +13,12 @@ abstract class IFavorite {
 
   Future<List<FavoriteModel>> searchFavorites(String query, {int limit = 50});
 
-  Future<List<FavoriteSearchResult>> searchFavoriteResults(String query,
-      {int limit = 50});
+  Future<List<FavoriteSearchResult>> searchFavoriteResults(
+    String query, {
+    int? projectId,
+    bool uncategorized = false,
+    int limit = 50,
+  });
 }
 
 class FavoriteSearchResult {
@@ -46,15 +50,15 @@ class FavoriteDao implements IFavorite, ITable {
 
   @override
   Future<int?> addFavorite(FavoriteModel model) async {
-    var result = await storage.db.insert(tableName, model.toJson(),
+    final result = await storage.db.insert(tableName, model.toJson(),
         conflictAlgorithm: ConflictAlgorithm.replace);
     return result;
   }
 
   @override
   Future<List<FavoriteModel>> getFavoriteList() async {
-    var results = await storage.db.query(tableName, orderBy: 'id desc');
-    var list = results.map((item) => FavoriteModel.fromJson(item)).toList();
+    final results = await storage.db.query(tableName, orderBy: 'id desc');
+    final list = results.map((item) => FavoriteModel.fromJson(item)).toList();
     return list;
   }
 
@@ -74,19 +78,32 @@ class FavoriteDao implements IFavorite, ITable {
   }
 
   @override
-  Future<List<FavoriteSearchResult>> searchFavoriteResults(String query,
-      {int limit = 50}) async {
+  Future<List<FavoriteSearchResult>> searchFavoriteResults(
+    String query, {
+    int? projectId,
+    bool uncategorized = false,
+    int limit = 50,
+  }) async {
     final q = query.trim();
     if (q.isEmpty) return const [];
+    final scopeWhere = <String>[];
+    final scopeArgs = <Object?>[];
+    if (uncategorized) {
+      scopeWhere.add('c.projectId is null');
+    } else if (projectId != null) {
+      scopeWhere.add('c.projectId = ?');
+      scopeArgs.add(projectId);
+    }
     final rows = await storage.db.rawQuery(
       'select f.*, m.cid as cid, c.title as conversationTitle '
       'from $tableName f '
       'left join tb_messages m on m.createdAt = f.createdAt and m.content = f.content '
       'left join tb_conversation_list c on c.cid = m.cid '
-      'where f.content like ? or f.ownerName like ? '
+      'where (f.content like ? or f.ownerName like ?) '
+      '${scopeWhere.isEmpty ? '' : 'and ${scopeWhere.join(' and ')} '}'
       'group by f.id '
       'order by f.id desc limit ?',
-      ['%$q%', '%$q%', limit.clamp(1, 100)],
+      ['%$q%', '%$q%', ...scopeArgs, limit.clamp(1, 100)],
     );
     return [
       for (final row in rows)
@@ -100,7 +117,7 @@ class FavoriteDao implements IFavorite, ITable {
 
   @override
   Future<int?> removeFavorite(FavoriteModel model) async {
-    var result = await storage.db
+    final result = await storage.db
         .delete(tableName, where: 'id = ?', whereArgs: [model.id]);
     return result;
   }

@@ -13,6 +13,8 @@ class DbMigration {
     await _ensureKnowledge(db);
     await _ensureAssistants(db);
     await _ensureFavorites(db);
+    await _ensureUsage(db);
+    await _ensureToolAudit(db);
   }
 
   static Future<void> migrateLegacyMessageTables(Database db) async {
@@ -27,6 +29,7 @@ class DbMigration {
       'tb_kb_doc',
       'tb_kb_chunk',
       'tb_project_kb',
+      'tb_tool_audit',
     };
     await _ensureMessages(db);
     for (final row in tables) {
@@ -65,7 +68,10 @@ class DbMigration {
         ', assistantId integer, projectId integer'
         ', avatarType text, avatarValue text'
         ', modelProviderId text, modelId text, webSearchEnabled integer'
-        ', toolIds text);');
+        ', toolIds text, speechInputEnabled integer, readAloudEnabled integer'
+        ', voiceLocale text, voiceRate real, voiceStyle text'
+        ', readAloudTriggerMode text'
+        ', roleScene text, roleRelationship text, roleToneNote text);');
     await _addColumn(db, 'tb_conversation_list', 'assistantId integer');
     await _addColumn(db, 'tb_conversation_list', 'projectId integer');
     await _addColumn(db, 'tb_conversation_list', 'avatarType text');
@@ -74,6 +80,15 @@ class DbMigration {
     await _addColumn(db, 'tb_conversation_list', 'modelId text');
     await _addColumn(db, 'tb_conversation_list', 'webSearchEnabled integer');
     await _addColumn(db, 'tb_conversation_list', 'toolIds text');
+    await _addColumn(db, 'tb_conversation_list', 'speechInputEnabled integer');
+    await _addColumn(db, 'tb_conversation_list', 'readAloudEnabled integer');
+    await _addColumn(db, 'tb_conversation_list', 'voiceLocale text');
+    await _addColumn(db, 'tb_conversation_list', 'voiceRate real');
+    await _addColumn(db, 'tb_conversation_list', 'voiceStyle text');
+    await _addColumn(db, 'tb_conversation_list', 'readAloudTriggerMode text');
+    await _addColumn(db, 'tb_conversation_list', 'roleScene text');
+    await _addColumn(db, 'tb_conversation_list', 'roleRelationship text');
+    await _addColumn(db, 'tb_conversation_list', 'roleToneNote text');
     await db.execute(
         'create unique index if not exists tb_conversation_list_cid_idx on tb_conversation_list (cid);');
     await db.execute(
@@ -118,15 +133,48 @@ class DbMigration {
   static Future<void> _ensureAssistants(Database db) async {
     await db.execute(
         'create table if not exists tb_assistant (id integer primary key autoincrement'
-        ', name text, emoji text, prompt text, model text, useTools integer'
+        ', name text, emoji text, prompt text, providerId text, model text, useTools integer'
         ', tools text, createdAt integer, updatedAt integer);');
     await _addColumn(db, 'tb_assistant', 'tools text');
+    await _addColumn(db, 'tb_assistant', 'providerId text');
   }
 
   static Future<void> _ensureFavorites(Database db) async {
     await db.execute(
         'create table if not exists tb_favorite (id integer primary key autoincrement'
         ', ownerName text, content text, createdAt integer);');
+  }
+
+  static Future<void> _ensureUsage(Database db) async {
+    await db.execute(
+        'create table if not exists tb_usage (id integer primary key autoincrement'
+        ', modelId text not null, providerId text, projectId integer, cid integer'
+        ', promptTokens integer not null, completionTokens integer not null'
+        ', cost real not null, estimated integer not null, createdAt integer not null);');
+    await _addColumn(db, 'tb_usage', 'providerId text');
+    await _addColumn(db, 'tb_usage', 'projectId integer');
+    await _addColumn(db, 'tb_usage', 'estimated integer');
+    await db.execute(
+        'create index if not exists tb_usage_model_idx on tb_usage(modelId)');
+    await db.execute(
+        'create index if not exists tb_usage_cid_idx on tb_usage(cid)');
+    await db.execute(
+        'create index if not exists tb_usage_project_idx on tb_usage(projectId)');
+    await db.execute(
+        'create index if not exists tb_usage_created_idx on tb_usage(createdAt)');
+  }
+
+  static Future<void> _ensureToolAudit(Database db) async {
+    await db.execute(
+        'create table if not exists tb_tool_audit (id integer primary key autoincrement'
+        ', toolName text not null, sourceType text, sourceId text, sourceName text'
+        ', trusted integer not null, readOnly integer not null'
+        ', approved integer not null, success integer not null, argCount integer not null'
+        ', argsPreview text, resultPreview text, error text, createdAt integer not null);');
+    await db.execute(
+        'create index if not exists tb_tool_audit_created_idx on tb_tool_audit(createdAt desc);');
+    await db.execute(
+        'create index if not exists tb_tool_audit_tool_idx on tb_tool_audit(toolName);');
   }
 
   static Future<void> _addColumn(

@@ -1,5 +1,8 @@
 import 'dart:convert';
 
+import 'package:chatgpt_app_core/chat/application/assistant_role_card_service.dart';
+import 'package:chatgpt_app_core/model/assistant_model.dart';
+
 /// 块化消息系统的核心领域模型。
 ///
 /// 忠实迁移自 Cherry Studio（`src/types/message.ts`）：
@@ -33,6 +36,8 @@ enum MessageBlockType {
   tool, // 工具调用
   citation, // 引用（网络搜索 / 知识库 grounding）
   file, // 文件
+  roleContext, // 角色上下文快照（调试/追溯用）
+  roleContinuation, // 未完成回复的角色状态承接
   error, // 错误
 }
 
@@ -163,8 +168,8 @@ sealed class MessageBlock {
           status: status,
           modelId: modelId,
           webResults: raw
-              .map((e) => WebSearchResult.fromJson(
-                  (e as Map).cast<String, dynamic>()))
+              .map((e) =>
+                  WebSearchResult.fromJson((e as Map).cast<String, dynamic>()))
               .toList(),
         );
       case MessageBlockType.file:
@@ -177,6 +182,40 @@ sealed class MessageBlock {
           modelId: modelId,
           file: FileMetadata.fromJson(
               ((j['file'] as Map?) ?? const {}).cast<String, dynamic>()),
+        );
+      case MessageBlockType.roleContext:
+        final rawMemoryBudget = j['memoryBudget'];
+        final rawMemoryHits = j['memoryHits'];
+        return RoleContextBlock(
+          id: id,
+          messageId: messageId,
+          createdAt: createdAt,
+          updatedAt: updatedAt,
+          status: status,
+          modelId: modelId,
+          content: j['content'] as String? ?? '',
+          memoryBudget: rawMemoryBudget is Map
+              ? AssistantMemoryContextBudget.fromJson(
+                  rawMemoryBudget.cast<String, dynamic>(),
+                )
+              : null,
+          memoryHits: [
+            for (final item in (rawMemoryHits as List? ?? const []))
+              if (item is Map)
+                AssistantMemoryEntryPreview.fromJson(
+                  item.cast<String, dynamic>(),
+                ),
+          ],
+        );
+      case MessageBlockType.roleContinuation:
+        return RoleContinuationBlock(
+          id: id,
+          messageId: messageId,
+          createdAt: createdAt,
+          updatedAt: updatedAt,
+          status: status,
+          modelId: modelId,
+          content: j['content'] as String? ?? '',
         );
       case MessageBlockType.error:
         return ErrorBlock(
@@ -482,8 +521,8 @@ class CitationBlock extends MessageBlock {
   MessageBlockType get type => MessageBlockType.citation;
 
   @override
-  Map<String, dynamic> toJson() => _baseJson()
-    ..['webResults'] = webResults.map((e) => e.toJson()).toList();
+  Map<String, dynamic> toJson() =>
+      _baseJson()..['webResults'] = webResults.map((e) => e.toJson()).toList();
 }
 
 class FileBlock extends MessageBlock {
@@ -504,6 +543,53 @@ class FileBlock extends MessageBlock {
 
   @override
   Map<String, dynamic> toJson() => _baseJson()..['file'] = file.toJson();
+}
+
+class RoleContextBlock extends MessageBlock {
+  final String content;
+  final AssistantMemoryContextBudget? memoryBudget;
+  final List<AssistantMemoryEntryPreview> memoryHits;
+
+  const RoleContextBlock({
+    required super.id,
+    required super.messageId,
+    required super.createdAt,
+    required super.status,
+    super.updatedAt,
+    super.modelId,
+    this.content = '',
+    this.memoryBudget,
+    this.memoryHits = const [],
+  });
+
+  @override
+  MessageBlockType get type => MessageBlockType.roleContext;
+
+  @override
+  Map<String, dynamic> toJson() => _baseJson()
+    ..['content'] = content
+    ..['memoryBudget'] = memoryBudget?.toJson()
+    ..['memoryHits'] = memoryHits.map((hit) => hit.toJson()).toList();
+}
+
+class RoleContinuationBlock extends MessageBlock {
+  final String content;
+
+  const RoleContinuationBlock({
+    required super.id,
+    required super.messageId,
+    required super.createdAt,
+    required super.status,
+    super.updatedAt,
+    super.modelId,
+    this.content = '',
+  });
+
+  @override
+  MessageBlockType get type => MessageBlockType.roleContinuation;
+
+  @override
+  Map<String, dynamic> toJson() => _baseJson()..['content'] = content;
 }
 
 class ErrorBlock extends MessageBlock {

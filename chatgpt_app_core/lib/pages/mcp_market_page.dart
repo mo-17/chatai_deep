@@ -2,7 +2,7 @@ import 'package:chatgpt_app_core/data/builtin_mcp_servers.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
-/// MCP 服务商店（对应「助手市场」）：浏览精选的远程 MCP server，点一个即返回给
+/// MCP 工具商店（对应「助手市场」）：浏览精选的远程 MCP server，点一个即返回给
 /// 设置页，预填进「添加直连 server」对话框，用户补好鉴权头/占位后保存。
 ///
 /// 仅陈列远程 HTTP 型（方案 A 可直连）；本地 stdio 型需经后端 Host（方案 B），
@@ -17,7 +17,7 @@ class McpMarketPage extends StatelessWidget {
     final cs = Theme.of(context).colorScheme;
 
     return Scaffold(
-      appBar: AppBar(title: const Text('MCP 服务商店'), centerTitle: true),
+      appBar: AppBar(title: const Text('MCP 工具商店'), centerTitle: true),
       body: ListView.builder(
         itemCount: categories.length + 1,
         itemBuilder: (context, i) {

@@ -91,11 +91,38 @@ class DefaultMessageWidget extends StatelessWidget {
         style: const TextStyle(fontSize: 16, color: Colors.white),
       ));
 
+  Widget _emojiAvatar(String emoji) => CircleAvatar(
+        radius: avatarSize / 2,
+        backgroundColor: _avatarBgColor,
+        child: Text(
+          emoji,
+          style: TextStyle(fontSize: avatarSize * 0.52),
+        ),
+      );
+
   Widget get _buildCircleAvatar {
-    if (!_isValidNetworkUrl(message.avatar)) return _initialsAvatar;
+    final avatar = message.avatar?.trim() ?? '';
+    if (avatar.isEmpty) return _initialsAvatar;
+    if (avatar.startsWith('emoji:')) {
+      final emoji = Uri.decodeComponent(avatar.substring('emoji:'.length));
+      return emoji.trim().isEmpty ? _initialsAvatar : _emojiAvatar(emoji);
+    }
+    if (!_isValidNetworkUrl(avatar)) {
+      final file = File(avatar);
+      if (!file.isAbsolute || !file.existsSync()) return _initialsAvatar;
+      return ClipOval(
+        child: Image.file(
+          file,
+          height: avatarSize,
+          width: avatarSize,
+          fit: BoxFit.cover,
+          errorBuilder: (_, __, ___) => _initialsAvatar,
+        ),
+      );
+    }
     return ClipOval(
       child: Image.network(
-        message.avatar!.trim(),
+        avatar,
         height: avatarSize,
         width: avatarSize,
         errorBuilder: (_, __, ___) => _initialsAvatar,
@@ -171,8 +198,9 @@ class DefaultMessageWidget extends StatelessWidget {
     if (custom == null) return _buildContentText(align, context);
     return InkWell(
       onTap: () => onBubbleTap != null ? onBubbleTap!(message, context) : null,
-      onLongPress: () =>
-          onBubbleLongPress != null ? onBubbleLongPress!(message, context) : null,
+      onLongPress: () => onBubbleLongPress != null
+          ? onBubbleLongPress!(message, context)
+          : null,
       child: custom,
     );
   }
@@ -184,7 +212,8 @@ class DefaultMessageWidget extends StatelessWidget {
 
     if (!hasImages) {
       return InkWell(
-        onTap: () => onBubbleTap != null ? onBubbleTap!(message, context) : null,
+        onTap: () =>
+            onBubbleTap != null ? onBubbleTap!(message, context) : null,
         onLongPress: () => onBubbleLongPress != null
             ? onBubbleLongPress!(message, context)
             : null,
@@ -222,7 +251,6 @@ class DefaultMessageWidget extends StatelessWidget {
   Widget _buildImageGrid(BuildContext context) {
     final images = message.imageUrlsOrB64!;
     final count = images.length;
-    final crossAxisCount = count == 1 ? 1 : 2;
     final itemWidth = count == 1 ? 200.0 : 100.0;
     final itemHeight = count == 1 ? 200.0 : 100.0;
 
@@ -337,8 +365,8 @@ class _ImageViewer extends StatelessWidget {
                 child: Image.memory(
                   base64Decode(parts[1]),
                   fit: BoxFit.contain,
-                  errorBuilder: (_, __, ___) =>
-                      const Icon(Icons.broken_image, color: Colors.white, size: 64),
+                  errorBuilder: (_, __, ___) => const Icon(Icons.broken_image,
+                      color: Colors.white, size: 64),
                 ),
               );
             }
@@ -347,8 +375,8 @@ class _ImageViewer extends StatelessWidget {
               child: Image.network(
                 img,
                 fit: BoxFit.contain,
-                errorBuilder: (_, __, ___) =>
-                    const Icon(Icons.broken_image, color: Colors.white, size: 64),
+                errorBuilder: (_, __, ___) => const Icon(Icons.broken_image,
+                    color: Colors.white, size: 64),
               ),
             );
           }

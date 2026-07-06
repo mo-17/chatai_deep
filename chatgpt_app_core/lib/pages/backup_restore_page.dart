@@ -12,10 +12,178 @@ import 'package:provider/provider.dart';
 ///备份与恢复页（阶段八）：导出 zip / 导入恢复。
 ///文件选择走 file_picker（与阶段四附件同一插件），核心逻辑在 [BackupService]。
 class BackupRestorePage extends StatefulWidget {
-  const BackupRestorePage({Key? key}) : super(key: key);
+  const BackupRestorePage({super.key});
 
   @override
   State<BackupRestorePage> createState() => _BackupRestorePageState();
+}
+
+class BackupImportPreviewDialog extends StatefulWidget {
+  final BackupPreview preview;
+
+  const BackupImportPreviewDialog({super.key, required this.preview});
+
+  @override
+  State<BackupImportPreviewDialog> createState() =>
+      _BackupImportPreviewDialogState();
+}
+
+class _BackupImportPreviewDialogState extends State<BackupImportPreviewDialog> {
+  BackupImportMode _mode = BackupImportMode.overwriteAll;
+
+  @override
+  Widget build(BuildContext context) {
+    final warning = widget.preview.warnings.isEmpty
+        ? ''
+        : '\n\n${widget.preview.warnings.join('\n')}';
+    return AlertDialog(
+      title: const Text('导入预览'),
+      content: SingleChildScrollView(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(_previewText(widget.preview)),
+            if (warning.isNotEmpty) ...[
+              const SizedBox(height: 12),
+              Text(warning.trim()),
+            ],
+            const SizedBox(height: 12),
+            DropdownButtonFormField<BackupImportMode>(
+              initialValue: _mode,
+              decoration: const InputDecoration(labelText: '导入方式'),
+              items: const [
+                DropdownMenuItem(
+                  value: BackupImportMode.overwriteAll,
+                  child: Text('覆盖全部'),
+                ),
+                DropdownMenuItem(
+                  value: BackupImportMode.projectConversationsOnly,
+                  child: Text('仅导入项目和会话'),
+                ),
+                DropdownMenuItem(
+                  value: BackupImportMode.assistantsOnly,
+                  child: Text('仅导入助手'),
+                ),
+                DropdownMenuItem(
+                  value: BackupImportMode.knowledgeBaseOnly,
+                  child: Text('仅导入知识库'),
+                ),
+                DropdownMenuItem(
+                  value: BackupImportMode.mergeAppend,
+                  child: Text('合并导入'),
+                ),
+              ],
+              onChanged: (value) => setState(() => _mode = value ?? _mode),
+            ),
+            const SizedBox(height: 8),
+            Text(_modeWarning(_mode)),
+            const SizedBox(height: 8),
+            Text(_impactText(widget.preview, _mode)),
+          ],
+        ),
+      ),
+      actions: [
+        TextButton(
+            onPressed: () => Navigator.pop(context), child: const Text('取消')),
+        TextButton(
+          onPressed: () => Navigator.pop(context, _mode),
+          child: Text(_confirmText(_mode)),
+        ),
+      ],
+    );
+  }
+
+  static String _confirmText(BackupImportMode mode) {
+    switch (mode) {
+      case BackupImportMode.overwriteAll:
+        return '覆盖导入';
+      case BackupImportMode.projectConversationsOnly:
+        return '仅导入项目和会话';
+      case BackupImportMode.assistantsOnly:
+        return '仅导入助手';
+      case BackupImportMode.knowledgeBaseOnly:
+        return '仅导入知识库';
+      case BackupImportMode.mergeAppend:
+        return '合并导入';
+    }
+  }
+
+  static String _modeWarning(BackupImportMode mode) {
+    switch (mode) {
+      case BackupImportMode.overwriteAll:
+        return '覆盖全部不可撤销。建议先导出一份当前数据。';
+      case BackupImportMode.projectConversationsOnly:
+        return '仅项目和会话导入会替换项目、会话和消息，并保留助手、收藏、知识库和 AI 设置。';
+      case BackupImportMode.assistantsOnly:
+        return '仅助手导入会替换助手列表，并解除无法匹配新助手集的会话/项目助手引用。';
+      case BackupImportMode.knowledgeBaseOnly:
+        return '仅知识库导入不会修改会话、消息、助手、收藏、项目和 AI 设置。';
+      case BackupImportMode.mergeAppend:
+        return '合并导入会追加为新数据；同 ID/cid 会自动重映射，不覆盖本地数据和 AI 设置。';
+    }
+  }
+
+  static String _impactText(BackupPreview preview, BackupImportMode mode) {
+    final plan = preview.planFor(mode);
+    final localOnlyLabel = switch (mode) {
+      BackupImportMode.overwriteAll => '仅本地数据将删除',
+      BackupImportMode.projectConversationsOnly => '仅本地项目/会话/消息将删除',
+      BackupImportMode.assistantsOnly => '仅本地助手将删除',
+      BackupImportMode.knowledgeBaseOnly => '仅本地知识库数据将删除',
+      BackupImportMode.mergeAppend => '仅本地数据将保留',
+    };
+    if (mode == BackupImportMode.mergeAppend) {
+      return '预计影响：${plan.scope}；追加 ${plan.backupOnlyRows} 行，'
+          '其中 ${plan.replacingRows} 行同 ID/cid 会重映射，'
+          '内容不同 ${plan.changedRows} 行，$localOnlyLabel ${plan.localRows} 行。';
+    }
+    return '预计影响：${plan.scope}；覆盖 ${plan.replacingRows} 行，'
+        '内容不同 ${plan.changedRows} 行，新增 ${plan.backupOnlyRows} 行，'
+        '$localOnlyLabel ${plan.localOnlyRows} 行。';
+  }
+
+  static String _previewText(BackupPreview preview) {
+    String exportedAtText() {
+      if (preview.exportedAt <= 0) return '未知';
+      final at = DateTime.fromMillisecondsSinceEpoch(preview.exportedAt);
+      String two(int v) => v.toString().padLeft(2, '0');
+      return '${at.year}-${two(at.month)}-${two(at.day)} '
+          '${two(at.hour)}:${two(at.minute)}';
+    }
+
+    return [
+      '备份版本：v${preview.formatVersion}',
+      '导出时间：${exportedAtText()}',
+      if (preview.accountHash.isNotEmpty) '来源账号：${preview.accountHash}',
+      'AI 设置：${preview.hasSettings ? '包含' : '不包含'}'
+          '${preview.includeApiKeys ? '（含 API Key）' : '（不含 API Key）'}',
+      '会话：${preview.conversations}',
+      '消息：${preview.messages}',
+      '助手：${preview.assistants}',
+      '收藏：${preview.favorites}',
+      '项目：${preview.projects}',
+      '知识库文档：${preview.knowledgeDocs}',
+      '知识库片段：${preview.knowledgeChunks}',
+      '项目知识库绑定：${preview.projectKnowledge}',
+      '头像资源：${preview.avatarAssets}',
+      '附件原始文件：${preview.fileAssets}',
+      '生成图片：${preview.generatedImageAssets}',
+      if (preview.conflictSummary.hasLocalData) ...[
+        '',
+        '当前本地数据：${preview.conflictSummary.localRows} 行',
+        '同 ID 覆盖：${preview.conflictSummary.replacingRows} 行',
+        '内容不同：${preview.conflictSummary.changedRows} 行',
+        '仅本地存在：${preview.conflictSummary.localOnlyRows} 行',
+        '仅备份存在：${preview.conflictSummary.backupOnlyRows} 行',
+        for (final item in preview.conflictSummary.tableConflicts
+            .where((item) => item.hasConflict)
+            .take(4))
+          '${item.table}：覆盖 ${item.replacingRows}，不同 ${item.changedRows}，'
+              '仅本地 ${item.localOnlyRows}',
+      ],
+    ].join('\n');
+  }
 }
 
 class _BackupRestorePageState extends State<BackupRestorePage> {
@@ -139,23 +307,25 @@ class _BackupRestorePageState extends State<BackupRestorePage> {
     }
     if (!mounted) return;
 
-    final confirmed = await showDialog<bool>(
-      context: context,
-      builder: (ctx) => AlertDialog(
-        title: const Text('导入恢复'),
-        content: const Text('导入将覆盖当前账号的全部会话、聊天记录、助手与收藏，'
-            '且不可撤销。建议先导出一份当前数据。确定继续吗？'),
-        actions: [
-          TextButton(
-              onPressed: () => Navigator.pop(ctx, false),
-              child: const Text('取消')),
-          TextButton(
-              onPressed: () => Navigator.pop(ctx, true),
-              child: const Text('覆盖导入')),
-        ],
-      ),
-    );
-    if (confirmed != true || !mounted) return;
+    final BackupPreview preview;
+    try {
+      final service = await _service();
+      preview = await service.previewArchive(
+        bytes,
+        accountHash: HiDBManager.getAccountHash(),
+      );
+    } on FormatException catch (e) {
+      if (mounted) HiDialog.showSnackBar(context, e.message);
+      return;
+    } catch (e) {
+      AILogger.log('backup preview failed: $e');
+      if (mounted) HiDialog.showSnackBar(context, '读取备份文件失败：$e');
+      return;
+    }
+    if (!mounted) return;
+
+    final mode = await _confirmImport(preview);
+    if (mode == null || !mounted) return;
 
     setState(() => _busy = true);
     try {
@@ -163,6 +333,7 @@ class _BackupRestorePageState extends State<BackupRestorePage> {
       final result = await service.importArchive(
         bytes,
         accountHash: HiDBManager.getAccountHash(),
+        mode: mode,
       );
       _applySettings(result);
       if (!mounted) return;
@@ -172,9 +343,7 @@ class _BackupRestorePageState extends State<BackupRestorePage> {
         context: context,
         builder: (ctx) => AlertDialog(
           title: const Text('导入完成'),
-          content: Text('已恢复 ${result.conversations} 个会话、'
-              '${result.messages} 条消息、${result.assistants} 个助手、'
-              '${result.favorites} 条收藏。$warning'),
+          content: Text(_resultText(result, mode, warning)),
           actions: [
             TextButton(
                 onPressed: () => Navigator.pop(ctx), child: const Text('好')),
@@ -188,6 +357,37 @@ class _BackupRestorePageState extends State<BackupRestorePage> {
       if (mounted) HiDialog.showSnackBar(context, '导入失败：$e');
     } finally {
       if (mounted) setState(() => _busy = false);
+    }
+  }
+
+  Future<BackupImportMode?> _confirmImport(BackupPreview preview) {
+    return showDialog<BackupImportMode>(
+      context: context,
+      builder: (ctx) => BackupImportPreviewDialog(preview: preview),
+    );
+  }
+
+  String _resultText(
+      BackupRestoreResult result, BackupImportMode mode, String warning) {
+    switch (mode) {
+      case BackupImportMode.overwriteAll:
+        return '已恢复 ${result.conversations} 个会话、'
+            '${result.messages} 条消息、${result.assistants} 个助手、'
+            '${result.favorites} 条收藏。$warning';
+      case BackupImportMode.projectConversationsOnly:
+        return '已恢复 ${result.projects} 个项目、'
+            '${result.conversations} 个会话、${result.messages} 条消息。$warning';
+      case BackupImportMode.assistantsOnly:
+        return '已恢复 ${result.assistants} 个助手。$warning';
+      case BackupImportMode.knowledgeBaseOnly:
+        return '已恢复 ${result.knowledgeDocs} 个知识库文档、'
+            '${result.knowledgeChunks} 个片段、'
+            '${result.projectKnowledge} 条项目知识库绑定。$warning';
+      case BackupImportMode.mergeAppend:
+        return '已合并 ${result.projects} 个项目、${result.conversations} 个会话、'
+            '${result.messages} 条消息、${result.assistants} 个助手、'
+            '${result.favorites} 条收藏、${result.knowledgeDocs} 个知识库文档。'
+            '$warning';
     }
   }
 

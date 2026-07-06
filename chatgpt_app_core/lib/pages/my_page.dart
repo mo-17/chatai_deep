@@ -6,8 +6,14 @@ import 'package:chatgpt_app_core/model/apk_model.dart';
 import 'package:chatgpt_app_core/pages/ai_settings_page.dart';
 import 'package:chatgpt_app_core/pages/assistant_list_page.dart';
 import 'package:chatgpt_app_core/pages/backup_restore_page.dart';
+import 'package:chatgpt_app_core/pages/capability_center_page.dart';
+import 'package:chatgpt_app_core/pages/cloud_sync_page.dart';
+import 'package:chatgpt_app_core/pages/generated_image_album_page.dart';
 import 'package:chatgpt_app_core/pages/knowledge_base_page.dart';
 import 'package:chatgpt_app_core/pages/mcp_settings_page.dart';
+import 'package:chatgpt_app_core/pages/tool_audit_page.dart';
+import 'package:chatgpt_app_core/pages/tts_model_manager_page.dart';
+import 'package:chatgpt_app_core/pages/usage_stats_page.dart';
 import 'package:chatgpt_app_core/provider/theme_provider.dart';
 import 'package:chatgpt_app_core/util/hi_dialog.dart';
 import 'package:chatgpt_app_core/util/hi_progress_dialog.dart';
@@ -24,7 +30,7 @@ import '../widget/theme_widget.dart';
 
 ///我的页面
 class MyPage extends StatefulWidget {
-  const MyPage({Key? key}) : super(key: key);
+  const MyPage({super.key});
 
   @override
   State<MyPage> createState() => _MyPageState();
@@ -53,69 +59,116 @@ class _MyPageState extends State<MyPage> {
 
   @override
   Widget build(BuildContext context) {
-    var themeProvider = context.watch<ThemeProvider>();
-    var color = themeProvider.themeColor;
+    final themeProvider = context.watch<ThemeProvider>();
+    final color = themeProvider.themeColor;
     return Scaffold(
-      body: Column(
-        children: [
-          HeaderWidget(
-            avatar: avatar,
-            name: userName,
-            imoocId: imoocId,
-          ),
-          20.paddingHeight,
-          const Divider(),
-          // 游客模式：醒目的登录入口（走标准登出流程清掉游客态并跳登录页）。
-          if (LoginDao.isGuest())
+      body: SafeArea(
+        child: ListView(
+          padding: const EdgeInsets.only(bottom: 24),
+          children: [
+            HeaderWidget(
+              avatar: avatar,
+              name: userName,
+              imoocId: imoocId,
+            ),
+            20.paddingHeight,
+            const Divider(),
+            // 游客模式：醒目的登录入口（走标准登出流程清掉游客态并跳登录页）。
+            if (LoginDao.isGuest())
+              ..._itemWidget(
+                  color: color,
+                  title: '登录 / 注册',
+                  icon: Icons.login,
+                  onTap: () => LoginDao.logOut()),
             ..._itemWidget(
                 color: color,
-                title: '登录 / 注册',
-                icon: Icons.login,
-                onTap: () => LoginDao.logOut()),
-          ..._itemWidget(
-              color: color,
-              title: 'AI 服务设置',
-              icon: Icons.smart_toy,
-              onTap: () => Navigator.push(context,
-                  MaterialPageRoute(builder: (_) => const AISettingsPage()))),
-          ..._itemWidget(
-              color: color,
-              title: 'MCP 服务',
-              icon: Icons.extension_outlined,
-              onTap: () => Navigator.push(context,
-                  MaterialPageRoute(builder: (_) => const McpSettingsPage()))),
-          ..._itemWidget(
-              color: color,
-              title: '助手管理',
-              icon: Icons.support_agent,
-              onTap: () => Navigator.push(
-                  context,
-                  MaterialPageRoute(
-                      builder: (_) => const AssistantListPage()))),
-          ..._itemWidget(
-              color: color,
-              title: '知识库',
-              icon: Icons.menu_book_outlined,
-              onTap: () => Navigator.push(
-                  context,
-                  MaterialPageRoute(
-                      builder: (_) => const KnowledgeBasePage()))),
-          ..._itemWidget(
-              color: color,
-              title: '备份与恢复',
-              icon: Icons.backup_outlined,
-              onTap: () => Navigator.push(
-                  context,
-                  MaterialPageRoute(
-                      builder: (_) => const BackupRestorePage()))),
-          ..._itemWidget(
-              color: color,
-              title: '检测更新',
-              icon: Icons.update,
-              onTap: _checkUpdate),
-          _buildTitle,
-          ThemeWidget(onThemeChange: _onThemeChange)
-        ],
+                title: 'AI 服务设置',
+                icon: Icons.smart_toy,
+                onTap: () => Navigator.push(context,
+                    MaterialPageRoute(builder: (_) => const AISettingsPage()))),
+            ..._itemWidget(
+                color: color,
+                title: 'MCP 服务',
+                icon: Icons.extension_outlined,
+                onTap: () => Navigator.push(
+                    context,
+                    MaterialPageRoute(
+                        builder: (_) => const McpSettingsPage()))),
+            ..._itemWidget(
+                color: color,
+                title: '助手管理',
+                icon: Icons.support_agent,
+                onTap: () => Navigator.push(
+                    context,
+                    MaterialPageRoute(
+                        builder: (_) => const AssistantListPage()))),
+            ..._itemWidget(
+                color: color,
+                title: '知识库',
+                icon: Icons.menu_book_outlined,
+                onTap: () => Navigator.push(
+                    context,
+                    MaterialPageRoute(
+                        builder: (_) => const KnowledgeBasePage()))),
+            ..._itemWidget(
+                color: color,
+                title: '离线语音模型',
+                icon: Icons.record_voice_over_outlined,
+                onTap: () => Navigator.push(
+                    context,
+                    MaterialPageRoute(
+                        builder: (_) => const TtsModelManagerPage()))),
+            ..._itemWidget(
+                color: color,
+                title: 'AI 能力中心',
+                icon: Icons.auto_awesome_motion_outlined,
+                onTap: () => Navigator.push(
+                    context,
+                    MaterialPageRoute(
+                        builder: (_) => const CapabilityCenterPage()))),
+            ..._itemWidget(
+                color: color,
+                title: '用量统计',
+                icon: Icons.query_stats_outlined,
+                onTap: () => Navigator.push(context,
+                    MaterialPageRoute(builder: (_) => const UsageStatsPage()))),
+            ..._itemWidget(
+                color: color,
+                title: '生成图片相册',
+                icon: Icons.photo_library_outlined,
+                onTap: () => Navigator.push(
+                    context,
+                    MaterialPageRoute(
+                        builder: (_) => const GeneratedImageAlbumPage()))),
+            ..._itemWidget(
+                color: color,
+                title: '工具审计',
+                icon: Icons.security_outlined,
+                onTap: () => Navigator.push(context,
+                    MaterialPageRoute(builder: (_) => const ToolAuditPage()))),
+            ..._itemWidget(
+                color: color,
+                title: '跨设备云同步',
+                icon: Icons.cloud_sync_outlined,
+                onTap: () => Navigator.push(context,
+                    MaterialPageRoute(builder: (_) => const CloudSyncPage()))),
+            ..._itemWidget(
+                color: color,
+                title: '备份与恢复',
+                icon: Icons.backup_outlined,
+                onTap: () => Navigator.push(
+                    context,
+                    MaterialPageRoute(
+                        builder: (_) => const BackupRestorePage()))),
+            ..._itemWidget(
+                color: color,
+                title: '检测更新',
+                icon: Icons.update,
+                onTap: _checkUpdate),
+            _buildTitle,
+            ThemeWidget(onThemeChange: _onThemeChange)
+          ],
+        ),
       ),
     );
   }
@@ -123,7 +176,7 @@ class _MyPageState extends State<MyPage> {
   @override
   void initState() {
     super.initState();
-    Map<String, dynamic>? userInfo = LoginDao.getUserInfo();
+    final Map<String, dynamic>? userInfo = LoginDao.getUserInfo();
     if (userInfo != null) {
       setState(() {
         userName = userInfo['userName'];
@@ -178,17 +231,19 @@ class _MyPageState extends State<MyPage> {
       return;
     }
     try {
-      var model = await ApkUpdateDao.checkUpdate();
+      final model = await ApkUpdateDao.checkUpdate();
       AILogger.log(jsonEncode(model));
+      if (!mounted) return;
       _showUpdateDialog(model);
     } catch (e) {
       AILogger.log(e.toString());
+      if (!mounted) return;
       HiDialog.showSnackBar(context, '已是最新版本');
     }
   }
 
   void _showUpdateDialog(ApkModel model) async {
-    var result = await HiDialog.showDownloadDialog(context,
+    final result = await HiDialog.showDownloadDialog(context,
         title: '有新版本啦',
         content: model.description ?? "",
         confirmText: "立即更新",
@@ -197,7 +252,7 @@ class _MyPageState extends State<MyPage> {
     if (!(result ?? false) || !mounted) {
       return;
     }
-    var dialog = HiProgressDialog();
+    final dialog = HiProgressDialog();
     dialog.show(context, cancellable: false);
     String? path;
     path = await HiDownLoad().download(
@@ -216,6 +271,6 @@ class _MyPageState extends State<MyPage> {
 }
 
 void installAPK(String path) async {
-  var result = await OpenFilex.open(path);
+  final result = await OpenFilex.open(path);
   AILogger.log('installAPK:${result.type} message:${result.message}');
 }

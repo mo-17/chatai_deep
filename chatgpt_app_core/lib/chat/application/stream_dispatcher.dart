@@ -109,18 +109,16 @@ class StreamDispatcher {
     if (text.isEmpty) return;
     // 块类型切换：正文开始 => 上一个思考块标记完成。
     if (_thinkingId != null) onThinkingComplete();
-    if (_mainTextId == null) {
-      _mainTextId = _morphOrCreate(
-        kind: 'text',
-        build: (id) => MainTextBlock(
-          id: id,
-          messageId: messageKey,
-          createdAt: _now(),
-          status: MessageBlockStatus.streaming,
-          modelId: modelId,
-        ),
-      );
-    }
+    _mainTextId ??= _morphOrCreate(
+      kind: 'text',
+      build: (id) => MainTextBlock(
+        id: id,
+        messageId: messageKey,
+        createdAt: _now(),
+        status: MessageBlockStatus.streaming,
+        modelId: modelId,
+      ),
+    );
     final b = store.block(_mainTextId!) as MainTextBlock;
     store.upsertBlock(b.copyWith(
       content: b.content + text,

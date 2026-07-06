@@ -2,6 +2,7 @@ import 'package:chatgpt_app_core/db/assistant_dao.dart';
 import 'package:chatgpt_app_core/db/hi_db_manager.dart';
 import 'package:chatgpt_app_core/model/assistant_model.dart';
 import 'package:chatgpt_app_core/pages/assistant_list_page.dart';
+import 'package:chatgpt_app_core/widget/assistant_avatar.dart';
 import 'package:flutter/material.dart';
 
 /// 助手选择结果。区分「取消」（showAssistantPicker 返回 null）与
@@ -56,8 +57,7 @@ Future<AssistantPickResult?> showAssistantPicker(BuildContext context,
             children: [
               Padding(
                 padding: const EdgeInsets.symmetric(vertical: 12),
-                child: Text('选择助手',
-                    style: Theme.of(ctx).textTheme.titleMedium),
+                child: Text('选择助手', style: Theme.of(ctx).textTheme.titleMedium),
               ),
               const Divider(height: 1),
               Flexible(
@@ -68,19 +68,17 @@ Future<AssistantPickResult?> showAssistantPicker(BuildContext context,
                       leading: const Icon(Icons.chat_bubble_outline),
                       title: '不使用助手',
                       selected: selectedId == null,
-                      onTap: () => Navigator.pop(
-                          ctx, const AssistantPickResult(null)),
+                      onTap: () =>
+                          Navigator.pop(ctx, const AssistantPickResult(null)),
                     ),
                     for (final a in assistants)
                       item(
-                        leading: CircleAvatar(
-                          child: Text(a.emoji.isNotEmpty ? a.emoji : '🤖'),
-                        ),
+                        leading: AssistantAvatar(assistant: a),
                         title: a.name,
-                        subtitle: a.prompt,
+                        subtitle:
+                            a.description.isEmpty ? a.prompt : a.description,
                         selected: a.id == selectedId,
-                        onTap: () =>
-                            Navigator.pop(ctx, AssistantPickResult(a)),
+                        onTap: () => Navigator.pop(ctx, AssistantPickResult(a)),
                       ),
                   ],
                 ),

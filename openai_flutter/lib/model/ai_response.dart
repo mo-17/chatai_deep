@@ -41,13 +41,23 @@ class AIResponse {
 
 class Usage {
   int? promptTokens;
+  int? cachedPromptTokens;
   int? completionTokens;
   int? totalTokens;
 
-  Usage({promptTokens, completionTokens, totalTokens});
+  Usage({
+    this.promptTokens,
+    this.cachedPromptTokens,
+    this.completionTokens,
+    this.totalTokens,
+  });
 
   Usage.fromJson(Map<String, dynamic> json) {
     promptTokens = json['prompt_tokens'];
+    final promptDetails = json['prompt_tokens_details'];
+    if (promptDetails is Map) {
+      cachedPromptTokens = (promptDetails['cached_tokens'] as num?)?.toInt();
+    }
     completionTokens = json['completion_tokens'];
     totalTokens = json['total_tokens'];
   }
@@ -55,6 +65,9 @@ class Usage {
   Map<String, dynamic> toJson() {
     final Map<String, dynamic> data = <String, dynamic>{};
     data['prompt_tokens'] = promptTokens;
+    data['prompt_tokens_details'] = {
+      'cached_tokens': cachedPromptTokens,
+    };
     data['completion_tokens'] = completionTokens;
     data['total_tokens'] = totalTokens;
     return data;

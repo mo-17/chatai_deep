@@ -1,3 +1,11 @@
+enum McpToolPermission {
+  /// 仅暴露资源/提示词这类只读合成工具；普通 MCP tools 不下发。
+  readOnly,
+
+  /// 普通工具可下发，但不信任来源仍需执行前确认。
+  confirmWrite,
+}
+
 /// 客户端直连的 MCP server 配置（方案 A）。移动端只能直连远程 Streamable HTTP
 /// 型 server（stdio 子进程在 iOS/Android/OHOS 上跑不了，那类走方案 B 后端代理）。
 class McpServerConfig {
@@ -18,6 +26,12 @@ class McpServerConfig {
   /// 与项目「防提示注入静默执行」的安全取向一致）。
   final bool trusted;
 
+  /// 工具权限级别。默认 confirmWrite：普通工具可用，但非信任源要确认。
+  final McpToolPermission permission;
+
+  /// 项目白名单。空 = 全项目可用；非空 = 仅这些 projectId 的会话可用。
+  final List<int> enabledProjectIds;
+
   const McpServerConfig({
     required this.id,
     required this.name,
@@ -25,6 +39,8 @@ class McpServerConfig {
     this.headers = const {},
     this.enabled = true,
     this.trusted = false,
+    this.permission = McpToolPermission.confirmWrite,
+    this.enabledProjectIds = const [],
   });
 
   McpServerConfig copyWith({
@@ -34,6 +50,8 @@ class McpServerConfig {
     Map<String, String>? headers,
     bool? enabled,
     bool? trusted,
+    McpToolPermission? permission,
+    List<int>? enabledProjectIds,
   }) =>
       McpServerConfig(
         id: id ?? this.id,
@@ -42,17 +60,24 @@ class McpServerConfig {
         headers: headers ?? this.headers,
         enabled: enabled ?? this.enabled,
         trusted: trusted ?? this.trusted,
+        permission: permission ?? this.permission,
+        enabledProjectIds: enabledProjectIds ?? this.enabledProjectIds,
       );
 
   factory McpServerConfig.fromJson(Map<String, dynamic> j) => McpServerConfig(
         id: j['id'] as String? ?? '',
         name: j['name'] as String? ?? (j['id'] as String? ?? 'MCP'),
         url: j['url'] as String? ?? '',
-        headers: (j['headers'] as Map?)
-                ?.map((k, v) => MapEntry('$k', '$v')) ??
+        headers: (j['headers'] as Map?)?.map((k, v) => MapEntry('$k', '$v')) ??
             const {},
         enabled: j['enabled'] as bool? ?? true,
         trusted: j['trusted'] as bool? ?? false,
+        permission: _permissionOf(j['permission'] as String?),
+        enabledProjectIds: (j['enabledProjectIds'] as List?)
+                ?.whereType<num>()
+                .map((e) => e.toInt())
+                .toList() ??
+            const [],
       );
 
   Map<String, dynamic> toJson() => {
@@ -62,7 +87,20 @@ class McpServerConfig {
         'headers': headers,
         'enabled': enabled,
         'trusted': trusted,
+        'permission': permission.name,
+        'enabledProjectIds': enabledProjectIds,
       };
+
+  bool isEnabledForProject(int? projectId) =>
+      enabledProjectIds.isEmpty ||
+      (projectId != null && enabledProjectIds.contains(projectId));
+
+  static McpToolPermission _permissionOf(String? raw) {
+    for (final value in McpToolPermission.values) {
+      if (value.name == raw) return value;
+    }
+    return McpToolPermission.confirmWrite;
+  }
 }
 
 /// MCP server 暴露的一个工具声明（tools/list 的元素）。

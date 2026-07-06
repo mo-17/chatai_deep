@@ -52,14 +52,39 @@ class DirectChatService implements ChatService {
         ...history,
         {
           'role': 'user',
-          'content': (attachments ?? const ChatAttachments())
-              .buildUserContent(prompt),
+          'content':
+              (attachments ?? const ChatAttachments()).buildUserContent(prompt),
         },
         ...extraMessages,
       ];
 
   @override
   Future<String?> chat({
+    required String prompt,
+    required List<Map<String, dynamic>> history,
+    ChatAttachments? attachments,
+    Duration? timeout,
+  }) async {
+    _ensureApiKey();
+    final config = AIConfigBuilder(
+      apiKey: _cfg.apiKey,
+      chatUrl: _cfg.baseUrl,
+    );
+    final completion = AICompletion(config);
+    final messages = _buildMessages(prompt, history, attachments);
+    final response = await completion.createChat(
+      model: _cfg.model,
+      messages: messages,
+      maxTokens: _maxTokensOrNull,
+      temperature: _temperature,
+      timeout: timeout ?? const Duration(seconds: 15),
+    );
+    final choices = response.choices?.first;
+    return choices?.message?.content;
+  }
+
+  @override
+  Future<ChatCompletionResult> chatWithUsage({
     required String prompt,
     required List<Map<String, dynamic>> history,
     ChatAttachments? attachments,
@@ -78,7 +103,13 @@ class DirectChatService implements ChatService {
       temperature: _temperature,
     );
     final choices = response.choices?.first;
-    return choices?.message?.content;
+    return ChatCompletionResult(
+      content: choices?.message?.content,
+      promptTokens: response.usage?.promptTokens,
+      cachedPromptTokens: response.usage?.cachedPromptTokens,
+      completionTokens: response.usage?.completionTokens,
+      estimated: false,
+    );
   }
 
   @override
@@ -116,7 +147,8 @@ class DirectChatService implements ChatService {
       chatUrl: _cfg.baseUrl,
     );
     final completion = AICompletion(config);
-    final messages = _buildMessages(prompt, history, attachments, extraMessages);
+    final messages =
+        _buildMessages(prompt, history, attachments, extraMessages);
     // 工具调用分片按 index 累积，流结束后再发完整 toolCall 事件（阶段六）。
     final toolAcc = ToolCallAccumulator();
     await for (final chunk in completion.createChatStreamEvents(
@@ -137,6 +169,12 @@ class DirectChatService implements ChatService {
             id: chunk.toolId,
             name: chunk.toolName,
             argsDelta: chunk.toolArgsDelta,
+          );
+        case AIStreamKind.usage:
+          yield StreamEvent.usage(
+            promptTokens: chunk.promptTokens,
+            cachedPromptTokens: chunk.cachedPromptTokens,
+            completionTokens: chunk.completionTokens,
           );
       }
     }

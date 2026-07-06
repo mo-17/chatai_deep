@@ -5,7 +5,9 @@ import 'package:chatgpt_app_core/chat/application/mcp/mcp_client.dart';
 import 'package:chatgpt_app_core/chat/application/mcp/mcp_client_pool.dart';
 import 'package:chatgpt_app_core/chat/application/mcp/mcp_types.dart';
 import 'package:chatgpt_app_core/chat/application/tool_registry.dart';
+import 'package:chatgpt_app_core/db/tool_audit_dao.dart';
 import 'package:chatgpt_app_core/model/ai_settings.dart';
+import 'package:chatgpt_app_core/model/tool_audit_record.dart';
 import 'package:http/http.dart' as http;
 import 'package:openai_flutter/utils/ai_logger.dart';
 
@@ -14,17 +16,70 @@ typedef McpConfirm = Future<bool> Function(String title, String detail);
 
 /// 供「助手编辑页」绑定用的 MCP 工具元信息（不含执行体）。
 class McpToolBindSpec {
+  /// 工具名（与模型可调用名一致，已做 safeName 处理）。
   final String name;
+
+  /// 工具描述，含来源前缀（如 [source]）会拼进提示。
   final String description;
-  const McpToolBindSpec({required this.name, required this.description});
+
+  /// 来源 server id（用于权限/审计/项目开关映射）。
+  final String sourceServerId;
+
+  /// 来源 server 展示名。
+  final String sourceServerName;
+
+  /// 来源是否可信（可信则默认跳过 confirm）。
+  final bool trusted;
+
+  /// 是否声明为只读工具；未来可用于写权限控制与 UI 标识。
+  final bool readOnly;
+
+  /// 项目级启用白名单，空数组表示「通用可用」。MVP 期为未来地基。
+  final List<String> enabledProjects;
+
+  const McpToolBindSpec({
+    required this.name,
+    required this.description,
+    required this.sourceServerId,
+    required this.sourceServerName,
+    required this.trusted,
+    this.readOnly = true,
+    this.enabledProjects = const [],
+  });
+}
+
+/// MCP 工具调用审计记录（MVP 地基：记录 confirm 判定与参数摘要）。
+class McpToolInvocationRecord {
+  final String toolName;
+  final String sourceServerId;
+  final String sourceServerName;
+  final bool trusted;
+  final bool approved;
+  final DateTime at;
+  final int argCount;
+
+  const McpToolInvocationRecord({
+    required this.toolName,
+    required this.sourceServerId,
+    required this.sourceServerName,
+    required this.trusted,
+    required this.approved,
+    required this.at,
+    required this.argCount,
+  });
+}
+
+class _DiscoveredMcpTool {
+  final ChatTool tool;
+  final McpToolBindSpec spec;
+  const _DiscoveredMcpTool(this.tool, this.spec);
 }
 
 class _Cached<T> {
   final DateTime at;
   final T value;
   const _Cached(this.at, this.value);
-  bool get fresh =>
-      DateTime.now().difference(at) < McpToolSource.cacheTtl;
+  bool get fresh => DateTime.now().difference(at) < McpToolSource.cacheTtl;
 }
 
 /// 一次直连发现的结果：工具清单 + server 声明的 resources/prompts 能力。
@@ -49,6 +104,8 @@ class McpToolSource {
 
   static final Map<String, _Cached<_DirectInfo>> _directCache = {};
   static _Cached<List<BackendMcpTool>>? _backendCache;
+  static const int _auditLimit = 100;
+  static final List<McpToolInvocationRecord> _auditTrail = [];
 
   /// 配置变更后清空缓存（设置页保存时调用）。同时清空直连连接池，
   /// 避免改了 URL / 请求头后仍复用旧连接。
@@ -58,29 +115,127 @@ class McpToolSource {
     McpClientPool.clear();
   }
 
+  /// 清理 MCP 审计轨迹（测试/退出页可调用）。
+  static void clearAuditTrail() {
+    _auditTrail.clear();
+  }
+
+  /// 最近的 MCP 调用记录（最多保留 [_auditLimit] 条）。
+  static List<McpToolInvocationRecord> get auditTrail =>
+      List<McpToolInvocationRecord>.unmodifiable(_auditTrail);
+
   /// 发现并装配当前设置下所有可用的 MCP 工具。任一来源失败都被吞掉
   /// （记日志，返回已成功的部分），绝不阻断会话发送。
   static Future<List<ChatTool>> discover(
     AISettings s, {
     McpConfirm? confirm,
+    ToolAuditDao? auditDao,
+    http.Client? client,
+    int? currentProjectId,
+  }) async {
+    return [
+      for (final item in await _discoverWithSpec(s,
+          confirm: confirm,
+          auditDao: auditDao,
+          client: client,
+          currentProjectId: currentProjectId))
+        item.tool
+    ];
+  }
+
+  /// 列出当前设置下可绑定的 MCP 工具元信息（供助手编辑页勾选）。
+  /// 与 [discover] 共用同一发现链路，保证工具名/来源一致。
+  static Future<List<McpToolBindSpec>> listSpecs(
+    AISettings s, {
     http.Client? client,
   }) async {
+    final tools = await _discoverWithSpec(s,
+        confirm: null, client: client, ignoreProjectFilter: true);
+    return [for (final item in tools) item.spec];
+  }
+
+  static Future<List<_DiscoveredMcpTool>> _discoverWithSpec(
+    AISettings s, {
+    McpConfirm? confirm,
+    ToolAuditDao? auditDao,
+    http.Client? client,
+    int? currentProjectId,
+    bool ignoreProjectFilter = false,
+  }) async {
     if (!s.mcpConfigured) return const [];
-    final tools = <ChatTool>[];
+    final items = <_DiscoveredMcpTool>[];
 
     // 方案 A：客户端直连各远程 server。
     for (final server in s.enabledMcpServers) {
+      if (!ignoreProjectFilter &&
+          !server.isEnabledForProject(currentProjectId)) {
+        continue;
+      }
       try {
         final info = await _listDirect(server, client: client);
-        for (final spec in info.specs) {
-          tools.add(_directTool(server, spec, confirm, client));
+        if (server.permission != McpToolPermission.readOnly) {
+          for (final spec in info.specs) {
+            final bind = McpToolBindSpec(
+              name: _safeName('mcp__${server.id}__${spec.name}'),
+              description: _withSource(spec.description, server.name),
+              sourceServerId: server.id,
+              sourceServerName: server.name,
+              trusted: server.trusted,
+              readOnly: false,
+              enabledProjects: [
+                for (final id in server.enabledProjectIds) '$id'
+              ],
+            );
+            items.add(_DiscoveredMcpTool(
+              _directTool(server, spec, confirm, auditDao, client, bind),
+              bind,
+            ));
+          }
         }
         // Resources / Prompts（item 7）：按 server 声明的能力暴露只读合成工具。
         if (info.supportsResources) {
-          tools.addAll(_resourceTools(server, client));
+          for (final tool
+              in _resourceTools(server, client, sourceName: server.name)) {
+            final name = tool.name;
+            final bind = McpToolBindSpec(
+              name: name,
+              description: tool.description,
+              sourceServerId: server.id,
+              sourceServerName: server.name,
+              trusted: server.trusted,
+              readOnly: true,
+              enabledProjects: [
+                for (final id in server.enabledProjectIds) '$id'
+              ],
+            );
+            items.add(_DiscoveredMcpTool(
+              _auditWrappedTool(tool, bind,
+                  confirm: confirm, auditDao: auditDao),
+              bind,
+            ));
+          }
         }
         if (info.supportsPrompts) {
-          tools.addAll(_promptTools(server, client));
+          for (final tool
+              in _promptTools(server, client, sourceName: server.name)) {
+            final name = tool.name;
+            final bind = McpToolBindSpec(
+              name: name,
+              description: tool.description,
+              sourceServerId: server.id,
+              sourceServerName: server.name,
+              trusted: server.trusted,
+              readOnly: true,
+              enabledProjects: [
+                for (final id in server.enabledProjectIds) '$id'
+              ],
+            );
+            items.add(_DiscoveredMcpTool(
+              _auditWrappedTool(tool, bind,
+                  confirm: confirm, auditDao: auditDao),
+              bind,
+            ));
+          }
         }
       } catch (e) {
         AILogger.log('MCP 直连 "${server.id}" 发现工具失败：$e');
@@ -92,26 +247,25 @@ class McpToolSource {
       try {
         final backendTools = await _listBackend(client: client);
         for (final t in backendTools) {
-          tools.add(_backendTool(t, s.mcpBackendTrusted, confirm, client));
+          final bind = McpToolBindSpec(
+            name: t.name,
+            description: _withSource(t.description, '后端 MCP'),
+            sourceServerId: 'backend',
+            sourceServerName: '后端 MCP',
+            trusted: s.mcpBackendTrusted,
+            readOnly: false,
+          );
+          items.add(_DiscoveredMcpTool(
+            _backendTool(
+                t, s.mcpBackendTrusted, confirm, auditDao, client, bind),
+            bind,
+          ));
         }
       } catch (e) {
         AILogger.log('MCP 后端发现工具失败：$e');
       }
     }
-    return tools;
-  }
-
-  /// 列出当前设置下可绑定的 MCP 工具元信息（供助手编辑页勾选）。
-  /// 复用 [discover] 的发现逻辑，只取名称/描述，不构造执行体。
-  static Future<List<McpToolBindSpec>> listSpecs(
-    AISettings s, {
-    http.Client? client,
-  }) async {
-    final tools = await discover(s, confirm: null, client: client);
-    return [
-      for (final t in tools)
-        McpToolBindSpec(name: t.name, description: t.description),
-    ];
+    return items;
   }
 
   // ── 直连（方案 A）────────────────────────────────────────
@@ -139,38 +293,44 @@ class McpToolSource {
     McpServerConfig server,
     RawMcpTool spec,
     McpConfirm? confirm,
+    ToolAuditDao? auditDao,
     http.Client? client,
+    McpToolBindSpec bindSpec,
   ) {
     final exposedName = _safeName('mcp__${server.id}__${spec.name}');
-    return ChatTool(
-      name: exposedName,
-      description: _withSource(spec.description, server.name),
-      parameters: spec.inputSchema,
-      execute: (args) async {
-        if (!server.trusted &&
-            !await _confirm(confirm, server.name, spec.name, args)) {
-          return _denied;
-        }
-        // 复用池中已初始化的连接；出错则驱逐，让下一次调用重连。
-        final c = McpClientPool.acquire(server, client: client);
-        try {
-          final text = await c.callTool(spec.name, args);
-          return ToolOutcome(content: text);
-        } catch (e) {
-          McpClientPool.evict(server);
-          return ToolOutcome(content: 'MCP 工具「${spec.name}」执行失败：$e');
-        }
-      },
+    return _auditWrappedTool(
+      ChatTool(
+        name: exposedName,
+        description: _withSource(spec.description, server.name),
+        parameters: spec.inputSchema,
+        execute: (args) async {
+          // 复用池中已初始化的连接；出错则驱逐，让下一次调用重连。
+          final c = McpClientPool.acquire(server, client: client);
+          try {
+            final text = await c.callTool(spec.name, args);
+            return ToolOutcome(content: text);
+          } catch (e) {
+            McpClientPool.evict(server);
+            return ToolOutcome(content: 'MCP 工具「${spec.name}」执行失败：$e');
+          }
+        },
+      ),
+      bindSpec,
+      confirm: confirm,
+      auditDao: auditDao,
+      sourceLabel: server.name,
     );
   }
 
   // ── Resources / Prompts 合成工具（item 7，只读、免确认）──────
   static List<ChatTool> _resourceTools(
-      McpServerConfig server, http.Client? client) {
+      McpServerConfig server, http.Client? client,
+      {String sourceName = ''}) {
     return [
       ChatTool(
         name: _safeName('mcp__${server.id}__resources_list'),
-        description: '[MCP·${server.name}] 列出该来源可读的资源（uri/名称/类型）。',
+        description:
+            '[MCP·${sourceName.isEmpty ? server.name : sourceName}] 列出该来源可读的资源（uri/名称/类型）。',
         parameters: const {'type': 'object', 'properties': <String, dynamic>{}},
         execute: (args) async {
           final c = McpClientPool.acquire(server, client: client);
@@ -184,7 +344,8 @@ class McpToolSource {
       ),
       ChatTool(
         name: _safeName('mcp__${server.id}__resources_read'),
-        description: '[MCP·${server.name}] 读取指定 uri 的资源正文（uri 来自 resources_list）。',
+        description:
+            '[MCP·${sourceName.isEmpty ? server.name : sourceName}] 读取指定 uri 的资源正文（uri 来自 resources_list）。',
         parameters: const {
           'type': 'object',
           'properties': {
@@ -208,11 +369,13 @@ class McpToolSource {
   }
 
   static List<ChatTool> _promptTools(
-      McpServerConfig server, http.Client? client) {
+      McpServerConfig server, http.Client? client,
+      {String sourceName = ''}) {
     return [
       ChatTool(
         name: _safeName('mcp__${server.id}__prompts_list'),
-        description: '[MCP·${server.name}] 列出该来源的提示词模板（名称/说明/参数）。',
+        description:
+            '[MCP·${sourceName.isEmpty ? server.name : sourceName}] 列出该来源的提示词模板（名称/说明/参数）。',
         parameters: const {'type': 'object', 'properties': <String, dynamic>{}},
         execute: (args) async {
           final c = McpClientPool.acquire(server, client: client);
@@ -226,7 +389,8 @@ class McpToolSource {
       ),
       ChatTool(
         name: _safeName('mcp__${server.id}__prompts_get'),
-        description: '[MCP·${server.name}] 取指定提示词模板渲染后的文本（name 来自 prompts_list）。',
+        description:
+            '[MCP·${server.name}] 取指定提示词模板渲染后的文本（name 来自 prompts_list）。',
         parameters: const {
           'type': 'object',
           'properties': {
@@ -253,7 +417,8 @@ class McpToolSource {
   }
 
   // ── 后端 Host（方案 B）──────────────────────────────────
-  static Future<List<BackendMcpTool>> _listBackend({http.Client? client}) async {
+  static Future<List<BackendMcpTool>> _listBackend(
+      {http.Client? client}) async {
     final cached = _backendCache;
     if (cached != null && cached.fresh) return cached.value;
     final c = BackendMcpClient(client: client);
@@ -270,27 +435,32 @@ class McpToolSource {
     BackendMcpTool tool,
     bool trusted,
     McpConfirm? confirm,
+    ToolAuditDao? auditDao,
     http.Client? client,
+    McpToolBindSpec bindSpec,
   ) {
-    return ChatTool(
-      name: tool.name, // 后端已加前缀，原样透传以便后端路由
-      description: _withSource(tool.description, '后端 MCP'),
-      parameters: tool.parameters,
-      execute: (args) async {
-        if (!trusted &&
-            !await _confirm(confirm, '后端 MCP', tool.name, args)) {
-          return _denied;
-        }
-        final c = BackendMcpClient(client: client);
-        try {
-          final text = await c.callTool(tool.name, args);
-          return ToolOutcome(content: text);
-        } catch (e) {
-          return ToolOutcome(content: 'MCP 工具「${tool.name}」执行失败：$e');
-        } finally {
-          c.close();
-        }
-      },
+    return _auditWrappedTool(
+      ChatTool(
+        name: tool.name, // 后端已加前缀，原样透传以便后端路由
+        description: _withSource(tool.description, '后端 MCP'),
+        parameters: tool.parameters,
+        execute: (args) async {
+          final c = BackendMcpClient(client: client);
+          try {
+            final text = await c.callTool(tool.name, args);
+            return ToolOutcome(content: text);
+          } catch (e) {
+            return ToolOutcome(content: 'MCP 工具「${tool.name}」执行失败：$e');
+          } finally {
+            c.close();
+          }
+        },
+      ),
+      bindSpec,
+      confirm: confirm,
+      auditDao: auditDao,
+      trusted: trusted,
+      sourceLabel: '后端 MCP',
     );
   }
 
@@ -321,4 +491,103 @@ class McpToolSource {
 
   static String _cap(String s, int max) =>
       s.length <= max ? s : '${s.substring(0, max)}…';
+
+  static ChatTool _auditWrappedTool(
+    ChatTool tool,
+    McpToolBindSpec bindSpec, {
+    McpConfirm? confirm,
+    ToolAuditDao? auditDao,
+    bool trusted = false,
+    String? sourceLabel,
+  }) {
+    final source = sourceLabel ?? bindSpec.sourceServerName;
+    return ChatTool(
+      name: tool.name,
+      description: tool.description,
+      parameters: tool.parameters,
+      execute: (args) async {
+        final needConfirm = !bindSpec.trusted && !trusted && !bindSpec.readOnly;
+        final approved = needConfirm
+            ? await _confirm(confirm, source, tool.name, args)
+            : true;
+        if (!approved) {
+          await _recordInvocation(
+            bindSpec,
+            args,
+            approved: false,
+            success: false,
+            outcome: _denied.content,
+            auditDao: auditDao,
+          );
+          return _denied;
+        }
+        try {
+          final outcome = await tool.execute(args);
+          final success = !outcome.content.contains('失败');
+          await _recordInvocation(
+            bindSpec,
+            args,
+            approved: true,
+            success: success,
+            outcome: outcome.content,
+            auditDao: auditDao,
+          );
+          return outcome;
+        } catch (e) {
+          await _recordInvocation(
+            bindSpec,
+            args,
+            approved: true,
+            success: false,
+            error: '$e',
+            auditDao: auditDao,
+          );
+          rethrow;
+        }
+      },
+    );
+  }
+
+  static Future<void> _recordInvocation(
+    McpToolBindSpec spec,
+    Map<String, dynamic> args, {
+    required bool approved,
+    required bool success,
+    String outcome = '',
+    String? error,
+    ToolAuditDao? auditDao,
+  }) async {
+    final now = DateTime.now();
+    _auditTrail.insert(
+      0,
+      McpToolInvocationRecord(
+        toolName: spec.name,
+        sourceServerId: spec.sourceServerId,
+        sourceServerName: spec.sourceServerName,
+        trusted: spec.trusted,
+        approved: approved,
+        at: now,
+        argCount: args.length,
+      ),
+    );
+    if (_auditTrail.length > _auditLimit) {
+      _auditTrail.removeRange(_auditLimit, _auditTrail.length);
+    }
+    if (auditDao == null) return;
+    await auditDao.record(ToolAuditRecord(
+      toolName: spec.name,
+      sourceType: 'mcp',
+      sourceId: spec.sourceServerId,
+      sourceName: spec.sourceServerName,
+      trusted: spec.trusted,
+      readOnly: spec.readOnly,
+      approved: approved,
+      success: success,
+      argCount: args.length,
+      argsPreview: args.isEmpty ? '' : _cap(jsonEncode(args), 500),
+      resultPreview: _cap(outcome, 500),
+      error: error,
+      createdAt: now.millisecondsSinceEpoch,
+    ));
+  }
 }

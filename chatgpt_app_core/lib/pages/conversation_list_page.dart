@@ -1,6 +1,9 @@
+import 'dart:async';
 import 'dart:io';
 
+import 'package:chat_message/models/message_model.dart';
 import 'package:chatgpt_app_core/backup/backup_service.dart';
+import 'package:chatgpt_app_core/chat/application/assistant_conversation_factory.dart';
 import 'package:chatgpt_app_core/chat/application/tool_registry.dart';
 import 'package:chatgpt_app_core/dao/ai_catalog_dao.dart';
 import 'package:chatgpt_app_core/db/conversation_dao.dart';
@@ -9,6 +12,7 @@ import 'package:chatgpt_app_core/db/knowledge_dao.dart';
 import 'package:chatgpt_app_core/db/message_dao.dart';
 import 'package:chatgpt_app_core/db/project_dao.dart';
 import 'package:chatgpt_app_core/model/ai_settings.dart';
+import 'package:chatgpt_app_core/model/assistant_model.dart';
 import 'package:chatgpt_app_core/model/conversation_model.dart';
 import 'package:chatgpt_app_core/model/project_model.dart';
 import 'package:chatgpt_app_core/pages/conversation_page.dart';
@@ -27,8 +31,23 @@ import 'package:provider/provider.dart';
 import '../db/hi_db_manager.dart';
 import '../widget/conversation_widget.dart';
 
+typedef ConversationSearchPageBuilder = Widget Function(
+  BuildContext context,
+  ConversationListDao? dao,
+  int? projectId,
+  bool uncategorized,
+  String scopeLabel,
+);
+
 class ConversationListPage extends StatefulWidget {
-  const ConversationListPage({Key? key}) : super(key: key);
+  final ConversationSearchPageBuilder? searchPageBuilder;
+  final bool skipInitialLoad;
+
+  const ConversationListPage({
+    super.key,
+    this.searchPageBuilder,
+    this.skipInitialLoad = false,
+  });
 
   @override
   State<ConversationListPage> createState() => _ConversationListPageState();
@@ -55,17 +74,30 @@ class _ConversationListPageState extends State<ConversationListPage>
 
   get _dataCount => conversationList.length + stickConversationList.length;
 
-  get _listView => _dataCount == 0
-      ? Center(
-          child: Text(
-            _emptyText,
-            style: TextStyle(color: Colors.grey[600]),
-          ),
-        )
-      : ListView.builder(
-          itemCount: _dataCount,
-          itemBuilder: (BuildContext context, int index) =>
-              _conversationWidget(index));
+  Widget get _listView => RefreshIndicator(
+        onRefresh: _refreshData,
+        child: _dataCount == 0
+            ? ListView(
+                physics: const AlwaysScrollableScrollPhysics(),
+                children: [
+                  SizedBox(
+                    height: MediaQuery.sizeOf(context).height * 0.45,
+                    child: Center(
+                      child: Text(
+                        _emptyText,
+                        style: TextStyle(color: Colors.grey[600]),
+                      ),
+                    ),
+                  ),
+                ],
+              )
+            : ListView.builder(
+                physics: const AlwaysScrollableScrollPhysics(),
+                itemCount: _dataCount,
+                itemBuilder: (BuildContext context, int index) =>
+                    _conversationWidget(index),
+              ),
+      );
 
   String get _emptyText {
     if (_selectedProjectId != null || _uncategorizedOnly) {
@@ -77,6 +109,7 @@ class _ConversationListPageState extends State<ConversationListPage>
   @override
   void initState() {
     super.initState();
+    if (widget.skipInitialLoad) return;
     _doInit();
     // 备份导入后重新加载（页面 keepAlive 常驻，不会再走 initState）。
     BackupService.restoreTick.addListener(_onRestore);
@@ -92,9 +125,7 @@ class _ConversationListPageState extends State<ConversationListPage>
   }
 
   void _onRestore() {
-    _loadProjects();
-    _loadStickData();
-    _loadData();
+    unawaited(_reloadData());
   }
 
   @override
@@ -115,6 +146,7 @@ class _ConversationListPageState extends State<ConversationListPage>
         centerTitle: true,
         actions: [
           IconButton(
+            key: const ValueKey('conversation_list_global_search'),
             onPressed: _openSearch,
             tooltip: '搜索会话',
             icon: const Icon(Icons.search),
@@ -199,17 +231,52 @@ class _ConversationListPageState extends State<ConversationListPage>
     final pick = await showAssistantPicker(context,
         selectedId: project?.defaultAssistantId);
     if (pick == null || !mounted) return; // 用户取消
-    int cid = DateTime.now().millisecondsSinceEpoch;
+    final cid = DateTime.now().millisecondsSinceEpoch;
     final avatar = AiCatalogDao.avatarUrl();
-    _jumpToConversation(ConversationModel(
-        cid: cid,
-        icon: avatar,
-        assistantId: pick.assistant?.id,
-        projectId: _uncategorizedOnly ? null : _selectedProjectId,
-        modelProviderId: project?.defaultProviderId,
-        modelId: project?.defaultModelId,
-        webSearchEnabled: project?.defaultUseWebSearch,
-        toolIds: project?.defaultToolIds));
+    final assistant = pick.assistant;
+    final opening = await _chooseAssistantOpening(assistant);
+    if (opening == null || !mounted) return;
+    _jumpToConversation(
+        AssistantConversationFactory.create(
+            cid: cid,
+            icon: avatar,
+            assistant: assistant,
+            projectId: _uncategorizedOnly ? null : _selectedProjectId,
+            modelProviderId: project?.defaultProviderId,
+            modelId: project?.defaultModelId,
+            webSearchEnabled: project?.defaultUseWebSearch,
+            toolIds: project?.defaultToolIds),
+        initialAssistantOpening: opening);
+  }
+
+  Future<String?> _chooseAssistantOpening(AssistantModel? assistant) async {
+    final candidates =
+        AssistantConversationFactory.openingMessageCandidates(assistant);
+    if (candidates.length <= 1) {
+      return candidates.isEmpty ? '' : candidates.first;
+    }
+    return showDialog<String>(
+      context: context,
+      builder: (ctx) => SimpleDialog(
+        title: const Text('选择开场白'),
+        children: [
+          for (var i = 0; i < candidates.length; i++)
+            SimpleDialogOption(
+              onPressed: () => Navigator.pop(ctx, candidates[i]),
+              child: Text(
+                candidates[i],
+                maxLines: 3,
+                overflow: TextOverflow.ellipsis,
+              ),
+            ),
+          const Divider(height: 1),
+          SimpleDialogOption(
+            onPressed: () => Navigator.pop(ctx, ''),
+            child: const Text('不使用开场白'),
+          ),
+        ],
+      ),
+    );
   }
 
   ProjectModel? get _currentProject {
@@ -236,7 +303,7 @@ class _ConversationListPageState extends State<ConversationListPage>
   }
 
   void _doInit() async {
-    var storage =
+    final storage =
         await HiDBManager.instance(dbName: HiDBManager.getAccountHash());
     conversationListDao = await ConversationListDao.create(storage);
     projectDao = await ProjectDao.create(storage);
@@ -248,7 +315,7 @@ class _ConversationListPageState extends State<ConversationListPage>
   int pageIndex = 1;
 
   Future<List<ConversationModel>> _loadStickData() async {
-    var list = await conversationListDao.getStickConversationList(
+    final list = await conversationListDao.getStickConversationList(
         projectId: _selectedProjectId, uncategorized: _uncategorizedOnly);
     setState(() {
       stickConversationList = list;
@@ -262,7 +329,7 @@ class _ConversationListPageState extends State<ConversationListPage>
     } else {
       pageIndex = 1;
     }
-    var list = await conversationListDao.getConversationList(
+    final list = await conversationListDao.getConversationList(
         pageIndex: pageIndex,
         projectId: _selectedProjectId,
         uncategorized: _uncategorizedOnly);
@@ -280,27 +347,56 @@ class _ConversationListPageState extends State<ConversationListPage>
   }
 
   Future<List<ProjectModel>> _loadProjects() async {
-    var list = await projectDao.getProjects(withCounts: true);
+    final list = await projectDao.getProjects(withCounts: true);
     setState(() {
       projectList = list;
     });
     return list;
   }
 
+  Future<void> _refreshData() async {
+    final startedAt = DateTime.now();
+    await _reloadData();
+    const minIndicatorDuration = Duration(milliseconds: 700);
+    final elapsed = DateTime.now().difference(startedAt);
+    if (elapsed < minIndicatorDuration) {
+      await Future.delayed(minIndicatorDuration - elapsed);
+    }
+  }
+
+  Future<void> _reloadData() async {
+    await Future.wait([
+      _loadProjects(),
+      _loadStickData(),
+      _loadData(),
+    ]);
+  }
+
   Future<void> _openSearch() async {
-    final result = await Navigator.push<ConversationModel>(
+    final result = await Navigator.push<ConversationSearchSelection>(
       context,
       MaterialPageRoute(
-        builder: (_) => ConversationSearchPage(
-          dao: conversationListDao,
-          projectId: _selectedProjectId,
-          uncategorized: _uncategorizedOnly,
-          scopeLabel: _searchScopeLabel,
-        ),
+        builder: (ctx) =>
+            widget.searchPageBuilder?.call(
+              ctx,
+              widget.skipInitialLoad ? null : conversationListDao,
+              _selectedProjectId,
+              _uncategorizedOnly,
+              _searchScopeLabel,
+            ) ??
+            ConversationSearchPage(
+              dao: conversationListDao,
+              projectId: _selectedProjectId,
+              uncategorized: _uncategorizedOnly,
+              scopeLabel: _searchScopeLabel,
+            ),
       ),
     );
     if (!mounted || result == null) return;
-    _jumpToConversation(result);
+    _jumpToConversation(
+      result.conversation,
+      initialTargetCreatedAt: result.targetMessageCreatedAt,
+    );
   }
 
   String get _searchScopeLabel {
@@ -308,6 +404,11 @@ class _ConversationListPageState extends State<ConversationListPage>
     final project = _currentProject;
     if (project != null) return project.name;
     return '全部会话';
+  }
+
+  static bool _isUsableConversationText(String? value) {
+    final text = value?.trim() ?? '';
+    return text.isNotEmpty && text.toLowerCase() != 'null';
   }
 
   void _selectProject(int? projectId, {bool uncategorized = false}) {
@@ -319,11 +420,14 @@ class _ConversationListPageState extends State<ConversationListPage>
     _loadData();
   }
 
-  void _jumpToConversation(ConversationModel model) {
+  void _jumpToConversation(ConversationModel model,
+      {int? initialTargetCreatedAt, String initialAssistantOpening = ''}) {
     NavigatorUtil.push(
         context,
         ConversationPage(
             conversationModel: model,
+            initialAssistantOpening: initialAssistantOpening,
+            initialTargetCreatedAt: initialTargetCreatedAt,
             conversationUpdate: (updated) => _doUpdate(updated))).then((_) {
       // 从对话详情页返回后立即更新，DB 操作已通过 async factory 保证表就绪
       _doUpdate(model);
@@ -332,12 +436,14 @@ class _ConversationListPageState extends State<ConversationListPage>
 
   _doUpdate(ConversationModel model) async {
     //fix 新建会话，没有聊天消息也会保存的问题
-    if (model.title == null) {
-      return;
-    }
-    var messageDao =
+    final messageDao =
         await MessageDao.create(conversationListDao.storage, cid: model.cid);
-    var count = await messageDao.getMessageCount();
+    final count = await messageDao.getMessageCount();
+    if (!_isUsableConversationText(model.title) ||
+        !_isUsableConversationText(model.lastMessage)) {
+      await _repairConversationSummary(model, messageDao);
+    }
+    if (!_isUsableConversationText(model.title)) return;
     //fix 置顶消息从对话框返回重复添加的问题
     if (model.stickTime > 0) {
       if (!stickConversationList.contains(model)) {
@@ -356,6 +462,25 @@ class _ConversationListPageState extends State<ConversationListPage>
     _loadProjects();
   }
 
+  Future<void> _repairConversationSummary(
+    ConversationModel model,
+    MessageDao messageDao,
+  ) async {
+    final messages = await messageDao.getAllMessage();
+    final usable = messages
+        .where((message) => _isUsableConversationText(message.content))
+        .toList();
+    if (usable.isEmpty) return;
+    final latest = usable.last;
+    model.lastMessage = latest.content.trim();
+    model.updateAt = latest.createdAt;
+    final firstUser = usable.where((m) => m.ownerType == OwnerType.sender);
+    final titleSource = firstUser.isEmpty ? usable.first : firstUser.first;
+    if (!_isUsableConversationText(model.title)) {
+      model.title = titleSource.content.trim();
+    }
+  }
+
   @override
   bool get wantKeepAlive => true;
 
@@ -370,7 +495,7 @@ class _ConversationListPageState extends State<ConversationListPage>
   }
 
   _onStick(ConversationModel model, {required bool isStick}) async {
-    var result =
+    final result =
         await conversationListDao.updateStickTime(model, isStick: isStick);
     //操作失败
     if (result <= 0) {
@@ -998,6 +1123,16 @@ class ConversationSearchPage extends StatefulWidget {
   State<ConversationSearchPage> createState() => _ConversationSearchPageState();
 }
 
+class ConversationSearchSelection {
+  final ConversationModel conversation;
+  final int? targetMessageCreatedAt;
+
+  const ConversationSearchSelection({
+    required this.conversation,
+    this.targetMessageCreatedAt,
+  });
+}
+
 class _ConversationSearchPageState extends State<ConversationSearchPage> {
   final _controller = TextEditingController();
   List<ConversationSearchResult> _results = const [];
@@ -1009,6 +1144,8 @@ class _ConversationSearchPageState extends State<ConversationSearchPage> {
   int? _updatedAfter;
   int? _updatedBefore;
   int _searchSeq = 0;
+  bool _searchAllConversations = false;
+  final Set<String> _expandedConversationHits = {};
 
   @override
   void dispose() {
@@ -1025,6 +1162,7 @@ class _ConversationSearchPageState extends State<ConversationSearchPage> {
         _favoriteResults = const [];
         _loading = false;
         _errorText = null;
+        _expandedConversationHits.clear();
       });
       return;
     }
@@ -1036,8 +1174,8 @@ class _ConversationSearchPageState extends State<ConversationSearchPage> {
       final conversations = widget.searchConversations == null
           ? await widget.dao!.searchConversations(
               query,
-              projectId: widget.projectId,
-              uncategorized: widget.uncategorized,
+              projectId: _effectiveProjectId,
+              uncategorized: _effectiveUncategorized,
               assistantId: _assistantId,
               modelId: _modelId,
               updatedAfter: _updatedAfter,
@@ -1045,8 +1183,8 @@ class _ConversationSearchPageState extends State<ConversationSearchPage> {
             )
           : await widget.searchConversations!(
               query,
-              projectId: widget.projectId,
-              uncategorized: widget.uncategorized,
+              projectId: _effectiveProjectId,
+              uncategorized: _effectiveUncategorized,
               assistantId: _assistantId,
               modelId: _modelId,
               updatedAfter: _updatedAfter,
@@ -1056,7 +1194,11 @@ class _ConversationSearchPageState extends State<ConversationSearchPage> {
               (String q) async {
                 final favoriteDao =
                     await FavoriteDao.create(widget.dao!.storage);
-                return favoriteDao.searchFavoriteResults(q);
+                return favoriteDao.searchFavoriteResults(
+                  q,
+                  projectId: _effectiveProjectId,
+                  uncategorized: _effectiveUncategorized,
+                );
               })
           .call(query);
       if (!mounted || seq != _searchSeq) return;
@@ -1064,6 +1206,7 @@ class _ConversationSearchPageState extends State<ConversationSearchPage> {
         _results = conversations;
         _favoriteResults = favorites;
         _loading = false;
+        _expandedConversationHits.clear();
       });
     } catch (e) {
       if (!mounted || seq != _searchSeq) return;
@@ -1072,15 +1215,68 @@ class _ConversationSearchPageState extends State<ConversationSearchPage> {
         _favoriteResults = const [];
         _loading = false;
         _errorText = '搜索失败：$e';
+        _expandedConversationHits.clear();
       });
     }
   }
+
+  String _hitKey(ConversationSearchResult item) =>
+      '${item.conversation.cid}:${item.targetMessageCreatedAt ?? item.sourceLabel}:${item.snippet}';
 
   bool get _hasFilters =>
       _assistantId != null ||
       _modelId?.trim().isNotEmpty == true ||
       _updatedAfter != null ||
       _updatedBefore != null;
+
+  bool get _hasScopedSearch => widget.projectId != null || widget.uncategorized;
+
+  int? get _effectiveProjectId =>
+      _searchAllConversations ? null : widget.projectId;
+
+  bool get _effectiveUncategorized =>
+      _searchAllConversations ? false : widget.uncategorized;
+
+  String get _effectiveScopeLabel =>
+      _searchAllConversations ? '全部会话' : widget.scopeLabel;
+
+  List<({String title, List<ConversationSearchResult> items})>
+      get _conversationResultGroups {
+    final titleHits = <ConversationSearchResult>[];
+    final recentHits = <ConversationSearchResult>[];
+    final historyHits = <ConversationSearchResult>[];
+    final otherHits = <ConversationSearchResult>[];
+    for (final item in _results) {
+      switch (item.sourceLabel) {
+        case '标题':
+          titleHits.add(item);
+        case '最近消息':
+          recentHits.add(item);
+        case '历史消息':
+          historyHits.add(item);
+        default:
+          otherHits.add(item);
+      }
+    }
+    return [
+      if (titleHits.isNotEmpty) (title: '标题命中', items: titleHits),
+      if (recentHits.isNotEmpty) (title: '最近消息命中', items: recentHits),
+      if (historyHits.isNotEmpty) (title: '历史消息命中', items: historyHits),
+      if (otherHits.isNotEmpty) (title: '其它匹配', items: otherHits),
+    ];
+  }
+
+  Future<void> _rerunSearchIfNeeded() async {
+    if (_controller.text.trim().isNotEmpty) {
+      await _search(_controller.text);
+    }
+  }
+
+  void _setSearchAllConversations(bool value) {
+    if (_searchAllConversations == value) return;
+    setState(() => _searchAllConversations = value);
+    _rerunSearchIfNeeded();
+  }
 
   Future<void> _editFilters() async {
     final modelController = TextEditingController(text: _modelId ?? '');
@@ -1254,7 +1450,7 @@ class _ConversationSearchPageState extends State<ConversationSearchPage> {
           autofocus: true,
           textInputAction: TextInputAction.search,
           decoration: InputDecoration(
-            hintText: '搜索${widget.scopeLabel}',
+            hintText: '搜索$_effectiveScopeLabel',
             border: InputBorder.none,
           ),
           onSubmitted: _search,
@@ -1274,6 +1470,36 @@ class _ConversationSearchPageState extends State<ConversationSearchPage> {
             icon: const Icon(Icons.search),
           ),
         ],
+        bottom: _hasScopedSearch
+            ? PreferredSize(
+                preferredSize: const Size.fromHeight(48),
+                child: Align(
+                  alignment: Alignment.centerLeft,
+                  child: SingleChildScrollView(
+                    scrollDirection: Axis.horizontal,
+                    padding: const EdgeInsets.fromLTRB(16, 0, 16, 8),
+                    child: Wrap(
+                      spacing: 8,
+                      children: [
+                        FilterChip(
+                          key:
+                              const ValueKey('conversation_search_scope_local'),
+                          label: Text(widget.scopeLabel),
+                          selected: !_searchAllConversations,
+                          onSelected: (_) => _setSearchAllConversations(false),
+                        ),
+                        FilterChip(
+                          key: const ValueKey('conversation_search_scope_all'),
+                          label: const Text('全部会话'),
+                          selected: _searchAllConversations,
+                          onSelected: (_) => _setSearchAllConversations(true),
+                        ),
+                      ],
+                    ),
+                  ),
+                ),
+              )
+            : null,
       ),
       body: _loading
           ? const Center(
@@ -1311,22 +1537,83 @@ class _ConversationSearchPageState extends State<ConversationSearchPage> {
                             key: const ValueKey(
                                 'conversation_search_conversations'),
                             padding: const EdgeInsets.fromLTRB(16, 14, 16, 6),
-                            child: Text('会话',
-                                style: Theme.of(context).textTheme.labelLarge),
-                          ),
-                        for (final item in _results) ...[
-                          ListTile(
-                            title: Text(item.conversation.title ?? '(未命名会话)'),
-                            subtitle: _HighlightedText(
-                              text: item.snippet,
-                              query: _controller.text,
-                              maxLines: 2,
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                Text('会话',
+                                    style:
+                                        Theme.of(context).textTheme.labelLarge),
+                                const SizedBox(height: 2),
+                                Text(
+                                  '按标题、最近消息、历史消息相关性分组；同组内保留置顶和更新时间排序',
+                                  key: const ValueKey(
+                                      'conversation_search_sort_summary'),
+                                  style: Theme.of(context)
+                                      .textTheme
+                                      .bodySmall
+                                      ?.copyWith(color: Colors.grey[600]),
+                                ),
+                              ],
                             ),
-                            trailing: const Icon(Icons.chevron_right),
-                            onTap: () =>
-                                Navigator.pop(context, item.conversation),
                           ),
-                          const Divider(height: 1),
+                        for (final group in _conversationResultGroups) ...[
+                          Padding(
+                            key: ValueKey(
+                                'conversation_search_group_${group.title}'),
+                            padding: const EdgeInsets.fromLTRB(16, 6, 16, 4),
+                            child: Text(
+                              '${group.title}（${group.items.length}）',
+                              style: Theme.of(context)
+                                  .textTheme
+                                  .labelMedium
+                                  ?.copyWith(color: Colors.grey[700]),
+                            ),
+                          ),
+                          for (final item in group.items) ...[
+                            ListTile(
+                              title: Text(item.conversation.title ?? '(未命名会话)'),
+                              subtitle: _ConversationHitSubtitle(
+                                item: item,
+                                query: _controller.text,
+                                expanded: _expandedConversationHits
+                                    .contains(_hitKey(item)),
+                                onToggle: item.messageSnippets.length <= 1
+                                    ? null
+                                    : () {
+                                        final key = _hitKey(item);
+                                        setState(() {
+                                          if (!_expandedConversationHits
+                                              .add(key)) {
+                                            _expandedConversationHits
+                                                .remove(key);
+                                          }
+                                        });
+                                      },
+                                onSelectHit: (createdAt) => Navigator.pop(
+                                  context,
+                                  ConversationSearchSelection(
+                                    conversation: item.conversation,
+                                    targetMessageCreatedAt: createdAt,
+                                  ),
+                                ),
+                              ),
+                              trailing: item.targetMessageCreatedAt == null
+                                  ? const Icon(Icons.chevron_right)
+                                  : const Tooltip(
+                                      message: '定位到命中消息',
+                                      child: Icon(Icons.my_location_outlined),
+                                    ),
+                              onTap: () => Navigator.pop(
+                                context,
+                                ConversationSearchSelection(
+                                  conversation: item.conversation,
+                                  targetMessageCreatedAt:
+                                      item.targetMessageCreatedAt,
+                                ),
+                              ),
+                            ),
+                            const Divider(height: 1),
+                          ],
                         ],
                         if (_favoriteResults.isNotEmpty)
                           Padding(
@@ -1341,7 +1628,7 @@ class _ConversationSearchPageState extends State<ConversationSearchPage> {
                             leading: const Icon(Icons.star_border),
                             title: Text(item.favorite.ownerName ?? '收藏'),
                             subtitle: _HighlightedText(
-                              text: item.favorite.content,
+                              text: _favoriteSnippet(item),
                               query: _controller.text,
                               maxLines: 3,
                             ),
@@ -1363,10 +1650,12 @@ class _ConversationSearchPageState extends State<ConversationSearchPage> {
                                 ? null
                                 : () => Navigator.pop(
                                       context,
-                                      ConversationModel(
-                                        cid: item.cid!,
-                                        icon: '',
-                                        title: item.conversationTitle,
+                                      ConversationSearchSelection(
+                                        conversation: ConversationModel(
+                                          cid: item.cid!,
+                                          icon: '',
+                                          title: item.conversationTitle,
+                                        ),
                                       ),
                                     ),
                           ),
@@ -1374,6 +1663,100 @@ class _ConversationSearchPageState extends State<ConversationSearchPage> {
                         ],
                       ],
                     ),
+    );
+  }
+}
+
+String _favoriteSnippet(FavoriteSearchResult item) {
+  if (item.cid == null) return item.favorite.content;
+  final title = item.conversationTitle?.trim();
+  final displayTitle =
+      title == null || title.isEmpty ? '会话 ${item.cid}' : title;
+  return '来自「$displayTitle」 · ${item.favorite.content}';
+}
+
+class _ConversationHitSubtitle extends StatelessWidget {
+  final ConversationSearchResult item;
+  final String query;
+  final bool expanded;
+  final VoidCallback? onToggle;
+  final ValueChanged<int>? onSelectHit;
+
+  const _ConversationHitSubtitle({
+    required this.item,
+    required this.query,
+    required this.expanded,
+    this.onToggle,
+    this.onSelectHit,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final extraHits = item.messageHits.skip(1).toList(growable: false);
+    final text = item.sourceLabel.isEmpty
+        ? item.snippet
+        : '${item.sourceLabel} · ${item.snippet}';
+    if (extraHits.isEmpty) {
+      return _HighlightedText(text: text, query: query, maxLines: 2);
+    }
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        _HighlightedText(text: text, query: query, maxLines: 2),
+        if (expanded)
+          ...extraHits.map(
+            (hit) => Padding(
+              padding: const EdgeInsets.only(top: 4),
+              child: InkWell(
+                key: ValueKey(
+                  'conversation_search_hit_${item.conversation.cid}_${hit.createdAt}',
+                ),
+                borderRadius: BorderRadius.circular(6),
+                onTap: hit.createdAt == null || onSelectHit == null
+                    ? null
+                    : () => onSelectHit!(hit.createdAt!),
+                child: Padding(
+                  padding: const EdgeInsets.symmetric(vertical: 2),
+                  child: Row(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Expanded(
+                        child: _HighlightedText(
+                          text: '历史消息 · ${hit.snippet}',
+                          query: query,
+                          maxLines: 2,
+                        ),
+                      ),
+                      const SizedBox(width: 6),
+                      Icon(
+                        Icons.my_location_outlined,
+                        size: 16,
+                        color: Theme.of(context).colorScheme.primary,
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+            ),
+          ),
+        Align(
+          alignment: Alignment.centerLeft,
+          child: TextButton.icon(
+            key:
+                ValueKey('conversation_search_expand_${item.conversation.cid}'),
+            style: TextButton.styleFrom(
+              visualDensity: VisualDensity.compact,
+              padding: EdgeInsets.zero,
+              minimumSize: const Size(0, 32),
+              tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+            ),
+            onPressed: onToggle,
+            icon: Icon(expanded ? Icons.expand_less : Icons.expand_more),
+            label: Text(expanded ? '收起命中片段' : '展开 ${extraHits.length} 处命中'),
+          ),
+        ),
+      ],
     );
   }
 }

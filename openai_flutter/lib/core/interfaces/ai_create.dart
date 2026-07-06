@@ -9,5 +9,6 @@ abstract class AICreateInterface {
       double? topP,
       int? n,
       String? stop,
-      String? user});
+      String? user,
+      Duration timeout = const Duration(seconds: 15)});
 }

@@ -18,6 +18,19 @@ class BackendChatService implements ChatService {
 
   BackendChatService(this._settings);
 
+  static StreamEvent? usageEventFromStreamJson(Map<String, dynamic> json) {
+    final usage = json['usage'];
+    if (usage is! Map<String, dynamic>) return null;
+    final promptDetails = usage['prompt_tokens_details'];
+    return StreamEvent.usage(
+      promptTokens: (usage['prompt_tokens'] as num?)?.toInt(),
+      cachedPromptTokens: promptDetails is Map
+          ? (promptDetails['cached_tokens'] as num?)?.toInt()
+          : null,
+      completionTokens: (usage['completion_tokens'] as num?)?.toInt(),
+    );
+  }
+
   @override
   ModelCapabilities get capabilities =>
       // 后端模式不知道厂商，交给清单按 modelId 反查 providerCode + supportsVision。
@@ -36,8 +49,8 @@ class BackendChatService implements ChatService {
         ...history,
         {
           'role': 'user',
-          'content': (attachments ?? const ChatAttachments())
-              .buildUserContent(prompt),
+          'content':
+              (attachments ?? const ChatAttachments()).buildUserContent(prompt),
         },
         ...extraMessages,
       ];
@@ -47,6 +60,7 @@ class BackendChatService implements ChatService {
     required String prompt,
     required List<Map<String, dynamic>> history,
     ChatAttachments? attachments,
+    Duration? timeout,
   }) async {
     final uri = BackendConst.buildUri('/uapi/chat/completions');
     final messages = _buildMessages(prompt, history, attachments);
@@ -64,8 +78,9 @@ class BackendChatService implements ChatService {
       'Content-Type': 'application/json',
       'Authorization': 'Bearer ${token ?? ''}',
     };
-    final response = await http.post(uri, headers: headers, body: jsonEncode(body))
-        .timeout(const Duration(seconds: 15));
+    final response = await http
+        .post(uri, headers: headers, body: jsonEncode(body))
+        .timeout(timeout ?? const Duration(minutes: 2));
     AILogger.log('backend response: ${response.statusCode}');
 
     if (response.statusCode == 401) {
@@ -97,6 +112,69 @@ class BackendChatService implements ChatService {
   }
 
   @override
+  Future<ChatCompletionResult> chatWithUsage({
+    required String prompt,
+    required List<Map<String, dynamic>> history,
+    ChatAttachments? attachments,
+  }) async {
+    final uri = BackendConst.buildUri('/uapi/chat/completions');
+    final messages = _buildMessages(prompt, history, attachments);
+    final body = {
+      'model': _settings.effectiveModel,
+      'messages': messages,
+      // 0 = 不限制：不带 max_tokens，用上游默认（避免长回复被截断）。
+      if (_settings.maxOutputTokens > 0)
+        'max_tokens': _settings.maxOutputTokens,
+      // null = 不带 temperature，用上游默认。
+      if (_settings.temperature != null) 'temperature': _settings.temperature,
+    };
+    final token = LoginDao.getBoardingPass();
+    final headers = <String, String>{
+      'Content-Type': 'application/json',
+      'Authorization': 'Bearer ${token ?? ''}',
+    };
+    final response = await http
+        .post(uri, headers: headers, body: jsonEncode(body))
+        .timeout(const Duration(seconds: 15));
+    AILogger.log('backend response: ${response.statusCode}');
+
+    if (response.statusCode == 401) {
+      LoginDao.logOut();
+      throw Exception('登录已过期，请重新登录');
+    }
+
+    const utf8decoder = Utf8Decoder();
+    final bodyString = utf8decoder.convert(response.bodyBytes);
+    AILogger.log('backend response body: ${AILogger.truncate(bodyString)}');
+
+    if (response.statusCode == 200 || response.statusCode == 201) {
+      final result = json.decode(bodyString) as Map<String, dynamic>;
+      if (result['code'] == 0 && result['data'] != null) {
+        final data = result['data'] as Map<String, dynamic>;
+        final usage = data['usage'] as Map<String, dynamic>?;
+        final promptDetails = usage?['prompt_tokens_details'];
+        final content = data['content'] as String?;
+        final reasoning = data['reasoningContent'] as String?;
+        return ChatCompletionResult(
+          content:
+              (content != null && content.isNotEmpty) ? content : reasoning,
+          promptTokens: usage == null ? null : usage['prompt_tokens'] as int?,
+          cachedPromptTokens: promptDetails is Map
+              ? (promptDetails['cached_tokens'] as num?)?.toInt()
+              : null,
+          completionTokens:
+              usage == null ? null : usage['completion_tokens'] as int?,
+          estimated: false,
+          cost: 0,
+        );
+      }
+      final msg = result['message'] as String?;
+      throw Exception(msg ?? '请求失败');
+    }
+    throw Exception('服务异常(${response.statusCode})');
+  }
+
+  @override
   Stream<String> chatStream({
     required String prompt,
     required List<Map<String, dynamic>> history,
@@ -115,7 +193,8 @@ class BackendChatService implements ChatService {
     List<Map<String, dynamic>> extraMessages = const [],
   }) async* {
     final uri = BackendConst.buildUri('/uapi/chat/completions/stream');
-    final messages = _buildMessages(prompt, history, attachments, extraMessages);
+    final messages =
+        _buildMessages(prompt, history, attachments, extraMessages);
     final body = {
       'model': _settings.effectiveModel,
       'messages': messages,
@@ -137,8 +216,8 @@ class BackendChatService implements ChatService {
 
     final httpClient = http.Client();
     try {
-      final streamedResponse = await httpClient.send(request)
-          .timeout(const Duration(seconds: 20));
+      final streamedResponse =
+          await httpClient.send(request).timeout(const Duration(seconds: 20));
       AILogger.log('backend stream status: ${streamedResponse.statusCode}');
 
       if (streamedResponse.statusCode == 401) {
@@ -146,7 +225,8 @@ class BackendChatService implements ChatService {
         throw Exception('登录已过期，请重新登录');
       }
 
-      if (streamedResponse.statusCode != 200 && streamedResponse.statusCode != 201) {
+      if (streamedResponse.statusCode != 200 &&
+          streamedResponse.statusCode != 201) {
         final bytes = await streamedResponse.stream.toBytes();
         final errorBody = const Utf8Decoder().convert(bytes);
         throw Exception('服务异常(${streamedResponse.statusCode}): $errorBody');
@@ -164,6 +244,8 @@ class BackendChatService implements ChatService {
         if (data == '[DONE]') break;
         try {
           final json = jsonDecode(data) as Map<String, dynamic>;
+          final usageEvent = usageEventFromStreamJson(json);
+          if (usageEvent != null) yield usageEvent;
           final choices = json['choices'] as List<dynamic>?;
           if (choices != null && choices.isNotEmpty) {
             final choice = choices[0];

@@ -7,6 +7,7 @@ import 'package:chatgpt_app_core/pages/bottom_navigator.dart';
 import 'package:chatgpt_app_core/provider/ai_settings_provider.dart';
 import 'package:chatgpt_app_core/provider/hi_provider.dart';
 import 'package:chatgpt_app_core/provider/theme_provider.dart';
+import 'package:chatgpt_app_core/sync/cloud_sync_client.dart';
 import 'package:chatgpt_app_core/util/model_catalog.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_hi_cache/flutter_hi_cache.dart';
@@ -146,7 +147,8 @@ class _MyAppState extends State<MyApp> {
         // 保留它，下次回到游客模式时 key 还在（钩子先于 storage.clear() 执行，
         // 此刻仍可判断 isGuest）。
         if (LoginDao.isGuest()) return;
-        final reset = AISettingsProvider.instance?.settings.resetOnLogout ?? true;
+        final reset =
+            AISettingsProvider.instance?.settings.resetOnLogout ?? true;
         if (reset) {
           AISettingsProvider.resetToDefaults();
         }
@@ -157,6 +159,9 @@ class _MyAppState extends State<MyApp> {
       // 登录成功后重新加载 AI 设置（accountHash 已变更）
       LoginDao.addLoginHook(() {
         AISettingsProvider.reloadInstance();
+      });
+      LoginDao.addLoginHook(() {
+        CloudSyncCoordinator.syncOnLogin();
       });
     }
   }

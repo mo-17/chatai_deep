@@ -14,6 +14,9 @@ enum AIStreamKind {
   /// 注意是「分片」：同一次调用的 id/name 先到、arguments 按 JSON 字符串
   /// 分片陆续到达，需按 [toolIndex] 累积（见上层 ToolCallAccumulator）。
   toolCall,
+
+  /// 流式收尾 usage（`stream_options.include_usage=true` 时的最终 token 统计）。
+  usage,
 }
 
 class AIStreamChunk {
@@ -27,25 +30,39 @@ class AIStreamChunk {
   final String? toolName;
   final String? toolArgsDelta;
 
+  /// usage 收尾字段（kind == usage 时有效）。
+  final int? promptTokens;
+  final int? cachedPromptTokens;
+  final int? completionTokens;
+
   const AIStreamChunk(this.kind, this.text)
       : toolIndex = null,
         toolId = null,
         toolName = null,
-        toolArgsDelta = null;
+        toolArgsDelta = null,
+        promptTokens = null,
+        cachedPromptTokens = null,
+        completionTokens = null;
 
   const AIStreamChunk.content(this.text)
       : kind = AIStreamKind.content,
         toolIndex = null,
         toolId = null,
         toolName = null,
-        toolArgsDelta = null;
+        toolArgsDelta = null,
+        promptTokens = null,
+        cachedPromptTokens = null,
+        completionTokens = null;
 
   const AIStreamChunk.reasoning(this.text)
       : kind = AIStreamKind.reasoning,
         toolIndex = null,
         toolId = null,
         toolName = null,
-        toolArgsDelta = null;
+        toolArgsDelta = null,
+        promptTokens = null,
+        cachedPromptTokens = null,
+        completionTokens = null;
 
   const AIStreamChunk.toolCall({
     required this.toolIndex,
@@ -53,5 +70,19 @@ class AIStreamChunk {
     this.toolName,
     this.toolArgsDelta,
   })  : kind = AIStreamKind.toolCall,
-        text = '';
+        text = '',
+        promptTokens = null,
+        cachedPromptTokens = null,
+        completionTokens = null;
+
+  const AIStreamChunk.usage({
+    this.promptTokens,
+    this.cachedPromptTokens,
+    this.completionTokens,
+  })  : kind = AIStreamKind.usage,
+        text = '',
+        toolIndex = null,
+        toolId = null,
+        toolName = null,
+        toolArgsDelta = null;
 }

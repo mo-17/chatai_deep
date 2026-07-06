@@ -39,6 +39,25 @@ abstract class IConversationList {
   ///更新会话级联网搜索覆盖。enabled 为 null 时恢复跟随全局设置。
   Future<int> updateWebSearchOverride(ConversationModel model, bool? enabled);
 
+  ///更新会话级语音偏好。bool 为 null 时恢复默认；locale/rate/style 为 null 时跟随系统/默认。
+  Future<int> updateVoicePrefs(
+    ConversationModel model, {
+    bool? speechInputEnabled,
+    bool? readAloudEnabled,
+    String? voiceLocale,
+    double? voiceRate,
+    String? voiceStyle,
+    String? readAloudTriggerMode,
+  });
+
+  ///更新会话级角色状态。只作用于当前会话，用于补充场景、关系和语气备注。
+  Future<int> updateRoleState(
+    ConversationModel model, {
+    String? roleScene,
+    String? roleRelationship,
+    String? roleToneNote,
+  });
+
   ///搜索会话标题、最近消息和全量消息内容。
   Future<List<ConversationSearchResult>> searchConversations(String query,
       {int? projectId,
@@ -53,10 +72,34 @@ abstract class IConversationList {
 class ConversationSearchResult {
   final ConversationModel conversation;
   final String snippet;
+  final String sourceLabel;
+  final int? targetMessageCreatedAt;
+  final List<ConversationSearchHit> messageHits;
 
-  const ConversationSearchResult({
+  ConversationSearchResult({
     required this.conversation,
     required this.snippet,
+    this.sourceLabel = '',
+    this.targetMessageCreatedAt,
+    List<ConversationSearchHit>? messageHits,
+    List<String> messageSnippets = const [],
+  }) : messageHits = messageHits ??
+            [
+              for (final snippet in messageSnippets)
+                ConversationSearchHit(snippet: snippet),
+            ];
+
+  List<String> get messageSnippets =>
+      messageHits.map((hit) => hit.snippet).toList(growable: false);
+}
+
+class ConversationSearchHit {
+  final String snippet;
+  final int? createdAt;
+
+  const ConversationSearchHit({
+    required this.snippet,
+    this.createdAt,
   });
 }
 
@@ -76,7 +119,10 @@ class ConversationListDao implements IConversationList, ITable {
         ', assistantId	integer, projectId integer'
         ', avatarType text, avatarValue text'
         ', modelProviderId text, modelId text, webSearchEnabled integer'
-        ', toolIds text);');
+        ', toolIds text, speechInputEnabled integer, readAloudEnabled integer'
+        ', voiceLocale text, voiceRate real, voiceStyle text'
+        ', readAloudTriggerMode text'
+        ', roleScene text, roleRelationship text, roleToneNote text);');
     await storage.db.execute(
         'create unique index if not exists ${_kTableName}_cid_idx on $_kTableName (cid);');
     // 兼容旧表：无 assistantId 列时自动新增（阶段七 会话绑定助手）。
@@ -129,6 +175,60 @@ class ConversationListDao implements IConversationList, ITable {
     } catch (_) {
       // 列已存在，忽略
     }
+    try {
+      await storage.db.execute(
+          'alter table $_kTableName add column speechInputEnabled integer');
+    } catch (_) {
+      // 列已存在，忽略
+    }
+    try {
+      await storage.db.execute(
+          'alter table $_kTableName add column readAloudEnabled integer');
+    } catch (_) {
+      // 列已存在，忽略
+    }
+    try {
+      await storage.db
+          .execute('alter table $_kTableName add column voiceLocale text');
+    } catch (_) {
+      // 列已存在，忽略
+    }
+    try {
+      await storage.db
+          .execute('alter table $_kTableName add column voiceRate real');
+    } catch (_) {
+      // 列已存在，忽略
+    }
+    try {
+      await storage.db
+          .execute('alter table $_kTableName add column voiceStyle text');
+    } catch (_) {
+      // 列已存在，忽略
+    }
+    try {
+      await storage.db.execute(
+          'alter table $_kTableName add column readAloudTriggerMode text');
+    } catch (_) {
+      // 列已存在，忽略
+    }
+    try {
+      await storage.db
+          .execute('alter table $_kTableName add column roleScene text');
+    } catch (_) {
+      // 列已存在，忽略
+    }
+    try {
+      await storage.db
+          .execute('alter table $_kTableName add column roleRelationship text');
+    } catch (_) {
+      // 列已存在，忽略
+    }
+    try {
+      await storage.db
+          .execute('alter table $_kTableName add column roleToneNote text');
+    } catch (_) {
+      // 列已存在，忽略
+    }
     //复合索引：置顶+更新时间排序优化
     await storage.db.execute(
         'create index if not exists ${_kTableName}_stick_update_idx on $_kTableName(stickTime, updateAt desc);');
@@ -158,12 +258,13 @@ class ConversationListDao implements IConversationList, ITable {
       int pageSize = 20,
       int? projectId,
       bool uncategorized = false}) async {
-    var offset = (pageIndex - 1) * pageSize;
+    final offset = (pageIndex - 1) * pageSize;
     final filter = _projectWhere(
-        baseWhere: 'stickTime <= 0',
+        baseWhere: 'stickTime <= 0 and title is not null and '
+            "trim(title) != '' and lower(trim(title)) != 'null'",
         projectId: projectId,
         uncategorized: uncategorized);
-    var results = await storage.db.query(tableName,
+    final results = await storage.db.query(tableName,
         where: filter.$1,
         whereArgs: filter.$2,
         orderBy: 'updateAt desc',
@@ -171,7 +272,8 @@ class ConversationListDao implements IConversationList, ITable {
         offset: offset);
 
     ///将查询结果转成Dart Model以方便使用
-    var list = results.map((item) => ConversationModel.fromJson(item)).toList();
+    final list =
+        results.map((item) => ConversationModel.fromJson(item)).toList();
     AILogger.log('conversation list count:${list.length}');
     return list;
   }
@@ -188,14 +290,16 @@ class ConversationListDao implements IConversationList, ITable {
   Future<List<ConversationModel>> getStickConversationList(
       {int? projectId, bool uncategorized = false}) async {
     final filter = _projectWhere(
-        baseWhere: 'stickTime > 0',
+        baseWhere: 'stickTime > 0 and title is not null and '
+            "trim(title) != '' and lower(trim(title)) != 'null'",
         projectId: projectId,
         uncategorized: uncategorized);
-    var results = await storage.db.query(tableName,
+    final results = await storage.db.query(tableName,
         where: filter.$1, whereArgs: filter.$2, orderBy: 'stickTime desc');
 
     ///将查询结果转成Dart Model以方便使用
-    var list = results.map((item) => ConversationModel.fromJson(item)).toList();
+    final list =
+        results.map((item) => ConversationModel.fromJson(item)).toList();
     return list;
   }
 
@@ -254,6 +358,59 @@ class ConversationListDao implements IConversationList, ITable {
   }
 
   @override
+  Future<int> updateVoicePrefs(
+    ConversationModel model, {
+    bool? speechInputEnabled,
+    bool? readAloudEnabled,
+    String? voiceLocale,
+    double? voiceRate,
+    String? voiceStyle,
+    String? readAloudTriggerMode,
+  }) {
+    model.speechInputEnabled = speechInputEnabled;
+    model.readAloudEnabled = readAloudEnabled;
+    model.voiceLocale = voiceLocale;
+    model.voiceRate = voiceRate;
+    model.voiceStyle = voiceStyle;
+    model.readAloudTriggerMode = readAloudTriggerMode;
+    return storage.db.update(
+        tableName,
+        {
+          'speechInputEnabled':
+              speechInputEnabled == null ? null : (speechInputEnabled ? 1 : 0),
+          'readAloudEnabled':
+              readAloudEnabled == null ? null : (readAloudEnabled ? 1 : 0),
+          'voiceLocale': voiceLocale,
+          'voiceRate': voiceRate,
+          'voiceStyle': voiceStyle,
+          'readAloudTriggerMode': readAloudTriggerMode,
+        },
+        where: model.id == null ? 'cid = ?' : 'id = ?',
+        whereArgs: [model.id ?? model.cid]);
+  }
+
+  @override
+  Future<int> updateRoleState(
+    ConversationModel model, {
+    String? roleScene,
+    String? roleRelationship,
+    String? roleToneNote,
+  }) {
+    model.roleScene = roleScene;
+    model.roleRelationship = roleRelationship;
+    model.roleToneNote = roleToneNote;
+    return storage.db.update(
+        tableName,
+        {
+          'roleScene': roleScene,
+          'roleRelationship': roleRelationship,
+          'roleToneNote': roleToneNote,
+        },
+        where: model.id == null ? 'cid = ?' : 'id = ?',
+        whereArgs: [model.id ?? model.cid]);
+  }
+
+  @override
   Future<List<ConversationSearchResult>> searchConversations(String query,
       {int? projectId,
       bool uncategorized = false,
@@ -306,30 +463,84 @@ class ConversationListDao implements IConversationList, ITable {
     final rows = await storage.db.rawQuery(
       'select c.*, '
       'max(case when m.content like ? then m.content else null end) as hitMessage '
+      ', max(case when m.content like ? then m.createdAt else null end) as hitMessageCreatedAt '
+      ', (case when c.title like ? then 100 else 0 end '
+      '+ case when c.lastMessage like ? then 50 else 0 end '
+      '+ max(case when m.content like ? then 10 else 0 end)) as relevance '
       'from $tableName c '
       'left join tb_messages m on m.cid = c.cid '
       'where $where '
       'group by c.id '
-      'order by c.stickTime desc, c.updateAt desc '
+      'order by relevance desc, c.stickTime desc, c.updateAt desc '
       'limit ?',
       [
+        like,
+        like,
+        like,
+        like,
         like,
         ...whereArgs,
         limit.clamp(1, 100),
       ],
     );
-    return [
-      for (final row in rows)
-        ConversationSearchResult(
-          conversation: ConversationModel.fromJson(row),
-          snippet: _searchSnippet(
-            q,
-            row['title'] as String?,
-            row['lastMessage'] as String?,
-            row['hitMessage'] as String?,
-          ),
-        ),
-    ];
+    final results = <ConversationSearchResult>[];
+    for (final row in rows) {
+      final title = row['title'] as String?;
+      final lastMessage = row['lastMessage'] as String?;
+      final hitMessage = row['hitMessage'] as String?;
+      final sourceLabel = _searchSourceLabel(q, title, lastMessage, hitMessage);
+      final conversation = ConversationModel.fromJson(row);
+      final messageHits = sourceLabel == '历史消息'
+          ? await _messageHitSnippets(conversation.cid, q)
+          : const <ConversationSearchHit>[];
+      results.add(ConversationSearchResult(
+        conversation: conversation,
+        snippet: messageHits.isNotEmpty
+            ? messageHits.first.snippet
+            : _searchSnippet(q, title, lastMessage, hitMessage),
+        sourceLabel: sourceLabel,
+        targetMessageCreatedAt: messageHits.isNotEmpty
+            ? messageHits.first.createdAt
+            : (sourceLabel == '历史消息'
+                ? _asInt(row['hitMessageCreatedAt'])
+                : null),
+        messageHits: messageHits,
+      ));
+    }
+    return results;
+  }
+
+  Future<List<ConversationSearchHit>> _messageHitSnippets(
+    int cid,
+    String query,
+  ) async {
+    final rows = await storage.db.query(
+      'tb_messages',
+      columns: ['content', 'createdAt'],
+      where: 'cid = ? and content like ?',
+      whereArgs: [cid, '%$query%'],
+      orderBy: 'createdAt desc',
+      limit: 4,
+    );
+    final seen = <String>{};
+    final hits = <ConversationSearchHit>[];
+    for (final row in rows) {
+      final content = row['content'] as String? ?? '';
+      final snippet = _capAround(content, query);
+      if (!seen.add(snippet)) continue;
+      final createdAt = _asInt(row['createdAt']);
+      if (createdAt == null) continue;
+      hits.add(ConversationSearchHit(snippet: snippet, createdAt: createdAt));
+    }
+    return hits;
+  }
+
+  static int? _asInt(Object? value) {
+    if (value == null) return null;
+    if (value is int) return value;
+    if (value is num) return value.toInt();
+    if (value is String) return int.tryParse(value);
+    return null;
   }
 
   (String, List<Object?>?) _projectWhere({
@@ -356,15 +567,63 @@ class ConversationListDao implements IConversationList, ITable {
     return _capAround(hitMessage ?? lastMessage ?? title ?? '', query);
   }
 
+  static String _searchSourceLabel(
+      String query, String? title, String? lastMessage, String? hitMessage) {
+    final lower = query.toLowerCase();
+    if (title?.toLowerCase().contains(lower) == true) return '标题';
+    if (lastMessage?.toLowerCase().contains(lower) == true) return '最近消息';
+    if (hitMessage?.toLowerCase().contains(lower) == true) return '历史消息';
+    return '';
+  }
+
   static String _capAround(String text, String query) {
-    if (text.length <= 120) return text;
+    const maxFullLength = 160;
+    const contextBefore = 48;
+    const contextAfter = 96;
+    if (text.length <= maxFullLength) return text;
     final lower = text.toLowerCase();
     final index = lower.indexOf(query.toLowerCase());
-    if (index < 0) return '${text.substring(0, 120)}...';
-    final start = (index - 40).clamp(0, text.length);
-    final end = (index + query.length + 80).clamp(0, text.length);
-    return '${start > 0 ? '...' : ''}${text.substring(start, end)}${end < text.length ? '...' : ''}';
+    if (index < 0) return '${text.substring(0, maxFullLength)}...';
+    final rawStart = (index - contextBefore).clamp(0, text.length);
+    final rawEnd = (index + query.length + contextAfter).clamp(0, text.length);
+    var start = rawStart;
+    var end = rawEnd;
+
+    if (rawStart > 0) {
+      final boundary = _lastContextBoundary(text, rawStart, index);
+      if (boundary != null) start = boundary + 1;
+    }
+    final trailingBoundary =
+        _firstContextBoundary(text, index + query.length, rawEnd);
+    if (trailingBoundary != null) end = trailingBoundary + 1;
+    final body = text.substring(start, end).trim();
+    return '${start > 0 ? '...' : ''}$body${end < text.length ? '...' : ''}';
   }
+
+  static int? _lastContextBoundary(String text, int start, int end) {
+    for (var i = end - 1; i >= start; i--) {
+      if (_isSearchContextBoundary(text[i])) return i;
+    }
+    return null;
+  }
+
+  static int? _firstContextBoundary(String text, int start, int end) {
+    for (var i = start; i < end; i++) {
+      if (_isSearchContextBoundary(text[i])) return i;
+    }
+    return null;
+  }
+
+  static bool _isSearchContextBoundary(String char) =>
+      char == '\n' ||
+      char == '。' ||
+      char == '！' ||
+      char == '？' ||
+      char == '；' ||
+      char == ';' ||
+      char == '.' ||
+      char == '!' ||
+      char == '?';
 
   Future<List<int>?> _ftsCandidateCids(String query) async {
     final ftsQuery = _ftsQuery(query);

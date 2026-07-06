@@ -24,14 +24,13 @@ class ConversationWidget extends StatelessWidget {
   final ConversationStickCallBack? onStick;
 
   const ConversationWidget(
-      {Key? key,
+      {super.key,
       required this.model,
       this.onPressed,
       this.onDelete,
       this.onMoveProject,
       this.onAvatar,
-      this.onStick})
-      : super(key: key);
+      this.onStick});
 
   get _item => Container(
         padding: const EdgeInsets.only(left: 10, right: 10),
@@ -141,7 +140,7 @@ class ConversationWidget extends StatelessWidget {
                 ],
               ),
               Text(
-                '[${model.messageCount}条对话] ${model.lastMessage}',
+                '[${model.messageCount ?? 0}条对话] ${_previewText(model.lastMessage)}',
                 maxLines: 1,
                 overflow: TextOverflow.ellipsis,
                 style: const TextStyle(fontSize: 13, color: Colors.grey),
@@ -168,8 +167,8 @@ class ConversationWidget extends StatelessWidget {
 
   ///在item下方弹框，难点如何找到要弹框的坐标位置
   _showPopMenu(BuildContext context) {
-    var isStick = model.stickTime > 0 ? true : false;
-    var showStick = isStick ? "取消置顶" : "置顶";
+    final isStick = model.stickTime > 0 ? true : false;
+    final showStick = isStick ? "取消置顶" : "置顶";
     HiDialog.showPopMenu(context, offsetX: -50, items: [
       PopupMenuItem(
         child: Text(showStick),
@@ -196,5 +195,10 @@ class ConversationWidget extends StatelessWidget {
         },
       )
     ]);
+  }
+
+  String _previewText(String? value) {
+    final text = value?.trim() ?? '';
+    return text.toLowerCase() == 'null' ? '' : text;
   }
 }

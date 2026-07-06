@@ -16,6 +16,7 @@ class AIHttp {
     required String url,
     required T Function(Map<String, dynamic>) onSuccess,
     Map<String, dynamic>? body,
+    Duration timeout = const Duration(seconds: 15),
   }) async {
     AILogger.log('starting request to $url');
 
@@ -35,7 +36,7 @@ class AIHttp {
         .post(Uri.parse(url),
             headers: config.headers(),
             body: body != null ? jsonEncode(body) : null)
-        .timeout(const Duration(seconds: 15));
+        .timeout(timeout);
     AILogger.log(
         'request to $url finished with status code ${response.statusCode}');
     AILogger.log('starting decoding response body');
@@ -95,8 +96,8 @@ class AIHttp {
       request.body = jsonEncode(body);
     }
 
-    final streamedResponse = await myClient.send(request)
-        .timeout(const Duration(seconds: 20));
+    final streamedResponse =
+        await myClient.send(request).timeout(const Duration(seconds: 20));
     AILogger.log(
         'stream request to $url finished with status ${streamedResponse.statusCode}');
 
@@ -113,16 +114,16 @@ class AIHttp {
       }
       if (decoded['error'] != null) {
         final error = decoded['error'] as Map<String, dynamic>;
-        throw AIRequestException(
-            error['message'] as String? ?? errorBody,
+        throw AIRequestException(error['message'] as String? ?? errorBody,
             streamedResponse.statusCode);
       }
       throw AIRequestException(
           'HTTP ${streamedResponse.statusCode}', streamedResponse.statusCode);
     }
 
-    final lineStream =
-        streamedResponse.stream.transform(const Utf8Decoder()).transform(const LineSplitter());
+    final lineStream = streamedResponse.stream
+        .transform(const Utf8Decoder())
+        .transform(const LineSplitter());
 
     await for (final line in lineStream) {
       if (!line.startsWith('data: ')) continue;
@@ -130,6 +131,17 @@ class AIHttp {
       if (data == '[DONE]') break;
       try {
         final json = jsonDecode(data) as Map<String, dynamic>;
+        final usage = json['usage'];
+        if (usage is Map<String, dynamic>) {
+          final promptDetails = usage['prompt_tokens_details'];
+          yield AIStreamChunk.usage(
+            promptTokens: (usage['prompt_tokens'] as num?)?.toInt(),
+            cachedPromptTokens: promptDetails is Map
+                ? (promptDetails['cached_tokens'] as num?)?.toInt()
+                : null,
+            completionTokens: (usage['completion_tokens'] as num?)?.toInt(),
+          );
+        }
         final choices = json['choices'] as List<dynamic>?;
         if (choices != null && choices.isNotEmpty) {
           final choice = choices[0];

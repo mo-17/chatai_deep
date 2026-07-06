@@ -6,16 +6,21 @@ const _colorShades = [50, 100, 200, 300, 400, 500, 600, 700, 800, 900];
 class ThemeWidget extends StatelessWidget {
   final ValueChanged<String> onThemeChange;
 
-  const ThemeWidget({Key? key, required this.onThemeChange}) : super(key: key);
+  const ThemeWidget({super.key, required this.onThemeChange});
 
-  get _listView => ListView.builder(
-      padding: const EdgeInsets.only(left: 15, right: 15),
-      itemCount: ThemeProvider.themes.length,
-      itemBuilder: (_, int index) => _itemWidget(ThemeProvider.themes[index]));
+  get _themeList => Padding(
+        padding: const EdgeInsets.only(left: 15, right: 15),
+        child: Column(
+          children: [
+            for (final colorName in ThemeProvider.themes)
+              _itemWidget(colorName),
+          ],
+        ),
+      );
 
   @override
   Widget build(BuildContext context) {
-    return Expanded(child: _listView);
+    return _themeList;
   }
 
   _itemWidget(String colorName) {
@@ -29,7 +34,7 @@ class ThemeWidget extends StatelessWidget {
   }
 
   _colorView(String colorName) {
-    MaterialColor materialColor = ThemeProvider.getThemeColor(colorName);
+    final MaterialColor materialColor = ThemeProvider.getThemeColor(colorName);
     return ClipRRect(
       borderRadius: BorderRadius.circular(5),
       child: Container(

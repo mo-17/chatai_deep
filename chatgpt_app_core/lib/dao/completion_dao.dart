@@ -17,8 +17,21 @@ import 'package:openai_flutter/utils/ai_logger.dart';
 class CompletionResult {
   final String? content;
   final List<WebSearchResult> webResults;
+  final int? promptTokens;
+  final int? cachedPromptTokens;
+  final int? completionTokens;
+  final bool estimated;
+  final double cost;
 
-  const CompletionResult({this.content, this.webResults = const []});
+  const CompletionResult({
+    this.content,
+    this.webResults = const [],
+    this.promptTokens,
+    this.cachedPromptTokens,
+    this.completionTokens,
+    this.estimated = false,
+    this.cost = 0,
+  });
 }
 
 class CompletionDao {
@@ -40,21 +53,29 @@ class CompletionDao {
   /// （当前轮经 attachments.extraText 发送，后续轮从这里重建）。
   final Map<int, String> _fileHistory;
 
+  /// 历史里每条 assistant 消息（按 createdAt）未完成回复的角色状态承接。
+  /// 用于把“有思考但无正文”的短期状态带到下一轮，不进入长期记忆。
+  final Map<int, String> _roleContinuationHistory;
+
   CompletionDao(
       {required AISettings settings,
       List<MessageModel>? messages,
       String? systemPrompt,
       Map<int, List<ToolBlock>>? toolHistory,
-      Map<int, String>? fileHistory})
+      Map<int, String>? fileHistory,
+      Map<int, String>? roleContinuationHistory})
       : chatService = ChatService.from(settings),
         _settings = settings,
         _systemPrompt = systemPrompt?.trim() ?? '',
         // 防御性拷贝成可增删的 growable 列表：调用方常把上一个 dao 的
         // `currentMessages`（List.unmodifiable）传进来重建，若直接持有该引用，
         // 后续 _messageList.add/removeLast 会抛 "Cannot add to an unmodifiable list"。
-        _messageList = messages == null ? <MessageModel>[] : List<MessageModel>.of(messages),
+        _messageList = messages == null
+            ? <MessageModel>[]
+            : List<MessageModel>.of(messages),
         _toolHistory = {...?toolHistory},
-        _fileHistory = {...?fileHistory} {
+        _fileHistory = {...?fileHistory},
+        _roleContinuationHistory = {...?roleContinuationHistory} {
     AILogger.log('init finish, loaded ${_messageList.length} messages');
   }
 
@@ -67,6 +88,10 @@ class CompletionDao {
 
   ///当前附件文本历史，供重建 CompletionDao 时一并传递（遗留项 6）。
   Map<int, String> get currentFileHistory => Map.unmodifiable(_fileHistory);
+
+  ///当前未完成回复状态承接，供重建 CompletionDao 时一并传递。
+  Map<int, String> get currentRoleContinuationHistory =>
+      Map.unmodifiable(_roleContinuationHistory);
 
   ///当前生效模型的能力探测结果（阶段三）。UI 据此开关图片/PDF/工具入口。
   ModelCapabilities get capabilities => chatService.capabilities;
@@ -87,6 +112,14 @@ class CompletionDao {
     if (assistantBlocks != null) {
       final tools = assistantBlocks.whereType<ToolBlock>().toList();
       if (tools.isNotEmpty) _toolHistory[assistant.createdAt] = tools;
+      final continuationText = assistantBlocks
+          .whereType<RoleContinuationBlock>()
+          .map((block) => block.content.trim())
+          .where((content) => content.isNotEmpty)
+          .join('\n');
+      if (continuationText.isNotEmpty) {
+        _roleContinuationHistory[assistant.createdAt] = continuationText;
+      }
     }
     if (userFileText != null && userFileText.isNotEmpty) {
       _fileHistory[user.createdAt] = userFileText;
@@ -108,6 +141,7 @@ class CompletionDao {
     _messageList.removeLast();
     _messageList.removeLast();
     _toolHistory.remove(assistant.createdAt);
+    _roleContinuationHistory.remove(assistant.createdAt);
     _fileHistory.remove(user.createdAt);
     return user;
   }
@@ -116,7 +150,7 @@ class CompletionDao {
   Future<String?> createCompletions(
       {required String prompt, ChatAttachments? attachments}) async {
     final history = _withSystem(_buildHistory());
-    var response = await chatService.chat(
+    final response = await chatService.chat(
         prompt: prompt, history: history, attachments: attachments);
     AILogger.log('ai response length: ${response?.length ?? 0}');
     return response;
@@ -131,15 +165,24 @@ class CompletionDao {
     // 意图识别的轻量调用用「无 system」的 history —— 助手人设不该影响
     // 「要不要联网」的判断（阶段七）；正式会话才带 system。
     final history = _buildHistory();
-    final results =
-        webSearch ? await _runWebSearch(prompt, history) : const <WebSearchResult>[];
-    final response = await chatService.chat(
+    final results = webSearch
+        ? await _runWebSearch(prompt, history)
+        : const <WebSearchResult>[];
+    final response = await chatService.chatWithUsage(
       prompt: prompt,
       history: _withSystem(history),
       attachments: _withSearchContext(attachments, results),
     );
-    AILogger.log('ai response length: ${response?.length ?? 0}');
-    return CompletionResult(content: response, webResults: results);
+    AILogger.log('ai response length: ${response.content?.length ?? 0}');
+    return CompletionResult(
+      content: response.content,
+      webResults: results,
+      promptTokens: response.promptTokens,
+      cachedPromptTokens: response.cachedPromptTokens,
+      completionTokens: response.completionTokens,
+      estimated: response.estimated,
+      cost: response.cost,
+    );
   }
 
   ///流式会话，逐 token yield（仅文本）
@@ -173,8 +216,9 @@ class CompletionDao {
       return;
     }
     // 意图识别用无 system 的 history（同 createCompletionsWithSearch）。
-    final results =
-        webSearch ? await _runWebSearch(prompt, history) : const <WebSearchResult>[];
+    final results = webSearch
+        ? await _runWebSearch(prompt, history)
+        : const <WebSearchResult>[];
     yield* chatService.chatStreamEvents(
       prompt: prompt,
       history: _withSystem(history),
@@ -224,15 +268,20 @@ class CompletionDao {
   static List<Map<String, dynamic>> injectSystemPrompt(
       List<Map<String, dynamic>> history, String? systemPrompt) {
     final p = systemPrompt?.trim() ?? '';
-    final content = p.isEmpty ? dateSystemPrompt() : '${dateSystemPrompt()}\n\n$p';
+    final content =
+        p.isEmpty ? dateSystemPrompt() : '${dateSystemPrompt()}\n\n$p';
     return [
       {'role': 'system', 'content': content},
       ...history,
     ];
   }
 
-  List<Map<String, dynamic>> _buildHistory() =>
-      buildHistory(_messageList, _toolHistory, fileHistory: _fileHistory);
+  List<Map<String, dynamic>> _buildHistory() => buildHistory(
+        _messageList,
+        _toolHistory,
+        fileHistory: _fileHistory,
+        roleContinuationHistory: _roleContinuationHistory,
+      );
 
   /// 把消息列表 + 各 assistant 的工具块 + 各 user 的附件文本重建成 OpenAI
   /// `messages[]`。
@@ -246,6 +295,7 @@ class CompletionDao {
     List<MessageModel> messages,
     Map<int, List<ToolBlock>> toolHistory, {
     Map<int, String> fileHistory = const {},
+    Map<int, String> roleContinuationHistory = const {},
   }) {
     final history = <Map<String, dynamic>>[];
     for (final m in messages) {
@@ -255,18 +305,35 @@ class CompletionDao {
             m.imageUrlsOrB64 != null && m.imageUrlsOrB64!.isNotEmpty;
         history.add({
           'role': 'user',
-          'content':
-              hasImages ? _visionContent(m, fileText) : _appendText(m.content, fileText),
+          'content': hasImages
+              ? _visionContent(m, fileText)
+              : _appendText(m.content, fileText),
         });
       } else {
         final tools = toolHistory[m.createdAt];
         if (tools != null && tools.isNotEmpty) {
           history.addAll(toolCallMessages(tools));
         }
-        history.add({'role': 'assistant', 'content': m.content});
+        final continuation = roleContinuationHistory[m.createdAt]?.trim() ?? '';
+        if (continuation.isNotEmpty) {
+          history.add({
+            'role': 'assistant',
+            'content': roleContinuationPrompt(continuation),
+          });
+        } else {
+          history.add({'role': 'assistant', 'content': m.content});
+        }
       }
     }
     return history;
+  }
+
+  static String roleContinuationPrompt(String content) {
+    final text = content.trim();
+    if (text.isEmpty) return '';
+    return '【上一轮未完成回复状态，仅供续写，不是角色已经说出口的内容】\n'
+        '$text\n'
+        '下一次回应时请承接这个状态，不要把场景重置，也不要直接复述本段说明。';
   }
 
   /// 把一条 assistant 消息里的工具块还原成 OpenAI 协议消息序列：每个工具调用 →

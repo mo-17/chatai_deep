@@ -35,6 +35,33 @@ class ConversationModel {
   ///会话级工具集覆盖。null = 跟随助手绑定；空列表 = 不暴露绑定工具。
   List<String>? toolIds;
 
+  ///会话级语音输入开关。null = 跟随默认（显示语音入口）。
+  bool? speechInputEnabled;
+
+  ///会话级朗读开关。
+  bool? readAloudEnabled;
+
+  ///会话级语音识别 localeId，例如 zh_CN / en_US。null = 跟随系统。
+  String? voiceLocale;
+
+  ///会话级朗读速率。
+  double? voiceRate;
+
+  ///会话级 TTS 语音风格，例如 system / female / male / bright / deep。
+  String? voiceStyle;
+
+  ///会话级朗读入口：button / longPress / hidden。null = 默认 button。
+  String? readAloudTriggerMode;
+
+  ///会话级角色当前场景。只影响当前会话，不写回全局角色卡。
+  String? roleScene;
+
+  ///会话级角色关系备注，例如熟悉度、称呼、互动边界。
+  String? roleRelationship;
+
+  ///会话级角色语气/演绎备注。
+  String? roleToneNote;
+
   ///会话消息是否有变化
   bool hadChanged = false;
 
@@ -54,7 +81,16 @@ class ConversationModel {
       this.modelProviderId,
       this.modelId,
       this.webSearchEnabled,
-      this.toolIds});
+      this.toolIds,
+      this.speechInputEnabled,
+      this.readAloudEnabled,
+      this.voiceLocale,
+      this.voiceRate,
+      this.voiceStyle,
+      this.readAloudTriggerMode,
+      this.roleScene,
+      this.roleRelationship,
+      this.roleToneNote});
 
   factory ConversationModel.fromJson(Map<String, dynamic> json) =>
       ConversationModel(
@@ -73,7 +109,16 @@ class ConversationModel {
           modelProviderId: json['modelProviderId'],
           modelId: json['modelId'],
           webSearchEnabled: _boolOf(json['webSearchEnabled']),
-          toolIds: _decodeToolIds(json['toolIds']));
+          toolIds: _decodeToolIds(json['toolIds']),
+          speechInputEnabled: _boolOf(json['speechInputEnabled']),
+          readAloudEnabled: _boolOf(json['readAloudEnabled']),
+          voiceLocale: json['voiceLocale'] as String?,
+          voiceRate: _doubleOf(json['voiceRate']),
+          voiceStyle: json['voiceStyle'] as String?,
+          readAloudTriggerMode: json['readAloudTriggerMode'] as String?,
+          roleScene: json['roleScene'] as String?,
+          roleRelationship: json['roleRelationship'] as String?,
+          roleToneNote: json['roleToneNote'] as String?);
 
   Map<String, dynamic> toJson() {
     final Map<String, dynamic> data = <String, dynamic>{};
@@ -94,7 +139,61 @@ class ConversationModel {
     data['webSearchEnabled'] =
         webSearchEnabled == null ? null : (webSearchEnabled! ? 1 : 0);
     data['toolIds'] = toolIds == null ? null : jsonEncode(toolIds);
+    data['speechInputEnabled'] =
+        speechInputEnabled == null ? null : (speechInputEnabled! ? 1 : 0);
+    data['readAloudEnabled'] =
+        readAloudEnabled == null ? null : (readAloudEnabled! ? 1 : 0);
+    data['voiceLocale'] = voiceLocale;
+    data['voiceRate'] = voiceRate;
+    data['voiceStyle'] = voiceStyle;
+    data['readAloudTriggerMode'] = readAloudTriggerMode;
+    data['roleScene'] = roleScene;
+    data['roleRelationship'] = roleRelationship;
+    data['roleToneNote'] = roleToneNote;
     return data;
+  }
+
+  /// 当前会话专属的角色状态上下文。用于补充同一角色在不同会话里的
+  /// 场景、关系和语气差异，不会写回全局角色卡。
+  String roleStateContext() {
+    final lines = roleStatePromptLines();
+    if (lines.isEmpty) return '';
+    return '[当前会话角色状态]\n${lines.join('\n')}';
+  }
+
+  List<String> roleStatePromptLines() {
+    final preview = roleStatePreviewLines();
+    return [
+      for (final line in preview)
+        if (line.startsWith('场景：'))
+          '- 当前$line'
+        else if (line.startsWith('关系：'))
+          '- 关系备注：${line.substring(3)}'
+        else if (line.startsWith('语气：'))
+          '- 语气备注：${line.substring(3)}',
+    ];
+  }
+
+  List<String> roleStatePreviewLines() {
+    final scene = _normalizeRoleStateText(roleScene);
+    final relationship = _normalizeRoleStateText(roleRelationship);
+    final tone = _normalizeRoleStateText(roleToneNote);
+    final lines = [
+      if (scene.isNotEmpty) '场景：$scene',
+      if (relationship.isNotEmpty) '关系：$relationship',
+      if (tone.isNotEmpty) '语气：$tone',
+    ];
+    return lines;
+  }
+
+  String roleStateCopyText({String title = '当前会话状态'}) {
+    final lines = roleStatePreviewLines();
+    if (lines.isEmpty) return '';
+    return ['# $title', ...lines].join('\n');
+  }
+
+  static String _normalizeRoleStateText(String? value) {
+    return value?.trim().replaceAll(RegExp(r'\s+'), ' ') ?? '';
   }
 
   static bool? _boolOf(Object? raw) {
@@ -105,6 +204,14 @@ class ConversationModel {
       if (raw == '1' || raw.toLowerCase() == 'true') return true;
       if (raw == '0' || raw.toLowerCase() == 'false') return false;
     }
+    return null;
+  }
+
+  static double? _doubleOf(Object? raw) {
+    if (raw == null) return null;
+    if (raw is double) return raw;
+    if (raw is int) return raw.toDouble();
+    if (raw is String) return double.tryParse(raw);
     return null;
   }
 

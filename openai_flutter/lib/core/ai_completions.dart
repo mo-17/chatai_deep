@@ -20,6 +20,7 @@ class AICompletion implements AICreateInterface {
     String? stop,
     String? user,
     List<Map<String, dynamic>>? messages,
+    Duration timeout = const Duration(seconds: 15),
   }) async {
     final body = <String, dynamic>{
       "model": model,
@@ -46,6 +47,7 @@ class AICompletion implements AICreateInterface {
         return AIResponse.fromJson(response);
       },
       body: body,
+      timeout: timeout,
     );
   }
 

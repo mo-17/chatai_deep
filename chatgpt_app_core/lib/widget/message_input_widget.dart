@@ -8,23 +8,46 @@ import 'package:image_picker/image_picker.dart';
 import 'package:provider/provider.dart';
 import 'package:speech_to_text/speech_to_text.dart' as stt;
 
-/// 根据系统 locale 选择最匹配的语音识别 localeId
-String _pickLocaleId(List<stt.LocaleName> locales) {
-  if (locales.isEmpty) return 'en_US';
-  final sysLocale = Platform.localeName;
+/// 根据偏好 / 系统 locale 选择最匹配的语音识别 localeId。
+///
+/// 返回 null 表示交给 speech_to_text 使用平台默认语言；永远不返回空字符串，
+/// 避免部分原生实现收到 `localeId: ''` 后崩溃。
+String? pickSpeechLocaleId(
+  List<stt.LocaleName> locales, {
+  String? preferredLocale,
+  String? systemLocale,
+}) {
+  final candidates = locales
+      .map((l) => l.localeId.trim())
+      .where((id) => id.isNotEmpty)
+      .toList();
+  if (candidates.isEmpty) return null;
+  final sysLocale = _normalizeSpeechLocale(preferredLocale) ??
+      _normalizeSpeechLocale(systemLocale) ??
+      _normalizeSpeechLocale(Platform.localeName);
+  if (sysLocale == null) return candidates.first;
   // 精确匹配
-  for (final l in locales) {
-    if (l.localeId == sysLocale) return l.localeId;
+  for (final id in candidates) {
+    if (_normalizeSpeechLocale(id) == sysLocale) return id;
   }
   // 语言前缀匹配
   final lang = sysLocale.split('_').first;
-  for (final l in locales) {
-    if (l.localeId.startsWith('$lang-') || l.localeId.startsWith('${lang}_')) {
-      return l.localeId;
+  if (lang.isNotEmpty) {
+    for (final id in candidates) {
+      final normalized = _normalizeSpeechLocale(id);
+      if (normalized != null && normalized.split('_').first == lang) {
+        return id;
+      }
     }
   }
   // 降级到系统默认
-  return locales.first.localeId;
+  return candidates.first;
+}
+
+String? _normalizeSpeechLocale(String? locale) {
+  final value = locale?.trim();
+  if (value == null || value.isEmpty) return null;
+  return value.replaceAll('-', '_');
 }
 
 ///聊天输入框
@@ -52,12 +75,15 @@ class MessageInputWidget extends StatefulWidget {
   final String? modelLabel;
   final VoidCallback? onModelTap;
   final String hint;
+  final String initialText;
   final bool enable;
   final bool isStreaming;
+  final bool speechInputEnabled;
+  final String? speechLocale;
 
   const MessageInputWidget(
     this.hint, {
-    Key? key,
+    super.key,
     this.onChanged,
     this.onSend,
     this.onStop,
@@ -74,9 +100,12 @@ class MessageInputWidget extends StatefulWidget {
     this.onToggleWebSearch,
     this.modelLabel,
     this.onModelTap,
+    this.initialText = '',
     this.enable = true,
     this.isStreaming = false,
-  }) : super(key: key);
+    this.speechInputEnabled = true,
+    this.speechLocale,
+  });
 
   @override
   State<MessageInputWidget> createState() => _MessageInputWidgetState();
@@ -95,6 +124,11 @@ class _MessageInputWidgetState extends State<MessageInputWidget> {
   @override
   void initState() {
     super.initState();
+    if (widget.initialText.isNotEmpty) {
+      _controller.text = widget.initialText;
+      _showSend = true;
+      widget.onChanged?.call(widget.initialText);
+    }
     _initSpeech();
   }
 
@@ -156,6 +190,10 @@ class _MessageInputWidgetState extends State<MessageInputWidget> {
   }
 
   Future<void> _onMicTap() async {
+    if (!widget.speechInputEnabled) {
+      _focusNode.requestFocus();
+      return;
+    }
     if (_speech == null) await _initSpeech();
 
     // 不支持语音识别时，聚焦输入框唤起系统键盘（键盘自带语音按钮）
@@ -177,7 +215,8 @@ class _MessageInputWidgetState extends State<MessageInputWidget> {
     _lastWords = _controller.text;
     try {
       final locales = await _speech!.locales();
-      final localeId = _pickLocaleId(locales);
+      final localeId =
+          pickSpeechLocaleId(locales, preferredLocale: widget.speechLocale);
       await _speech!.listen(
         onResult: (result) {
           if (!mounted) return;
@@ -549,8 +588,8 @@ class _MessageInputWidgetState extends State<MessageInputWidget> {
 
   @override
   Widget build(BuildContext context) {
-    var themeProvider = context.watch<ThemeProvider>();
-    var color = themeProvider.themeColor;
+    final themeProvider = context.watch<ThemeProvider>();
+    final color = themeProvider.themeColor;
     var bottom = MediaQuery.of(context).padding.bottom;
     if (bottom == 0.0) {
       //适配iOS刘海屏以外的设备
@@ -572,7 +611,7 @@ class _MessageInputWidgetState extends State<MessageInputWidget> {
                 if (widget.showWebSearch) _webSearchBtn(color),
                 if (_showPhotoBtn) _photoBtn,
                 if (_showFileBtn) _fileBtn,
-                _micBtn,
+                if (widget.speechInputEnabled) _micBtn,
                 _input,
                 if (_showSend || widget.isStreaming) _sendBtn(color),
               ],

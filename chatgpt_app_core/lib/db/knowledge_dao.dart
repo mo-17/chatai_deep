@@ -1,3 +1,6 @@
+import 'dart:convert';
+
+import 'package:chatgpt_app_core/capability/product_capabilities.dart';
 import 'package:chatgpt_app_core/data/knowledge_chunker.dart';
 import 'package:chatgpt_app_core/db/hi_db_manager.dart';
 import 'package:chatgpt_app_core/db/table_name.dart';
@@ -10,6 +13,19 @@ class KnowledgeHit {
   final String content;
 
   const KnowledgeHit({required this.docTitle, required this.content});
+}
+
+class KnowledgeVectorIndexStats {
+  final int chunks;
+  final int indexed;
+
+  const KnowledgeVectorIndexStats({
+    required this.chunks,
+    required this.indexed,
+  });
+
+  int get missing => chunks - indexed;
+  bool get isComplete => missing <= 0;
 }
 
 ///知识库数据操作接口（L4a 关键词版）。
@@ -47,7 +63,12 @@ class KnowledgeDao implements IKnowledge, ITable {
         'create table if not exists tb_kb_chunk (id integer primary key autoincrement'
         ', docId integer, seq integer, content text);');
     await storage.db.execute(
+        'create table if not exists tb_kb_vector (chunkId integer primary key'
+        ', docId integer not null, vector text not null, updatedAt integer not null);');
+    await storage.db.execute(
         'create index if not exists tb_kb_chunk_doc_idx on tb_kb_chunk(docId);');
+    await storage.db.execute(
+        'create index if not exists tb_kb_vector_doc_idx on tb_kb_vector(docId);');
     await storage.db.execute(
         'create table if not exists tb_project_kb (projectId integer not null'
         ', docId integer not null, primary key(projectId, docId));');
@@ -72,6 +93,7 @@ class KnowledgeDao implements IKnowledge, ITable {
           'tb_kb_chunk', {'docId': docId, 'seq': i, 'content': chunks[i]});
     }
     await batch.commit(noResult: true);
+    await rebuildVectorIndex(docId: docId);
     AILogger.log('kb add doc "$title" -> $docId (${chunks.length} chunks)');
     return docId;
   }
@@ -87,8 +109,61 @@ class KnowledgeDao implements IKnowledge, ITable {
     await storage.db
         .delete('tb_kb_chunk', where: 'docId = ?', whereArgs: [docId]);
     await storage.db
+        .delete('tb_kb_vector', where: 'docId = ?', whereArgs: [docId]);
+    await storage.db
         .delete('tb_project_kb', where: 'docId = ?', whereArgs: [docId]);
     return storage.db.delete('tb_kb_doc', where: 'id = ?', whereArgs: [docId]);
+  }
+
+  Future<KnowledgeVectorIndexStats> vectorIndexStats({int? docId}) async {
+    final chunkWhere = docId == null ? '' : 'where docId = ?';
+    final args = docId == null ? const <Object?>[] : <Object?>[docId];
+    final chunkRows = await storage.db.rawQuery(
+      'select count(*) as count from tb_kb_chunk $chunkWhere',
+      args,
+    );
+    final indexRows = await storage.db.rawQuery(
+      'select count(*) as count from tb_kb_vector $chunkWhere',
+      args,
+    );
+    return KnowledgeVectorIndexStats(
+      chunks: ((chunkRows.first['count'] as num?) ?? 0).toInt(),
+      indexed: ((indexRows.first['count'] as num?) ?? 0).toInt(),
+    );
+  }
+
+  Future<KnowledgeVectorIndexStats> rebuildVectorIndex({int? docId}) async {
+    final where = docId == null ? '' : 'where c.docId = ?';
+    final rows = await storage.db.rawQuery(
+      'select c.id as chunkId, c.docId as docId, c.content as content, '
+      'd.title as title from tb_kb_chunk c '
+      'left join tb_kb_doc d on d.id = c.docId '
+      '$where order by c.id',
+      docId == null ? const <Object?>[] : <Object?>[docId],
+    );
+    await storage.db.transaction((txn) async {
+      if (docId == null) {
+        await txn.delete('tb_kb_vector');
+      } else {
+        await txn
+            .delete('tb_kb_vector', where: 'docId = ?', whereArgs: [docId]);
+      }
+      final batch = txn.batch();
+      final now = DateTime.now().millisecondsSinceEpoch;
+      for (final row in rows) {
+        final title = (row['title'] as String?) ?? '';
+        final content = (row['content'] as String?) ?? '';
+        batch.insert('tb_kb_vector', {
+          'chunkId': row['chunkId'],
+          'docId': row['docId'],
+          'vector':
+              jsonEncode(LightweightVectorRag.vectorOf('$title $content')),
+          'updatedAt': now,
+        });
+      }
+      await batch.commit(noResult: true);
+    });
+    return vectorIndexStats(docId: docId);
   }
 
   @override
@@ -117,11 +192,62 @@ class KnowledgeDao implements IKnowledge, ITable {
       'where ${clauses.join(' and ')} order by c.id limit ?',
       whereArgs,
     );
-    return [
+    final keywordHits = [
       for (final r in rows)
         KnowledgeHit(
           docTitle: (r['title'] as String?) ?? '(未命名文档)',
           content: (r['content'] as String?) ?? '',
+        ),
+    ];
+    if (keywordHits.isNotEmpty) return keywordHits;
+
+    return _vectorFallback(query, limit: limit, scopedDocIds: scopedDocIds);
+  }
+
+  Future<List<KnowledgeHit>> _vectorFallback(String query,
+      {required int limit, required List<int> scopedDocIds}) async {
+    final useProjectScope = scopedDocIds.isNotEmpty;
+    final where = useProjectScope
+        ? 'where c.docId in (${List.filled(scopedDocIds.length, '?').join(',')})'
+        : '';
+    final rows = await storage.db.rawQuery(
+      'select c.id as chunkId, c.docId as docId, c.content as content, '
+      'd.title as title, v.vector as vector from tb_kb_chunk c '
+      'left join tb_kb_doc d on d.id = c.docId '
+      'left join tb_kb_vector v on v.chunkId = c.id '
+      '$where order by c.id limit 200',
+      useProjectScope ? scopedDocIds : const <Object?>[],
+    );
+    final titles = <String, String>{};
+    final qv = LightweightVectorRag.vectorOf(query);
+    final hits = <RagHit>[];
+    for (final row in rows) {
+      final id = '${row['docId']}:${row['chunkId']}';
+      final title = (row['title'] as String?) ?? '(未命名文档)';
+      final content = (row['content'] as String?) ?? '';
+      titles[id] = title;
+      final vector = _decodeVector(row['vector']) ??
+          LightweightVectorRag.vectorOf('$title $content');
+      final score = LightweightVectorRag.cosine(qv, vector);
+      if (score <= 0) continue;
+      final doc = RagDocument(
+        id: id,
+        title: title,
+        content: content,
+      );
+      hits.add(RagHit(
+        document: doc,
+        score: score,
+        snippet:
+            content.length <= 120 ? content : '${content.substring(0, 120)}...',
+      ));
+    }
+    hits.sort((a, b) => b.score.compareTo(a.score));
+    return [
+      for (final hit in hits.take(limit))
+        KnowledgeHit(
+          docTitle: titles[hit.document.id] ?? hit.document.title,
+          content: hit.snippet,
         ),
     ];
   }
@@ -146,5 +272,20 @@ class KnowledgeDao implements IKnowledge, ITable {
       }
       await batch.commit(noResult: true);
     });
+  }
+
+  static Map<String, double>? _decodeVector(Object? raw) {
+    if (raw is! String || raw.trim().isEmpty) return null;
+    try {
+      final decoded = jsonDecode(raw);
+      if (decoded is! Map) return null;
+      return {
+        for (final entry in decoded.entries)
+          if (entry.key is String && entry.value is num)
+            entry.key as String: (entry.value as num).toDouble(),
+      };
+    } catch (_) {
+      return null;
+    }
   }
 }
