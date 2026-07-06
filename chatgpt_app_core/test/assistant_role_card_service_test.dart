@@ -1111,11 +1111,17 @@ void main() {
               'keys': ['钟楼'],
               'content': '钟楼会在第四层扫描时触发。',
               'position': 'before_char',
-              'probability': 80,
+              'probability': 100,
               'useProbability': true,
               'extensions': {
                 'depth': 4,
               },
+            },
+            {
+              'keys': ['暗门'],
+              'content': '概率为零的条目不应注入。',
+              'probability': 0,
+              'useProbability': true,
             },
           ],
         },
@@ -1124,16 +1130,20 @@ void main() {
 
     expect(
       imported.memoryBook,
-      '[pos=before_char] [depth=4] [prob=80] 钟楼 => 钟楼会在第四层扫描时触发。',
+      [
+        '[pos=before_char] [depth=4] [prob=100] 钟楼 => 钟楼会在第四层扫描时触发。',
+        '[prob=0] 暗门 => 概率为零的条目不应注入。',
+      ].join('\n'),
     );
     final hit = AssistantRoleCardService.matchMemoryEntries(
       imported.memoryBook,
-      '钟楼敲响了。',
+      '钟楼敲响了，暗门也打开了。',
     ).single;
     expect(hit.position, 'before_char');
     expect(hit.depth, 4);
-    expect(hit.probability, 80);
-    expect(hit.label, '钟楼 · pos=before_char · depth=4 · prob=80');
+    expect(hit.probability, 100);
+    expect(hit.label, '钟楼 · pos=before_char · depth=4 · prob=100');
+    expect(hit.content, isNot(contains('概率为零')));
   });
 
   test('SillyTavern 世界书禁用别名会保留为 off 条目', () {

@@ -513,6 +513,7 @@ class AssistantRoleCardService {
       if (!hit) continue;
       if (!_secondaryHit(entry, scanText, lowerScanText)) continue;
       if (_excludeHit(entry, scanText, lowerScanText)) continue;
+      if (!_probabilityHit(entry, scanText)) continue;
       if (!seen.add(entry.content)) continue;
       matched.add(entry);
     }
@@ -955,6 +956,31 @@ class AssistantRoleCardService {
       caseSensitive: entry.caseSensitive,
       wholeWords: entry.wholeWords,
     );
+  }
+
+  static bool _probabilityHit(
+    AssistantMemoryEntryPreview entry,
+    String scanText,
+  ) {
+    final probability = entry.probability;
+    if (probability == null || probability >= 100) return true;
+    if (probability <= 0) return false;
+    final seed = [
+      entry.keywords.join('|'),
+      entry.secondaryKeywords.join('|'),
+      entry.content,
+      scanText,
+    ].join('\n');
+    return _stablePercent(seed) < probability;
+  }
+
+  static int _stablePercent(String value) {
+    var hash = 0x811c9dc5;
+    for (final unit in value.codeUnits) {
+      hash ^= unit;
+      hash = (hash * 0x01000193) & 0xffffffff;
+    }
+    return hash % 100;
   }
 
   static _MemoryPreviewMeta _parseMemoryMeta(String line) {
