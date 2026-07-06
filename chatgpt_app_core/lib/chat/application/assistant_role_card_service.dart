@@ -1508,10 +1508,14 @@ class AssistantRoleCardService {
 
   static bool? _boolOrNull(Object? raw) {
     if (raw is bool) return raw;
+    if (raw is num) {
+      if (raw == 1) return true;
+      if (raw == 0) return false;
+    }
     if (raw is String) {
       final value = raw.trim().toLowerCase();
-      if (value == 'true') return true;
-      if (value == 'false') return false;
+      if (const {'true', '1', 'yes', 'y', 'on'}.contains(value)) return true;
+      if (const {'false', '0', 'no', 'n', 'off'}.contains(value)) return false;
     }
     return null;
   }
@@ -1569,7 +1573,7 @@ class AssistantRoleCardService {
               regex: _tavernEntryUsesRegex(item))
           : const <String>[];
       final prefix = _tavernWorldBookPrefix(item, secondaryKeys: secondaryKeys);
-      final constant = item['constant'] == true;
+      final constant = _tavernEntryConstant(item);
       final keys = _tavernKeys(item, name, includeSecondary: !selective);
       if (constant || keys.isEmpty) {
         lines.add('$prefix$content');
@@ -1712,11 +1716,8 @@ class AssistantRoleCardService {
   static int? _tavernEntryProbability(Map<String, dynamic> item) {
     final direct = _intOrNull(item['probability']);
     final extensions = item['extensions'];
-    final useProbability = item['useProbability'] == true ||
-        item['use_probability'] == true ||
-        (extensions is Map &&
-            (extensions['useProbability'] == true ||
-                extensions['use_probability'] == true));
+    final useProbability =
+        _tavernBool(item, const ['useProbability', 'use_probability']) == true;
     final extProbability =
         extensions is Map ? _intOrNull(extensions['probability']) : null;
     final value = direct ?? extProbability;
@@ -1739,18 +1740,27 @@ class AssistantRoleCardService {
   }
 
   static bool _tavernEntryDisabled(Map<String, dynamic> item) {
-    if (item['enabled'] == false ||
-        item['disabled'] == true ||
-        item['disable'] == true) {
-      return true;
+    return _tavernBool(item, const ['enabled']) == false ||
+        _tavernBool(item, const ['disabled', 'disable']) == true;
+  }
+
+  static bool _tavernEntryConstant(Map<String, dynamic> item) {
+    return _tavernBool(item, const ['constant']) == true;
+  }
+
+  static bool? _tavernBool(Map<String, dynamic> item, List<String> keys) {
+    for (final key in keys) {
+      final value = _boolOrNull(item[key]);
+      if (value != null) return value;
     }
     final extensions = item['extensions'];
     if (extensions is Map) {
-      return extensions['enabled'] == false ||
-          extensions['disabled'] == true ||
-          extensions['disable'] == true;
+      for (final key in keys) {
+        final value = _boolOrNull(extensions[key]);
+        if (value != null) return value;
+      }
     }
-    return false;
+    return null;
   }
 
   static List<String> _tavernKeys(
@@ -1797,48 +1807,27 @@ class AssistantRoleCardService {
   }
 
   static bool _tavernEntryUsesSelective(Map<String, dynamic> item) {
-    if (item['selective'] == true || item['selectiveLogic'] == true) {
-      return true;
-    }
-    final extensions = item['extensions'];
-    if (extensions is Map) {
-      return extensions['selective'] == true ||
-          extensions['selectiveLogic'] == true;
-    }
-    return false;
+    return _tavernBool(
+          item,
+          const ['selective', 'selectiveLogic', 'selective_logic'],
+        ) ==
+        true;
   }
 
   static bool _tavernEntryCaseSensitive(Map<String, dynamic> item) {
-    if (item['case_sensitive'] == true || item['caseSensitive'] == true) {
-      return true;
-    }
-    final extensions = item['extensions'];
-    if (extensions is Map) {
-      return extensions['case_sensitive'] == true ||
-          extensions['caseSensitive'] == true;
-    }
-    return false;
+    return _tavernBool(item, const ['case_sensitive', 'caseSensitive']) == true;
   }
 
   static bool _tavernEntryWholeWords(Map<String, dynamic> item) {
-    if (item['match_whole_words'] == true || item['matchWholeWords'] == true) {
-      return true;
-    }
-    final extensions = item['extensions'];
-    if (extensions is Map) {
-      return extensions['match_whole_words'] == true ||
-          extensions['matchWholeWords'] == true;
-    }
-    return false;
+    return _tavernBool(item, const [
+          'match_whole_words',
+          'matchWholeWords',
+        ]) ==
+        true;
   }
 
   static bool _tavernEntryUsesRegex(Map<String, dynamic> item) {
-    if (item['regex'] == true || item['use_regex'] == true) return true;
-    final extensions = item['extensions'];
-    if (extensions is Map) {
-      return extensions['regex'] == true || extensions['use_regex'] == true;
-    }
-    return false;
+    return _tavernBool(item, const ['regex', 'use_regex', 'useRegex']) == true;
   }
 
   static String _normalizeTavernText(Object? value, String name) {

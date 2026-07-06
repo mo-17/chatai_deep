@@ -1084,6 +1084,60 @@ void main() {
     );
   });
 
+  test('SillyTavern 世界书布尔字段兼容字符串和数字', () {
+    final imported = AssistantRoleCardService.importJson(jsonEncode({
+      'spec': 'chara_card_v2',
+      'data': {
+        'name': '布尔字段角色',
+        'description': '角色设定正文。',
+        'first_mes': '你好。',
+        'character_book': {
+          'entries': [
+            {
+              'constant': '1',
+              'content': '常驻设定。',
+            },
+            {
+              'keys': ['禁用词'],
+              'content': '这条不应该触发。',
+              'enabled': 'false',
+            },
+            {
+              'keys': ['暗门'],
+              'secondary_keys': ['地下'],
+              'content': '暗门只在地下回应。',
+              'selective': 'yes',
+              'regex': 1,
+              'case_sensitive': 'on',
+              'match_whole_words': 1,
+            },
+            {
+              'keys': ['概率'],
+              'content': '概率字段启用。',
+              'probability': '20',
+              'useProbability': 'true',
+            },
+          ],
+        },
+      },
+    }));
+
+    expect(
+      imported.memoryBook,
+      [
+        '常驻设定。',
+        '[off] 禁用词 => 这条不应该触发。',
+        '[re] [cs] [ww] [sec=地下] 暗门 => 暗门只在地下回应。',
+        '[prob=20] 概率 => 概率字段启用。',
+      ].join('\n'),
+    );
+    final hits = AssistantRoleCardService.matchMemoryEntries(
+      imported.memoryBook,
+      '禁用词',
+    );
+    expect(hits.map((item) => item.content), ['常驻设定。']);
+  });
+
   test('SillyTavern 世界书 order 字段可兜底为移动端优先级', () {
     final imported = AssistantRoleCardService.importJson(jsonEncode({
       'spec': 'chara_card_v2',
