@@ -85,7 +85,8 @@ void main() {
 [备选开场白]
 雨声盖住了脚步声。
 ''',
-      memoryBook: '[sec=潮汐|浮岛] [p=12] 钟声 => 钟声代表艾琳记忆里的浮岛潮汐。\n'
+      memoryBook:
+          '[sec=潮汐|浮岛] [exclude=白天] [p=12] [pos=after_char] [depth=3] [prob=40] [norec] [group=bell] [gw=7] 钟声 => 钟声代表艾琳记忆里的浮岛潮汐。\n'
           '[off] [re] 第[一二三]幕 || Act\\s+\\d+ => 按幕次切换叙事节奏。\n'
           '城市由七座浮岛组成。',
       defaultVoiceStyle: 'female',
@@ -123,7 +124,15 @@ void main() {
       'keys': ['钟声'],
       'selective': true,
       'secondary_keys': ['潮汐', '浮岛'],
+      'exclude_keys': ['白天'],
       'priority': 12,
+      'position': 'after_char',
+      'depth': 3,
+      'probability': 40,
+      'useProbability': true,
+      'excludeRecursion': true,
+      'group': 'bell',
+      'groupWeight': 7,
     });
     expect(entries[1], {
       'content': '按幕次切换叙事节奏。',
@@ -149,7 +158,12 @@ void main() {
     expect(imported.description, '浮岛钟表师，适合慢节奏角色扮演\n标签：有默认音色、世界书、工具');
     expect(imported.prompt, contains('[系统提示]\n保持沉浸，不要跳出角色。'));
     expect(imported.prompt, contains('[角色设定]\n艾琳 是浮岛钟表师，习惯在雨夜修表。'));
-    expect(imported.memoryBook, contains('[sec=潮汐|浮岛] [p=12] 钟声 =>'));
+    expect(
+      imported.memoryBook,
+      contains(
+        '[sec=潮汐|浮岛] [exclude=白天] [p=12] [pos=after_char] [depth=3] [prob=40] [norec] [group=bell] [gw=7] 钟声 =>',
+      ),
+    );
     expect(
         imported.memoryBook, contains('[off] [re] 第[一二三]幕 || Act\\s+\\d+ =>'));
     expect(imported.memoryBook, contains('城市由七座浮岛组成。'));

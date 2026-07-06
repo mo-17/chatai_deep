@@ -872,10 +872,22 @@ class AssistantRoleCardService {
         item['selective'] = true;
         item['secondary_keys'] = entry.secondaryKeywords;
       }
+      if (entry.excludeKeywords.isNotEmpty) {
+        item['exclude_keys'] = entry.excludeKeywords;
+      }
       if (entry.priority != 0) item['priority'] = entry.priority;
       if (entry.regex) item['regex'] = true;
       if (entry.caseSensitive) item['case_sensitive'] = true;
       if (entry.wholeWords) item['match_whole_words'] = true;
+      if (entry.position.trim().isNotEmpty) item['position'] = entry.position;
+      if (entry.depth != null) item['depth'] = entry.depth;
+      if (entry.probability != null) {
+        item['probability'] = entry.probability;
+        item['useProbability'] = true;
+      }
+      if (entry.excludeFromRecursion) item['excludeRecursion'] = true;
+      if (entry.group.trim().isNotEmpty) item['group'] = entry.group.trim();
+      if (entry.groupWeight != 0) item['groupWeight'] = entry.groupWeight;
       entries.add(item);
     }
     return {'entries': entries};
