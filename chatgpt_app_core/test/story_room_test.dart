@@ -439,6 +439,38 @@ void main() {
       expect(system, contains('暗门后通向地下书库'));
     });
 
+    test('酒馆原卡 Token 预算会裁剪最终注入的世界书文本', () {
+      final room = StoryRoomModel(
+        title: '镜厅',
+        mode: StoryRoomMode.tavern,
+        publicContext: [
+          '【Tavern 原卡信息】',
+          'Token 预算：20',
+          '',
+          '【关键词记忆 / 世界书】',
+          '镜子 => 这是一个非常非常非常长的镜子设定，后半段不应该完整出现。',
+        ].join('\n'),
+      );
+      final fuka = StoryParticipantModel(
+        id: 1,
+        roomId: 1,
+        role: StoryParticipantRole.assistant,
+        name: 'Fuka',
+        prompt: '安静观察。',
+      );
+
+      final system = StoryContextBuilder.systemPrompt(
+        room: room,
+        participants: [fuka],
+        speaker: fuka,
+        latestInput: '我看见了镜子。',
+      );
+
+      expect(system, contains('这是一个非常非常'));
+      expect(system, contains('...'));
+      expect(system, isNot(contains('后半段不应该完整出现')));
+    });
+
     test('酒馆世界书按本轮输入动态命中，避免全量注入', () {
       final room = StoryRoomModel(
         title: 'Florin',

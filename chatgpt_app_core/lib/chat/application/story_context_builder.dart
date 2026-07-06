@@ -49,10 +49,14 @@ class StoryContextBuilder {
             recentTexts: recentTexts,
             recursive: _worldBookRecursiveScanning(room),
           );
-    final beforeCharHits = worldBookHits
+    final budgetedWorldBookHits = _budgetWorldBookHits(
+      worldBookHits,
+      maxChars: _worldBookTokenBudget(room),
+    );
+    final beforeCharHits = budgetedWorldBookHits
         .where((hit) => !_isAfterCharWorldBookPosition(hit.position))
         .toList();
-    final afterCharHits = worldBookHits
+    final afterCharHits = budgetedWorldBookHits
         .where((hit) => _isAfterCharWorldBookPosition(hit.position))
         .toList();
     if (beforeCharHits.isNotEmpty) {
@@ -135,6 +139,11 @@ class StoryContextBuilder {
     return 6;
   }
 
+  static int? _worldBookTokenBudget(StoryRoomModel room) {
+    final budget = RegExp(r'Token 预算：(\d+)').firstMatch(room.publicContext);
+    return int.tryParse(budget?.group(1) ?? '');
+  }
+
   static int _worldBookScanDepth(StoryRoomModel room) {
     final depth = RegExp(r'扫描深度：(\d+)').firstMatch(room.publicContext);
     final value = int.tryParse(depth?.group(1) ?? '');
@@ -184,6 +193,59 @@ class StoryContextBuilder {
       all.addAll(nextHits);
     }
     return all.take(maxEntries).toList();
+  }
+
+  static List<AssistantMemoryEntryPreview> _budgetWorldBookHits(
+    List<AssistantMemoryEntryPreview> hits, {
+    required int? maxChars,
+  }) {
+    if (maxChars == null) return hits;
+    final limit = maxChars.clamp(0, 20000).toInt();
+    if (limit <= 0) return const [];
+    final budgeted = <AssistantMemoryEntryPreview>[];
+    var used = 0;
+    for (final hit in hits) {
+      final linePrefix = '${hit.label}：';
+      final separator = budgeted.isEmpty ? 0 : 1;
+      final remaining = limit - used - separator - linePrefix.length;
+      if (remaining <= 0) break;
+      final content = hit.content.length > remaining
+          ? _truncateWorldBookContent(hit.content, remaining)
+          : hit.content;
+      if (content.isEmpty) break;
+      budgeted.add(_copyWorldBookHit(hit, content: content));
+      used += separator + linePrefix.length + content.length;
+      if (content.length >= remaining) break;
+    }
+    return budgeted;
+  }
+
+  static AssistantMemoryEntryPreview _copyWorldBookHit(
+    AssistantMemoryEntryPreview hit, {
+    required String content,
+  }) {
+    return AssistantMemoryEntryPreview(
+      keywords: hit.keywords,
+      content: content,
+      alwaysOn: hit.alwaysOn,
+      enabled: hit.enabled,
+      priority: hit.priority,
+      regex: hit.regex,
+      secondaryKeywords: hit.secondaryKeywords,
+      excludeKeywords: hit.excludeKeywords,
+      caseSensitive: hit.caseSensitive,
+      wholeWords: hit.wholeWords,
+      position: hit.position,
+      depth: hit.depth,
+      probability: hit.probability,
+    );
+  }
+
+  static String _truncateWorldBookContent(String content, int maxChars) {
+    if (maxChars <= 0) return '';
+    if (content.length <= maxChars) return content;
+    if (maxChars <= 3) return content.substring(0, maxChars);
+    return '${content.substring(0, maxChars - 3).trimRight()}...';
   }
 
   static List<String> _recentMatchTexts(
