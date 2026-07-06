@@ -11,6 +11,8 @@ dependencies:
     sdk: flutter
   chatgpt_app_core:
     path: ../chatgpt_app_core
+  login_sdk:
+    path: ../login_sdk
 
 dependency_overrides:
   sqflite:
@@ -57,8 +59,14 @@ dependency_overrides:
   # 转发面板以 Platform.operatingSystem == 'ohos' 守卫，降级为复制到剪贴板。
   share_plus:
     path: ../ohos_stubs/share_plus
+  # flutter_tts 无鸿蒙实现：覆盖到本地空实现 stub；
+  # 运行时由 FlutterTtsReadAloudService.isSupported（非 OHOS）守卫。
+  flutter_tts:
+    path: ../ohos_stubs/flutter_tts
 
 dev_dependencies:
+  flutter_test:
+    sdk: flutter
   flutter_lints: ^2.0.0
 
 flutter:

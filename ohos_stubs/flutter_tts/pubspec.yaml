@@ -1,0 +1,10 @@
+name: flutter_tts
+description: >-
+  HarmonyOS 空实现 stub。上游 flutter_tts 无 OHOS 原生实现，OHOS 壳通过
+  dependency_overrides 覆盖到本包，使共享核心可编译。运行时由
+  FlutterTtsReadAloudService.isSupported 守卫，正常不会触达本 stub。
+version: 4.2.3
+publish_to: 'none'
+
+environment:
+  sdk: '>=3.0.0 <4.0.0'

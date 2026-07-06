@@ -1,6 +1,7 @@
 'use client';
 
 import { useEffect, useState, useMemo, useRef } from 'react';
+import Image from 'next/image';
 import {
   Card, CardBody, CardHeader, Button, Select, SelectItem, Switch, Spinner,
 } from '@heroui/react';
@@ -146,9 +147,12 @@ export default function AiGlobalPage() {
         <CardBody>
           <div className="flex items-center gap-4">
             {avatarUrl ? (
-              <img
+              <Image
                 src={avatarUrl}
                 alt="AI avatar"
+                width={64}
+                height={64}
+                unoptimized
                 className="w-16 h-16 rounded-lg object-cover border border-default-300"
               />
             ) : (

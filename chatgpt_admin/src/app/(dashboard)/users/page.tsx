@@ -1,6 +1,7 @@
 'use client';
 
 import { useState, useCallback } from 'react';
+import Image from 'next/image';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { useSearchParams, useRouter } from 'next/navigation';
 import { useDebounce } from 'ahooks';
@@ -169,7 +170,14 @@ export default function UsersPage() {
               <TableCell>{user.id}</TableCell>
               <TableCell>
                 {user.avatar ? (
-                  <img src={user.avatar} className="w-8 h-8 rounded-full" alt="" />
+                  <Image
+                    src={user.avatar}
+                    width={32}
+                    height={32}
+                    unoptimized
+                    className="w-8 h-8 rounded-full object-cover"
+                    alt=""
+                  />
                 ) : null}
               </TableCell>
               <TableCell>{user.userName}</TableCell>

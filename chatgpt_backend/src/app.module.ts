@@ -14,6 +14,7 @@ import { AiModule } from './ai/ai.module';
 import { HealthModule } from './health/health.module';
 import { AuthModule } from './auth/auth.module';
 import { McpModule } from './mcp/mcp.module';
+import { SyncModule } from './sync/sync.module';
 import {
   VerificationCode,
   SmtpProvider,
@@ -88,6 +89,7 @@ import {
     HealthModule,
     AuthModule,
     McpModule,
+    SyncModule,
   ],
   providers: [{ provide: APP_GUARD, useClass: ThrottlerGuard }],
 })

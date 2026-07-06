@@ -1,6 +1,7 @@
 name: login_sdk
 description: A new Flutter package project.
 version: 0.0.1
+publish_to: none
 homepage:
 
 environment:
@@ -27,6 +28,7 @@ dev_dependencies:
 
 # The following section is specific to Flutter packages.
 flutter:
+  uses-material-design: true
 
   assets:
     - assets/login_bg_botanical.svg

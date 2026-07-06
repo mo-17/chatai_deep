@@ -1,7 +1,7 @@
 'use client';
 
 import { useState, useEffect } from 'react';
-import { Button, Switch, Input, Spinner } from '@heroui/react';
+import { Switch, Input, Spinner } from '@heroui/react';
 import { fetchAuthSettings, updateAuthSettings } from '@/lib/api/auth-admin';
 import type { AuthSettings } from '@/lib/api/auth-admin';
 
@@ -19,7 +19,7 @@ export default function AuthSettingsPage() {
     const updated = { ...settings, ...patch };
     setSettings(updated);
     setSaving(true);
-    try { setSettings(await updateAuthSettings(patch)); } catch (_) {}
+    try { setSettings(await updateAuthSettings(patch)); } catch {}
     setSaving(false);
   };
 

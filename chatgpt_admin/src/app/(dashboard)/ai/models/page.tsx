@@ -3,7 +3,7 @@
 import { useState, useCallback } from 'react';
 import {
   Table, TableHeader, TableColumn, TableBody, TableRow, TableCell,
-  Button, Chip, Switch, Select, SelectItem, Input, Tooltip, Spinner,
+  Button, Chip, Switch, Select, SelectItem, Input, Tooltip,
   Modal, ModalContent, ModalHeader, ModalBody, ModalFooter,
 } from '@heroui/react';
 import { Pencil, Trash2, Circle, CheckCircle } from 'lucide-react';

@@ -1,6 +1,7 @@
 'use client';
 
 import { useParams } from 'next/navigation';
+import Image from 'next/image';
 import { useQuery } from '@tanstack/react-query';
 import { Card, CardBody, CardHeader, Chip, Skeleton, Table, TableHeader, TableColumn, TableBody, TableRow, TableCell } from '@heroui/react';
 import { userApi } from '@/lib/api/user';
@@ -39,7 +40,14 @@ export default function UserDetailPage() {
           <CardHeader>基本信息</CardHeader>
           <CardBody className="space-y-2">
             {user.avatar && (
-              <img src={user.avatar} className="w-16 h-16 rounded-full" alt="" />
+              <Image
+                src={user.avatar}
+                width={64}
+                height={64}
+                unoptimized
+                className="w-16 h-16 rounded-full object-cover"
+                alt=""
+              />
             )}
             <p><span className="text-default-500">用户名:</span> {user.userName}</p>
             <p>

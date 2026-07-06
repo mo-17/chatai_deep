@@ -1,7 +1,7 @@
 name: chatgpt_flutter
 description: ChatGPT Flutter Android/iOS app shell
 publish_to: 'none'
-version: 1.0.3+5
+version: 1.0.4+7
 
 environment:
   sdk: '>=3.0.0 <4.0.0'
@@ -35,3 +35,13 @@ dev_dependencies:
 
 flutter:
   uses-material-design: true
+  assets:
+    - assets/sherpa_onnx/matcha-icefall-zh-baker/manifest.json
+    - assets/sherpa_onnx/matcha-icefall-zh-baker/vocos-22khz-univ.onnx
+    - assets/sherpa_onnx/matcha-icefall-zh-baker/matcha-icefall-zh-baker/model-steps-3.onnx
+    - assets/sherpa_onnx/matcha-icefall-zh-baker/matcha-icefall-zh-baker/tokens.txt
+    - assets/sherpa_onnx/matcha-icefall-zh-baker/matcha-icefall-zh-baker/lexicon.txt
+    - assets/sherpa_onnx/matcha-icefall-zh-baker/matcha-icefall-zh-baker/phone.fst
+    - assets/sherpa_onnx/matcha-icefall-zh-baker/matcha-icefall-zh-baker/date.fst
+    - assets/sherpa_onnx/matcha-icefall-zh-baker/matcha-icefall-zh-baker/number.fst
+    - assets/sherpa_onnx/matcha-icefall-zh-baker/matcha-icefall-zh-baker/dict/

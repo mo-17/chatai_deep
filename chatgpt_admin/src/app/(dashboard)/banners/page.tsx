@@ -1,6 +1,7 @@
 'use client';
 
 import { useState, useEffect } from 'react';
+import Image from 'next/image';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import {
   Table, TableHeader, TableColumn, TableBody, TableRow, TableCell,
@@ -120,7 +121,16 @@ export default function BannersPage() {
           {(b) => (
             <TableRow key={b.id}>
               <TableCell>
-                {b.cover ? <img src={b.cover} className="w-12 h-8 object-cover rounded" alt="" /> : '-'}
+                {b.cover ? (
+                  <Image
+                    src={b.cover}
+                    width={48}
+                    height={32}
+                    unoptimized
+                    className="w-12 h-8 object-cover rounded"
+                    alt=""
+                  />
+                ) : '-'}
               </TableCell>
               <TableCell>{b.title}</TableCell>
               <TableCell>{b.subtitle || '-'}</TableCell>
