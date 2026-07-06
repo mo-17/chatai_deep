@@ -919,6 +919,42 @@ void main() {
     expect(hits.single.label, '钟声 + 二级：潮汐 / 浮岛 · p=6');
   });
 
+  test('SillyTavern 世界书 keysecondary 字段会作为二级触发条件', () {
+    final imported = AssistantRoleCardService.importJson(jsonEncode({
+      'spec': 'chara_card_v2',
+      'data': {
+        'name': '原生字段角色',
+        'description': '角色设定正文。',
+        'first_mes': '你好。',
+        'character_book': {
+          'entries': [
+            {
+              'key': ['钟声'],
+              'keysecondary': ['地下', '雨夜'],
+              'content': '原生二级关键词被保留。',
+              'selective': true,
+            },
+          ],
+        },
+      },
+    }));
+
+    expect(
+      imported.memoryBook,
+      '[sec=地下|雨夜] 钟声 => 原生二级关键词被保留。',
+    );
+    expect(
+      AssistantRoleCardService.matchMemoryEntries(imported.memoryBook, '钟声响了'),
+      isEmpty,
+    );
+    final hits = AssistantRoleCardService.matchMemoryEntries(
+      imported.memoryBook,
+      '地下传来钟声',
+    );
+    expect(hits.single.secondaryKeywords, ['地下', '雨夜']);
+    expect(hits.single.content, '原生二级关键词被保留。');
+  });
+
   test('SillyTavern 世界书排除关键词会保留并参与匹配', () {
     final imported = AssistantRoleCardService.importJson(jsonEncode({
       'spec': 'chara_card_v2',

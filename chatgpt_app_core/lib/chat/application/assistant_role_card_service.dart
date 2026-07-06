@@ -1569,8 +1569,7 @@ class AssistantRoleCardService {
       if (comment.isNotEmpty) lines.add('# $comment');
       final selective = _tavernEntryUsesSelective(item);
       final secondaryKeys = selective
-          ? _tavernKeysFrom(item['secondary_keys'], name,
-              regex: _tavernEntryUsesRegex(item))
+          ? _tavernSecondaryKeys(item, name, regex: _tavernEntryUsesRegex(item))
           : const <String>[];
       final prefix = _tavernWorldBookPrefix(item, secondaryKeys: secondaryKeys);
       final constant = _tavernEntryConstant(item);
@@ -1774,7 +1773,7 @@ class AssistantRoleCardService {
     keys.addAll(_tavernKeysFrom(item['keys'], name, regex: regex));
     keys.addAll(_tavernKeysFrom(item['key'], name, regex: regex));
     if (includeSecondary) {
-      keys.addAll(_tavernKeysFrom(item['secondary_keys'], name, regex: regex));
+      keys.addAll(_tavernSecondaryKeys(item, name, regex: regex));
     }
     final seen = <String>{};
     return [
@@ -1804,6 +1803,28 @@ class AssistantRoleCardService {
         .map((item) => item.trim())
         .where((item) => item.isNotEmpty)
         .toList();
+  }
+
+  static List<String> _tavernSecondaryKeys(
+    Map<String, dynamic> item,
+    String name, {
+    required bool regex,
+  }) {
+    final keys = <String>[];
+    for (final key in const [
+      'secondary_keys',
+      'secondaryKeys',
+      'secondary_key',
+      'keysecondary',
+      'keySecondary',
+    ]) {
+      keys.addAll(_tavernKeysFrom(item[key], name, regex: regex));
+    }
+    final seen = <String>{};
+    return [
+      for (final key in keys)
+        if (seen.add(key)) key,
+    ];
   }
 
   static bool _tavernEntryUsesSelective(Map<String, dynamic> item) {
