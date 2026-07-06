@@ -719,6 +719,42 @@ void main() {
       expect(system, isNot(contains('【关键词记忆 / 世界书】')));
     });
 
+    test('酒馆世界书兼容 after char 位置别名', () {
+      final room = StoryRoomModel(
+        title: '训练场',
+        mode: StoryRoomMode.tavern,
+        publicContext: [
+          '【关键词记忆 / 世界书】',
+          '[pos=after char] 剑术 => 这条应注入到角色人设之后。',
+        ].join('\n'),
+      );
+      final fuka = StoryParticipantModel(
+        id: 1,
+        roomId: 1,
+        role: StoryParticipantRole.assistant,
+        name: 'Fuka',
+        prompt: '谨慎观察。',
+      );
+
+      final system = StoryContextBuilder.systemPrompt(
+        room: room,
+        participants: [fuka],
+        speaker: fuka,
+        latestInput: '你会剑术吗？',
+      );
+
+      expect(system, contains('【本轮命中世界书 / 角色后置】'));
+      expect(system, contains('这条应注入到角色人设之后。'));
+      expect(
+        system.indexOf('【当前发言者人设 / 写作职责】'),
+        lessThan(system.indexOf('【本轮命中世界书 / 角色后置】')),
+      );
+      expect(
+        system,
+        isNot(contains('【本轮命中世界书】\n命中角色记忆')),
+      );
+    });
+
     test('酒馆房间世界书匹配会忽略导入备注注释', () {
       final room = StoryRoomModel(
         title: '镜厅',

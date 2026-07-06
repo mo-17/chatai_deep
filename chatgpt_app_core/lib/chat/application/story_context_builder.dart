@@ -274,9 +274,12 @@ class StoryContextBuilder {
   }
 
   static bool _isAfterCharWorldBookPosition(String position) {
-    final normalized = position.trim().toLowerCase();
+    final normalized =
+        position.trim().toLowerCase().replaceAll(RegExp(r'[\s-]+'), '_');
     return normalized == 'after_char' ||
         normalized == 'afterchar' ||
+        normalized == 'after_character' ||
+        normalized == 'after_character_definition' ||
         normalized == 'after' ||
         normalized == '1';
   }
