@@ -275,6 +275,29 @@ void main() {
         ].join('\n'),
       );
     });
+
+    test('多角色世界书导入时跳过明确非角色条目', () {
+      final participants =
+          StoryRoomRoleCardImporter.parseMemoryBookParticipants(
+        [
+          'Chandra => Name: Chandra',
+          'Type: character',
+          'Personality: proud general.',
+          '',
+          'Florin => Name: Florin',
+          'Type: location',
+          'Description: A bright kingdom.',
+          '',
+          'Medli => Name: Medli',
+          '性格：温柔但坚定。',
+        ].join('\n'),
+        roomId: 1,
+      );
+
+      expect(participants.map((item) => item.name), ['Chandra', 'Medli']);
+      expect(participants.first.prompt, contains('proud general'));
+      expect(participants.last.prompt, contains('温柔但坚定'));
+    });
   });
 
   group('StoryContextBuilder', () {

@@ -198,6 +198,7 @@ class StoryRoomRoleCardImporter {
     for (final entry in _parseMemoryBookEntries(memoryBook)) {
       final content = entry.content.trim();
       if (content.isEmpty) continue;
+      if (!_looksLikeParticipantEntry(content)) continue;
       final name = _participantName(entry);
       if (name.isEmpty) continue;
       participants.add(StoryParticipantModel(
@@ -278,6 +279,32 @@ class StoryRoomRoleCardImporter {
       if (name.isNotEmpty) return name;
     }
     return entry.keywords.isEmpty ? '' : entry.keywords.first;
+  }
+
+  static bool _looksLikeParticipantEntry(String content) {
+    final type = _fieldValue(content, 'Type');
+    if (type.isNotEmpty) {
+      final normalized = type.toLowerCase();
+      return normalized.contains('character') ||
+          normalized.contains('角色') ||
+          normalized.contains('person') ||
+          normalized.contains('npc') ||
+          normalized.contains('assistant');
+    }
+    return _fieldValue(content, 'Name').isNotEmpty ||
+        _fieldValue(content, 'Personality').isNotEmpty ||
+        _fieldValue(content, 'Persona').isNotEmpty ||
+        _fieldValue(content, 'Character').isNotEmpty ||
+        _fieldValue(content, '角色').isNotEmpty ||
+        _fieldValue(content, '性格').isNotEmpty;
+  }
+
+  static String _fieldValue(String content, String field) {
+    final escaped = RegExp.escape(field);
+    final match = RegExp('^\\s*$escaped\\s*[:：]\\s*(.+?)\\s*\$',
+            multiLine: true, caseSensitive: false)
+        .firstMatch(content);
+    return match?.group(1)?.trim() ?? '';
   }
 
   static String _section(String title, String value) {
