@@ -471,6 +471,37 @@ void main() {
       expect(system, isNot(contains('暗门后通向地下书库')));
     });
 
+    test('酒馆世界书同组条目只注入权重最高版本', () {
+      final room = StoryRoomModel(
+        title: '钟楼',
+        mode: StoryRoomMode.tavern,
+        publicContext: [
+          '【关键词记忆 / 世界书】',
+          '[group=bell] [gw=1] 钟声 => 低权重钟声设定。',
+          '[group=bell] [gw=9] 钟声 => 高权重钟声设定。',
+          '钟声 => 无分组公共设定。',
+        ].join('\n'),
+      );
+      final fuka = StoryParticipantModel(
+        id: 1,
+        roomId: 1,
+        role: StoryParticipantRole.assistant,
+        name: 'Fuka',
+        prompt: '安静观察。',
+      );
+
+      final system = StoryContextBuilder.systemPrompt(
+        room: room,
+        participants: [fuka],
+        speaker: fuka,
+        latestInput: '钟声响了。',
+      );
+
+      expect(system, contains('高权重钟声设定'));
+      expect(system, contains('无分组公共设定'));
+      expect(system, isNot(contains('低权重钟声设定')));
+    });
+
     test('酒馆原卡 Token 预算会裁剪最终注入的世界书文本', () {
       final room = StoryRoomModel(
         title: '镜厅',

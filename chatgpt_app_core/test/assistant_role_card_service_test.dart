@@ -1215,6 +1215,71 @@ void main() {
     expect(hits.single.label, '镜子 · 不参与递归');
   });
 
+  test('SillyTavern 世界书 group 和 groupWeight 字段会保留', () {
+    final imported = AssistantRoleCardService.importJson(jsonEncode({
+      'spec': 'chara_card_v2',
+      'data': {
+        'name': '分组角色',
+        'description': '角色设定正文。',
+        'first_mes': '你好。',
+        'character_book': {
+          'entries': [
+            {
+              'keys': ['钟声'],
+              'content': '晨钟版本。',
+              'group': 'bell',
+              'groupWeight': 20,
+            },
+            {
+              'keys': ['钟声'],
+              'content': '暮钟版本。',
+              'extensions': {
+                'group_name': 'bell',
+                'group_weight': '5',
+              },
+            },
+          ],
+        },
+      },
+    }));
+
+    expect(
+      imported.memoryBook,
+      [
+        '[group=bell] [gw=20] 钟声 => 晨钟版本。',
+        '[group=bell] [gw=5] 钟声 => 暮钟版本。',
+      ].join('\n'),
+    );
+    final hits = AssistantRoleCardService.matchMemoryEntries(
+      imported.memoryBook,
+      '钟声响了',
+      maxEntries: 4,
+    );
+    expect(hits.map((item) => item.content), ['晨钟版本。']);
+    expect(hits.single.group, 'bell');
+    expect(hits.single.groupWeight, 20);
+    expect(hits.single.label, '钟声 · 组：bell · gw=20');
+  });
+
+  test('世界书同组命中只保留 groupWeight 最高条目', () {
+    final hits = AssistantRoleCardService.matchMemoryEntries(
+      [
+        '[group=bell] [gw=1] [p=100] 钟声 => 低权重但高优先级。',
+        '[group=bell] [gw=9] [p=1] 钟声 => 高权重版本。',
+        '[p=5] 钟声 => 无分组条目仍保留。',
+      ].join('\n'),
+      '钟声响了',
+      maxEntries: 5,
+    );
+
+    expect(hits.map((item) => item.content), [
+      '无分组条目仍保留。',
+      '高权重版本。',
+    ]);
+    expect(hits.last.group, 'bell');
+    expect(hits.last.groupWeight, 9);
+  });
+
   test('SillyTavern 世界书 order 字段可兜底为移动端优先级', () {
     final imported = AssistantRoleCardService.importJson(jsonEncode({
       'spec': 'chara_card_v2',

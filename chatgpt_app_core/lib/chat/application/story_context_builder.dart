@@ -240,6 +240,8 @@ class StoryContextBuilder {
       depth: hit.depth,
       probability: hit.probability,
       excludeFromRecursion: hit.excludeFromRecursion,
+      group: hit.group,
+      groupWeight: hit.groupWeight,
     );
   }
 

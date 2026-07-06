@@ -461,6 +461,8 @@ class AssistantRoleCardService {
           depth: meta.depth,
           probability: meta.probability,
           excludeFromRecursion: meta.excludeFromRecursion,
+          group: meta.group,
+          groupWeight: meta.groupWeight,
         ));
         continue;
       }
@@ -486,6 +488,8 @@ class AssistantRoleCardService {
         depth: meta.depth,
         probability: meta.probability,
         excludeFromRecursion: meta.excludeFromRecursion,
+        group: meta.group,
+        groupWeight: meta.groupWeight,
       ));
     }
     return entries;
@@ -523,7 +527,42 @@ class AssistantRoleCardService {
       final byPriority = b.priority.compareTo(a.priority);
       return byPriority == 0 ? 0 : byPriority;
     });
-    return matched.take(maxEntries.clamp(1, 50)).toList();
+    return _applyMemoryGroups(matched).take(maxEntries.clamp(1, 50)).toList();
+  }
+
+  static List<AssistantMemoryEntryPreview> _applyMemoryGroups(
+    List<AssistantMemoryEntryPreview> entries,
+  ) {
+    final ungrouped = <AssistantMemoryEntryPreview>[];
+    final grouped = <String, AssistantMemoryEntryPreview>{};
+    for (final entry in entries) {
+      final group = entry.group.trim();
+      if (group.isEmpty) {
+        ungrouped.add(entry);
+        continue;
+      }
+      final current = grouped[group];
+      if (current == null || _compareGroupedMemoryEntry(entry, current) < 0) {
+        grouped[group] = entry;
+      }
+    }
+    final merged = [...ungrouped, ...grouped.values];
+    merged.sort((a, b) {
+      final byPriority = b.priority.compareTo(a.priority);
+      return byPriority == 0 ? 0 : byPriority;
+    });
+    return merged;
+  }
+
+  static int _compareGroupedMemoryEntry(
+    AssistantMemoryEntryPreview a,
+    AssistantMemoryEntryPreview b,
+  ) {
+    final byWeight = b.groupWeight.compareTo(a.groupWeight);
+    if (byWeight != 0) return byWeight;
+    final byPriority = b.priority.compareTo(a.priority);
+    if (byPriority != 0) return byPriority;
+    return 0;
   }
 
   static String _scanTextForEntry(
@@ -998,6 +1037,8 @@ class AssistantRoleCardService {
     int? depth;
     int? probability;
     var excludeFromRecursion = false;
+    var group = '';
+    var groupWeight = 0;
     var changed = true;
     while (changed && rest.startsWith('[')) {
       changed = false;
@@ -1064,6 +1105,16 @@ class AssistantRoleCardService {
         excludeFromRecursion = true;
         rest = rest.substring(end + 1).trimLeft();
         changed = true;
+      } else if (tag.startsWith('group=')) {
+        group = rawTag.substring(rawTag.indexOf('=') + 1).trim();
+        rest = rest.substring(end + 1).trimLeft();
+        changed = true;
+      } else if (tag.startsWith('gw=') || tag.startsWith('groupweight=')) {
+        groupWeight =
+            int.tryParse(rawTag.substring(rawTag.indexOf('=') + 1).trim()) ??
+                groupWeight;
+        rest = rest.substring(end + 1).trimLeft();
+        changed = true;
       }
     }
     return _MemoryPreviewMeta(
@@ -1079,6 +1130,8 @@ class AssistantRoleCardService {
       depth: depth,
       probability: probability,
       excludeFromRecursion: excludeFromRecursion,
+      group: group,
+      groupWeight: groupWeight,
     );
   }
 
@@ -1668,6 +1721,10 @@ class AssistantRoleCardService {
     final probability = _tavernEntryProbability(item);
     if (probability != null) parts.add('[prob=$probability]');
     if (_tavernEntryExcludeFromRecursion(item)) parts.add('[norec]');
+    final group = _tavernEntryGroup(item);
+    if (group.isNotEmpty) parts.add('[group=$group]');
+    final groupWeight = _tavernEntryGroupWeight(item);
+    if (groupWeight != 0) parts.add('[gw=$groupWeight]');
     return parts.isEmpty ? '' : '${parts.join(' ')} ';
   }
 
@@ -1749,6 +1806,46 @@ class AssistantRoleCardService {
       if (value is num) return value;
     }
     return null;
+  }
+
+  static String _tavernEntryGroup(Map<String, dynamic> item) {
+    for (final key in const ['group', 'group_name', 'groupName']) {
+      final value = _normalizeTavernText(item[key], '');
+      if (value.isNotEmpty) return value;
+    }
+    final extensions = item['extensions'];
+    if (extensions is Map) {
+      for (final key in const ['group', 'group_name', 'groupName']) {
+        final value = _normalizeTavernText(extensions[key], '');
+        if (value.isNotEmpty) return value;
+      }
+    }
+    return '';
+  }
+
+  static int _tavernEntryGroupWeight(Map<String, dynamic> item) {
+    for (final key in const [
+      'group_weight',
+      'groupWeight',
+      'group_override',
+      'groupOverride',
+    ]) {
+      final value = _intOrNull(item[key]);
+      if (value != null) return value;
+    }
+    final extensions = item['extensions'];
+    if (extensions is Map) {
+      for (final key in const [
+        'group_weight',
+        'groupWeight',
+        'group_override',
+        'groupOverride',
+      ]) {
+        final value = _intOrNull(extensions[key]);
+        if (value != null) return value;
+      }
+    }
+    return 0;
   }
 
   static bool _tavernEntryDisabled(Map<String, dynamic> item) {
@@ -2080,6 +2177,8 @@ class AssistantMemoryEntryPreview {
   final int? depth;
   final int? probability;
   final bool excludeFromRecursion;
+  final String group;
+  final int groupWeight;
 
   const AssistantMemoryEntryPreview({
     required this.keywords,
@@ -2096,6 +2195,8 @@ class AssistantMemoryEntryPreview {
     this.depth,
     this.probability,
     this.excludeFromRecursion = false,
+    this.group = '',
+    this.groupWeight = 0,
   });
 
   factory AssistantMemoryEntryPreview.fromJson(Map<String, dynamic> json) {
@@ -2123,6 +2224,8 @@ class AssistantMemoryEntryPreview {
       depth: json['depth'] as int?,
       probability: json['probability'] as int?,
       excludeFromRecursion: json['excludeFromRecursion'] as bool? ?? false,
+      group: json['group'] as String? ?? '',
+      groupWeight: json['groupWeight'] as int? ?? 0,
     );
   }
 
@@ -2141,6 +2244,8 @@ class AssistantMemoryEntryPreview {
         'depth': depth,
         'probability': probability,
         'excludeFromRecursion': excludeFromRecursion,
+        'group': group,
+        'groupWeight': groupWeight,
       };
 
   String get label {
@@ -2161,8 +2266,10 @@ class AssistantMemoryEntryPreview {
     final depthLabel = depth == null ? '' : ' · depth=$depth';
     final probabilityLabel = probability == null ? '' : ' · prob=$probability';
     final recursionLabel = excludeFromRecursion ? ' · 不参与递归' : '';
+    final groupLabel = group.trim().isEmpty ? '' : ' · 组：$group';
+    final groupWeightLabel = groupWeight == 0 ? '' : ' · gw=$groupWeight';
     final enabledLabel = enabled ? '' : ' · 已禁用';
-    return '$base$secondaryLabel$excludeLabel$caseLabel$wholeWordsLabel$priorityLabel$positionLabel$depthLabel$probabilityLabel$recursionLabel$enabledLabel';
+    return '$base$secondaryLabel$excludeLabel$caseLabel$wholeWordsLabel$priorityLabel$positionLabel$depthLabel$probabilityLabel$recursionLabel$groupLabel$groupWeightLabel$enabledLabel';
   }
 }
 
@@ -2179,6 +2286,8 @@ class _MemoryPreviewMeta {
   final int? depth;
   final int? probability;
   final bool excludeFromRecursion;
+  final String group;
+  final int groupWeight;
 
   const _MemoryPreviewMeta({
     required this.body,
@@ -2193,5 +2302,7 @@ class _MemoryPreviewMeta {
     this.depth,
     this.probability,
     this.excludeFromRecursion = false,
+    this.group = '',
+    this.groupWeight = 0,
   });
 }
