@@ -188,6 +188,28 @@ void main() {
       expect(messages.single.content, 'Alt opening B');
     });
 
+    test('单卡导入默认开场为空时使用 Tavern 备选开场', () async {
+      db = await databaseFactoryFfi.openDatabase(inMemoryDatabasePath);
+      final dao = await StoryRoomDao.create(HiDBManager.test(db));
+      final assistant = AssistantModel(
+        name: 'Fuka',
+        prompt: '害羞的图书委员。',
+      );
+
+      final roomId =
+          await StoryRoomRoleCardImportService(dao).importAsTavernRoom(
+        assistant,
+        title: 'Fuka Room',
+        tavernMeta: const AssistantRoleCardTavernMeta(
+          alternateGreetings: ['', '她轻轻推开图书馆的门。'],
+        ),
+      );
+
+      final messages = await dao.getMessages(roomId);
+      expect(messages, hasLength(1));
+      expect(messages.single.content, '她轻轻推开图书馆的门。');
+    });
+
     test('批量角色卡可合并为一个酒馆房间', () async {
       db = await databaseFactoryFfi.openDatabase(inMemoryDatabasePath);
       final dao = await StoryRoomDao.create(HiDBManager.test(db));
@@ -274,6 +296,28 @@ void main() {
           '火焰在她掌心亮起。',
         ].join('\n'),
       );
+    });
+
+    test('批量导入酒馆房间可从备选开场生成房间开场', () async {
+      db = await databaseFactoryFfi.openDatabase(inMemoryDatabasePath);
+      final dao = await StoryRoomDao.create(HiDBManager.test(db));
+      final fuka = AssistantModel(name: 'Fuka');
+
+      final roomId =
+          await StoryRoomRoleCardImportService(dao).importBatchAsTavernRoom(
+        [
+          AssistantRoleCardImportResult(
+            assistant: fuka,
+            tavernMeta: const AssistantRoleCardTavernMeta(
+              alternateGreetings: ['她从书架后探出头。'],
+            ),
+          ),
+        ],
+        title: 'Imported Tavern',
+      );
+
+      final messages = await dao.getMessages(roomId);
+      expect(messages.single.content, '【Fuka】\n她从书架后探出头。');
     });
 
     test('多角色世界书导入时跳过明确非角色条目', () {

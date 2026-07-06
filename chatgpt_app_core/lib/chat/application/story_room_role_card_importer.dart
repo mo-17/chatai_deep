@@ -170,8 +170,16 @@ class StoryRoomRoleCardImporter {
     return parts.join('\n\n');
   }
 
-  static String initialSceneMessage(AssistantModel assistant) {
-    return assistant.openingMessage.trim();
+  static String initialSceneMessage(
+    AssistantModel assistant, {
+    AssistantRoleCardTavernMeta? tavernMeta,
+  }) {
+    final opening = assistant.openingMessage.trim();
+    if (opening.isNotEmpty) return opening;
+    if (tavernMeta == null) return '';
+    return tavernMeta.alternateGreetings
+        .map((item) => item.trim())
+        .firstWhere((item) => item.isNotEmpty, orElse: () => '');
   }
 
   static String initialBatchSceneMessage(
@@ -180,7 +188,10 @@ class StoryRoomRoleCardImporter {
     final lines = <String>[];
     for (final result in results) {
       final assistant = result.assistant;
-      final opening = assistant.openingMessage.trim();
+      final opening = initialSceneMessage(
+        assistant,
+        tavernMeta: result.tavernMeta,
+      );
       if (opening.isEmpty) continue;
       final name =
           assistant.name.trim().isEmpty ? '未命名角色' : assistant.name.trim();
@@ -382,7 +393,10 @@ class StoryRoomRoleCardImportService {
       await dao.saveParticipant(participant);
     }
     final opening = initialOpening ??
-        StoryRoomRoleCardImporter.initialSceneMessage(assistant);
+        StoryRoomRoleCardImporter.initialSceneMessage(
+          assistant,
+          tavernMeta: tavernMeta,
+        );
     if (opening.isNotEmpty) {
       await dao.saveMessage(StoryMessageModel(
         roomId: roomId,
