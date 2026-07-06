@@ -84,6 +84,58 @@ void main() {
       expect(fallback.length, 2);
     });
 
+    test('关键词无命中时使用轻量向量 fallback，并尊重项目范围', () async {
+      final docA =
+          await dao.addDocument('容器平台手册', 'Kubernetes 里的 Pod 是最小调度单元，承载容器工作负载');
+      await dao.addDocument('财务制度', '报销单需要在月底前提交给财务审批');
+      await dao.setProjectDocIds(7, [docA!]);
+
+      final globalHits = await dao.search('容器 部署');
+      expect(globalHits, isNotEmpty);
+      expect(globalHits.first.docTitle, '容器平台手册');
+
+      final scopedHits = await dao.search('容器 部署', projectId: 7);
+      expect(scopedHits.single.docTitle, '容器平台手册');
+
+      final missedByScope = await dao.search('财务 部署', projectId: 7);
+      expect(missedByScope, isEmpty);
+    });
+
+    test('轻量向量索引自动写入、可重建，并在索引缺失时仍可检索', () async {
+      final docA =
+          await dao.addDocument('容器平台手册', 'Kubernetes 里的 Pod 是最小调度单元，承载容器工作负载');
+      final docB = await dao.addDocument('财务制度', '报销单需要在月底前提交给财务审批');
+
+      final initialStats = await dao.vectorIndexStats();
+      expect(initialStats.chunks, 2);
+      expect(initialStats.indexed, 2);
+      expect(initialStats.isComplete, isTrue);
+
+      await storage.db.delete('tb_kb_vector');
+      final missingStats = await dao.vectorIndexStats();
+      expect(missingStats.chunks, 2);
+      expect(missingStats.indexed, 0);
+      expect(missingStats.missing, 2);
+
+      final fallbackHits = await dao.search('容器 部署');
+      expect(fallbackHits.first.docTitle, '容器平台手册');
+
+      final rebuiltDoc = await dao.rebuildVectorIndex(docId: docA);
+      expect(rebuiltDoc.chunks, 1);
+      expect(rebuiltDoc.indexed, 1);
+      expect((await dao.vectorIndexStats()).missing, 1);
+
+      final rebuiltAll = await dao.rebuildVectorIndex();
+      expect(rebuiltAll.chunks, 2);
+      expect(rebuiltAll.indexed, 2);
+      expect(rebuiltAll.isComplete, isTrue);
+
+      await dao.deleteDocument(docB!);
+      final afterDelete = await dao.vectorIndexStats();
+      expect(afterDelete.chunks, 1);
+      expect(afterDelete.indexed, 1);
+    });
+
     test('空文本不建文档', () async {
       expect(await dao.addDocument('空', '   '), isNull);
       expect(await dao.getDocuments(), isEmpty);

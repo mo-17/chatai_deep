@@ -4,10 +4,13 @@ import 'package:chatgpt_app_core/chat/application/mcp/mcp_client.dart';
 import 'package:chatgpt_app_core/chat/application/mcp/mcp_client_pool.dart';
 import 'package:chatgpt_app_core/chat/application/mcp/mcp_tool_source.dart';
 import 'package:chatgpt_app_core/chat/application/mcp/mcp_types.dart';
+import 'package:chatgpt_app_core/db/hi_db_manager.dart';
+import 'package:chatgpt_app_core/db/tool_audit_dao.dart';
 import 'package:chatgpt_app_core/model/ai_settings.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:http/http.dart' as http;
 import 'package:http/testing.dart';
+import 'package:sqflite_common_ffi/sqflite_ffi.dart';
 
 /// 一个最小的 MCP server 模拟器：按 JSON-RPC method 分派，可选 SSE 输出。
 /// 记录收到的 tools/call 参数供断言。
@@ -18,7 +21,8 @@ class _FakeMcpServer {
   Map<String, dynamic>? lastCallArgs;
   int initCount = 0;
 
-  _FakeMcpServer({this.sse = false, this.resources = false, this.prompts = false});
+  _FakeMcpServer(
+      {this.sse = false, this.resources = false, this.prompts = false});
 
   http.Client client() => MockClient((req) async {
         final body = jsonDecode(req.body) as Map<String, dynamic>;
@@ -41,8 +45,7 @@ class _FakeMcpServer {
               },
               'serverInfo': {'name': 'fake', 'version': '1.0.0'},
             };
-            return _reply(id, result,
-                headers: {'mcp-session-id': 'sess-1'});
+            return _reply(id, result, headers: {'mcp-session-id': 'sess-1'});
           case 'resources/list':
             return _reply(id, {
               'resources': [
@@ -112,8 +115,7 @@ class _FakeMcpServer {
       utf8.encode(body),
       200,
       headers: {
-        'content-type':
-            sse ? 'text/event-stream' : 'application/json',
+        'content-type': sse ? 'text/event-stream' : 'application/json',
         ...headers,
       },
     );
@@ -121,8 +123,15 @@ class _FakeMcpServer {
 }
 
 void main() {
+  setUpAll(() {
+    sqfliteFfiInit();
+  });
+
   setUp(McpToolSource.clearCache);
   tearDown(McpToolSource.clearCache);
+
+  Future<HiDBManager> newDb() async => HiDBManager.test(
+      await databaseFactoryFfi.openDatabase(inMemoryDatabasePath));
 
   group('AISettings MCP 字段', () {
     test('toJson/fromJson 往返（直连 server + 后端开关）', () {
@@ -134,6 +143,8 @@ void main() {
             url: 'https://x/mcp',
             headers: {'Authorization': 'Bearer t'},
             trusted: true,
+            permission: McpToolPermission.readOnly,
+            enabledProjectIds: [7, 9],
           ),
         ]
         ..mcpBackendEnabled = true
@@ -143,6 +154,8 @@ void main() {
       expect(r.mcpServers.first.id, 'demo');
       expect(r.mcpServers.first.headers['Authorization'], 'Bearer t');
       expect(r.mcpServers.first.trusted, isTrue);
+      expect(r.mcpServers.first.permission, McpToolPermission.readOnly);
+      expect(r.mcpServers.first.enabledProjectIds, [7, 9]);
       expect(r.mcpBackendEnabled, isTrue);
       expect(r.mcpBackendTrusted, isTrue);
     });
@@ -163,6 +176,22 @@ void main() {
         ];
       expect(s.enabledMcpServers.map((e) => e.id), ['a']);
       expect(s.mcpConfigured, isTrue);
+    });
+
+    test('McpServerConfig 项目白名单：空白名单通用，非空必须命中 projectId', () {
+      const common = McpServerConfig(id: 'a', name: 'A', url: 'https://a');
+      const scoped = McpServerConfig(
+        id: 'b',
+        name: 'B',
+        url: 'https://b',
+        enabledProjectIds: [7],
+      );
+
+      expect(common.isEnabledForProject(null), isTrue);
+      expect(common.isEnabledForProject(3), isTrue);
+      expect(scoped.isEnabledForProject(null), isFalse);
+      expect(scoped.isEnabledForProject(3), isFalse);
+      expect(scoped.isEnabledForProject(7), isTrue);
     });
   });
 
@@ -213,6 +242,59 @@ void main() {
       expect(tools.first.parameters['required'], ['text']);
     });
 
+    test('项目白名单未命中：会话发现不下发该 server 工具', () async {
+      final fake = _FakeMcpServer();
+      final settings = AISettings.defaults()
+        ..mcpServers = const [
+          McpServerConfig(
+            id: 'srv',
+            name: 'Srv',
+            url: 'https://x/mcp',
+            enabledProjectIds: [7],
+          ),
+        ];
+
+      final miss = await McpToolSource.discover(settings,
+          currentProjectId: 8,
+          confirm: (_, __) async => true,
+          client: fake.client());
+      final hit = await McpToolSource.discover(settings,
+          currentProjectId: 7,
+          confirm: (_, __) async => true,
+          client: fake.client());
+
+      expect(miss, isEmpty);
+      expect(hit.map((e) => e.name), ['mcp__srv__echo']);
+    });
+
+    test('readOnly 权限：隐藏普通 MCP tools，仅保留资源/提示词只读工具', () async {
+      final fake = _FakeMcpServer(resources: true, prompts: true);
+      final settings = AISettings.defaults()
+        ..mcpServers = const [
+          McpServerConfig(
+            id: 'srv',
+            name: 'Srv',
+            url: 'https://x/mcp',
+            trusted: true,
+            permission: McpToolPermission.readOnly,
+          ),
+        ];
+
+      final tools = await McpToolSource.discover(settings,
+          confirm: (_, __) async => true, client: fake.client());
+      final names = tools.map((e) => e.name).toSet();
+
+      expect(names, isNot(contains('mcp__srv__echo')));
+      expect(
+          names,
+          containsAll([
+            'mcp__srv__resources_list',
+            'mcp__srv__resources_read',
+            'mcp__srv__prompts_list',
+            'mcp__srv__prompts_get',
+          ]));
+    });
+
     test('信任源：免确认直接执行', () async {
       final fake = _FakeMcpServer();
       final tools = await McpToolSource.discover(settingsWith(trusted: true),
@@ -245,6 +327,52 @@ void main() {
           confirm: null, client: fake.client());
       final out = await tools.first.execute({'text': 'x'});
       expect(out.content, contains('拒绝'));
+    });
+
+    test('审计轨迹记录：执行参数与拒绝状态可追溯', () async {
+      McpToolSource.clearAuditTrail();
+      final fake = _FakeMcpServer();
+      final tools = await McpToolSource.discover(settingsWith(),
+          confirm: (_, __) async => true, client: fake.client());
+
+      final out = await tools.first.execute({'text': 'ok', 'count': 1});
+      expect(out.content, 'pong:ok');
+      expect(McpToolSource.auditTrail, hasLength(1));
+      expect(McpToolSource.auditTrail.first.toolName, tools.first.name);
+      expect(McpToolSource.auditTrail.first.approved, isTrue);
+      expect(McpToolSource.auditTrail.first.argCount, 2);
+      expect(McpToolSource.auditTrail.first.sourceServerId, 'srv');
+
+      final denied = await McpToolSource.discover(settingsWith(),
+          confirm: (_, __) async => false, client: fake.client());
+      final deniedOut = await denied.first.execute({'text': 'x', 'count': 2});
+      expect(deniedOut.content, contains('拒绝'));
+      expect(McpToolSource.auditTrail, hasLength(2));
+      expect(McpToolSource.auditTrail.first.approved, isFalse);
+      expect(McpToolSource.auditTrail.first.argCount, 2);
+    });
+
+    test('审计轨迹可持久化到 SQLite', () async {
+      McpToolSource.clearAuditTrail();
+      final storage = await newDb();
+      final auditDao = await ToolAuditDao.create(storage);
+      final fake = _FakeMcpServer();
+      final tools = await McpToolSource.discover(settingsWith(),
+          confirm: (_, __) async => true,
+          auditDao: auditDao,
+          client: fake.client());
+
+      await tools.first.execute({'text': 'persist'});
+
+      final rows = await auditDao.latest();
+      expect(rows.single.toolName, tools.first.name);
+      expect(rows.single.sourceType, 'mcp');
+      expect(rows.single.sourceId, 'srv');
+      expect(rows.single.approved, isTrue);
+      expect(rows.single.success, isTrue);
+      expect(rows.single.argsPreview, contains('persist'));
+      expect(rows.single.resultPreview, contains('pong:persist'));
+      await storage.db.close();
     });
 
     test('未配置 MCP：discover 返回空', () async {
@@ -283,12 +411,14 @@ void main() {
       final tools = await McpToolSource.discover(settings(),
           confirm: (_, __) async => true, client: fake.client());
       final names = tools.map((t) => t.name).toSet();
-      expect(names, containsAll([
-        'mcp__srv__resources_list',
-        'mcp__srv__resources_read',
-        'mcp__srv__prompts_list',
-        'mcp__srv__prompts_get',
-      ]));
+      expect(
+          names,
+          containsAll([
+            'mcp__srv__resources_list',
+            'mcp__srv__resources_read',
+            'mcp__srv__prompts_list',
+            'mcp__srv__prompts_get',
+          ]));
     });
 
     test('resources_read / prompts_get 执行返回文本', () async {
@@ -328,6 +458,43 @@ void main() {
           ]));
       expect(specs.firstWhere((e) => e.name == 'mcp__srv__echo').description,
           contains('回声'));
+    });
+
+    test('listSpecs：返回元信息字段（来源 + trust + readOnly）', () async {
+      final fake = _FakeMcpServer();
+      final settings = AISettings.defaults()
+        ..mcpServers = [
+          const McpServerConfig(
+              id: 'srv', name: 'Srv', url: 'https://x/mcp', trusted: true),
+        ];
+      final specs =
+          await McpToolSource.listSpecs(settings, client: fake.client());
+
+      final echo = specs.firstWhere((e) => e.name == 'mcp__srv__echo');
+      expect(echo.sourceServerId, 'srv');
+      expect(echo.sourceServerName, 'Srv');
+      expect(echo.trusted, isTrue);
+      expect(echo.readOnly, isFalse);
+      expect(echo.enabledProjects, isEmpty);
+    });
+
+    test('listSpecs：绑定面保留项目白名单工具，由会话运行时按项目过滤', () async {
+      final fake = _FakeMcpServer();
+      final settings = AISettings.defaults()
+        ..mcpServers = [
+          const McpServerConfig(
+            id: 'srv',
+            name: 'Srv',
+            url: 'https://x/mcp',
+            enabledProjectIds: [7],
+          ),
+        ];
+
+      final specs =
+          await McpToolSource.listSpecs(settings, client: fake.client());
+
+      final echo = specs.firstWhere((e) => e.name == 'mcp__srv__echo');
+      expect(echo.enabledProjects, ['7']);
     });
 
     test('按 toolIds 过滤：只保留勾选的 MCP 工具（与会话页一致）', () async {

@@ -92,6 +92,53 @@ void main() {
       expect(out.content, contains('执行失败'));
     });
 
+    test('工具执行抛错可按策略重试，并返回最终成功结果', () async {
+      var calls = 0;
+      final reg = ToolRegistry(
+        [
+          ChatTool(
+            name: 'flaky',
+            description: '',
+            parameters: const {'type': 'object'},
+            execute: (_) async {
+              calls++;
+              if (calls == 1) throw Exception('临时失败');
+              return const ToolOutcome(content: 'ok');
+            },
+          ),
+        ],
+        retryPolicy: const ToolRetryPolicy(maxAttempts: 2),
+      );
+
+      final out = await reg.execute('flaky', const {});
+
+      expect(out.content, 'ok');
+      expect(calls, 2);
+    });
+
+    test('工具返回错误文本不会触发重试', () async {
+      var calls = 0;
+      final reg = ToolRegistry(
+        [
+          ChatTool(
+            name: 'soft_error',
+            description: '',
+            parameters: const {'type': 'object'},
+            execute: (_) async {
+              calls++;
+              return const ToolOutcome(content: '错误：缺少参数');
+            },
+          ),
+        ],
+        retryPolicy: const ToolRetryPolicy(maxAttempts: 3),
+      );
+
+      final out = await reg.execute('soft_error', const {});
+
+      expect(out.content, contains('缺少参数'));
+      expect(calls, 1);
+    });
+
     test('联网搜索工具：结果回灌带编号 JSON，webResults 带出供 citation', () async {
       final tool = ToolRegistry.webSearchTool(_FakeSearchProvider({
         '北京 天气': [
@@ -119,11 +166,35 @@ void main() {
       s.tavilyApiKey = 'tvly-x';
       expect(ToolRegistry.fromSettings(s).byName('web_search'), isNotNull);
     });
+
+    test('fromAssistant：动态工具默认启用一次失败重试', () async {
+      var calls = 0;
+      final reg = ToolRegistry.fromAssistant(
+        AISettings.defaults(),
+        const [],
+        extraTools: [
+          ChatTool(
+            name: 'mcp_flaky',
+            description: '',
+            parameters: const {'type': 'object'},
+            execute: (_) async {
+              calls++;
+              if (calls == 1) throw Exception('MCP timeout');
+              return const ToolOutcome(content: 'done');
+            },
+          ),
+        ],
+      );
+
+      final out = await reg.execute('mcp_flaky', const {});
+
+      expect(out.content, 'done');
+      expect(calls, 2);
+    });
   });
 
   group('ToolLoopRunner 执行回路', () {
-    test('toolCall -> 执行 -> 回灌 -> 续写正文 -> citation 收尾（验收主链路）',
-        () async {
+    test('toolCall -> 执行 -> 回灌 -> 续写正文 -> citation 收尾（验收主链路）', () async {
       final service = _ScriptedChatService([
         // 第 1 轮：模型决定调用 web_search
         [
@@ -147,10 +218,9 @@ void main() {
           ),
         ),
       ]);
-      final events = await ToolLoopRunner(
-              chatService: service, registry: registry)
-          .run(prompt: '今天的新闻', history: const [])
-          .toList();
+      final events =
+          await ToolLoopRunner(chatService: service, registry: registry)
+              .run(prompt: '今天的新闻', history: const []).toList();
 
       // 事件顺序：正文 → toolCall → toolResult → 续写正文 → citation。
       expect(events.map((e) => e.type), [
@@ -171,8 +241,7 @@ void main() {
       expect(extra[0]['role'], 'assistant');
       expect(extra[0]['content'], '我来查一下。');
       final toolCalls = extra[0]['tool_calls'] as List;
-      expect(
-          ((toolCalls.single as Map)['function'] as Map)['arguments'],
+      expect(((toolCalls.single as Map)['function'] as Map)['arguments'],
           jsonEncode({'query': '今日新闻'}));
       expect(extra[1]['role'], 'tool');
       expect(extra[1]['tool_call_id'], 'call_1');
@@ -188,10 +257,27 @@ void main() {
       ]);
       final events = await ToolLoopRunner(
               chatService: service, registry: ToolRegistry([_echoTool()]))
-          .run(prompt: '1+1', history: const [])
-          .toList();
+          .run(prompt: '1+1', history: const []).toList();
       expect(events.map((e) => e.type), [StreamEventType.text]);
       expect(service.capturedTools, hasLength(1));
+    });
+
+    test('流式 usage 事件穿透工具循环，供会话收尾记录真实 token', () async {
+      final service = _ScriptedChatService([
+        [
+          StreamEvent.text('完成'),
+          StreamEvent.usage(promptTokens: 12, completionTokens: 8),
+        ],
+      ]);
+
+      final events = await ToolLoopRunner(
+              chatService: service, registry: ToolRegistry([_echoTool()]))
+          .run(prompt: 'q', history: const []).toList();
+
+      expect(events.map((e) => e.type),
+          [StreamEventType.text, StreamEventType.usage]);
+      expect(events.last.promptTokens, 12);
+      expect(events.last.completionTokens, 8);
     });
 
     test('轮次上限：收尾轮不带 tools 强制作答，绝不无限循环', () async {
@@ -204,8 +290,7 @@ void main() {
           ]);
       final events = await ToolLoopRunner(
               chatService: service, registry: ToolRegistry([_echoTool()]))
-          .run(prompt: 'q', history: const [])
-          .toList();
+          .run(prompt: 'q', history: const []).toList();
       // 共 maxRounds 轮带 tools + 1 轮收尾不带 tools。
       expect(service.capturedTools, hasLength(ToolLoopRunner.maxRounds + 1));
       expect(service.capturedTools.last, isNull);
@@ -292,8 +377,17 @@ class _ScriptedChatService implements ChatService {
     required String prompt,
     required List<Map<String, dynamic>> history,
     ChatAttachments? attachments,
+    Duration? timeout,
   }) async =>
       null;
+
+  @override
+  Future<ChatCompletionResult> chatWithUsage({
+    required String prompt,
+    required List<Map<String, dynamic>> history,
+    ChatAttachments? attachments,
+  }) async =>
+      const ChatCompletionResult(content: null, estimated: true);
 
   @override
   Stream<String> chatStream({

@@ -1,3 +1,4 @@
+import 'package:chatgpt_app_core/chat/application/mcp/mcp_types.dart';
 import 'package:chatgpt_app_core/pages/mcp_settings_page.dart';
 import 'package:chatgpt_app_core/provider/ai_settings_provider.dart';
 import 'package:flutter/material.dart';
@@ -20,7 +21,8 @@ void main() {
     await HiCache.getInstance().prefs?.clear();
   });
 
-  Future<void> pumpPage(WidgetTester tester, AISettingsProvider provider) async {
+  Future<void> pumpPage(
+      WidgetTester tester, AISettingsProvider provider) async {
     await tester.pumpWidget(
       ChangeNotifierProvider<AISettingsProvider>.value(
         value: provider,
@@ -50,6 +52,33 @@ void main() {
     expect(provider.settings.mcpServers, hasLength(1));
     expect(provider.settings.mcpServers.first.url, 'https://example.com/mcp');
     expect(provider.settings.mcpServers.first.name, '本地测试');
+    expect(provider.settings.mcpServers.first.permission,
+        McpToolPermission.confirmWrite);
+  });
+
+  testWidgets('添加直连 server：可保存只读工具权限', (tester) async {
+    final provider = AISettingsProvider();
+    await pumpPage(tester, provider);
+
+    await tester.tap(find.widgetWithText(TextButton, '添加'));
+    await tester.pumpAndSettle();
+
+    final fields = find.byType(TextField);
+    await tester.enterText(fields.at(0), '只读服务');
+    await tester.enterText(fields.at(1), 'https://readonly.example/mcp');
+
+    await tester.tap(find.byType(DropdownButtonFormField<McpToolPermission>));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('仅资源/提示词只读').last);
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.widgetWithText(TextButton, '保存'));
+    await tester.pumpAndSettle();
+
+    expect(tester.takeException(), isNull);
+    expect(provider.settings.mcpServers, hasLength(1));
+    expect(provider.settings.mcpServers.first.permission,
+        McpToolPermission.readOnly);
   });
 
   testWidgets('从商店选 Context7：URL 预填后保存即落库', (tester) async {
@@ -58,7 +87,7 @@ void main() {
 
     await tester.tap(find.widgetWithText(TextButton, '商店'));
     await tester.pumpAndSettle();
-    expect(find.text('MCP 服务商店'), findsOneWidget);
+    expect(find.text('MCP 工具商店'), findsOneWidget);
 
     await tester.tap(find.text('Context7'));
     await tester.pumpAndSettle(); // 返回设置页 + 打开预填的添加对话框
@@ -71,7 +100,8 @@ void main() {
     expect(tester.takeException(), isNull);
     expect(provider.settings.mcpServers, hasLength(1));
     expect(provider.settings.mcpServers.first.id, 'context7');
-    expect(provider.settings.mcpServers.first.url, 'https://mcp.context7.com/mcp');
+    expect(
+        provider.settings.mcpServers.first.url, 'https://mcp.context7.com/mcp');
   });
 
   testWidgets('取消对话框：不新增 server，也不崩溃', (tester) async {

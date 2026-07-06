@@ -1,6 +1,8 @@
 import 'package:chatgpt_app_core/chat/application/chat_block_store.dart';
+import 'package:chatgpt_app_core/chat/application/assistant_role_card_service.dart';
 import 'package:chatgpt_app_core/chat/application/stream_dispatcher.dart';
 import 'package:chatgpt_app_core/chat/domain/message_block.dart';
+import 'package:chatgpt_app_core/model/assistant_model.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 /// 阶段一 / 阶段二 验收的可执行版本。覆盖块化消息系统的核心不变量：
@@ -163,6 +165,70 @@ void main() {
       expect(restored.single, isA<PlaceholderBlock>());
       expect(restored.single.status, MessageBlockStatus.success);
     });
+
+    test('角色上下文快照块可持久化往返', () {
+      const blocks = [
+        RoleContextBlock(
+          id: 'b_role_context',
+          messageId: key,
+          createdAt: 1000,
+          status: MessageBlockStatus.success,
+          content: '[当前命中的角色记忆]\n- 钟声代表潮汐',
+          memoryBudget: AssistantMemoryContextBudget(
+            context: '[当前命中的角色记忆]\n- 钟声代表潮汐',
+            matchedCount: 3,
+            includedCount: 1,
+            skippedCount: 2,
+            truncated: true,
+            maxContextChars: 80,
+            usedChars: 60,
+          ),
+          memoryHits: [
+            AssistantMemoryEntryPreview(
+              keywords: ['钟声'],
+              content: '钟声代表潮汐',
+              alwaysOn: false,
+              priority: 5,
+            ),
+          ],
+        ),
+      ];
+
+      final json = MessageBlock.encodeList(blocks);
+      final restored = MessageBlock.decodeList(json);
+
+      expect(restored.single, isA<RoleContextBlock>());
+      final roleBlock = restored.single as RoleContextBlock;
+      expect(roleBlock.content, contains('钟声代表潮汐'));
+      expect(roleBlock.memoryBudget?.matchedCount, 3);
+      expect(roleBlock.memoryBudget?.includedCount, 1);
+      expect(roleBlock.memoryBudget?.skippedCount, 2);
+      expect(roleBlock.memoryBudget?.truncated, isTrue);
+      expect(roleBlock.memoryHits, hasLength(1));
+      expect(roleBlock.memoryHits.single.label, '钟声 · p=5');
+      expect(roleBlock.memoryHits.single.content, '钟声代表潮汐');
+      expect(restored.single.type, MessageBlockType.roleContext);
+    });
+
+    test('未完成回复角色状态承接块可持久化往返', () {
+      const blocks = [
+        RoleContinuationBlock(
+          id: 'b_role_continuation',
+          messageId: key,
+          createdAt: 1001,
+          status: MessageBlockStatus.success,
+          content: '上一轮尚未正式开口，角色紧张地攥住笔记本。',
+        ),
+      ];
+
+      final json = MessageBlock.encodeList(blocks);
+      final restored = MessageBlock.decodeList(json);
+
+      expect(restored.single, isA<RoleContinuationBlock>());
+      final block = restored.single as RoleContinuationBlock;
+      expect(block.content, contains('尚未正式开口'));
+      expect(block.type, MessageBlockType.roleContinuation);
+    });
   });
 
   group('ChatBlockStore', () {
@@ -173,8 +239,7 @@ void main() {
       final ids1 = store.blockIdsFor(key);
       d.onTextChunk('y'); // 同一个块更新内容，不新增块
       final ids2 = store.blockIdsFor(key);
-      expect(identical(ids1, ids2), isTrue,
-          reason: '块列表未变 -> 同一 List 引用');
+      expect(identical(ids1, ids2), isTrue, reason: '块列表未变 -> 同一 List 引用');
     });
 
     test('removeMessage 清掉该消息的全部块', () {

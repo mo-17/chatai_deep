@@ -1,7 +1,6 @@
 import 'package:chat_message/models/message_model.dart';
 import 'package:chat_message/util/wechat_date_format.dart';
 import 'package:chat_message/widget/default_message_widget.dart';
-import 'package:flutter/cupertino.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 
@@ -35,8 +34,8 @@ void main() {
     final a = MessageModel(
         ownerType: OwnerType.sender, content: 'x', createdAt: 1, key: k);
     expect(identical(a.key, k), isTrue);
-    final b = MessageModel(
-        ownerType: OwnerType.sender, content: 'y', createdAt: 2);
+    final b =
+        MessageModel(ownerType: OwnerType.sender, content: 'y', createdAt: 2);
     expect(identical(b.key, k), isFalse);
   });
 
@@ -65,5 +64,50 @@ void main() {
     // 修复前此处会因 RangeError 抛异常；修复后正常构建。
     expect(tester.takeException(), isNull);
     expect(find.text('你好'), findsOneWidget);
+  });
+
+  testWidgets('本地文件头像路径缺失时安全回退首字头像', (tester) async {
+    await tester.pumpWidget(MaterialApp(
+      home: Scaffold(
+        body: SingleChildScrollView(
+          child: DefaultMessageWidget(
+            key: GlobalKey(),
+            message: MessageModel(
+              ownerType: OwnerType.receiver,
+              ownerName: '艾琳',
+              avatar: '/tmp/not_exists_chatai_avatar.png',
+              content: '你好',
+              createdAt: 1000,
+            ),
+          ),
+        ),
+      ),
+    ));
+
+    expect(tester.takeException(), isNull);
+    expect(find.text('艾'), findsOneWidget);
+  });
+
+  testWidgets('emoji 头像协议直接渲染 emoji，不回退首字头像', (tester) async {
+    await tester.pumpWidget(MaterialApp(
+      home: Scaffold(
+        body: SingleChildScrollView(
+          child: DefaultMessageWidget(
+            key: GlobalKey(),
+            message: MessageModel(
+              ownerType: OwnerType.receiver,
+              ownerName: '艾琳',
+              avatar: 'emoji:${Uri.encodeComponent('🎭')}',
+              content: '你好',
+              createdAt: 1000,
+            ),
+          ),
+        ),
+      ),
+    ));
+
+    expect(tester.takeException(), isNull);
+    expect(find.text('🎭'), findsOneWidget);
+    expect(find.text('艾'), findsNothing);
   });
 }

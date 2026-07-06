@@ -51,8 +51,21 @@ void main() {
       expect(m.name, b.name);
       expect(m.emoji, b.emoji);
       expect(m.prompt, b.prompt);
+      expect(m.description, b.description);
+      expect(m.openingMessage, b.openingMessage);
+      expect(m.exampleDialogs, b.exampleDialogs);
+      expect(m.memoryBook, b.memoryBook);
       expect(m.useTools, b.useTools);
       expect(m.model, '', reason: '内置助手不绑模型，避免与服务商不兼容');
+    });
+
+    test('重点角色模板包含简介、开场白、示例对话和关键词记忆', () {
+      final role = BuiltinAssistants.all
+          .firstWhere((assistant) => assistant.name == '英语口语陪练');
+      expect(role.description, isNotEmpty);
+      expect(role.openingMessage, isNotEmpty);
+      expect(role.exampleDialogs, contains('用户：'));
+      expect(role.memoryBook, contains('纠错'));
     });
 
     test('每次调用返回独立新实例（编辑页改写不污染共享模板）', () {
@@ -91,6 +104,7 @@ void main() {
       expect(saved.id, id);
       expect(saved.name, '代码审查员');
       expect(saved.prompt.trim(), isNotEmpty);
+      expect(saved.memoryBook, contains('review'));
       expect(saved.createdAt, greaterThan(0));
 
       // 添加后即普通助手：可改名再存（走更新而非再插入）。

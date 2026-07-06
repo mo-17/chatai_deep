@@ -68,6 +68,31 @@ void main() {
     await storage.db.close();
   });
 
+  test('对话列表会过滤空标题和字符串 null 的脏会话', () async {
+    final storage = await newDb();
+    final dao = await ConversationListDao.create(storage);
+    await dao.saveConversation(ConversationModel(cid: 1, icon: '')
+      ..title = null
+      ..lastMessage = '不应展示'
+      ..stickTime = 0
+      ..updateAt = 1);
+    await dao.saveConversation(ConversationModel(cid: 2, icon: '')
+      ..title = 'null'
+      ..lastMessage = '不应展示'
+      ..stickTime = 0
+      ..updateAt = 2);
+    await dao.saveConversation(ConversationModel(cid: 3, icon: '')
+      ..title = '有效会话'
+      ..lastMessage = '正常展示'
+      ..stickTime = 0
+      ..updateAt = 3);
+
+    final list = await dao.getConversationList();
+
+    expect(list.map((item) => item.cid), [3]);
+    await storage.db.close();
+  });
+
   test('旧项目表自动补 icon，新项目可保存图标和颜色', () async {
     final storage = await newDb();
     await storage.db
@@ -180,6 +205,112 @@ void main() {
     await storage.db.close();
   });
 
+  test('会话语音偏好字段兼容旧表，并可恢复默认', () async {
+    final storage = await newDb();
+    await storage.db.execute(
+        'create table tb_conversation_list (id integer primary key autoincrement'
+        ', cid integer, title text, icon text, updateAt integer'
+        ', messageCount integer, lastMessage text, stickTime integer);');
+
+    final dao = await ConversationListDao.create(storage);
+    final model = ConversationModel(cid: 12, icon: '')
+      ..title = '语音测试'
+      ..stickTime = 0;
+    await dao.saveConversation(model);
+    await dao.updateVoicePrefs(
+      model,
+      speechInputEnabled: false,
+      readAloudEnabled: true,
+      voiceLocale: 'en_US',
+      voiceRate: 1.5,
+      voiceStyle: 'female',
+      readAloudTriggerMode: 'longPress',
+    );
+    var rows =
+        await storage.db.query('tb_conversation_list', where: 'cid = 12');
+    expect(rows.single['speechInputEnabled'], 0);
+    expect(rows.single['readAloudEnabled'], 1);
+    expect(rows.single['voiceLocale'], 'en_US');
+    expect(rows.single['voiceRate'], 1.5);
+    expect(rows.single['voiceStyle'], 'female');
+    expect(rows.single['readAloudTriggerMode'], 'longPress');
+    final parsed = ConversationModel.fromJson(rows.single);
+    expect(parsed.speechInputEnabled, isFalse);
+    expect(parsed.readAloudEnabled, isTrue);
+    expect(parsed.voiceLocale, 'en_US');
+    expect(parsed.voiceRate, 1.5);
+    expect(parsed.voiceStyle, 'female');
+    expect(parsed.readAloudTriggerMode, 'longPress');
+
+    await dao.updateVoicePrefs(model);
+    rows = await storage.db.query('tb_conversation_list', where: 'cid = 12');
+    expect(rows.single['speechInputEnabled'], isNull);
+    expect(rows.single['readAloudEnabled'], isNull);
+    expect(rows.single['voiceLocale'], isNull);
+    expect(rows.single['voiceRate'], isNull);
+    expect(rows.single['voiceStyle'], isNull);
+    expect(rows.single['readAloudTriggerMode'], isNull);
+    expect(ConversationModel.fromJson(rows.single).speechInputEnabled, isNull);
+    await storage.db.close();
+  });
+
+  test('会话角色状态字段兼容旧表，并可注入当前会话上下文', () async {
+    final storage = await newDb();
+    await storage.db.execute(
+        'create table tb_conversation_list (id integer primary key autoincrement'
+        ', cid integer, title text, icon text, updateAt integer'
+        ', messageCount integer, lastMessage text, stickTime integer);');
+
+    final dao = await ConversationListDao.create(storage);
+    final model = ConversationModel(cid: 15, icon: '')
+      ..title = '角色状态测试'
+      ..stickTime = 0;
+    await dao.saveConversation(model);
+    await dao.updateRoleState(
+      model,
+      roleScene: '雨夜\n旧书店',
+      roleRelationship: '熟悉但  保持距离',
+      roleToneNote: '克制\n温柔',
+    );
+    var rows =
+        await storage.db.query('tb_conversation_list', where: 'cid = 15');
+    expect(rows.single['roleScene'], '雨夜\n旧书店');
+    expect(rows.single['roleRelationship'], '熟悉但  保持距离');
+    expect(rows.single['roleToneNote'], '克制\n温柔');
+
+    final parsed = ConversationModel.fromJson(rows.single);
+    expect(parsed.roleScene, '雨夜\n旧书店');
+    expect(parsed.roleRelationship, '熟悉但  保持距离');
+    expect(parsed.roleToneNote, '克制\n温柔');
+    expect(parsed.roleStateContext(), contains('[当前会话角色状态]'));
+    expect(parsed.roleStateContext(), contains('- 当前场景：雨夜 旧书店'));
+    expect(parsed.roleStateContext(), contains('- 关系备注：熟悉但 保持距离'));
+    expect(parsed.roleStateContext(), contains('- 语气备注：克制 温柔'));
+    expect(parsed.roleStatePreviewLines(), [
+      '场景：雨夜 旧书店',
+      '关系：熟悉但 保持距离',
+      '语气：克制 温柔',
+    ]);
+    expect(
+      parsed.roleStateCopyText(title: '艾琳 · 当前会话状态'),
+      [
+        '# 艾琳 · 当前会话状态',
+        '场景：雨夜 旧书店',
+        '关系：熟悉但 保持距离',
+        '语气：克制 温柔',
+      ].join('\n'),
+    );
+
+    await dao.updateRoleState(model);
+    rows = await storage.db.query('tb_conversation_list', where: 'cid = 15');
+    expect(rows.single['roleScene'], isNull);
+    expect(rows.single['roleRelationship'], isNull);
+    expect(rows.single['roleToneNote'], isNull);
+    expect(ConversationModel.fromJson(rows.single).roleStateContext(), '');
+    expect(ConversationModel.fromJson(rows.single).roleStateCopyText(), '');
+    await storage.db.close();
+  });
+
   test('会话工具集覆盖字段兼容旧表，并可 JSON 往返', () async {
     final storage = await newDb();
     await storage.db.execute(
@@ -268,6 +399,7 @@ void main() {
     final all = await convDao.searchConversations('Alpha');
     expect(all.map((e) => e.conversation.cid), containsAll([21, 22]));
     expect(all.first.snippet, contains('Alpha'));
+    expect(all.map((e) => e.targetMessageCreatedAt), containsAll([1, 2]));
 
     final scoped =
         await convDao.searchConversations('Alpha', projectId: project.id);
@@ -279,6 +411,7 @@ void main() {
 
     final byTitle = await convDao.searchConversations('发布');
     expect(byTitle.single.conversation.cid, 21);
+    expect(byTitle.single.targetMessageCreatedAt, isNull);
 
     final byAssistant =
         await convDao.searchConversations('Alpha', assistantId: 9);
@@ -294,6 +427,56 @@ void main() {
         FavoriteModel(ownerName: 'AI', content: 'Alpha 收藏内容', createdAt: 3));
     final favorites = await favoriteDao.searchFavorites('Alpha');
     expect(favorites.single.content, contains('收藏'));
+    await storage.db.close();
+  });
+
+  test('搜索会话：标题和最近消息命中优先于仅历史消息命中', () async {
+    final storage = await newDb();
+    final convDao = await ConversationListDao.create(storage);
+    await convDao.saveConversation(ConversationModel(cid: 31, icon: '')
+      ..title = 'Alpha 发布计划'
+      ..lastMessage = '普通收尾'
+      ..stickTime = 0
+      ..updateAt = 1);
+    await convDao.saveConversation(ConversationModel(cid: 32, icon: '')
+      ..title = '普通标题'
+      ..lastMessage = 'Alpha 最近消息'
+      ..stickTime = 0
+      ..updateAt = 2);
+    await convDao.saveConversation(ConversationModel(cid: 33, icon: '')
+      ..title = '普通会话'
+      ..lastMessage = '普通最近消息'
+      ..stickTime = 0
+      ..updateAt = 99);
+    await MessageDao.create(storage, cid: 33);
+    await storage.db.insert('tb_messages', {
+      'cid': 33,
+      'content': 'Alpha 只出现在历史消息里',
+      'createdAt': 3,
+      'ownerName': 'user',
+      'ownerType': 'sender',
+    });
+    await storage.db.insert('tb_messages', {
+      'cid': 33,
+      'content': 'Alpha 第二处历史命中',
+      'createdAt': 4,
+      'ownerName': 'AI',
+      'ownerType': 'receiver',
+    });
+
+    final hits = await convDao.searchConversations('Alpha');
+
+    expect(hits.map((e) => e.conversation.cid), [31, 32, 33]);
+    expect(hits[0].snippet, contains('Alpha 发布计划'));
+    expect(hits[1].snippet, contains('Alpha 最近消息'));
+    expect(hits[2].snippet, contains('Alpha 第二处历史命中'));
+    expect(hits.map((e) => e.sourceLabel), ['标题', '最近消息', '历史消息']);
+    expect(hits.map((e) => e.targetMessageCreatedAt), [null, null, 4]);
+    expect(hits[2].messageSnippets, [
+      'Alpha 第二处历史命中',
+      'Alpha 只出现在历史消息里',
+    ]);
+    expect(hits[2].messageHits.map((hit) => hit.createdAt), [4, 3]);
     await storage.db.close();
   });
 
@@ -316,8 +499,20 @@ void main() {
     }
 
     expect(await hasColumn('tb_conversation_list', 'toolIds'), isTrue);
+    expect(
+        await hasColumn('tb_conversation_list', 'speechInputEnabled'), isTrue);
+    expect(await hasColumn('tb_conversation_list', 'readAloudEnabled'), isTrue);
+    expect(await hasColumn('tb_conversation_list', 'voiceLocale'), isTrue);
+    expect(await hasColumn('tb_conversation_list', 'voiceRate'), isTrue);
+    expect(await hasColumn('tb_conversation_list', 'voiceStyle'), isTrue);
+    expect(await hasColumn('tb_conversation_list', 'readAloudTriggerMode'),
+        isTrue);
+    expect(await hasColumn('tb_conversation_list', 'roleScene'), isTrue);
+    expect(await hasColumn('tb_conversation_list', 'roleRelationship'), isTrue);
+    expect(await hasColumn('tb_conversation_list', 'roleToneNote'), isTrue);
     expect(await hasColumn('tb_project', 'defaultToolIds'), isTrue);
     expect(await hasColumn('tb_messages', 'blocks'), isTrue);
+    expect(await hasColumn('tb_tool_audit', 'toolName'), isTrue);
     final kbRefs = await storage.db.rawQuery(
         "select name from sqlite_master where type='table' and name='tb_project_kb'");
     expect(kbRefs, isNotEmpty);
@@ -329,7 +524,7 @@ void main() {
     final convDao = await ConversationListDao.create(storage);
     await convDao.saveConversation(ConversationModel(cid: 1000, icon: '')
       ..title = '长会话'
-      ..lastMessage = 'needle'
+      ..lastMessage = '普通收尾'
       ..stickTime = 0
       ..updateAt = 1000);
     await MessageDao.create(storage, cid: 1000);
@@ -350,6 +545,36 @@ void main() {
     final hits = await convDao.searchConversations('needle');
     expect(hits.single.conversation.cid, 1000);
     expect(hits.single.snippet, contains('needle'));
+    expect(hits.single.targetMessageCreatedAt, 777);
+    await storage.db.close();
+  });
+
+  test('搜索会话：长历史消息片段优先按自然边界截取上下文', () async {
+    final storage = await newDb();
+    final convDao = await ConversationListDao.create(storage);
+    await convDao.saveConversation(ConversationModel(cid: 1001, icon: '')
+      ..title = '长上下文会话'
+      ..lastMessage = '普通收尾'
+      ..stickTime = 0
+      ..updateAt = 1001);
+    await MessageDao.create(storage, cid: 1001);
+    await storage.db.insert('tb_messages', {
+      'cid': 1001,
+      'content': '${'前置铺垫内容' * 12}\n'
+          '第二段上下文开始，needle 关联的决策背景、执行动作和风险说明都在这里。'
+          '${'后续无关内容' * 12}',
+      'createdAt': 1001,
+      'ownerName': 'AI',
+      'ownerType': 'receiver',
+    });
+
+    final hits = await convDao.searchConversations('needle');
+
+    expect(hits.single.conversation.cid, 1001);
+    expect(hits.single.snippet, startsWith('...第二段上下文开始'));
+    expect(hits.single.snippet, contains('needle 关联的决策背景、执行动作和风险说明都在这里。'));
+    expect(hits.single.snippet, endsWith('...'));
+    expect(hits.single.snippet, isNot(contains('前置铺垫内容')));
     await storage.db.close();
   });
 
@@ -390,6 +615,73 @@ void main() {
 
     expect(result.single.cid, 31);
     expect(result.single.conversationTitle, '正确会话');
+    await storage.db.close();
+  });
+
+  test('收藏搜索跟随项目和未分类范围过滤', () async {
+    final storage = await newDb();
+    final projectDao = await ProjectDao.create(storage);
+    final project = ProjectModel(name: 'Alpha 项目');
+    final otherProject = ProjectModel(name: '其它项目');
+    await projectDao.saveProject(project);
+    await projectDao.saveProject(otherProject);
+    final convDao = await ConversationListDao.create(storage);
+    await convDao.saveConversation(
+        ConversationModel(cid: 51, icon: '', projectId: project.id)
+          ..title = '项目会话'
+          ..stickTime = 0
+          ..updateAt = 51);
+    await convDao.saveConversation(ConversationModel(cid: 52, icon: '')
+      ..title = '未分类会话'
+      ..stickTime = 0
+      ..updateAt = 52);
+    await convDao.saveConversation(
+        ConversationModel(cid: 53, icon: '', projectId: otherProject.id)
+          ..title = '其它项目会话'
+          ..stickTime = 0
+          ..updateAt = 53);
+    await MessageDao.create(storage, cid: 51);
+    for (final item in [
+      (cid: 51, content: 'Alpha 项目收藏', createdAt: 510),
+      (cid: 52, content: 'Alpha 未分类收藏', createdAt: 520),
+      (cid: 53, content: 'Alpha 其它项目收藏', createdAt: 530),
+    ]) {
+      await storage.db.insert('tb_messages', {
+        'cid': item.cid,
+        'content': item.content,
+        'createdAt': item.createdAt,
+        'ownerName': 'AI',
+        'ownerType': 'receiver',
+      });
+    }
+    final favoriteDao = await FavoriteDao.create(storage);
+    for (final item in [
+      (content: 'Alpha 项目收藏', createdAt: 510),
+      (content: 'Alpha 未分类收藏', createdAt: 520),
+      (content: 'Alpha 其它项目收藏', createdAt: 530),
+    ]) {
+      await favoriteDao.addFavorite(FavoriteModel(
+        ownerName: 'AI',
+        content: item.content,
+        createdAt: item.createdAt,
+      ));
+    }
+
+    final scoped =
+        await favoriteDao.searchFavoriteResults('Alpha', projectId: project.id);
+    final uncategorized =
+        await favoriteDao.searchFavoriteResults('Alpha', uncategorized: true);
+    final all = await favoriteDao.searchFavoriteResults('Alpha');
+
+    expect(scoped.map((e) => e.favorite.content), ['Alpha 项目收藏']);
+    expect(uncategorized.map((e) => e.favorite.content), ['Alpha 未分类收藏']);
+    expect(
+        all.map((e) => e.favorite.content),
+        containsAll([
+          'Alpha 项目收藏',
+          'Alpha 未分类收藏',
+          'Alpha 其它项目收藏',
+        ]));
     await storage.db.close();
   });
 

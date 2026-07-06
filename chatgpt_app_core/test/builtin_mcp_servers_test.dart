@@ -58,6 +58,19 @@ void main() {
     }
   });
 
+  test('搜索类 MCP 工具使用工具搜索分组，避免和回答联网搜索混淆', () {
+    final searchTools = McpStore.all
+        .where((e) =>
+            ['exa', 'keenable', 'tavily', 'kagi', 'serpapi'].contains(e.id))
+        .toList();
+    expect(searchTools, hasLength(5));
+    for (final e in searchTools) {
+      expect(e.category, '工具搜索');
+      expect(e.description, contains('MCP 工具'));
+    }
+    expect(McpStore.grouped().containsKey('搜索'), isFalse);
+  });
+
   test('toServerConfig 透传 id / name / url', () {
     final e = McpStore.httpEntries.first;
     final cfg = e.toServerConfig();

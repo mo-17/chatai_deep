@@ -4,7 +4,6 @@ import 'package:chatgpt_app_core/db/hi_db_manager.dart';
 import 'package:chatgpt_app_core/model/ai_settings.dart';
 import 'package:chatgpt_app_core/model/assistant_model.dart';
 import 'package:flutter_test/flutter_test.dart';
-import 'package:sqflite_common/sqlite_api.dart';
 import 'package:sqflite_common_ffi/sqflite_ffi.dart';
 
 /// L1（助手绑定工具）验收：
@@ -35,8 +34,8 @@ void main() {
   });
 
   group('ToolRegistry.fromAssistant 选路', () {
-    AISettings configured() =>
-        AISettings.defaults()..tavilyApiKey = 'tvly-x'; // webSearchProviderId 默认 tavily
+    AISettings configured() => AISettings.defaults()
+      ..tavilyApiKey = 'tvly-x'; // webSearchProviderId 默认 tavily
 
     test('未绑定（null）且无 forceWebSearch -> 空注册表', () {
       final r = ToolRegistry.fromAssistant(configured(), null);
@@ -49,16 +48,16 @@ void main() {
     });
 
     test('forceWebSearch=true（会话联网开关）即便未绑定也纳入 web_search', () {
-      final r = ToolRegistry.fromAssistant(configured(), null,
-          forceWebSearch: true);
+      final r =
+          ToolRegistry.fromAssistant(configured(), null, forceWebSearch: true);
       expect(r.byName('web_search'), isNotNull);
     });
 
     test('未配置搜索 key -> 即便绑定/强制也为空（依赖未满足）', () {
       final s = AISettings.defaults(); // 无 key
-      expect(ToolRegistry.fromAssistant(s, const ['web_search']).isEmpty, isTrue);
       expect(
-          ToolRegistry.fromAssistant(s, null, forceWebSearch: true).isEmpty,
+          ToolRegistry.fromAssistant(s, const ['web_search']).isEmpty, isTrue);
+      expect(ToolRegistry.fromAssistant(s, null, forceWebSearch: true).isEmpty,
           isTrue);
     });
 
@@ -82,8 +81,8 @@ void main() {
           ', useTools integer, createdAt integer, updatedAt integer)');
       final dao = await AssistantDao.create(HiDBManager.test(db));
 
-      final id = await dao
-          .saveAssistant(AssistantModel(name: '研究员', toolIds: const ['web_search']));
+      final id = await dao.saveAssistant(
+          AssistantModel(name: '研究员', toolIds: const ['web_search']));
       final back = await dao.getAssistant(id!);
       expect(back!.toolIds, ['web_search']);
     });
@@ -94,6 +93,47 @@ void main() {
       final id = await dao.saveAssistant(AssistantModel(name: '无工具'));
       final back = await dao.getAssistant(id!);
       expect(back!.toolIds, isNull);
+    });
+
+    test('旧表（无 providerId 列）经 create 后可读写 providerId', () async {
+      db = await databaseFactoryFfi.openDatabase(inMemoryDatabasePath);
+      await db.execute(
+          'create table tb_assistant (id integer primary key autoincrement'
+          ', name text, emoji text, prompt text, model text'
+          ', useTools integer, createdAt integer, updatedAt integer)');
+      final dao = await AssistantDao.create(HiDBManager.test(db));
+      final id = await dao.saveAssistant(
+        AssistantModel(name: '研究员', providerId: 'openai'),
+      );
+      final back = await dao.getAssistant(id!);
+      expect(back!.providerId, 'openai');
+    });
+
+    test('旧表（无头像列）经 create 后可读写 avatarType/avatarValue', () async {
+      db = await databaseFactoryFfi.openDatabase(inMemoryDatabasePath);
+      await db.execute(
+          'create table tb_assistant (id integer primary key autoincrement'
+          ', name text, emoji text, prompt text, model text'
+          ', useTools integer, createdAt integer, updatedAt integer)');
+      final dao = await AssistantDao.create(HiDBManager.test(db));
+      final id = await dao.saveAssistant(
+        AssistantModel(
+          name: '有头像',
+          avatarType: 'image',
+          avatarValue: '/tmp/assistant-avatar.png',
+        ),
+      );
+      final back = await dao.getAssistant(id!);
+      expect(back!.avatarType, 'image');
+      expect(back.avatarValue, '/tmp/assistant-avatar.png');
+    });
+
+    test('新表 providerId 缺省为空串', () async {
+      db = await databaseFactoryFfi.openDatabase(inMemoryDatabasePath);
+      final dao = await AssistantDao.create(HiDBManager.test(db));
+      final id = await dao.saveAssistant(AssistantModel(name: '默认服务商'));
+      final back = await dao.getAssistant(id!);
+      expect(back!.providerId, isEmpty);
     });
   });
 }

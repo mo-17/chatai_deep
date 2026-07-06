@@ -1,4 +1,5 @@
 import 'package:chat_message/models/message_model.dart';
+import 'package:chatgpt_app_core/chat/domain/message_block.dart';
 import 'package:chatgpt_app_core/dao/completion_dao.dart';
 import 'package:chatgpt_app_core/model/ai_settings.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -54,6 +55,40 @@ void main() {
         () => dao.currentMessages.add(msg(OwnerType.sender, 'y', 2)),
         throwsUnsupportedError,
       );
+    });
+
+    test('未完成回复状态会进入下一轮 history，且重新生成会清理', () {
+      final dao = CompletionDao(settings: AISettings.defaults());
+      final user = msg(OwnerType.sender, 'hello', 1);
+      final assistant = msg(OwnerType.receiver, 'no response', 2);
+
+      dao.appendTurn(
+        user,
+        assistant,
+        assistantBlocks: const [
+          RoleContinuationBlock(
+            id: 'b_role_continuation',
+            messageId: 'msg_2',
+            createdAt: 2,
+            status: MessageBlockStatus.success,
+            content: '上一轮尚未正式开口，角色紧张地攥住笔记本。',
+          ),
+        ],
+      );
+
+      final history = CompletionDao.buildHistory(
+        dao.currentMessages,
+        dao.currentToolHistory,
+        roleContinuationHistory: dao.currentRoleContinuationHistory,
+      );
+      expect(history.last['role'], 'assistant');
+      expect(history.last['content'], contains('未完成回复状态'));
+      expect(history.last['content'], contains('角色紧张地攥住笔记本'));
+      expect(history.last['content'], isNot(contains('no response')));
+
+      final dropped = dao.dropLastTurn();
+      expect(dropped?.content, 'hello');
+      expect(dao.currentRoleContinuationHistory, isEmpty);
     });
   });
 }

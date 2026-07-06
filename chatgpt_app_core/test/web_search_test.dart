@@ -8,6 +8,7 @@ import 'package:chatgpt_app_core/chat/domain/chat_attachments.dart';
 import 'package:chatgpt_app_core/chat/domain/message_block.dart';
 import 'package:chatgpt_app_core/chat/domain/model_capabilities.dart';
 import 'package:chatgpt_app_core/chat/domain/stream_event.dart';
+import 'package:chatgpt_app_core/chat/ui/block_message_content.dart';
 import 'package:chatgpt_app_core/dao/chat/chat_service.dart';
 import 'package:chatgpt_app_core/model/ai_settings.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -111,7 +112,8 @@ void main() {
     });
 
     test('非 200 抛错（由编排层吞掉降级）', () {
-      final client = MockClient((_) async => http.Response('unauthorized', 401));
+      final client =
+          MockClient((_) async => http.Response('unauthorized', 401));
       expect(buildProvider(client).search('q'), throwsException);
     });
   });
@@ -127,7 +129,9 @@ void main() {
           const WebSearchResult(title: 'A2', url: 'https://a.com'), // 重复 URL
           const WebSearchResult(title: 'C', url: 'https://c.com'),
         ],
-      }, throwOn: {'q3'});
+      }, throwOn: {
+        'q3'
+      });
       final o = SearchOrchestrator(
           chatService: _FakeChatService((_) async => ''), provider: provider);
       final merged = await o.searchAll(['q1', 'q2', 'q3']);
@@ -165,8 +169,8 @@ void main() {
 
     test('意图说不用搜 -> 不触发 provider（验收第 3 条）', () async {
       final provider = _FakeSearchProvider({});
-      final chat = _FakeChatService(
-          (_) async => '{"needSearch": false, "queries": []}');
+      final chat =
+          _FakeChatService((_) async => '{"needSearch": false, "queries": []}');
       final o = SearchOrchestrator(chatService: chat, provider: provider);
       final results = await o.run(prompt: '1+1 等于几', history: const []);
       expect(results, isEmpty);
@@ -264,6 +268,32 @@ void main() {
       expect(restored.webResults.single.title, 'T');
       expect(restored.webResults.single.url, 'https://a.com');
     });
+
+    test('正文 [n] 标记按来源列表分段，并只让有效来源可点击', () {
+      final segments = parseCitationTextSegments(
+        content: '参考 [1] 和 [2]，无效 [3] 保持普通文本。',
+        webResults: const [
+          WebSearchResult(title: 'A', url: 'https://a.com', content: 'A'),
+          WebSearchResult(title: 'B', url: '', content: 'B'),
+        ],
+      );
+
+      expect(segments.map((e) => e.text), [
+        '参考 ',
+        '[1]',
+        ' 和 ',
+        '[2]',
+        '，无效 ',
+        '[3]',
+        ' 保持普通文本。',
+      ]);
+      expect(segments[1].citationIndex, 1);
+      expect(segments[1].url, 'https://a.com');
+      expect(segments[3].citationIndex, 2);
+      expect(segments[3].url, isNull);
+      expect(segments[5].citationIndex, 3);
+      expect(segments[5].url, isNull);
+    });
   });
 
   group('AISettings 联网搜索字段', () {
@@ -325,8 +355,17 @@ class _FakeChatService implements ChatService {
     required String prompt,
     required List<Map<String, dynamic>> history,
     ChatAttachments? attachments,
+    Duration? timeout,
   }) =>
       onChat(prompt);
+
+  @override
+  Future<ChatCompletionResult> chatWithUsage({
+    required String prompt,
+    required List<Map<String, dynamic>> history,
+    ChatAttachments? attachments,
+  }) async =>
+      ChatCompletionResult(content: await onChat(prompt), estimated: true);
 
   @override
   Stream<String> chatStream({
