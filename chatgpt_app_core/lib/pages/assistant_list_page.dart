@@ -984,7 +984,7 @@ class _AssistantListPageState extends State<AssistantListPage> {
           assistant: assistant,
           avatarPngBytes: result.avatarPngBytes,
           sourceName: result.sourceName,
-          tavernMeta: result.tavernMeta,
+          tavernMeta: result.tavernMeta?.syncTranslatedOpenings(assistant),
         ));
         progress.value = _TavernTranslationProgress(
           current: i + 1,

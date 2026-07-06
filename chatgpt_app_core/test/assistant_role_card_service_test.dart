@@ -239,6 +239,29 @@ void main() {
     expect(meta.characterBookEntryCount, 1);
   });
 
+  test('翻译后 Tavern meta 会同步使用已翻译备选开场', () {
+    const meta = AssistantRoleCardTavernMeta(
+      creator: 'card maker',
+      source: 'https://example.com/cards/fuka',
+      alternateGreetings: ['She stands by the door with books.'],
+    );
+    final translatedAssistant = AssistantModel(
+      name: '风香',
+      exampleDialogs: '''
+[备选开场白]
+她抱着书站在门边。
+
+雨声盖住了脚步声。
+''',
+    );
+
+    final synced = meta.syncTranslatedOpenings(translatedAssistant);
+
+    expect(synced.alternateGreetings, ['她抱着书站在门边。', '雨声盖住了脚步声。']);
+    expect(synced.creator, 'card maker');
+    expect(synced.source, 'https://example.com/cards/fuka');
+  });
+
   test('可导出 SillyTavern 常用 PNG 角色卡并从 PNG 元数据导回', () {
     final assistant = AssistantModel(
       name: 'Fuka Shikuzaki',

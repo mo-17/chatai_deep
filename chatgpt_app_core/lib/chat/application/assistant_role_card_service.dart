@@ -2189,6 +2189,39 @@ class AssistantRoleCardTavernMeta {
     this.characterBookEntryCount = 0,
   });
 
+  AssistantRoleCardTavernMeta copyWith({
+    List<String>? alternateGreetings,
+  }) {
+    return AssistantRoleCardTavernMeta(
+      spec: spec,
+      specVersion: specVersion,
+      creator: creator,
+      characterVersion: characterVersion,
+      createDate: createDate,
+      updateDate: updateDate,
+      source: source,
+      creatorNotes: creatorNotes,
+      systemPrompt: systemPrompt,
+      postHistoryInstructions: postHistoryInstructions,
+      tags: tags,
+      alternateGreetings: alternateGreetings ?? this.alternateGreetings,
+      characterBookName: characterBookName,
+      characterBookScanDepth: characterBookScanDepth,
+      characterBookTokenBudget: characterBookTokenBudget,
+      characterBookRecursiveScanning: characterBookRecursiveScanning,
+      characterBookEntryCount: characterBookEntryCount,
+    );
+  }
+
+  AssistantRoleCardTavernMeta syncTranslatedOpenings(
+    AssistantModel assistant,
+  ) {
+    final translatedGreetings =
+        AssistantRoleCardService.alternateGreetings(assistant.exampleDialogs);
+    if (translatedGreetings.isEmpty) return this;
+    return copyWith(alternateGreetings: translatedGreetings);
+  }
+
   bool get isEmpty =>
       spec.isEmpty &&
       specVersion.isEmpty &&
