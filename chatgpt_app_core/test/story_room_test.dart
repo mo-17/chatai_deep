@@ -514,6 +514,35 @@ void main() {
       expect(system, isNot(contains('gentle scout')));
       expect(system, isNot(contains('【关键词记忆 / 世界书】')));
     });
+
+    test('酒馆房间世界书匹配会忽略导入备注注释', () {
+      final room = StoryRoomModel(
+        title: '镜厅',
+        mode: StoryRoomMode.tavern,
+        publicContext: [
+          '【关键词记忆 / 世界书】',
+          '# 这个条目用于镜厅谜题。',
+          '镜子 => 镜子背后藏着暗门。',
+        ].join('\n'),
+      );
+      final fuka = StoryParticipantModel(
+        id: 1,
+        roomId: 1,
+        role: StoryParticipantRole.assistant,
+        name: 'Fuka',
+        prompt: '安静观察。',
+      );
+
+      final system = StoryContextBuilder.systemPrompt(
+        room: room,
+        participants: [fuka],
+        speaker: fuka,
+        latestInput: '我看见了镜子。',
+      );
+
+      expect(system, contains('镜子背后藏着暗门'));
+      expect(system, isNot(contains('这个条目用于镜厅谜题')));
+    });
   });
 
   group('StorySpeakerScheduler', () {

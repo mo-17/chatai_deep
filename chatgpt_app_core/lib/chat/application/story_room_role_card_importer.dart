@@ -216,6 +216,7 @@ class StoryRoomRoleCardImporter {
     _MemoryBookEntry? current;
     for (final rawLine in memoryBook.replaceAll('\r\n', '\n').split('\n')) {
       final line = rawLine.trimRight();
+      if (line.trimLeft().startsWith('#')) continue;
       final split = line.indexOf('=>');
       if (split >= 0) {
         if (current != null) entries.add(current);

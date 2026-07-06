@@ -1561,6 +1561,8 @@ class AssistantRoleCardService {
     for (final item in _tavernWorldBookEntries(raw['entries'])) {
       final content = _normalizeTavernText(item['content'], name);
       if (content.isEmpty) continue;
+      final comment = _tavernEntryComment(item, name);
+      if (comment.isNotEmpty) lines.add('# $comment');
       final selective = _tavernEntryUsesSelective(item);
       final secondaryKeys = selective
           ? _tavernKeysFrom(item['secondary_keys'], name,
@@ -1577,6 +1579,21 @@ class AssistantRoleCardService {
       }
     }
     return lines.join('\n');
+  }
+
+  static String _tavernEntryComment(Map<String, dynamic> item, String name) {
+    for (final key in const ['comment', 'comments', 'note', 'notes']) {
+      final text = _normalizeTavernText(item[key], name);
+      if (text.isNotEmpty) return text;
+    }
+    final extensions = item['extensions'];
+    if (extensions is Map) {
+      for (final key in const ['comment', 'comments', 'note', 'notes']) {
+        final text = _normalizeTavernText(extensions[key], name);
+        if (text.isNotEmpty) return text;
+      }
+    }
+    return '';
   }
 
   static Iterable<Map<String, dynamic>> _tavernWorldBookEntries(Object? raw) {

@@ -1194,6 +1194,36 @@ void main() {
     expect(summary.disabledMemoryCount, 3);
   });
 
+  test('SillyTavern 世界书备注会保留为注释且不参与命中', () {
+    final imported = AssistantRoleCardService.importJson(jsonEncode({
+      'spec': 'chara_card_v2',
+      'data': {
+        'name': '备注世界书',
+        'description': '角色设定正文。',
+        'first_mes': '你好。',
+        'character_book': {
+          'entries': [
+            {
+              'keys': ['镜子'],
+              'content': '镜子背后藏着暗门。',
+              'comment': '这个条目用于镜厅谜题。',
+            },
+          ],
+        },
+      },
+    }));
+
+    expect(
+      imported.memoryBook,
+      '# 这个条目用于镜厅谜题。\n镜子 => 镜子背后藏着暗门。',
+    );
+    final entries = AssistantRoleCardService.parseMemoryEntries(
+      imported.memoryBook,
+    );
+    expect(entries, hasLength(1));
+    expect(entries.single.content, '镜子背后藏着暗门。');
+  });
+
   test('兼容 PNG tEXt chara 元数据中的 base64 角色卡', () {
     final cardJson = jsonEncode({
       'spec': 'chara_card_v2',
