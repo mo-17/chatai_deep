@@ -1605,7 +1605,7 @@ class AssistantRoleCardService {
     }
     if (raw is Map) {
       final sortedKeys = raw.keys.toList()
-        ..sort((a, b) => a.toString().compareTo(b.toString()));
+        ..sort((a, b) => _compareTavernEntryKeys(a, b));
       return [
         for (final key in sortedKeys)
           if (raw[key] is Map<String, dynamic>)
@@ -1613,6 +1613,15 @@ class AssistantRoleCardService {
       ];
     }
     return const [];
+  }
+
+  static int _compareTavernEntryKeys(Object? a, Object? b) {
+    final aText = a.toString();
+    final bText = b.toString();
+    final aNum = num.tryParse(aText);
+    final bNum = num.tryParse(bText);
+    if (aNum != null && bNum != null) return aNum.compareTo(bNum);
+    return aText.compareTo(bText);
   }
 
   static String _tavernWorldBookPrefix(

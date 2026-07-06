@@ -1048,6 +1048,42 @@ void main() {
     ]);
   });
 
+  test('SillyTavern 世界书 entries 对象映射按数字 key 排序', () {
+    final imported = AssistantRoleCardService.importJson(jsonEncode({
+      'spec': 'chara_card_v2',
+      'data': {
+        'name': '数字排序角色',
+        'description': '角色设定正文。',
+        'first_mes': '你好。',
+        'character_book': {
+          'entries': {
+            '10': {
+              'keys': ['十号'],
+              'content': '第十条。',
+            },
+            '2': {
+              'keys': ['二号'],
+              'content': '第二条。',
+            },
+            '1': {
+              'keys': ['一号'],
+              'content': '第一条。',
+            },
+          },
+        },
+      },
+    }));
+
+    expect(
+      imported.memoryBook,
+      [
+        '一号 => 第一条。',
+        '二号 => 第二条。',
+        '十号 => 第十条。',
+      ].join('\n'),
+    );
+  });
+
   test('SillyTavern 世界书 order 字段可兜底为移动端优先级', () {
     final imported = AssistantRoleCardService.importJson(jsonEncode({
       'spec': 'chara_card_v2',
