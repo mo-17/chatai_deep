@@ -407,6 +407,38 @@ void main() {
       expect(system, contains('镜子在最近一轮内会触发'));
     });
 
+    test('酒馆原卡递归扫描会用已命中世界书继续触发相关条目', () {
+      final room = StoryRoomModel(
+        title: '镜厅',
+        mode: StoryRoomMode.tavern,
+        publicContext: [
+          '【Tavern 原卡信息】',
+          '递归扫描：开启',
+          '',
+          '【关键词记忆 / 世界书】',
+          '镜子 => 镜子背后藏着暗门。',
+          '暗门 => 暗门后通向地下书库。',
+        ].join('\n'),
+      );
+      final fuka = StoryParticipantModel(
+        id: 1,
+        roomId: 1,
+        role: StoryParticipantRole.assistant,
+        name: 'Fuka',
+        prompt: '安静观察。',
+      );
+
+      final system = StoryContextBuilder.systemPrompt(
+        room: room,
+        participants: [fuka],
+        speaker: fuka,
+        latestInput: '我看见了镜子。',
+      );
+
+      expect(system, contains('镜子背后藏着暗门'));
+      expect(system, contains('暗门后通向地下书库'));
+    });
+
     test('酒馆世界书按本轮输入动态命中，避免全量注入', () {
       final room = StoryRoomModel(
         title: 'Florin',

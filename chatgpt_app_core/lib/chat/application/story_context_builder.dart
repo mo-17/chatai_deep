@@ -35,16 +35,19 @@ class StoryContextBuilder {
         ..writeln(isTavern ? '【公共上下文 / 场景设定】' : '【公共上下文 / 世界设定】')
         ..writeln(publicContext);
     }
+    final maxEntries = _worldBookHitLimit(room);
+    final recentTexts = _recentMatchTexts(
+      recentMessages,
+      maxDepth: _worldBookScanDepth(room),
+    );
     final worldBookHits = worldBook.isEmpty
         ? const <AssistantMemoryEntryPreview>[]
-        : AssistantRoleCardService.matchMemoryEntries(
-            StoryRoomRoleCardImporter.normalizeMemoryBookForMatching(worldBook),
-            latestInput,
-            maxEntries: _worldBookHitLimit(room),
-            recentTexts: _recentMatchTexts(
-              recentMessages,
-              maxDepth: _worldBookScanDepth(room),
-            ),
+        : _matchWorldBookHits(
+            worldBook,
+            latestInput: latestInput,
+            maxEntries: maxEntries,
+            recentTexts: recentTexts,
+            recursive: _worldBookRecursiveScanning(room),
           );
     final beforeCharHits = worldBookHits
         .where((hit) => !_isAfterCharWorldBookPosition(hit.position))
@@ -136,6 +139,51 @@ class StoryContextBuilder {
     final depth = RegExp(r'扫描深度：(\d+)').firstMatch(room.publicContext);
     final value = int.tryParse(depth?.group(1) ?? '');
     return (value ?? 6).clamp(0, 50);
+  }
+
+  static bool _worldBookRecursiveScanning(StoryRoomModel room) {
+    final match = RegExp(r'递归扫描：([^\n]+)').firstMatch(room.publicContext);
+    final value = match?.group(1)?.trim().toLowerCase() ?? '';
+    return value == '开启' || value == 'true' || value == 'yes' || value == '1';
+  }
+
+  static List<AssistantMemoryEntryPreview> _matchWorldBookHits(
+    String worldBook, {
+    required String latestInput,
+    required int maxEntries,
+    required List<String> recentTexts,
+    required bool recursive,
+  }) {
+    final normalized =
+        StoryRoomRoleCardImporter.normalizeMemoryBookForMatching(worldBook);
+    final hits = AssistantRoleCardService.matchMemoryEntries(
+      normalized,
+      latestInput,
+      maxEntries: maxEntries,
+      recentTexts: recentTexts,
+    );
+    if (!recursive || hits.isEmpty || hits.length >= maxEntries) {
+      return hits;
+    }
+
+    final all = <AssistantMemoryEntryPreview>[...hits];
+    final seen = {for (final hit in hits) hit.content};
+    for (var round = 0; round < 2 && all.length < maxEntries; round++) {
+      final recursiveInput = [
+        latestInput,
+        ...recentTexts,
+        for (final hit in all) hit.content,
+      ].join('\n');
+      final nextHits = AssistantRoleCardService.matchMemoryEntries(
+        normalized,
+        recursiveInput,
+        maxEntries: maxEntries,
+        recentTexts: recentTexts,
+      ).where((hit) => seen.add(hit.content)).toList();
+      if (nextHits.isEmpty) break;
+      all.addAll(nextHits);
+    }
+    return all.take(maxEntries).toList();
   }
 
   static List<String> _recentMatchTexts(
