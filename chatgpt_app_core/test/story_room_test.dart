@@ -361,6 +361,52 @@ void main() {
       expect(system, contains('古井可扫描最近两轮'));
     });
 
+    test('酒馆原卡扫描深度限制默认世界书最近消息范围', () {
+      final room = StoryRoomModel(
+        title: '镜厅',
+        mode: StoryRoomMode.tavern,
+        publicContext: [
+          '【Tavern 原卡信息】',
+          '扫描深度：1',
+          '',
+          '【关键词记忆 / 世界书】',
+          '旧钟声 => 旧钟声不在房间扫描深度内时不触发。',
+          '镜子 => 镜子在最近一轮内会触发。',
+        ].join('\n'),
+      );
+      final fuka = StoryParticipantModel(
+        id: 1,
+        roomId: 1,
+        role: StoryParticipantRole.assistant,
+        name: 'Fuka',
+        prompt: '安静观察。',
+      );
+
+      final system = StoryContextBuilder.systemPrompt(
+        room: room,
+        participants: [fuka],
+        speaker: fuka,
+        latestInput: '现在没有新的线索。',
+        recentMessages: [
+          StoryMessageModel(
+            roomId: 1,
+            speakerRole: 'assistant',
+            speakerName: 'Fuka',
+            content: '两轮前听见旧钟声。',
+          ),
+          StoryMessageModel(
+            roomId: 1,
+            speakerRole: 'user',
+            speakerName: '我',
+            content: '上一轮看见镜子。',
+          ),
+        ],
+      );
+
+      expect(system, isNot(contains('旧钟声不在房间扫描深度内时不触发')));
+      expect(system, contains('镜子在最近一轮内会触发'));
+    });
+
     test('酒馆世界书按本轮输入动态命中，避免全量注入', () {
       final room = StoryRoomModel(
         title: 'Florin',

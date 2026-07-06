@@ -41,7 +41,10 @@ class StoryContextBuilder {
             StoryRoomRoleCardImporter.normalizeMemoryBookForMatching(worldBook),
             latestInput,
             maxEntries: _worldBookHitLimit(room),
-            recentTexts: _recentMatchTexts(recentMessages),
+            recentTexts: _recentMatchTexts(
+              recentMessages,
+              maxDepth: _worldBookScanDepth(room),
+            ),
           );
     final beforeCharHits = worldBookHits
         .where((hit) => !_isAfterCharWorldBookPosition(hit.position))
@@ -129,10 +132,19 @@ class StoryContextBuilder {
     return 6;
   }
 
+  static int _worldBookScanDepth(StoryRoomModel room) {
+    final depth = RegExp(r'扫描深度：(\d+)').firstMatch(room.publicContext);
+    final value = int.tryParse(depth?.group(1) ?? '');
+    return (value ?? 6).clamp(0, 50);
+  }
+
   static List<String> _recentMatchTexts(
-      List<StoryMessageModel> recentMessages) {
-    final recent = recentMessages.length > 6
-        ? recentMessages.sublist(recentMessages.length - 6)
+    List<StoryMessageModel> recentMessages, {
+    required int maxDepth,
+  }) {
+    if (maxDepth <= 0) return const [];
+    final recent = recentMessages.length > maxDepth
+        ? recentMessages.sublist(recentMessages.length - maxDepth)
         : recentMessages;
     return [
       for (final message in recent) '${message.speakerName}：${message.content}',
