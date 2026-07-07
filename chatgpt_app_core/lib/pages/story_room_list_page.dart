@@ -1,6 +1,9 @@
+import 'package:chatgpt_app_core/chat/application/story_room_role_card_importer.dart';
 import 'package:chatgpt_app_core/db/hi_db_manager.dart';
 import 'package:chatgpt_app_core/db/story_room_dao.dart';
+import 'package:chatgpt_app_core/db/story_template_dao.dart';
 import 'package:chatgpt_app_core/model/story_room_model.dart';
+import 'package:chatgpt_app_core/model/story_template_model.dart';
 import 'package:chatgpt_app_core/pages/story_room_page.dart';
 import 'package:chatgpt_app_core/util/hi_dialog.dart';
 import 'package:flutter/material.dart';
@@ -14,7 +17,10 @@ class StoryRoomListPage extends StatefulWidget {
 
 class _StoryRoomListPageState extends State<StoryRoomListPage> {
   StoryRoomDao? _dao;
+  StoryTemplateDao? _templateDao;
   List<StoryRoomModel> _rooms = const [];
+  List<StoryTemplateModel> _templates = const [];
+  int _tabIndex = 0;
   bool _loading = true;
 
   @override
@@ -26,11 +32,15 @@ class _StoryRoomListPageState extends State<StoryRoomListPage> {
   Future<void> _load() async {
     final db = await HiDBManager.instance(dbName: HiDBManager.getAccountHash());
     final dao = await StoryRoomDao.create(db);
+    final templateDao = await StoryTemplateDao.create(db);
     final rooms = await dao.getRooms();
+    final templates = await templateDao.getTemplates();
     if (!mounted) return;
     setState(() {
       _dao = dao;
+      _templateDao = templateDao;
       _rooms = rooms;
+      _templates = templates;
       _loading = false;
     });
   }
@@ -41,72 +51,181 @@ class _StoryRoomListPageState extends State<StoryRoomListPage> {
       appBar: AppBar(title: const Text('创作 / 酒馆')),
       body: _loading
           ? const Center(child: CircularProgressIndicator())
-          : _rooms.isEmpty
-              ? const Center(child: Text('暂无创作房间'))
-              : RefreshIndicator(
-                  onRefresh: _load,
-                  child: ListView.separated(
-                    itemCount: _rooms.length,
-                    separatorBuilder: (_, __) => const Divider(height: 1),
-                    itemBuilder: (_, index) {
-                      final room = _rooms[index];
-                      return ListTile(
-                        leading: CircleAvatar(
-                          child: Icon(room.mode == StoryRoomMode.tavern
-                              ? Icons.forum_outlined
-                              : Icons.theater_comedy_outlined),
-                        ),
-                        title: Text(room.title,
-                            maxLines: 1, overflow: TextOverflow.ellipsis),
-                        subtitle: Text(
-                          room.publicContext.isEmpty
-                              ? StoryRoomMode.labelOf(room.mode)
-                              : '${StoryRoomMode.labelOf(room.mode)} · ${room.publicContext}',
-                          maxLines: 1,
-                          overflow: TextOverflow.ellipsis,
-                        ),
-                        trailing: PopupMenuButton<String>(
-                          tooltip: '房间操作',
-                          onSelected: (value) {
-                            if (value == 'rename') {
-                              _renameRoom(room);
-                            } else if (value == 'delete') {
-                              _deleteRoom(room);
-                            }
-                          },
-                          itemBuilder: (_) => const [
-                            PopupMenuItem(
-                              value: 'rename',
-                              child: Row(
-                                children: [
-                                  Icon(Icons.drive_file_rename_outline),
-                                  SizedBox(width: 8),
-                                  Text('重命名'),
-                                ],
-                              ),
-                            ),
-                            PopupMenuItem(
-                              value: 'delete',
-                              child: Row(
-                                children: [
-                                  Icon(Icons.delete_outline),
-                                  SizedBox(width: 8),
-                                  Text('删除'),
-                                ],
-                              ),
-                            ),
-                          ],
-                        ),
-                        onTap: () => _openRoom(room),
-                      );
+          : Column(
+              children: [
+                Padding(
+                  padding: const EdgeInsets.fromLTRB(16, 12, 16, 8),
+                  child: SegmentedButton<int>(
+                    segments: const [
+                      ButtonSegment(
+                        value: 0,
+                        icon: Icon(Icons.meeting_room_outlined),
+                        label: Text('房间'),
+                      ),
+                      ButtonSegment(
+                        value: 1,
+                        icon: Icon(Icons.inventory_2_outlined),
+                        label: Text('模板'),
+                      ),
+                    ],
+                    selected: {_tabIndex},
+                    onSelectionChanged: (value) {
+                      setState(() => _tabIndex = value.first);
                     },
                   ),
                 ),
+                Expanded(
+                  child:
+                      _tabIndex == 0 ? _buildRoomList() : _buildTemplateList(),
+                ),
+              ],
+            ),
       floatingActionButton: FloatingActionButton(
-        onPressed: _showCreateRoomSheet,
-        child: const Icon(Icons.add),
+        onPressed: _tabIndex == 0 ? _showCreateRoomSheet : _showTemplateHint,
+        child: Icon(_tabIndex == 0 ? Icons.add : Icons.info_outline),
       ),
     );
+  }
+
+  Widget _buildRoomList() {
+    if (_rooms.isEmpty) {
+      return const Center(child: Text('暂无创作房间'));
+    }
+    return RefreshIndicator(
+      onRefresh: _load,
+      child: ListView.separated(
+        itemCount: _rooms.length,
+        separatorBuilder: (_, __) => const Divider(height: 1),
+        itemBuilder: (_, index) {
+          final room = _rooms[index];
+          return ListTile(
+            leading: CircleAvatar(
+              child: Icon(room.mode == StoryRoomMode.tavern
+                  ? Icons.forum_outlined
+                  : Icons.theater_comedy_outlined),
+            ),
+            title:
+                Text(room.title, maxLines: 1, overflow: TextOverflow.ellipsis),
+            subtitle: Text(
+              room.publicContext.isEmpty
+                  ? StoryRoomMode.labelOf(room.mode)
+                  : '${StoryRoomMode.labelOf(room.mode)} · ${room.publicContext}',
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+            ),
+            trailing: PopupMenuButton<String>(
+              tooltip: '房间操作',
+              onSelected: (value) {
+                if (value == 'rename') {
+                  _renameRoom(room);
+                } else if (value == 'delete') {
+                  _deleteRoom(room);
+                }
+              },
+              itemBuilder: (_) => const [
+                PopupMenuItem(
+                  value: 'rename',
+                  child: Row(
+                    children: [
+                      Icon(Icons.drive_file_rename_outline),
+                      SizedBox(width: 8),
+                      Text('重命名'),
+                    ],
+                  ),
+                ),
+                PopupMenuItem(
+                  value: 'delete',
+                  child: Row(
+                    children: [
+                      Icon(Icons.delete_outline),
+                      SizedBox(width: 8),
+                      Text('删除'),
+                    ],
+                  ),
+                ),
+              ],
+            ),
+            onTap: () => _openRoom(room),
+          );
+        },
+      ),
+    );
+  }
+
+  Widget _buildTemplateList() {
+    if (_templates.isEmpty) {
+      return const Center(child: Text('暂无酒馆模板'));
+    }
+    return RefreshIndicator(
+      onRefresh: _load,
+      child: ListView.separated(
+        itemCount: _templates.length,
+        separatorBuilder: (_, __) => const Divider(height: 1),
+        itemBuilder: (_, index) {
+          final template = _templates[index];
+          return ListTile(
+            leading: const CircleAvatar(
+              child: Icon(Icons.inventory_2_outlined),
+            ),
+            title: Text(
+              template.title,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+            ),
+            subtitle: Text(
+              _templateSubtitle(template),
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+            ),
+            trailing: PopupMenuButton<String>(
+              tooltip: '模板操作',
+              onSelected: (value) {
+                if (value == 'create') {
+                  _createRoomFromTemplate(template);
+                } else if (value == 'delete') {
+                  _deleteTemplate(template);
+                }
+              },
+              itemBuilder: (_) => const [
+                PopupMenuItem(
+                  value: 'create',
+                  child: Row(
+                    children: [
+                      Icon(Icons.add_circle_outline),
+                      SizedBox(width: 8),
+                      Text('开新房间'),
+                    ],
+                  ),
+                ),
+                PopupMenuItem(
+                  value: 'delete',
+                  child: Row(
+                    children: [
+                      Icon(Icons.delete_outline),
+                      SizedBox(width: 8),
+                      Text('删除模板'),
+                    ],
+                  ),
+                ),
+              ],
+            ),
+            onTap: () => _createRoomFromTemplate(template),
+          );
+        },
+      ),
+    );
+  }
+
+  String _templateSubtitle(StoryTemplateModel template) {
+    final parts = <String>[
+      template.translated ? '已翻译' : '未翻译',
+      if (template.sourceTitle.trim().isNotEmpty) template.sourceTitle.trim(),
+    ];
+    return parts.join(' · ');
+  }
+
+  void _showTemplateHint() {
+    HiDialog.showSnackBar(context, '请从助手管理导入角色卡，选择「酒馆房间」后会自动保存模板');
   }
 
   Future<void> _showCreateRoomSheet() async {
@@ -242,11 +361,74 @@ class _StoryRoomListPageState extends State<StoryRoomListPage> {
     await _load();
   }
 
+  Future<void> _createRoomFromTemplate(StoryTemplateModel template) async {
+    final dao = _dao;
+    if (dao == null) return;
+    try {
+      final existingTitles = (await dao.getRooms()).map((room) => room.title);
+      final title = _uniqueName(template.title, existingTitles);
+      final importer = StoryRoomRoleCardImportService(dao);
+      final roomId = await importer.createRoomFromTemplate(
+        template,
+        title: title,
+      );
+      final room = await dao.getRoom(roomId);
+      if (!mounted || room == null) return;
+      await _openRoom(room);
+      await _load();
+    } catch (e) {
+      if (!mounted) return;
+      HiDialog.showSnackBar(context, '从模板创建房间失败：$e');
+    }
+  }
+
+  Future<void> _deleteTemplate(StoryTemplateModel template) async {
+    final dao = _templateDao;
+    final id = template.id;
+    if (dao == null || id == null) return;
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('删除模板'),
+        content: Text('确定删除「${template.title}」吗？已创建的房间不会受影响。'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, false),
+            child: const Text('取消'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(ctx, true),
+            style: FilledButton.styleFrom(
+              backgroundColor: Theme.of(ctx).colorScheme.error,
+              foregroundColor: Theme.of(ctx).colorScheme.onError,
+            ),
+            child: const Text('删除'),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true) return;
+    await dao.deleteTemplate(id);
+    if (!mounted) return;
+    await _load();
+  }
+
   Future<void> _openRoom(StoryRoomModel room) async {
     await Navigator.push(
       context,
       MaterialPageRoute(builder: (_) => StoryRoomPage(room: room)),
     );
+  }
+
+  static String _uniqueName(String base, Iterable<String> existing) {
+    final cleanBase = base.trim().isEmpty ? '新的酒馆房间' : base.trim();
+    final taken = existing.toSet();
+    if (!taken.contains(cleanBase)) return cleanBase;
+    var index = 2;
+    while (taken.contains('$cleanBase ($index)')) {
+      index++;
+    }
+    return '$cleanBase ($index)';
   }
 }
 
