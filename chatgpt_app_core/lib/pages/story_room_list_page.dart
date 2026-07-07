@@ -173,6 +173,7 @@ class _StoryRoomListPageState extends State<StoryRoomListPage> {
         separatorBuilder: (_, __) => const Divider(height: 1),
         itemBuilder: (_, index) {
           final template = _templates[index];
+          final canTranslateCopy = _isMultiRoleTemplate(template);
           return ListTile(
             leading: const CircleAvatar(
               child: Icon(Icons.inventory_2_outlined),
@@ -202,8 +203,8 @@ class _StoryRoomListPageState extends State<StoryRoomListPage> {
                   _deleteTemplate(template);
                 }
               },
-              itemBuilder: (_) => const [
-                PopupMenuItem(
+              itemBuilder: (_) => [
+                const PopupMenuItem(
                   value: 'create',
                   child: Row(
                     children: [
@@ -213,7 +214,7 @@ class _StoryRoomListPageState extends State<StoryRoomListPage> {
                     ],
                   ),
                 ),
-                PopupMenuItem(
+                const PopupMenuItem(
                   value: 'rename',
                   child: Row(
                     children: [
@@ -223,7 +224,7 @@ class _StoryRoomListPageState extends State<StoryRoomListPage> {
                     ],
                   ),
                 ),
-                PopupMenuItem(
+                const PopupMenuItem(
                   value: 'opening',
                   child: Row(
                     children: [
@@ -233,17 +234,18 @@ class _StoryRoomListPageState extends State<StoryRoomListPage> {
                     ],
                   ),
                 ),
-                PopupMenuItem(
-                  value: 'translate_copy',
-                  child: Row(
-                    children: [
-                      Icon(Icons.translate_outlined),
-                      SizedBox(width: 8),
-                      Text('生成中文副本'),
-                    ],
+                if (canTranslateCopy)
+                  const PopupMenuItem(
+                    value: 'translate_copy',
+                    child: Row(
+                      children: [
+                        Icon(Icons.translate_outlined),
+                        SizedBox(width: 8),
+                        Text('生成中文副本'),
+                      ],
+                    ),
                   ),
-                ),
-                PopupMenuItem(
+                const PopupMenuItem(
                   value: 'delete',
                   child: Row(
                     children: [
@@ -291,6 +293,14 @@ class _StoryRoomListPageState extends State<StoryRoomListPage> {
       return '$count 个角色';
     } catch (_) {
       return '模板数据异常';
+    }
+  }
+
+  bool _isMultiRoleTemplate(StoryTemplateModel template) {
+    try {
+      return StoryRoomTemplatePayload.fromTemplate(template).results.length > 1;
+    } catch (_) {
+      return false;
     }
   }
 
@@ -523,8 +533,8 @@ class _StoryRoomListPageState extends State<StoryRoomListPage> {
       HiDialog.showSnackBar(context, '模板数据异常：$e');
       return;
     }
-    if (payload.results.isEmpty) {
-      HiDialog.showSnackBar(context, '模板没有可翻译的角色');
+    if (payload.results.length <= 1) {
+      HiDialog.showSnackBar(context, '单角色模板不需要生成中文副本');
       return;
     }
 
