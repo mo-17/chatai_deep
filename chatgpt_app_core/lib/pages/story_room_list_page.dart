@@ -1,13 +1,22 @@
+import 'dart:async';
+
 import 'package:chatgpt_app_core/chat/application/assistant_role_card_service.dart';
+import 'package:chatgpt_app_core/chat/application/assistant_role_card_translation_service.dart';
 import 'package:chatgpt_app_core/chat/application/story_room_role_card_importer.dart';
+import 'package:chatgpt_app_core/chat/application/tavern_room_import_preparer.dart';
+import 'package:chatgpt_app_core/dao/chat/chat_service.dart';
 import 'package:chatgpt_app_core/db/hi_db_manager.dart';
 import 'package:chatgpt_app_core/db/story_room_dao.dart';
 import 'package:chatgpt_app_core/db/story_template_dao.dart';
+import 'package:chatgpt_app_core/model/assistant_model.dart';
 import 'package:chatgpt_app_core/model/story_room_model.dart';
 import 'package:chatgpt_app_core/model/story_template_model.dart';
 import 'package:chatgpt_app_core/pages/story_room_page.dart';
+import 'package:chatgpt_app_core/provider/ai_settings_provider.dart';
 import 'package:chatgpt_app_core/util/hi_dialog.dart';
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
+import 'package:provider/provider.dart';
 
 class StoryRoomListPage extends StatefulWidget {
   const StoryRoomListPage({super.key});
@@ -187,6 +196,8 @@ class _StoryRoomListPageState extends State<StoryRoomListPage> {
                   _renameTemplate(template);
                 } else if (value == 'opening') {
                   _editTemplateOpening(template);
+                } else if (value == 'translate_copy') {
+                  _translateTemplateAsSimplifiedCopy(template);
                 } else if (value == 'delete') {
                   _deleteTemplate(template);
                 }
@@ -219,6 +230,16 @@ class _StoryRoomListPageState extends State<StoryRoomListPage> {
                       Icon(Icons.edit_note_outlined),
                       SizedBox(width: 8),
                       Text('编辑开场'),
+                    ],
+                  ),
+                ),
+                PopupMenuItem(
+                  value: 'translate_copy',
+                  child: Row(
+                    children: [
+                      Icon(Icons.translate_outlined),
+                      SizedBox(width: 8),
+                      Text('生成中文副本'),
                     ],
                   ),
                 ),
@@ -490,6 +511,133 @@ class _StoryRoomListPageState extends State<StoryRoomListPage> {
     }
   }
 
+  Future<void> _translateTemplateAsSimplifiedCopy(
+    StoryTemplateModel template,
+  ) async {
+    final dao = _templateDao;
+    if (dao == null) return;
+    late final StoryRoomTemplatePayload payload;
+    try {
+      payload = StoryRoomTemplatePayload.fromTemplate(template);
+    } catch (e) {
+      HiDialog.showSnackBar(context, '模板数据异常：$e');
+      return;
+    }
+    if (payload.results.isEmpty) {
+      HiDialog.showSnackBar(context, '模板没有可翻译的角色');
+      return;
+    }
+
+    final hasOpening = payload.initialOpening.trim().isNotEmpty;
+    final totalSteps = payload.results.length + (hasOpening ? 1 : 0);
+    final progress = ValueNotifier<_TemplateTranslationProgress>(
+      _TemplateTranslationProgress(
+        current: 0,
+        total: totalSteps,
+        name: template.title,
+        stage: '准备翻译',
+      ),
+    );
+    if (!mounted) return;
+    unawaited(showDialog<void>(
+      context: context,
+      barrierDismissible: false,
+      builder: (ctx) => _TemplateTranslationProgressDialog(progress: progress),
+    ));
+
+    try {
+      final settings = context.read<AISettingsProvider>().settings.clone();
+      final chatService = ChatService.from(settings);
+      final translatedResults = await TavernRoomImportPreparer.prepare(
+        payload.results,
+        translateToSimplifiedChinese: true,
+        complete: (prompt) => chatService.chat(
+          prompt: prompt,
+          history: const [],
+          timeout: const Duration(minutes: 2),
+        ),
+        onProgress: (value) {
+          progress.value = _TemplateTranslationProgress(
+            current: value.current,
+            total: totalSteps,
+            name: value.name,
+            stage: value.stage,
+          );
+        },
+      );
+
+      var translatedOpening = payload.initialOpening;
+      if (hasOpening) {
+        progress.value = _TemplateTranslationProgress(
+          current: payload.results.length + 1,
+          total: totalSteps,
+          name: '模板开场',
+          stage: '正在翻译开场',
+        );
+        translatedOpening = await _translateTemplateOpening(
+          payload.initialOpening,
+          chatService,
+          template.title,
+        );
+      }
+
+      final existingTitles =
+          (await dao.getTemplates()).map((item) => item.title);
+      final title = _uniqueName('${template.title}（简中）', existingTitles);
+      final copy = StoryRoomTemplatePayload(
+        results: translatedResults,
+        initialOpening: translatedOpening,
+      ).toTemplate(
+        title: title,
+        sourceTitle: template.sourceTitle.trim().isEmpty
+            ? template.title
+            : template.sourceTitle,
+        translated: true,
+      );
+      await dao.saveTemplate(copy);
+      if (!mounted) return;
+      await _load();
+      if (!mounted) return;
+      HiDialog.showSnackBar(context, '已生成中文副本「$title」');
+    } on FormatException catch (e) {
+      if (!mounted) return;
+      HiDialog.showSnackBar(context, '生成中文副本失败：${e.message}');
+    } catch (e) {
+      if (!mounted) return;
+      HiDialog.showSnackBar(context, '生成中文副本失败：$e');
+    } finally {
+      if (mounted) {
+        await Navigator.of(context, rootNavigator: true).maybePop();
+      }
+      progress.dispose();
+    }
+  }
+
+  Future<String> _translateTemplateOpening(
+    String opening,
+    ChatService chatService,
+    String templateTitle,
+  ) async {
+    try {
+      final assistant = await AssistantRoleCardTranslationService
+          .translateToSimplifiedChinese(
+        AssistantModel(
+          name: templateTitle.trim().isEmpty ? '模板开场' : templateTitle,
+          openingMessage: opening,
+        ),
+        complete: (prompt) => chatService.chat(
+          prompt: prompt,
+          history: const [],
+          timeout: const Duration(minutes: 2),
+        ),
+      );
+      final translated = assistant.openingMessage.trim();
+      return translated.isEmpty ? opening : translated;
+    } catch (_) {
+      return opening;
+    }
+  }
+
   List<String> _templateOpeningCandidates(StoryRoomTemplatePayload payload) {
     final seen = <String>{};
     final candidates = <String>[];
@@ -562,6 +710,59 @@ class _StoryRoomListPageState extends State<StoryRoomListPage> {
       index++;
     }
     return '$cleanBase ($index)';
+  }
+}
+
+class _TemplateTranslationProgress {
+  final int current;
+  final int total;
+  final String name;
+  final String stage;
+
+  const _TemplateTranslationProgress({
+    required this.current,
+    required this.total,
+    required this.name,
+    required this.stage,
+  });
+}
+
+class _TemplateTranslationProgressDialog extends StatelessWidget {
+  final ValueListenable<_TemplateTranslationProgress> progress;
+
+  const _TemplateTranslationProgressDialog({required this.progress});
+
+  @override
+  Widget build(BuildContext context) {
+    return AlertDialog(
+      title: const Text('正在生成中文副本'),
+      content: ValueListenableBuilder<_TemplateTranslationProgress>(
+        valueListenable: progress,
+        builder: (context, value, _) {
+          final ratio = value.total <= 0
+              ? 0.0
+              : (value.current / value.total).clamp(0, 1).toDouble();
+          return Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                value.name.trim().isEmpty ? '未命名模板' : value.name,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+              ),
+              const SizedBox(height: 6),
+              Text(
+                '${value.stage} · ${value.current}/${value.total}',
+                style: const TextStyle(fontSize: 12, color: Colors.black54),
+              ),
+              const SizedBox(height: 12),
+              LinearProgressIndicator(value: ratio),
+            ],
+          );
+        },
+      ),
+    );
   }
 }
 
