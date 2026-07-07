@@ -81,6 +81,20 @@ class AvatarAssetService {
   static Future<void> deleteAssistantAvatar(String? path) =>
       deleteConversationAvatar(path);
 
+  static Future<String?> resolveManagedPath(String? path) async {
+    final value = path?.trim() ?? '';
+    if (value.isEmpty) return null;
+    final file = File(value);
+    if (await file.exists()) return value;
+    if (!isManagedPath(value)) return value;
+    final suffix = managedSuffix(value);
+    if (suffix == null) return value;
+    final root = await (debugDocumentsDirectoryResolver ??
+        getApplicationDocumentsDirectory)();
+    final relocated = File('${root.path}/$_rootDirName/$suffix');
+    return await relocated.exists() ? relocated.path : value;
+  }
+
   static Future<Directory> avatarDir({String? accountHash}) async {
     final root = await (debugDocumentsDirectoryResolver ??
         getApplicationDocumentsDirectory)();
@@ -94,6 +108,15 @@ class AvatarAssetService {
 
   static bool isManagedPath(String? path) =>
       path != null && path.contains('/$_rootDirName/');
+
+  static String? managedSuffix(String? path) {
+    final value = path?.trim() ?? '';
+    const marker = '/$_rootDirName/';
+    final index = value.indexOf(marker);
+    if (index < 0) return null;
+    final suffix = value.substring(index + marker.length);
+    return suffix.trim().isEmpty ? null : suffix;
+  }
 
   static String _safeSegment(String raw) {
     final value = raw.trim().isEmpty ? 'default' : raw.trim();

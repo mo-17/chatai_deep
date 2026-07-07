@@ -1,6 +1,7 @@
 import 'package:chatgpt_app_core/db/hi_db_manager.dart';
 import 'package:chatgpt_app_core/db/table_name.dart';
 import 'package:chatgpt_app_core/model/assistant_model.dart';
+import 'package:chatgpt_app_core/util/avatar_asset_service.dart';
 import 'package:openai_flutter/utils/ai_logger.dart';
 
 ///助手数据操作接口（阶段七）
@@ -98,7 +99,12 @@ class AssistantDao implements IAssistant, ITable {
   Future<List<AssistantModel>> getAssistants() async {
     final results =
         await storage.db.query(tableName, orderBy: 'updatedAt desc');
-    return results.map((item) => AssistantModel.fromJson(item)).toList();
+    final assistants =
+        results.map((item) => AssistantModel.fromJson(item)).toList();
+    for (final assistant in assistants) {
+      await _resolveAssistantAvatar(assistant);
+    }
+    return assistants;
   }
 
   @override
@@ -106,6 +112,25 @@ class AssistantDao implements IAssistant, ITable {
     final results = await storage.db
         .query(tableName, where: 'id = ?', whereArgs: [id], limit: 1);
     if (results.isEmpty) return null;
-    return AssistantModel.fromJson(results.first);
+    final assistant = AssistantModel.fromJson(results.first);
+    await _resolveAssistantAvatar(assistant);
+    return assistant;
+  }
+
+  Future<void> _resolveAssistantAvatar(AssistantModel assistant) async {
+    if (assistant.avatarType != AvatarAssetService.imageType) return;
+    final current = assistant.avatarValue?.trim() ?? '';
+    if (current.isEmpty) return;
+    final resolved = await AvatarAssetService.resolveManagedPath(current);
+    if (resolved == null || resolved == current) return;
+    assistant.avatarValue = resolved;
+    final id = assistant.id;
+    if (id == null) return;
+    await storage.db.update(
+      tableName,
+      {'avatarValue': resolved},
+      where: 'id = ?',
+      whereArgs: [id],
+    );
   }
 }

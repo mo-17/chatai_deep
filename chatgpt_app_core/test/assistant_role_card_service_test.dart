@@ -1761,6 +1761,27 @@ void main() {
     expect(await File(path).exists(), isTrue);
   });
 
+  test('托管头像路径在 iOS 容器变化后可重定位', () async {
+    final oldRoot =
+        await Directory.systemTemp.createTemp('assistant_avatar_old_root_');
+    final newRoot =
+        await Directory.systemTemp.createTemp('assistant_avatar_new_root_');
+    AvatarAssetService.debugDocumentsDirectoryResolver = () async => newRoot;
+    addTearDown(() async {
+      AvatarAssetService.debugDocumentsDirectoryResolver = null;
+      if (await oldRoot.exists()) await oldRoot.delete(recursive: true);
+      if (await newRoot.exists()) await newRoot.delete(recursive: true);
+    });
+    final oldPath = '${oldRoot.path}/chat_avatar/test/assistant_role_1000.png';
+    final newPath = '${newRoot.path}/chat_avatar/test/assistant_role_1000.png';
+    await File(newPath).parent.create(recursive: true);
+    await File(newPath).writeAsBytes(_pngWithTextChunk('comment', 'avatar'));
+
+    final resolved = await AvatarAssetService.resolveManagedPath(oldPath);
+
+    expect(resolved, newPath);
+  });
+
   test('助手头像源文件可复制到托管目录并删除', () async {
     final tmp =
         await Directory.systemTemp.createTemp('assistant_avatar_pick_test_');

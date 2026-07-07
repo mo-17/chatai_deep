@@ -34,12 +34,33 @@ class AssistantAvatar extends StatelessWidget {
     if (type == AvatarAssetService.imageType && value.isNotEmpty) {
       final file = File(value);
       if (file.existsSync()) {
-        return CircleAvatar(
-          radius: radius,
-          backgroundImage: FileImage(file),
+        return _imageAvatar(file);
+      }
+      if (AvatarAssetService.isManagedPath(value)) {
+        return FutureBuilder<String?>(
+          future: AvatarAssetService.resolveManagedPath(value),
+          builder: (context, snapshot) {
+            final resolved = snapshot.data;
+            if (resolved != null) {
+              final relocated = File(resolved);
+              if (relocated.existsSync()) return _imageAvatar(relocated);
+            }
+            return _emojiAvatar;
+          },
         );
       }
     }
+    return _emojiAvatar;
+  }
+
+  Widget _imageAvatar(File file) {
+    return CircleAvatar(
+      radius: radius,
+      backgroundImage: FileImage(file),
+    );
+  }
+
+  Widget get _emojiAvatar {
     final fallback = emoji.isNotEmpty ? emoji : (assistant?.emoji ?? '🤖');
     return CircleAvatar(
       radius: radius,

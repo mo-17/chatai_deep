@@ -1,8 +1,11 @@
+import 'dart:io';
+
 import 'package:chatgpt_app_core/chat/application/tool_registry.dart';
 import 'package:chatgpt_app_core/db/assistant_dao.dart';
 import 'package:chatgpt_app_core/db/hi_db_manager.dart';
 import 'package:chatgpt_app_core/model/ai_settings.dart';
 import 'package:chatgpt_app_core/model/assistant_model.dart';
+import 'package:chatgpt_app_core/util/avatar_asset_service.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:sqflite_common_ffi/sqflite_ffi.dart';
 
@@ -126,6 +129,36 @@ void main() {
       final back = await dao.getAssistant(id!);
       expect(back!.avatarType, 'image');
       expect(back.avatarValue, '/tmp/assistant-avatar.png');
+    });
+
+    test('读取助手时会重定位旧 iOS 容器中的托管头像路径', () async {
+      final newRoot =
+          await Directory.systemTemp.createTemp('assistant_avatar_dao_root_');
+      AvatarAssetService.debugDocumentsDirectoryResolver = () async => newRoot;
+      addTearDown(() async {
+        AvatarAssetService.debugDocumentsDirectoryResolver = null;
+        if (await newRoot.exists()) await newRoot.delete(recursive: true);
+      });
+      db = await databaseFactoryFfi.openDatabase(inMemoryDatabasePath);
+      final dao = await AssistantDao.create(HiDBManager.test(db));
+      const oldPath = '/old/container/chat_avatar/test/assistant_role_1.png';
+      final newPath = '${newRoot.path}/chat_avatar/test/assistant_role_1.png';
+      await File(newPath).parent.create(recursive: true);
+      await File(newPath).writeAsBytes([1, 2, 3]);
+      final id = await dao.saveAssistant(
+        AssistantModel(
+          name: '旧路径头像',
+          avatarType: AvatarAssetService.imageType,
+          avatarValue: oldPath,
+        ),
+      );
+
+      final back = await dao.getAssistant(id!);
+      final rows =
+          await db.query('tb_assistant', where: 'id = ?', whereArgs: [id]);
+
+      expect(back!.avatarValue, newPath);
+      expect(rows.single['avatarValue'], newPath);
     });
 
     test('新表 providerId 缺省为空串', () async {
