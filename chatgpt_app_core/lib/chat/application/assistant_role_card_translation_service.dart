@@ -7,6 +7,10 @@ typedef RoleCardTranslationCall = Future<String?> Function(String prompt);
 class AssistantRoleCardTranslationService {
   const AssistantRoleCardTranslationService._();
 
+  static const _fieldMaxAttempts = 2;
+  static const _longFieldMaxChars = 2200;
+  static const _longFieldRetryMaxChars = 900;
+
   static const _fields = [
     'name',
     'description',
@@ -162,18 +166,22 @@ class AssistantRoleCardTranslationService {
     required String field,
     required String value,
     required RoleCardTranslationCall complete,
+    int maxAttempts = _fieldMaxAttempts,
   }) async {
-    try {
-      final response = await complete(buildFieldPrompt(
-        field: field,
-        value: value,
-      ));
-      final translated = decodeTranslation(response);
-      final result = translated[field];
-      return result is String ? result : null;
-    } catch (_) {
-      return null;
+    for (var attempt = 0; attempt < maxAttempts; attempt++) {
+      try {
+        final response = await complete(buildFieldPrompt(
+          field: field,
+          value: value,
+        ));
+        final translated = decodeTranslation(response);
+        final result = translated[field];
+        return result is String ? result : null;
+      } catch (_) {
+        if (attempt == maxAttempts - 1) return null;
+      }
     }
+    return null;
   }
 
   static Future<String?> _translateLongField({
@@ -181,19 +189,61 @@ class AssistantRoleCardTranslationService {
     required String value,
     required RoleCardTranslationCall complete,
   }) async {
-    final chunks = _chunkTextByLines(value);
+    final chunks = _chunkTextByLines(value, maxChars: _longFieldMaxChars);
     final translated = <String>[];
     var changed = false;
     for (final chunk in chunks) {
-      final result = await _translateSingleField(
+      final result = await _translateLongFieldChunk(
         field: field,
-        value: chunk,
+        chunk: chunk,
         complete: complete,
       );
-      translated.add(result ?? chunk);
-      changed = changed || (result != null && result != chunk);
+      translated.add(result.text);
+      changed = changed || result.changed;
     }
     return changed ? translated.join('\n') : null;
+  }
+
+  static Future<_TranslatedChunk> _translateLongFieldChunk({
+    required String field,
+    required String chunk,
+    required RoleCardTranslationCall complete,
+  }) async {
+    final result = await _translateSingleField(
+      field: field,
+      value: chunk,
+      complete: complete,
+    );
+    if (result != null) {
+      return _TranslatedChunk(result, result != chunk);
+    }
+    if (chunk.length <= _longFieldRetryMaxChars) {
+      return _TranslatedChunk(chunk, false);
+    }
+
+    final subChunks = _chunkTextByLines(
+      chunk,
+      maxChars: _longFieldRetryMaxChars,
+    );
+    if (subChunks.length <= 1) {
+      return _TranslatedChunk(chunk, false);
+    }
+
+    final translated = <String>[];
+    var changed = false;
+    for (final subChunk in subChunks) {
+      final subResult = await _translateSingleField(
+        field: field,
+        value: subChunk,
+        complete: complete,
+      );
+      translated.add(subResult ?? subChunk);
+      changed = changed || (subResult != null && subResult != subChunk);
+    }
+
+    return changed
+        ? _TranslatedChunk(translated.join('\n'), true)
+        : _TranslatedChunk(chunk, false);
   }
 
   static List<String> _chunkTextByLines(String value, {int maxChars = 2200}) {
@@ -258,4 +308,11 @@ class AssistantRoleCardTranslationService {
     if (text.length <= 240) return text;
     return '${text.substring(0, 240)}...';
   }
+}
+
+class _TranslatedChunk {
+  const _TranslatedChunk(this.text, this.changed);
+
+  final String text;
+  final bool changed;
 }

@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:convert';
 
 import 'package:chatgpt_app_core/chat/application/assistant_role_card_translation_service.dart';
 import 'package:chatgpt_app_core/model/assistant_model.dart';
@@ -118,6 +119,44 @@ void main() {
     expect(translated.memoryBook, contains('爱丽丝住在贝克街'));
   });
 
+  test('分字段翻译失败后会重试未翻译字段', () async {
+    final assistant = sampleAssistant();
+    var calls = 0;
+    var descriptionCalls = 0;
+
+    final translated =
+        await AssistantRoleCardTranslationService.translateToSimplifiedChinese(
+      assistant,
+      complete: (prompt) async {
+        calls++;
+        if (calls == 1) throw TimeoutException('whole card timeout');
+        if (prompt.contains('"name"')) return '{"name":"爱丽丝"}';
+        if (prompt.contains('"description"')) {
+          descriptionCalls++;
+          if (descriptionCalls == 1) {
+            throw TimeoutException('description timeout');
+          }
+          return '{"description":"一位来自伦敦的侦探。"}';
+        }
+        if (prompt.contains('"prompt"')) return '{"prompt":"你是一位细心的侦探。"}';
+        if (prompt.contains('"openingMessage"')) {
+          return '{"openingMessage":"晚上好。"}';
+        }
+        if (prompt.contains('"exampleDialogs"')) {
+          return '{"exampleDialogs":"用户：你好\\n爱丽丝：我先观察。"}';
+        }
+        if (prompt.contains('"memoryBook"')) {
+          return '{"memoryBook":"[re] ^Baker Street\$ => 爱丽丝住在贝克街。"}';
+        }
+        return '{}';
+      },
+    );
+
+    expect(descriptionCalls, 2);
+    expect(translated.name, '爱丽丝');
+    expect(translated.description, '一位来自伦敦的侦探。');
+  });
+
   test('分字段翻译会拆分过长 memoryBook', () async {
     final assistant = AssistantModel(
       name: 'Alice',
@@ -154,6 +193,52 @@ void main() {
     expect(memoryPrompts.length, greaterThan(1));
     expect(translated.memoryBook, contains('爱丽丝有'));
     expect(translated.memoryBook.split('\n'), hasLength(80));
+  });
+
+  test('memoryBook 大块失败后会拆成更小块重新翻译', () async {
+    final assistant = AssistantModel(
+      name: 'Alice',
+      memoryBook: List.generate(
+        60,
+        (index) =>
+            'key$index => Alice keeps a detailed note about scene number $index.',
+      ).join('\n'),
+    );
+    final memoryValueLengths = <int>[];
+    var calls = 0;
+
+    final translated =
+        await AssistantRoleCardTranslationService.translateToSimplifiedChinese(
+      assistant,
+      complete: (prompt) async {
+        calls++;
+        if (calls == 1) throw TimeoutException('whole card timeout');
+        if (prompt.contains('"name"') &&
+            !prompt.contains('"memoryBook"') &&
+            !prompt.contains('"description"')) {
+          return '{"name":"爱丽丝"}';
+        }
+        if (prompt.contains('"memoryBook"')) {
+          final start = prompt.indexOf('{');
+          final payload =
+              jsonDecode(prompt.substring(start)) as Map<String, dynamic>;
+          final value = payload['memoryBook'] as String;
+          memoryValueLengths.add(value.length);
+          if (value.length > 900) {
+            throw TimeoutException('large memory chunk timeout');
+          }
+          return jsonEncode({
+            'memoryBook': value.replaceAll('Alice keeps', '爱丽丝记录'),
+          });
+        }
+        throw TimeoutException('force fallback');
+      },
+    );
+
+    expect(memoryValueLengths.any((length) => length > 900), isTrue);
+    expect(memoryValueLengths.any((length) => length <= 900), isTrue);
+    expect(translated.memoryBook, contains('爱丽丝记录'));
+    expect(translated.memoryBook.split('\n'), hasLength(60));
   });
 
   test('decodeTranslation rejects non json output', () {
