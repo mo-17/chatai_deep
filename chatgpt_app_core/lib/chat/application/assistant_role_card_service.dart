@@ -2207,6 +2207,50 @@ class AssistantRoleCardTavernMeta {
     this.characterBookEntryCount = 0,
   });
 
+  factory AssistantRoleCardTavernMeta.fromJson(Map<String, dynamic> json) =>
+      AssistantRoleCardTavernMeta(
+        spec: json['spec'] as String? ?? '',
+        specVersion: json['specVersion'] as String? ?? '',
+        creator: json['creator'] as String? ?? '',
+        characterVersion: json['characterVersion'] as String? ?? '',
+        createDate: json['createDate'] as String? ?? '',
+        updateDate: json['updateDate'] as String? ?? '',
+        source: json['source'] as String? ?? '',
+        creatorNotes: json['creatorNotes'] as String? ?? '',
+        systemPrompt: json['systemPrompt'] as String? ?? '',
+        postHistoryInstructions:
+            json['postHistoryInstructions'] as String? ?? '',
+        tags: _stringList(json['tags']),
+        alternateGreetings: _stringList(json['alternateGreetings']),
+        characterBookName: json['characterBookName'] as String? ?? '',
+        characterBookScanDepth: _intOrNull(json['characterBookScanDepth']),
+        characterBookTokenBudget: _intOrNull(json['characterBookTokenBudget']),
+        characterBookRecursiveScanning:
+            json['characterBookRecursiveScanning'] as bool?,
+        characterBookEntryCount:
+            _intOrNull(json['characterBookEntryCount']) ?? 0,
+      );
+
+  Map<String, dynamic> toJson() => {
+        'spec': spec,
+        'specVersion': specVersion,
+        'creator': creator,
+        'characterVersion': characterVersion,
+        'createDate': createDate,
+        'updateDate': updateDate,
+        'source': source,
+        'creatorNotes': creatorNotes,
+        'systemPrompt': systemPrompt,
+        'postHistoryInstructions': postHistoryInstructions,
+        'tags': tags,
+        'alternateGreetings': alternateGreetings,
+        'characterBookName': characterBookName,
+        'characterBookScanDepth': characterBookScanDepth,
+        'characterBookTokenBudget': characterBookTokenBudget,
+        'characterBookRecursiveScanning': characterBookRecursiveScanning,
+        'characterBookEntryCount': characterBookEntryCount,
+      };
+
   AssistantRoleCardTavernMeta copyWith({
     List<String>? alternateGreetings,
   }) {
@@ -2258,6 +2302,21 @@ class AssistantRoleCardTavernMeta {
       characterBookTokenBudget == null &&
       characterBookRecursiveScanning == null &&
       characterBookEntryCount == 0;
+
+  static List<String> _stringList(Object? raw) {
+    if (raw is! List) return const [];
+    return [
+      for (final item in raw)
+        if (item is String && item.trim().isNotEmpty) item.trim(),
+    ];
+  }
+
+  static int? _intOrNull(Object? raw) {
+    if (raw is int) return raw;
+    if (raw is num) return raw.toInt();
+    if (raw is String) return int.tryParse(raw);
+    return null;
+  }
 }
 
 class AssistantRoleCardImportBatchResult {

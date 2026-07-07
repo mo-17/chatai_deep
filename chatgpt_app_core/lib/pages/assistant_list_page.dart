@@ -15,9 +15,11 @@ import 'package:chatgpt_app_core/db/hi_db_manager.dart';
 import 'package:chatgpt_app_core/db/knowledge_dao.dart';
 import 'package:chatgpt_app_core/db/skill_script_dao.dart';
 import 'package:chatgpt_app_core/db/story_room_dao.dart';
+import 'package:chatgpt_app_core/db/story_template_dao.dart';
 import 'package:chatgpt_app_core/model/ai_settings.dart';
 import 'package:chatgpt_app_core/model/assistant_model.dart';
 import 'package:chatgpt_app_core/model/conversation_model.dart';
+import 'package:chatgpt_app_core/model/story_template_model.dart';
 import 'package:chatgpt_app_core/pages/assistant_edit_page.dart';
 import 'package:chatgpt_app_core/pages/assistant_market_page.dart';
 import 'package:chatgpt_app_core/pages/assistant_memory_page.dart';
@@ -41,6 +43,27 @@ import 'package:provider/provider.dart';
 import 'package:share_plus/share_plus.dart';
 
 final _roleCardImportCoordinator = _RoleCardImportCoordinator();
+
+Future<StoryTemplateModel> _saveTavernRoomTemplate(
+  HiDBManager dbManager,
+  List<AssistantRoleCardImportResult> results, {
+  required String title,
+  required String sourceTitle,
+  required bool translated,
+  String? initialOpening,
+}) async {
+  final templateDao = await StoryTemplateDao.create(dbManager);
+  final template = StoryRoomTemplatePayload(
+    results: results,
+    initialOpening: initialOpening?.trim() ?? '',
+  ).toTemplate(
+    title: title,
+    sourceTitle: sourceTitle,
+    translated: translated,
+  );
+  await templateDao.saveTemplate(template);
+  return template;
+}
 
 ///助手管理页（阶段七）：列表 + 新建 / 编辑 / 删除。
 ///对应源项目 `src/screens/assistant/AssistantScreen.tsx` 的精简版。
@@ -901,12 +924,15 @@ class _AssistantListPageState extends State<AssistantListPage> {
         existingTitles,
       );
       final importer = StoryRoomRoleCardImportService(dao);
-      final roomId = await importer.importAsTavernRoom(
-        translatedResult.assistant,
+      final template = await _saveTavernRoomTemplate(
+        dbManager,
+        [translatedResult],
         title: title,
-        tavernMeta: translatedResult.tavernMeta,
+        sourceTitle: result.sourceName ?? translatedResult.assistant.name,
+        translated: translateToSimplifiedChinese,
         initialOpening: initialOpening,
       );
+      final roomId = await importer.createRoomFromTemplate(template);
       if (!mounted) return;
       HiDialog.showSnackBar(context, '已创建酒馆房间「$title」');
       final room = await dao.getRoom(roomId);
@@ -944,11 +970,15 @@ class _AssistantListPageState extends State<AssistantListPage> {
         existingTitles,
       );
       final importer = StoryRoomRoleCardImportService(dao);
-      final roomId = await importer.importBatchAsTavernRoom(
+      final template = await _saveTavernRoomTemplate(
+        dbManager,
         prepared,
         title: title,
+        sourceTitle: sourcePath,
+        translated: translateToSimplifiedChinese,
         initialOpening: initialOpening,
       );
+      final roomId = await importer.createRoomFromTemplate(template);
       if (!mounted) return;
       HiDialog.showSnackBar(context, '已创建酒馆房间「$title」');
       final room = await dao.getRoom(roomId);
@@ -1766,7 +1796,7 @@ class _RoleCardImportCoordinator extends ChangeNotifier {
           );
         },
       );
-      _update(job, stage: '正在保存房间', progress: 0.82);
+      _update(job, stage: '正在保存模板', progress: 0.76);
       final dbManager =
           await HiDBManager.instance(dbName: HiDBManager.getAccountHash());
       final dao = await StoryRoomDao.create(dbManager);
@@ -1776,16 +1806,15 @@ class _RoleCardImportCoordinator extends ChangeNotifier {
         existingTitles,
       );
       final importer = StoryRoomRoleCardImportService(dao);
-      final roomId = prepared.length == 1
-          ? await importer.importAsTavernRoom(
-              prepared.single.assistant,
-              title: title,
-              tavernMeta: prepared.single.tavernMeta,
-            )
-          : await importer.importBatchAsTavernRoom(
-              prepared,
-              title: title,
-            );
+      final template = await _saveTavernRoomTemplate(
+        dbManager,
+        prepared,
+        title: title,
+        sourceTitle: sourceTitle,
+        translated: translateToSimplifiedChinese,
+      );
+      _update(job, stage: '正在创建房间', progress: 0.84);
+      final roomId = await importer.createRoomFromTemplate(template);
       _update(
         job,
         status: _RoleCardImportJobStatus.completed,

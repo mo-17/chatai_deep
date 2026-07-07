@@ -4,8 +4,10 @@ import 'package:chatgpt_app_core/chat/application/story_room_role_card_importer.
 import 'package:chatgpt_app_core/chat/application/story_speaker_scheduler.dart';
 import 'package:chatgpt_app_core/db/hi_db_manager.dart';
 import 'package:chatgpt_app_core/db/story_room_dao.dart';
+import 'package:chatgpt_app_core/db/story_template_dao.dart';
 import 'package:chatgpt_app_core/model/assistant_model.dart';
 import 'package:chatgpt_app_core/model/story_room_model.dart';
+import 'package:chatgpt_app_core/model/story_template_model.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:sqflite_common_ffi/sqflite_ffi.dart';
 
@@ -105,6 +107,42 @@ void main() {
       expect(await dao.getRoom(roomId), isNull);
       expect(await dao.getParticipants(roomId), isEmpty);
       expect(await dao.getMessages(roomId), isEmpty);
+    });
+
+    test('保存和读取可复用酒馆模板', () async {
+      db = await databaseFactoryFfi.openDatabase(inMemoryDatabasePath);
+      final templateDao = await StoryTemplateDao.create(HiDBManager.test(db));
+      final template = StoryRoomTemplatePayload(
+        results: [
+          AssistantRoleCardImportResult(
+            assistant: AssistantModel(name: 'Fuka', prompt: '害羞的图书委员。'),
+            sourceName: 'fuka.png',
+            tavernMeta: const AssistantRoleCardTavernMeta(
+              spec: 'chara_card_v2',
+              alternateGreetings: ['她轻轻推开门。'],
+            ),
+          ),
+        ],
+        initialOpening: '她轻轻推开门。',
+      ).toTemplate(
+        title: 'Fuka 模板',
+        sourceTitle: 'fuka.png',
+        translated: true,
+      );
+
+      final id = await templateDao.saveTemplate(template);
+      final saved = await templateDao.getTemplate(id);
+      final list = await templateDao.getTemplates();
+      final payload = StoryRoomTemplatePayload.fromTemplate(saved!);
+
+      expect(list, hasLength(1));
+      expect(saved.title, 'Fuka 模板');
+      expect(saved.sourceTitle, 'fuka.png');
+      expect(saved.kind, StoryTemplateKind.tavernRoom);
+      expect(saved.translated, isTrue);
+      expect(payload.initialOpening, '她轻轻推开门。');
+      expect(payload.results.single.assistant.name, 'Fuka');
+      expect(payload.results.single.tavernMeta?.spec, 'chara_card_v2');
     });
   });
 
@@ -342,6 +380,56 @@ void main() {
 
       final messages = await dao.getMessages(roomId);
       expect(messages.single.content, '【Fuka】\n她从书架后探出头。');
+    });
+
+    test('可从保存的酒馆模板重复创建新房间', () async {
+      db = await databaseFactoryFfi.openDatabase(inMemoryDatabasePath);
+      final dbManager = HiDBManager.test(db);
+      final dao = await StoryRoomDao.create(dbManager);
+      final templateDao = await StoryTemplateDao.create(dbManager);
+      final fuka = AssistantModel(
+        name: 'Fuka',
+        description: '害羞的图书委员。',
+        prompt: '说话轻声，容易紧张。',
+      )..openingMessage = '她抱紧书本，站在门边。';
+      final chandra = AssistantModel(
+        name: 'Chandra',
+        description: '火焰将军。',
+        prompt: '自信、直接。',
+      );
+      final template = StoryRoomTemplatePayload(
+        results: [
+          AssistantRoleCardImportResult(assistant: fuka),
+          AssistantRoleCardImportResult(assistant: chandra),
+        ],
+        initialOpening: fuka.openingMessage,
+      ).toTemplate(
+        title: 'Imported Tavern',
+        sourceTitle: 'cards.zip',
+        translated: true,
+      );
+      await templateDao.saveTemplate(template);
+
+      final importer = StoryRoomRoleCardImportService(dao);
+      final firstId = await importer.createRoomFromTemplate(
+        template,
+        title: 'Imported Tavern A',
+      );
+      final secondId = await importer.createRoomFromTemplate(
+        template,
+        title: 'Imported Tavern B',
+      );
+
+      final first = await dao.getRoom(firstId);
+      final second = await dao.getRoom(secondId);
+      expect(first?.title, 'Imported Tavern A');
+      expect(second?.title, 'Imported Tavern B');
+      expect(await dao.getParticipants(firstId), hasLength(2));
+      expect(await dao.getParticipants(secondId), hasLength(2));
+      expect(
+          (await dao.getMessages(firstId)).single.content, fuka.openingMessage);
+      expect((await dao.getMessages(secondId)).single.content,
+          fuka.openingMessage);
     });
 
     test('多角色世界书导入时跳过明确非角色条目', () {

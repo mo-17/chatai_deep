@@ -1,6 +1,9 @@
+import 'dart:convert';
+
 import 'package:chatgpt_app_core/db/story_room_dao.dart';
 import 'package:chatgpt_app_core/model/assistant_model.dart';
 import 'package:chatgpt_app_core/model/story_room_model.dart';
+import 'package:chatgpt_app_core/model/story_template_model.dart';
 
 import 'assistant_role_card_service.dart';
 
@@ -480,5 +483,111 @@ class StoryRoomRoleCardImportService {
       ));
     }
     return roomId;
+  }
+
+  Future<int> createRoomFromTemplate(
+    StoryTemplateModel template, {
+    String? title,
+  }) async {
+    final data = StoryRoomTemplatePayload.fromTemplate(template);
+    final roomTitle = title?.trim().isNotEmpty == true
+        ? title!.trim()
+        : template.title.trim();
+    if (data.results.length == 1) {
+      return importAsTavernRoom(
+        data.results.single.assistant,
+        title: roomTitle,
+        tavernMeta: data.results.single.tavernMeta,
+        initialOpening: data.initialOpening,
+      );
+    }
+    return importBatchAsTavernRoom(
+      data.results,
+      title: roomTitle,
+      initialOpening: data.initialOpening,
+    );
+  }
+}
+
+class StoryRoomTemplatePayload {
+  static const formatVersion = 1;
+
+  final List<AssistantRoleCardImportResult> results;
+  final String initialOpening;
+
+  const StoryRoomTemplatePayload({
+    required this.results,
+    this.initialOpening = '',
+  });
+
+  factory StoryRoomTemplatePayload.fromTemplate(StoryTemplateModel template) {
+    final decoded = jsonDecode(template.payload);
+    if (decoded is! Map<String, dynamic>) {
+      throw const FormatException('酒馆模板数据格式错误');
+    }
+    return StoryRoomTemplatePayload.fromJson(decoded);
+  }
+
+  factory StoryRoomTemplatePayload.fromJson(Map<String, dynamic> json) {
+    final rawResults = json['results'];
+    return StoryRoomTemplatePayload(
+      results: rawResults is List
+          ? [
+              for (final item in rawResults)
+                if (item is Map)
+                  _resultFromJson(Map<String, dynamic>.from(item)),
+            ]
+          : const [],
+      initialOpening: json['initialOpening'] as String? ?? '',
+    );
+  }
+
+  StoryTemplateModel toTemplate({
+    required String title,
+    String sourceTitle = '',
+    bool translated = false,
+  }) {
+    return StoryTemplateModel(
+      title: title.trim().isEmpty ? '未命名酒馆模板' : title.trim(),
+      sourceTitle: sourceTitle,
+      translated: translated,
+      payload: jsonEncode(toJson()),
+    );
+  }
+
+  Map<String, dynamic> toJson() => {
+        'formatVersion': formatVersion,
+        'initialOpening': initialOpening,
+        'results': results.map(_resultToJson).toList(),
+      };
+
+  static Map<String, dynamic> _resultToJson(
+    AssistantRoleCardImportResult result,
+  ) =>
+      {
+        'assistant': result.assistant.toJson(),
+        'sourceName': result.sourceName,
+        'tavernMeta': result.tavernMeta?.toJson(),
+      };
+
+  static AssistantRoleCardImportResult _resultFromJson(
+    Map<String, dynamic> json,
+  ) {
+    final assistantJson = json['assistant'];
+    if (assistantJson is! Map) {
+      throw const FormatException('酒馆模板缺少角色数据');
+    }
+    final tavernMetaJson = json['tavernMeta'];
+    return AssistantRoleCardImportResult(
+      assistant: AssistantModel.fromJson(
+        Map<String, dynamic>.from(assistantJson),
+      ),
+      sourceName: json['sourceName'] as String?,
+      tavernMeta: tavernMetaJson is Map
+          ? AssistantRoleCardTavernMeta.fromJson(
+              Map<String, dynamic>.from(tavernMetaJson),
+            )
+          : null,
+    );
   }
 }
