@@ -1029,6 +1029,7 @@ class _AssistantListPageState extends State<AssistantListPage> {
             total: value.total,
             name: value.name,
             stage: value.stage,
+            detail: _RoleCardImportCoordinator._tavernImportDetail(value),
           );
         },
       );
@@ -1595,12 +1596,14 @@ class _TavernTranslationProgress {
   final int total;
   final String name;
   final String stage;
+  final String detail;
 
   const _TavernTranslationProgress({
     required this.current,
     required this.total,
     required this.name,
     required this.stage,
+    this.detail = '',
   });
 
   double get value {
@@ -1638,7 +1641,11 @@ class _TavernTranslationProgressDialog extends StatelessWidget {
               ),
               const SizedBox(height: 6),
               Text(
-                '${value.stage} · ${value.current}/${value.total}',
+                [
+                  value.stage,
+                  if (value.detail.trim().isNotEmpty) value.detail.trim(),
+                  '${value.current}/${value.total}',
+                ].join(' · '),
                 style: const TextStyle(fontSize: 12, color: Colors.black54),
               ),
               const SizedBox(height: 12),
@@ -1740,11 +1747,18 @@ class _RoleCardImportCoordinator extends ChangeNotifier {
           plan,
           options,
           settings,
+          onProgress: (value) => _update(
+            job,
+            stage: value.stage,
+            detail: _translationDetail(value),
+            progress: 0.18 + (0.52 * value.current / value.total),
+          ),
         );
         _update(
           job,
           stage: '正在保存',
           displayName: assistant.name,
+          detail: '',
           progress: 0.78,
         );
         await dao.saveAssistant(assistant);
@@ -1753,6 +1767,7 @@ class _RoleCardImportCoordinator extends ChangeNotifier {
           status: _RoleCardImportJobStatus.completed,
           stage: '已保存',
           displayName: assistant.name,
+          detail: '',
           progress: 1,
         );
         _jobs.remove(job);
@@ -1788,15 +1803,21 @@ class _RoleCardImportCoordinator extends ChangeNotifier {
           timeout: const Duration(minutes: 2),
         ),
         onProgress: (value) {
+          final roleRatio =
+              value.total <= 0 ? 0.0 : value.current / value.total;
+          final fieldRatio = value.fieldTotal <= 0
+              ? 0.0
+              : (value.fieldCurrent / value.fieldTotal) / value.total;
           _update(
             job,
             stage: value.stage,
             displayName: value.name,
-            progress: 0.12 + (0.58 * value.current / value.total),
+            detail: _tavernImportDetail(value),
+            progress: 0.12 + (0.58 * (roleRatio + fieldRatio).clamp(0, 1)),
           );
         },
       );
-      _update(job, stage: '正在保存模板', progress: 0.76);
+      _update(job, stage: '正在保存模板', detail: '', progress: 0.76);
       final dbManager =
           await HiDBManager.instance(dbName: HiDBManager.getAccountHash());
       final dao = await StoryRoomDao.create(dbManager);
@@ -1813,13 +1834,14 @@ class _RoleCardImportCoordinator extends ChangeNotifier {
         sourceTitle: sourceTitle,
         translated: translateToSimplifiedChinese,
       );
-      _update(job, stage: '正在创建房间', progress: 0.84);
+      _update(job, stage: '正在创建房间', detail: '', progress: 0.84);
       final roomId = await importer.createRoomFromTemplate(template);
       _update(
         job,
         status: _RoleCardImportJobStatus.completed,
         stage: '已创建房间 #$roomId',
         displayName: title,
+        detail: '',
         progress: 1,
       );
       _completedTick += 1;
@@ -1845,12 +1867,14 @@ class _RoleCardImportCoordinator extends ChangeNotifier {
     _RoleCardImportJobStatus? status,
     String? stage,
     String? displayName,
+    String? detail,
     double? progress,
   }) {
     if (!_jobs.contains(job)) return;
     if (status != null) job.status = status;
     if (stage != null) job.stage = stage;
     if (displayName != null) job.displayName = displayName;
+    if (detail != null) job.detail = detail;
     if (progress != null) job.progress = progress.clamp(0, 1).toDouble();
     notifyListeners();
   }
@@ -1883,11 +1907,16 @@ class _RoleCardImportCoordinator extends ChangeNotifier {
   Future<AssistantModel> _prepareImportedRoleCard(
     _RoleCardImportPlan plan,
     _RoleCardImportOptions options,
-    AISettings settings,
-  ) async {
+    AISettings settings, {
+    RoleCardTranslationProgressCallback? onProgress,
+  }) async {
     var incoming = plan.result.assistant;
     if (options.translateToSimplifiedChinese) {
-      incoming = await _translateImportedRoleCard(incoming, settings);
+      incoming = await _translateImportedRoleCard(
+        incoming,
+        settings,
+        onProgress: onProgress,
+      );
     }
     final assistant = AssistantRoleCardService.sanitizeForImport(
       incoming,
@@ -1962,8 +1991,9 @@ class _RoleCardImportCoordinator extends ChangeNotifier {
 
   Future<AssistantModel> _translateImportedRoleCard(
     AssistantModel assistant,
-    AISettings settings,
-  ) async {
+    AISettings settings, {
+    RoleCardTranslationProgressCallback? onProgress,
+  }) async {
     final chatService = ChatService.from(settings);
     try {
       return await AssistantRoleCardTranslationService
@@ -1974,12 +2004,32 @@ class _RoleCardImportCoordinator extends ChangeNotifier {
           history: const [],
           timeout: const Duration(minutes: 2),
         ),
+        onProgress: onProgress,
       );
     } on FormatException catch (e) {
       throw Exception(e.message);
     } catch (e) {
       throw Exception('翻译角色卡失败：$e');
     }
+  }
+
+  static String _translationDetail(RoleCardTranslationProgress value) {
+    final parts = <String>[
+      if (value.fieldLabel.isNotEmpty) value.fieldLabel,
+      if (value.total > 1) '${value.current}/${value.total}',
+      if (value.detail.trim().isNotEmpty) value.detail.trim(),
+    ];
+    return parts.join(' · ');
+  }
+
+  static String _tavernImportDetail(TavernRoomImportProgress value) {
+    final parts = <String>[
+      if (value.total > 1) '角色 ${value.current}/${value.total}',
+      if (value.fieldLabel.isNotEmpty) value.fieldLabel,
+      if (value.fieldTotal > 1) '${value.fieldCurrent}/${value.fieldTotal}',
+      if (value.detail.trim().isNotEmpty) value.detail.trim(),
+    ];
+    return parts.join(' · ');
   }
 }
 
@@ -1994,6 +2044,7 @@ class _RoleCardImportJob {
   final _RoleCardImportJobKind kind;
   String displayName;
   String stage;
+  String detail = '';
   double progress = 0;
   String error = '';
   String log = '';
@@ -2097,6 +2148,7 @@ class _RoleCardImportJobTile extends StatelessWidget {
           Text(
             [
               job.stage,
+              if (job.detail.trim().isNotEmpty) job.detail.trim(),
               if (job.counter.isNotEmpty) job.counter,
               if (job.translate) 'AI 翻译',
               if (job.tavernRoom) '酒馆房间',

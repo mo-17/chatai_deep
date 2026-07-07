@@ -6,12 +6,20 @@ class TavernRoomImportProgress {
   final int total;
   final String name;
   final String stage;
+  final String detail;
+  final int fieldCurrent;
+  final int fieldTotal;
+  final String fieldLabel;
 
   const TavernRoomImportProgress({
     required this.current,
     required this.total,
     required this.name,
     required this.stage,
+    this.detail = '',
+    this.fieldCurrent = 0,
+    this.fieldTotal = 0,
+    this.fieldLabel = '',
   });
 }
 
@@ -36,12 +44,22 @@ class TavernRoomImportPreparer {
         current: i + 1,
         total: results.length,
         name: result.assistant.name,
-        stage: '等待 AI 翻译返回',
+        stage: '准备翻译角色',
       ));
       final assistant = await AssistantRoleCardTranslationService
           .translateToSimplifiedChinese(
         result.assistant,
         complete: complete,
+        onProgress: (value) => onProgress?.call(TavernRoomImportProgress(
+          current: i + 1,
+          total: results.length,
+          name: result.assistant.name,
+          stage: value.stage,
+          detail: value.detail,
+          fieldCurrent: value.current,
+          fieldTotal: value.total,
+          fieldLabel: value.fieldLabel,
+        )),
       );
       translated.add(AssistantRoleCardImportResult(
         assistant: assistant,

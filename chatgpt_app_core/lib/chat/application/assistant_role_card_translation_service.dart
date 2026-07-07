@@ -3,6 +3,27 @@ import 'dart:convert';
 import 'package:chatgpt_app_core/model/assistant_model.dart';
 
 typedef RoleCardTranslationCall = Future<String?> Function(String prompt);
+typedef RoleCardTranslationProgressCallback = void Function(
+  RoleCardTranslationProgress progress,
+);
+
+class RoleCardTranslationProgress {
+  final String field;
+  final String fieldLabel;
+  final int current;
+  final int total;
+  final String stage;
+  final String detail;
+
+  const RoleCardTranslationProgress({
+    required this.field,
+    required this.fieldLabel,
+    required this.current,
+    required this.total,
+    required this.stage,
+    this.detail = '',
+  });
+}
 
 class AssistantRoleCardTranslationService {
   const AssistantRoleCardTranslationService._();
@@ -24,23 +45,47 @@ class AssistantRoleCardTranslationService {
   static Future<AssistantModel> translateToSimplifiedChinese(
     AssistantModel assistant, {
     required RoleCardTranslationCall complete,
+    RoleCardTranslationProgressCallback? onProgress,
   }) async {
     if (!_shouldUseWholeCardTranslation(assistant)) {
       final translated = await translateFieldsIndividually(
         assistant,
         complete: complete,
+        onProgress: onProgress,
       );
       return applyTranslatedFields(assistant, translated);
     }
 
     try {
+      onProgress?.call(const RoleCardTranslationProgress(
+        field: 'wholeCard',
+        fieldLabel: '整卡',
+        current: 1,
+        total: 1,
+        stage: '提交整卡翻译',
+      ));
       final response = await complete(buildPrompt(assistant));
+      onProgress?.call(const RoleCardTranslationProgress(
+        field: 'wholeCard',
+        fieldLabel: '整卡',
+        current: 1,
+        total: 1,
+        stage: '解析整卡翻译',
+      ));
       final translated = decodeTranslation(response);
       return applyTranslatedFields(assistant, translated);
     } catch (_) {
+      onProgress?.call(const RoleCardTranslationProgress(
+        field: 'wholeCard',
+        fieldLabel: '整卡',
+        current: 1,
+        total: 1,
+        stage: '整卡失败，改为分字段',
+      ));
       final translated = await translateFieldsIndividually(
         assistant,
         complete: complete,
+        onProgress: onProgress,
       );
       return applyTranslatedFields(assistant, translated);
     }
@@ -49,26 +94,61 @@ class AssistantRoleCardTranslationService {
   static Future<Map<String, dynamic>> translateFieldsIndividually(
     AssistantModel assistant, {
     required RoleCardTranslationCall complete,
+    RoleCardTranslationProgressCallback? onProgress,
   }) async {
     final translated = <String, dynamic>{};
-    for (final field in _fields) {
+    for (var i = 0; i < _fields.length; i++) {
+      final field = _fields[i];
       final value = _fieldValue(assistant, field);
       if (value.trim().isEmpty) {
         translated[field] = value;
+        onProgress?.call(RoleCardTranslationProgress(
+          field: field,
+          fieldLabel: _fieldLabel(field),
+          current: i + 1,
+          total: _fields.length,
+          stage: '字段为空，已跳过',
+        ));
         continue;
       }
+      onProgress?.call(RoleCardTranslationProgress(
+        field: field,
+        fieldLabel: _fieldLabel(field),
+        current: i + 1,
+        total: _fields.length,
+        stage: '准备翻译字段',
+        detail: '${value.length} 字',
+      ));
       final result = field == 'memoryBook'
           ? await _translateLongField(
               field: field,
               value: value,
               complete: complete,
+              fieldIndex: i + 1,
+              fieldTotal: _fields.length,
+              onProgress: onProgress,
             )
           : await _translateSingleField(
               field: field,
               value: value,
               complete: complete,
+              onProgress: onProgress,
+              progress: RoleCardTranslationProgress(
+                field: field,
+                fieldLabel: _fieldLabel(field),
+                current: i + 1,
+                total: _fields.length,
+                stage: '等待 AI 返回字段翻译',
+              ),
             );
       translated[field] = result ?? value;
+      onProgress?.call(RoleCardTranslationProgress(
+        field: field,
+        fieldLabel: _fieldLabel(field),
+        current: i + 1,
+        total: _fields.length,
+        stage: result == null ? '字段翻译失败，保留原文' : '字段已翻译',
+      ));
     }
     return translated;
   }
@@ -179,14 +259,46 @@ class AssistantRoleCardTranslationService {
     return chars <= _wholeCardMaxChars;
   }
 
+  static String _fieldLabel(String field) {
+    switch (field) {
+      case 'name':
+        return '名称';
+      case 'description':
+        return '简介';
+      case 'prompt':
+        return '人设';
+      case 'openingMessage':
+        return '开场';
+      case 'exampleDialogs':
+        return '示例对话';
+      case 'memoryBook':
+        return '世界书';
+    }
+    return field;
+  }
+
   static Future<String?> _translateSingleField({
     required String field,
     required String value,
     required RoleCardTranslationCall complete,
     int maxAttempts = _fieldMaxAttempts,
+    RoleCardTranslationProgressCallback? onProgress,
+    RoleCardTranslationProgress? progress,
   }) async {
     for (var attempt = 0; attempt < maxAttempts; attempt++) {
       try {
+        if (progress != null) {
+          onProgress?.call(RoleCardTranslationProgress(
+            field: progress.field,
+            fieldLabel: progress.fieldLabel,
+            current: progress.current,
+            total: progress.total,
+            stage: progress.stage,
+            detail: maxAttempts <= 1
+                ? progress.detail
+                : '第 ${attempt + 1}/$maxAttempts 次',
+          ));
+        }
         final response = await complete(buildFieldPrompt(
           field: field,
           value: value,
@@ -205,15 +317,24 @@ class AssistantRoleCardTranslationService {
     required String field,
     required String value,
     required RoleCardTranslationCall complete,
+    required int fieldIndex,
+    required int fieldTotal,
+    RoleCardTranslationProgressCallback? onProgress,
   }) async {
     final chunks = _chunkTextByLines(value, maxChars: _longFieldMaxChars);
     final translated = <String>[];
     var changed = false;
-    for (final chunk in chunks) {
+    for (var i = 0; i < chunks.length; i++) {
+      final chunk = chunks[i];
       final result = await _translateLongFieldChunk(
         field: field,
         chunk: chunk,
         complete: complete,
+        fieldIndex: fieldIndex,
+        fieldTotal: fieldTotal,
+        chunkIndex: i + 1,
+        chunkTotal: chunks.length,
+        onProgress: onProgress,
       );
       translated.add(result.text);
       changed = changed || result.changed;
@@ -225,11 +346,25 @@ class AssistantRoleCardTranslationService {
     required String field,
     required String chunk,
     required RoleCardTranslationCall complete,
+    required int fieldIndex,
+    required int fieldTotal,
+    required int chunkIndex,
+    required int chunkTotal,
+    RoleCardTranslationProgressCallback? onProgress,
   }) async {
     final result = await _translateSingleField(
       field: field,
       value: chunk,
       complete: complete,
+      onProgress: onProgress,
+      progress: RoleCardTranslationProgress(
+        field: field,
+        fieldLabel: _fieldLabel(field),
+        current: fieldIndex,
+        total: fieldTotal,
+        stage: '翻译长字段分块',
+        detail: '$chunkIndex/$chunkTotal',
+      ),
     );
     if (result != null) {
       return _TranslatedChunk(result, result != chunk);
@@ -248,11 +383,21 @@ class AssistantRoleCardTranslationService {
 
     final translated = <String>[];
     var changed = false;
-    for (final subChunk in subChunks) {
+    for (var i = 0; i < subChunks.length; i++) {
+      final subChunk = subChunks[i];
       final subResult = await _translateSingleField(
         field: field,
         value: subChunk,
         complete: complete,
+        onProgress: onProgress,
+        progress: RoleCardTranslationProgress(
+          field: field,
+          fieldLabel: _fieldLabel(field),
+          current: fieldIndex,
+          total: fieldTotal,
+          stage: '重试长字段小分块',
+          detail: '$chunkIndex/$chunkTotal · ${i + 1}/${subChunks.length}',
+        ),
       );
       translated.add(subResult ?? subChunk);
       changed = changed || (subResult != null && subResult != subChunk);

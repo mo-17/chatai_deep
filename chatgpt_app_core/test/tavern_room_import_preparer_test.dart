@@ -65,7 +65,15 @@ She stands by the door.
     expect(prepared.single.sourceName, 'alice.png');
     expect(prepared.single.tavernMeta?.creator, 'card maker');
     expect(prepared.single.tavernMeta?.alternateGreetings, ['她站在门边。']);
-    expect(progresses.map((item) => item.stage), ['等待 AI 翻译返回', '已翻译']);
+    expect(progresses.map((item) => item.stage), [
+      '准备翻译角色',
+      '提交整卡翻译',
+      '解析整卡翻译',
+      '已翻译',
+    ]);
+    expect(progresses[1].fieldLabel, '整卡');
+    expect(progresses[1].fieldCurrent, 1);
+    expect(progresses[1].fieldTotal, 1);
     expect(progresses.last.name, '爱丽丝');
   });
 }
