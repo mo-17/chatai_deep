@@ -2178,6 +2178,16 @@ class _RoleCardImportJobTile extends StatelessWidget {
         : completed
             ? Colors.green[700]
             : Colors.blueGrey[700];
+    final progress = job.progress.clamp(0, 1).toDouble();
+    final detailLine = [
+      job.stage,
+      if (job.detail.trim().isNotEmpty) job.detail.trim(),
+    ].join(' · ');
+    final metaItems = [
+      if (job.counter.isNotEmpty) job.counter,
+      if (job.translate) 'AI 翻译',
+      if (job.tavernRoom) '酒馆房间',
+    ];
     return ListTile(
       leading: CircleAvatar(
         backgroundColor: failed
@@ -2202,25 +2212,46 @@ class _RoleCardImportJobTile extends StatelessWidget {
       subtitle: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Text(
-            [
-              job.stage,
-              if (job.detail.trim().isNotEmpty) job.detail.trim(),
-              if (job.counter.isNotEmpty) job.counter,
-              if (job.translate) 'AI 翻译',
-              if (job.tavernRoom) '酒馆房间',
-            ].join(' · '),
-            maxLines: 1,
-            overflow: TextOverflow.ellipsis,
-            style: TextStyle(color: color),
+          Row(
+            children: [
+              Expanded(
+                child: Text(
+                  detailLine,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: TextStyle(color: color),
+                ),
+              ),
+              if (!failed && !completed) ...[
+                const SizedBox(width: 8),
+                Text(
+                  '${(progress * 100).round()}%',
+                  style: TextStyle(
+                    color: color,
+                    fontSize: 12,
+                    fontFeatures: const [FontFeature.tabularFigures()],
+                  ),
+                ),
+              ],
+            ],
           ),
           const SizedBox(height: 4),
           LinearProgressIndicator(
-            value: failed ? 1 : job.progress.clamp(0, 1).toDouble(),
+            value: failed ? 1 : progress,
             minHeight: 3,
             backgroundColor: Colors.black12,
             color: failed ? Colors.red[300] : Colors.blueGrey[400],
           ),
+          if (metaItems.isNotEmpty) ...[
+            const SizedBox(height: 6),
+            Wrap(
+              spacing: 6,
+              runSpacing: 4,
+              children: [
+                for (final item in metaItems) _ImportJobMetaPill(label: item),
+              ],
+            ),
+          ],
           if (failed && job.error.trim().isNotEmpty) ...[
             const SizedBox(height: 4),
             Text(
@@ -2257,6 +2288,32 @@ class _RoleCardImportJobTile extends StatelessWidget {
               ),
             ),
         ],
+      ),
+    );
+  }
+}
+
+class _ImportJobMetaPill extends StatelessWidget {
+  final String label;
+
+  const _ImportJobMetaPill({required this.label});
+
+  @override
+  Widget build(BuildContext context) {
+    final color = Theme.of(context).colorScheme.primary;
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+      decoration: BoxDecoration(
+        color: color.withValues(alpha: 0.08),
+        borderRadius: BorderRadius.circular(6),
+      ),
+      child: Text(
+        label,
+        style: TextStyle(
+          color: color,
+          fontSize: 11,
+          height: 1.1,
+        ),
       ),
     );
   }

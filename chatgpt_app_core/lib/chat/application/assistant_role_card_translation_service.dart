@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 
 import 'package:chatgpt_app_core/model/assistant_model.dart';
@@ -32,6 +33,7 @@ class AssistantRoleCardTranslationService {
   static const _fieldMaxAttempts = 2;
   static const _longFieldMaxChars = 2200;
   static const _longFieldRetryMaxChars = 900;
+  static const _fieldCallTimeout = Duration(minutes: 2, seconds: 15);
 
   static const _fields = [
     'name',
@@ -302,12 +304,24 @@ class AssistantRoleCardTranslationService {
         final response = await complete(buildFieldPrompt(
           field: field,
           value: value,
-        ));
+        )).timeout(_fieldCallTimeout);
         final translated = decodeTranslation(response);
         final result = translated[field];
         return result is String ? result : null;
-      } catch (_) {
-        if (attempt == maxAttempts - 1) return null;
+      } catch (e) {
+        if (attempt == maxAttempts - 1) {
+          if (progress != null) {
+            onProgress?.call(RoleCardTranslationProgress(
+              field: progress.field,
+              fieldLabel: progress.fieldLabel,
+              current: progress.current,
+              total: progress.total,
+              stage: progress.stage,
+              detail: e is TimeoutException ? '请求超时，保留原文' : '翻译失败，保留原文',
+            ));
+          }
+          return null;
+        }
       }
     }
     return null;
