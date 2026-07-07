@@ -1,5 +1,7 @@
 import 'package:chatgpt_app_core/chat/application/assistant_role_card_service.dart';
 import 'package:chatgpt_app_core/chat/application/assistant_role_card_translation_service.dart';
+import 'package:chatgpt_app_core/chat/application/story_room_role_card_importer.dart';
+import 'package:chatgpt_app_core/model/assistant_model.dart';
 
 class TavernRoomImportProgress {
   final int current;
@@ -61,19 +63,59 @@ class TavernRoomImportPreparer {
           fieldLabel: value.fieldLabel,
         )),
       );
+      final protectedAssistant = _protectMemoryBookParticipants(
+        source: result.assistant,
+        translated: assistant,
+        onProgress: onProgress,
+        current: i + 1,
+        total: results.length,
+      );
       translated.add(AssistantRoleCardImportResult(
-        assistant: assistant,
+        assistant: protectedAssistant,
         avatarPngBytes: result.avatarPngBytes,
         sourceName: result.sourceName,
-        tavernMeta: result.tavernMeta?.syncTranslatedOpenings(assistant),
+        tavernMeta:
+            result.tavernMeta?.syncTranslatedOpenings(protectedAssistant),
       ));
       onProgress?.call(TavernRoomImportProgress(
         current: i + 1,
         total: results.length,
-        name: assistant.name,
+        name: protectedAssistant.name,
         stage: '已翻译',
       ));
     }
+    return translated;
+  }
+
+  static int _participantCount(String memoryBook) {
+    return StoryRoomRoleCardImporter.parseMemoryBookParticipants(
+      memoryBook,
+      roomId: 0,
+    ).length;
+  }
+
+  static AssistantModel _protectMemoryBookParticipants({
+    required AssistantModel source,
+    required AssistantModel translated,
+    required TavernRoomImportProgressCallback? onProgress,
+    required int current,
+    required int total,
+  }) {
+    final before = _participantCount(source.memoryBook);
+    if (before <= 1) return translated;
+    final after = _participantCount(translated.memoryBook);
+    if (after >= before) return translated;
+    translated.memoryBook = source.memoryBook;
+    onProgress?.call(TavernRoomImportProgress(
+      current: current,
+      total: total,
+      name: translated.name,
+      stage: '世界书角色数减少，已回退原文',
+      detail: '$before -> $after',
+      fieldLabel: '世界书',
+      fieldCurrent: 6,
+      fieldTotal: 6,
+    ));
     return translated;
   }
 }

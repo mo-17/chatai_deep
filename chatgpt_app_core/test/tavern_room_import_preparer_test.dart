@@ -76,4 +76,57 @@ She stands by the door.
     expect(progresses[1].fieldTotal, 1);
     expect(progresses.last.name, '爱丽丝');
   });
+
+  test('翻译后世界书角色数减少时回退原 memoryBook', () async {
+    final memoryBook = [
+      'Alice => Name: Alice',
+      'Type: character',
+      'Personality: careful.',
+      '',
+      'Bob => Name: Bob',
+      'Type: character',
+      'Personality: brave.',
+    ].join('\n');
+    final source = AssistantRoleCardImportResult(
+      assistant: AssistantModel(
+        name: 'Party',
+        description: 'Many characters.',
+        prompt: 'Stay in scene.',
+        memoryBook: memoryBook,
+      ),
+    );
+    final progresses = <TavernRoomImportProgress>[];
+
+    final prepared = await TavernRoomImportPreparer.prepare(
+      [source],
+      translateToSimplifiedChinese: true,
+      onProgress: progresses.add,
+      complete: (prompt) async {
+        return jsonEncode({
+          'name': '队伍',
+          'description': '许多角色。',
+          'prompt': '保持场景。',
+          'openingMessage': '',
+          'exampleDialogs': '',
+          'memoryBook': [
+            'Alice => Name: Alice',
+            'Type: character',
+            'Personality: careful.',
+          ].join('\n'),
+        });
+      },
+    );
+
+    expect(prepared.single.assistant.name, '队伍');
+    expect(prepared.single.assistant.memoryBook, memoryBook);
+    expect(
+      progresses.map((item) => item.stage),
+      contains('世界书角色数减少，已回退原文'),
+    );
+    final rollback = progresses.firstWhere(
+      (item) => item.stage == '世界书角色数减少，已回退原文',
+    );
+    expect(rollback.detail, '2 -> 1');
+    expect(rollback.fieldLabel, '世界书');
+  });
 }
