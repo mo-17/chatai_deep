@@ -423,17 +423,38 @@ void main() {
         template,
         title: 'Imported Tavern B',
       );
+      template.payload = StoryRoomTemplatePayload(
+        results: [
+          AssistantRoleCardImportResult(assistant: fuka),
+          AssistantRoleCardImportResult(assistant: chandra),
+        ],
+        initialOpening: '新的模板开场。',
+      )
+          .toTemplate(
+            title: template.title,
+            sourceTitle: template.sourceTitle,
+            translated: template.translated,
+          )
+          .payload;
+      final thirdId = await importer.createRoomFromTemplate(
+        template,
+        title: 'Imported Tavern C',
+      );
 
       final first = await dao.getRoom(firstId);
       final second = await dao.getRoom(secondId);
+      final third = await dao.getRoom(thirdId);
       expect(first?.title, 'Imported Tavern A');
       expect(second?.title, 'Imported Tavern B');
+      expect(third?.title, 'Imported Tavern C');
       expect(await dao.getParticipants(firstId), hasLength(2));
       expect(await dao.getParticipants(secondId), hasLength(2));
+      expect(await dao.getParticipants(thirdId), hasLength(2));
       expect(
           (await dao.getMessages(firstId)).single.content, fuka.openingMessage);
       expect((await dao.getMessages(secondId)).single.content,
           fuka.openingMessage);
+      expect((await dao.getMessages(thirdId)).single.content, '新的模板开场。');
     });
 
     test('多角色世界书导入时跳过明确非角色条目', () {

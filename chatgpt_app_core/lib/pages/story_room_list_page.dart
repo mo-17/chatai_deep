@@ -1,3 +1,4 @@
+import 'package:chatgpt_app_core/chat/application/assistant_role_card_service.dart';
 import 'package:chatgpt_app_core/chat/application/story_room_role_card_importer.dart';
 import 'package:chatgpt_app_core/db/hi_db_manager.dart';
 import 'package:chatgpt_app_core/db/story_room_dao.dart';
@@ -184,6 +185,8 @@ class _StoryRoomListPageState extends State<StoryRoomListPage> {
                   _createRoomFromTemplate(template);
                 } else if (value == 'rename') {
                   _renameTemplate(template);
+                } else if (value == 'opening') {
+                  _editTemplateOpening(template);
                 } else if (value == 'delete') {
                   _deleteTemplate(template);
                 }
@@ -210,6 +213,16 @@ class _StoryRoomListPageState extends State<StoryRoomListPage> {
                   ),
                 ),
                 PopupMenuItem(
+                  value: 'opening',
+                  child: Row(
+                    children: [
+                      Icon(Icons.edit_note_outlined),
+                      SizedBox(width: 8),
+                      Text('编辑开场'),
+                    ],
+                  ),
+                ),
+                PopupMenuItem(
                   value: 'delete',
                   child: Row(
                     children: [
@@ -232,9 +245,21 @@ class _StoryRoomListPageState extends State<StoryRoomListPage> {
     final parts = <String>[
       _templateRoleCountText(template),
       template.translated ? '已翻译' : '未翻译',
+      _templateOpeningText(template),
       if (template.sourceTitle.trim().isNotEmpty) template.sourceTitle.trim(),
     ];
     return parts.join(' · ');
+  }
+
+  String _templateOpeningText(StoryTemplateModel template) {
+    try {
+      final opening =
+          StoryRoomTemplatePayload.fromTemplate(template).initialOpening.trim();
+      if (opening.isEmpty) return '无开场';
+      return '开场 ${opening.length} 字';
+    } catch (_) {
+      return '开场异常';
+    }
   }
 
   String _templateRoleCountText(StoryTemplateModel template) {
@@ -426,6 +451,70 @@ class _StoryRoomListPageState extends State<StoryRoomListPage> {
     }
   }
 
+  Future<void> _editTemplateOpening(StoryTemplateModel template) async {
+    final dao = _templateDao;
+    final id = template.id;
+    if (dao == null || id == null) return;
+    late final StoryRoomTemplatePayload payload;
+    try {
+      payload = StoryRoomTemplatePayload.fromTemplate(template);
+    } catch (e) {
+      HiDialog.showSnackBar(context, '模板数据异常：$e');
+      return;
+    }
+    final opening = await showDialog<String>(
+      context: context,
+      builder: (_) => _TemplateOpeningDialog(
+        initialOpening: payload.initialOpening,
+        candidates: _templateOpeningCandidates(payload),
+      ),
+    );
+    if (opening == null) return;
+    template.payload = StoryRoomTemplatePayload(
+      results: payload.results,
+      initialOpening: opening,
+    )
+        .toTemplate(
+          title: template.title,
+          sourceTitle: template.sourceTitle,
+          translated: template.translated,
+        )
+        .payload;
+    try {
+      await dao.saveTemplate(template);
+      if (!mounted) return;
+      await _load();
+    } catch (e) {
+      if (!mounted) return;
+      HiDialog.showSnackBar(context, '保存开场失败：$e');
+    }
+  }
+
+  List<String> _templateOpeningCandidates(StoryRoomTemplatePayload payload) {
+    final seen = <String>{};
+    final candidates = <String>[];
+    void add(String value) {
+      final text = value.trim();
+      if (text.isEmpty) return;
+      final key = text.replaceAll(RegExp(r'\s+'), '');
+      if (seen.add(key)) candidates.add(text);
+    }
+
+    add(payload.initialOpening);
+    for (final result in payload.results) {
+      add(result.assistant.openingMessage);
+      for (final item in result.tavernMeta?.alternateGreetings ?? const []) {
+        add(item);
+      }
+      for (final item in AssistantRoleCardService.alternateGreetings(
+        result.assistant.exampleDialogs,
+      )) {
+        add(item);
+      }
+    }
+    return candidates;
+  }
+
   Future<void> _deleteTemplate(StoryTemplateModel template) async {
     final dao = _templateDao;
     final id = template.id;
@@ -528,4 +617,97 @@ class _RenameRoomDialogState extends State<_RenameRoomDialog> {
   }
 
   void _submit(String value) => Navigator.pop(context, value.trim());
+}
+
+class _TemplateOpeningDialog extends StatefulWidget {
+  final String initialOpening;
+  final List<String> candidates;
+
+  const _TemplateOpeningDialog({
+    required this.initialOpening,
+    required this.candidates,
+  });
+
+  @override
+  State<_TemplateOpeningDialog> createState() => _TemplateOpeningDialogState();
+}
+
+class _TemplateOpeningDialogState extends State<_TemplateOpeningDialog> {
+  late final TextEditingController _controller;
+
+  @override
+  void initState() {
+    super.initState();
+    _controller = TextEditingController(text: widget.initialOpening);
+  }
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return AlertDialog(
+      title: const Text('编辑模板开场'),
+      content: ConstrainedBox(
+        constraints: const BoxConstraints(maxWidth: 520),
+        child: SingleChildScrollView(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              if (widget.candidates.isNotEmpty) ...[
+                Wrap(
+                  spacing: 8,
+                  runSpacing: 8,
+                  children: [
+                    for (var i = 0; i < widget.candidates.length; i++)
+                      ActionChip(
+                        label: Text('备选 ${i + 1}'),
+                        tooltip: widget.candidates[i],
+                        onPressed: () {
+                          _controller.text = widget.candidates[i];
+                          _controller.selection = TextSelection.collapsed(
+                            offset: _controller.text.length,
+                          );
+                        },
+                      ),
+                  ],
+                ),
+                const SizedBox(height: 12),
+              ],
+              TextField(
+                controller: _controller,
+                autofocus: true,
+                minLines: 6,
+                maxLines: 12,
+                textInputAction: TextInputAction.newline,
+                decoration: const InputDecoration(
+                  labelText: '开场内容',
+                  alignLabelWithHint: true,
+                  border: OutlineInputBorder(),
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.pop(context),
+          child: const Text('取消'),
+        ),
+        TextButton(
+          onPressed: () => _controller.clear(),
+          child: const Text('清空'),
+        ),
+        FilledButton(
+          onPressed: () => Navigator.pop(context, _controller.text.trim()),
+          child: const Text('保存'),
+        ),
+      ],
+    );
+  }
 }
