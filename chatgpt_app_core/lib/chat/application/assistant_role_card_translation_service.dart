@@ -20,9 +20,44 @@ class AssistantRoleCardTranslationService {
     AssistantModel assistant, {
     required RoleCardTranslationCall complete,
   }) async {
-    final response = await complete(buildPrompt(assistant));
-    final translated = decodeTranslation(response);
-    return applyTranslatedFields(assistant, translated);
+    try {
+      final response = await complete(buildPrompt(assistant));
+      final translated = decodeTranslation(response);
+      return applyTranslatedFields(assistant, translated);
+    } catch (_) {
+      final translated = await translateFieldsIndividually(
+        assistant,
+        complete: complete,
+      );
+      return applyTranslatedFields(assistant, translated);
+    }
+  }
+
+  static Future<Map<String, dynamic>> translateFieldsIndividually(
+    AssistantModel assistant, {
+    required RoleCardTranslationCall complete,
+  }) async {
+    final translated = <String, dynamic>{};
+    for (final field in _fields) {
+      final value = _fieldValue(assistant, field);
+      if (value.trim().isEmpty) {
+        translated[field] = value;
+        continue;
+      }
+      final result = field == 'memoryBook'
+          ? await _translateLongField(
+              field: field,
+              value: value,
+              complete: complete,
+            )
+          : await _translateSingleField(
+              field: field,
+              value: value,
+              complete: complete,
+            );
+      translated[field] = result ?? value;
+    }
+    return translated;
   }
 
   static String buildPrompt(AssistantModel assistant) {
@@ -39,6 +74,23 @@ class AssistantRoleCardTranslationService {
       '5. 如果某个字段为空，保持空字符串。',
       '',
       jsonEncode(payload),
+    ].join('\n');
+  }
+
+  static String buildFieldPrompt({
+    required String field,
+    required String value,
+  }) {
+    return [
+      '你是角色卡本地化助手。请将下面 JSON 中 "$field" 字段的自然语言文本翻译为简体中文。',
+      '要求：',
+      '1. 只返回一个 JSON 对象，不要 Markdown，不要解释。',
+      '2. 保持字段名 "$field" 不变。',
+      '3. 不要添加、删除或改写工具 ID、模型 ID、服务商 ID、语音 ID、文件路径、URL。',
+      if (field == 'memoryBook')
+        '4. memoryBook 可能包含 [off]、[p=10]、[re]、[sec=...]、=>、正则表达式和关键词；保留这些结构与正则表达式，只翻译自然语言内容。',
+      '',
+      jsonEncode({field: value}),
     ].join('\n');
   }
 
@@ -104,6 +156,77 @@ class AssistantRoleCardTranslationService {
         return assistant.memoryBook;
     }
     return '';
+  }
+
+  static Future<String?> _translateSingleField({
+    required String field,
+    required String value,
+    required RoleCardTranslationCall complete,
+  }) async {
+    try {
+      final response = await complete(buildFieldPrompt(
+        field: field,
+        value: value,
+      ));
+      final translated = decodeTranslation(response);
+      final result = translated[field];
+      return result is String ? result : null;
+    } catch (_) {
+      return null;
+    }
+  }
+
+  static Future<String?> _translateLongField({
+    required String field,
+    required String value,
+    required RoleCardTranslationCall complete,
+  }) async {
+    final chunks = _chunkTextByLines(value);
+    final translated = <String>[];
+    var changed = false;
+    for (final chunk in chunks) {
+      final result = await _translateSingleField(
+        field: field,
+        value: chunk,
+        complete: complete,
+      );
+      translated.add(result ?? chunk);
+      changed = changed || (result != null && result != chunk);
+    }
+    return changed ? translated.join('\n') : null;
+  }
+
+  static List<String> _chunkTextByLines(String value, {int maxChars = 2200}) {
+    final lines = value.replaceAll('\r\n', '\n').split('\n');
+    final chunks = <String>[];
+    final current = <String>[];
+    var currentChars = 0;
+    void flush() {
+      if (current.isEmpty) return;
+      chunks.add(current.join('\n'));
+      current.clear();
+      currentChars = 0;
+    }
+
+    for (final line in lines) {
+      final lineChars = line.length + (current.isEmpty ? 0 : 1);
+      if (current.isNotEmpty && currentChars + lineChars > maxChars) {
+        flush();
+      }
+      if (line.length > maxChars) {
+        var start = 0;
+        while (start < line.length) {
+          final end = (start + maxChars).clamp(0, line.length).toInt();
+          chunks.add(line.substring(start, end));
+          start = end;
+        }
+        continue;
+      }
+      current.add(line);
+      currentChars += lineChars;
+    }
+    flush();
+    return chunks.isEmpty ? [''] : chunks;
   }
 
   static String _translated(
