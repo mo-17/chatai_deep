@@ -182,6 +182,8 @@ class _StoryRoomListPageState extends State<StoryRoomListPage> {
               onSelected: (value) {
                 if (value == 'create') {
                   _createRoomFromTemplate(template);
+                } else if (value == 'rename') {
+                  _renameTemplate(template);
                 } else if (value == 'delete') {
                   _deleteTemplate(template);
                 }
@@ -194,6 +196,16 @@ class _StoryRoomListPageState extends State<StoryRoomListPage> {
                       Icon(Icons.add_circle_outline),
                       SizedBox(width: 8),
                       Text('开新房间'),
+                    ],
+                  ),
+                ),
+                PopupMenuItem(
+                  value: 'rename',
+                  child: Row(
+                    children: [
+                      Icon(Icons.drive_file_rename_outline),
+                      SizedBox(width: 8),
+                      Text('重命名'),
                     ],
                   ),
                 ),
@@ -218,10 +230,22 @@ class _StoryRoomListPageState extends State<StoryRoomListPage> {
 
   String _templateSubtitle(StoryTemplateModel template) {
     final parts = <String>[
+      _templateRoleCountText(template),
       template.translated ? '已翻译' : '未翻译',
       if (template.sourceTitle.trim().isNotEmpty) template.sourceTitle.trim(),
     ];
     return parts.join(' · ');
+  }
+
+  String _templateRoleCountText(StoryTemplateModel template) {
+    try {
+      final payload = StoryRoomTemplatePayload.fromTemplate(template);
+      final count = payload.results.length;
+      if (count <= 0) return '无角色';
+      return '$count 个角色';
+    } catch (_) {
+      return '模板数据异常';
+    }
   }
 
   void _showTemplateHint() {
@@ -379,6 +403,26 @@ class _StoryRoomListPageState extends State<StoryRoomListPage> {
     } catch (e) {
       if (!mounted) return;
       HiDialog.showSnackBar(context, '从模板创建房间失败：$e');
+    }
+  }
+
+  Future<void> _renameTemplate(StoryTemplateModel template) async {
+    final dao = _templateDao;
+    final id = template.id;
+    if (dao == null || id == null) return;
+    final title = await showDialog<String>(
+      context: context,
+      builder: (_) => _RenameRoomDialog(initialTitle: template.title),
+    );
+    if (title == null || title.isEmpty || title == template.title) return;
+    template.title = title;
+    try {
+      await dao.saveTemplate(template);
+      if (!mounted) return;
+      await _load();
+    } catch (e) {
+      if (!mounted) return;
+      HiDialog.showSnackBar(context, '重命名模板失败：$e');
     }
   }
 

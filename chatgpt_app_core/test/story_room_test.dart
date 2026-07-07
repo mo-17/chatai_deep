@@ -143,6 +143,10 @@ void main() {
       expect(payload.initialOpening, '她轻轻推开门。');
       expect(payload.results.single.assistant.name, 'Fuka');
       expect(payload.results.single.tavernMeta?.spec, 'chara_card_v2');
+
+      saved.title = 'Fuka 模板改名';
+      await templateDao.saveTemplate(saved);
+      expect((await templateDao.getTemplate(id))?.title, 'Fuka 模板改名');
     });
   });
 
