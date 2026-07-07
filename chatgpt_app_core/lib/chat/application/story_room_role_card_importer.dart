@@ -23,19 +23,46 @@ class StoryRoomRoleCardImporter {
       assistant.memoryBook,
       roomId: 0,
     );
-    if (memoryEntries.length >= 3) return true;
+    if (memoryEntries.length >= 2) return true;
     final text = [
       assistant.name,
       assistant.description,
       assistant.prompt,
       assistant.openingMessage,
     ].join('\n').toLowerCase();
-    return text.contains('multiple characters') ||
-        text.contains('scenario') ||
-        text.contains('sandbox') ||
-        text.contains('adventure') ||
-        text.contains('world book') ||
-        text.contains('lorebook');
+    return _looksLikeMultiCharacterText(name: assistant.name, text: text);
+  }
+
+  static bool _looksLikeMultiCharacterText({
+    required String name,
+    required String text,
+  }) {
+    final compact = text.replaceAll(RegExp(r'\s+'), ' ').trim();
+    if (compact.isEmpty) return false;
+    const markers = [
+      'multiple characters',
+      'multi character',
+      'multi-character',
+      'two characters',
+      'dual character',
+      'dual-character',
+      'twins',
+      'twin sisters',
+      'sisters',
+      '多角色',
+      '多名角色',
+      '双角色',
+      '双人',
+      '两位角色',
+      '群像',
+      '多人',
+    ];
+    if (markers.any(compact.contains)) return true;
+    final normalizedName = name.trim().toLowerCase();
+    return RegExp(r'\b\w+\s*(?:&|\+|/)\s*\w+\b').hasMatch(normalizedName) ||
+        RegExp(r'\b\w+\s+and\s+\w+\b').hasMatch(normalizedName) ||
+        RegExp(r'[\u4e00-\u9fa5]{1,12}\s*(?:和|与|及)\s*[\u4e00-\u9fa5]{1,12}')
+            .hasMatch(normalizedName);
   }
 
   static StoryRoomRoleCardImportPlan buildPlan(

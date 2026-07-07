@@ -254,6 +254,57 @@ void main() {
       expect(messages.single.content, 'Alt opening B');
     });
 
+    test('单角色卡包含场景和世界书字段时不自动建议酒馆房间', () {
+      final assistant = AssistantModel(
+        name: 'Dr. Moon',
+        description:
+            'Scenario: private research interview. World book and lorebook entries describe background facts.',
+        prompt:
+            'Name: Dr. Moon\nType: character\nPersonality: calm researcher.',
+      )..memoryBook = [
+          '[p=10] Foundation => A secret organization in the scenario.',
+          'Containment sites and research protocols.',
+          '[p=10] Reality Anchor => A background device from the lorebook.',
+          'It stabilizes abnormal events.',
+        ].join('\n');
+
+      expect(
+        StoryRoomRoleCardImporter.shouldSuggestTavernRoom(assistant),
+        isFalse,
+      );
+    });
+
+    test('双人角色卡名称或描述命中时建议酒馆房间', () {
+      final assistant = AssistantModel(
+        name: 'Aria & Amelia',
+        description: 'Aria and Amelia are loyal maid twins.',
+        prompt: 'Aria is bold. Amelia is timid.',
+      );
+
+      expect(
+        StoryRoomRoleCardImporter.shouldSuggestTavernRoom(assistant),
+        isTrue,
+      );
+    });
+
+    test('两个世界书角色条目会建议酒馆房间', () {
+      final assistant = AssistantModel(name: 'Twin Scene')
+        ..memoryBook = [
+          'Aria => Name: Aria',
+          'Type: character',
+          'Personality: bold.',
+          '',
+          'Amelia => Name: Amelia',
+          'Type: character',
+          'Personality: timid.',
+        ].join('\n');
+
+      expect(
+        StoryRoomRoleCardImporter.shouldSuggestTavernRoom(assistant),
+        isTrue,
+      );
+    });
+
     test('单卡导入默认开场为空时使用 Tavern 备选开场', () async {
       db = await databaseFactoryFfi.openDatabase(inMemoryDatabasePath);
       final dao = await StoryRoomDao.create(HiDBManager.test(db));
