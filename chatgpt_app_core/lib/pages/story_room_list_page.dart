@@ -287,8 +287,7 @@ class _StoryRoomListPageState extends State<StoryRoomListPage> {
 
   String _templateRoleCountText(StoryTemplateModel template) {
     try {
-      final payload = StoryRoomTemplatePayload.fromTemplate(template);
-      final count = payload.results.length;
+      final count = _templateRoleCount(template);
       if (count <= 0) return '无角色';
       return '$count 个角色';
     } catch (_) {
@@ -298,10 +297,21 @@ class _StoryRoomListPageState extends State<StoryRoomListPage> {
 
   bool _isMultiRoleTemplate(StoryTemplateModel template) {
     try {
-      return StoryRoomTemplatePayload.fromTemplate(template).results.length > 1;
+      return _templateRoleCount(template) > 1;
     } catch (_) {
       return false;
     }
+  }
+
+  int _templateRoleCount(StoryTemplateModel template) {
+    final payload = StoryRoomTemplatePayload.fromTemplate(template);
+    final resultCount = payload.results.length;
+    if (resultCount != 1) return resultCount;
+    final parsed = StoryRoomRoleCardImporter.parseMemoryBookParticipants(
+      payload.results.single.assistant.memoryBook,
+      roomId: 0,
+    );
+    return parsed.length > 1 ? parsed.length : resultCount;
   }
 
   void _showTemplateHint() {
@@ -533,7 +543,7 @@ class _StoryRoomListPageState extends State<StoryRoomListPage> {
       HiDialog.showSnackBar(context, '模板数据异常：$e');
       return;
     }
-    if (payload.results.length <= 1) {
+    if (_templateRoleCount(template) <= 1) {
       HiDialog.showSnackBar(context, '单角色模板不需要生成中文副本');
       return;
     }
