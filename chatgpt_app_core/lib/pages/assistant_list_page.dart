@@ -1219,10 +1219,12 @@ class _AssistantListPageState extends State<AssistantListPage> {
     return showDialog<void>(
       context: context,
       builder: (context) => AlertDialog(
-        title: const Text('导入失败日志'),
+        title: const Text('导入任务日志'),
         content: SingleChildScrollView(
           child: SelectableText(
-            job.log.trim().isEmpty ? job.error : job.log,
+            job.log.trim().isEmpty
+                ? (job.error.trim().isEmpty ? '暂无详细日志' : job.error)
+                : job.log,
             style: const TextStyle(fontSize: 12),
           ),
         ),
@@ -1876,7 +1878,39 @@ class _RoleCardImportCoordinator extends ChangeNotifier {
     if (displayName != null) job.displayName = displayName;
     if (detail != null) job.detail = detail;
     if (progress != null) job.progress = progress.clamp(0, 1).toDouble();
+    _appendLog(
+      job,
+      stage: stage,
+      detail: detail,
+      displayName: displayName,
+      progress: progress,
+      status: status,
+    );
     notifyListeners();
+  }
+
+  void _appendLog(
+    _RoleCardImportJob job, {
+    _RoleCardImportJobStatus? status,
+    String? stage,
+    String? detail,
+    String? displayName,
+    double? progress,
+  }) {
+    final parts = <String>[
+      _logTime(),
+      if (status != null) _statusLabel(status),
+      if (stage != null && stage.trim().isNotEmpty) stage.trim(),
+      if (detail != null && detail.trim().isNotEmpty) detail.trim(),
+      if (displayName != null && displayName.trim().isNotEmpty)
+        '对象：${displayName.trim()}',
+      if (progress != null) '进度：${(progress.clamp(0, 1) * 100).round()}%',
+    ];
+    if (parts.length <= 1) return;
+    final line = parts.join(' · ');
+    final lines = job.log.split('\n');
+    if (lines.isNotEmpty && lines.last == line) return;
+    job.log = job.log.trim().isEmpty ? line : '${job.log}\n$line';
   }
 
   void _failJob(
@@ -1892,7 +1926,7 @@ class _RoleCardImportCoordinator extends ChangeNotifier {
     job.progress = 1;
     job.error = error is FormatException ? error.message : error.toString();
     final targetLabel = job.tavernRoom ? '酒馆房间导入' : '角色卡导入';
-    job.log = [
+    final failure = [
       '$targetLabel失败',
       '名称：${job.displayName}',
       '阶段：${job.stage}',
@@ -1901,7 +1935,30 @@ class _RoleCardImportCoordinator extends ChangeNotifier {
       '',
       stackTrace.toString(),
     ].join('\n');
+    job.log = job.log.trim().isEmpty ? failure : '${job.log}\n\n$failure';
     notifyListeners();
+  }
+
+  static String _logTime() {
+    final now = DateTime.now();
+    return [
+      now.hour.toString().padLeft(2, '0'),
+      now.minute.toString().padLeft(2, '0'),
+      now.second.toString().padLeft(2, '0'),
+    ].join(':');
+  }
+
+  static String _statusLabel(_RoleCardImportJobStatus status) {
+    switch (status) {
+      case _RoleCardImportJobStatus.queued:
+        return '排队中';
+      case _RoleCardImportJobStatus.running:
+        return '运行中';
+      case _RoleCardImportJobStatus.completed:
+        return '已完成';
+      case _RoleCardImportJobStatus.failed:
+        return '失败';
+    }
   }
 
   Future<AssistantModel> _prepareImportedRoleCard(
@@ -2175,43 +2232,32 @@ class _RoleCardImportJobTile extends StatelessWidget {
           ],
         ],
       ),
-      trailing: failed
-          ? PopupMenuButton<String>(
-              tooltip: '失败记录',
-              onSelected: (value) {
-                if (value == 'log') onShowLog();
-                if (value == 'dismiss') onDismiss();
-              },
-              itemBuilder: (context) => const [
-                PopupMenuItem(
-                  value: 'log',
-                  child: ListTile(
-                    contentPadding: EdgeInsets.zero,
-                    leading: Icon(Icons.article_outlined),
-                    title: Text('查看日志'),
-                  ),
-                ),
-                PopupMenuItem(
-                  value: 'dismiss',
-                  child: ListTile(
-                    contentPadding: EdgeInsets.zero,
-                    leading: Icon(Icons.close),
-                    title: Text('移除记录'),
-                  ),
-                ),
-              ],
-            )
-          : completed
-              ? IconButton(
-                  tooltip: '移除记录',
-                  icon: const Icon(Icons.close),
-                  onPressed: onDismiss,
-                )
-              : const SizedBox(
-                  width: 24,
-                  height: 24,
-                  child: CircularProgressIndicator(strokeWidth: 2),
-                ),
+      trailing: PopupMenuButton<String>(
+        tooltip: '任务操作',
+        onSelected: (value) {
+          if (value == 'log') onShowLog();
+          if (value == 'dismiss') onDismiss();
+        },
+        itemBuilder: (context) => [
+          const PopupMenuItem(
+            value: 'log',
+            child: ListTile(
+              contentPadding: EdgeInsets.zero,
+              leading: Icon(Icons.article_outlined),
+              title: Text('查看日志'),
+            ),
+          ),
+          if (failed || completed)
+            const PopupMenuItem(
+              value: 'dismiss',
+              child: ListTile(
+                contentPadding: EdgeInsets.zero,
+                leading: Icon(Icons.close),
+                title: Text('移除记录'),
+              ),
+            ),
+        ],
+      ),
     );
   }
 }
