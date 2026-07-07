@@ -33,6 +33,7 @@ import 'package:chatgpt_app_core/util/app_events.dart';
 import 'package:chatgpt_app_core/util/avatar_asset_service.dart';
 import 'package:chatgpt_app_core/util/hi_dialog.dart';
 import 'package:chatgpt_app_core/widget/assistant_avatar.dart';
+import 'package:chatgpt_app_core/widget/translation_task_log_dialog.dart';
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
@@ -1218,22 +1219,10 @@ class _AssistantListPageState extends State<AssistantListPage> {
   ) {
     return showDialog<void>(
       context: context,
-      builder: (context) => AlertDialog(
-        title: const Text('导入任务日志'),
-        content: SingleChildScrollView(
-          child: SelectableText(
-            job.log.trim().isEmpty
-                ? (job.error.trim().isEmpty ? '暂无详细日志' : job.error)
-                : job.log,
-            style: const TextStyle(fontSize: 12),
-          ),
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.of(context).pop(),
-            child: const Text('关闭'),
-          ),
-        ],
+      builder: (context) => TranslationTaskLogDialog(
+        title: '导入任务日志',
+        log: job.log,
+        error: job.error,
       ),
     );
   }
@@ -1911,6 +1900,7 @@ class _RoleCardImportCoordinator extends ChangeNotifier {
     final lines = job.log.split('\n');
     if (lines.isNotEmpty && lines.last == line) return;
     job.log = job.log.trim().isEmpty ? line : '${job.log}\n$line';
+    _trimLog(job);
   }
 
   void _failJob(
@@ -1936,7 +1926,18 @@ class _RoleCardImportCoordinator extends ChangeNotifier {
       stackTrace.toString(),
     ].join('\n');
     job.log = job.log.trim().isEmpty ? failure : '${job.log}\n\n$failure';
+    _trimLog(job);
     notifyListeners();
+  }
+
+  static void _trimLog(_RoleCardImportJob job) {
+    const maxLines = 500;
+    final lines = job.log.split('\n');
+    if (lines.length <= maxLines) return;
+    job.log = [
+      '日志较长，已隐藏前 ${lines.length - maxLines} 行',
+      ...lines.skip(lines.length - maxLines),
+    ].join('\n');
   }
 
   static String _logTime() {

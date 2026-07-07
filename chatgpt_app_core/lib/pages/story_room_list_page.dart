@@ -17,6 +17,7 @@ import 'package:chatgpt_app_core/model/story_template_model.dart';
 import 'package:chatgpt_app_core/pages/story_room_page.dart';
 import 'package:chatgpt_app_core/provider/ai_settings_provider.dart';
 import 'package:chatgpt_app_core/util/hi_dialog.dart';
+import 'package:chatgpt_app_core/widget/translation_task_log_dialog.dart';
 import 'package:flutter/material.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:provider/provider.dart';
@@ -704,24 +705,10 @@ class _StoryRoomListPageState extends State<StoryRoomListPage> {
   void _showTemplateTranslationLog(_StoryTemplateTranslationJob job) {
     showDialog<void>(
       context: context,
-      builder: (ctx) => AlertDialog(
-        title: const Text('生成中文副本日志'),
-        content: SizedBox(
-          width: double.maxFinite,
-          child: SingleChildScrollView(
-            child: SelectableText(
-              job.log.trim().isEmpty
-                  ? (job.error.trim().isEmpty ? '暂无详细日志' : job.error)
-                  : job.log,
-            ),
-          ),
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(ctx),
-            child: const Text('关闭'),
-          ),
-        ],
+      builder: (ctx) => TranslationTaskLogDialog(
+        title: '生成中文副本日志',
+        log: job.log,
+        error: job.error,
       ),
     );
   }
@@ -967,6 +954,7 @@ class _StoryTemplateTranslationCoordinator extends ChangeNotifier {
     final lines = job.log.split('\n');
     if (lines.isNotEmpty && lines.last == line) return;
     job.log = job.log.trim().isEmpty ? line : '${job.log}\n$line';
+    _trimLog(job);
   }
 
   void _failJob(
@@ -988,7 +976,18 @@ class _StoryTemplateTranslationCoordinator extends ChangeNotifier {
       stackTrace.toString(),
     ].join('\n');
     job.log = job.log.trim().isEmpty ? failure : '${job.log}\n\n$failure';
+    _trimLog(job);
     notifyListeners();
+  }
+
+  static void _trimLog(_StoryTemplateTranslationJob job) {
+    const maxLines = 500;
+    final lines = job.log.split('\n');
+    if (lines.length <= maxLines) return;
+    job.log = [
+      '日志较长，已隐藏前 ${lines.length - maxLines} 行',
+      ...lines.skip(lines.length - maxLines),
+    ].join('\n');
   }
 
   static String _logTime() {
