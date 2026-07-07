@@ -320,6 +320,18 @@ void main() {
       expect(participants.last.prompt, contains('当前你只扮演：Amelia'));
       final messages = await dao.getMessages(roomId);
       expect(messages.single.content, 'The twin maids wait by the door.');
+
+      final template = StoryRoomTemplatePayload(
+        results: [AssistantRoleCardImportResult(assistant: assistant)],
+        initialOpening: assistant.openingMessage,
+      ).toTemplate(title: assistant.name);
+      expect(
+        StoryRoomRoleCardImporter.countTemplateParticipants(
+          StoryRoomTemplatePayload.fromTemplate(template),
+          title: template.title,
+        ),
+        2,
+      );
     });
 
     test('单条合并名世界书角色导入酒馆房间时会拆成多个参与者', () async {
@@ -348,6 +360,17 @@ void main() {
       expect(participants.first.prompt, contains('Name: Aria & Amelia'));
       expect(participants.first.prompt, contains('当前你只扮演：Aria'));
       expect(participants.last.prompt, contains('当前你只扮演：Amelia'));
+
+      final template = StoryRoomTemplatePayload(
+        results: [AssistantRoleCardImportResult(assistant: assistant)],
+      ).toTemplate(title: assistant.name);
+      expect(
+        StoryRoomRoleCardImporter.countTemplateParticipants(
+          StoryRoomTemplatePayload.fromTemplate(template),
+          title: template.title,
+        ),
+        2,
+      );
     });
 
     test('两个世界书角色条目会建议酒馆房间', () {

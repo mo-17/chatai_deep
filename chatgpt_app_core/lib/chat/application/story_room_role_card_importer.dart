@@ -71,24 +71,10 @@ class StoryRoomRoleCardImporter {
     required String title,
     AssistantRoleCardTavernMeta? tavernMeta,
   }) {
-    final participants = parseMemoryBookParticipants(
-      assistant.memoryBook,
-      roomId: roomId,
-      defaultAvatarType: assistant.avatarType,
-      defaultAvatarValue: assistant.avatarValue,
-    );
-    final inferredParticipants = _inferMultiCharacterParticipants(
+    final participants = resolveParticipantsForAssistant(
       assistant,
       roomId: roomId,
-      sourceParticipant: participants.length == 1 ? participants.single : null,
     );
-    if (participants.isEmpty && inferredParticipants.isNotEmpty) {
-      participants.addAll(inferredParticipants);
-    } else if (participants.length == 1 && inferredParticipants.length >= 2) {
-      participants
-        ..clear()
-        ..addAll(inferredParticipants);
-    }
     final multiParticipant = participants.length >= 2;
     final room = StoryRoomModel(
       id: roomId == 0 ? null : roomId,
@@ -157,14 +143,12 @@ class StoryRoomRoleCardImporter {
     var sortOrder = 0;
     for (final result in results) {
       final assistant = result.assistant;
-      final parsed = parseMemoryBookParticipants(
-        assistant.memoryBook,
+      final resolved = resolveParticipantsForAssistant(
+        assistant,
         roomId: roomId,
-        defaultAvatarType: assistant.avatarType,
-        defaultAvatarValue: assistant.avatarValue,
       );
-      if (parsed.length >= 2) {
-        for (final participant in parsed) {
+      if (resolved.isNotEmpty) {
+        for (final participant in resolved) {
           participant.sortOrder = sortOrder++;
           participants.add(participant);
         }
@@ -183,6 +167,52 @@ class StoryRoomRoleCardImporter {
       ));
     }
     return StoryRoomRoleCardImportPlan(room: room, participants: participants);
+  }
+
+  static int countTemplateParticipants(
+    StoryRoomTemplatePayload payload, {
+    String title = '',
+  }) {
+    if (payload.results.isEmpty) return 0;
+    if (payload.results.length == 1) {
+      final result = payload.results.single;
+      return buildPlan(
+        result.assistant,
+        roomId: 0,
+        title: title,
+        tavernMeta: result.tavernMeta,
+      ).participants.length;
+    }
+    return buildBatchPlan(
+      payload.results,
+      roomId: 0,
+      title: title,
+    ).participants.length;
+  }
+
+  static List<StoryParticipantModel> resolveParticipantsForAssistant(
+    AssistantModel assistant, {
+    required int roomId,
+  }) {
+    final parsedParticipants = parseMemoryBookParticipants(
+      assistant.memoryBook,
+      roomId: roomId,
+      defaultAvatarType: assistant.avatarType,
+      defaultAvatarValue: assistant.avatarValue,
+    );
+    final inferredParticipants = _inferMultiCharacterParticipants(
+      assistant,
+      roomId: roomId,
+      sourceParticipant:
+          parsedParticipants.length == 1 ? parsedParticipants.single : null,
+    );
+    if (parsedParticipants.isEmpty && inferredParticipants.isNotEmpty) {
+      return inferredParticipants;
+    }
+    if (parsedParticipants.length == 1 && inferredParticipants.length >= 2) {
+      return inferredParticipants;
+    }
+    return parsedParticipants;
   }
 
   static String buildBatchPublicContext(

@@ -362,13 +362,10 @@ class _StoryRoomListPageState extends State<StoryRoomListPage> {
 
   int _templateRoleCount(StoryTemplateModel template) {
     final payload = StoryRoomTemplatePayload.fromTemplate(template);
-    final resultCount = payload.results.length;
-    if (resultCount != 1) return resultCount;
-    final parsed = StoryRoomRoleCardImporter.parseMemoryBookParticipants(
-      payload.results.single.assistant.memoryBook,
-      roomId: 0,
+    return StoryRoomRoleCardImporter.countTemplateParticipants(
+      payload,
+      title: template.title,
     );
-    return parsed.length > 1 ? parsed.length : resultCount;
   }
 
   void _showTemplateHint() {
