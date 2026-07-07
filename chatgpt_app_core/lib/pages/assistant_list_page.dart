@@ -1742,7 +1742,7 @@ class _RoleCardImportCoordinator extends ChangeNotifier {
             job,
             stage: value.stage,
             detail: _translationDetail(value),
-            progress: 0.18 + (0.52 * value.current / value.total),
+            progress: 0.18 + (0.52 * _translationProgressRatio(value)),
           ),
         );
         _update(
@@ -1794,17 +1794,13 @@ class _RoleCardImportCoordinator extends ChangeNotifier {
           timeout: const Duration(minutes: 2),
         ),
         onProgress: (value) {
-          final roleRatio =
-              value.total <= 0 ? 0.0 : value.current / value.total;
-          final fieldRatio = value.fieldTotal <= 0
-              ? 0.0
-              : (value.fieldCurrent / value.fieldTotal) / value.total;
+          final ratio = _tavernTranslationProgressRatio(value);
           _update(
             job,
             stage: value.stage,
             displayName: value.name,
             detail: _tavernImportDetail(value),
-            progress: 0.12 + (0.58 * (roleRatio + fieldRatio).clamp(0, 1)),
+            progress: 0.12 + (0.58 * ratio),
           );
         },
       );
@@ -2080,6 +2076,13 @@ class _RoleCardImportCoordinator extends ChangeNotifier {
     return parts.join(' · ');
   }
 
+  static double _translationProgressRatio(RoleCardTranslationProgress value) {
+    if (value.total <= 0) return 0;
+    final fieldBase = (value.current - 1).clamp(0, value.total) / value.total;
+    final inField = value.fieldProgress.clamp(0, 1).toDouble() / value.total;
+    return (fieldBase + inField).clamp(0, 1).toDouble();
+  }
+
   static String _tavernImportDetail(TavernRoomImportProgress value) {
     final parts = <String>[
       if (value.total > 1) '角色 ${value.current}/${value.total}',
@@ -2088,6 +2091,19 @@ class _RoleCardImportCoordinator extends ChangeNotifier {
       if (value.detail.trim().isNotEmpty) value.detail.trim(),
     ];
     return parts.join(' · ');
+  }
+
+  static double _tavernTranslationProgressRatio(
+    TavernRoomImportProgress value,
+  ) {
+    if (value.total <= 0) return 0;
+    final roleBase = (value.current - 1).clamp(0, value.total) / value.total;
+    final fieldRatio = value.fieldTotal <= 0
+        ? 0.0
+        : ((value.fieldCurrent - 1).clamp(0, value.fieldTotal) +
+                value.fieldProgress.clamp(0, 1).toDouble()) /
+            value.fieldTotal;
+    return (roleBase + (fieldRatio / value.total)).clamp(0, 1).toDouble();
   }
 }
 

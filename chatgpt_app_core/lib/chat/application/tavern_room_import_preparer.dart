@@ -12,6 +12,7 @@ class TavernRoomImportProgress {
   final int fieldCurrent;
   final int fieldTotal;
   final String fieldLabel;
+  final double fieldProgress;
 
   const TavernRoomImportProgress({
     required this.current,
@@ -22,6 +23,7 @@ class TavernRoomImportProgress {
     this.fieldCurrent = 0,
     this.fieldTotal = 0,
     this.fieldLabel = '',
+    this.fieldProgress = 0,
   });
 }
 
@@ -61,6 +63,7 @@ class TavernRoomImportPreparer {
           fieldCurrent: value.current,
           fieldTotal: value.total,
           fieldLabel: value.fieldLabel,
+          fieldProgress: value.fieldProgress,
         )),
       );
       final protectedAssistant = _protectMemoryBookParticipants(

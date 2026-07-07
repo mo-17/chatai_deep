@@ -15,6 +15,7 @@ class RoleCardTranslationProgress {
   final int total;
   final String stage;
   final String detail;
+  final double fieldProgress;
 
   const RoleCardTranslationProgress({
     required this.field,
@@ -23,6 +24,7 @@ class RoleCardTranslationProgress {
     required this.total,
     required this.stage,
     this.detail = '',
+    this.fieldProgress = 0,
   });
 }
 
@@ -110,6 +112,7 @@ class AssistantRoleCardTranslationService {
           current: i + 1,
           total: _fields.length,
           stage: '字段为空，已跳过',
+          fieldProgress: 1,
         ));
         continue;
       }
@@ -150,6 +153,7 @@ class AssistantRoleCardTranslationService {
         current: i + 1,
         total: _fields.length,
         stage: result == null ? '字段翻译失败，保留原文' : '字段已翻译',
+        fieldProgress: 1,
       ));
     }
     return translated;
@@ -299,6 +303,7 @@ class AssistantRoleCardTranslationService {
             detail: maxAttempts <= 1
                 ? progress.detail
                 : '第 ${attempt + 1}/$maxAttempts 次',
+            fieldProgress: progress.fieldProgress,
           ));
         }
         final response = await complete(buildFieldPrompt(
@@ -318,6 +323,7 @@ class AssistantRoleCardTranslationService {
               total: progress.total,
               stage: progress.stage,
               detail: e is TimeoutException ? '请求超时，保留原文' : '翻译失败，保留原文',
+              fieldProgress: progress.fieldProgress,
             ));
           }
           return null;
@@ -377,13 +383,32 @@ class AssistantRoleCardTranslationService {
         current: fieldIndex,
         total: fieldTotal,
         stage: '翻译长字段分块',
-        detail: '$chunkIndex/$chunkTotal',
+        detail: '块 $chunkIndex/$chunkTotal',
+        fieldProgress: (chunkIndex - 1).clamp(0, chunkTotal) / chunkTotal,
       ),
     );
     if (result != null) {
+      onProgress?.call(RoleCardTranslationProgress(
+        field: field,
+        fieldLabel: _fieldLabel(field),
+        current: fieldIndex,
+        total: fieldTotal,
+        stage: '长字段分块已翻译',
+        detail: '块 $chunkIndex/$chunkTotal',
+        fieldProgress: chunkIndex / chunkTotal,
+      ));
       return _TranslatedChunk(result, result != chunk);
     }
     if (chunk.length <= _longFieldRetryMaxChars) {
+      onProgress?.call(RoleCardTranslationProgress(
+        field: field,
+        fieldLabel: _fieldLabel(field),
+        current: fieldIndex,
+        total: fieldTotal,
+        stage: '长字段分块保留原文',
+        detail: '块 $chunkIndex/$chunkTotal',
+        fieldProgress: chunkIndex / chunkTotal,
+      ));
       return _TranslatedChunk(chunk, false);
     }
 
@@ -410,11 +435,24 @@ class AssistantRoleCardTranslationService {
           current: fieldIndex,
           total: fieldTotal,
           stage: '重试长字段小分块',
-          detail: '$chunkIndex/$chunkTotal · ${i + 1}/${subChunks.length}',
+          detail: '块 $chunkIndex/$chunkTotal · 小块 ${i + 1}/${subChunks.length}',
+          fieldProgress: ((chunkIndex - 1) +
+                  ((i).clamp(0, subChunks.length) / subChunks.length)) /
+              chunkTotal,
         ),
       );
       translated.add(subResult ?? subChunk);
       changed = changed || (subResult != null && subResult != subChunk);
+      onProgress?.call(RoleCardTranslationProgress(
+        field: field,
+        fieldLabel: _fieldLabel(field),
+        current: fieldIndex,
+        total: fieldTotal,
+        stage: subResult == null ? '小分块保留原文' : '小分块已翻译',
+        detail: '块 $chunkIndex/$chunkTotal · 小块 ${i + 1}/${subChunks.length}',
+        fieldProgress:
+            ((chunkIndex - 1) + ((i + 1) / subChunks.length)) / chunkTotal,
+      ));
     }
 
     return changed

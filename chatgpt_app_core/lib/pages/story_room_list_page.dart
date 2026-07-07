@@ -809,18 +809,14 @@ class _StoryTemplateTranslationCoordinator extends ChangeNotifier {
           timeout: const Duration(minutes: 2),
         ),
         onProgress: (value) {
-          final roleRatio =
-              value.total <= 0 ? 0.0 : value.current / value.total;
-          final fieldRatio = value.fieldTotal <= 0
-              ? 0.0
-              : (value.fieldCurrent / value.fieldTotal) / value.total;
+          final ratio = _tavernTranslationProgressRatio(value);
           _update(
             job,
             displayName:
                 value.name.trim().isEmpty ? job.sourceTitle : value.name,
             stage: value.stage,
             detail: _tavernImportDetail(value),
-            progress: 0.06 + (0.72 * (roleRatio + fieldRatio).clamp(0, 1)),
+            progress: 0.06 + (0.72 * ratio),
           );
         },
       );
@@ -1019,6 +1015,19 @@ class _StoryTemplateTranslationCoordinator extends ChangeNotifier {
       if (value.detail.trim().isNotEmpty) value.detail.trim(),
     ];
     return parts.join(' · ');
+  }
+
+  static double _tavernTranslationProgressRatio(
+    TavernRoomImportProgress value,
+  ) {
+    if (value.total <= 0) return 0;
+    final roleBase = (value.current - 1).clamp(0, value.total) / value.total;
+    final fieldRatio = value.fieldTotal <= 0
+        ? 0.0
+        : ((value.fieldCurrent - 1).clamp(0, value.fieldTotal) +
+                value.fieldProgress.clamp(0, 1).toDouble()) /
+            value.fieldTotal;
+    return (roleBase + (fieldRatio / value.total)).clamp(0, 1).toDouble();
   }
 
   static String _tavernImportDetail(TavernRoomImportProgress value) {
