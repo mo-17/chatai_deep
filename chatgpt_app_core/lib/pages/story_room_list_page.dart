@@ -1,4 +1,6 @@
 import 'dart:async';
+import 'dart:convert';
+import 'dart:io';
 
 import 'package:chatgpt_app_core/chat/application/assistant_role_card_service.dart';
 import 'package:chatgpt_app_core/chat/application/assistant_role_card_translation_service.dart';
@@ -16,7 +18,9 @@ import 'package:chatgpt_app_core/pages/story_room_page.dart';
 import 'package:chatgpt_app_core/provider/ai_settings_provider.dart';
 import 'package:chatgpt_app_core/util/hi_dialog.dart';
 import 'package:flutter/material.dart';
+import 'package:path_provider/path_provider.dart';
 import 'package:provider/provider.dart';
+import 'package:share_plus/share_plus.dart';
 
 final _storyTemplateTranslationCoordinator =
     _StoryTemplateTranslationCoordinator();
@@ -237,6 +241,8 @@ class _StoryRoomListPageState extends State<StoryRoomListPage> {
                   _renameTemplate(template);
                 } else if (value == 'opening') {
                   _editTemplateOpening(template);
+                } else if (value == 'export') {
+                  _exportTemplate(template);
                 } else if (value == 'translate_copy') {
                   _translateTemplateAsSimplifiedCopy(template);
                 } else if (value == 'delete') {
@@ -271,6 +277,16 @@ class _StoryRoomListPageState extends State<StoryRoomListPage> {
                       Icon(Icons.edit_note_outlined),
                       SizedBox(width: 8),
                       Text('编辑开场'),
+                    ],
+                  ),
+                ),
+                const PopupMenuItem(
+                  value: 'export',
+                  child: Row(
+                    children: [
+                      Icon(Icons.ios_share_outlined),
+                      SizedBox(width: 8),
+                      Text('导出模板'),
                     ],
                   ),
                 ),
@@ -571,6 +587,34 @@ class _StoryRoomListPageState extends State<StoryRoomListPage> {
     }
   }
 
+  Future<void> _exportTemplate(StoryTemplateModel template) async {
+    try {
+      final payload = jsonDecode(template.payload);
+      final body = const JsonEncoder.withIndent('  ').convert({
+        'format': 'chatai_deep_tavern_template',
+        'formatVersion': 1,
+        'template': {
+          'title': template.title,
+          'sourceTitle': template.sourceTitle,
+          'kind': template.kind,
+          'translated': template.translated,
+          'createdAt': template.createdAt,
+          'updatedAt': template.updatedAt,
+          'payload': payload,
+        },
+      });
+      final dir = await getTemporaryDirectory();
+      final file = File('${dir.path}/${_templateExportFilename(template)}');
+      await file.writeAsString(body);
+      await SharePlus.instance.share(ShareParams(
+        files: [XFile(file.path)],
+      ));
+    } catch (e) {
+      if (!mounted) return;
+      HiDialog.showSnackBar(context, '导出模板失败：$e');
+    }
+  }
+
   Future<void> _translateTemplateAsSimplifiedCopy(
     StoryTemplateModel template,
   ) async {
@@ -691,6 +735,13 @@ class _StoryRoomListPageState extends State<StoryRoomListPage> {
       index++;
     }
     return '$cleanBase ($index)';
+  }
+
+  static String _templateExportFilename(StoryTemplateModel template) {
+    final name =
+        template.title.trim().isEmpty ? 'tavern_template' : template.title;
+    final safe = name.replaceAll(RegExp(r'[\\/:*?"<>|\s]+'), '_');
+    return 'tavern_template_$safe.json';
   }
 }
 
