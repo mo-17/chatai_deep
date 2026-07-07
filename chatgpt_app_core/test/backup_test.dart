@@ -5,6 +5,7 @@ import 'package:archive/archive.dart';
 import 'package:chatgpt_app_core/backup/backup_service.dart';
 import 'package:chatgpt_app_core/capability/generated_image_save_service.dart';
 import 'package:chatgpt_app_core/chat/application/assistant_role_card_service.dart';
+import 'package:chatgpt_app_core/chat/application/story_room_role_card_importer.dart';
 import 'package:chatgpt_app_core/chat/domain/message_block.dart';
 import 'package:chatgpt_app_core/db/assistant_dao.dart';
 import 'package:chatgpt_app_core/db/conversation_dao.dart';
@@ -13,6 +14,7 @@ import 'package:chatgpt_app_core/db/hi_db_manager.dart';
 import 'package:chatgpt_app_core/db/knowledge_dao.dart';
 import 'package:chatgpt_app_core/db/message_dao.dart';
 import 'package:chatgpt_app_core/db/project_dao.dart';
+import 'package:chatgpt_app_core/db/story_template_dao.dart';
 import 'package:chatgpt_app_core/model/ai_settings.dart';
 import 'package:chatgpt_app_core/model/assistant_model.dart';
 import 'package:chatgpt_app_core/model/conversation_model.dart';
@@ -101,6 +103,21 @@ void main() {
     await FavoriteDao.create(storage);
     await storage.db.insert('tb_favorite',
         {'ownerName': 'AI', 'content': '收藏内容', 'createdAt': 333});
+    final templateDao = await StoryTemplateDao.create(storage);
+    await templateDao.saveTemplate(
+      StoryRoomTemplatePayload(
+        results: [
+          AssistantRoleCardImportResult(
+            assistant: AssistantModel(name: '酒馆角色', prompt: '保持沉浸。'),
+          ),
+        ],
+        initialOpening: '夜色降临。',
+      ).toTemplate(
+        title: '酒馆模板',
+        sourceTitle: 'card.png',
+        translated: true,
+      ),
+    );
     return aid!;
   }
 
@@ -134,6 +151,7 @@ void main() {
       expect(preview.assistants, 1);
       expect(preview.favorites, 1);
       expect(preview.projects, 1);
+      expect(preview.storyTemplates, 1);
       expect(preview.totalRows, greaterThan(0));
       expect(preview.warnings.single, contains('其他账号'));
       expect(preview.conflictSummary.localRows, 1);
@@ -261,6 +279,7 @@ void main() {
       expect(result.assistants, 1);
       expect(result.favorites, 1);
       expect(result.projects, 1);
+      expect(result.storyTemplates, 1);
       expect(result.warnings, isEmpty);
       expect(
           result.settings!.providers.firstWhere((p) => p.id == 'openai').apiKey,
@@ -277,6 +296,14 @@ void main() {
       final assistant =
           await (await AssistantDao.create(dst)).getAssistant(aid);
       expect(assistant!.name, '审查员');
+      final restoredTemplates =
+          await (await StoryTemplateDao.create(dst)).getTemplates();
+      expect(restoredTemplates, hasLength(1));
+      expect(restoredTemplates.single.title, '酒馆模板');
+      final restoredTemplatePayload =
+          StoryRoomTemplatePayload.fromTemplate(restoredTemplates.single);
+      expect(restoredTemplatePayload.results.single.assistant.name, '酒馆角色');
+      expect(restoredTemplatePayload.initialOpening, '夜色降临。');
       // blocks 列原样恢复，包含可追溯的角色上下文快照。
       final msgs = await dst.db.query('tb_messages', where: 'createdAt = 222');
       final restoredBlocks =
@@ -590,6 +617,15 @@ void main() {
       final srcDocId =
           await srcKnowledgeDao.addDocument('导入资料', 'Imported knowledge body');
       await srcKnowledgeDao.setProjectDocIds(77, [srcDocId!]);
+      await (await StoryTemplateDao.create(src)).saveTemplate(
+        StoryRoomTemplatePayload(
+          results: [
+            AssistantRoleCardImportResult(
+              assistant: AssistantModel(name: '导入酒馆角色'),
+            ),
+          ],
+        ).toTemplate(title: '导入酒馆模板', translated: true),
+      );
       final bytes = await BackupService(src).exportArchive(
         settings: AISettings.defaults()..tavilyApiKey = 'backup-key',
         accountHash: 'acc1',
@@ -621,6 +657,7 @@ void main() {
       expect(result.knowledgeDocs, 1);
       expect(result.knowledgeChunks, greaterThan(0));
       expect(result.projectKnowledge, 1);
+      expect(result.storyTemplates, 1);
       expect(result.settings, isNull);
       expect(result.warnings.join('\n'), contains('cid 与本地冲突'));
       expect(BackupService.restoreTick.value, tickBefore + 1);
@@ -686,6 +723,11 @@ void main() {
           where: 'projectId = ? and docId = ?',
           whereArgs: [importedProjectId, importedDocId]);
       expect(importedProjectKnowledge, hasLength(1));
+
+      final mergedTemplates =
+          await (await StoryTemplateDao.create(dst)).getTemplates();
+      expect(mergedTemplates.map((item) => item.title), contains('导入酒馆模板'));
+      expect(mergedTemplates.map((item) => item.title), contains('酒馆模板'));
       expect(
           await dstKnowledgeDao.getProjectDocIds(localProjectId), [localDocId]);
       await dst.db.close();

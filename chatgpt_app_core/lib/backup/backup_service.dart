@@ -13,6 +13,7 @@ import 'package:chatgpt_app_core/db/hi_db_manager.dart';
 import 'package:chatgpt_app_core/db/knowledge_dao.dart';
 import 'package:chatgpt_app_core/db/message_dao.dart';
 import 'package:chatgpt_app_core/db/project_dao.dart';
+import 'package:chatgpt_app_core/db/story_template_dao.dart';
 import 'package:chatgpt_app_core/model/ai_settings.dart';
 import 'package:chatgpt_app_core/util/avatar_asset_service.dart';
 import 'package:flutter/foundation.dart';
@@ -31,6 +32,7 @@ class BackupRestoreResult {
   final int knowledgeDocs;
   final int knowledgeChunks;
   final int projectKnowledge;
+  final int storyTemplates;
   final int generatedImageAssets;
 
   /// 备份里的 AI 设置（settings.json 缺失时为 null）。
@@ -48,6 +50,7 @@ class BackupRestoreResult {
     this.knowledgeDocs = 0,
     this.knowledgeChunks = 0,
     this.projectKnowledge = 0,
+    this.storyTemplates = 0,
     this.generatedImageAssets = 0,
     this.settings,
     this.warnings = const [],
@@ -85,6 +88,7 @@ class BackupPreview {
   final int knowledgeDocs;
   final int knowledgeChunks;
   final int projectKnowledge;
+  final int storyTemplates;
   final int avatarAssets;
   final int fileAssets;
   final int generatedImageAssets;
@@ -105,6 +109,7 @@ class BackupPreview {
     required this.knowledgeDocs,
     required this.knowledgeChunks,
     required this.projectKnowledge,
+    this.storyTemplates = 0,
     required this.avatarAssets,
     required this.fileAssets,
     this.generatedImageAssets = 0,
@@ -121,7 +126,8 @@ class BackupPreview {
       projects +
       knowledgeDocs +
       knowledgeChunks +
-      projectKnowledge;
+      projectKnowledge +
+      storyTemplates;
 
   BackupImportPlan planFor(BackupImportMode mode) {
     BackupTableConflict? table(String name) {
@@ -185,6 +191,7 @@ class BackupPreview {
           'tb_kb_doc',
           'tb_kb_chunk',
           'tb_project_kb',
+          'tb_story_template',
         ]);
         return BackupImportPlan(
           mode: mode,
@@ -277,7 +284,7 @@ class BackupTableConflict {
 /// 因此可以用 sqflite_common_ffi 内存库做 round-trip 单测。
 class BackupService {
   /// 备份格式版本。导入时大于本值则拒绝（新版本备份导入旧 app）。
-  static const int formatVersion = 2;
+  static const int formatVersion = 3;
 
   static const _kManifest = 'manifest.json';
   static const _kConversations = 'conversations.json';
@@ -289,6 +296,7 @@ class BackupService {
   static const _kKnowledgeDocs = 'knowledge_docs.json';
   static const _kKnowledgeChunks = 'knowledge_chunks.json';
   static const _kProjectKnowledge = 'project_knowledge.json';
+  static const _kStoryTemplates = 'story_templates.json';
   static const _kAvatarPrefix = 'assets/avatars/';
   static const _kFilePrefix = 'assets/files/';
   static const _kGeneratedImagePrefix = 'assets/generated_images/';
@@ -325,6 +333,7 @@ class BackupService {
     final knowledgeDocs = await storage.db.query('tb_kb_doc');
     final knowledgeChunks = await storage.db.query('tb_kb_chunk');
     final projectKnowledge = await storage.db.query('tb_project_kb');
+    final storyTemplates = await storage.db.query('tb_story_template');
     final avatarFiles = await _collectAvatarFiles(conversations);
     final attachmentFiles = await _collectAttachmentFiles(messages);
     final generatedImageFiles = await _collectGeneratedImageFiles();
@@ -361,6 +370,7 @@ class BackupService {
         'knowledgeDocs': knowledgeDocs.length,
         'knowledgeChunks': knowledgeChunks.length,
         'projectKnowledge': projectKnowledge.length,
+        'storyTemplates': storyTemplates.length,
         'avatarAssets': avatarFiles.length,
         'fileAssets': attachmentFiles.length,
         'generatedImageAssets': generatedImageFiles.length,
@@ -377,6 +387,7 @@ class BackupService {
       ..addFile(_jsonFile(_kKnowledgeDocs, knowledgeDocs))
       ..addFile(_jsonFile(_kKnowledgeChunks, knowledgeChunks))
       ..addFile(_jsonFile(_kProjectKnowledge, projectKnowledge))
+      ..addFile(_jsonFile(_kStoryTemplates, storyTemplates))
       ..addFile(_jsonFile(_kSettings, exportedSettings.toJson()));
     for (final entry in avatarFiles.entries) {
       archive.addFile(
@@ -423,6 +434,7 @@ class BackupService {
     final knowledgeDocs = _readRows(archive, _kKnowledgeDocs);
     final knowledgeChunks = _readRows(archive, _kKnowledgeChunks);
     final projectKnowledge = _readRows(archive, _kProjectKnowledge);
+    final storyTemplates = _readRows(archive, _kStoryTemplates);
     int countOf(String key, String fileName) {
       final value = counts?[key];
       if (value is int) return value;
@@ -443,6 +455,8 @@ class BackupService {
           return knowledgeChunks.length;
         case _kProjectKnowledge:
           return projectKnowledge.length;
+        case _kStoryTemplates:
+          return storyTemplates.length;
       }
       return 0;
     }
@@ -457,6 +471,7 @@ class BackupService {
       knowledgeDocs: knowledgeDocs,
       knowledgeChunks: knowledgeChunks,
       projectKnowledge: projectKnowledge,
+      storyTemplates: storyTemplates,
     );
     return BackupPreview(
       formatVersion: version,
@@ -471,6 +486,7 @@ class BackupService {
       knowledgeDocs: countOf('knowledgeDocs', _kKnowledgeDocs),
       knowledgeChunks: countOf('knowledgeChunks', _kKnowledgeChunks),
       projectKnowledge: countOf('projectKnowledge', _kProjectKnowledge),
+      storyTemplates: countOf('storyTemplates', _kStoryTemplates),
       avatarAssets: counts?['avatarAssets'] is int
           ? counts!['avatarAssets'] as int
           : archive.files
@@ -522,6 +538,7 @@ class BackupService {
     final knowledgeDocs = _readRows(archive, _kKnowledgeDocs);
     final knowledgeChunks = _readRows(archive, _kKnowledgeChunks);
     final projectKnowledge = _readRows(archive, _kProjectKnowledge);
+    final storyTemplates = _readRows(archive, _kStoryTemplates);
     if (mode == BackupImportMode.mergeAppend) {
       return _importMergeAppend(
         archive: archive,
@@ -534,6 +551,7 @@ class BackupService {
         knowledgeDocs: knowledgeDocs,
         knowledgeChunks: knowledgeChunks,
         projectKnowledge: projectKnowledge,
+        storyTemplates: storyTemplates,
         warnings: warnings,
       );
     }
@@ -642,6 +660,7 @@ class BackupService {
       batch.delete('tb_assistant');
       batch.delete('tb_favorite');
       batch.delete('tb_project_kb');
+      batch.delete('tb_story_template');
       batch.delete('tb_kb_chunk');
       batch.delete('tb_kb_doc');
       for (final row in projects) {
@@ -668,6 +687,9 @@ class BackupService {
       for (final row in projectKnowledge) {
         batch.insert('tb_project_kb', row);
       }
+      for (final row in storyTemplates) {
+        batch.insert('tb_story_template', row);
+      }
       await batch.commit(noResult: true);
     });
 
@@ -682,6 +704,7 @@ class BackupService {
         ', ${favorites.length} favorites, ${projects.length} projects'
         ', ${knowledgeDocs.length} kb docs, ${knowledgeChunks.length} kb chunks'
         ', ${projectKnowledge.length} project kb refs'
+        ', ${storyTemplates.length} story templates'
         ', warnings: $warnings');
     restoreTick.value++;
     return BackupRestoreResult(
@@ -693,6 +716,7 @@ class BackupService {
       knowledgeDocs: knowledgeDocs.length,
       knowledgeChunks: knowledgeChunks.length,
       projectKnowledge: projectKnowledge.length,
+      storyTemplates: storyTemplates.length,
       generatedImageAssets: generatedImageAssets,
       settings: settings,
       warnings: warnings,
@@ -812,6 +836,7 @@ class BackupService {
     required List<Map<String, dynamic>> knowledgeDocs,
     required List<Map<String, dynamic>> knowledgeChunks,
     required List<Map<String, dynamic>> projectKnowledge,
+    required List<Map<String, dynamic>> storyTemplates,
     required List<String> warnings,
   }) async {
     await _restoreAttachmentAssets(archive, messages, warnings);
@@ -959,6 +984,10 @@ class BackupService {
             conflictAlgorithm: ConflictAlgorithm.ignore);
         insertedProjectKnowledge++;
       }
+
+      for (final row in storyTemplates) {
+        await txn.insert('tb_story_template', _withoutId(row));
+      }
     });
 
     if (remappedCids > 0) {
@@ -990,6 +1019,7 @@ class BackupService {
         ', ${knowledgeDocs.length} kb docs'
         ', ${knowledgeChunks.length - skippedChunks} kb chunks'
         ', $insertedProjectKnowledge project kb refs'
+        ', ${storyTemplates.length} story templates'
         ', warnings: $warnings');
     restoreTick.value++;
     return BackupRestoreResult(
@@ -1001,6 +1031,7 @@ class BackupService {
       knowledgeDocs: knowledgeDocs.length,
       knowledgeChunks: knowledgeChunks.length - skippedChunks,
       projectKnowledge: insertedProjectKnowledge,
+      storyTemplates: storyTemplates.length,
       generatedImageAssets: generatedImageAssets,
       warnings: warnings,
     );
@@ -1145,6 +1176,7 @@ class BackupService {
     await FavoriteDao.create(storage);
     await ProjectDao.create(storage);
     await KnowledgeDao.create(storage);
+    await StoryTemplateDao.create(storage);
     await _ensureConversationProjectIdColumn(storage.db);
   }
 
@@ -1206,6 +1238,7 @@ class BackupService {
     required List<Map<String, dynamic>> knowledgeDocs,
     required List<Map<String, dynamic>> knowledgeChunks,
     required List<Map<String, dynamic>> projectKnowledge,
+    required List<Map<String, dynamic>> storyTemplates,
   }) async {
     final specs = [
       _ConflictSpec('tb_conversation_list', 'cid', conversations),
@@ -1217,6 +1250,7 @@ class BackupService {
       _ConflictSpec('tb_kb_chunk', 'id', knowledgeChunks),
       _ConflictSpec('tb_project_kb', 'projectId', projectKnowledge,
           secondColumn: 'docId'),
+      _ConflictSpec('tb_story_template', 'id', storyTemplates),
     ];
 
     var localRows = 0;
