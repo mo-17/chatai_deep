@@ -7,6 +7,7 @@ typedef RoleCardTranslationCall = Future<String?> Function(String prompt);
 class AssistantRoleCardTranslationService {
   const AssistantRoleCardTranslationService._();
 
+  static const _wholeCardMaxChars = 3000;
   static const _fieldMaxAttempts = 2;
   static const _longFieldMaxChars = 2200;
   static const _longFieldRetryMaxChars = 900;
@@ -24,6 +25,14 @@ class AssistantRoleCardTranslationService {
     AssistantModel assistant, {
     required RoleCardTranslationCall complete,
   }) async {
+    if (!_shouldUseWholeCardTranslation(assistant)) {
+      final translated = await translateFieldsIndividually(
+        assistant,
+        complete: complete,
+      );
+      return applyTranslatedFields(assistant, translated);
+    }
+
     try {
       final response = await complete(buildPrompt(assistant));
       final translated = decodeTranslation(response);
@@ -160,6 +169,14 @@ class AssistantRoleCardTranslationService {
         return assistant.memoryBook;
     }
     return '';
+  }
+
+  static bool _shouldUseWholeCardTranslation(AssistantModel assistant) {
+    final chars = _fields.fold<int>(
+      0,
+      (sum, field) => sum + _fieldValue(assistant, field).trim().length,
+    );
+    return chars <= _wholeCardMaxChars;
   }
 
   static Future<String?> _translateSingleField({

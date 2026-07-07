@@ -195,6 +195,50 @@ void main() {
     expect(translated.memoryBook.split('\n'), hasLength(80));
   });
 
+  test('大卡会直接跳过整卡翻译以减少失败成本', () async {
+    final assistant = AssistantModel(
+      name: 'Alice',
+      description: 'A long role card.',
+      memoryBook: List.generate(
+        80,
+        (index) =>
+            'key$index => Alice keeps a detailed note about scene number $index.',
+      ).join('\n'),
+    );
+    var wholeCardCalls = 0;
+    var fieldCalls = 0;
+
+    final translated =
+        await AssistantRoleCardTranslationService.translateToSimplifiedChinese(
+      assistant,
+      complete: (prompt) async {
+        if (prompt.contains('"description"') &&
+            prompt.contains('"prompt"') &&
+            prompt.contains('"memoryBook"')) {
+          wholeCardCalls++;
+        } else {
+          fieldCalls++;
+        }
+        if (prompt.contains('"name"')) return '{"name":"爱丽丝"}';
+        if (prompt.contains('"description"')) {
+          return '{"description":"一张很长的角色卡。"}';
+        }
+        if (prompt.contains('"memoryBook"')) {
+          final start = prompt.indexOf('{');
+          final payload = prompt.substring(start);
+          return payload.replaceAll('Alice keeps', '爱丽丝记录');
+        }
+        return '{}';
+      },
+    );
+
+    expect(wholeCardCalls, 0);
+    expect(fieldCalls, greaterThan(1));
+    expect(translated.name, '爱丽丝');
+    expect(translated.description, '一张很长的角色卡。');
+    expect(translated.memoryBook, contains('爱丽丝记录'));
+  });
+
   test('memoryBook 大块失败后会拆成更小块重新翻译', () async {
     final assistant = AssistantModel(
       name: 'Alice',
