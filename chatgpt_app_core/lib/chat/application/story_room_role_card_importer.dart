@@ -71,19 +71,34 @@ class StoryRoomRoleCardImporter {
     required String title,
     AssistantRoleCardTavernMeta? tavernMeta,
   }) {
-    final room = StoryRoomModel(
-      id: roomId == 0 ? null : roomId,
-      title: title.trim().isEmpty ? assistant.name : title.trim(),
-      mode: StoryRoomMode.tavern,
-      replyMode: StoryReplyMode.autoSingle,
-      maxAutoReplies: 1,
-      publicContext: buildPublicContext(assistant, tavernMeta: tavernMeta),
-    );
     final participants = parseMemoryBookParticipants(
       assistant.memoryBook,
       roomId: roomId,
       defaultAvatarType: assistant.avatarType,
       defaultAvatarValue: assistant.avatarValue,
+    );
+    final inferredParticipants = _inferMultiCharacterParticipants(
+      assistant,
+      roomId: roomId,
+      sourceParticipant: participants.length == 1 ? participants.single : null,
+    );
+    if (participants.isEmpty && inferredParticipants.isNotEmpty) {
+      participants.addAll(inferredParticipants);
+    } else if (participants.length == 1 && inferredParticipants.length >= 2) {
+      participants
+        ..clear()
+        ..addAll(inferredParticipants);
+    }
+    final multiParticipant = participants.length >= 2;
+    final room = StoryRoomModel(
+      id: roomId == 0 ? null : roomId,
+      title: title.trim().isEmpty ? assistant.name : title.trim(),
+      mode: StoryRoomMode.tavern,
+      replyMode: multiParticipant
+          ? StoryReplyMode.autoMulti
+          : StoryReplyMode.autoSingle,
+      maxAutoReplies: multiParticipant ? 2 : 1,
+      publicContext: buildPublicContext(assistant, tavernMeta: tavernMeta),
     );
     if (participants.isEmpty) {
       participants.add(StoryParticipantModel(
@@ -396,6 +411,70 @@ class StoryRoomRoleCardImporter {
         '[示例对话]\n${assistant.exampleDialogs.trim()}',
     ];
     return parts.join('\n\n');
+  }
+
+  static List<StoryParticipantModel> _inferMultiCharacterParticipants(
+    AssistantModel assistant, {
+    required int roomId,
+    StoryParticipantModel? sourceParticipant,
+  }) {
+    final names = _splitMultiCharacterNames(sourceParticipant?.name ?? '');
+    final fallbackNames = names.isEmpty
+        ? _splitMultiCharacterNames(assistant.name)
+        : const <String>[];
+    final inferredNames = names.isNotEmpty ? names : fallbackNames;
+    if (inferredNames.length < 2) return const [];
+    final sourcePrompt = sourceParticipant?.prompt ?? '';
+    return inferredNames.asMap().entries.map((entry) {
+      final name = entry.value;
+      return StoryParticipantModel(
+        roomId: roomId,
+        role: StoryParticipantRole.assistant,
+        name: name,
+        prompt: _participantPromptForInferredName(
+          assistant,
+          name,
+          sourcePrompt: sourcePrompt,
+        ),
+        avatarType: sourceParticipant?.avatarType ?? assistant.avatarType,
+        avatarValue: sourceParticipant?.avatarValue ?? assistant.avatarValue,
+        sortOrder: entry.key,
+      );
+    }).toList();
+  }
+
+  static List<String> _splitMultiCharacterNames(String rawName) {
+    final name = rawName.trim();
+    if (name.isEmpty) return const [];
+    final splitters = RegExp(
+      r'\s*(?:&|\+|/|\band\b|和|与|及)\s*',
+      caseSensitive: false,
+    );
+    final names = name
+        .split(splitters)
+        .map((item) => item.trim())
+        .where((item) => item.length >= 2 && item.length <= 40)
+        .toList();
+    return names.length >= 2 ? names : const [];
+  }
+
+  static String _participantPromptForInferredName(
+    AssistantModel assistant,
+    String name, {
+    String sourcePrompt = '',
+  }) {
+    final base = sourcePrompt.trim().isNotEmpty
+        ? sourcePrompt.trim()
+        : _participantPrompt(assistant);
+    final instruction = [
+      '[多角色卡拆分]',
+      '原卡名称：${assistant.name}',
+      '当前你只扮演：$name',
+      '保持原卡设定中属于该角色的语气、关系和行为边界；不要代替其他角色发言。',
+    ].join('\n');
+    return [base, instruction]
+        .where((part) => part.trim().isNotEmpty)
+        .join('\n\n');
   }
 
   static String _tavernMetaText(AssistantRoleCardTavernMeta meta) {

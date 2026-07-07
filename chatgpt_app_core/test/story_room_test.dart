@@ -287,6 +287,69 @@ void main() {
       );
     });
 
+    test('双人角色卡导入酒馆房间时会拆成多个参与者', () async {
+      db = await databaseFactoryFfi.openDatabase(inMemoryDatabasePath);
+      final dao = await StoryRoomDao.create(HiDBManager.test(db));
+      final assistant = AssistantModel(
+        name: 'Aria & Amelia',
+        description: 'Aria and Amelia are loyal maid twins.',
+        prompt: 'Aria is bold. Amelia is timid.',
+        avatarType: 'image',
+        avatarValue: '/cards/aria-amelia.png',
+      )..openingMessage = 'The twin maids wait by the door.';
+
+      final roomId =
+          await StoryRoomRoleCardImportService(dao).importAsTavernRoom(
+        assistant,
+        title: assistant.name,
+      );
+
+      final room = await dao.getRoom(roomId);
+      expect(room?.replyMode, StoryReplyMode.autoMulti);
+      expect(room?.maxAutoReplies, 2);
+      final participants = await dao.getParticipants(roomId);
+      expect(participants.map((item) => item.name), ['Aria', 'Amelia']);
+      expect(participants.every((item) => item.avatarType == 'image'), isTrue);
+      expect(
+        participants.every(
+          (item) => item.avatarValue == '/cards/aria-amelia.png',
+        ),
+        isTrue,
+      );
+      expect(participants.first.prompt, contains('当前你只扮演：Aria'));
+      expect(participants.last.prompt, contains('当前你只扮演：Amelia'));
+      final messages = await dao.getMessages(roomId);
+      expect(messages.single.content, 'The twin maids wait by the door.');
+    });
+
+    test('单条合并名世界书角色导入酒馆房间时会拆成多个参与者', () async {
+      db = await databaseFactoryFfi.openDatabase(inMemoryDatabasePath);
+      final dao = await StoryRoomDao.create(HiDBManager.test(db));
+      final assistant = AssistantModel(
+        name: 'Aria & Amelia',
+        description: 'Twin maid character card.',
+        prompt: 'Shared setting for both twins.',
+      )..memoryBook = [
+          'Twins => Name: Aria & Amelia',
+          'Type: character',
+          'Personality: Aria is bold. Amelia is timid.',
+        ].join('\n');
+
+      final roomId =
+          await StoryRoomRoleCardImportService(dao).importAsTavernRoom(
+        assistant,
+        title: assistant.name,
+      );
+
+      final room = await dao.getRoom(roomId);
+      final participants = await dao.getParticipants(roomId);
+      expect(room?.replyMode, StoryReplyMode.autoMulti);
+      expect(participants.map((item) => item.name), ['Aria', 'Amelia']);
+      expect(participants.first.prompt, contains('Name: Aria & Amelia'));
+      expect(participants.first.prompt, contains('当前你只扮演：Aria'));
+      expect(participants.last.prompt, contains('当前你只扮演：Amelia'));
+    });
+
     test('两个世界书角色条目会建议酒馆房间', () {
       final assistant = AssistantModel(name: 'Twin Scene')
         ..memoryBook = [
