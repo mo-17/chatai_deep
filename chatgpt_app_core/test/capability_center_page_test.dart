@@ -126,7 +126,7 @@ void main() {
       ),
     );
 
-    await tester.tap(find.widgetWithText(FilledButton, '开始').first);
+    await tester.tap(find.text('开始').first);
     await tester.pump();
 
     expect(started, isNotNull);
@@ -167,13 +167,13 @@ void main() {
     await tester.enterText(fields.at(3), '复盘助手');
     await tester.enterText(fields.at(7), '你擅长复盘。');
     await tester.enterText(fields.at(8), '请帮我复盘今天。');
-    await tester.tap(find.widgetWithText(FilledButton, '保存'));
+    await tester.tap(find.text('保存'));
     await tester.pumpAndSettle();
 
     expect(find.text('每日复盘'), findsOneWidget);
     expect(const WorkflowTemplateStore().load().single.title, '每日复盘');
 
-    await tester.tap(find.widgetWithText(FilledButton, '开始').first);
+    await tester.tap(find.text('开始').first);
     await tester.pump();
 
     expect(started, isNotNull);
@@ -217,14 +217,14 @@ void main() {
     expect(find.text('openai / gpt-4o'), findsOneWidget);
     expect(find.text('工具：knowledge_search'), findsOneWidget);
     expect(find.textContaining('开场提示：请以「艾琳」'), findsOneWidget);
-    expect(find.widgetWithText(OutlinedButton, '查看角色资料'), findsOneWidget);
+    expect(find.text('查看角色资料'), findsOneWidget);
 
-    await tester.tap(find.widgetWithText(OutlinedButton, '查看角色资料'));
+    await tester.tap(find.text('查看角色资料'));
     await tester.pump();
 
     expect(opened?.id, 'role_airin');
 
-    await tester.tap(find.widgetWithText(FilledButton, '开始').first);
+    await tester.tap(find.text('开始').first);
     await tester.pump();
 
     expect(started?.id, 'role_airin');

@@ -36,7 +36,7 @@ void main() {
     final provider = AISettingsProvider();
     await pumpPage(tester, provider);
 
-    await tester.tap(find.widgetWithText(TextButton, '添加'));
+    await tester.tap(find.text('添加'));
     await tester.pumpAndSettle();
     expect(find.text('添加 MCP server'), findsOneWidget);
 
@@ -60,7 +60,7 @@ void main() {
     final provider = AISettingsProvider();
     await pumpPage(tester, provider);
 
-    await tester.tap(find.widgetWithText(TextButton, '添加'));
+    await tester.tap(find.text('添加'));
     await tester.pumpAndSettle();
 
     final fields = find.byType(TextField);
@@ -85,7 +85,7 @@ void main() {
     final provider = AISettingsProvider();
     await pumpPage(tester, provider);
 
-    await tester.tap(find.widgetWithText(TextButton, '商店'));
+    await tester.tap(find.text('商店'));
     await tester.pumpAndSettle();
     expect(find.text('MCP 工具商店'), findsOneWidget);
 
@@ -108,7 +108,7 @@ void main() {
     final provider = AISettingsProvider();
     await pumpPage(tester, provider);
 
-    await tester.tap(find.widgetWithText(TextButton, '添加'));
+    await tester.tap(find.text('添加'));
     await tester.pumpAndSettle();
     await tester.enterText(
         find.byType(TextField).at(1), 'https://discard.example/mcp');

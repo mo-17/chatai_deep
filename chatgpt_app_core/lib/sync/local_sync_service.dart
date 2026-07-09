@@ -5,6 +5,7 @@ import 'package:chatgpt_app_core/db/db_migration.dart';
 import 'package:chatgpt_app_core/db/hi_db_manager.dart';
 import 'package:chatgpt_app_core/db/story_artifact_dao.dart';
 import 'package:chatgpt_app_core/db/story_room_dao.dart';
+import 'package:chatgpt_app_core/db/story_template_translation_task_dao.dart';
 import 'package:chatgpt_app_core/sync/sync_tombstone_store.dart';
 
 /// 本地同步服务：把 SQLite 里的核心业务表转换成可上传的增量变更，
@@ -88,6 +89,12 @@ class LocalSyncService {
       table: 'tb_story_artifact_revision',
       idColumns: ['id'],
       timestampColumn: 'createdAt',
+    ),
+    _SyncEntitySpec(
+      entity: 'story_template_translation_task',
+      table: 'tb_story_template_translation_task',
+      idColumns: ['id'],
+      timestampColumn: 'updatedAt',
     ),
   ];
 
@@ -211,6 +218,7 @@ class LocalSyncService {
     await DbMigration.run(storage.db);
     await StoryRoomDao.create(storage);
     await StoryArtifactDao.create(storage);
+    await StoryTemplateTranslationTaskDao.create(storage);
     await SyncTombstoneStore.ensure(storage.db);
   }
 

@@ -26,7 +26,9 @@ class StoryRoomDao implements ITable {
         'create table if not exists tb_story_participant (id integer primary key autoincrement'
         ', roomId integer not null, assistantId integer, role text, name text'
         ', prompt text, avatarType text, avatarValue text'
-        ', voiceStyle text, sortOrder integer, enabled integer, createdAt integer, updatedAt integer)');
+        ', voiceStyle text, modelProviderId text, modelId text'
+        ', temperature real, maxOutputTokens integer'
+        ', sortOrder integer, enabled integer, createdAt integer, updatedAt integer)');
     await _ensureParticipantColumns(storage);
     await storage.db.execute(
         'create index if not exists tb_story_participant_room_idx on tb_story_participant(roomId, sortOrder)');
@@ -86,11 +88,19 @@ class StoryRoomDao implements ITable {
   }
 
   static Future<void> _ensureParticipantColumns(HiDBManager storage) async {
-    try {
-      await storage.db.execute(
-          'alter table tb_story_participant add column voiceStyle text');
-    } catch (_) {
-      // 已存在 voiceStyle 列时忽略，保持旧库可升级。
+    for (final column in const [
+      'voiceStyle text',
+      'modelProviderId text',
+      'modelId text',
+      'temperature real',
+      'maxOutputTokens integer',
+    ]) {
+      try {
+        await storage.db
+            .execute('alter table tb_story_participant add column $column');
+      } catch (_) {
+        // 已存在列时忽略，保持旧库可升级。
+      }
     }
   }
 

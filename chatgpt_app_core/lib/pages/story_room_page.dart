@@ -6,6 +6,7 @@ import 'package:chatgpt_app_core/chat/application/read_aloud_service.dart';
 import 'package:chatgpt_app_core/chat/application/story_context_builder.dart';
 import 'package:chatgpt_app_core/chat/application/story_room_read_aloud_controller.dart';
 import 'package:chatgpt_app_core/chat/application/story_room_settings_resolver.dart';
+import 'package:chatgpt_app_core/chat/application/story_participant_settings_resolver.dart';
 import 'package:chatgpt_app_core/chat/application/story_speaker_scheduler.dart';
 import 'package:chatgpt_app_core/chat/application/usage_record_service.dart';
 import 'package:chatgpt_app_core/chat/application/user_sherpa_onnx_tts_models.dart';
@@ -835,7 +836,6 @@ class _StoryRoomPageState extends State<StoryRoomPage> {
     try {
       await _streamSpeakerReply(
         dao: dao,
-        chatService: ChatService.from(settings),
         settings: settings,
         input: input,
         speaker: speaker,
@@ -962,19 +962,33 @@ class _StoryRoomPageState extends State<StoryRoomPage> {
   }
 
   Future<void> _editParticipant(StoryParticipantModel participant) async {
+    final global = context.read<AISettingsProvider>().settings;
     final nameController = TextEditingController(text: participant.name);
     final promptController = TextEditingController(text: participant.prompt);
+    final modelController =
+        TextEditingController(text: participant.modelId ?? '');
+    final temperatureController = TextEditingController(
+      text: participant.temperature?.toString() ?? '',
+    );
+    final maxTokensController = TextEditingController(
+      text: participant.maxOutputTokens?.toString() ?? '',
+    );
     final userVoiceModels = await UserSherpaOnnxTtsModelStore().listModels();
     if (!mounted) {
       nameController.dispose();
       promptController.dispose();
+      modelController.dispose();
+      temperatureController.dispose();
+      maxTokensController.dispose();
       return;
     }
     var voiceStyle = participant.voiceStyle ?? TtsVoiceStyle.system.id;
+    var providerId = participant.modelProviderId?.trim() ?? '';
     final hasVoiceStyle = TtsVoiceStyle.isValid(voiceStyle) ||
         userVoiceModels.any((model) => model.voiceStyleId == voiceStyle);
     if (!hasVoiceStyle) voiceStyle = TtsVoiceStyle.system.id;
-    final saved = await showDialog<(String, String, String)>(
+    final saved = await showDialog<
+        (String, String, String, String?, String?, double?, int?)>(
       context: context,
       builder: (ctx) => StatefulBuilder(
         builder: (ctx, setDialogState) => AlertDialog(
@@ -997,6 +1011,65 @@ class _StoryRoomPageState extends State<StoryRoomPage> {
                   maxLines: 10,
                   decoration: const InputDecoration(
                     labelText: '房间内人设 / 职责',
+                    border: OutlineInputBorder(),
+                  ),
+                ),
+                if (global.mode == AIMode.local) ...[
+                  const SizedBox(height: 12),
+                  DropdownButtonFormField<String>(
+                    initialValue: global.enabledProviders
+                            .any((provider) => provider.id == providerId)
+                        ? providerId
+                        : '',
+                    decoration: const InputDecoration(
+                      labelText: '角色服务商覆盖',
+                      border: OutlineInputBorder(),
+                    ),
+                    items: [
+                      const DropdownMenuItem(
+                        value: '',
+                        child: Text('跟随房间设置'),
+                      ),
+                      for (final provider in global.enabledProviders)
+                        DropdownMenuItem(
+                          value: provider.id,
+                          child: Text(provider.name),
+                        ),
+                    ],
+                    onChanged: (value) {
+                      setDialogState(() {
+                        providerId = value ?? '';
+                      });
+                    },
+                  ),
+                ],
+                const SizedBox(height: 12),
+                TextField(
+                  controller: modelController,
+                  decoration: const InputDecoration(
+                    labelText: '角色模型覆盖',
+                    hintText: '留空跟随房间设置',
+                    border: OutlineInputBorder(),
+                  ),
+                ),
+                const SizedBox(height: 12),
+                TextField(
+                  controller: temperatureController,
+                  keyboardType:
+                      const TextInputType.numberWithOptions(decimal: true),
+                  decoration: const InputDecoration(
+                    labelText: '角色 Temperature 覆盖',
+                    hintText: '留空跟随房间设置，范围 0-2',
+                    border: OutlineInputBorder(),
+                  ),
+                ),
+                const SizedBox(height: 12),
+                TextField(
+                  controller: maxTokensController,
+                  keyboardType: TextInputType.number,
+                  decoration: const InputDecoration(
+                    labelText: '角色最大输出 Token 覆盖',
+                    hintText: '留空跟随房间设置，0 表示不限制',
                     border: OutlineInputBorder(),
                   ),
                 ),
@@ -1043,8 +1116,34 @@ class _StoryRoomPageState extends State<StoryRoomPage> {
               onPressed: () {
                 final name = nameController.text.trim();
                 if (name.isEmpty) return;
-                Navigator.pop(
-                    ctx, (name, promptController.text.trim(), voiceStyle));
+                final temperatureText = temperatureController.text.trim();
+                final maxTokensText = maxTokensController.text.trim();
+                final temperature = temperatureText.isEmpty
+                    ? null
+                    : double.tryParse(temperatureText);
+                final maxTokens =
+                    maxTokensText.isEmpty ? null : int.tryParse(maxTokensText);
+                if (temperatureText.isNotEmpty &&
+                    (temperature == null ||
+                        temperature < 0 ||
+                        temperature > 2)) {
+                  return;
+                }
+                if (maxTokensText.isNotEmpty &&
+                    (maxTokens == null || maxTokens < 0)) {
+                  return;
+                }
+                Navigator.pop(ctx, (
+                  name,
+                  promptController.text.trim(),
+                  voiceStyle,
+                  providerId.isEmpty ? null : providerId,
+                  modelController.text.trim().isEmpty
+                      ? null
+                      : modelController.text.trim(),
+                  temperature,
+                  maxTokens,
+                ));
               },
               child: const Text('保存'),
             ),
@@ -1054,10 +1153,18 @@ class _StoryRoomPageState extends State<StoryRoomPage> {
     );
     nameController.dispose();
     promptController.dispose();
+    modelController.dispose();
+    temperatureController.dispose();
+    maxTokensController.dispose();
     if (saved == null) return;
     participant.name = saved.$1;
     participant.prompt = saved.$2;
     participant.voiceStyle = saved.$3;
+    participant
+      ..modelProviderId = saved.$4
+      ..modelId = saved.$5
+      ..temperature = saved.$6
+      ..maxOutputTokens = saved.$7;
     await _dao?.saveParticipant(participant);
     await _load();
   }
@@ -1092,7 +1199,12 @@ class _StoryRoomPageState extends State<StoryRoomPage> {
       ..name = assistant.name
       ..prompt = assistant.systemPromptFor('')
       ..avatarType = avatar.$1
-      ..avatarValue = avatar.$2;
+      ..avatarValue = avatar.$2
+      ..modelProviderId = assistant.providerId.trim().isEmpty
+          ? null
+          : assistant.providerId.trim()
+      ..modelId =
+          assistant.model.trim().isEmpty ? null : assistant.model.trim();
     await _dao?.saveParticipant(participant);
     await _load();
     if (mounted) HiDialog.showSnackBar(context, '已同步助手最新资料');
@@ -1157,6 +1269,10 @@ class _StoryRoomPageState extends State<StoryRoomPage> {
       voiceStyle: assistant.defaultVoiceStyle.trim().isEmpty
           ? null
           : assistant.defaultVoiceStyle.trim(),
+      modelProviderId: assistant.providerId.trim().isEmpty
+          ? null
+          : assistant.providerId.trim(),
+      modelId: assistant.model.trim().isEmpty ? null : assistant.model.trim(),
       sortOrder: _participants.length + 1,
     );
   }
@@ -1519,7 +1635,6 @@ class _StoryRoomPageState extends State<StoryRoomPage> {
         if (_stopRequested) break;
         final reply = await _streamSpeakerReply(
           dao: dao,
-          chatService: chatService,
           settings: settings,
           input: input,
           speaker: speaker,
@@ -1661,13 +1776,15 @@ class _StoryRoomPageState extends State<StoryRoomPage> {
 
   Future<StoryMessageModel?> _streamSpeakerReply({
     required StoryRoomDao dao,
-    required ChatService chatService,
     required AISettings settings,
     required String input,
     required StoryParticipantModel speaker,
     required List<StoryMessageModel> historyMessages,
     StoryRoomAttachmentBundle? attachmentBundle,
   }) async {
+    final speakerSettings =
+        StoryParticipantSettingsResolver.apply(settings, speaker);
+    final speakerChatService = ChatService.from(speakerSettings);
     final system = StoryContextBuilder.systemPrompt(
       room: widget.room,
       participants: _participants,
@@ -1677,7 +1794,11 @@ class _StoryRoomPageState extends State<StoryRoomPage> {
     );
     final history = [
       {'role': 'system', 'content': system},
-      ...StoryContextBuilder.history(historyMessages),
+      ...StoryContextBuilder.history(
+        historyMessages,
+        room: widget.room,
+        speaker: speaker,
+      ),
     ];
     final message = StoryMessageModel(
       roomId: widget.room.id!,
@@ -1704,7 +1825,7 @@ class _StoryRoomPageState extends State<StoryRoomPage> {
     var hasUsage = false;
     Object? streamError;
     final done = Completer<void>();
-    final stream = chatService.chatStreamEvents(
+    final stream = speakerChatService.chatStreamEvents(
       prompt: StoryContextBuilder.promptFor(input: input, speaker: speaker),
       history: history,
       attachments: attachmentBundle?.attachments,
@@ -1760,7 +1881,7 @@ class _StoryRoomPageState extends State<StoryRoomPage> {
     message.content = text;
     await dao.saveMessage(message);
     await _recordUsage(
-      settings: settings,
+      settings: speakerSettings,
       prompt: _usagePromptText(
         history,
         StoryContextBuilder.promptFor(input: input, speaker: speaker),

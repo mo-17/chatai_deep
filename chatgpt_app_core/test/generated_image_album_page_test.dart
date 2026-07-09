@@ -19,7 +19,7 @@ void main() {
     expect(find.text('生成图片相册'), findsOneWidget);
     expect(find.text('还没有保存的生成图片'), findsOneWidget);
 
-    await tester.tap(find.widgetWithText(TextButton, '刷新'));
+    await tester.tap(find.text('刷新'));
     await tester.pumpAndSettle();
     expect(loads, 2);
   });

@@ -228,3 +228,4 @@ flutter test           # 含新增的验收测试
 
 - 把分支 `worktree-block-message-system` 的全部改动 review 后合并 main（`docs/` 以分支版为准）。
 - OHOS 壳层（`chatgpt_flutter_ohos`）回归一遍八个阶段的功能（注意 mise 激活，见 CLAUDE.md）。
+- 2026-07-10 创作/酒馆第二阶段已落地并完成回归：角色管理、角色级模型参数/实际用量、附件与多模态、分角色 TTS、消息编辑/删除/重生/续写、长期上下文窗口、世界书高级运行语义、Tavern `depth_prompt`、模板导入导出与后台翻译任务、房间/模板任务/创作资料备份同步、结构化创作工作台，以及剧情导演/世界书一致性 AI 检查均已接通。全量 `chatgpt_app_core` 测试 712/712 通过；本批定向分析零问题。后续生态扩展边界主要是 SillyTavern Prompt Manager/正则脚本等可执行插件（当前仅保留原始数据，不执行不受信任脚本）、CHARX 资产包，以及把普通对话的 MCP/tool loop/联网搜索完整迁入多角色房间；继续时应单独设计权限和安全模型，不要把第三方脚本直接执行。

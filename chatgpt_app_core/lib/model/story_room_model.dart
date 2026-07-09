@@ -151,6 +151,10 @@ class StoryParticipantModel {
   String? avatarType;
   String? avatarValue;
   String? voiceStyle;
+  String? modelProviderId;
+  String? modelId;
+  double? temperature;
+  int? maxOutputTokens;
   int sortOrder;
   bool enabled;
   int createdAt;
@@ -166,6 +170,10 @@ class StoryParticipantModel {
     this.avatarType,
     this.avatarValue,
     this.voiceStyle,
+    this.modelProviderId,
+    this.modelId,
+    this.temperature,
+    this.maxOutputTokens,
     this.sortOrder = 0,
     this.enabled = true,
     int? createdAt,
@@ -184,6 +192,10 @@ class StoryParticipantModel {
         avatarType: json['avatarType'] as String?,
         avatarValue: json['avatarValue'] as String?,
         voiceStyle: json['voiceStyle'] as String?,
+        modelProviderId: json['modelProviderId'] as String?,
+        modelId: json['modelId'] as String?,
+        temperature: (json['temperature'] as num?)?.toDouble(),
+        maxOutputTokens: (json['maxOutputTokens'] as num?)?.toInt(),
         sortOrder: json['sortOrder'] as int? ?? 0,
         enabled: (json['enabled'] as int? ?? 1) == 1,
         createdAt: json['createdAt'] as int?,
@@ -200,6 +212,10 @@ class StoryParticipantModel {
         'avatarType': avatarType,
         'avatarValue': avatarValue,
         'voiceStyle': voiceStyle,
+        'modelProviderId': modelProviderId,
+        'modelId': modelId,
+        'temperature': temperature,
+        'maxOutputTokens': maxOutputTokens,
         'sortOrder': sortOrder,
         'enabled': enabled ? 1 : 0,
         'createdAt': createdAt,

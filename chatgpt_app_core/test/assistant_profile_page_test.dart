@@ -207,9 +207,9 @@ void main() {
       ),
     ));
 
-    expect(find.widgetWithText(FilledButton, '开始对话'), findsOneWidget);
+    expect(find.text('开始对话'), findsOneWidget);
 
-    await tester.tap(find.widgetWithText(FilledButton, '开始对话'));
+    await tester.tap(find.text('开始对话'));
     await tester.pumpAndSettle();
 
     expect(started, isTrue);

@@ -3,10 +3,12 @@ import 'package:chatgpt_app_core/db/conversation_dao.dart';
 import 'package:chatgpt_app_core/db/hi_db_manager.dart';
 import 'package:chatgpt_app_core/db/project_dao.dart';
 import 'package:chatgpt_app_core/db/story_room_dao.dart';
+import 'package:chatgpt_app_core/db/story_template_translation_task_dao.dart';
 import 'package:chatgpt_app_core/model/conversation_model.dart';
 import 'package:chatgpt_app_core/model/project_model.dart';
 import 'package:chatgpt_app_core/model/story_room_model.dart';
 import 'package:chatgpt_app_core/model/story_artifact_model.dart';
+import 'package:chatgpt_app_core/model/story_template_translation_task_model.dart';
 import 'package:chatgpt_app_core/sync/local_sync_service.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:sqflite_common_ffi/sqflite_ffi.dart';
@@ -463,6 +465,98 @@ void main() {
         await storage.db.query('tb_story_artifact_revision',
             where: 'id = ?', whereArgs: [20]),
         isEmpty);
+    await storage.db.close();
+  });
+
+  test('翻译任务按 updatedAt 同步，远端 upsert/delete 只写任务记录', () async {
+    final storage = await newDb();
+    final taskDao = await StoryTemplateTranslationTaskDao.create(storage);
+    final localTask = StoryTemplateTranslationTaskModel(
+      templateId: 7,
+      sourceTitle: '本地英文酒馆',
+      sourcePayload: '{}',
+      status: StoryTemplateTranslationTaskStatus.running,
+    );
+    await taskDao.saveTask(localTask);
+    await storage.db.update(
+      'tb_story_template_translation_task',
+      {'updatedAt': 30},
+      where: 'id = ?',
+      whereArgs: [localTask.id],
+    );
+
+    final sync = LocalSyncService(storage);
+    final localChanges = await sync.exportChanges(updatedAfter: 20);
+    final localChange = localChanges.singleWhere(
+      (change) => change.entity == 'story_template_translation_task',
+    );
+    expect(localChange.updatedAt, 30);
+    expect(localChange.payload['status'],
+        StoryTemplateTranslationTaskStatus.running);
+
+    final upsert = await sync.applyRemoteChanges([
+      const SyncChange(
+        entity: 'story_template_translation_task',
+        id: '99',
+        op: SyncOp.upsert,
+        updatedAt: 100,
+        payload: {
+          'id': 99,
+          'templateId': 8,
+          'sourceTitle': '远端英文酒馆',
+          'sourcePayload': '{}',
+          'outputTitle': '',
+          'outputTemplateId': null,
+          'status': 'running',
+          'progress': 0.5,
+          'stage': '翻译中',
+          'detail': '',
+          'log': '',
+          'error': '',
+          'roleIndex': 1,
+          'roleTotal': 2,
+          'roleName': '',
+          'fieldIndex': 0,
+          'fieldTotal': 0,
+          'fieldLabel': '',
+          'fieldProgress': 0.0,
+          'partialPayload': '{}',
+          'createdAt': 90,
+          'updatedAt': 100,
+        },
+      ),
+    ]);
+    expect(upsert.accepted.map((change) => change.key), [
+      'story_template_translation_task:99',
+    ]);
+    final remoteTask = (await storage.db.query(
+      'tb_story_template_translation_task',
+      where: 'id = ?',
+      whereArgs: [99],
+    ))
+        .single;
+    expect(remoteTask['status'], StoryTemplateTranslationTaskStatus.running);
+    expect(remoteTask['stage'], '翻译中');
+
+    final deletion = await sync.applyRemoteChanges([
+      const SyncChange(
+        entity: 'story_template_translation_task',
+        id: '99',
+        op: SyncOp.delete,
+        updatedAt: 110,
+      ),
+    ]);
+    expect(deletion.accepted.map((change) => change.key), [
+      'story_template_translation_task:99',
+    ]);
+    expect(
+      await storage.db.query(
+        'tb_story_template_translation_task',
+        where: 'id = ?',
+        whereArgs: [99],
+      ),
+      isEmpty,
+    );
     await storage.db.close();
   });
 

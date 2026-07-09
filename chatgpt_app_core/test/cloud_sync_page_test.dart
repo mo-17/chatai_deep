@@ -127,7 +127,12 @@ void main() {
     await tester.tap(find.text('立即同步'));
     await tester.pump();
 
-    final button = tester.widget<ElevatedButton>(find.byType(ElevatedButton));
+    final button = tester.widget<ElevatedButton>(
+      find.ancestor(
+        of: find.text('同步中...'),
+        matching: find.byWidgetPredicate((widget) => widget is ElevatedButton),
+      ),
+    );
     expect(button.onPressed, isNull);
     expect(find.text('同步中...'), findsOneWidget);
 

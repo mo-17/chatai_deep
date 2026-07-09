@@ -17,12 +17,15 @@ import 'package:chatgpt_app_core/db/project_dao.dart';
 import 'package:chatgpt_app_core/db/story_artifact_dao.dart';
 import 'package:chatgpt_app_core/db/story_room_dao.dart';
 import 'package:chatgpt_app_core/db/story_template_dao.dart';
+import 'package:chatgpt_app_core/db/story_template_translation_task_dao.dart';
 import 'package:chatgpt_app_core/model/ai_settings.dart';
 import 'package:chatgpt_app_core/model/assistant_model.dart';
 import 'package:chatgpt_app_core/model/conversation_model.dart';
 import 'package:chatgpt_app_core/model/project_model.dart';
 import 'package:chatgpt_app_core/model/story_room_model.dart';
 import 'package:chatgpt_app_core/model/story_artifact_model.dart';
+import 'package:chatgpt_app_core/model/story_template_model.dart';
+import 'package:chatgpt_app_core/model/story_template_translation_task_model.dart';
 import 'package:chatgpt_app_core/util/avatar_asset_service.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:sqflite_common_ffi/sqflite_ffi.dart';
@@ -364,10 +367,96 @@ void main() {
       expect(result.storyRooms, 0);
       expect(result.storyParticipants, 0);
       expect(result.storyMessages, 0);
+      expect(result.storyTemplateTranslationTasks, 0);
       expect(await dst.db.query('tb_story_room'), isEmpty);
       expect(await dst.db.query('tb_story_participant'), isEmpty);
       expect(await dst.db.query('tb_story_message'), isEmpty);
+      expect(await dst.db.query('tb_story_template_translation_task'), isEmpty);
       await dst.db.close();
+    });
+  });
+
+  group('酒馆模板翻译任务备份', () {
+    test('覆盖恢复保留任务，合并恢复重映射关联的酒馆模板 ID', () async {
+      final src = await newDb();
+      final sourceTemplateDao = await StoryTemplateDao.create(src);
+      final sourceTemplate = StoryTemplateModel(title: '英文酒馆', payload: '{}');
+      final outputTemplate = StoryTemplateModel(title: '中文酒馆', payload: '{}');
+      await sourceTemplateDao.saveTemplate(sourceTemplate);
+      await sourceTemplateDao.saveTemplate(outputTemplate);
+      final sourceTaskDao = await StoryTemplateTranslationTaskDao.create(src);
+      final task = StoryTemplateTranslationTaskModel(
+        templateId: sourceTemplate.id,
+        sourceTitle: '英文酒馆',
+        sourcePayload: '{}',
+        outputTitle: '中文酒馆',
+        outputTemplateId: outputTemplate.id,
+        status: StoryTemplateTranslationTaskStatus.running,
+      );
+      await sourceTaskDao.saveTask(task);
+      final bytes = await BackupService(src).exportArchive(
+        settings: AISettings.defaults(),
+        accountHash: 'acc1',
+      );
+      await src.db.close();
+
+      final overwrite = await newDb();
+      final overwritePreview = await BackupService(overwrite).previewArchive(
+        bytes,
+        accountHash: 'acc1',
+      );
+      expect(overwritePreview.storyTemplateTranslationTasks, 1);
+      final overwriteResult = await BackupService(overwrite).importArchive(
+        bytes,
+        accountHash: 'acc1',
+      );
+      expect(overwriteResult.storyTemplateTranslationTasks, 1);
+      final overwrittenTask = (await overwrite.db.query(
+        'tb_story_template_translation_task',
+      ))
+          .single;
+      expect(overwrittenTask['templateId'], sourceTemplate.id);
+      expect(overwrittenTask['outputTemplateId'], outputTemplate.id);
+      expect(overwrittenTask['status'],
+          StoryTemplateTranslationTaskStatus.running);
+      await overwrite.db.close();
+
+      final merge = await newDb();
+      final localTemplateDao = await StoryTemplateDao.create(merge);
+      await localTemplateDao.saveTemplate(
+        StoryTemplateModel(title: '本地模板一', payload: '{}'),
+      );
+      await localTemplateDao.saveTemplate(
+        StoryTemplateModel(title: '本地模板二', payload: '{}'),
+      );
+      final mergeResult = await BackupService(merge).importArchive(
+        bytes,
+        accountHash: 'acc1',
+        mode: BackupImportMode.mergeAppend,
+      );
+      expect(mergeResult.storyTemplateTranslationTasks, 1);
+      final importedSource = (await merge.db.query(
+        'tb_story_template',
+        where: 'title = ?',
+        whereArgs: ['英文酒馆'],
+      ))
+          .single;
+      final importedOutput = (await merge.db.query(
+        'tb_story_template',
+        where: 'title = ?',
+        whereArgs: ['中文酒馆'],
+      ))
+          .single;
+      final mergedTask = (await merge.db.query(
+        'tb_story_template_translation_task',
+      ))
+          .single;
+      expect(mergedTask['templateId'], importedSource['id']);
+      expect(mergedTask['outputTemplateId'], importedOutput['id']);
+      expect(mergedTask['templateId'], isNot(sourceTemplate.id));
+      expect(mergedTask['outputTemplateId'], isNot(outputTemplate.id));
+      expect(mergedTask['status'], StoryTemplateTranslationTaskStatus.running);
+      await merge.db.close();
     });
   });
 

@@ -16,6 +16,7 @@ import 'package:chatgpt_app_core/db/project_dao.dart';
 import 'package:chatgpt_app_core/db/story_artifact_dao.dart';
 import 'package:chatgpt_app_core/db/story_room_dao.dart';
 import 'package:chatgpt_app_core/db/story_template_dao.dart';
+import 'package:chatgpt_app_core/db/story_template_translation_task_dao.dart';
 import 'package:chatgpt_app_core/model/ai_settings.dart';
 import 'package:chatgpt_app_core/util/avatar_asset_service.dart';
 import 'package:flutter/foundation.dart';
@@ -35,6 +36,7 @@ class BackupRestoreResult {
   final int knowledgeChunks;
   final int projectKnowledge;
   final int storyTemplates;
+  final int storyTemplateTranslationTasks;
   final int storyRooms;
   final int storyParticipants;
   final int storyMessages;
@@ -58,6 +60,7 @@ class BackupRestoreResult {
     this.knowledgeChunks = 0,
     this.projectKnowledge = 0,
     this.storyTemplates = 0,
+    this.storyTemplateTranslationTasks = 0,
     this.storyRooms = 0,
     this.storyParticipants = 0,
     this.storyMessages = 0,
@@ -101,6 +104,7 @@ class BackupPreview {
   final int knowledgeChunks;
   final int projectKnowledge;
   final int storyTemplates;
+  final int storyTemplateTranslationTasks;
   final int storyRooms;
   final int storyParticipants;
   final int storyMessages;
@@ -127,6 +131,7 @@ class BackupPreview {
     required this.knowledgeChunks,
     required this.projectKnowledge,
     this.storyTemplates = 0,
+    this.storyTemplateTranslationTasks = 0,
     this.storyRooms = 0,
     this.storyParticipants = 0,
     this.storyMessages = 0,
@@ -150,6 +155,7 @@ class BackupPreview {
       knowledgeChunks +
       projectKnowledge +
       storyTemplates +
+      storyTemplateTranslationTasks +
       storyRooms +
       storyParticipants +
       storyMessages +
@@ -219,6 +225,7 @@ class BackupPreview {
           'tb_kb_chunk',
           'tb_project_kb',
           'tb_story_template',
+          'tb_story_template_translation_task',
           'tb_story_room',
           'tb_story_participant',
           'tb_story_message',
@@ -329,6 +336,8 @@ class BackupService {
   static const _kKnowledgeChunks = 'knowledge_chunks.json';
   static const _kProjectKnowledge = 'project_knowledge.json';
   static const _kStoryTemplates = 'story_templates.json';
+  static const _kStoryTemplateTranslationTasks =
+      'story_template_translation_tasks.json';
   static const _kStoryRooms = 'story_rooms.json';
   static const _kStoryParticipants = 'story_participants.json';
   static const _kStoryMessages = 'story_messages.json';
@@ -371,6 +380,8 @@ class BackupService {
     final knowledgeChunks = await storage.db.query('tb_kb_chunk');
     final projectKnowledge = await storage.db.query('tb_project_kb');
     final storyTemplates = await storage.db.query('tb_story_template');
+    final storyTemplateTranslationTasks =
+        await storage.db.query('tb_story_template_translation_task');
     final storyRooms = await storage.db.query('tb_story_room');
     final storyParticipants = await storage.db.query('tb_story_participant');
     final storyMessages = await storage.db.query('tb_story_message');
@@ -414,6 +425,7 @@ class BackupService {
         'knowledgeChunks': knowledgeChunks.length,
         'projectKnowledge': projectKnowledge.length,
         'storyTemplates': storyTemplates.length,
+        'storyTemplateTranslationTasks': storyTemplateTranslationTasks.length,
         'storyRooms': storyRooms.length,
         'storyParticipants': storyParticipants.length,
         'storyMessages': storyMessages.length,
@@ -436,6 +448,8 @@ class BackupService {
       ..addFile(_jsonFile(_kKnowledgeChunks, knowledgeChunks))
       ..addFile(_jsonFile(_kProjectKnowledge, projectKnowledge))
       ..addFile(_jsonFile(_kStoryTemplates, storyTemplates))
+      ..addFile(_jsonFile(
+          _kStoryTemplateTranslationTasks, storyTemplateTranslationTasks))
       ..addFile(_jsonFile(_kStoryRooms, storyRooms))
       ..addFile(_jsonFile(_kStoryParticipants, storyParticipants))
       ..addFile(_jsonFile(_kStoryMessages, storyMessages))
@@ -488,6 +502,8 @@ class BackupService {
     final knowledgeChunks = _readRows(archive, _kKnowledgeChunks);
     final projectKnowledge = _readRows(archive, _kProjectKnowledge);
     final storyTemplates = _readRows(archive, _kStoryTemplates);
+    final storyTemplateTranslationTasks =
+        _readRows(archive, _kStoryTemplateTranslationTasks);
     final storyRooms = _readRows(archive, _kStoryRooms);
     final storyParticipants = _readRows(archive, _kStoryParticipants);
     final storyMessages = _readRows(archive, _kStoryMessages);
@@ -515,6 +531,8 @@ class BackupService {
           return projectKnowledge.length;
         case _kStoryTemplates:
           return storyTemplates.length;
+        case _kStoryTemplateTranslationTasks:
+          return storyTemplateTranslationTasks.length;
         case _kStoryRooms:
           return storyRooms.length;
         case _kStoryParticipants:
@@ -540,6 +558,7 @@ class BackupService {
       knowledgeChunks: knowledgeChunks,
       projectKnowledge: projectKnowledge,
       storyTemplates: storyTemplates,
+      storyTemplateTranslationTasks: storyTemplateTranslationTasks,
       storyRooms: storyRooms,
       storyParticipants: storyParticipants,
       storyMessages: storyMessages,
@@ -560,6 +579,10 @@ class BackupService {
       knowledgeChunks: countOf('knowledgeChunks', _kKnowledgeChunks),
       projectKnowledge: countOf('projectKnowledge', _kProjectKnowledge),
       storyTemplates: countOf('storyTemplates', _kStoryTemplates),
+      storyTemplateTranslationTasks: countOf(
+        'storyTemplateTranslationTasks',
+        _kStoryTemplateTranslationTasks,
+      ),
       storyRooms: countOf('storyRooms', _kStoryRooms),
       storyParticipants: countOf('storyParticipants', _kStoryParticipants),
       storyMessages: countOf('storyMessages', _kStoryMessages),
@@ -618,6 +641,8 @@ class BackupService {
     final knowledgeChunks = _readRows(archive, _kKnowledgeChunks);
     final projectKnowledge = _readRows(archive, _kProjectKnowledge);
     final storyTemplates = _readRows(archive, _kStoryTemplates);
+    final storyTemplateTranslationTasks =
+        _readRows(archive, _kStoryTemplateTranslationTasks);
     final storyRooms = _readRows(archive, _kStoryRooms);
     final storyParticipants = _readRows(archive, _kStoryParticipants);
     final storyMessages = _readRows(archive, _kStoryMessages);
@@ -636,6 +661,7 @@ class BackupService {
         knowledgeChunks: knowledgeChunks,
         projectKnowledge: projectKnowledge,
         storyTemplates: storyTemplates,
+        storyTemplateTranslationTasks: storyTemplateTranslationTasks,
         storyRooms: storyRooms,
         storyParticipants: storyParticipants,
         storyMessages: storyMessages,
@@ -818,6 +844,7 @@ class BackupService {
       batch.delete('tb_assistant');
       batch.delete('tb_favorite');
       batch.delete('tb_project_kb');
+      batch.delete('tb_story_template_translation_task');
       batch.delete('tb_story_template');
       batch.delete('tb_kb_chunk');
       batch.delete('tb_kb_doc');
@@ -847,6 +874,9 @@ class BackupService {
       }
       for (final row in storyTemplates) {
         batch.insert('tb_story_template', row);
+      }
+      for (final row in storyTemplateTranslationTasks) {
+        batch.insert('tb_story_template_translation_task', row);
       }
       for (final row in storyRooms) {
         final oldId = _intValue(row['id']);
@@ -928,6 +958,7 @@ class BackupService {
         ', ${knowledgeDocs.length} kb docs, ${knowledgeChunks.length} kb chunks'
         ', ${projectKnowledge.length} project kb refs'
         ', ${storyTemplates.length} story templates'
+        ', ${storyTemplateTranslationTasks.length} story template translation tasks'
         ', $insertedStoryArtifacts story artifacts'
         ', $insertedStoryArtifactRevisions story artifact revisions'
         ', warnings: $warnings');
@@ -942,6 +973,7 @@ class BackupService {
       knowledgeChunks: knowledgeChunks.length,
       projectKnowledge: projectKnowledge.length,
       storyTemplates: storyTemplates.length,
+      storyTemplateTranslationTasks: storyTemplateTranslationTasks.length,
       storyRooms: storyRooms.length,
       storyParticipants: insertedStoryParticipants,
       storyMessages: insertedStoryMessages,
@@ -1067,6 +1099,7 @@ class BackupService {
     required List<Map<String, dynamic>> knowledgeChunks,
     required List<Map<String, dynamic>> projectKnowledge,
     required List<Map<String, dynamic>> storyTemplates,
+    required List<Map<String, dynamic>> storyTemplateTranslationTasks,
     required List<Map<String, dynamic>> storyRooms,
     required List<Map<String, dynamic>> storyParticipants,
     required List<Map<String, dynamic>> storyMessages,
@@ -1094,6 +1127,7 @@ class BackupService {
     final storyRoomIdMap = <int, int>{};
     final storyParticipantIdMap = <int, int>{};
     final storyArtifactIdMap = <int, int>{};
+    final storyTemplateIdMap = <int, int>{};
     var skippedMessages = 0;
     var skippedChunks = 0;
     var skippedProjectKnowledge = 0;
@@ -1116,6 +1150,8 @@ class BackupService {
     var skippedStoryArtifactRevisions = 0;
     var insertedStoryArtifacts = 0;
     var insertedStoryArtifactRevisions = 0;
+    var fixedTranslationTaskTemplateRefs = 0;
+    var fixedTranslationTaskOutputTemplateRefs = 0;
 
     await storage.db.transaction((txn) async {
       final localStoryRoomIds = {
@@ -1343,7 +1379,28 @@ class BackupService {
       }
 
       for (final row in storyTemplates) {
-        await txn.insert('tb_story_template', _withoutId(row));
+        final oldId = _intValue(row['id']);
+        final newId = await txn.insert('tb_story_template', _withoutId(row));
+        if (oldId != null) storyTemplateIdMap[oldId] = newId;
+      }
+
+      for (final row in storyTemplateTranslationTasks) {
+        final next = _withoutId(row);
+        final oldTemplateId = _intValue(next['templateId']);
+        if (oldTemplateId != null) {
+          final newTemplateId = storyTemplateIdMap[oldTemplateId];
+          next['templateId'] = newTemplateId;
+          if (newTemplateId == null) fixedTranslationTaskTemplateRefs++;
+        }
+        final oldOutputTemplateId = _intValue(next['outputTemplateId']);
+        if (oldOutputTemplateId != null) {
+          final newOutputTemplateId = storyTemplateIdMap[oldOutputTemplateId];
+          next['outputTemplateId'] = newOutputTemplateId;
+          if (newOutputTemplateId == null) {
+            fixedTranslationTaskOutputTemplateRefs++;
+          }
+        }
+        await txn.insert('tb_story_template_translation_task', next);
       }
     });
 
@@ -1398,6 +1455,13 @@ class BackupService {
     if (skippedStoryArtifactRevisions > 0) {
       warnings.add('$skippedStoryArtifactRevisions 条创作资料修订找不到所属资料，已跳过');
     }
+    if (fixedTranslationTaskTemplateRefs > 0) {
+      warnings.add('$fixedTranslationTaskTemplateRefs 个翻译任务找不到源酒馆模板，已清除引用');
+    }
+    if (fixedTranslationTaskOutputTemplateRefs > 0) {
+      warnings
+          .add('$fixedTranslationTaskOutputTemplateRefs 个翻译任务找不到生成的酒馆模板，已清除引用');
+    }
 
     AILogger.log('backup import merge append: '
         '${projects.length} projects, ${conversations.length} conversations'
@@ -1407,6 +1471,7 @@ class BackupService {
         ', ${knowledgeChunks.length - skippedChunks} kb chunks'
         ', $insertedProjectKnowledge project kb refs'
         ', ${storyTemplates.length} story templates'
+        ', ${storyTemplateTranslationTasks.length} story template translation tasks'
         ', ${storyRooms.length} story rooms'
         ', $insertedStoryParticipants story participants'
         ', $insertedStoryMessages story messages'
@@ -1424,6 +1489,7 @@ class BackupService {
       knowledgeChunks: knowledgeChunks.length - skippedChunks,
       projectKnowledge: insertedProjectKnowledge,
       storyTemplates: storyTemplates.length,
+      storyTemplateTranslationTasks: storyTemplateTranslationTasks.length,
       storyRooms: storyRooms.length,
       storyParticipants: insertedStoryParticipants,
       storyMessages: insertedStoryMessages,
@@ -1576,6 +1642,7 @@ class BackupService {
     await StoryRoomDao.create(storage);
     await StoryArtifactDao.create(storage);
     await StoryTemplateDao.create(storage);
+    await StoryTemplateTranslationTaskDao.create(storage);
     await _ensureConversationProjectIdColumn(storage.db);
   }
 
@@ -1638,6 +1705,7 @@ class BackupService {
     required List<Map<String, dynamic>> knowledgeChunks,
     required List<Map<String, dynamic>> projectKnowledge,
     required List<Map<String, dynamic>> storyTemplates,
+    required List<Map<String, dynamic>> storyTemplateTranslationTasks,
     required List<Map<String, dynamic>> storyRooms,
     required List<Map<String, dynamic>> storyParticipants,
     required List<Map<String, dynamic>> storyMessages,
@@ -1655,6 +1723,11 @@ class BackupService {
       _ConflictSpec('tb_project_kb', 'projectId', projectKnowledge,
           secondColumn: 'docId'),
       _ConflictSpec('tb_story_template', 'id', storyTemplates),
+      _ConflictSpec(
+        'tb_story_template_translation_task',
+        'id',
+        storyTemplateTranslationTasks,
+      ),
       _ConflictSpec('tb_story_room', 'id', storyRooms),
       _ConflictSpec('tb_story_participant', 'id', storyParticipants),
       _ConflictSpec('tb_story_message', 'id', storyMessages),

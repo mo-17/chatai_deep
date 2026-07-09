@@ -1,14 +1,24 @@
+import 'dart:async';
 import 'dart:io';
 
+import 'package:chatgpt_app_core/chat/application/story_ai_workflow_service.dart';
 import 'package:chatgpt_app_core/chat/application/story_artifact_context_builder.dart';
+import 'package:chatgpt_app_core/chat/application/story_room_settings_resolver.dart';
+import 'package:chatgpt_app_core/chat/application/usage_record_service.dart';
+import 'package:chatgpt_app_core/chat/domain/stream_event.dart';
+import 'package:chatgpt_app_core/dao/chat/chat_service.dart';
 import 'package:chatgpt_app_core/db/hi_db_manager.dart';
 import 'package:chatgpt_app_core/db/story_artifact_dao.dart';
 import 'package:chatgpt_app_core/db/story_room_dao.dart';
+import 'package:chatgpt_app_core/db/usage_dao.dart';
+import 'package:chatgpt_app_core/model/ai_settings.dart';
 import 'package:chatgpt_app_core/model/story_artifact_model.dart';
 import 'package:chatgpt_app_core/model/story_room_model.dart';
+import 'package:chatgpt_app_core/provider/ai_settings_provider.dart';
 import 'package:chatgpt_app_core/util/hi_dialog.dart';
 import 'package:flutter/material.dart';
 import 'package:path_provider/path_provider.dart';
+import 'package:provider/provider.dart';
 import 'package:share_plus/share_plus.dart';
 
 class StoryWorkbenchPage extends StatefulWidget {
@@ -23,9 +33,15 @@ class StoryWorkbenchPage extends StatefulWidget {
 class _StoryWorkbenchPageState extends State<StoryWorkbenchPage> {
   StoryArtifactDao? _dao;
   StoryRoomDao? _roomDao;
+  UsageRecordService? _usageRecordService;
   List<StoryArtifactModel> _artifacts = const [];
   String? _filterType;
   bool _loading = true;
+  StoryAiWorkflowKind? _runningWorkflow;
+  String _workflowStatus = '';
+  bool _stopRequested = false;
+  StreamSubscription<StreamEvent>? _activeWorkflowSub;
+  Completer<void>? _activeWorkflowDone;
 
   @override
   void initState() {
@@ -33,11 +49,19 @@ class _StoryWorkbenchPageState extends State<StoryWorkbenchPage> {
     _load();
   }
 
+  @override
+  void dispose() {
+    unawaited(_activeWorkflowSub?.cancel());
+    super.dispose();
+  }
+
   Future<void> _load() async {
     final storage =
         await HiDBManager.instance(dbName: HiDBManager.getAccountHash());
     final dao = await StoryArtifactDao.create(storage);
     final roomDao = await StoryRoomDao.create(storage);
+    final usageRecordService =
+        UsageRecordService(await UsageDao.create(storage));
     final artifacts = await dao.getArtifacts(
       widget.room.id!,
       type: _filterType,
@@ -46,6 +70,7 @@ class _StoryWorkbenchPageState extends State<StoryWorkbenchPage> {
     setState(() {
       _dao = dao;
       _roomDao = roomDao;
+      _usageRecordService = usageRecordService;
       _artifacts = artifacts;
       _loading = false;
     });
@@ -68,6 +93,8 @@ class _StoryWorkbenchPageState extends State<StoryWorkbenchPage> {
           ? const Center(child: CircularProgressIndicator())
           : Column(
               children: [
+                _workflowBar,
+                const Divider(height: 1),
                 _typeFilter,
                 const Divider(height: 1),
                 Expanded(child: _artifactList),
@@ -78,6 +105,59 @@ class _StoryWorkbenchPageState extends State<StoryWorkbenchPage> {
         tooltip: '新增创作资料',
         child: const Icon(Icons.add),
       ),
+    );
+  }
+
+  Widget get _workflowBar {
+    final running = _runningWorkflow;
+    final colorScheme = Theme.of(context).colorScheme;
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(12, 10, 12, 8),
+      child: running == null
+          ? Wrap(
+              spacing: 8,
+              runSpacing: 8,
+              children: [
+                OutlinedButton.icon(
+                  onPressed: () =>
+                      _runWorkflow(StoryAiWorkflowKind.directorReview),
+                  icon: const Icon(Icons.movie_filter_outlined),
+                  label: const Text('剧情导演审阅'),
+                ),
+                OutlinedButton.icon(
+                  onPressed: () =>
+                      _runWorkflow(StoryAiWorkflowKind.worldBookConsistency),
+                  icon: const Icon(Icons.fact_check_outlined),
+                  label: const Text('世界书一致性检查'),
+                ),
+              ],
+            )
+          : Row(
+              children: [
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        _workflowStatus.isEmpty
+                            ? '${StoryAiWorkflowService.titleFor(running)}中...'
+                            : _workflowStatus,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: Theme.of(context).textTheme.bodySmall,
+                      ),
+                      const SizedBox(height: 6),
+                      LinearProgressIndicator(color: colorScheme.primary),
+                    ],
+                  ),
+                ),
+                IconButton(
+                  tooltip: '停止生成',
+                  onPressed: _stopWorkflow,
+                  icon: const Icon(Icons.stop_circle_outlined),
+                ),
+              ],
+            ),
     );
   }
 
@@ -281,6 +361,190 @@ class _StoryWorkbenchPageState extends State<StoryWorkbenchPage> {
     await _load();
   }
 
+  Future<void> _runWorkflow(StoryAiWorkflowKind kind) async {
+    if (_runningWorkflow != null || _dao == null) return;
+    setState(() {
+      _runningWorkflow = kind;
+      _workflowStatus = '${StoryAiWorkflowService.titleFor(kind)}准备中...';
+      _stopRequested = false;
+    });
+    try {
+      final artifacts = await _dao!.getArtifacts(widget.room.id!);
+      if (!mounted) return;
+      if (_stopRequested) return;
+      final settings = StoryRoomSettingsResolver.apply(
+        widget.room,
+        context.read<AISettingsProvider>().settings,
+      );
+      final request = StoryAiWorkflowService.prepare(
+        kind: kind,
+        room: widget.room,
+        artifacts: artifacts,
+      );
+      final buffer = StringBuffer();
+      var promptTokens = 0;
+      var cachedPromptTokens = 0;
+      var completionTokens = 0;
+      var hasUsage = false;
+      Object? streamError;
+      final done = Completer<void>();
+      final createdAt = DateTime.now().millisecondsSinceEpoch;
+      setState(() => _workflowStatus = '${request.title}中...');
+      final stream = ChatService.from(settings).chatStreamEvents(
+        prompt: request.prompt,
+        history: request.history,
+      );
+      late final StreamSubscription<StreamEvent> sub;
+      sub = stream.listen(
+        (event) {
+          if (_stopRequested) return;
+          if (event.type == StreamEventType.usage) {
+            hasUsage = true;
+            promptTokens += event.promptTokens ?? 0;
+            cachedPromptTokens += event.cachedPromptTokens ?? 0;
+            completionTokens += event.completionTokens ?? 0;
+            return;
+          }
+          if (event.type == StreamEventType.text) {
+            buffer.write(event.delta);
+            if (mounted) {
+              setState(() => _workflowStatus = '${request.title}中...');
+            }
+          }
+        },
+        onError: (Object error) {
+          streamError = error;
+          if (!done.isCompleted) done.complete();
+        },
+        onDone: () {
+          if (!done.isCompleted) done.complete();
+        },
+        cancelOnError: false,
+      );
+      _activeWorkflowSub = sub;
+      _activeWorkflowDone = done;
+      await done.future;
+      if (identical(_activeWorkflowSub, sub)) _activeWorkflowSub = null;
+      if (identical(_activeWorkflowDone, done)) _activeWorkflowDone = null;
+
+      final content = buffer.toString().trim();
+      if (content.isNotEmpty) {
+        await _recordWorkflowUsage(
+          settings: settings,
+          request: request,
+          completion: content,
+          promptTokens: hasUsage ? promptTokens : null,
+          cachedPromptTokens: hasUsage ? cachedPromptTokens : null,
+          completionTokens: hasUsage ? completionTokens : null,
+          estimated: !hasUsage,
+          createdAt: createdAt,
+        );
+        if (mounted) {
+          setState(() => _workflowStatus =
+              _stopRequested ? '已停止，正在预览已生成内容' : '审阅完成，正在预览结果');
+          await _previewWorkflowResult(
+            request: request,
+            content: content,
+            stopped: _stopRequested,
+            createdAt: createdAt,
+          );
+        }
+      } else if (streamError != null && mounted) {
+        HiDialog.showSnackBar(context, '生成失败：$streamError');
+      } else if (!_stopRequested && mounted) {
+        HiDialog.showSnackBar(context, 'AI 未返回可保存的内容');
+      }
+    } catch (error) {
+      if (mounted) HiDialog.showSnackBar(context, '生成失败：$error');
+    } finally {
+      if (mounted) {
+        setState(() {
+          _runningWorkflow = null;
+          _workflowStatus = '';
+          _stopRequested = false;
+        });
+      }
+    }
+  }
+
+  void _stopWorkflow() {
+    if (_runningWorkflow == null) return;
+    _stopRequested = true;
+    final sub = _activeWorkflowSub;
+    if (sub != null) unawaited(sub.cancel());
+    final done = _activeWorkflowDone;
+    if (done != null && !done.isCompleted) done.complete();
+    if (mounted) setState(() => _workflowStatus = '正在停止...');
+  }
+
+  Future<void> _recordWorkflowUsage({
+    required AISettings settings,
+    required StoryAiWorkflowRequest request,
+    required String completion,
+    int? promptTokens,
+    int? cachedPromptTokens,
+    int? completionTokens,
+    required bool estimated,
+    required int createdAt,
+  }) async {
+    final recorder = _usageRecordService;
+    final modelId = settings.effectiveModel.trim();
+    if (recorder == null || modelId.isEmpty) return;
+    try {
+      await recorder.recordTurn(
+        modelId: modelId,
+        providerId:
+            settings.mode == AIMode.local ? settings.activeProviderId : null,
+        projectId: null,
+        cid: null,
+        prompt: request.usagePrompt,
+        completion: completion,
+        promptTokens: promptTokens,
+        cachedPromptTokens: cachedPromptTokens,
+        completionTokens: completionTokens,
+        estimated: estimated,
+        costConfig: settings.usageCostConfig,
+        createdAt: createdAt,
+      );
+    } catch (_) {
+      // 用量记录失败不能阻断工作流结果。
+    }
+  }
+
+  Future<void> _previewWorkflowResult({
+    required StoryAiWorkflowRequest request,
+    required String content,
+    required bool stopped,
+    required int createdAt,
+  }) async {
+    final artifacts = await _dao?.getArtifacts(widget.room.id!) ?? _artifacts;
+    if (!mounted) return;
+    final maxOrder = artifacts.fold<int>(
+      0,
+      (value, item) => item.sortOrder > value ? item.sortOrder : value,
+    );
+    final initial = StoryAiWorkflowService.resultArtifact(
+      request: request,
+      roomId: widget.room.id!,
+      sortOrder: maxOrder + 1,
+      content: content,
+      stopped: stopped,
+      createdAt: createdAt,
+    );
+    final artifact = await showDialog<StoryArtifactModel>(
+      context: context,
+      builder: (ctx) => _StoryWorkflowResultDialog(
+        initial: initial,
+        stopped: stopped,
+      ),
+    );
+    if (artifact == null) return;
+    await _dao?.saveArtifact(artifact);
+    await _syncRoomContext();
+    await _load();
+    if (mounted) HiDialog.showSnackBar(context, '已保存为创作资料');
+  }
+
   Future<void> _syncRoomContext() async {
     final dao = _dao;
     final roomDao = _roomDao;
@@ -332,6 +596,102 @@ class _StoryWorkbenchPageState extends State<StoryWorkbenchPage> {
       default:
         return Icons.account_tree_outlined;
     }
+  }
+}
+
+class _StoryWorkflowResultDialog extends StatefulWidget {
+  final StoryArtifactModel initial;
+  final bool stopped;
+
+  const _StoryWorkflowResultDialog({
+    required this.initial,
+    required this.stopped,
+  });
+
+  @override
+  State<_StoryWorkflowResultDialog> createState() =>
+      _StoryWorkflowResultDialogState();
+}
+
+class _StoryWorkflowResultDialogState
+    extends State<_StoryWorkflowResultDialog> {
+  late final TextEditingController _titleController;
+  late final TextEditingController _contentController;
+
+  @override
+  void initState() {
+    super.initState();
+    _titleController = TextEditingController(text: widget.initial.title);
+    _contentController = TextEditingController(text: widget.initial.content);
+  }
+
+  @override
+  void dispose() {
+    _titleController.dispose();
+    _contentController.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return AlertDialog(
+      title: Text(widget.stopped ? '预览已生成内容' : '预览审阅结果'),
+      content: SizedBox(
+        width: 560,
+        child: ConstrainedBox(
+          constraints: BoxConstraints(
+            maxHeight: MediaQuery.sizeOf(context).height * 0.62,
+          ),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              TextField(
+                controller: _titleController,
+                decoration: const InputDecoration(
+                  labelText: '资料标题',
+                  border: OutlineInputBorder(),
+                ),
+              ),
+              const SizedBox(height: 12),
+              Expanded(
+                child: TextField(
+                  controller: _contentController,
+                  expands: true,
+                  minLines: null,
+                  maxLines: null,
+                  textAlignVertical: TextAlignVertical.top,
+                  decoration: const InputDecoration(
+                    labelText: '审阅内容',
+                    border: OutlineInputBorder(),
+                    alignLabelWithHint: true,
+                  ),
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.pop(context),
+          child: const Text('关闭'),
+        ),
+        FilledButton(
+          onPressed: () {
+            final title = _titleController.text.trim();
+            final content = _contentController.text.trim();
+            if (title.isEmpty || content.isEmpty) return;
+            Navigator.pop(
+              context,
+              widget.initial
+                ..title = title
+                ..content = content,
+            );
+          },
+          child: const Text('保存为资料'),
+        ),
+      ],
+    );
   }
 }
 

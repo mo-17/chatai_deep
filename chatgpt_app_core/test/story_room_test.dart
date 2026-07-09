@@ -5,6 +5,7 @@ import 'package:chatgpt_app_core/chat/application/story_context_builder.dart';
 import 'package:chatgpt_app_core/chat/application/story_context_window.dart';
 import 'package:chatgpt_app_core/chat/application/story_room_role_card_importer.dart';
 import 'package:chatgpt_app_core/chat/application/story_room_settings_resolver.dart';
+import 'package:chatgpt_app_core/chat/application/story_participant_settings_resolver.dart';
 import 'package:chatgpt_app_core/chat/application/story_speaker_scheduler.dart';
 import 'package:chatgpt_app_core/db/hi_db_manager.dart';
 import 'package:chatgpt_app_core/db/story_room_dao.dart';
@@ -57,6 +58,10 @@ void main() {
         prompt: '内向但敏锐',
         avatarType: 'emoji',
         avatarValue: '📚',
+        modelProviderId: 'openai',
+        modelId: 'gpt-4o-mini',
+        temperature: 0.45,
+        maxOutputTokens: 3072,
         sortOrder: 1,
       );
       await dao.saveParticipant(author);
@@ -93,6 +98,37 @@ void main() {
       expect(messages.last.speakerId, role.id);
       expect(messages.last.speakerName, '风香');
       expect(messages.last.speakerAvatarValue, '📚');
+      expect(participants.last.modelProviderId, 'openai');
+      expect(participants.last.modelId, 'gpt-4o-mini');
+      expect(participants.last.temperature, 0.45);
+      expect(participants.last.maxOutputTokens, 3072);
+    });
+
+    test('旧参与者表会自动补齐角色模型覆盖列', () async {
+      db = await databaseFactoryFfi.openDatabase(inMemoryDatabasePath);
+      await db.execute(
+        'create table tb_story_participant (id integer primary key autoincrement'
+        ', roomId integer not null, assistantId integer, role text, name text'
+        ', prompt text, avatarType text, avatarValue text, voiceStyle text'
+        ', sortOrder integer, enabled integer, createdAt integer, updatedAt integer)',
+      );
+      final dao = await StoryRoomDao.create(HiDBManager.test(db));
+      final roomId = await dao.saveRoom(StoryRoomModel(title: '旧角色房间'));
+      final participant = StoryParticipantModel(
+        roomId: roomId,
+        role: StoryParticipantRole.assistant,
+        name: '旧角色',
+        modelProviderId: 'deepseek',
+        modelId: 'deepseek-chat',
+        temperature: 0.2,
+        maxOutputTokens: 1024,
+      );
+      await dao.saveParticipant(participant);
+      final saved = (await dao.getParticipants(roomId)).single;
+      expect(saved.modelProviderId, 'deepseek');
+      expect(saved.modelId, 'deepseek-chat');
+      expect(saved.temperature, 0.2);
+      expect(saved.maxOutputTokens, 1024);
     });
 
     test('重命名和删除房间会清理参与者与消息', () async {
@@ -283,6 +319,36 @@ void main() {
       expect(resolved.temperature, 0.8);
       expect(resolved.maxOutputTokens, 2048);
       expect(global.backendModel, 'global-model');
+    });
+  });
+
+  group('StoryParticipantSettingsResolver', () {
+    test('角色覆盖叠加到房间设置且不修改原设置', () {
+      final roomSettings = AISettings.defaults()
+        ..activeProviderId = 'deepseek'
+        ..setActiveModel('deepseek-chat')
+        ..temperature = 0.8
+        ..maxOutputTokens = 2048;
+      final participant = StoryParticipantModel(
+        roomId: 1,
+        role: StoryParticipantRole.assistant,
+        name: '角色',
+        modelProviderId: 'openai',
+        modelId: 'gpt-4o-mini',
+        temperature: 0.25,
+        maxOutputTokens: 4096,
+      );
+
+      final resolved =
+          StoryParticipantSettingsResolver.apply(roomSettings, participant);
+
+      expect(resolved.activeProviderId, 'openai');
+      expect(resolved.effectiveModel, 'gpt-4o-mini');
+      expect(resolved.temperature, 0.25);
+      expect(resolved.maxOutputTokens, 4096);
+      expect(roomSettings.activeProviderId, 'deepseek');
+      expect(roomSettings.effectiveModel, 'deepseek-chat');
+      expect(roomSettings.temperature, 0.8);
     });
   });
 
@@ -815,6 +881,77 @@ void main() {
   });
 
   group('StoryContextBuilder', () {
+    test('按 Tavern depth_prompt 的深度和角色插入历史消息', () {
+      final room = StoryRoomModel(
+        title: '实验室',
+        mode: StoryRoomMode.tavern,
+        publicContext: [
+          '【Tavern 原卡信息：Dr. Moon】',
+          '角色注释：她会隐藏真实目的。',
+          '第二行注释仍属于 depth prompt。',
+          '角色注释插入深度：1',
+          '角色注释角色：assistant',
+          '世界书：实验室设定',
+        ].join('\n'),
+      );
+      final speaker = StoryParticipantModel(
+        roomId: 1,
+        role: StoryParticipantRole.assistant,
+        name: 'Dr. Moon',
+      );
+      final history = StoryContextBuilder.history(
+        [
+          StoryMessageModel(
+            roomId: 1,
+            speakerRole: 'user',
+            speakerName: '我',
+            content: '第一条',
+          ),
+          StoryMessageModel(
+            roomId: 1,
+            speakerRole: 'assistant',
+            speakerName: 'Dr. Moon',
+            content: '第二条',
+          ),
+        ],
+        room: room,
+        speaker: speaker,
+      );
+
+      expect(history, hasLength(3));
+      expect(history[1]['role'], 'assistant');
+      expect(history[1]['content'], contains('隐藏真实目的'));
+      expect(history[1]['content'], contains('第二行注释'));
+      expect(history[2]['content'], contains('第二条'));
+    });
+
+    test('depth_prompt 超出历史范围时安全插到开头并回退 system role', () {
+      final room = StoryRoomModel(
+        title: '房间',
+        mode: StoryRoomMode.tavern,
+        publicContext: [
+          '【Tavern 原卡信息】',
+          '角色注释：保持沉默。',
+          '角色注释插入深度：99',
+          '角色注释角色：unknown',
+        ].join('\n'),
+      );
+      final history = StoryContextBuilder.history(
+        [
+          StoryMessageModel(
+            roomId: 1,
+            speakerRole: 'user',
+            speakerName: '我',
+            content: '你好',
+          ),
+        ],
+        room: room,
+      );
+
+      expect(history.first['role'], 'system');
+      expect(history.first['content'], '保持沉默。');
+    });
+
     test('上下文窗口保留最近消息、开场和旧剧情连续状态', () {
       final room = StoryRoomModel(title: '钟楼谜案', mode: StoryRoomMode.tavern);
       final fuka = StoryParticipantModel(

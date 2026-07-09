@@ -106,8 +106,12 @@ class StoryContextBuilder {
     return buffer.toString().trim();
   }
 
-  static List<Map<String, dynamic>> history(List<StoryMessageModel> messages) {
-    return [
+  static List<Map<String, dynamic>> history(
+    List<StoryMessageModel> messages, {
+    StoryRoomModel? room,
+    StoryParticipantModel? speaker,
+  }) {
+    final result = <Map<String, dynamic>>[
       for (final message
           in StoryContextWindow.fromMessages(messages).recentMessages)
         {
@@ -117,6 +121,19 @@ class StoryContextBuilder {
               : '${message.speakerName}：${message.content}',
         }
     ];
+    if (room == null || room.mode != StoryRoomMode.tavern) return result;
+    final depthPrompt = _tavernDepthPrompt(
+      room.publicContext,
+      speakerName: speaker?.name ?? '',
+    );
+    if (depthPrompt == null) return result;
+    final insertAt =
+        (result.length - depthPrompt.depth).clamp(0, result.length);
+    result.insert(insertAt, {
+      'role': depthPrompt.role,
+      'content': depthPrompt.content,
+    });
+    return result;
   }
 
   static String promptFor({
@@ -139,6 +156,109 @@ class StoryContextBuilder {
       default:
         return '';
     }
+  }
+
+  static _TavernDepthPrompt? _tavernDepthPrompt(
+    String publicContext, {
+    required String speakerName,
+  }) {
+    final sections = _tavernMetaSections(publicContext);
+    if (sections.isEmpty) return null;
+    final exactTitle = 'Tavern 原卡信息：${speakerName.trim()}';
+    final section = sections.cast<_TavernMetaSection?>().firstWhere(
+          (item) => item?.title == exactTitle,
+          orElse: () => sections.firstWhere(
+            (item) => item.title == 'Tavern 原卡信息',
+            orElse: () => sections.first,
+          ),
+        );
+    if (section == null) return null;
+    final lines = section.lines;
+    final noteIndex = lines.indexWhere((line) => line.startsWith('角色注释：'));
+    if (noteIndex < 0) return null;
+    final note = <String>[lines[noteIndex].substring('角色注释：'.length)];
+    var depth = 4;
+    var role = 'system';
+    for (var index = noteIndex + 1; index < lines.length; index++) {
+      final line = lines[index];
+      if (line.startsWith('角色注释插入深度：')) {
+        depth =
+            int.tryParse(line.substring('角色注释插入深度：'.length).trim()) ?? depth;
+        continue;
+      }
+      if (line.startsWith('角色注释角色：')) {
+        role = _normalizeDepthPromptRole(
+          line.substring('角色注释角色：'.length),
+        );
+        continue;
+      }
+      if (_isTavernMetaField(line)) break;
+      note.add(line);
+    }
+    final content = note.join('\n').trim();
+    if (content.isEmpty) return null;
+    return _TavernDepthPrompt(
+      content: content,
+      depth: depth.clamp(0, 100),
+      role: role,
+    );
+  }
+
+  static List<_TavernMetaSection> _tavernMetaSections(String text) {
+    final sections = <_TavernMetaSection>[];
+    _TavernMetaSection? current;
+    for (final rawLine in text.replaceAll('\r\n', '\n').split('\n')) {
+      final line = rawLine.trimRight();
+      if (line.startsWith('【') && line.endsWith('】')) {
+        if (current != null) sections.add(current);
+        final title = line.substring(1, line.length - 1);
+        current =
+            title.startsWith('Tavern 原卡信息') ? _TavernMetaSection(title) : null;
+        continue;
+      }
+      current?.lines.add(line);
+    }
+    if (current != null) sections.add(current);
+    return sections;
+  }
+
+  static bool _isTavernMetaField(String line) {
+    const labels = [
+      '规范：',
+      '作者：',
+      '角色版本：',
+      '创建时间：',
+      '更新时间：',
+      '来源：',
+      '来源列表：',
+      '角色别名：',
+      '创建时间戳：',
+      '修改时间戳：',
+      '标签：',
+      '作者备注：',
+      '系统提示：',
+      '后续指令：',
+      '扩展世界：',
+      '群聊活跃度：',
+      '群聊专属开场：',
+      '世界书：',
+      '世界书条目：',
+      '扫描深度：',
+      'Token 预算：',
+      '递归扫描：',
+    ];
+    return labels.any(line.startsWith);
+  }
+
+  static String _normalizeDepthPromptRole(String value) {
+    final normalized = value.trim().toLowerCase();
+    if (normalized == 'user' || normalized == 'human') return 'user';
+    if (normalized == 'assistant' ||
+        normalized == 'char' ||
+        normalized == 'character') {
+      return 'assistant';
+    }
+    return 'system';
   }
 
   static int _worldBookHitLimit(StoryRoomModel room) {
@@ -326,4 +446,23 @@ class StoryContextBuilder {
     if (match == null) return -1;
     return start + match.start + 1;
   }
+}
+
+class _TavernMetaSection {
+  final String title;
+  final List<String> lines = [];
+
+  _TavernMetaSection(this.title);
+}
+
+class _TavernDepthPrompt {
+  final String content;
+  final int depth;
+  final String role;
+
+  const _TavernDepthPrompt({
+    required this.content,
+    required this.depth,
+    required this.role,
+  });
 }
