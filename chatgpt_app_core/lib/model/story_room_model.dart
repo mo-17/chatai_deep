@@ -1,3 +1,5 @@
+import 'dart:convert';
+
 class StoryRoomModel {
   int? id;
   String title;
@@ -148,6 +150,7 @@ class StoryParticipantModel {
   String prompt;
   String? avatarType;
   String? avatarValue;
+  String? voiceStyle;
   int sortOrder;
   bool enabled;
   int createdAt;
@@ -162,6 +165,7 @@ class StoryParticipantModel {
     this.prompt = '',
     this.avatarType,
     this.avatarValue,
+    this.voiceStyle,
     this.sortOrder = 0,
     this.enabled = true,
     int? createdAt,
@@ -179,6 +183,7 @@ class StoryParticipantModel {
         prompt: json['prompt'] as String? ?? '',
         avatarType: json['avatarType'] as String?,
         avatarValue: json['avatarValue'] as String?,
+        voiceStyle: json['voiceStyle'] as String?,
         sortOrder: json['sortOrder'] as int? ?? 0,
         enabled: (json['enabled'] as int? ?? 1) == 1,
         createdAt: json['createdAt'] as int?,
@@ -194,6 +199,7 @@ class StoryParticipantModel {
         'prompt': prompt,
         'avatarType': avatarType,
         'avatarValue': avatarValue,
+        'voiceStyle': voiceStyle,
         'sortOrder': sortOrder,
         'enabled': enabled ? 1 : 0,
         'createdAt': createdAt,
@@ -209,7 +215,11 @@ class StoryMessageModel {
   String speakerName;
   String? speakerAvatarType;
   String? speakerAvatarValue;
+  String? speakerVoiceStyle;
   String content;
+  List<String> imagePaths;
+  List<String> filePaths;
+  String attachmentContext;
   int createdAt;
   int updatedAt;
 
@@ -221,7 +231,11 @@ class StoryMessageModel {
     required this.speakerName,
     this.speakerAvatarType,
     this.speakerAvatarValue,
+    this.speakerVoiceStyle,
     required this.content,
+    this.imagePaths = const [],
+    this.filePaths = const [],
+    this.attachmentContext = '',
     int? createdAt,
     int? updatedAt,
   })  : createdAt = createdAt ?? DateTime.now().millisecondsSinceEpoch,
@@ -239,7 +253,11 @@ class StoryMessageModel {
         speakerName: json['speakerName'] as String? ?? '',
         speakerAvatarType: json['speakerAvatarType'] as String?,
         speakerAvatarValue: json['speakerAvatarValue'] as String?,
+        speakerVoiceStyle: json['speakerVoiceStyle'] as String?,
         content: json['content'] as String? ?? '',
+        imagePaths: _decodePaths(json['imagePaths']),
+        filePaths: _decodePaths(json['filePaths']),
+        attachmentContext: json['attachmentContext'] as String? ?? '',
         createdAt: json['createdAt'] as int?,
         updatedAt: json['updatedAt'] as int? ?? json['createdAt'] as int?,
       );
@@ -252,8 +270,32 @@ class StoryMessageModel {
         'speakerName': speakerName,
         'speakerAvatarType': speakerAvatarType,
         'speakerAvatarValue': speakerAvatarValue,
+        'speakerVoiceStyle': speakerVoiceStyle,
         'content': content,
+        'imagePaths': jsonEncode(imagePaths),
+        'filePaths': jsonEncode(filePaths),
+        'attachmentContext': attachmentContext,
         'createdAt': createdAt,
         'updatedAt': updatedAt,
       };
+
+  static List<String> _decodePaths(Object? raw) {
+    if (raw is List) {
+      return [
+        for (final item in raw)
+          if (item is String && item.isNotEmpty) item
+      ];
+    }
+    if (raw is! String || raw.trim().isEmpty) return const [];
+    try {
+      final decoded = jsonDecode(raw);
+      if (decoded is! List) return const [];
+      return [
+        for (final item in decoded)
+          if (item is String && item.isNotEmpty) item
+      ];
+    } catch (_) {
+      return const [];
+    }
+  }
 }

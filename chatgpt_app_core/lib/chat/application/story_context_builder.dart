@@ -1,6 +1,7 @@
 import 'package:chatgpt_app_core/chat/application/assistant_role_card_service.dart';
 import 'package:chatgpt_app_core/chat/application/story_room_role_card_importer.dart';
 import 'package:chatgpt_app_core/chat/application/story_context_window.dart';
+import 'package:chatgpt_app_core/chat/application/story_room_attachments.dart';
 import 'package:chatgpt_app_core/model/story_room_model.dart';
 
 class StoryContextBuilder {
@@ -112,7 +113,7 @@ class StoryContextBuilder {
         {
           'role': message.isUser ? 'user' : 'assistant',
           'content': message.isUser
-              ? message.content
+              ? StoryRoomAttachmentPolicy.historyContent(message)
               : '${message.speakerName}：${message.content}',
         }
     ];

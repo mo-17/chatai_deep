@@ -13,6 +13,7 @@ import 'package:chatgpt_app_core/db/hi_db_manager.dart';
 import 'package:chatgpt_app_core/db/knowledge_dao.dart';
 import 'package:chatgpt_app_core/db/message_dao.dart';
 import 'package:chatgpt_app_core/db/project_dao.dart';
+import 'package:chatgpt_app_core/db/story_artifact_dao.dart';
 import 'package:chatgpt_app_core/db/story_room_dao.dart';
 import 'package:chatgpt_app_core/db/story_template_dao.dart';
 import 'package:chatgpt_app_core/model/ai_settings.dart';
@@ -37,6 +38,8 @@ class BackupRestoreResult {
   final int storyRooms;
   final int storyParticipants;
   final int storyMessages;
+  final int storyArtifacts;
+  final int storyArtifactRevisions;
   final int generatedImageAssets;
 
   /// 备份里的 AI 设置（settings.json 缺失时为 null）。
@@ -58,6 +61,8 @@ class BackupRestoreResult {
     this.storyRooms = 0,
     this.storyParticipants = 0,
     this.storyMessages = 0,
+    this.storyArtifacts = 0,
+    this.storyArtifactRevisions = 0,
     this.generatedImageAssets = 0,
     this.settings,
     this.warnings = const [],
@@ -99,6 +104,8 @@ class BackupPreview {
   final int storyRooms;
   final int storyParticipants;
   final int storyMessages;
+  final int storyArtifacts;
+  final int storyArtifactRevisions;
   final int avatarAssets;
   final int fileAssets;
   final int generatedImageAssets;
@@ -123,6 +130,8 @@ class BackupPreview {
     this.storyRooms = 0,
     this.storyParticipants = 0,
     this.storyMessages = 0,
+    this.storyArtifacts = 0,
+    this.storyArtifactRevisions = 0,
     required this.avatarAssets,
     required this.fileAssets,
     this.generatedImageAssets = 0,
@@ -143,7 +152,9 @@ class BackupPreview {
       storyTemplates +
       storyRooms +
       storyParticipants +
-      storyMessages;
+      storyMessages +
+      storyArtifacts +
+      storyArtifactRevisions;
 
   BackupImportPlan planFor(BackupImportMode mode) {
     BackupTableConflict? table(String name) {
@@ -211,6 +222,8 @@ class BackupPreview {
           'tb_story_room',
           'tb_story_participant',
           'tb_story_message',
+          'tb_story_artifact',
+          'tb_story_artifact_revision',
         ]);
         return BackupImportPlan(
           mode: mode,
@@ -303,7 +316,7 @@ class BackupTableConflict {
 /// 因此可以用 sqflite_common_ffi 内存库做 round-trip 单测。
 class BackupService {
   /// 备份格式版本。导入时大于本值则拒绝（新版本备份导入旧 app）。
-  static const int formatVersion = 3;
+  static const int formatVersion = 4;
 
   static const _kManifest = 'manifest.json';
   static const _kConversations = 'conversations.json';
@@ -319,6 +332,8 @@ class BackupService {
   static const _kStoryRooms = 'story_rooms.json';
   static const _kStoryParticipants = 'story_participants.json';
   static const _kStoryMessages = 'story_messages.json';
+  static const _kStoryArtifacts = 'story_artifacts.json';
+  static const _kStoryArtifactRevisions = 'story_artifact_revisions.json';
   static const _kAvatarPrefix = 'assets/avatars/';
   static const _kFilePrefix = 'assets/files/';
   static const _kGeneratedImagePrefix = 'assets/generated_images/';
@@ -359,6 +374,9 @@ class BackupService {
     final storyRooms = await storage.db.query('tb_story_room');
     final storyParticipants = await storage.db.query('tb_story_participant');
     final storyMessages = await storage.db.query('tb_story_message');
+    final storyArtifacts = await storage.db.query('tb_story_artifact');
+    final storyArtifactRevisions =
+        await storage.db.query('tb_story_artifact_revision');
     final avatarFiles = await _collectAvatarFiles(conversations);
     final attachmentFiles = await _collectAttachmentFiles(messages);
     final generatedImageFiles = await _collectGeneratedImageFiles();
@@ -399,6 +417,8 @@ class BackupService {
         'storyRooms': storyRooms.length,
         'storyParticipants': storyParticipants.length,
         'storyMessages': storyMessages.length,
+        'storyArtifacts': storyArtifacts.length,
+        'storyArtifactRevisions': storyArtifactRevisions.length,
         'avatarAssets': avatarFiles.length,
         'fileAssets': attachmentFiles.length,
         'generatedImageAssets': generatedImageFiles.length,
@@ -419,6 +439,8 @@ class BackupService {
       ..addFile(_jsonFile(_kStoryRooms, storyRooms))
       ..addFile(_jsonFile(_kStoryParticipants, storyParticipants))
       ..addFile(_jsonFile(_kStoryMessages, storyMessages))
+      ..addFile(_jsonFile(_kStoryArtifacts, storyArtifacts))
+      ..addFile(_jsonFile(_kStoryArtifactRevisions, storyArtifactRevisions))
       ..addFile(_jsonFile(_kSettings, exportedSettings.toJson()));
     for (final entry in avatarFiles.entries) {
       archive.addFile(
@@ -469,6 +491,8 @@ class BackupService {
     final storyRooms = _readRows(archive, _kStoryRooms);
     final storyParticipants = _readRows(archive, _kStoryParticipants);
     final storyMessages = _readRows(archive, _kStoryMessages);
+    final storyArtifacts = _readRows(archive, _kStoryArtifacts);
+    final storyArtifactRevisions = _readRows(archive, _kStoryArtifactRevisions);
     int countOf(String key, String fileName) {
       final value = counts?[key];
       if (value is int) return value;
@@ -497,6 +521,10 @@ class BackupService {
           return storyParticipants.length;
         case _kStoryMessages:
           return storyMessages.length;
+        case _kStoryArtifacts:
+          return storyArtifacts.length;
+        case _kStoryArtifactRevisions:
+          return storyArtifactRevisions.length;
       }
       return 0;
     }
@@ -515,6 +543,8 @@ class BackupService {
       storyRooms: storyRooms,
       storyParticipants: storyParticipants,
       storyMessages: storyMessages,
+      storyArtifacts: storyArtifacts,
+      storyArtifactRevisions: storyArtifactRevisions,
     );
     return BackupPreview(
       formatVersion: version,
@@ -533,6 +563,9 @@ class BackupService {
       storyRooms: countOf('storyRooms', _kStoryRooms),
       storyParticipants: countOf('storyParticipants', _kStoryParticipants),
       storyMessages: countOf('storyMessages', _kStoryMessages),
+      storyArtifacts: countOf('storyArtifacts', _kStoryArtifacts),
+      storyArtifactRevisions:
+          countOf('storyArtifactRevisions', _kStoryArtifactRevisions),
       avatarAssets: counts?['avatarAssets'] is int
           ? counts!['avatarAssets'] as int
           : archive.files
@@ -555,8 +588,8 @@ class BackupService {
     );
   }
 
-  /// 校验并恢复一个备份 zip。**覆盖式**：清空四张表后整批写回，
-  /// 保留原始 id/cid（assistantId 外键、消息排序都依赖它们）。
+  /// 校验并恢复一个备份 zip。**覆盖式**：清空数据表后整批写回；普通表
+  /// 保留原始 id/cid，故事工作台表按目标库新 id 重映射关联。
   /// 格式不合法 / 版本过新时抛 [FormatException]，不会动现有数据。
   Future<BackupRestoreResult> importArchive(
     List<int> zipBytes, {
@@ -588,6 +621,8 @@ class BackupService {
     final storyRooms = _readRows(archive, _kStoryRooms);
     final storyParticipants = _readRows(archive, _kStoryParticipants);
     final storyMessages = _readRows(archive, _kStoryMessages);
+    final storyArtifacts = _readRows(archive, _kStoryArtifacts);
+    final storyArtifactRevisions = _readRows(archive, _kStoryArtifactRevisions);
     if (mode == BackupImportMode.mergeAppend) {
       return _importMergeAppend(
         archive: archive,
@@ -604,6 +639,8 @@ class BackupService {
         storyRooms: storyRooms,
         storyParticipants: storyParticipants,
         storyMessages: storyMessages,
+        storyArtifacts: storyArtifacts,
+        storyArtifactRevisions: storyArtifactRevisions,
         warnings: warnings,
       );
     }
@@ -755,11 +792,25 @@ class BackupService {
     if (fixedStoryMessageSpeakers > 0) {
       warnings.add('$fixedStoryMessageSpeakers 条酒馆消息引用的参与者不存在，已清除发言者绑定');
     }
+    final storyRoomIdMap = <int, int>{};
+    final storyParticipantIdMap = <int, int>{};
+    final storyArtifactIdMap = <int, int>{};
+    var skippedStoryArtifacts = 0;
+    var skippedStoryArtifactRevisions = 0;
+    var insertedStoryParticipants = 0;
+    var insertedStoryMessages = 0;
+    var insertedStoryArtifacts = 0;
+    var insertedStoryArtifactRevisions = 0;
     await _restoreAvatarAssets(archive, normalizedConversations, warnings,
         accountHash: accountHash);
 
     // 单事务覆盖式写入：任何一步失败整体回滚，不会留下半套数据。
     await storage.db.transaction((txn) async {
+      await txn.delete('tb_story_artifact_revision');
+      await txn.delete('tb_story_artifact');
+      await txn.delete('tb_story_message');
+      await txn.delete('tb_story_participant');
+      await txn.delete('tb_story_room');
       final batch = txn.batch();
       batch.delete('tb_project');
       batch.delete('tb_conversation_list');
@@ -768,9 +819,6 @@ class BackupService {
       batch.delete('tb_favorite');
       batch.delete('tb_project_kb');
       batch.delete('tb_story_template');
-      batch.delete('tb_story_message');
-      batch.delete('tb_story_participant');
-      batch.delete('tb_story_room');
       batch.delete('tb_kb_chunk');
       batch.delete('tb_kb_doc');
       for (final row in projects) {
@@ -801,16 +849,72 @@ class BackupService {
         batch.insert('tb_story_template', row);
       }
       for (final row in storyRooms) {
-        batch.insert('tb_story_room', row);
+        final oldId = _intValue(row['id']);
+        final newId = await txn.insert('tb_story_room', _withoutId(row));
+        if (oldId != null) storyRoomIdMap[oldId] = newId;
       }
       for (final row in normalizedStoryParticipants) {
-        batch.insert('tb_story_participant', row);
+        final oldRoomId = _intValue(row['roomId']);
+        final newRoomId = oldRoomId == null ? null : storyRoomIdMap[oldRoomId];
+        if (newRoomId == null) continue;
+        final next = _withoutId(row)..['roomId'] = newRoomId;
+        final newId = await txn.insert('tb_story_participant', next);
+        final oldId = _intValue(row['id']);
+        if (oldId != null) storyParticipantIdMap[oldId] = newId;
+        insertedStoryParticipants++;
       }
       for (final row in normalizedStoryMessages) {
-        batch.insert('tb_story_message', row);
+        final oldRoomId = _intValue(row['roomId']);
+        final newRoomId = oldRoomId == null ? null : storyRoomIdMap[oldRoomId];
+        if (newRoomId == null) continue;
+        final next = _withoutId(row)..['roomId'] = newRoomId;
+        final oldSpeakerId = _intValue(next['speakerId']);
+        if (oldSpeakerId != null) {
+          next['speakerId'] = storyParticipantIdMap[oldSpeakerId];
+        }
+        final newId = await txn.insert('tb_story_message', next);
+        if (_intValue(row['id']) != null) {
+          // 消息自身没有后续外键，但去掉旧 id 也避免与目标库序列冲突。
+          assert(newId > 0);
+        }
+        insertedStoryMessages++;
+      }
+      for (final row in storyArtifacts) {
+        final oldRoomId = _intValue(row['roomId']);
+        final newRoomId = oldRoomId == null ? null : storyRoomIdMap[oldRoomId];
+        if (newRoomId == null) {
+          skippedStoryArtifacts++;
+          continue;
+        }
+        final next = _withoutId(row)..['roomId'] = newRoomId;
+        final newId = await txn.insert('tb_story_artifact', next);
+        final oldId = _intValue(row['id']);
+        if (oldId != null) storyArtifactIdMap[oldId] = newId;
+        insertedStoryArtifacts++;
+      }
+      for (final row in storyArtifactRevisions) {
+        final oldArtifactId = _intValue(row['artifactId']);
+        final newArtifactId =
+            oldArtifactId == null ? null : storyArtifactIdMap[oldArtifactId];
+        if (newArtifactId == null) {
+          skippedStoryArtifactRevisions++;
+          continue;
+        }
+        await txn.insert(
+          'tb_story_artifact_revision',
+          _withoutId(row)..['artifactId'] = newArtifactId,
+        );
+        insertedStoryArtifactRevisions++;
       }
       await batch.commit(noResult: true);
     });
+
+    if (skippedStoryArtifacts > 0) {
+      warnings.add('$skippedStoryArtifacts 个创作资料找不到所属房间，已跳过');
+    }
+    if (skippedStoryArtifactRevisions > 0) {
+      warnings.add('$skippedStoryArtifactRevisions 条创作资料修订找不到所属资料，已跳过');
+    }
 
     AISettings? settings;
     final settingsJson = _readJson(archive, _kSettings);
@@ -824,6 +928,8 @@ class BackupService {
         ', ${knowledgeDocs.length} kb docs, ${knowledgeChunks.length} kb chunks'
         ', ${projectKnowledge.length} project kb refs'
         ', ${storyTemplates.length} story templates'
+        ', $insertedStoryArtifacts story artifacts'
+        ', $insertedStoryArtifactRevisions story artifact revisions'
         ', warnings: $warnings');
     restoreTick.value++;
     return BackupRestoreResult(
@@ -837,8 +943,10 @@ class BackupService {
       projectKnowledge: projectKnowledge.length,
       storyTemplates: storyTemplates.length,
       storyRooms: storyRooms.length,
-      storyParticipants: normalizedStoryParticipants.length,
-      storyMessages: normalizedStoryMessages.length,
+      storyParticipants: insertedStoryParticipants,
+      storyMessages: insertedStoryMessages,
+      storyArtifacts: insertedStoryArtifacts,
+      storyArtifactRevisions: insertedStoryArtifactRevisions,
       generatedImageAssets: generatedImageAssets,
       settings: settings,
       warnings: warnings,
@@ -962,6 +1070,8 @@ class BackupService {
     required List<Map<String, dynamic>> storyRooms,
     required List<Map<String, dynamic>> storyParticipants,
     required List<Map<String, dynamic>> storyMessages,
+    required List<Map<String, dynamic>> storyArtifacts,
+    required List<Map<String, dynamic>> storyArtifactRevisions,
     required List<String> warnings,
   }) async {
     await _restoreAttachmentAssets(archive, messages, warnings);
@@ -983,6 +1093,7 @@ class BackupService {
     final docIdMap = <int, int>{};
     final storyRoomIdMap = <int, int>{};
     final storyParticipantIdMap = <int, int>{};
+    final storyArtifactIdMap = <int, int>{};
     var skippedMessages = 0;
     var skippedChunks = 0;
     var skippedProjectKnowledge = 0;
@@ -1000,6 +1111,11 @@ class BackupService {
     var remappedStoryRooms = 0;
     var remappedStoryParticipants = 0;
     var remappedStoryMessages = 0;
+    var remappedStoryArtifacts = 0;
+    var skippedStoryArtifacts = 0;
+    var skippedStoryArtifactRevisions = 0;
+    var insertedStoryArtifacts = 0;
+    var insertedStoryArtifactRevisions = 0;
 
     await storage.db.transaction((txn) async {
       final localStoryRoomIds = {
@@ -1012,6 +1128,10 @@ class BackupService {
       };
       final localStoryMessageIds = {
         for (final row in await txn.query('tb_story_message'))
+          if (_intValue(row['id']) != null) _intValue(row['id'])!,
+      };
+      final localStoryArtifactIds = {
+        for (final row in await txn.query('tb_story_artifact'))
           if (_intValue(row['id']) != null) _intValue(row['id'])!,
       };
       remappedStoryRooms = storyRooms.where((row) {
@@ -1147,6 +1267,38 @@ class BackupService {
         insertedStoryMessages++;
       }
 
+      for (final row in storyArtifacts) {
+        final oldRoomId = _intValue(row['roomId']);
+        final newRoomId = oldRoomId == null ? null : storyRoomIdMap[oldRoomId];
+        if (newRoomId == null) {
+          skippedStoryArtifacts++;
+          continue;
+        }
+        final next = _withoutId(row)..['roomId'] = newRoomId;
+        final newId = await txn.insert('tb_story_artifact', next);
+        final oldId = _intValue(row['id']);
+        if (oldId != null) {
+          storyArtifactIdMap[oldId] = newId;
+          if (localStoryArtifactIds.contains(oldId)) remappedStoryArtifacts++;
+        }
+        insertedStoryArtifacts++;
+      }
+
+      for (final row in storyArtifactRevisions) {
+        final oldArtifactId = _intValue(row['artifactId']);
+        final newArtifactId =
+            oldArtifactId == null ? null : storyArtifactIdMap[oldArtifactId];
+        if (newArtifactId == null) {
+          skippedStoryArtifactRevisions++;
+          continue;
+        }
+        await txn.insert(
+          'tb_story_artifact_revision',
+          _withoutId(row)..['artifactId'] = newArtifactId,
+        );
+        insertedStoryArtifactRevisions++;
+      }
+
       for (final row in favorites) {
         await txn.insert('tb_favorite', _withoutId(row));
       }
@@ -1207,6 +1359,9 @@ class BackupService {
     if (remappedStoryMessages > 0) {
       warnings.add('$remappedStoryMessages 条酒馆消息 ID 与本地冲突，已重映射');
     }
+    if (remappedStoryArtifacts > 0) {
+      warnings.add('$remappedStoryArtifacts 个创作资料 ID 与本地冲突，已重映射');
+    }
     if (fixedConversationAssistants > 0) {
       warnings.add('$fixedConversationAssistants 个会话引用的助手不在备份中，已解除绑定');
     }
@@ -1237,6 +1392,12 @@ class BackupService {
     if (fixedStoryMessageSpeakers > 0) {
       warnings.add('$fixedStoryMessageSpeakers 条酒馆消息引用的参与者无法匹配，已清除发言者绑定');
     }
+    if (skippedStoryArtifacts > 0) {
+      warnings.add('$skippedStoryArtifacts 个创作资料找不到所属房间，已跳过');
+    }
+    if (skippedStoryArtifactRevisions > 0) {
+      warnings.add('$skippedStoryArtifactRevisions 条创作资料修订找不到所属资料，已跳过');
+    }
 
     AILogger.log('backup import merge append: '
         '${projects.length} projects, ${conversations.length} conversations'
@@ -1249,6 +1410,8 @@ class BackupService {
         ', ${storyRooms.length} story rooms'
         ', $insertedStoryParticipants story participants'
         ', $insertedStoryMessages story messages'
+        ', $insertedStoryArtifacts story artifacts'
+        ', $insertedStoryArtifactRevisions story artifact revisions'
         ', warnings: $warnings');
     restoreTick.value++;
     return BackupRestoreResult(
@@ -1264,6 +1427,8 @@ class BackupService {
       storyRooms: storyRooms.length,
       storyParticipants: insertedStoryParticipants,
       storyMessages: insertedStoryMessages,
+      storyArtifacts: insertedStoryArtifacts,
+      storyArtifactRevisions: insertedStoryArtifactRevisions,
       generatedImageAssets: generatedImageAssets,
       warnings: warnings,
     );
@@ -1409,6 +1574,7 @@ class BackupService {
     await ProjectDao.create(storage);
     await KnowledgeDao.create(storage);
     await StoryRoomDao.create(storage);
+    await StoryArtifactDao.create(storage);
     await StoryTemplateDao.create(storage);
     await _ensureConversationProjectIdColumn(storage.db);
   }
@@ -1475,6 +1641,8 @@ class BackupService {
     required List<Map<String, dynamic>> storyRooms,
     required List<Map<String, dynamic>> storyParticipants,
     required List<Map<String, dynamic>> storyMessages,
+    required List<Map<String, dynamic>> storyArtifacts,
+    required List<Map<String, dynamic>> storyArtifactRevisions,
   }) async {
     final specs = [
       _ConflictSpec('tb_conversation_list', 'cid', conversations),
@@ -1490,6 +1658,8 @@ class BackupService {
       _ConflictSpec('tb_story_room', 'id', storyRooms),
       _ConflictSpec('tb_story_participant', 'id', storyParticipants),
       _ConflictSpec('tb_story_message', 'id', storyMessages),
+      _ConflictSpec('tb_story_artifact', 'id', storyArtifacts),
+      _ConflictSpec('tb_story_artifact_revision', 'id', storyArtifactRevisions),
     ];
 
     var localRows = 0;

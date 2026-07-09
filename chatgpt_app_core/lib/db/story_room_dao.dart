@@ -26,14 +26,17 @@ class StoryRoomDao implements ITable {
         'create table if not exists tb_story_participant (id integer primary key autoincrement'
         ', roomId integer not null, assistantId integer, role text, name text'
         ', prompt text, avatarType text, avatarValue text'
-        ', sortOrder integer, enabled integer, createdAt integer, updatedAt integer)');
+        ', voiceStyle text, sortOrder integer, enabled integer, createdAt integer, updatedAt integer)');
+    await _ensureParticipantColumns(storage);
     await storage.db.execute(
         'create index if not exists tb_story_participant_room_idx on tb_story_participant(roomId, sortOrder)');
     await storage.db.execute(
         'create table if not exists tb_story_message (id integer primary key autoincrement'
         ', roomId integer not null, speakerId integer, speakerRole text'
         ', speakerName text, speakerAvatarType text, speakerAvatarValue text'
-        ', content text, createdAt integer, updatedAt integer)');
+        ', speakerVoiceStyle text, content text, imagePaths text, filePaths text'
+        ', attachmentContext text, createdAt integer, updatedAt integer)');
+    await _ensureMessageColumns(storage);
     try {
       await storage.db
           .execute('alter table tb_story_message add column updatedAt integer');
@@ -78,6 +81,31 @@ class StoryRoomDao implements ITable {
             .execute('alter table tb_story_room add column $column');
       } catch (_) {
         // 已存在模型参数列时忽略，保持旧库可升级。
+      }
+    }
+  }
+
+  static Future<void> _ensureParticipantColumns(HiDBManager storage) async {
+    try {
+      await storage.db.execute(
+          'alter table tb_story_participant add column voiceStyle text');
+    } catch (_) {
+      // 已存在 voiceStyle 列时忽略，保持旧库可升级。
+    }
+  }
+
+  static Future<void> _ensureMessageColumns(HiDBManager storage) async {
+    for (final column in const [
+      'speakerVoiceStyle text',
+      'imagePaths text',
+      'filePaths text',
+      'attachmentContext text',
+    ]) {
+      try {
+        await storage.db
+            .execute('alter table tb_story_message add column $column');
+      } catch (_) {
+        // 已存在列时忽略，保持旧库可升级。
       }
     }
   }
@@ -195,6 +223,19 @@ class StoryRoomDao implements ITable {
 
   Future<int> saveMessage(StoryMessageModel model) async {
     model.updatedAt = DateTime.now().millisecondsSinceEpoch;
+    if ((model.speakerVoiceStyle == null ||
+            model.speakerVoiceStyle!.trim().isEmpty) &&
+        model.speakerId != null) {
+      final participants = await storage.db.query(
+        participantTable,
+        columns: ['voiceStyle'],
+        where: 'id = ?',
+        whereArgs: [model.speakerId],
+      );
+      if (participants.isNotEmpty) {
+        model.speakerVoiceStyle = participants.first['voiceStyle'] as String?;
+      }
+    }
     final data = model.toJson()..remove('id');
     final id = await storage.db.insert(messageTable, data);
     model.id = id;

@@ -6,6 +6,7 @@ import 'package:chatgpt_app_core/db/story_room_dao.dart';
 import 'package:chatgpt_app_core/model/conversation_model.dart';
 import 'package:chatgpt_app_core/model/project_model.dart';
 import 'package:chatgpt_app_core/model/story_room_model.dart';
+import 'package:chatgpt_app_core/model/story_artifact_model.dart';
 import 'package:chatgpt_app_core/sync/local_sync_service.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:sqflite_common_ffi/sqflite_ffi.dart';
@@ -342,6 +343,126 @@ void main() {
       whereArgs: [11],
     );
     expect(localRoom.single['title'], '本地标题');
+    await storage.db.close();
+  });
+
+  test('Story Artifact 同步注册 updatedAt/createdAt，并支持远端 upsert/delete', () async {
+    final storage = await newDb();
+    final sync = LocalSyncService(storage);
+
+    expect(await sync.exportChanges(), isEmpty);
+    await storage.db.insert('tb_story_artifact', {
+      'id': 1,
+      'roomId': 7,
+      'type': StoryArtifactType.outline,
+      'title': '本地大纲',
+      'content': '本地内容',
+      'status': 'draft',
+      'sortOrder': 0,
+      'createdAt': 10,
+      'updatedAt': 20,
+    });
+    await storage.db.insert('tb_story_artifact_revision', {
+      'id': 2,
+      'artifactId': 1,
+      'title': '旧大纲',
+      'content': '旧内容',
+      'status': 'draft',
+      'createdAt': 30,
+    });
+
+    final localChanges = await sync.exportChanges(updatedAfter: 15);
+    expect(
+      localChanges.map((change) => change.key),
+      containsAll(['story_artifact:1', 'story_artifact_revision:2']),
+    );
+    expect(
+      localChanges
+          .singleWhere((change) => change.entity == 'story_artifact')
+          .updatedAt,
+      20,
+    );
+    expect(
+      localChanges
+          .singleWhere((change) => change.entity == 'story_artifact_revision')
+          .updatedAt,
+      30,
+    );
+
+    final upsert = await sync.applyRemoteChanges([
+      const SyncChange(
+        entity: 'story_artifact',
+        id: '10',
+        op: SyncOp.upsert,
+        updatedAt: 100,
+        payload: {
+          'id': 10,
+          'roomId': 8,
+          'type': 'chapter',
+          'title': '远端章节',
+          'content': '远端内容',
+          'status': 'final',
+          'sortOrder': 1,
+          'createdAt': 90,
+          'updatedAt': 100,
+        },
+      ),
+      const SyncChange(
+        entity: 'story_artifact_revision',
+        id: '20',
+        op: SyncOp.upsert,
+        updatedAt: 110,
+        payload: {
+          'id': 20,
+          'artifactId': 10,
+          'title': '远端章节旧稿',
+          'content': '远端旧内容',
+          'status': 'draft',
+          'createdAt': 110,
+        },
+      ),
+    ]);
+    expect(upsert.accepted.map((change) => change.key), [
+      'story_artifact:10',
+      'story_artifact_revision:20',
+    ]);
+    expect(
+        (await storage.db
+                .query('tb_story_artifact', where: 'id = ?', whereArgs: [10]))
+            .single['roomId'],
+        8);
+    expect(
+        (await storage.db.query('tb_story_artifact_revision',
+                where: 'id = ?', whereArgs: [20]))
+            .single['artifactId'],
+        10);
+
+    final deletion = await sync.applyRemoteChanges([
+      const SyncChange(
+        entity: 'story_artifact',
+        id: '10',
+        op: SyncOp.delete,
+        updatedAt: 120,
+      ),
+      const SyncChange(
+        entity: 'story_artifact_revision',
+        id: '20',
+        op: SyncOp.delete,
+        updatedAt: 121,
+      ),
+    ]);
+    expect(deletion.accepted.map((change) => change.key), [
+      'story_artifact:10',
+      'story_artifact_revision:20',
+    ]);
+    expect(
+        await storage.db
+            .query('tb_story_artifact', where: 'id = ?', whereArgs: [10]),
+        isEmpty);
+    expect(
+        await storage.db.query('tb_story_artifact_revision',
+            where: 'id = ?', whereArgs: [20]),
+        isEmpty);
     await storage.db.close();
   });
 

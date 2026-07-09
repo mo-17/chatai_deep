@@ -1,3 +1,5 @@
+import 'dart:convert';
+
 import 'package:chatgpt_app_core/chat/application/assistant_role_card_service.dart';
 import 'package:chatgpt_app_core/chat/application/story_context_builder.dart';
 import 'package:chatgpt_app_core/chat/application/story_context_window.dart';
@@ -203,6 +205,47 @@ void main() {
       saved.title = 'Fuka 模板改名';
       await templateDao.saveTemplate(saved);
       expect((await templateDao.getTemplate(id))?.title, 'Fuka 模板改名');
+    });
+
+    test('消息附件字段可保存读取，旧消息表会自动补列', () async {
+      db = await databaseFactoryFfi.openDatabase(inMemoryDatabasePath);
+      await db.execute(
+        'create table tb_story_message (id integer primary key autoincrement'
+        ', roomId integer not null, speakerId integer, speakerRole text'
+        ', speakerName text, speakerAvatarType text, speakerAvatarValue text'
+        ', speakerVoiceStyle text, content text, createdAt integer, updatedAt integer)',
+      );
+      await db.insert('tb_story_message', {
+        'roomId': 999,
+        'speakerRole': 'user',
+        'speakerName': '旧用户',
+        'content': '旧消息',
+        'createdAt': 1,
+        'updatedAt': 1,
+      });
+
+      final dao = await StoryRoomDao.create(HiDBManager.test(db));
+      final legacy = await dao.getMessages(999);
+      expect(legacy.single.imagePaths, isEmpty);
+      expect(legacy.single.filePaths, isEmpty);
+      expect(legacy.single.attachmentContext, isEmpty);
+
+      final roomId = await dao.saveRoom(StoryRoomModel(title: '附件房间'));
+      final message = StoryMessageModel(
+        roomId: roomId,
+        speakerRole: 'user',
+        speakerName: '我',
+        content: '请看附件',
+        imagePaths: const ['/tmp/cover.png'],
+        filePaths: const ['/tmp/world.pdf', '/tmp/notes.txt'],
+        attachmentContext: '[附件 notes.txt 内容]',
+      );
+      await dao.saveMessage(message);
+
+      final saved = (await dao.getMessages(roomId)).single;
+      expect(saved.imagePaths, ['/tmp/cover.png']);
+      expect(saved.filePaths, ['/tmp/world.pdf', '/tmp/notes.txt']);
+      expect(saved.attachmentContext, '[附件 notes.txt 内容]');
     });
   });
 
@@ -504,6 +547,48 @@ void main() {
       final messages = await dao.getMessages(roomId);
       expect(messages, hasLength(1));
       expect(messages.single.content, '她轻轻推开图书馆的门。');
+    });
+
+    test('V3 群聊元数据会恢复到房间上下文且不凭空拆分参与者', () {
+      final assistant = AssistantRoleCardService.importJson(jsonEncode({
+        'spec': 'chara_card_v3',
+        'spec_version': '3.0',
+        'data': {
+          'name': 'Archivist',
+          'nickname': '馆长',
+          'description': '{{char}} 守护着档案塔。',
+          'personality': '克制。',
+          'first_mes': '',
+          'mes_example': '',
+          'group_only_greetings': ['{{char}} 在群聊里展开档案。'],
+          'extensions': {
+            'talkativeness': 0.7,
+            'depth_prompt': {
+              'prompt': '{{char}} 会先核对档案编号。',
+              'depth': 6,
+              'role': 'system',
+            },
+          },
+        },
+      }));
+
+      final plan = StoryRoomRoleCardImporter.buildPlan(
+        assistant,
+        roomId: 0,
+        title: '档案塔',
+      );
+
+      expect(plan.participants, hasLength(1));
+      expect(plan.room.replyMode, StoryReplyMode.autoSingle);
+      expect(plan.room.publicContext, contains('角色注释插入深度：6'));
+      expect(plan.room.publicContext, contains('群聊活跃度：0.7'));
+      expect(plan.room.publicContext, contains('群聊专属开场：馆长 在群聊里展开档案。'));
+      expect(
+          plan.room.publicContext, isNot(contains('chatai_deep.tavern_raw')));
+      expect(
+        StoryRoomRoleCardImporter.initialSceneMessage(assistant),
+        '馆长 在群聊里展开档案。',
+      );
     });
 
     test('批量角色卡可合并为一个酒馆房间', () async {

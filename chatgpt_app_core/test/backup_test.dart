@@ -14,6 +14,7 @@ import 'package:chatgpt_app_core/db/hi_db_manager.dart';
 import 'package:chatgpt_app_core/db/knowledge_dao.dart';
 import 'package:chatgpt_app_core/db/message_dao.dart';
 import 'package:chatgpt_app_core/db/project_dao.dart';
+import 'package:chatgpt_app_core/db/story_artifact_dao.dart';
 import 'package:chatgpt_app_core/db/story_room_dao.dart';
 import 'package:chatgpt_app_core/db/story_template_dao.dart';
 import 'package:chatgpt_app_core/model/ai_settings.dart';
@@ -21,6 +22,7 @@ import 'package:chatgpt_app_core/model/assistant_model.dart';
 import 'package:chatgpt_app_core/model/conversation_model.dart';
 import 'package:chatgpt_app_core/model/project_model.dart';
 import 'package:chatgpt_app_core/model/story_room_model.dart';
+import 'package:chatgpt_app_core/model/story_artifact_model.dart';
 import 'package:chatgpt_app_core/util/avatar_asset_service.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:sqflite_common_ffi/sqflite_ffi.dart';
@@ -180,6 +182,17 @@ void main() {
       final src = await newDb();
       final aid = await seed(src);
       final sourceIds = await seedStoryRoom(src, assistantId: aid);
+      final sourceArtifactDao = await StoryArtifactDao.create(src);
+      final sourceArtifact = StoryArtifactModel(
+        roomId: sourceIds['roomId']!,
+        type: StoryArtifactType.chapter,
+        title: '第一章',
+        content: '初稿',
+        status: 'draft',
+      );
+      await sourceArtifactDao.saveArtifact(sourceArtifact);
+      sourceArtifact.content = '修订稿';
+      await sourceArtifactDao.saveArtifact(sourceArtifact);
       final bytes = await BackupService(src).exportArchive(
         settings: AISettings.defaults(),
         accountHash: 'acc1',
@@ -187,7 +200,13 @@ void main() {
       await src.db.close();
 
       final dst = await newDb();
-      await seedStoryRoom(dst, title: '本地旧酒馆');
+      final localIds = await seedStoryRoom(dst, title: '本地旧酒馆');
+      final localArtifactDao = await StoryArtifactDao.create(dst);
+      await localArtifactDao.saveArtifact(StoryArtifactModel(
+        roomId: localIds['roomId']!,
+        type: StoryArtifactType.outline,
+        title: '本地资料',
+      ));
       final preview = await BackupService(dst).previewArchive(
         bytes,
         accountHash: 'acc1',
@@ -195,6 +214,8 @@ void main() {
       expect(preview.storyRooms, 1);
       expect(preview.storyParticipants, 1);
       expect(preview.storyMessages, 1);
+      expect(preview.storyArtifacts, 1);
+      expect(preview.storyArtifactRevisions, 1);
       expect(preview.totalRows, greaterThanOrEqualTo(3));
       expect(
         preview.conflictSummary.tableConflicts
@@ -212,13 +233,23 @@ void main() {
       expect(result.storyRooms, 1);
       expect(result.storyParticipants, 1);
       expect(result.storyMessages, 1);
+      expect(result.storyArtifacts, 1);
+      expect(result.storyArtifactRevisions, 1);
       expect(await dst.db.query('tb_story_room'), hasLength(1));
       expect(await dst.db.query('tb_story_participant'), hasLength(1));
       final messages = await dst.db.query('tb_story_message');
       expect(messages, hasLength(1));
-      expect(messages.single['roomId'], sourceIds['roomId']);
-      expect(messages.single['speakerId'], sourceIds['participantId']);
+      expect(messages.single['roomId'], isNot(sourceIds['roomId']));
+      expect(messages.single['speakerId'], isNot(sourceIds['participantId']));
       expect(messages.single['content'], '她抬起头，看向门口。');
+      final restoredRoomId = messages.single['roomId'] as int;
+      final artifacts = await dst.db.query('tb_story_artifact');
+      expect(artifacts, hasLength(1));
+      expect(artifacts.single['roomId'], restoredRoomId);
+      expect(artifacts.single['id'], isNot(sourceArtifact.id));
+      final revisions = await dst.db.query('tb_story_artifact_revision');
+      expect(revisions, hasLength(1));
+      expect(revisions.single['artifactId'], artifacts.single['id']);
       await dst.db.close();
     });
 
@@ -227,7 +258,18 @@ void main() {
       final srcAid = await (await AssistantDao.create(src)).saveAssistant(
         AssistantModel(name: '源角色', prompt: '源角色设定'),
       );
-      await seedStoryRoom(src, assistantId: srcAid, title: '源酒馆');
+      final sourceIds =
+          await seedStoryRoom(src, assistantId: srcAid, title: '源酒馆');
+      final sourceArtifactDao = await StoryArtifactDao.create(src);
+      final sourceArtifact = StoryArtifactModel(
+        roomId: sourceIds['roomId']!,
+        type: StoryArtifactType.outline,
+        title: '源大纲',
+        content: '源内容',
+      );
+      await sourceArtifactDao.saveArtifact(sourceArtifact);
+      sourceArtifact.content = '源修订';
+      await sourceArtifactDao.saveArtifact(sourceArtifact);
       final bytes = await BackupService(src).exportArchive(
         settings: AISettings.defaults(),
         accountHash: 'acc1',
@@ -243,6 +285,12 @@ void main() {
         assistantId: dstAid,
         title: '本地酒馆',
       );
+      final localArtifactDao = await StoryArtifactDao.create(dst);
+      await localArtifactDao.saveArtifact(StoryArtifactModel(
+        roomId: localIds['roomId']!,
+        type: StoryArtifactType.outline,
+        title: '本地大纲',
+      ));
       final result = await BackupService(dst).importArchive(
         bytes,
         accountHash: 'acc1',
@@ -252,6 +300,8 @@ void main() {
       expect(result.storyRooms, 1);
       expect(result.storyParticipants, 1);
       expect(result.storyMessages, 1);
+      expect(result.storyArtifacts, 1);
+      expect(result.storyArtifactRevisions, 1);
       expect(result.warnings.join('\n'), contains('酒馆房间 ID'));
       expect(await dst.db.query('tb_story_room'), hasLength(2));
       expect(await dst.db.query('tb_story_participant'), hasLength(2));
@@ -280,6 +330,21 @@ void main() {
           .single;
       expect(importedMessage['speakerId'], importedParticipantId);
       expect(importedParticipant['assistantId'], isNot(dstAid));
+      final importedArtifact = (await dst.db.query(
+        'tb_story_artifact',
+        where: 'title = ?',
+        whereArgs: ['源大纲'],
+      ))
+          .single;
+      expect(importedArtifact['roomId'], importedRoomId);
+      expect(importedArtifact['id'], isNot(sourceArtifact.id));
+      final importedRevision = (await dst.db.query(
+        'tb_story_artifact_revision',
+        where: 'artifactId = ?',
+        whereArgs: [importedArtifact['id']],
+      ))
+          .single;
+      expect(importedRevision['artifactId'], importedArtifact['id']);
       await dst.db.close();
     });
 

@@ -71,6 +71,8 @@ class StoryRoomRoleCardImporter {
     required String title,
     AssistantRoleCardTavernMeta? tavernMeta,
   }) {
+    final effectiveMeta = tavernMeta ??
+        AssistantRoleCardService.tavernMetaFromAssistant(assistant);
     final participants = resolveParticipantsForAssistant(
       assistant,
       roomId: roomId,
@@ -84,7 +86,7 @@ class StoryRoomRoleCardImporter {
           ? StoryReplyMode.autoMulti
           : StoryReplyMode.autoSingle,
       maxAutoReplies: multiParticipant ? 2 : 1,
-      publicContext: buildPublicContext(assistant, tavernMeta: tavernMeta),
+      publicContext: buildPublicContext(assistant, tavernMeta: effectiveMeta),
     );
     if (participants.isEmpty) {
       participants.add(StoryParticipantModel(
@@ -103,24 +105,29 @@ class StoryRoomRoleCardImporter {
     AssistantModel assistant, {
     AssistantRoleCardTavernMeta? tavernMeta,
   }) {
+    final effectiveMeta = tavernMeta ??
+        AssistantRoleCardService.tavernMetaFromAssistant(assistant);
     final parts = <String>[
-      if (tavernMeta != null && !tavernMeta.isEmpty)
-        _section('Tavern 原卡信息', _tavernMetaText(tavernMeta)),
+      if (effectiveMeta != null && !effectiveMeta.isEmpty)
+        _section('Tavern 原卡信息', _tavernMetaText(effectiveMeta)),
       _section('角色卡说明', assistant.description),
       _section('公共设定', assistant.prompt),
       if (assistant.openingMessage.trim().isNotEmpty)
         _section('默认开场', assistant.openingMessage),
-      if (tavernMeta != null && tavernMeta.alternateGreetings.isNotEmpty)
+      if (effectiveMeta != null && effectiveMeta.alternateGreetings.isNotEmpty)
         _section(
           '备选开场',
-          tavernMeta.alternateGreetings
+          effectiveMeta.alternateGreetings
               .asMap()
               .entries
               .map((entry) => '${entry.key + 1}. ${entry.value}')
               .join('\n\n'),
         ),
       _section('示例对话', assistant.exampleDialogs),
-      _section('关键词记忆 / 世界书', assistant.memoryBook),
+      _section(
+        '关键词记忆 / 世界书',
+        AssistantRoleCardService.memoryBookForRuntime(assistant.memoryBook),
+      ),
     ].where((part) => part.isNotEmpty).toList();
     return parts.join('\n\n');
   }
@@ -234,11 +241,14 @@ class StoryRoomRoleCardImporter {
       if (sections.isNotEmpty) {
         parts.add('【角色卡：$name】\n${sections.join('\n\n')}');
       }
-      final meta = result.tavernMeta;
+      final meta = result.tavernMeta ??
+          AssistantRoleCardService.tavernMetaFromAssistant(assistant);
       if (meta != null && !meta.isEmpty) {
         parts.add('【Tavern 原卡信息：$name】\n${_tavernMetaText(meta)}');
       }
-      final memoryBook = assistant.memoryBook.trim();
+      final memoryBook =
+          AssistantRoleCardService.memoryBookForRuntime(assistant.memoryBook)
+              .trim();
       if (memoryBook.isNotEmpty) {
         memorySections.add('# $name\n$memoryBook');
       }
@@ -255,8 +265,14 @@ class StoryRoomRoleCardImporter {
   }) {
     final opening = assistant.openingMessage.trim();
     if (opening.isNotEmpty) return opening;
-    if (tavernMeta == null) return '';
-    return tavernMeta.alternateGreetings
+    final effectiveMeta = tavernMeta ??
+        AssistantRoleCardService.tavernMetaFromAssistant(assistant);
+    if (effectiveMeta == null) return '';
+    final alternate = effectiveMeta.alternateGreetings
+        .map((item) => item.trim())
+        .firstWhere((item) => item.isNotEmpty, orElse: () => '');
+    if (alternate.isNotEmpty) return alternate;
+    return effectiveMeta.groupOnlyGreetings
         .map((item) => item.trim())
         .firstWhere((item) => item.isNotEmpty, orElse: () => '');
   }
@@ -519,11 +535,26 @@ class StoryRoomRoleCardImporter {
       if (meta.createDate.isNotEmpty) '创建时间：${meta.createDate}',
       if (meta.updateDate.isNotEmpty) '更新时间：${meta.updateDate}',
       if (meta.source.isNotEmpty) '来源：${meta.source}',
+      if (meta.sources.length > 1) '来源列表：${meta.sources.join('、')}',
+      if (meta.nickname.isNotEmpty) '角色别名：${meta.nickname}',
+      if (meta.creationTimestamp != null) '创建时间戳：${meta.creationTimestamp}',
+      if (meta.modificationTimestamp != null)
+        '修改时间戳：${meta.modificationTimestamp}',
       if (meta.tags.isNotEmpty) '标签：${meta.tags.join('、')}',
       if (meta.creatorNotes.isNotEmpty) '作者备注：${meta.creatorNotes}',
       if (meta.systemPrompt.isNotEmpty) '系统提示：${meta.systemPrompt}',
       if (meta.postHistoryInstructions.isNotEmpty)
         '后续指令：${meta.postHistoryInstructions}',
+      if (meta.extensionWorld.isNotEmpty) '扩展世界：${meta.extensionWorld}',
+      if (meta.talkativeness != null) '群聊活跃度：${meta.talkativeness}',
+      if (meta.characterDepthPrompt.isNotEmpty)
+        '角色注释：${meta.characterDepthPrompt}',
+      if (meta.characterDepthPromptDepth != null)
+        '角色注释插入深度：${meta.characterDepthPromptDepth}',
+      if (meta.characterDepthPromptRole.isNotEmpty)
+        '角色注释角色：${meta.characterDepthPromptRole}',
+      if (meta.groupOnlyGreetings.isNotEmpty)
+        '群聊专属开场：${meta.groupOnlyGreetings.join(' / ')}',
       if (meta.characterBookName.isNotEmpty) '世界书：${meta.characterBookName}',
       if (meta.characterBookEntryCount > 0)
         '世界书条目：${meta.characterBookEntryCount}',

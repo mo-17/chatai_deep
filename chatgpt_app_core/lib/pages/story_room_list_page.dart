@@ -5,6 +5,8 @@ import 'dart:io';
 import 'package:chatgpt_app_core/chat/application/assistant_role_card_service.dart';
 import 'package:chatgpt_app_core/chat/application/assistant_role_card_translation_service.dart';
 import 'package:chatgpt_app_core/chat/application/story_room_role_card_importer.dart';
+import 'package:chatgpt_app_core/chat/application/story_template_transfer.dart';
+import 'package:chatgpt_app_core/chat/application/story_template_translation_tasks.dart';
 import 'package:chatgpt_app_core/chat/application/tavern_room_import_preparer.dart';
 import 'package:chatgpt_app_core/dao/chat/chat_service.dart';
 import 'package:chatgpt_app_core/db/hi_db_manager.dart';
@@ -14,17 +16,19 @@ import 'package:chatgpt_app_core/model/ai_settings.dart';
 import 'package:chatgpt_app_core/model/assistant_model.dart';
 import 'package:chatgpt_app_core/model/story_room_model.dart';
 import 'package:chatgpt_app_core/model/story_template_model.dart';
+import 'package:chatgpt_app_core/model/story_template_translation_task_model.dart';
 import 'package:chatgpt_app_core/pages/story_room_page.dart';
 import 'package:chatgpt_app_core/provider/ai_settings_provider.dart';
 import 'package:chatgpt_app_core/util/hi_dialog.dart';
 import 'package:chatgpt_app_core/widget/translation_task_log_dialog.dart';
+import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:provider/provider.dart';
 import 'package:share_plus/share_plus.dart';
 
 final _storyTemplateTranslationCoordinator =
-    _StoryTemplateTranslationCoordinator();
+    StoryTemplateTranslationCoordinator();
 
 class StoryRoomListPage extends StatefulWidget {
   const StoryRoomListPage({super.key});
@@ -39,7 +43,7 @@ class _StoryRoomListPageState extends State<StoryRoomListPage> {
   List<StoryRoomModel> _rooms = const [];
   List<StoryTemplateModel> _templates = const [];
   int _tabIndex = 0;
-  int _lastTemplateTranslationCompletedTick = 0;
+  final Set<int> _observedCompletedTemplateTaskIds = <int>{};
   bool _loading = true;
 
   @override
@@ -60,9 +64,14 @@ class _StoryRoomListPageState extends State<StoryRoomListPage> {
   void _handleTemplateTranslationChanged() {
     if (!mounted) return;
     setState(() {});
-    final completedTick = _storyTemplateTranslationCoordinator.completedTick;
-    if (completedTick != _lastTemplateTranslationCompletedTick) {
-      _lastTemplateTranslationCompletedTick = completedTick;
+    final newCompleted = _storyTemplateTranslationCoordinator.tasks
+        .where((task) =>
+            task.status == StoryTemplateTranslationTaskStatus.completed &&
+            task.id != null)
+        .map((task) => task.id!)
+        .where(_observedCompletedTemplateTaskIds.add)
+        .isNotEmpty;
+    if (newCompleted) {
       unawaited(_load());
     }
   }
@@ -71,6 +80,10 @@ class _StoryRoomListPageState extends State<StoryRoomListPage> {
     final db = await HiDBManager.instance(dbName: HiDBManager.getAccountHash());
     final dao = await StoryRoomDao.create(db);
     final templateDao = await StoryTemplateDao.create(db);
+    await _storyTemplateTranslationCoordinator.initialize(
+      db,
+      accountHash: HiDBManager.getAccountHash(),
+    );
     final rooms = await dao.getRooms();
     final templates = await templateDao.getTemplates();
     if (!mounted) return;
@@ -86,7 +99,17 @@ class _StoryRoomListPageState extends State<StoryRoomListPage> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      appBar: AppBar(title: const Text('创作 / 酒馆')),
+      appBar: AppBar(
+        title: const Text('创作 / 酒馆'),
+        actions: [
+          if (_tabIndex == 1 && Platform.operatingSystem != 'ohos')
+            IconButton(
+              icon: const Icon(Icons.file_upload_outlined),
+              tooltip: '导入本 App 导出的酒馆模板',
+              onPressed: _importTemplate,
+            ),
+        ],
+      ),
       body: _loading
           ? const Center(child: CircularProgressIndicator())
           : Column(
@@ -120,14 +143,15 @@ class _StoryRoomListPageState extends State<StoryRoomListPage> {
               ],
             ),
       floatingActionButton: FloatingActionButton(
-        onPressed: _tabIndex == 0 ? _showCreateRoomSheet : _showTemplateHint,
-        child: Icon(_tabIndex == 0 ? Icons.add : Icons.info_outline),
+        onPressed: _tabIndex == 0 ? _showCreateRoomSheet : _showTemplateActions,
+        tooltip: _tabIndex == 0 ? '新建房间' : '模板操作',
+        child: const Icon(Icons.add),
       ),
     );
   }
 
   Widget _buildTemplateTranslationJobs() {
-    final jobs = _storyTemplateTranslationCoordinator.jobs;
+    final jobs = _storyTemplateTranslationCoordinator.tasks;
     if (jobs.isEmpty) return const SizedBox.shrink();
     return Column(
       children: [
@@ -135,7 +159,13 @@ class _StoryRoomListPageState extends State<StoryRoomListPage> {
           _StoryTemplateTranslationJobTile(
             job: job,
             onShowLog: () => _showTemplateTranslationLog(job),
-            onDismiss: () => _storyTemplateTranslationCoordinator.dismiss(job),
+            onRetry: job.canRetry ? () => _retryTemplateTranslation(job) : null,
+            onCancel: job.isRunning
+                ? () => _storyTemplateTranslationCoordinator.cancel(job)
+                : null,
+            onDismiss: job.isTerminal
+                ? () => _storyTemplateTranslationCoordinator.dismiss(job)
+                : null,
           ),
         const Divider(height: 1),
       ],
@@ -238,6 +268,8 @@ class _StoryRoomListPageState extends State<StoryRoomListPage> {
               onSelected: (value) {
                 if (value == 'create') {
                   _createRoomFromTemplate(template);
+                } else if (value == 'edit') {
+                  _editTemplate(template);
                 } else if (value == 'rename') {
                   _renameTemplate(template);
                 } else if (value == 'opening') {
@@ -258,6 +290,16 @@ class _StoryRoomListPageState extends State<StoryRoomListPage> {
                       Icon(Icons.add_circle_outline),
                       SizedBox(width: 8),
                       Text('开新房间'),
+                    ],
+                  ),
+                ),
+                const PopupMenuItem(
+                  value: 'edit',
+                  child: Row(
+                    children: [
+                      Icon(Icons.tune_outlined),
+                      SizedBox(width: 8),
+                      Text('完整编辑'),
                     ],
                   ),
                 ),
@@ -314,7 +356,7 @@ class _StoryRoomListPageState extends State<StoryRoomListPage> {
                 ),
               ],
             ),
-            onTap: () => _createRoomFromTemplate(template),
+            onTap: () => _editTemplate(template),
           );
         },
       ),
@@ -368,8 +410,139 @@ class _StoryRoomListPageState extends State<StoryRoomListPage> {
     );
   }
 
-  void _showTemplateHint() {
-    HiDialog.showSnackBar(context, '请从助手管理导入角色卡，选择「酒馆房间」后会自动保存模板');
+  Future<void> _showTemplateActions() async {
+    final action = await showModalBottomSheet<String>(
+      context: context,
+      showDragHandle: true,
+      builder: (ctx) => SafeArea(
+        child: Padding(
+          padding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              ListTile(
+                leading: const CircleAvatar(
+                  child: Icon(Icons.note_add_outlined),
+                ),
+                title: const Text('新建酒馆模板'),
+                subtitle: const Text('从一个空白角色开始配置'),
+                onTap: () => Navigator.pop(ctx, 'new'),
+              ),
+              if (Platform.operatingSystem != 'ohos')
+                ListTile(
+                  leading: const CircleAvatar(
+                    child: Icon(Icons.file_upload_outlined),
+                  ),
+                  title: const Text('导入酒馆模板'),
+                  subtitle: const Text('仅支持本 App 导出的 JSON 文件'),
+                  onTap: () => Navigator.pop(ctx, 'import'),
+                ),
+            ],
+          ),
+        ),
+      ),
+    );
+    if (action == 'new') await _createEmptyTemplate();
+    if (action == 'import') await _importTemplate();
+  }
+
+  Future<void> _createEmptyTemplate() async {
+    final template = StoryRoomTemplatePayload(
+      results: [
+        AssistantRoleCardImportResult(
+          assistant: AssistantModel(name: '新角色'),
+        ),
+      ],
+    ).toTemplate(title: '未命名酒馆模板');
+    await _editTemplate(template, creating: true);
+  }
+
+  Future<void> _importTemplate() async {
+    final dao = _templateDao;
+    if (dao == null) return;
+    if (Platform.operatingSystem == 'ohos') {
+      HiDialog.showSnackBar(context, '鸿蒙版本暂不支持模板文件选择');
+      return;
+    }
+    try {
+      final picked = await FilePicker.pickFiles(
+        dialogTitle: '选择本 App 导出的酒馆模板',
+        type: FileType.custom,
+        allowedExtensions: const ['json'],
+        withData: true,
+      );
+      final file = picked?.files.single;
+      if (file == null) return;
+      final bytes = file.bytes;
+      final content = bytes != null
+          ? utf8.decode(bytes)
+          : file.path != null
+              ? await File(file.path!).readAsString()
+              : null;
+      if (content == null) {
+        throw const FormatException('无法读取选中的模板文件');
+      }
+      final imported = StoryTemplateTransfer.importJson(content);
+      final originalTitle = imported.title;
+      imported.title = StoryTemplateTransfer.uniqueTitle(
+        originalTitle,
+        (await dao.getTemplates()).map((item) => item.title),
+      );
+      await dao.saveTemplate(imported);
+      if (!mounted) return;
+      await _load();
+      if (!mounted) return;
+      final renamed = imported.title != originalTitle;
+      HiDialog.showSnackBar(
+        context,
+        renamed ? '模板重名，已导入为「${imported.title}」' : '已导入模板「${imported.title}」',
+      );
+    } catch (error) {
+      if (!mounted) return;
+      final message =
+          error is FormatException ? error.message : '导入模板失败：$error';
+      HiDialog.showSnackBar(context, message);
+    }
+  }
+
+  Future<void> _editTemplate(
+    StoryTemplateModel template, {
+    bool creating = false,
+  }) async {
+    final dao = _templateDao;
+    if (dao == null) return;
+    try {
+      final payload = StoryRoomTemplatePayload.fromTemplate(template);
+      if (payload.results.isEmpty) {
+        throw const FormatException('酒馆模板至少需要一个角色');
+      }
+      final result = await Navigator.push<StoryTemplateModel>(
+        context,
+        MaterialPageRoute(
+          builder: (_) => _StoryTemplateEditorPage(
+            template: template,
+            payload: payload,
+          ),
+        ),
+      );
+      if (result == null) return;
+      if (creating) {
+        result.title = StoryTemplateTransfer.uniqueTitle(
+          result.title,
+          (await dao.getTemplates()).map((item) => item.title),
+        );
+      }
+      await dao.saveTemplate(result);
+      if (!mounted) return;
+      await _load();
+      if (!mounted) return;
+      HiDialog.showSnackBar(context, creating ? '已创建模板' : '模板已保存');
+    } catch (error) {
+      if (!mounted) return;
+      final message =
+          error is FormatException ? error.message : '编辑模板失败：$error';
+      HiDialog.showSnackBar(context, message);
+    }
   }
 
   Future<void> _showCreateRoomSheet() async {
@@ -461,6 +634,10 @@ class _StoryRoomListPageState extends State<StoryRoomListPage> {
       replyMode: room.replyMode,
       maxAutoReplies: room.maxAutoReplies,
       publicContext: room.publicContext,
+      modelProviderId: room.modelProviderId,
+      modelId: room.modelId,
+      temperature: room.temperature,
+      maxOutputTokens: room.maxOutputTokens,
       createdAt: room.createdAt,
       updatedAt: room.updatedAt,
     );
@@ -587,20 +764,7 @@ class _StoryRoomListPageState extends State<StoryRoomListPage> {
 
   Future<void> _exportTemplate(StoryTemplateModel template) async {
     try {
-      final payload = jsonDecode(template.payload);
-      final body = const JsonEncoder.withIndent('  ').convert({
-        'format': 'chatai_deep_tavern_template',
-        'formatVersion': 1,
-        'template': {
-          'title': template.title,
-          'sourceTitle': template.sourceTitle,
-          'kind': template.kind,
-          'translated': template.translated,
-          'createdAt': template.createdAt,
-          'updatedAt': template.updatedAt,
-          'payload': payload,
-        },
-      });
+      final body = StoryTemplateTransfer.exportJson(template);
       final dir = await getTemporaryDirectory();
       final file = File('${dir.path}/${_templateExportFilename(template)}');
       await file.writeAsString(body);
@@ -616,9 +780,8 @@ class _StoryRoomListPageState extends State<StoryRoomListPage> {
   Future<void> _translateTemplateAsSimplifiedCopy(
     StoryTemplateModel template,
   ) async {
-    late final StoryRoomTemplatePayload payload;
     try {
-      payload = StoryRoomTemplatePayload.fromTemplate(template);
+      StoryRoomTemplatePayload.fromTemplate(template);
     } catch (e) {
       HiDialog.showSnackBar(context, '模板数据异常：$e');
       return;
@@ -628,12 +791,49 @@ class _StoryRoomListPageState extends State<StoryRoomListPage> {
       return;
     }
     final settings = context.read<AISettingsProvider>().settings.clone();
-    _storyTemplateTranslationCoordinator.start(
-      template: template,
-      payload: payload,
-      settings: settings,
+    final chatService = ChatService.from(settings);
+    try {
+      await _storyTemplateTranslationCoordinator.start(
+        template,
+        complete: (prompt) async {
+          final response = await chatService.chat(
+            prompt: prompt,
+            history: const [],
+            timeout: const Duration(minutes: 2),
+          );
+          if (response == null || response.trim().isEmpty) {
+            throw StateError('翻译服务未返回内容');
+          }
+          return response;
+        },
+      );
+      if (!mounted) return;
+      HiDialog.showSnackBar(context, '已加入后台任务，可在当前页面查看进度');
+    } catch (error) {
+      if (!mounted) return;
+      HiDialog.showSnackBar(context, '创建翻译任务失败：$error');
+    }
+  }
+
+  Future<void> _retryTemplateTranslation(
+    StoryTemplateTranslationTaskModel task,
+  ) async {
+    final settings = context.read<AISettingsProvider>().settings.clone();
+    final chatService = ChatService.from(settings);
+    await _storyTemplateTranslationCoordinator.retry(
+      task,
+      complete: (prompt) async {
+        final response = await chatService.chat(
+          prompt: prompt,
+          history: const [],
+          timeout: const Duration(minutes: 2),
+        );
+        if (response == null || response.trim().isEmpty) {
+          throw StateError('翻译服务未返回内容');
+        }
+        return response;
+      },
     );
-    HiDialog.showSnackBar(context, '已加入后台任务，可在当前页面查看进度');
   }
 
   List<String> _templateOpeningCandidates(StoryRoomTemplatePayload payload) {
@@ -699,7 +899,7 @@ class _StoryRoomListPageState extends State<StoryRoomListPage> {
     );
   }
 
-  void _showTemplateTranslationLog(_StoryTemplateTranslationJob job) {
+  void _showTemplateTranslationLog(StoryTemplateTranslationTaskModel job) {
     showDialog<void>(
       context: context,
       builder: (ctx) => TranslationTaskLogDialog(
@@ -753,6 +953,7 @@ class _StoryTemplateTranslationJob {
   bool get running => status == _StoryTemplateTranslationJobStatus.running;
 }
 
+// ignore: unused_element
 class _StoryTemplateTranslationCoordinator extends ChangeNotifier {
   final List<_StoryTemplateTranslationJob> _jobs = [];
   int _completedTick = 0;
@@ -1049,12 +1250,13 @@ class _StoryTemplateTranslationCoordinator extends ChangeNotifier {
   }
 }
 
-class _StoryTemplateTranslationJobTile extends StatelessWidget {
+// ignore: unused_element
+class _LegacyStoryTemplateTranslationJobTile extends StatelessWidget {
   final _StoryTemplateTranslationJob job;
   final VoidCallback onShowLog;
   final VoidCallback onDismiss;
 
-  const _StoryTemplateTranslationJobTile({
+  const _LegacyStoryTemplateTranslationJobTile({
     required this.job,
     required this.onShowLog,
     required this.onDismiss,
@@ -1143,6 +1345,150 @@ class _StoryTemplateTranslationJobTile extends StatelessWidget {
                 contentPadding: EdgeInsets.zero,
                 leading: Icon(Icons.close),
                 title: Text('移除记录'),
+              ),
+            ),
+        ],
+      ),
+    );
+  }
+}
+
+class _StoryTemplateTranslationJobTile extends StatelessWidget {
+  final StoryTemplateTranslationTaskModel job;
+  final VoidCallback onShowLog;
+  final VoidCallback? onRetry;
+  final VoidCallback? onCancel;
+  final VoidCallback? onDismiss;
+
+  const _StoryTemplateTranslationJobTile({
+    required this.job,
+    required this.onShowLog,
+    this.onRetry,
+    this.onCancel,
+    this.onDismiss,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final failed = job.status == StoryTemplateTranslationTaskStatus.failed;
+    final completed =
+        job.status == StoryTemplateTranslationTaskStatus.completed;
+    final cancelled =
+        job.status == StoryTemplateTranslationTaskStatus.cancelled;
+    final color = failed
+        ? Colors.red[700]
+        : completed
+            ? Colors.green[700]
+            : cancelled
+                ? Colors.grey[700]
+                : Colors.blueGrey[700];
+    return ListTile(
+      dense: true,
+      leading: CircleAvatar(
+        backgroundColor: failed
+            ? Colors.red[50]
+            : completed
+                ? Colors.green[50]
+                : Colors.blueGrey[50],
+        child: Icon(
+          failed
+              ? Icons.error_outline
+              : completed
+                  ? Icons.check
+                  : cancelled
+                      ? Icons.cancel_outlined
+                      : Icons.translate_outlined,
+          color: color,
+        ),
+      ),
+      title: Text(
+        job.outputTitle.trim().isEmpty ? job.sourceTitle : job.outputTitle,
+        maxLines: 1,
+        overflow: TextOverflow.ellipsis,
+      ),
+      subtitle: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(
+            [
+              StoryTemplateTranslationTaskStatus.labelOf(job.status),
+              job.stage,
+              if (job.detail.trim().isNotEmpty) job.detail.trim(),
+            ].where((item) => item.trim().isNotEmpty).join(' · '),
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+            style: TextStyle(color: color),
+          ),
+          const SizedBox(height: 4),
+          LinearProgressIndicator(
+            value: job.progress.clamp(0, 1).toDouble(),
+            minHeight: 3,
+            backgroundColor: Colors.black12,
+            color: color,
+          ),
+          if (job.fieldLabel.trim().isNotEmpty)
+            Text(
+              [
+                if (job.roleName.trim().isNotEmpty) job.roleName.trim(),
+                job.fieldLabel.trim(),
+                if (job.fieldTotal > 1) '${job.fieldIndex}/${job.fieldTotal}',
+              ].join(' · '),
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: const TextStyle(fontSize: 12, color: Colors.black54),
+            ),
+        ],
+      ),
+      trailing: PopupMenuButton<String>(
+        tooltip: '任务操作',
+        onSelected: (value) {
+          if (value == 'log') onShowLog();
+          if (value == 'retry') onRetry?.call();
+          if (value == 'cancel') onCancel?.call();
+          if (value == 'dismiss') onDismiss?.call();
+        },
+        itemBuilder: (_) => [
+          const PopupMenuItem(
+            value: 'log',
+            child: Row(
+              children: [
+                Icon(Icons.article_outlined),
+                SizedBox(width: 8),
+                Text('查看日志'),
+              ],
+            ),
+          ),
+          if (onRetry != null)
+            const PopupMenuItem(
+              value: 'retry',
+              child: Row(
+                children: [
+                  Icon(Icons.refresh),
+                  SizedBox(width: 8),
+                  Text('重试'),
+                ],
+              ),
+            ),
+          if (onCancel != null)
+            const PopupMenuItem(
+              value: 'cancel',
+              child: Row(
+                children: [
+                  Icon(Icons.stop_circle_outlined),
+                  SizedBox(width: 8),
+                  Text('取消'),
+                ],
+              ),
+            ),
+          if (onDismiss != null)
+            const PopupMenuItem(
+              value: 'dismiss',
+              child: Row(
+                children: [
+                  Icon(Icons.close),
+                  SizedBox(width: 8),
+                  Text('移除记录'),
+                ],
               ),
             ),
         ],
@@ -1294,6 +1640,380 @@ class _TemplateOpeningDialogState extends State<_TemplateOpeningDialog> {
           child: const Text('保存'),
         ),
       ],
+    );
+  }
+}
+
+class _StoryTemplateEditorPage extends StatefulWidget {
+  final StoryTemplateModel template;
+  final StoryRoomTemplatePayload payload;
+
+  const _StoryTemplateEditorPage({
+    required this.template,
+    required this.payload,
+  });
+
+  @override
+  State<_StoryTemplateEditorPage> createState() =>
+      _StoryTemplateEditorPageState();
+}
+
+class _StoryTemplateEditorPageState extends State<_StoryTemplateEditorPage> {
+  late final TextEditingController _titleController;
+  late final TextEditingController _openingController;
+  late List<AssistantRoleCardImportResult> _roles;
+  late List<int> _roleKeys;
+  int _nextRoleKey = 0;
+
+  @override
+  void initState() {
+    super.initState();
+    _titleController = TextEditingController(text: widget.template.title);
+    _openingController = TextEditingController(
+      text: widget.payload.initialOpening,
+    );
+    _roles = widget.payload.results.map(_copyRole).toList(growable: true);
+    _roleKeys = List<int>.generate(_roles.length, (_) => _nextRoleKey++);
+  }
+
+  @override
+  void dispose() {
+    _titleController.dispose();
+    _openingController.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(
+        title: const Text('编辑酒馆模板'),
+        actions: [
+          IconButton(
+            icon: const Icon(Icons.save_outlined),
+            tooltip: '保存模板',
+            onPressed: _save,
+          ),
+        ],
+      ),
+      body: ReorderableListView.builder(
+        padding: const EdgeInsets.fromLTRB(16, 16, 16, 32),
+        header: Padding(
+          padding: const EdgeInsets.only(bottom: 12),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              TextField(
+                controller: _titleController,
+                textInputAction: TextInputAction.next,
+                decoration: const InputDecoration(
+                  labelText: '模板名称',
+                  border: OutlineInputBorder(),
+                ),
+              ),
+              const SizedBox(height: 12),
+              TextField(
+                controller: _openingController,
+                minLines: 3,
+                maxLines: 7,
+                textInputAction: TextInputAction.newline,
+                decoration: const InputDecoration(
+                  labelText: '房间开场（优先显示）',
+                  alignLabelWithHint: true,
+                  border: OutlineInputBorder(),
+                ),
+              ),
+              const SizedBox(height: 16),
+              Text('角色（${_roles.length}）',
+                  style: Theme.of(context).textTheme.titleMedium),
+              const SizedBox(height: 4),
+            ],
+          ),
+        ),
+        footer: Padding(
+          padding: const EdgeInsets.only(top: 12),
+          child: OutlinedButton.icon(
+            icon: const Icon(Icons.person_add_alt_1_outlined),
+            label: const Text('添加角色'),
+            onPressed: _addRole,
+          ),
+        ),
+        itemCount: _roles.length,
+        onReorder: _reorder,
+        itemBuilder: (context, index) {
+          final role = _roles[index];
+          final assistant = role.assistant;
+          final subtitle = <String>[
+            if (assistant.description.trim().isNotEmpty)
+              assistant.description.trim(),
+            if (assistant.openingMessage.trim().isNotEmpty) '有角色开场',
+            if (assistant.memoryBook.trim().isNotEmpty) '有世界书',
+          ].join(' · ');
+          return ListTile(
+            key: ValueKey(_roleKeys[index]),
+            contentPadding: const EdgeInsets.symmetric(horizontal: 4),
+            leading: CircleAvatar(
+              child: Text(
+                '${index + 1}',
+                style: const TextStyle(fontSize: 14),
+              ),
+            ),
+            title: Text(
+              assistant.name.trim().isEmpty ? '未命名角色' : assistant.name,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+            ),
+            subtitle: subtitle.isEmpty
+                ? const Text('点击编辑角色资料')
+                : Text(
+                    subtitle,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                  ),
+            onTap: () => _editRole(index),
+            trailing: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                IconButton(
+                  icon: const Icon(Icons.delete_outline),
+                  tooltip: _roles.length == 1 ? '模板至少保留一个角色' : '删除角色',
+                  onPressed:
+                      _roles.length == 1 ? null : () => _deleteRole(index),
+                ),
+                ReorderableDragStartListener(
+                  index: index,
+                  child: const Padding(
+                    padding: EdgeInsets.all(8),
+                    child: Icon(Icons.drag_handle),
+                  ),
+                ),
+              ],
+            ),
+          );
+        },
+      ),
+    );
+  }
+
+  Future<void> _addRole() async {
+    final result = await Navigator.push<AssistantRoleCardImportResult>(
+      context,
+      MaterialPageRoute(
+        builder: (_) => _StoryTemplateRoleEditorPage(
+          role: AssistantRoleCardImportResult(
+            assistant: AssistantModel(name: '新角色'),
+          ),
+        ),
+      ),
+    );
+    if (result == null || !mounted) return;
+    setState(() {
+      _roles.add(result);
+      _roleKeys.add(_nextRoleKey++);
+    });
+  }
+
+  Future<void> _editRole(int index) async {
+    final result = await Navigator.push<AssistantRoleCardImportResult>(
+      context,
+      MaterialPageRoute(
+        builder: (_) => _StoryTemplateRoleEditorPage(role: _roles[index]),
+      ),
+    );
+    if (result == null || !mounted) return;
+    setState(() => _roles[index] = result);
+  }
+
+  void _deleteRole(int index) {
+    if (_roles.length <= 1) {
+      HiDialog.showSnackBar(context, '模板至少保留一个角色');
+      return;
+    }
+    setState(() {
+      _roles.removeAt(index);
+      _roleKeys.removeAt(index);
+    });
+  }
+
+  void _reorder(int oldIndex, int newIndex) {
+    if (newIndex > oldIndex) newIndex--;
+    setState(() {
+      _roles.insert(newIndex, _roles.removeAt(oldIndex));
+      _roleKeys.insert(newIndex, _roleKeys.removeAt(oldIndex));
+    });
+  }
+
+  void _save() {
+    final title = _titleController.text.trim();
+    if (title.isEmpty) {
+      HiDialog.showSnackBar(context, '请填写模板名称');
+      return;
+    }
+    if (_roles.isEmpty) {
+      HiDialog.showSnackBar(context, '模板至少保留一个角色');
+      return;
+    }
+    if (_roles.any((role) => role.assistant.name.trim().isEmpty)) {
+      HiDialog.showSnackBar(context, '每个角色都需要名称');
+      return;
+    }
+    final result = StoryTemplateModel(
+      id: widget.template.id,
+      title: title,
+      sourceTitle: widget.template.sourceTitle,
+      kind: widget.template.kind,
+      translated: widget.template.translated,
+      payload: jsonEncode(
+        StoryRoomTemplatePayload(
+          results: _roles,
+          initialOpening: _openingController.text.trim(),
+        ).toJson(),
+      ),
+      createdAt: widget.template.createdAt,
+      updatedAt: widget.template.updatedAt,
+    );
+    Navigator.pop(context, result);
+  }
+
+  static AssistantRoleCardImportResult _copyRole(
+    AssistantRoleCardImportResult role,
+  ) =>
+      AssistantRoleCardImportResult(
+        assistant: AssistantModel.fromJson(
+          Map<String, dynamic>.from(role.assistant.toJson()),
+        ),
+        avatarPngBytes: role.avatarPngBytes,
+        sourceName: role.sourceName,
+        tavernMeta: role.tavernMeta,
+      );
+}
+
+class _StoryTemplateRoleEditorPage extends StatefulWidget {
+  final AssistantRoleCardImportResult role;
+
+  const _StoryTemplateRoleEditorPage({required this.role});
+
+  @override
+  State<_StoryTemplateRoleEditorPage> createState() =>
+      _StoryTemplateRoleEditorPageState();
+}
+
+class _StoryTemplateRoleEditorPageState
+    extends State<_StoryTemplateRoleEditorPage> {
+  late final TextEditingController _nameController;
+  late final TextEditingController _promptController;
+  late final TextEditingController _descriptionController;
+  late final TextEditingController _avatarController;
+  late final TextEditingController _openingController;
+  late final TextEditingController _examplesController;
+  late final TextEditingController _worldBookController;
+
+  @override
+  void initState() {
+    super.initState();
+    final assistant = widget.role.assistant;
+    _nameController = TextEditingController(text: assistant.name);
+    _promptController = TextEditingController(text: assistant.prompt);
+    _descriptionController = TextEditingController(text: assistant.description);
+    _avatarController =
+        TextEditingController(text: assistant.avatarValue ?? '');
+    _openingController = TextEditingController(text: assistant.openingMessage);
+    _examplesController = TextEditingController(text: assistant.exampleDialogs);
+    _worldBookController = TextEditingController(text: assistant.memoryBook);
+  }
+
+  @override
+  void dispose() {
+    _nameController.dispose();
+    _promptController.dispose();
+    _descriptionController.dispose();
+    _avatarController.dispose();
+    _openingController.dispose();
+    _examplesController.dispose();
+    _worldBookController.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(
+        title: const Text('编辑角色'),
+        actions: [
+          IconButton(
+            icon: const Icon(Icons.save_outlined),
+            tooltip: '保存角色',
+            onPressed: _save,
+          ),
+        ],
+      ),
+      body: ListView(
+        padding: const EdgeInsets.fromLTRB(16, 16, 16, 32),
+        children: [
+          _field(_nameController, '角色名称', maxLines: 1),
+          _field(_descriptionController, '简介', minLines: 2, maxLines: 5),
+          _field(_avatarController, '头像引用（本地路径或 URL）', maxLines: 1),
+          _field(_promptController, '人设（系统提示）', minLines: 5, maxLines: 12),
+          _field(_openingController, '角色开场', minLines: 3, maxLines: 8),
+          _field(_examplesController, '示例对话', minLines: 4, maxLines: 12),
+          _field(_worldBookController, '世界书', minLines: 5, maxLines: 14),
+        ],
+      ),
+    );
+  }
+
+  Widget _field(
+    TextEditingController controller,
+    String label, {
+    int minLines = 1,
+    int? maxLines,
+  }) =>
+      Padding(
+        padding: const EdgeInsets.only(bottom: 14),
+        child: TextField(
+          controller: controller,
+          minLines: minLines,
+          maxLines: maxLines ?? minLines,
+          textInputAction:
+              minLines == 1 ? TextInputAction.next : TextInputAction.newline,
+          decoration: InputDecoration(
+            labelText: label,
+            alignLabelWithHint: minLines > 1,
+            border: const OutlineInputBorder(),
+          ),
+        ),
+      );
+
+  void _save() {
+    final name = _nameController.text.trim();
+    if (name.isEmpty) {
+      HiDialog.showSnackBar(context, '请填写角色名称');
+      return;
+    }
+    final assistant = AssistantModel.fromJson(
+      Map<String, dynamic>.from(widget.role.assistant.toJson()),
+    )
+      ..name = name
+      ..description = _descriptionController.text.trim()
+      ..prompt = _promptController.text.trim()
+      ..openingMessage = _openingController.text.trim()
+      ..exampleDialogs = _examplesController.text.trim()
+      ..memoryBook = _worldBookController.text.trim();
+    final avatar = _avatarController.text.trim();
+    assistant.avatarValue = avatar.isEmpty ? null : avatar;
+    if (avatar.isEmpty) {
+      assistant.avatarType = null;
+    } else if ((assistant.avatarType ?? '').trim().isEmpty) {
+      assistant.avatarType = 'image';
+    }
+    Navigator.pop(
+      context,
+      AssistantRoleCardImportResult(
+        assistant: assistant,
+        avatarPngBytes: widget.role.avatarPngBytes,
+        sourceName: widget.role.sourceName,
+        tavernMeta: widget.role.tavernMeta,
+      ),
     );
   }
 }

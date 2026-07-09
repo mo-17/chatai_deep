@@ -1,0 +1,115 @@
+import 'dart:io';
+
+import 'package:chatgpt_app_core/chat/application/file_processor.dart';
+import 'package:chatgpt_app_core/chat/domain/chat_attachments.dart';
+import 'package:chatgpt_app_core/chat/domain/model_capabilities.dart';
+import 'package:chatgpt_app_core/model/story_room_model.dart';
+
+/// 酒馆房间附件的数量和历史重建规则。
+class StoryRoomAttachmentPolicy {
+  const StoryRoomAttachmentPolicy._();
+
+  static const maxImages = 4;
+  static const maxFiles = 10;
+
+  static List<String> normalizePaths(
+    Iterable<String> paths, {
+    required int limit,
+  }) {
+    final seen = <String>{};
+    final result = <String>[];
+    for (final raw in paths) {
+      final path = raw.trim();
+      if (path.isEmpty || !seen.add(path)) continue;
+      result.add(path);
+      if (result.length >= limit) break;
+    }
+    return result;
+  }
+
+  /// 旧消息没有附件字段时保持原来的纯文本历史；新消息把已抽取文本接在
+  /// 用户内容之后，使重开房间后仍能把降级文件上下文发回模型。
+  static String historyContent(StoryMessageModel message) {
+    final text = message.content.trim();
+    final attachmentText = message.attachmentContext.trim();
+    if (attachmentText.isEmpty) return text;
+    if (text.isEmpty) return attachmentText;
+    return '$text\n\n$attachmentText';
+  }
+}
+
+/// 当前轮发给每个角色的同一份附件包。
+class StoryRoomAttachmentBundle {
+  final List<String> imagePaths;
+  final List<String> filePaths;
+  final String attachmentContext;
+  final ChatAttachments attachments;
+
+  const StoryRoomAttachmentBundle({
+    this.imagePaths = const [],
+    this.filePaths = const [],
+    this.attachmentContext = '',
+    this.attachments = const ChatAttachments(),
+  });
+
+  bool get isEmpty => attachments.isEmpty;
+}
+
+/// 把故事房间选择的本地路径转换成 provider 无关的附件包。
+///
+/// 图片只在模型支持 vision 时编码进请求；文件交给 [FileProcessor] 决定走
+/// 原生 PDF 还是抽文本降级。路径和降级文本另外留在 [StoryMessageModel]，用于
+/// 重建历史和重新生成。单个失效路径不会阻塞整轮发送。
+class StoryRoomAttachmentService {
+  const StoryRoomAttachmentService._();
+
+  static Future<StoryRoomAttachmentBundle> prepare({
+    required Iterable<String> imagePaths,
+    required Iterable<String> filePaths,
+    required ModelCapabilities capabilities,
+    String fallbackContext = '',
+  }) async {
+    final images = StoryRoomAttachmentPolicy.normalizePaths(
+      imagePaths,
+      limit: StoryRoomAttachmentPolicy.maxImages,
+    );
+    final files = StoryRoomAttachmentPolicy.normalizePaths(
+      filePaths,
+      limit: StoryRoomAttachmentPolicy.maxFiles,
+    );
+
+    final imageData = <String>[];
+    if (capabilities.image) {
+      for (final path in images) {
+        try {
+          if (await File(path).exists()) {
+            imageData.add(await FileProcessor.encodeImage(path));
+          }
+        } catch (_) {
+          // 单张图片损坏时保留其路径用于消息摘要，跳过本次请求编码。
+        }
+      }
+    }
+
+    var processed = const ProcessedFiles();
+    if (files.isNotEmpty) {
+      try {
+        processed = await FileProcessor.process(files, capabilities);
+      } catch (_) {
+        // 历史文件可能已被系统清理，使用落库的旧文本上下文继续请求。
+      }
+    }
+    final extracted = processed.extraText.trim();
+    final context = extracted.isNotEmpty ? extracted : fallbackContext.trim();
+    return StoryRoomAttachmentBundle(
+      imagePaths: images,
+      filePaths: files,
+      attachmentContext: context,
+      attachments: ChatAttachments(
+        images: imageData,
+        nativeFiles: processed.nativeFiles,
+        extraText: context,
+      ),
+    );
+  }
+}

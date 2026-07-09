@@ -15,6 +15,8 @@ class AssistantRoleCardService {
   static const tavernExportDescription = '导出 SillyTavern V2 JSON，适合检查或二次编辑';
   static const tavernPngExportLabel = 'Tavern V2 PNG';
   static const tavernPngExportDescription = '导出酒馆常用 PNG 角色卡，可直接导入 SillyTavern';
+  // 只写入 memoryBook 的注释行，因此不会参与角色记忆匹配或系统提示注入。
+  static const _tavernRawMarker = '# [chatai_deep.tavern_raw.v1] ';
   static const _tavernPreferredLocaleKeys = [
     'zh-CN',
     'zh_CN',
@@ -44,38 +46,24 @@ class AssistantRoleCardService {
     AssistantModel assistant, {
     DateTime? exportedAt,
   }) {
-    final sections = _promptSections(assistant.prompt);
-    final description = sections['角色设定'] ?? assistant.prompt.trim();
-    final data = <String, dynamic>{
-      'name': assistant.name,
-      'description': description,
-      'personality': sections['性格'] ?? '',
-      'scenario': sections['场景'] ?? '',
-      'first_mes': assistant.openingMessage.trim(),
-      'mes_example': exampleDialogPromptText(assistant.exampleDialogs),
-      'creator_notes': assistant.description.trim(),
-      'system_prompt': sections['系统提示'] ?? '',
-      'post_history_instructions': sections['后续指令'] ?? '',
-      'alternate_greetings': alternateGreetings(assistant.exampleDialogs),
-      'character_book': _tavernWorldBookPayload(assistant.memoryBook),
-      'tags': _exportTags(assistant),
-      'extensions': {
-        'chatai_deep': {
-          'format': format,
-          'version': version,
-          'exportedAt': (exportedAt ?? DateTime.now()).toIso8601String(),
-          'defaultVoiceStyle': assistant.defaultVoiceStyle,
-          'providerId': assistant.providerId,
-          'model': assistant.model,
-          'useTools': assistant.useTools,
-          'toolIds': assistant.toolIds ?? const <String>[],
-        },
-      },
-    };
-    data.removeWhere((key, value) => _isEmptyTavernValue(value));
+    final rawCard = _tavernRawCardPayload(assistant.memoryBook);
+    final data = rawCard == null
+        ? _tavernDataFromAssistant(assistant, exportedAt: exportedAt)
+        : _tavernDataFromRawCard(
+            assistant,
+            rawCard,
+            exportedAt: exportedAt,
+          );
+    if (rawCard == null) {
+      data.removeWhere((key, value) => _isEmptyTavernValue(value));
+    }
     final card = <String, dynamic>{
-      'spec': 'chara_card_v2',
-      'spec_version': '2.0',
+      'spec': rawCard?['spec'] is String
+          ? rawCard!['spec'] as String
+          : 'chara_card_v2',
+      'spec_version': rawCard?['spec_version'] is String
+          ? rawCard!['spec_version'] as String
+          : '2.0',
       'data': data,
     };
     return const JsonEncoder.withIndent('  ').convert(card);
@@ -136,93 +124,23 @@ class AssistantRoleCardService {
     try {
       final decoded = jsonDecode(jsonText);
       if (decoded is! Map<String, dynamic>) return null;
-      final data = decoded['data'];
-      final tavernData = _looksLikeTavernData(data)
-          ? data as Map<String, dynamic>
-          : _looksLikeTavernData(decoded)
-              ? decoded
-              : null;
-      if (tavernData == null) return null;
-      final name = _string(tavernData['name']);
-      final book = tavernData['character_book'];
-      Map<String, dynamic>? bookMap;
-      if (book is Map<String, dynamic>) {
-        bookMap = book;
-      }
-      return AssistantRoleCardTavernMeta(
-        spec: _string(decoded['spec']).isNotEmpty
-            ? _string(decoded['spec'])
-            : _string(tavernData['spec']),
-        specVersion: _string(decoded['spec_version']).isNotEmpty
-            ? _string(decoded['spec_version'])
-            : _string(tavernData['spec_version']),
-        creator: _firstTavernText(tavernData, name, const [
-          'creator',
-          'created_by',
-          'createdBy',
-        ]),
-        characterVersion: _firstTavernText(tavernData, name, const [
-          'character_version',
-          'characterVersion',
-          'version',
-        ]),
-        createDate: _firstTavernText(tavernData, name, const [
-          'create_date',
-          'createDate',
-          'created_at',
-          'createdAt',
-        ]),
-        updateDate: _firstTavernText(tavernData, name, const [
-          'update_date',
-          'updateDate',
-          'updated_at',
-          'updatedAt',
-        ]),
-        source: _firstTavernText(tavernData, name, const [
-          'source',
-          'source_url',
-          'sourceUrl',
-        ]),
-        creatorNotes: _firstTavernText(tavernData, name, const [
-          'creator_notes',
-          'creatorcomment',
-          'creator_comment',
-          'creatorNotes',
-          'creator_notes_multilingual',
-          'creator_notes_i18n',
-          'creatorNotesMultilingual',
-          'creatorCommentMultilingual',
-        ]),
-        systemPrompt: _tavernLocalizedText(tavernData['system_prompt'], name),
-        postHistoryInstructions: _tavernLocalizedText(
-          tavernData['post_history_instructions'],
-          name,
-        ),
-        tags: _tavernTags(tavernData['tags']),
-        alternateGreetings: _tavernAlternateGreetings(
-          tavernData['alternate_greetings'],
-          name,
-        ),
-        characterBookName:
-            bookMap == null ? '' : _string(bookMap['name']).trim(),
-        characterBookScanDepth: bookMap == null
-            ? null
-            : _intOrNull(bookMap['scan_depth'] ?? bookMap['scanDepth']),
-        characterBookTokenBudget: bookMap == null
-            ? null
-            : _intOrNull(bookMap['token_budget'] ?? bookMap['tokenBudget']),
-        characterBookRecursiveScanning: bookMap == null
-            ? null
-            : _boolOrNull(
-                bookMap['recursive_scanning'] ?? bookMap['recursiveScanning']),
-        characterBookEntryCount: bookMap == null
-            ? 0
-            : _tavernWorldBookEntries(bookMap['entries']).length,
-      );
+      return _tavernMetaFromDecoded(decoded);
     } catch (_) {
       return null;
     }
   }
+
+  /// 从导入卡写入的注释标记恢复原卡元信息，供后续创建酒馆房间时使用。
+  static AssistantRoleCardTavernMeta? tavernMetaFromAssistant(
+    AssistantModel assistant,
+  ) {
+    final rawCard = _tavernRawCardPayload(assistant.memoryBook);
+    return rawCard == null ? null : _tavernMetaFromDecoded(rawCard);
+  }
+
+  /// 移除仅用于往返导出的内部标记，供运行时世界书消费方使用。
+  static String memoryBookForRuntime(String memoryBook) =>
+      _withoutTavernRawCardMarker(memoryBook);
 
   static List<AssistantRoleCardImportResult> importPackageBytesList(
       List<int> bytes,
@@ -1443,10 +1361,17 @@ class AssistantRoleCardService {
     }
     final data = decoded['data'];
     if (_looksLikeTavernData(data)) {
-      return _fromTavernData(data as Map<String, dynamic>);
+      final tavernData = data as Map<String, dynamic>;
+      return _fromTavernData(
+        tavernData,
+        rawCard: _tavernRawCard(decoded, tavernData),
+      );
     }
     if (_looksLikeTavernData(decoded)) {
-      return _fromTavernData(decoded);
+      return _fromTavernData(
+        decoded,
+        rawCard: _tavernRawCard(decoded, decoded),
+      );
     }
     // 兼容直接导出的 AssistantModel JSON。
     return decoded;
@@ -1459,35 +1384,46 @@ class AssistantRoleCardService {
             value.containsKey('mes_example') ||
             value.containsKey('personality') ||
             value.containsKey('scenario') ||
-            value.containsKey('character_book'));
+            value.containsKey('character_book') ||
+            value.containsKey('characterBook'));
   }
 
-  static Map<String, dynamic> _fromTavernData(Map<String, dynamic> data) {
+  static Map<String, dynamic> _fromTavernData(
+    Map<String, dynamic> data, {
+    required Map<String, dynamic> rawCard,
+  }) {
     final name = _string(data['name']);
+    final promptName = _tavernPromptName(data);
     final extension = _chataiDeepTavernExtension(data);
     final promptParts = <String>[
-      _sectionText('系统提示', _tavernLocalizedText(data['system_prompt'], name)),
-      _sectionText('角色设定', _tavernLocalizedText(data['description'], name)),
-      _sectionText('性格', _tavernLocalizedText(data['personality'], name)),
-      _sectionText('场景', _tavernLocalizedText(data['scenario'], name)),
+      _sectionText(
+        '系统提示',
+        _tavernLocalizedText(data['system_prompt'], promptName),
+      ),
+      _sectionText(
+        '角色设定',
+        _tavernLocalizedText(data['description'], promptName),
+      ),
+      _sectionText('性格', _tavernLocalizedText(data['personality'], promptName)),
+      _sectionText('场景', _tavernLocalizedText(data['scenario'], promptName)),
       _sectionText('后续指令',
-          _tavernLocalizedText(data['post_history_instructions'], name)),
+          _tavernLocalizedText(data['post_history_instructions'], promptName)),
     ].where((part) => part.isNotEmpty).toList();
     final description = _tavernDescription(
       data,
-      name,
+      promptName,
       preferCreatorNotes: extension.isNotEmpty,
     );
-    final exampleDialogs = _tavernExampleDialogs(data, name);
-    return {
+    final exampleDialogs = _tavernExampleDialogs(data, promptName);
+    final payload = <String, dynamic>{
       'name': name,
       'emoji': '🤖',
       'description':
           description.isNotEmpty ? description : _compactDescription(data),
       'prompt': promptParts.join('\n\n'),
-      'openingMessage': _tavernLocalizedText(data['first_mes'], name),
+      'openingMessage': _tavernLocalizedText(data['first_mes'], promptName),
       'exampleDialogs': exampleDialogs,
-      'memoryBook': _tavernWorldBook(data['character_book'], name),
+      'memoryBook': _tavernWorldBook(_tavernCharacterBook(data), promptName),
       'defaultVoiceStyle': _string(extension['defaultVoiceStyle']),
       'providerId': _string(extension['providerId']),
       'model': _string(extension['model']),
@@ -1495,6 +1431,14 @@ class AssistantRoleCardService {
           extension['useTools'] is bool ? extension['useTools'] as bool : true,
       'toolIds': _toolIds(extension),
     };
+    if (_shouldPreserveTavernRawCard(rawCard, data)) {
+      payload['memoryBook'] = _withTavernRawCardMarker(
+        _string(payload['memoryBook']),
+        rawCard,
+        _assistantSnapshot(payload),
+      );
+    }
+    return payload;
   }
 
   static Map<String, dynamic> _chataiDeepTavernExtension(
@@ -1510,14 +1454,535 @@ class AssistantRoleCardService {
     };
   }
 
+  static Map<String, dynamic> _tavernRawCard(
+    Map<String, dynamic> decoded,
+    Map<String, dynamic> data,
+  ) =>
+      {
+        'spec': _string(decoded['spec']).isEmpty
+            ? 'chara_card_v2'
+            : _string(decoded['spec']),
+        'spec_version': _string(decoded['spec_version']).isEmpty
+            ? '2.0'
+            : _string(decoded['spec_version']),
+        'data': _copyJsonMap(data),
+      };
+
+  static Map<String, dynamic>? _tavernRawCardFromMemoryBook(String raw) {
+    for (final line in raw.replaceAll('\r\n', '\n').split('\n')) {
+      if (!line.startsWith(_tavernRawMarker)) continue;
+      final encoded = line.substring(_tavernRawMarker.length).trim();
+      if (encoded.isEmpty) continue;
+      try {
+        final decoded = jsonDecode(utf8.decode(base64Url.decode(encoded)));
+        if (decoded is Map) return _mapStringDynamic(decoded);
+      } catch (_) {
+        continue;
+      }
+    }
+    return null;
+  }
+
+  static String _withoutTavernRawCardMarker(String raw) => raw
+      .replaceAll('\r\n', '\n')
+      .split('\n')
+      .where((line) => !line.startsWith(_tavernRawMarker))
+      .join('\n')
+      .trim();
+
+  static String _withTavernRawCardMarker(
+    String memoryBook,
+    Map<String, dynamic> rawCard,
+    Map<String, dynamic> snapshot,
+  ) {
+    final payload = <String, dynamic>{
+      'card': rawCard,
+      'snapshot': snapshot,
+    };
+    final marker =
+        '$_tavernRawMarker${base64Url.encode(utf8.encode(jsonEncode(payload)))}';
+    final book = _withoutTavernRawCardMarker(memoryBook);
+    return book.isEmpty ? marker : '$marker\n$book';
+  }
+
+  static Map<String, dynamic> _assistantSnapshot(
+          Map<String, dynamic> payload) =>
+      {
+        'name': _string(payload['name']),
+        'description': _string(payload['description']),
+        'prompt': _string(payload['prompt']),
+        'openingMessage': _string(payload['openingMessage']),
+        'exampleDialogs': _string(payload['exampleDialogs']),
+        'memoryBook': _withoutTavernRawCardMarker(
+          _string(payload['memoryBook']),
+        ),
+      };
+
+  static Map<String, dynamic>? _tavernRawCardPayload(String memoryBook) {
+    final marker = _tavernRawCardFromMemoryBook(memoryBook);
+    if (marker == null) return null;
+    final card = marker['card'];
+    if (card is Map) return _mapStringDynamic(card);
+    // 兼容早期只保存卡对象、未包一层 snapshot 的内部标记。
+    return marker.containsKey('data') ? marker : null;
+  }
+
+  static Map<String, dynamic>? _tavernRawSnapshot(String memoryBook) {
+    final marker = _tavernRawCardFromMemoryBook(memoryBook);
+    if (marker == null) return null;
+    final snapshot = marker['snapshot'];
+    return snapshot is Map ? _mapStringDynamic(snapshot) : null;
+  }
+
+  static Map<String, dynamic> _tavernDataFromAssistant(
+    AssistantModel assistant, {
+    DateTime? exportedAt,
+  }) {
+    final sections = _promptSections(assistant.prompt);
+    final description = sections['角色设定'] ?? assistant.prompt.trim();
+    return <String, dynamic>{
+      'name': assistant.name,
+      'description': description,
+      'personality': sections['性格'] ?? '',
+      'scenario': sections['场景'] ?? '',
+      'first_mes': assistant.openingMessage.trim(),
+      'mes_example': exampleDialogPromptText(assistant.exampleDialogs),
+      'creator_notes': assistant.description.trim(),
+      'system_prompt': sections['系统提示'] ?? '',
+      'post_history_instructions': sections['后续指令'] ?? '',
+      'alternate_greetings': alternateGreetings(assistant.exampleDialogs),
+      'character_book': _tavernWorldBookPayload(assistant.memoryBook),
+      'tags': _exportTags(assistant),
+      'extensions': {
+        'chatai_deep': _chataiDeepExportExtension(
+          assistant,
+          exportedAt: exportedAt,
+        ),
+      },
+    };
+  }
+
+  static Map<String, dynamic> _tavernDataFromRawCard(
+    AssistantModel assistant,
+    Map<String, dynamic> rawCard, {
+    DateTime? exportedAt,
+  }) {
+    final rawData = rawCard['data'];
+    if (rawData is! Map) {
+      return _tavernDataFromAssistant(assistant, exportedAt: exportedAt);
+    }
+    final data =
+        _copyJsonMap(_mapStringDynamic(rawData) ?? <String, dynamic>{});
+    final snapshot = _tavernRawSnapshot(assistant.memoryBook);
+    final sections = _promptSections(assistant.prompt);
+    final description = sections['角色设定'] ?? assistant.prompt.trim();
+
+    if (!_snapshotMatches(snapshot, 'name', assistant.name)) {
+      data['name'] = assistant.name;
+    }
+    if (!_snapshotMatches(snapshot, 'description', assistant.description)) {
+      _writeTavernText(data, 'creator_notes', assistant.description.trim());
+    }
+    if (!_snapshotMatches(snapshot, 'prompt', assistant.prompt)) {
+      _writeTavernText(data, 'description', description);
+      _writeTavernText(data, 'personality', sections['性格'] ?? '');
+      _writeTavernText(data, 'scenario', sections['场景'] ?? '');
+      _writeTavernText(data, 'system_prompt', sections['系统提示'] ?? '');
+      _writeTavernText(
+        data,
+        'post_history_instructions',
+        sections['后续指令'] ?? '',
+      );
+    }
+    if (!_snapshotMatches(
+      snapshot,
+      'openingMessage',
+      assistant.openingMessage,
+    )) {
+      _writeTavernText(data, 'first_mes', assistant.openingMessage.trim());
+    }
+    if (!_snapshotMatches(
+      snapshot,
+      'exampleDialogs',
+      assistant.exampleDialogs,
+    )) {
+      _writeTavernText(
+        data,
+        'mes_example',
+        exampleDialogPromptText(assistant.exampleDialogs),
+      );
+      data['alternate_greetings'] =
+          alternateGreetings(assistant.exampleDialogs);
+    }
+    if (!_snapshotMatches(
+      snapshot,
+      'memoryBook',
+      _withoutTavernRawCardMarker(assistant.memoryBook),
+    )) {
+      data['character_book'] = _tavernWorldBookPayload(assistant.memoryBook);
+    }
+
+    final extensions =
+        _mapStringDynamic(data['extensions']) ?? <String, dynamic>{};
+    final hasChataiDeep = extensions['chatai_deep'] is Map;
+    if (hasChataiDeep || _hasAssistantExportSettings(assistant)) {
+      final appExtension =
+          _mapStringDynamic(extensions['chatai_deep']) ?? <String, dynamic>{};
+      appExtension.addAll(_chataiDeepExportExtension(
+        assistant,
+        exportedAt: exportedAt,
+      ));
+      extensions['chatai_deep'] = appExtension;
+      data['extensions'] = extensions;
+    }
+    return data;
+  }
+
+  static Map<String, dynamic> _chataiDeepExportExtension(
+    AssistantModel assistant, {
+    DateTime? exportedAt,
+  }) =>
+      {
+        'format': format,
+        'version': version,
+        'exportedAt': (exportedAt ?? DateTime.now()).toIso8601String(),
+        'defaultVoiceStyle': assistant.defaultVoiceStyle,
+        'providerId': assistant.providerId,
+        'model': assistant.model,
+        'useTools': assistant.useTools,
+        'toolIds': assistant.toolIds ?? const <String>[],
+      };
+
+  static bool _hasAssistantExportSettings(AssistantModel assistant) =>
+      assistant.defaultVoiceStyle.trim().isNotEmpty ||
+      assistant.providerId.trim().isNotEmpty ||
+      assistant.model.trim().isNotEmpty ||
+      !assistant.useTools ||
+      (assistant.toolIds ?? const <String>[]).isNotEmpty;
+
+  static bool _snapshotMatches(
+    Map<String, dynamic>? snapshot,
+    String key,
+    String value,
+  ) =>
+      snapshot != null && snapshot[key] == value;
+
+  static void _writeTavernText(
+    Map<String, dynamic> data,
+    String key,
+    String value,
+  ) {
+    final current = data[key];
+    if (current is! Map) {
+      data[key] = value;
+      return;
+    }
+    final localized = _mapStringDynamic(current);
+    if (localized == null) {
+      data[key] = value;
+      return;
+    }
+    final locale = _tavernPreferredLocaleKeys.firstWhere(
+      (key) => localized.containsKey(key),
+      orElse: () => localized.keys.firstWhere(
+        (item) => localized[item] is String,
+        orElse: () => 'zh-CN',
+      ),
+    );
+    localized[locale] = value;
+    data[key] = localized;
+  }
+
+  static Map<String, dynamic> _copyJsonMap(Map<String, dynamic> source) {
+    final copied = jsonDecode(jsonEncode(source));
+    return copied is Map
+        ? _mapStringDynamic(copied) ?? <String, dynamic>{}
+        : {};
+  }
+
+  static Map<String, dynamic>? _mapStringDynamic(Object? value) {
+    if (value is! Map) return null;
+    return {
+      for (final entry in value.entries)
+        if (entry.key is String) entry.key as String: entry.value,
+    };
+  }
+
+  static String _tavernPromptName(Map<String, dynamic> data) {
+    final nickname = _string(data['nickname']);
+    return nickname.isEmpty ? _string(data['name']) : nickname;
+  }
+
+  static Object? _tavernCharacterBook(Map<String, dynamic> data) =>
+      data['character_book'] ?? data['characterBook'];
+
+  static bool _shouldPreserveTavernRawCard(
+    Map<String, dynamic> rawCard,
+    Map<String, dynamic> data,
+  ) {
+    if (_string(rawCard['spec']).toLowerCase() == 'chara_card_v3') return true;
+    if (_hasTavernLocalizedVariants(data)) return true;
+    if (const {
+      'nickname',
+      'group_only_greetings',
+      'source',
+      'assets',
+      'creation_date',
+      'modification_date',
+    }.any(data.containsKey)) {
+      return true;
+    }
+    final extensions = _mapStringDynamic(data['extensions']);
+    if (extensions != null &&
+        extensions.keys.any((key) => key != 'chatai_deep')) {
+      return true;
+    }
+    return _tavernCharacterBookNeedsRawPreservation(
+      _mapStringDynamic(_tavernCharacterBook(data)),
+    );
+  }
+
+  static bool _hasTavernLocalizedVariants(Map<String, dynamic> data) {
+    for (final key in const [
+      'description',
+      'personality',
+      'scenario',
+      'first_mes',
+      'mes_example',
+      'creator_notes',
+      'creator_notes_multilingual',
+      'system_prompt',
+      'post_history_instructions',
+      'alternate_greetings',
+    ]) {
+      if (data[key] is Map) return true;
+    }
+    return false;
+  }
+
+  static bool _tavernCharacterBookNeedsRawPreservation(
+    Map<String, dynamic>? book,
+  ) {
+    if (book == null) return false;
+    if (book.keys.any((key) => key != 'entries')) return true;
+    for (final entry in _tavernWorldBookEntries(book['entries'])) {
+      if (entry.containsKey('comment') ||
+          entry.containsKey('name') ||
+          entry.containsKey('id') ||
+          entry.containsKey('insertion_order') ||
+          entry.containsKey('insertionOrder')) {
+        return true;
+      }
+      final extensions = _mapStringDynamic(entry['extensions']);
+      if (extensions != null &&
+          extensions.keys
+              .any((key) => !_supportedWorldBookExtensionKeys.contains(key))) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  static const _supportedWorldBookExtensionKeys = {
+    'position',
+    'depth',
+    'probability',
+    'useProbability',
+    'use_probability',
+    'excludeRecursion',
+    'exclude_recursion',
+    'preventRecursion',
+    'prevent_recursion',
+    'disabled',
+    'disable',
+    'group',
+    'group_name',
+    'groupName',
+    'group_weight',
+    'groupWeight',
+    'group_override',
+    'groupOverride',
+    'case_sensitive',
+    'caseSensitive',
+    'match_whole_words',
+    'matchWholeWords',
+    'regex',
+    'use_regex',
+    'useRegex',
+    'secondary_keys',
+    'secondaryKeys',
+    'secondary_key',
+    'keysecondary',
+    'keySecondary',
+    'exclude_keys',
+    'excludeKeys',
+    'exclusion_keys',
+    'exclusionKeys',
+    'exclusions',
+    'priority',
+    'order',
+  };
+
+  static AssistantRoleCardTavernMeta? _tavernMetaFromDecoded(
+    Map<String, dynamic> decoded,
+  ) {
+    final nested = decoded['data'];
+    final tavernData = _looksLikeTavernData(nested)
+        ? nested as Map<String, dynamic>
+        : _looksLikeTavernData(decoded)
+            ? decoded
+            : null;
+    if (tavernData == null) return null;
+    final promptName = _tavernPromptName(tavernData);
+    final book = _mapStringDynamic(_tavernCharacterBook(tavernData));
+    final bookExtensions =
+        book == null ? null : _mapStringDynamic(book['extensions']);
+    final extensions = _mapStringDynamic(tavernData['extensions']);
+    final depthPrompt = extensions == null
+        ? null
+        : _mapStringDynamic(extensions['depth_prompt']);
+    final sources = _tavernSources(tavernData, promptName);
+
+    Object? bookValue(List<String> keys) {
+      if (book == null) return null;
+      for (final key in keys) {
+        if (book.containsKey(key)) return book[key];
+        if (bookExtensions?.containsKey(key) == true) {
+          return bookExtensions![key];
+        }
+      }
+      return null;
+    }
+
+    return AssistantRoleCardTavernMeta(
+      spec: _string(decoded['spec']).isNotEmpty
+          ? _string(decoded['spec'])
+          : _string(tavernData['spec']),
+      specVersion: _string(decoded['spec_version']).isNotEmpty
+          ? _string(decoded['spec_version'])
+          : _string(tavernData['spec_version']),
+      creator: _firstTavernText(tavernData, promptName, const [
+        'creator',
+        'created_by',
+        'createdBy',
+      ]),
+      characterVersion: _firstTavernText(tavernData, promptName, const [
+        'character_version',
+        'characterVersion',
+        'version',
+      ]),
+      createDate: _firstTavernText(tavernData, promptName, const [
+        'create_date',
+        'createDate',
+        'created_at',
+        'createdAt',
+      ]),
+      updateDate: _firstTavernText(tavernData, promptName, const [
+        'update_date',
+        'updateDate',
+        'updated_at',
+        'updatedAt',
+      ]),
+      source: sources.isEmpty ? '' : sources.first,
+      sources: sources,
+      nickname: _string(tavernData['nickname']),
+      creationTimestamp: _intOrNull(tavernData['creation_date']),
+      modificationTimestamp: _intOrNull(tavernData['modification_date']),
+      creatorNotes: _firstTavernText(tavernData, promptName, const [
+        'creator_notes',
+        'creatorcomment',
+        'creator_comment',
+        'creatorNotes',
+        'creator_notes_multilingual',
+        'creator_notes_i18n',
+        'creatorNotesMultilingual',
+        'creatorCommentMultilingual',
+      ]),
+      systemPrompt:
+          _tavernLocalizedText(tavernData['system_prompt'], promptName),
+      postHistoryInstructions: _tavernLocalizedText(
+        tavernData['post_history_instructions'],
+        promptName,
+      ),
+      tags: _tavernTags(tavernData['tags']),
+      alternateGreetings: _tavernAlternateGreetings(
+        tavernData['alternate_greetings'],
+        promptName,
+      ),
+      groupOnlyGreetings: _tavernAlternateGreetings(
+        tavernData['group_only_greetings'],
+        promptName,
+      ),
+      talkativeness:
+          extensions == null ? null : _numOrNull(extensions['talkativeness']),
+      extensionWorld: extensions == null
+          ? ''
+          : _tavernLocalizedText(extensions['world'], promptName),
+      characterDepthPrompt: depthPrompt == null
+          ? ''
+          : _tavernLocalizedText(depthPrompt['prompt'], promptName),
+      characterDepthPromptDepth:
+          depthPrompt == null ? null : _intOrNull(depthPrompt['depth']),
+      characterDepthPromptRole:
+          depthPrompt == null ? '' : _string(depthPrompt['role']),
+      characterBookName:
+          book == null ? '' : _tavernLocalizedText(book['name'], promptName),
+      characterBookScanDepth:
+          _intOrNull(bookValue(const ['scan_depth', 'scanDepth'])),
+      characterBookTokenBudget:
+          _intOrNull(bookValue(const ['token_budget', 'tokenBudget'])),
+      characterBookRecursiveScanning: _boolOrNull(
+        bookValue(const ['recursive_scanning', 'recursiveScanning']),
+      ),
+      characterBookEntryCount:
+          book == null ? 0 : _tavernWorldBookEntries(book['entries']).length,
+    );
+  }
+
+  static List<String> _tavernSources(
+    Map<String, dynamic> data,
+    String promptName,
+  ) {
+    final values = <String>[];
+    for (final key in const ['source', 'source_url', 'sourceUrl']) {
+      final raw = data[key];
+      if (raw is List) {
+        values.addAll([
+          for (final item in raw)
+            if (_normalizeTavernText(item, promptName).isNotEmpty)
+              _normalizeTavernText(item, promptName),
+        ]);
+      } else {
+        final value = _normalizeTavernText(raw, promptName);
+        if (value.isNotEmpty) values.add(value);
+      }
+    }
+    final seen = <String>{};
+    return [
+      for (final value in values)
+        if (seen.add(value)) value
+    ];
+  }
+
+  static num? _numOrNull(Object? raw) {
+    if (raw is num) return raw;
+    if (raw is String) return num.tryParse(raw.trim());
+    return null;
+  }
+
   static String _sectionText(String title, Object? value) {
     final text = _string(value);
     return text.isEmpty ? '' : '[$title]\n$text';
   }
 
-  static String _compactDescription(Map<String, dynamic> data) {
-    final text =
-        _tavernLocalizedText(data['description'], _string(data['name']));
+  static String _compactDescription(
+    Map<String, dynamic> data, {
+    String? promptName,
+  }) {
+    final text = _tavernLocalizedText(
+      data['description'],
+      promptName ?? _tavernPromptName(data),
+    );
     if (text.length <= 80) return text;
     return '${text.substring(0, 80)}...';
   }
@@ -1537,7 +2002,7 @@ class AssistantRoleCardService {
       'creatorNotesMultilingual',
       'creatorCommentMultilingual',
     ]);
-    final roleSummary = _compactDescription(data);
+    final roleSummary = _compactDescription(data, promptName: name);
     final tags = _tavernTags(data['tags']);
     final tagLine = tags.isEmpty ? '' : '标签：${tags.join('、')}';
     final parts = <String>[];
@@ -1679,9 +2144,10 @@ class AssistantRoleCardService {
   }
 
   static String _tavernWorldBook(Object? raw, String name) {
-    if (raw is! Map<String, dynamic>) return '';
+    final book = _mapStringDynamic(raw);
+    if (book == null) return '';
     final lines = <String>[];
-    for (final item in _tavernWorldBookEntries(raw['entries'])) {
+    for (final item in _tavernWorldBookEntries(book['entries'])) {
       final content = _normalizeTavernText(item['content'], name);
       if (content.isEmpty) continue;
       final comment = _tavernEntryComment(item, name);
@@ -1874,8 +2340,20 @@ class AssistantRoleCardService {
       'insertion_order',
       'insertionOrder',
     ]) {
-      final value = item[key];
-      if (value is num) return value;
+      final value = _numOrNull(item[key]);
+      if (value != null) return value;
+    }
+    final extensions = item['extensions'];
+    if (extensions is Map) {
+      for (final key in const [
+        'priority',
+        'order',
+        'insertion_order',
+        'insertionOrder',
+      ]) {
+        final value = _numOrNull(extensions[key]);
+        if (value != null) return value;
+      }
     }
     return null;
   }
@@ -2007,10 +2485,24 @@ class AssistantRoleCardService {
       'secondary_keys',
       'secondaryKeys',
       'secondary_key',
+      'key_secondary',
       'keysecondary',
       'keySecondary',
     ]) {
       keys.addAll(_tavernKeysFrom(item[key], name, regex: regex));
+    }
+    final extensions = item['extensions'];
+    if (extensions is Map) {
+      for (final key in const [
+        'secondary_keys',
+        'secondaryKeys',
+        'secondary_key',
+        'key_secondary',
+        'keysecondary',
+        'keySecondary',
+      ]) {
+        keys.addAll(_tavernKeysFrom(extensions[key], name, regex: regex));
+      }
     }
     final seen = <String>{};
     return [
@@ -2176,11 +2668,21 @@ class AssistantRoleCardTavernMeta {
   final String createDate;
   final String updateDate;
   final String source;
+  final List<String> sources;
+  final String nickname;
+  final int? creationTimestamp;
+  final int? modificationTimestamp;
   final String creatorNotes;
   final String systemPrompt;
   final String postHistoryInstructions;
   final List<String> tags;
   final List<String> alternateGreetings;
+  final List<String> groupOnlyGreetings;
+  final num? talkativeness;
+  final String extensionWorld;
+  final String characterDepthPrompt;
+  final int? characterDepthPromptDepth;
+  final String characterDepthPromptRole;
   final String characterBookName;
   final int? characterBookScanDepth;
   final int? characterBookTokenBudget;
@@ -2195,11 +2697,21 @@ class AssistantRoleCardTavernMeta {
     this.createDate = '',
     this.updateDate = '',
     this.source = '',
+    this.sources = const [],
+    this.nickname = '',
+    this.creationTimestamp,
+    this.modificationTimestamp,
     this.creatorNotes = '',
     this.systemPrompt = '',
     this.postHistoryInstructions = '',
     this.tags = const [],
     this.alternateGreetings = const [],
+    this.groupOnlyGreetings = const [],
+    this.talkativeness,
+    this.extensionWorld = '',
+    this.characterDepthPrompt = '',
+    this.characterDepthPromptDepth,
+    this.characterDepthPromptRole = '',
     this.characterBookName = '',
     this.characterBookScanDepth,
     this.characterBookTokenBudget,
@@ -2216,12 +2728,24 @@ class AssistantRoleCardTavernMeta {
         createDate: json['createDate'] as String? ?? '',
         updateDate: json['updateDate'] as String? ?? '',
         source: json['source'] as String? ?? '',
+        sources: _stringList(json['sources']),
+        nickname: json['nickname'] as String? ?? '',
+        creationTimestamp: _intOrNull(json['creationTimestamp']),
+        modificationTimestamp: _intOrNull(json['modificationTimestamp']),
         creatorNotes: json['creatorNotes'] as String? ?? '',
         systemPrompt: json['systemPrompt'] as String? ?? '',
         postHistoryInstructions:
             json['postHistoryInstructions'] as String? ?? '',
         tags: _stringList(json['tags']),
         alternateGreetings: _stringList(json['alternateGreetings']),
+        groupOnlyGreetings: _stringList(json['groupOnlyGreetings']),
+        talkativeness: _numOrNull(json['talkativeness']),
+        extensionWorld: json['extensionWorld'] as String? ?? '',
+        characterDepthPrompt: json['characterDepthPrompt'] as String? ?? '',
+        characterDepthPromptDepth:
+            _intOrNull(json['characterDepthPromptDepth']),
+        characterDepthPromptRole:
+            json['characterDepthPromptRole'] as String? ?? '',
         characterBookName: json['characterBookName'] as String? ?? '',
         characterBookScanDepth: _intOrNull(json['characterBookScanDepth']),
         characterBookTokenBudget: _intOrNull(json['characterBookTokenBudget']),
@@ -2239,11 +2763,21 @@ class AssistantRoleCardTavernMeta {
         'createDate': createDate,
         'updateDate': updateDate,
         'source': source,
+        'sources': sources,
+        'nickname': nickname,
+        'creationTimestamp': creationTimestamp,
+        'modificationTimestamp': modificationTimestamp,
         'creatorNotes': creatorNotes,
         'systemPrompt': systemPrompt,
         'postHistoryInstructions': postHistoryInstructions,
         'tags': tags,
         'alternateGreetings': alternateGreetings,
+        'groupOnlyGreetings': groupOnlyGreetings,
+        'talkativeness': talkativeness,
+        'extensionWorld': extensionWorld,
+        'characterDepthPrompt': characterDepthPrompt,
+        'characterDepthPromptDepth': characterDepthPromptDepth,
+        'characterDepthPromptRole': characterDepthPromptRole,
         'characterBookName': characterBookName,
         'characterBookScanDepth': characterBookScanDepth,
         'characterBookTokenBudget': characterBookTokenBudget,
@@ -2262,11 +2796,21 @@ class AssistantRoleCardTavernMeta {
       createDate: createDate,
       updateDate: updateDate,
       source: source,
+      sources: sources,
+      nickname: nickname,
+      creationTimestamp: creationTimestamp,
+      modificationTimestamp: modificationTimestamp,
       creatorNotes: creatorNotes,
       systemPrompt: systemPrompt,
       postHistoryInstructions: postHistoryInstructions,
       tags: tags,
       alternateGreetings: alternateGreetings ?? this.alternateGreetings,
+      groupOnlyGreetings: groupOnlyGreetings,
+      talkativeness: talkativeness,
+      extensionWorld: extensionWorld,
+      characterDepthPrompt: characterDepthPrompt,
+      characterDepthPromptDepth: characterDepthPromptDepth,
+      characterDepthPromptRole: characterDepthPromptRole,
       characterBookName: characterBookName,
       characterBookScanDepth: characterBookScanDepth,
       characterBookTokenBudget: characterBookTokenBudget,
@@ -2292,11 +2836,21 @@ class AssistantRoleCardTavernMeta {
       createDate.isEmpty &&
       updateDate.isEmpty &&
       source.isEmpty &&
+      sources.isEmpty &&
+      nickname.isEmpty &&
+      creationTimestamp == null &&
+      modificationTimestamp == null &&
       creatorNotes.isEmpty &&
       systemPrompt.isEmpty &&
       postHistoryInstructions.isEmpty &&
       tags.isEmpty &&
       alternateGreetings.isEmpty &&
+      groupOnlyGreetings.isEmpty &&
+      talkativeness == null &&
+      extensionWorld.isEmpty &&
+      characterDepthPrompt.isEmpty &&
+      characterDepthPromptDepth == null &&
+      characterDepthPromptRole.isEmpty &&
       characterBookName.isEmpty &&
       characterBookScanDepth == null &&
       characterBookTokenBudget == null &&
@@ -2315,6 +2869,12 @@ class AssistantRoleCardTavernMeta {
     if (raw is int) return raw;
     if (raw is num) return raw.toInt();
     if (raw is String) return int.tryParse(raw);
+    return null;
+  }
+
+  static num? _numOrNull(Object? raw) {
+    if (raw is num) return raw;
+    if (raw is String) return num.tryParse(raw.trim());
     return null;
   }
 }

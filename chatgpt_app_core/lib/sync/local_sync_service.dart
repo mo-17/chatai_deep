@@ -3,6 +3,7 @@ import 'dart:convert';
 import 'package:chatgpt_app_core/capability/product_capabilities.dart';
 import 'package:chatgpt_app_core/db/db_migration.dart';
 import 'package:chatgpt_app_core/db/hi_db_manager.dart';
+import 'package:chatgpt_app_core/db/story_artifact_dao.dart';
 import 'package:chatgpt_app_core/db/story_room_dao.dart';
 import 'package:chatgpt_app_core/sync/sync_tombstone_store.dart';
 
@@ -75,6 +76,18 @@ class LocalSyncService {
       table: 'tb_story_message',
       idColumns: ['id'],
       timestampColumn: 'updatedAt',
+    ),
+    _SyncEntitySpec(
+      entity: 'story_artifact',
+      table: 'tb_story_artifact',
+      idColumns: ['id'],
+      timestampColumn: 'updatedAt',
+    ),
+    _SyncEntitySpec(
+      entity: 'story_artifact_revision',
+      table: 'tb_story_artifact_revision',
+      idColumns: ['id'],
+      timestampColumn: 'createdAt',
     ),
   ];
 
@@ -197,6 +210,7 @@ class LocalSyncService {
   Future<void> _ensureTables() async {
     await DbMigration.run(storage.db);
     await StoryRoomDao.create(storage);
+    await StoryArtifactDao.create(storage);
     await SyncTombstoneStore.ensure(storage.db);
   }
 

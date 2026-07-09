@@ -198,6 +198,16 @@ void main() {
     "post_history_instructions": "延续上一轮情绪。",
     "tags": ["school", "shy"],
     "alternate_greetings": ["{{char}} 抱着书站在门边。"],
+    "extensions": {
+      "talkativeness": "0.5",
+      "world": "Fuka Archive",
+      "depth_prompt": {
+        "prompt": "{{char}} 会先整理书架。",
+        "depth": 4,
+        "role": "system"
+      },
+      "prompt_order": {"post_history_instructions": 100}
+    },
     "character_book": {
       "name": "Fuka Lore",
       "scan_depth": 3,
@@ -237,6 +247,142 @@ void main() {
     expect(meta.characterBookTokenBudget, 400);
     expect(meta.characterBookRecursiveScanning, isTrue);
     expect(meta.characterBookEntryCount, 1);
+    expect(meta.talkativeness, 0.5);
+    expect(meta.extensionWorld, 'Fuka Archive');
+    expect(meta.characterDepthPrompt, 'Fuka 会先整理书架。');
+    expect(meta.characterDepthPromptDepth, 4);
+    expect(meta.characterDepthPromptRole, 'system');
+
+    final exported = jsonDecode(
+      AssistantRoleCardService.exportTavernV2Json(result.assistant),
+    ) as Map<String, dynamic>;
+    final extensions = (exported['data'] as Map<String, dynamic>)['extensions']
+        as Map<String, dynamic>;
+    expect(exported['spec'], 'chara_card_v2');
+    expect(extensions['depth_prompt'], {
+      'prompt': '{{char}} 会先整理书架。',
+      'depth': 4,
+      'role': 'system',
+    });
+    expect(extensions['prompt_order'], {'post_history_instructions': 100});
+  });
+
+  test('V3 高级字段和扩展元数据会结构化保留并尽量原样导出', () {
+    final source = <String, dynamic>{
+      'spec': 'chara_card_v3',
+      'spec_version': '3.0',
+      'data': {
+        'name': 'Archivist',
+        'nickname': '馆长',
+        'description': {
+          'en': '{{char}} guards the archive.',
+          'zh': '{{char}} 守护着无尽档案。',
+        },
+        'personality': '谨慎而好奇。',
+        'scenario': '午夜的档案塔。',
+        'first_mes': '',
+        'mes_example': '',
+        'creator_notes': {
+          'en': 'English note.',
+          'zh': '给 {{char}} 的中文作者备注。',
+        },
+        'creator_notes_multilingual': {
+          'en': 'English note.',
+          'zh': '给 {{char}} 的中文作者备注。',
+        },
+        'tags': ['archive', 'group-ready'],
+        'creator': 'card maker',
+        'character_version': '3.1',
+        'alternate_greetings': [],
+        'group_only_greetings': ['{{char}} 在群聊里展开档案。'],
+        'source': ['https://example.com/cards/archivist', 'catalog:42'],
+        'creation_date': 1700000000,
+        'modification_date': 1700000100,
+        'extensions': {
+          'talkativeness': '0.7',
+          'world': 'Infinite Archive',
+          'depth_prompt': {
+            'prompt': '{{char}} 会先核对档案编号。',
+            'depth': 6,
+            'role': 'system',
+          },
+          // Prompt Manager 不是角色卡标准字段，这里只透明保留，不解释其语义。
+          'prompt_order': {'post_history_instructions': 100},
+        },
+        'characterBook': {
+          'name': 'Archive Lore',
+          'description': '馆藏规则。',
+          'scanDepth': 8,
+          'tokenBudget': 500,
+          'recursiveScanning': true,
+          'entries': [
+            {
+              'keys': ['档案\\d+'],
+              'content': '档案编号需要由馆长核验。',
+              'use_regex': true,
+              'selective': true,
+              'extensions': {
+                'keysecondary': ['午夜'],
+                'priority': '7',
+              },
+            },
+          ],
+        },
+      },
+    };
+
+    final result = AssistantRoleCardService.importPackageBytes(
+      utf8.encode(jsonEncode(source)),
+      filename: 'archivist-v3.json',
+    );
+    final assistant = result.assistant;
+    final meta = result.tavernMeta!;
+
+    expect(assistant.name, 'Archivist');
+    expect(assistant.prompt, contains('馆长 守护着无尽档案。'));
+    expect(assistant.memoryBook, startsWith('# [chatai_deep.tavern_raw.v1] '));
+    expect(
+      assistant.memoryBook,
+      contains('[re] [sec=午夜] [p=7] 档案\\d+ => 档案编号需要由馆长核验。'),
+    );
+    expect(meta.nickname, '馆长');
+    expect(meta.sources, ['https://example.com/cards/archivist', 'catalog:42']);
+    expect(meta.creationTimestamp, 1700000000);
+    expect(meta.modificationTimestamp, 1700000100);
+    expect(meta.groupOnlyGreetings, ['馆长 在群聊里展开档案。']);
+    expect(meta.talkativeness, 0.7);
+    expect(meta.extensionWorld, 'Infinite Archive');
+    expect(meta.characterDepthPrompt, '馆长 会先核对档案编号。');
+    expect(meta.characterDepthPromptDepth, 6);
+    expect(meta.characterDepthPromptRole, 'system');
+    expect(meta.characterBookName, 'Archive Lore');
+    expect(meta.characterBookScanDepth, 8);
+    expect(meta.characterBookTokenBudget, 500);
+    expect(meta.characterBookRecursiveScanning, isTrue);
+    expect(
+        AssistantRoleCardService.tavernMetaFromAssistant(assistant)?.nickname,
+        '馆长');
+
+    final exported = jsonDecode(
+      AssistantRoleCardService.exportTavernV2Json(assistant),
+    ) as Map<String, dynamic>;
+    final data = exported['data'] as Map<String, dynamic>;
+    final extensions = data['extensions'] as Map<String, dynamic>;
+
+    expect(exported['spec'], 'chara_card_v3');
+    expect(exported['spec_version'], '3.0');
+    expect((data['description'] as Map<String, dynamic>)['zh'],
+        '{{char}} 守护着无尽档案。');
+    expect(data['group_only_greetings'], ['{{char}} 在群聊里展开档案。']);
+    expect(
+        data['source'], ['https://example.com/cards/archivist', 'catalog:42']);
+    expect(extensions['depth_prompt'], {
+      'prompt': '{{char}} 会先核对档案编号。',
+      'depth': 6,
+      'role': 'system',
+    });
+    expect(extensions['prompt_order'], {'post_history_instructions': 100});
+    expect((data['characterBook'] as Map<String, dynamic>)['scanDepth'], 8);
   });
 
   test('翻译后 Tavern meta 会同步使用已翻译备选开场', () {
@@ -1407,7 +1553,7 @@ void main() {
     }));
 
     expect(
-      imported.memoryBook,
+      AssistantRoleCardService.memoryBookForRuntime(imported.memoryBook),
       [
         '[p=30] 铃声 => 铃声优先级来自 order。',
         '[p=12] 钟声 => priority 明确存在时优先使用。',
@@ -1542,7 +1688,7 @@ void main() {
     }));
 
     expect(
-      imported.memoryBook,
+      AssistantRoleCardService.memoryBookForRuntime(imported.memoryBook),
       '# 这个条目用于镜厅谜题。\n镜子 => 镜子背后藏着暗门。',
     );
     final entries = AssistantRoleCardService.parseMemoryEntries(
@@ -1572,7 +1718,7 @@ void main() {
     }));
 
     expect(
-      imported.memoryBook,
+      AssistantRoleCardService.memoryBookForRuntime(imported.memoryBook),
       '# Medli\nMedli => Type: character\nPersonality: gentle scout.',
     );
   });

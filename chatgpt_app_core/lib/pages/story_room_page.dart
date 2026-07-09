@@ -1,9 +1,14 @@
 import 'dart:async';
+import 'dart:io';
 
+import 'package:chatgpt_app_core/chat/application/story_room_attachments.dart';
+import 'package:chatgpt_app_core/chat/application/read_aloud_service.dart';
 import 'package:chatgpt_app_core/chat/application/story_context_builder.dart';
+import 'package:chatgpt_app_core/chat/application/story_room_read_aloud_controller.dart';
 import 'package:chatgpt_app_core/chat/application/story_room_settings_resolver.dart';
 import 'package:chatgpt_app_core/chat/application/story_speaker_scheduler.dart';
 import 'package:chatgpt_app_core/chat/application/usage_record_service.dart';
+import 'package:chatgpt_app_core/chat/application/user_sherpa_onnx_tts_models.dart';
 import 'package:chatgpt_app_core/chat/domain/stream_event.dart';
 import 'package:chatgpt_app_core/dao/chat/chat_service.dart';
 import 'package:chatgpt_app_core/db/assistant_dao.dart';
@@ -14,38 +19,45 @@ import 'package:chatgpt_app_core/model/ai_settings.dart';
 import 'package:chatgpt_app_core/model/assistant_model.dart';
 import 'package:chatgpt_app_core/model/story_room_model.dart';
 import 'package:chatgpt_app_core/provider/ai_settings_provider.dart';
+import 'package:chatgpt_app_core/pages/story_workbench_page.dart';
 import 'package:chatgpt_app_core/util/avatar_asset_service.dart';
 import 'package:chatgpt_app_core/util/hi_dialog.dart';
 import 'package:chatgpt_app_core/widget/assistant_avatar.dart';
 import 'package:chatgpt_app_core/widget/assistant_picker.dart';
+import 'package:chatgpt_app_core/widget/message_input_widget.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:provider/provider.dart';
 
 class StoryRoomPage extends StatefulWidget {
   final StoryRoomModel room;
+  final ReadAloudService? readAloudService;
 
-  const StoryRoomPage({super.key, required this.room});
+  const StoryRoomPage({super.key, required this.room, this.readAloudService});
 
   @override
   State<StoryRoomPage> createState() => _StoryRoomPageState();
 }
 
 class _StoryRoomPageState extends State<StoryRoomPage> {
-  final _inputCtl = TextEditingController();
   final _publicContextCtl = TextEditingController();
   StoryRoomDao? _dao;
   UsageRecordService? _usageRecordService;
   List<StoryParticipantModel> _participants = const [];
   List<StoryMessageModel> _messages = const [];
   int? _selectedParticipantId;
+  int? _forcedNextParticipantId;
   bool _loading = true;
   bool _sending = false;
   bool _stopRequested = false;
   StreamSubscription<StreamEvent>? _activeReplySub;
   Completer<void>? _activeReplyDone;
   String _generationStatus = '';
+  String _inputText = '';
+  List<String> _pendingImages = [];
+  List<String> _pendingFiles = [];
   final Set<int> _streamingMessageCreatedAt = {};
+  late final StoryRoomReadAloudController _readAloudController;
 
   bool get _isTavern => widget.room.mode == StoryRoomMode.tavern;
 
@@ -62,6 +74,9 @@ class _StoryRoomPageState extends State<StoryRoomPage> {
   @override
   void initState() {
     super.initState();
+    _readAloudController = StoryRoomReadAloudController(
+      service: widget.readAloudService,
+    )..addListener(_onReadAloudChanged);
     _publicContextCtl.text = widget.room.publicContext;
     _load();
   }
@@ -69,9 +84,15 @@ class _StoryRoomPageState extends State<StoryRoomPage> {
   @override
   void dispose() {
     unawaited(_activeReplySub?.cancel());
-    _inputCtl.dispose();
+    _readAloudController
+      ..removeListener(_onReadAloudChanged)
+      ..dispose();
     _publicContextCtl.dispose();
     super.dispose();
+  }
+
+  void _onReadAloudChanged() {
+    if (mounted) setState(() {});
   }
 
   Future<void> _load() async {
@@ -143,6 +164,14 @@ class _StoryRoomPageState extends State<StoryRoomPage> {
               if (value == 'participant') _addAssistantParticipant();
               if (value == 'reply') _editTavernReplyMode();
               if (value == 'model') _editRoomModelSettings();
+              if (value == 'workbench') {
+                Navigator.push(
+                  context,
+                  MaterialPageRoute(
+                    builder: (_) => StoryWorkbenchPage(room: widget.room),
+                  ),
+                );
+              }
             },
             itemBuilder: (_) => [
               const PopupMenuItem(
@@ -178,6 +207,15 @@ class _StoryRoomPageState extends State<StoryRoomPage> {
                   contentPadding: EdgeInsets.zero,
                 ),
               ),
+              if (!_isTavern)
+                const PopupMenuItem(
+                  value: 'workbench',
+                  child: ListTile(
+                    leading: Icon(Icons.dashboard_customize_outlined),
+                    title: Text('创作工作台'),
+                    contentPadding: EdgeInsets.zero,
+                  ),
+                ),
             ],
           ),
         ],
@@ -309,6 +347,11 @@ class _StoryRoomPageState extends State<StoryRoomPage> {
                         ),
                       ] else
                         Text(message.content),
+                      if (message.imagePaths.isNotEmpty ||
+                          message.filePaths.isNotEmpty ||
+                          message.attachmentContext.trim().isNotEmpty)
+                        _messageAttachments(message),
+                      if (!isUser) _readAloudButton(message),
                     ],
                   ),
                 ),
@@ -320,9 +363,50 @@ class _StoryRoomPageState extends State<StoryRoomPage> {
     );
   }
 
+  Widget _readAloudButton(StoryMessageModel message) {
+    final contentAvailable = message.content.trim().isNotEmpty &&
+        !_streamingMessageCreatedAt.contains(message.createdAt);
+    final active = _readAloudController.state.isActiveFor(message);
+    final state = _readAloudController.state;
+    final icon = active && state.isGenerating
+        ? null
+        : active
+            ? Icons.stop_rounded
+            : Icons.volume_up_outlined;
+    return Align(
+      alignment: Alignment.centerLeft,
+      child: IconButton(
+        visualDensity: VisualDensity.compact,
+        tooltip: active ? '停止朗读' : '朗读',
+        onPressed: contentAvailable ? () => _toggleReadAloud(message) : null,
+        icon: icon == null
+            ? const SizedBox(
+                width: 18,
+                height: 18,
+                child: CircularProgressIndicator(strokeWidth: 2),
+              )
+            : Icon(icon),
+      ),
+    );
+  }
+
+  Future<void> _toggleReadAloud(StoryMessageModel message) {
+    final voiceStyle = StoryRoomReadAloudVoiceResolver.resolve(
+      message,
+      _participants,
+    );
+    return _readAloudController.toggle(
+      message: message,
+      voiceStyle: voiceStyle,
+    );
+  }
+
   Widget get _composer {
     final selected = _selectedParticipant;
     final manual = !_isTavern || widget.room.replyMode == StoryReplyMode.manual;
+    final settings = context.watch<AISettingsProvider>().settings;
+    final capabilities =
+        ChatService.capabilitiesFor(_effectiveSettings(settings));
     return SafeArea(
       top: false,
       child: Padding(
@@ -364,7 +448,9 @@ class _StoryRoomPageState extends State<StoryRoomPage> {
                       : Text(
                           selected == null
                               ? '自动接话：请先添加角色卡'
-                              : '${StoryReplyMode.labelOf(widget.room.replyMode)} · 备用角色：${selected.name}',
+                              : _forcedNextParticipantId == null
+                                  ? '${StoryReplyMode.labelOf(widget.room.replyMode)} · 备用角色：${selected.name}'
+                                  : '${StoryReplyMode.labelOf(widget.room.replyMode)} · 下一位：${_forcedNextParticipantName()}',
                           maxLines: 1,
                           overflow: TextOverflow.ellipsis,
                           style: TextStyle(color: Colors.grey.shade700),
@@ -400,29 +486,31 @@ class _StoryRoomPageState extends State<StoryRoomPage> {
               ),
               const SizedBox(height: 8),
             ],
-            Row(
-              crossAxisAlignment: CrossAxisAlignment.end,
-              children: [
-                Expanded(
-                  child: TextField(
-                    controller: _inputCtl,
-                    minLines: 1,
-                    maxLines: 5,
-                    enabled: !_sending,
-                    decoration: InputDecoration(
-                      hintText: _isTavern ? '输入对话或场景动作' : '输入剧情、台词或创作指令',
-                      border: const OutlineInputBorder(),
-                    ),
-                  ),
-                ),
-                const SizedBox(width: 8),
-                IconButton.filled(
-                  tooltip: _sending ? '停止生成' : '发送',
-                  onPressed: _sending ? _stopGeneration : _send,
-                  icon:
-                      Icon(_sending ? Icons.stop_rounded : Icons.send_rounded),
-                ),
-              ],
+            MessageInputWidget(
+              _isTavern ? '输入对话或场景动作' : '输入剧情、台词或创作指令',
+              enable: !_sending,
+              isStreaming: _sending,
+              onChanged: (value) => _inputText = value,
+              onSend: () => unawaited(_send()),
+              onStop: _stopGeneration,
+              pendingImages: _pendingImages,
+              imagesEnabled: capabilities.image,
+              imagesDisabledReason: '当前模型不支持图片，请切换多模态模型',
+              onImagesPicked: (paths) => setState(() => _pendingImages =
+                  StoryRoomAttachmentPolicy.normalizePaths(paths,
+                      limit: StoryRoomAttachmentPolicy.maxImages)),
+              onRemoveImage: (index) => setState(() {
+                _pendingImages = List<String>.from(_pendingImages)
+                  ..removeAt(index);
+              }),
+              pendingFiles: _pendingFiles,
+              onFilesPicked: (paths) => setState(() => _pendingFiles =
+                  StoryRoomAttachmentPolicy.normalizePaths(paths,
+                      limit: StoryRoomAttachmentPolicy.maxFiles)),
+              onRemoveFile: (index) => setState(() {
+                _pendingFiles = List<String>.from(_pendingFiles)
+                  ..removeAt(index);
+              }),
             ),
           ],
         ),
@@ -449,6 +537,72 @@ class _StoryRoomPageState extends State<StoryRoomPage> {
       avatarValue: message.speakerAvatarValue,
       radius: radius,
     );
+  }
+
+  Widget _messageAttachments(StoryMessageModel message) {
+    final hasFiles = message.filePaths.isNotEmpty;
+    final hasExtractedText = message.attachmentContext.trim().isNotEmpty;
+    return Padding(
+      padding: const EdgeInsets.only(top: 8),
+      child: Wrap(
+        spacing: 6,
+        runSpacing: 6,
+        children: [
+          for (final path in message.imagePaths)
+            ClipRRect(
+              borderRadius: BorderRadius.circular(6),
+              child: Image.file(
+                File(path),
+                width: 54,
+                height: 54,
+                fit: BoxFit.cover,
+                errorBuilder: (_, __, ___) => Container(
+                  width: 54,
+                  height: 54,
+                  color: Colors.black12,
+                  alignment: Alignment.center,
+                  child:
+                      const Icon(Icons.image_not_supported_outlined, size: 20),
+                ),
+              ),
+            ),
+          if (hasFiles)
+            for (final path in message.filePaths)
+              _attachmentLabel(
+                Icons.insert_drive_file_outlined,
+                _attachmentName(path),
+              ),
+          if (hasExtractedText)
+            _attachmentLabel(Icons.article_outlined, '已提取文件内容'),
+        ],
+      ),
+    );
+  }
+
+  Widget _attachmentLabel(IconData icon, String label) {
+    return Container(
+      constraints: const BoxConstraints(maxWidth: 210),
+      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 5),
+      decoration: BoxDecoration(
+        color: Theme.of(context).colorScheme.surfaceContainerHighest,
+        borderRadius: BorderRadius.circular(6),
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Icon(icon, size: 16),
+          const SizedBox(width: 4),
+          Flexible(
+            child: Text(label, maxLines: 1, overflow: TextOverflow.ellipsis),
+          ),
+        ],
+      ),
+    );
+  }
+
+  String _attachmentName(String path) {
+    final parts = path.split(RegExp(r'[/\\]'));
+    return parts.isEmpty ? path : parts.last;
   }
 
   Future<void> _addAssistantParticipant() async {
@@ -619,8 +773,17 @@ class _StoryRoomPageState extends State<StoryRoomPage> {
       HiDialog.showSnackBar(context, '找不到触发这条回复的用户消息');
       return;
     }
-    final input = _messages[userIndex].content;
+    final userMessage = _messages[userIndex];
+    final input = userMessage.content;
     final history = _messages.sublist(0, userIndex);
+    final settings =
+        _effectiveSettings(context.read<AISettingsProvider>().settings);
+    final attachmentBundle = await StoryRoomAttachmentService.prepare(
+      imagePaths: userMessage.imagePaths,
+      filePaths: userMessage.filePaths,
+      capabilities: ChatService.capabilitiesFor(settings),
+      fallbackContext: userMessage.attachmentContext,
+    );
     if (message.id != null) await _dao?.deleteMessage(message.id!);
     if (mounted) {
       setState(() =>
@@ -630,6 +793,7 @@ class _StoryRoomPageState extends State<StoryRoomPage> {
       input: input,
       speaker: speaker,
       historyMessages: history,
+      attachmentBundle: attachmentBundle,
     );
   }
 
@@ -657,6 +821,7 @@ class _StoryRoomPageState extends State<StoryRoomPage> {
     required String input,
     required StoryParticipantModel speaker,
     required List<StoryMessageModel> historyMessages,
+    StoryRoomAttachmentBundle? attachmentBundle,
   }) async {
     final dao = _dao;
     if (dao == null || _sending) return;
@@ -675,6 +840,7 @@ class _StoryRoomPageState extends State<StoryRoomPage> {
         input: input,
         speaker: speaker,
         historyMessages: historyMessages,
+        attachmentBundle: attachmentBundle,
       );
     } catch (e) {
       if (mounted) HiDialog.showSnackBar(context, '生成失败：$e');
@@ -716,6 +882,16 @@ class _StoryRoomPageState extends State<StoryRoomPage> {
                 title: const Text('同步助手最新资料'),
                 subtitle: const Text('更新名称、人设和头像，不改历史消息'),
                 onTap: () => Navigator.pop(ctx, 'sync'),
+              ),
+            if (_isTavern &&
+                participant.enabled &&
+                participant.role == StoryParticipantRole.assistant &&
+                widget.room.replyMode != StoryReplyMode.manual)
+              ListTile(
+                leading: const Icon(Icons.next_plan_outlined),
+                title: const Text('指定为下一位发言者'),
+                subtitle: const Text('下一次发送优先由该角色开口'),
+                onTap: () => Navigator.pop(ctx, 'force_next'),
               ),
             ListTile(
               leading: Icon(
@@ -761,6 +937,13 @@ class _StoryRoomPageState extends State<StoryRoomPage> {
       case 'sync':
         await _syncParticipantFromAssistant(participant);
         return;
+      case 'force_next':
+        setState(() {
+          _forcedNextParticipantId = participant.id;
+          _selectedParticipantId = participant.id;
+        });
+        HiDialog.showSnackBar(context, '下一位将由「${participant.name}」发言');
+        return;
       case 'toggle':
         participant.enabled = !participant.enabled;
         await _dao?.saveParticipant(participant);
@@ -781,48 +964,92 @@ class _StoryRoomPageState extends State<StoryRoomPage> {
   Future<void> _editParticipant(StoryParticipantModel participant) async {
     final nameController = TextEditingController(text: participant.name);
     final promptController = TextEditingController(text: participant.prompt);
-    final saved = await showDialog<(String, String)>(
+    final userVoiceModels = await UserSherpaOnnxTtsModelStore().listModels();
+    if (!mounted) {
+      nameController.dispose();
+      promptController.dispose();
+      return;
+    }
+    var voiceStyle = participant.voiceStyle ?? TtsVoiceStyle.system.id;
+    final hasVoiceStyle = TtsVoiceStyle.isValid(voiceStyle) ||
+        userVoiceModels.any((model) => model.voiceStyleId == voiceStyle);
+    if (!hasVoiceStyle) voiceStyle = TtsVoiceStyle.system.id;
+    final saved = await showDialog<(String, String, String)>(
       context: context,
-      builder: (ctx) => AlertDialog(
-        title: const Text('编辑房间内角色'),
-        content: SingleChildScrollView(
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              TextField(
-                controller: nameController,
-                decoration: const InputDecoration(
-                  labelText: '显示名称',
-                  border: OutlineInputBorder(),
+      builder: (ctx) => StatefulBuilder(
+        builder: (ctx, setDialogState) => AlertDialog(
+          title: const Text('编辑房间内角色'),
+          content: SingleChildScrollView(
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                TextField(
+                  controller: nameController,
+                  decoration: const InputDecoration(
+                    labelText: '显示名称',
+                    border: OutlineInputBorder(),
+                  ),
                 ),
-              ),
-              const SizedBox(height: 12),
-              TextField(
-                controller: promptController,
-                minLines: 5,
-                maxLines: 10,
-                decoration: const InputDecoration(
-                  labelText: '房间内人设 / 职责',
-                  border: OutlineInputBorder(),
+                const SizedBox(height: 12),
+                TextField(
+                  controller: promptController,
+                  minLines: 5,
+                  maxLines: 10,
+                  decoration: const InputDecoration(
+                    labelText: '房间内人设 / 职责',
+                    border: OutlineInputBorder(),
+                  ),
                 ),
-              ),
-            ],
+                const SizedBox(height: 12),
+                DropdownButtonFormField<String>(
+                  initialValue: voiceStyle,
+                  decoration: const InputDecoration(
+                    labelText: '朗读音色风格',
+                    border: OutlineInputBorder(),
+                  ),
+                  items: [
+                    for (final style in TtsVoiceStyle.all)
+                      DropdownMenuItem(
+                        value: style.id,
+                        child: Text(style.label),
+                      ),
+                    for (final model in userVoiceModels)
+                      DropdownMenuItem(
+                        value: model.voiceStyleId,
+                        child: Text('用户模型：${model.title}'),
+                      ),
+                  ],
+                  onChanged: (value) {
+                    if (value != null) setDialogState(() => voiceStyle = value);
+                  },
+                ),
+                const SizedBox(height: 4),
+                Align(
+                  alignment: Alignment.centerLeft,
+                  child: Text(
+                    _voiceStyleDescription(voiceStyle, userVoiceModels),
+                    style: Theme.of(ctx).textTheme.bodySmall,
+                  ),
+                ),
+              ],
+            ),
           ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(ctx),
+              child: const Text('取消'),
+            ),
+            FilledButton(
+              onPressed: () {
+                final name = nameController.text.trim();
+                if (name.isEmpty) return;
+                Navigator.pop(
+                    ctx, (name, promptController.text.trim(), voiceStyle));
+              },
+              child: const Text('保存'),
+            ),
+          ],
         ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(ctx),
-            child: const Text('取消'),
-          ),
-          FilledButton(
-            onPressed: () {
-              final name = nameController.text.trim();
-              if (name.isEmpty) return;
-              Navigator.pop(ctx, (name, promptController.text.trim()));
-            },
-            child: const Text('保存'),
-          ),
-        ],
       ),
     );
     nameController.dispose();
@@ -830,8 +1057,21 @@ class _StoryRoomPageState extends State<StoryRoomPage> {
     if (saved == null) return;
     participant.name = saved.$1;
     participant.prompt = saved.$2;
+    participant.voiceStyle = saved.$3;
     await _dao?.saveParticipant(participant);
     await _load();
+  }
+
+  String _voiceStyleDescription(
+    String voiceStyle,
+    List<UserSherpaOnnxTtsModel> userModels,
+  ) {
+    for (final model in userModels) {
+      if (model.voiceStyleId == voiceStyle) {
+        return '用户导入的 sherpa-onnx 模型：${model.title}';
+      }
+    }
+    return TtsVoiceStyle.byId(voiceStyle).description;
   }
 
   Future<void> _syncParticipantFromAssistant(
@@ -914,6 +1154,9 @@ class _StoryRoomPageState extends State<StoryRoomPage> {
       prompt: assistant.systemPromptFor(''),
       avatarType: avatar.$1,
       avatarValue: avatar.$2,
+      voiceStyle: assistant.defaultVoiceStyle.trim().isEmpty
+          ? null
+          : assistant.defaultVoiceStyle.trim(),
       sortOrder: _participants.length + 1,
     );
   }
@@ -1206,7 +1449,7 @@ class _StoryRoomPageState extends State<StoryRoomPage> {
   Future<void> _send() async {
     final dao = _dao;
     final manualSpeaker = _selectedParticipant;
-    final input = _inputCtl.text.trim();
+    final input = _inputText.trim();
     if (dao == null || input.isEmpty) return;
     final manual = !_isTavern || widget.room.replyMode == StoryReplyMode.manual;
     if (manual && manualSpeaker == null) return;
@@ -1218,20 +1461,45 @@ class _StoryRoomPageState extends State<StoryRoomPage> {
     }
     final settings =
         _effectiveSettings(context.read<AISettingsProvider>().settings);
+    final capabilities = ChatService.capabilitiesFor(settings);
+    if (_pendingImages.isNotEmpty && !capabilities.image) {
+      HiDialog.showSnackBar(context, '当前模型不支持图片，请切换多模态模型');
+      return;
+    }
+    final pendingImages = List<String>.from(_pendingImages);
+    final pendingFiles = List<String>.from(_pendingFiles);
+    if (mounted) {
+      setState(() {
+        // 先锁住发送，避免附件编码期间重复触发下一轮请求。
+        _sending = true;
+        _stopRequested = false;
+        _generationStatus = '准备附件...';
+        _inputText = '';
+        _pendingImages = [];
+        _pendingFiles = [];
+      });
+    }
+    final attachmentBundle = await StoryRoomAttachmentService.prepare(
+      imagePaths: pendingImages,
+      filePaths: pendingFiles,
+      capabilities: capabilities,
+    );
     final previousMessages = List<StoryMessageModel>.from(_messages);
     final userMessage = StoryMessageModel(
       roomId: widget.room.id!,
       speakerRole: 'user',
       speakerName: '我',
       content: input,
+      imagePaths: attachmentBundle.imagePaths,
+      filePaths: attachmentBundle.filePaths,
+      attachmentContext: attachmentBundle.attachmentContext,
     );
-    setState(() {
-      _sending = true;
-      _stopRequested = false;
-      _generationStatus = '准备生成回复...';
-      _messages = [..._messages, userMessage];
-      _inputCtl.clear();
-    });
+    if (mounted) {
+      setState(() {
+        _generationStatus = '准备生成回复...';
+        _messages = [..._messages, userMessage];
+      });
+    }
     await dao.saveMessage(userMessage);
 
     try {
@@ -1256,6 +1524,7 @@ class _StoryRoomPageState extends State<StoryRoomPage> {
           input: input,
           speaker: speaker,
           historyMessages: workingHistory,
+          attachmentBundle: attachmentBundle,
         );
         if (reply == null) break;
         replies.add(reply);
@@ -1296,13 +1565,33 @@ class _StoryRoomPageState extends State<StoryRoomPage> {
     required List<StoryMessageModel> previousMessages,
   }) async {
     final candidates = StorySpeakerScheduler.tavernCandidates(_participants);
+    StoryParticipantModel? forced;
+    final forcedId = _forcedNextParticipantId;
+    if (forcedId != null) {
+      for (final candidate in candidates) {
+        if (candidate.id == forcedId) {
+          forced = candidate;
+          break;
+        }
+      }
+      _forcedNextParticipantId = null;
+      if (mounted) setState(() {});
+      if (forced != null && widget.room.replyMode != StoryReplyMode.autoMulti) {
+        return [forced];
+      }
+      if (forced != null) {
+        candidates.removeWhere((candidate) => candidate.id == forced!.id);
+      }
+    }
     final fallback = StorySpeakerScheduler.fallbackSpeaker(
       candidates: candidates,
       selectedParticipantId: _selectedParticipantId,
     );
-    if (candidates.length <= 1) return [if (fallback != null) fallback];
+    if (candidates.length <= 1) {
+      return [if (forced != null) forced, if (fallback != null) fallback];
+    }
     final maxSpeakers = widget.room.replyMode == StoryReplyMode.autoMulti
-        ? widget.room.maxAutoReplies.clamp(2, 3)
+        ? (widget.room.maxAutoReplies - (forced == null ? 0 : 1)).clamp(1, 3)
         : 1;
     try {
       final allowedIds = {for (final item in candidates) item.id!};
@@ -1344,17 +1633,30 @@ class _StoryRoomPageState extends State<StoryRoomPage> {
         allowedIds,
         maxCount: maxSpeakers,
       );
-      if (ids.isEmpty) return [if (fallback != null) fallback];
+      if (ids.isEmpty) {
+        return [if (forced != null) forced, if (fallback != null) fallback];
+      }
       final speakers = <StoryParticipantModel>[];
       for (final id in ids) {
         for (final item in candidates) {
           if (item.id == id) speakers.add(item);
         }
       }
-      return speakers.isEmpty ? [if (fallback != null) fallback] : speakers;
+      if (speakers.isEmpty) {
+        return [if (forced != null) forced, if (fallback != null) fallback];
+      }
+      return [if (forced != null) forced, ...speakers];
     } catch (_) {
-      return [if (fallback != null) fallback];
+      return [if (forced != null) forced, if (fallback != null) fallback];
     }
+  }
+
+  String _forcedNextParticipantName() {
+    final id = _forcedNextParticipantId;
+    for (final participant in _participants) {
+      if (participant.id == id) return participant.name;
+    }
+    return '已指定角色';
   }
 
   Future<StoryMessageModel?> _streamSpeakerReply({
@@ -1364,6 +1666,7 @@ class _StoryRoomPageState extends State<StoryRoomPage> {
     required String input,
     required StoryParticipantModel speaker,
     required List<StoryMessageModel> historyMessages,
+    StoryRoomAttachmentBundle? attachmentBundle,
   }) async {
     final system = StoryContextBuilder.systemPrompt(
       room: widget.room,
@@ -1383,6 +1686,7 @@ class _StoryRoomPageState extends State<StoryRoomPage> {
       speakerName: speaker.name,
       speakerAvatarType: speaker.avatarType,
       speakerAvatarValue: speaker.avatarValue,
+      speakerVoiceStyle: speaker.voiceStyle,
       content: '',
     );
     if (mounted) {
@@ -1403,6 +1707,7 @@ class _StoryRoomPageState extends State<StoryRoomPage> {
     final stream = chatService.chatStreamEvents(
       prompt: StoryContextBuilder.promptFor(input: input, speaker: speaker),
       history: history,
+      attachments: attachmentBundle?.attachments,
     );
     late final StreamSubscription<StreamEvent> sub;
     sub = stream.listen(
