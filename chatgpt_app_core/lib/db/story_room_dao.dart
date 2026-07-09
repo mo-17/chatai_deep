@@ -1,6 +1,7 @@
 import 'package:chatgpt_app_core/db/hi_db_manager.dart';
 import 'package:chatgpt_app_core/db/table_name.dart';
 import 'package:chatgpt_app_core/model/story_room_model.dart';
+import 'package:chatgpt_app_core/sync/sync_tombstone_store.dart';
 
 class StoryRoomDao implements ITable {
   final HiDBManager storage;
@@ -17,7 +18,9 @@ class StoryRoomDao implements ITable {
     await storage.db.execute(
         'create table if not exists tb_story_room (id integer primary key autoincrement'
         ', title text, mode text, replyMode text, maxAutoReplies integer'
-        ', publicContext text, createdAt integer, updatedAt integer)');
+        ', publicContext text, modelProviderId text, modelId text'
+        ', temperature real, maxOutputTokens integer'
+        ', createdAt integer, updatedAt integer)');
     await _ensureRoomColumns(storage);
     await storage.db.execute(
         'create table if not exists tb_story_participant (id integer primary key autoincrement'
@@ -30,9 +33,18 @@ class StoryRoomDao implements ITable {
         'create table if not exists tb_story_message (id integer primary key autoincrement'
         ', roomId integer not null, speakerId integer, speakerRole text'
         ', speakerName text, speakerAvatarType text, speakerAvatarValue text'
-        ', content text, createdAt integer)');
+        ', content text, createdAt integer, updatedAt integer)');
+    try {
+      await storage.db
+          .execute('alter table tb_story_message add column updatedAt integer');
+    } catch (_) {
+      // 已存在 updatedAt 列时忽略，保持旧库可升级。
+    }
+    await storage.db.execute(
+        'update tb_story_message set updatedAt = createdAt where updatedAt is null');
     await storage.db.execute(
         'create index if not exists tb_story_message_room_idx on tb_story_message(roomId, id asc)');
+    await SyncTombstoneStore.ensure(storage.db);
     return StoryRoomDao._(storage);
   }
 
@@ -54,6 +66,19 @@ class StoryRoomDao implements ITable {
           'alter table tb_story_room add column maxAutoReplies integer default 1');
     } catch (_) {
       // 已存在 maxAutoReplies 列时忽略，保持旧库可升级。
+    }
+    for (final column in const [
+      'modelProviderId text',
+      'modelId text',
+      'temperature real',
+      'maxOutputTokens integer',
+    ]) {
+      try {
+        await storage.db
+            .execute('alter table tb_story_room add column $column');
+      } catch (_) {
+        // 已存在模型参数列时忽略，保持旧库可升级。
+      }
     }
   }
 
@@ -87,6 +112,41 @@ class StoryRoomDao implements ITable {
 
   Future<void> deleteRoom(int id) async {
     await storage.db.transaction((txn) async {
+      final now = DateTime.now().millisecondsSinceEpoch;
+      final messageIds = await txn.query(
+        messageTable,
+        columns: ['id'],
+        where: 'roomId = ?',
+        whereArgs: [id],
+      );
+      final participantIds = await txn.query(
+        participantTable,
+        columns: ['id'],
+        where: 'roomId = ?',
+        whereArgs: [id],
+      );
+      for (final row in messageIds) {
+        await SyncTombstoneStore.record(
+          txn,
+          entity: 'story_message',
+          id: row['id']!,
+          updatedAt: now,
+        );
+      }
+      for (final row in participantIds) {
+        await SyncTombstoneStore.record(
+          txn,
+          entity: 'story_participant',
+          id: row['id']!,
+          updatedAt: now,
+        );
+      }
+      await SyncTombstoneStore.record(
+        txn,
+        entity: 'story_room',
+        id: id,
+        updatedAt: now,
+      );
       await txn.delete(messageTable, where: 'roomId = ?', whereArgs: [id]);
       await txn.delete(participantTable, where: 'roomId = ?', whereArgs: [id]);
       await txn.delete(tableName, where: 'id = ?', whereArgs: [id]);
@@ -110,10 +170,13 @@ class StoryRoomDao implements ITable {
     return model.id!;
   }
 
-  Future<List<StoryParticipantModel>> getParticipants(int roomId) async {
+  Future<List<StoryParticipantModel>> getParticipants(
+    int roomId, {
+    bool includeDisabled = false,
+  }) async {
     final rows = await storage.db.query(
       participantTable,
-      where: 'roomId = ? and enabled = 1',
+      where: includeDisabled ? 'roomId = ?' : 'roomId = ? and enabled = 1',
       whereArgs: [roomId],
       orderBy: 'sortOrder asc, id asc',
     );
@@ -121,10 +184,17 @@ class StoryRoomDao implements ITable {
   }
 
   Future<void> deleteParticipant(int id) async {
+    await SyncTombstoneStore.record(
+      storage.db,
+      entity: 'story_participant',
+      id: id,
+      updatedAt: DateTime.now().millisecondsSinceEpoch,
+    );
     await storage.db.delete(participantTable, where: 'id = ?', whereArgs: [id]);
   }
 
   Future<int> saveMessage(StoryMessageModel model) async {
+    model.updatedAt = DateTime.now().millisecondsSinceEpoch;
     final data = model.toJson()..remove('id');
     final id = await storage.db.insert(messageTable, data);
     model.id = id;
@@ -145,5 +215,34 @@ class StoryRoomDao implements ITable {
       orderBy: 'id asc',
     );
     return rows.map(StoryMessageModel.fromJson).toList();
+  }
+
+  Future<void> updateMessage(StoryMessageModel model) async {
+    final id = model.id;
+    if (id == null) throw ArgumentError('更新消息需要 id');
+    model.updatedAt = DateTime.now().millisecondsSinceEpoch;
+    final data = model.toJson()..remove('id');
+    await storage.db.update(
+      messageTable,
+      data,
+      where: 'id = ?',
+      whereArgs: [id],
+    );
+    await storage.db.update(
+      tableName,
+      {'updatedAt': DateTime.now().millisecondsSinceEpoch},
+      where: 'id = ?',
+      whereArgs: [model.roomId],
+    );
+  }
+
+  Future<void> deleteMessage(int id) async {
+    await SyncTombstoneStore.record(
+      storage.db,
+      entity: 'story_message',
+      id: id,
+      updatedAt: DateTime.now().millisecondsSinceEpoch,
+    );
+    await storage.db.delete(messageTable, where: 'id = ?', whereArgs: [id]);
   }
 }

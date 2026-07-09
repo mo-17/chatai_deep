@@ -1,10 +1,13 @@
 import 'package:chatgpt_app_core/chat/application/assistant_role_card_service.dart';
 import 'package:chatgpt_app_core/chat/application/story_context_builder.dart';
+import 'package:chatgpt_app_core/chat/application/story_context_window.dart';
 import 'package:chatgpt_app_core/chat/application/story_room_role_card_importer.dart';
+import 'package:chatgpt_app_core/chat/application/story_room_settings_resolver.dart';
 import 'package:chatgpt_app_core/chat/application/story_speaker_scheduler.dart';
 import 'package:chatgpt_app_core/db/hi_db_manager.dart';
 import 'package:chatgpt_app_core/db/story_room_dao.dart';
 import 'package:chatgpt_app_core/db/story_template_dao.dart';
+import 'package:chatgpt_app_core/model/ai_settings.dart';
 import 'package:chatgpt_app_core/model/assistant_model.dart';
 import 'package:chatgpt_app_core/model/story_room_model.dart';
 import 'package:chatgpt_app_core/model/story_template_model.dart';
@@ -32,6 +35,10 @@ void main() {
         replyMode: StoryReplyMode.autoMulti,
         maxAutoReplies: 3,
         publicContext: '现代奇幻',
+        modelProviderId: 'deepseek',
+        modelId: 'deepseek-v4-pro',
+        temperature: 0.7,
+        maxOutputTokens: 4096,
       );
       final roomId = await dao.saveRoom(room);
 
@@ -75,6 +82,10 @@ void main() {
       expect(savedRoom?.mode, StoryRoomMode.tavern);
       expect(savedRoom?.replyMode, StoryReplyMode.autoMulti);
       expect(savedRoom?.maxAutoReplies, 3);
+      expect(savedRoom?.modelProviderId, 'deepseek');
+      expect(savedRoom?.modelId, 'deepseek-v4-pro');
+      expect(savedRoom?.temperature, 0.7);
+      expect(savedRoom?.maxOutputTokens, 4096);
       final messages = await dao.getMessages(roomId);
       expect(messages, hasLength(2));
       expect(messages.last.speakerId, role.id);
@@ -106,6 +117,51 @@ void main() {
       await dao.deleteRoom(roomId);
       expect(await dao.getRoom(roomId), isNull);
       expect(await dao.getParticipants(roomId), isEmpty);
+      expect(await dao.getMessages(roomId), isEmpty);
+    });
+
+    test('禁用角色默认不参与生成但可由管理界面读取和重新启用', () async {
+      db = await databaseFactoryFfi.openDatabase(inMemoryDatabasePath);
+      final dao = await StoryRoomDao.create(HiDBManager.test(db));
+      final roomId = await dao.saveRoom(StoryRoomModel(title: '群像房间'));
+      final participant = StoryParticipantModel(
+        roomId: roomId,
+        role: StoryParticipantRole.assistant,
+        name: '暂离角色',
+        enabled: false,
+      );
+      await dao.saveParticipant(participant);
+
+      expect(await dao.getParticipants(roomId), isEmpty);
+      final managed = await dao.getParticipants(roomId, includeDisabled: true);
+      expect(managed.single.name, '暂离角色');
+      expect(managed.single.enabled, isFalse);
+
+      managed.single.enabled = true;
+      await dao.saveParticipant(managed.single);
+      expect((await dao.getParticipants(roomId)).single.enabled, isTrue);
+    });
+
+    test('房间消息支持编辑和删除', () async {
+      db = await databaseFactoryFfi.openDatabase(inMemoryDatabasePath);
+      final dao = await StoryRoomDao.create(HiDBManager.test(db));
+      final roomId = await dao.saveRoom(StoryRoomModel(title: '可编辑房间'));
+      final message = StoryMessageModel(
+        roomId: roomId,
+        speakerRole: 'user',
+        speakerName: '我',
+        content: '旧内容',
+      );
+      await dao.saveMessage(message);
+
+      message.content = '新内容';
+      final previousUpdatedAt = message.updatedAt;
+      await Future<void>.delayed(const Duration(milliseconds: 2));
+      await dao.updateMessage(message);
+      expect((await dao.getMessages(roomId)).single.content, '新内容');
+      expect(message.updatedAt, greaterThan(previousUpdatedAt));
+
+      await dao.deleteMessage(message.id!);
       expect(await dao.getMessages(roomId), isEmpty);
     });
 
@@ -147,6 +203,43 @@ void main() {
       saved.title = 'Fuka 模板改名';
       await templateDao.saveTemplate(saved);
       expect((await templateDao.getTemplate(id))?.title, 'Fuka 模板改名');
+    });
+  });
+
+  group('StoryRoomSettingsResolver', () {
+    test('本地模式应用房间服务商、模型和生成参数且不修改全局设置', () {
+      final global = AISettings.defaults();
+      final room = StoryRoomModel(
+        title: '导演房',
+        modelProviderId: 'openai',
+        modelId: 'gpt-4o-mini',
+        temperature: 0.35,
+        maxOutputTokens: 8192,
+      );
+
+      final resolved = StoryRoomSettingsResolver.apply(room, global);
+
+      expect(resolved.activeProviderId, 'openai');
+      expect(resolved.effectiveModel, 'gpt-4o-mini');
+      expect(resolved.temperature, 0.35);
+      expect(resolved.maxOutputTokens, 8192);
+      expect(global.activeProviderId, isNot('openai'));
+    });
+
+    test('后端模式只覆盖房间模型并保留全局跟随项', () {
+      final global = AISettings.defaults()
+        ..mode = AIMode.backend
+        ..backendModel = 'global-model'
+        ..temperature = 0.8
+        ..maxOutputTokens = 2048;
+      final room = StoryRoomModel(title: '创作房', modelId: 'room-model');
+
+      final resolved = StoryRoomSettingsResolver.apply(room, global);
+
+      expect(resolved.backendModel, 'room-model');
+      expect(resolved.temperature, 0.8);
+      expect(resolved.maxOutputTokens, 2048);
+      expect(global.backendModel, 'global-model');
     });
   });
 
@@ -637,6 +730,93 @@ void main() {
   });
 
   group('StoryContextBuilder', () {
+    test('上下文窗口保留最近消息、开场和旧剧情连续状态', () {
+      final room = StoryRoomModel(title: '钟楼谜案', mode: StoryRoomMode.tavern);
+      final fuka = StoryParticipantModel(
+        id: 2,
+        roomId: 1,
+        role: StoryParticipantRole.assistant,
+        name: 'Fuka',
+        prompt: '安静观察。',
+      );
+      final messages = <StoryMessageModel>[
+        StoryMessageModel(
+          roomId: 1,
+          speakerRole: StoryParticipantRole.assistant,
+          speakerName: '开场',
+          content: '雨夜的钟楼传来第三次钟声。',
+        ),
+        StoryMessageModel(
+          roomId: 1,
+          speakerRole: 'user',
+          speakerName: '我',
+          content: '我把银钥匙交给 Fuka。',
+        ),
+        StoryMessageModel(
+          roomId: 1,
+          speakerRole: StoryParticipantRole.assistant,
+          speakerName: 'Fuka',
+          content: 'Fuka 收好银钥匙，决定先去地下室。',
+        ),
+        StoryMessageModel(
+          roomId: 1,
+          speakerRole: StoryParticipantRole.assistant,
+          speakerName: '守钟人',
+          content: '守钟人留在塔顶监视街道。',
+        ),
+        for (var index = 0; index < 12; index++)
+          StoryMessageModel(
+            roomId: 1,
+            speakerRole: index.isEven ? 'user' : StoryParticipantRole.assistant,
+            speakerName: index.isEven ? '我' : 'Fuka',
+            content: '最近剧情 $index',
+          ),
+      ];
+
+      final history = StoryContextBuilder.history(messages);
+      final system = StoryContextBuilder.systemPrompt(
+        room: room,
+        participants: [fuka],
+        speaker: fuka,
+        recentMessages: messages,
+      );
+
+      expect(history, hasLength(12));
+      expect(history.first['content'], '最近剧情 0');
+      expect(history.last['content'], 'Fuka：最近剧情 11');
+      expect(history.map((item) => item['content']),
+          isNot(contains('我把银钥匙交给 Fuka。')));
+      expect(system, contains('【长期剧情记忆】'));
+      expect(system, contains('【系统开场】'));
+      expect(system, contains('雨夜的钟楼传来第三次钟声。'));
+      expect(system, contains('【连续状态】'));
+      expect(system, contains('Fuka：Fuka 收好银钥匙，决定先去地下室。'));
+      expect(system, contains('守钟人：守钟人留在塔顶监视街道。'));
+      expect(system, contains('【旧剧情摘要】'));
+    });
+
+    test('上下文摘要在相同输入下保持确定性并受字符预算限制', () {
+      final messages = List.generate(
+        20,
+        (index) => StoryMessageModel(
+          roomId: 1,
+          speakerRole: index.isEven ? 'user' : StoryParticipantRole.assistant,
+          speakerName: index.isEven ? '我' : 'Fuka',
+          content: '第 $index 幕 ${'剧情内容' * 80}',
+        ),
+      );
+      final first = StoryContextWindow.fromMessages(messages).summary(
+        maxCharacters: 300,
+      );
+      final second = StoryContextWindow.fromMessages(messages).summary(
+        maxCharacters: 300,
+      );
+
+      expect(first, second);
+      expect(first.length, lessThanOrEqualTo(300));
+      expect(first, contains('【连续状态】'));
+    });
+
     test('区分公共上下文、当前发言者人设和多 speaker 历史', () {
       final room = StoryRoomModel(title: '雨夜书店', publicContext: '城市里有魔法。');
       final author = StoryParticipantModel(

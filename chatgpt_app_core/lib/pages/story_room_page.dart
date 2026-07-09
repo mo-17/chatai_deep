@@ -1,11 +1,16 @@
 import 'dart:async';
 
 import 'package:chatgpt_app_core/chat/application/story_context_builder.dart';
+import 'package:chatgpt_app_core/chat/application/story_room_settings_resolver.dart';
 import 'package:chatgpt_app_core/chat/application/story_speaker_scheduler.dart';
+import 'package:chatgpt_app_core/chat/application/usage_record_service.dart';
 import 'package:chatgpt_app_core/chat/domain/stream_event.dart';
 import 'package:chatgpt_app_core/dao/chat/chat_service.dart';
+import 'package:chatgpt_app_core/db/assistant_dao.dart';
 import 'package:chatgpt_app_core/db/hi_db_manager.dart';
 import 'package:chatgpt_app_core/db/story_room_dao.dart';
+import 'package:chatgpt_app_core/db/usage_dao.dart';
+import 'package:chatgpt_app_core/model/ai_settings.dart';
 import 'package:chatgpt_app_core/model/assistant_model.dart';
 import 'package:chatgpt_app_core/model/story_room_model.dart';
 import 'package:chatgpt_app_core/provider/ai_settings_provider.dart';
@@ -14,6 +19,7 @@ import 'package:chatgpt_app_core/util/hi_dialog.dart';
 import 'package:chatgpt_app_core/widget/assistant_avatar.dart';
 import 'package:chatgpt_app_core/widget/assistant_picker.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:provider/provider.dart';
 
 class StoryRoomPage extends StatefulWidget {
@@ -29,6 +35,7 @@ class _StoryRoomPageState extends State<StoryRoomPage> {
   final _inputCtl = TextEditingController();
   final _publicContextCtl = TextEditingController();
   StoryRoomDao? _dao;
+  UsageRecordService? _usageRecordService;
   List<StoryParticipantModel> _participants = const [];
   List<StoryMessageModel> _messages = const [];
   int? _selectedParticipantId;
@@ -44,9 +51,12 @@ class _StoryRoomPageState extends State<StoryRoomPage> {
 
   StoryParticipantModel? get _selectedParticipant {
     for (final item in _participants) {
-      if (item.id == _selectedParticipantId) return item;
+      if (item.id == _selectedParticipantId && item.enabled) return item;
     }
-    return _participants.isEmpty ? null : _participants.first;
+    for (final item in _participants) {
+      if (item.enabled) return item;
+    }
+    return null;
   }
 
   @override
@@ -67,21 +77,42 @@ class _StoryRoomPageState extends State<StoryRoomPage> {
   Future<void> _load() async {
     final db = await HiDBManager.instance(dbName: HiDBManager.getAccountHash());
     final dao = await StoryRoomDao.create(db);
-    var participants = await dao.getParticipants(widget.room.id!);
+    final usageRecordService = UsageRecordService(await UsageDao.create(db));
+    var participants = await dao.getParticipants(
+      widget.room.id!,
+      includeDisabled: true,
+    );
     if (participants.isEmpty && !_isTavern) {
       await _seedDefaultParticipants(dao);
-      participants = await dao.getParticipants(widget.room.id!);
+      participants = await dao.getParticipants(
+        widget.room.id!,
+        includeDisabled: true,
+      );
     }
     final messages = await dao.getMessages(widget.room.id!);
     if (!mounted) return;
     setState(() {
       _dao = dao;
+      _usageRecordService = usageRecordService;
       _participants = participants;
       _messages = messages;
-      _selectedParticipantId ??=
-          participants.isEmpty ? null : participants.first.id;
+      final selectedStillEnabled = participants.any(
+        (item) => item.id == _selectedParticipantId && item.enabled,
+      );
+      if (!selectedStillEnabled) {
+        _selectedParticipantId = _firstEnabledParticipantId(participants);
+      }
       _loading = false;
     });
+  }
+
+  static int? _firstEnabledParticipantId(
+    List<StoryParticipantModel> participants,
+  ) {
+    for (final item in participants) {
+      if (item.enabled) return item.id;
+    }
+    return null;
   }
 
   Future<void> _seedDefaultParticipants(StoryRoomDao dao) async {
@@ -105,22 +136,50 @@ class _StoryRoomPageState extends State<StoryRoomPage> {
       appBar: AppBar(
         title: Text(widget.room.title),
         actions: [
-          IconButton(
-            tooltip: '公共上下文',
-            onPressed: _editPublicContext,
-            icon: const Icon(Icons.notes_outlined),
+          PopupMenuButton<String>(
+            tooltip: '房间设置',
+            onSelected: (value) {
+              if (value == 'context') _editPublicContext();
+              if (value == 'participant') _addAssistantParticipant();
+              if (value == 'reply') _editTavernReplyMode();
+              if (value == 'model') _editRoomModelSettings();
+            },
+            itemBuilder: (_) => [
+              const PopupMenuItem(
+                value: 'context',
+                child: ListTile(
+                  leading: Icon(Icons.notes_outlined),
+                  title: Text('公共上下文'),
+                  contentPadding: EdgeInsets.zero,
+                ),
+              ),
+              const PopupMenuItem(
+                value: 'participant',
+                child: ListTile(
+                  leading: Icon(Icons.person_add_alt_1_outlined),
+                  title: Text('添加角色'),
+                  contentPadding: EdgeInsets.zero,
+                ),
+              ),
+              if (_isTavern)
+                const PopupMenuItem(
+                  value: 'reply',
+                  child: ListTile(
+                    leading: Icon(Icons.forum_outlined),
+                    title: Text('发言模式'),
+                    contentPadding: EdgeInsets.zero,
+                  ),
+                ),
+              const PopupMenuItem(
+                value: 'model',
+                child: ListTile(
+                  leading: Icon(Icons.tune_outlined),
+                  title: Text('模型与生成参数'),
+                  contentPadding: EdgeInsets.zero,
+                ),
+              ),
+            ],
           ),
-          IconButton(
-            tooltip: '添加角色',
-            onPressed: _addAssistantParticipant,
-            icon: const Icon(Icons.person_add_alt_1_outlined),
-          ),
-          if (_isTavern)
-            IconButton(
-              tooltip: '发言模式',
-              onPressed: _editTavernReplyMode,
-              icon: const Icon(Icons.forum_outlined),
-            ),
         ],
       ),
       body: _loading
@@ -148,11 +207,28 @@ class _StoryRoomPageState extends State<StoryRoomPage> {
         itemBuilder: (_, index) {
           final item = _participants[index];
           final selected = item.id == _selectedParticipant?.id;
-          return ChoiceChip(
-            avatar: _avatarForParticipant(item, radius: 13),
-            selected: selected,
-            label: Text(item.name, overflow: TextOverflow.ellipsis),
-            onSelected: (_) => setState(() => _selectedParticipantId = item.id),
+          return Opacity(
+            opacity: item.enabled ? 1 : 0.48,
+            child: GestureDetector(
+              onLongPress: _sending ? null : () => _manageParticipant(item),
+              child: ChoiceChip(
+                avatar: _avatarForParticipant(item, radius: 13),
+                selected: selected,
+                label: Text(
+                  item.enabled ? item.name : '${item.name}（已暂停）',
+                  overflow: TextOverflow.ellipsis,
+                ),
+                onSelected: _sending
+                    ? null
+                    : (_) {
+                        if (!item.enabled) {
+                          _manageParticipant(item);
+                          return;
+                        }
+                        setState(() => _selectedParticipantId = item.id);
+                      },
+              ),
+            ),
           );
         },
       ),
@@ -177,60 +253,64 @@ class _StoryRoomPageState extends State<StoryRoomPage> {
             constraints: BoxConstraints(
               maxWidth: MediaQuery.of(context).size.width * 0.82,
             ),
-            child: Card(
-              margin: const EdgeInsets.symmetric(vertical: 5),
-              child: Padding(
-                padding: const EdgeInsets.all(10),
-                child: Column(
-                  crossAxisAlignment: isUser
-                      ? CrossAxisAlignment.end
-                      : CrossAxisAlignment.start,
-                  children: [
-                    Row(
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
-                        if (!isUser) ...[
-                          _avatarForMessage(message, radius: 12),
-                          const SizedBox(width: 6),
-                        ],
-                        Flexible(
-                          child: Text(
-                            message.speakerName,
-                            maxLines: 1,
-                            overflow: TextOverflow.ellipsis,
-                            style: const TextStyle(
-                              fontSize: 12,
-                              color: Colors.black54,
+            child: GestureDetector(
+              onLongPress:
+                  _sending ? null : () => _showMessageActions(message, index),
+              child: Card(
+                margin: const EdgeInsets.symmetric(vertical: 5),
+                child: Padding(
+                  padding: const EdgeInsets.all(10),
+                  child: Column(
+                    crossAxisAlignment: isUser
+                        ? CrossAxisAlignment.end
+                        : CrossAxisAlignment.start,
+                    children: [
+                      Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          if (!isUser) ...[
+                            _avatarForMessage(message, radius: 12),
+                            const SizedBox(width: 6),
+                          ],
+                          Flexible(
+                            child: Text(
+                              message.speakerName,
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                              style: const TextStyle(
+                                fontSize: 12,
+                                color: Colors.black54,
+                              ),
                             ),
                           ),
-                        ),
-                      ],
-                    ),
-                    const SizedBox(height: 6),
-                    if (_streamingMessageCreatedAt
-                        .contains(message.createdAt)) ...[
-                      if (message.content.trim().isEmpty)
-                        Text(
-                          '${message.speakerName} 正在发言...',
-                          style: TextStyle(
-                            color: Theme.of(context).colorScheme.primary,
-                            fontStyle: FontStyle.italic,
-                          ),
-                        )
-                      else
-                        Text(message.content),
-                      const SizedBox(height: 8),
-                      LinearProgressIndicator(
-                        minHeight: 2,
-                        color: Theme.of(context).colorScheme.primary,
-                        backgroundColor: Theme.of(context)
-                            .colorScheme
-                            .primary
-                            .withValues(alpha: 0.12),
+                        ],
                       ),
-                    ] else
-                      Text(message.content),
-                  ],
+                      const SizedBox(height: 6),
+                      if (_streamingMessageCreatedAt
+                          .contains(message.createdAt)) ...[
+                        if (message.content.trim().isEmpty)
+                          Text(
+                            '${message.speakerName} 正在发言...',
+                            style: TextStyle(
+                              color: Theme.of(context).colorScheme.primary,
+                              fontStyle: FontStyle.italic,
+                            ),
+                          )
+                        else
+                          Text(message.content),
+                        const SizedBox(height: 8),
+                        LinearProgressIndicator(
+                          minHeight: 2,
+                          color: Theme.of(context).colorScheme.primary,
+                          backgroundColor: Theme.of(context)
+                              .colorScheme
+                              .primary
+                              .withValues(alpha: 0.12),
+                        ),
+                      ] else
+                        Text(message.content),
+                    ],
+                  ),
                 ),
               ),
             ),
@@ -265,7 +345,8 @@ class _StoryRoomPageState extends State<StoryRoomPage> {
                             value: selected?.id,
                             isExpanded: true,
                             items: [
-                              for (final item in _participants)
+                              for (final item in _participants
+                                  .where((item) => item.enabled))
                                 DropdownMenuItem(
                                   value: item.id,
                                   child: Text(
@@ -376,8 +457,450 @@ class _StoryRoomPageState extends State<StoryRoomPage> {
     if (assistant == null || !mounted) return;
     final dao = _dao;
     if (dao == null) return;
+    if (assistant.id != null &&
+        _participants.any((item) => item.assistantId == assistant.id)) {
+      HiDialog.showSnackBar(context, '这个角色已经在房间中');
+      return;
+    }
     final participant = _participantFromAssistant(assistant);
     await dao.saveParticipant(participant);
+    await _load();
+  }
+
+  Future<void> _showMessageActions(
+    StoryMessageModel message,
+    int index,
+  ) async {
+    final canRegenerate = !message.isUser && message.speakerId != null;
+    final action = await showModalBottomSheet<String>(
+      context: context,
+      showDragHandle: true,
+      builder: (ctx) => SafeArea(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            ListTile(
+              leading: const Icon(Icons.copy_outlined),
+              title: const Text('复制内容'),
+              onTap: () => Navigator.pop(ctx, 'copy'),
+            ),
+            ListTile(
+              leading: const Icon(Icons.edit_outlined),
+              title: const Text('编辑内容'),
+              onTap: () => Navigator.pop(ctx, 'edit'),
+            ),
+            if (canRegenerate)
+              ListTile(
+                leading: const Icon(Icons.refresh_outlined),
+                title: const Text('重新生成'),
+                subtitle: const Text('使用这条回复之前的对话重新生成'),
+                onTap: () => Navigator.pop(ctx, 'regenerate'),
+              ),
+            if (canRegenerate)
+              ListTile(
+                leading: const Icon(Icons.playlist_add_outlined),
+                title: const Text('继续生成'),
+                subtitle: const Text('从当前内容之后继续，不重复已有文字'),
+                onTap: () => Navigator.pop(ctx, 'continue'),
+              ),
+            ListTile(
+              leading: Icon(
+                Icons.delete_outline,
+                color: Theme.of(ctx).colorScheme.error,
+              ),
+              title: Text(
+                '删除消息',
+                style: TextStyle(color: Theme.of(ctx).colorScheme.error),
+              ),
+              onTap: () => Navigator.pop(ctx, 'delete'),
+            ),
+          ],
+        ),
+      ),
+    );
+    if (!mounted || action == null) return;
+    switch (action) {
+      case 'copy':
+        await Clipboard.setData(ClipboardData(text: message.content));
+        if (mounted) HiDialog.showSnackBar(context, '已复制');
+        return;
+      case 'edit':
+        await _editMessage(message);
+        return;
+      case 'regenerate':
+        await _regenerateMessage(message, index);
+        return;
+      case 'continue':
+        await _continueMessage(message);
+        return;
+      case 'delete':
+        await _deleteMessage(message);
+        return;
+    }
+  }
+
+  Future<void> _editMessage(StoryMessageModel message) async {
+    final controller = TextEditingController(text: message.content);
+    final content = await showDialog<String>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: Text('编辑${message.speakerName}的消息'),
+        content: TextField(
+          controller: controller,
+          autofocus: true,
+          minLines: 5,
+          maxLines: 14,
+          decoration: const InputDecoration(border: OutlineInputBorder()),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx),
+            child: const Text('取消'),
+          ),
+          FilledButton(
+            onPressed: () {
+              final value = controller.text.trim();
+              if (value.isNotEmpty) Navigator.pop(ctx, value);
+            },
+            child: const Text('保存'),
+          ),
+        ],
+      ),
+    );
+    controller.dispose();
+    if (content == null || content == message.content) return;
+    message.content = content;
+    await _dao?.updateMessage(message);
+    if (mounted) setState(() {});
+  }
+
+  Future<void> _deleteMessage(StoryMessageModel message) async {
+    final id = message.id;
+    if (id == null) return;
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('删除消息'),
+        content: const Text('删除后不会自动改写后续剧情，确定继续吗？'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, false),
+            child: const Text('取消'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(ctx, true),
+            child: const Text('删除'),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true) return;
+    await _dao?.deleteMessage(id);
+    if (mounted) {
+      setState(
+          () => _messages = _messages.where((item) => item.id != id).toList());
+    }
+  }
+
+  Future<void> _regenerateMessage(
+    StoryMessageModel message,
+    int index,
+  ) async {
+    final speaker = _participantById(message.speakerId);
+    if (speaker == null) {
+      HiDialog.showSnackBar(context, '原角色已移出或暂停，无法重新生成');
+      return;
+    }
+    var userIndex = index - 1;
+    while (userIndex >= 0 && !_messages[userIndex].isUser) {
+      userIndex--;
+    }
+    if (userIndex < 0) {
+      HiDialog.showSnackBar(context, '找不到触发这条回复的用户消息');
+      return;
+    }
+    final input = _messages[userIndex].content;
+    final history = _messages.sublist(0, userIndex);
+    if (message.id != null) await _dao?.deleteMessage(message.id!);
+    if (mounted) {
+      setState(() =>
+          _messages = _messages.where((item) => item != message).toList());
+    }
+    await _runSingleSpeakerGeneration(
+      input: input,
+      speaker: speaker,
+      historyMessages: history,
+    );
+  }
+
+  Future<void> _continueMessage(StoryMessageModel message) async {
+    final speaker = _participantById(message.speakerId);
+    if (speaker == null) {
+      HiDialog.showSnackBar(context, '原角色已移出或暂停，无法继续生成');
+      return;
+    }
+    await _runSingleSpeakerGeneration(
+      input: '请从上一段中断处继续，保持相同语气和场景，不要重复已经生成的内容。',
+      speaker: speaker,
+      historyMessages: List<StoryMessageModel>.from(_messages),
+    );
+  }
+
+  StoryParticipantModel? _participantById(int? id) {
+    for (final item in _participants) {
+      if (item.id == id && item.enabled) return item;
+    }
+    return null;
+  }
+
+  Future<void> _runSingleSpeakerGeneration({
+    required String input,
+    required StoryParticipantModel speaker,
+    required List<StoryMessageModel> historyMessages,
+  }) async {
+    final dao = _dao;
+    if (dao == null || _sending) return;
+    final settings =
+        _effectiveSettings(context.read<AISettingsProvider>().settings);
+    setState(() {
+      _sending = true;
+      _stopRequested = false;
+      _generationStatus = '${speaker.name} 正在发言...';
+    });
+    try {
+      await _streamSpeakerReply(
+        dao: dao,
+        chatService: ChatService.from(settings),
+        settings: settings,
+        input: input,
+        speaker: speaker,
+        historyMessages: historyMessages,
+      );
+    } catch (e) {
+      if (mounted) HiDialog.showSnackBar(context, '生成失败：$e');
+    } finally {
+      if (mounted) {
+        setState(() {
+          _sending = false;
+          _generationStatus = '';
+          _stopRequested = false;
+        });
+      }
+    }
+  }
+
+  Future<void> _manageParticipant(StoryParticipantModel participant) async {
+    final index = _participants.indexWhere((item) => item.id == participant.id);
+    if (index < 0) return;
+    final action = await showModalBottomSheet<String>(
+      context: context,
+      showDragHandle: true,
+      builder: (ctx) => SafeArea(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            ListTile(
+              leading: _avatarForParticipant(participant),
+              title: Text(participant.name),
+              subtitle: Text(StoryParticipantRole.labelOf(participant.role)),
+            ),
+            const Divider(height: 1),
+            ListTile(
+              leading: const Icon(Icons.edit_outlined),
+              title: const Text('编辑房间内角色'),
+              onTap: () => Navigator.pop(ctx, 'edit'),
+            ),
+            if (participant.assistantId != null)
+              ListTile(
+                leading: const Icon(Icons.sync_outlined),
+                title: const Text('同步助手最新资料'),
+                subtitle: const Text('更新名称、人设和头像，不改历史消息'),
+                onTap: () => Navigator.pop(ctx, 'sync'),
+              ),
+            ListTile(
+              leading: Icon(
+                participant.enabled
+                    ? Icons.pause_circle_outline
+                    : Icons.play_circle_outline,
+              ),
+              title: Text(participant.enabled ? '暂停参与发言' : '重新加入发言'),
+              onTap: () => Navigator.pop(ctx, 'toggle'),
+            ),
+            if (index > 0)
+              ListTile(
+                leading: const Icon(Icons.arrow_back_outlined),
+                title: const Text('向前移动'),
+                onTap: () => Navigator.pop(ctx, 'previous'),
+              ),
+            if (index < _participants.length - 1)
+              ListTile(
+                leading: const Icon(Icons.arrow_forward_outlined),
+                title: const Text('向后移动'),
+                onTap: () => Navigator.pop(ctx, 'next'),
+              ),
+            ListTile(
+              leading: Icon(
+                Icons.delete_outline,
+                color: Theme.of(ctx).colorScheme.error,
+              ),
+              title: Text(
+                '移出房间',
+                style: TextStyle(color: Theme.of(ctx).colorScheme.error),
+              ),
+              onTap: () => Navigator.pop(ctx, 'delete'),
+            ),
+          ],
+        ),
+      ),
+    );
+    if (!mounted || action == null) return;
+    switch (action) {
+      case 'edit':
+        await _editParticipant(participant);
+        return;
+      case 'sync':
+        await _syncParticipantFromAssistant(participant);
+        return;
+      case 'toggle':
+        participant.enabled = !participant.enabled;
+        await _dao?.saveParticipant(participant);
+        await _load();
+        return;
+      case 'previous':
+        await _swapParticipants(index, index - 1);
+        return;
+      case 'next':
+        await _swapParticipants(index, index + 1);
+        return;
+      case 'delete':
+        await _deleteParticipant(participant);
+        return;
+    }
+  }
+
+  Future<void> _editParticipant(StoryParticipantModel participant) async {
+    final nameController = TextEditingController(text: participant.name);
+    final promptController = TextEditingController(text: participant.prompt);
+    final saved = await showDialog<(String, String)>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('编辑房间内角色'),
+        content: SingleChildScrollView(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              TextField(
+                controller: nameController,
+                decoration: const InputDecoration(
+                  labelText: '显示名称',
+                  border: OutlineInputBorder(),
+                ),
+              ),
+              const SizedBox(height: 12),
+              TextField(
+                controller: promptController,
+                minLines: 5,
+                maxLines: 10,
+                decoration: const InputDecoration(
+                  labelText: '房间内人设 / 职责',
+                  border: OutlineInputBorder(),
+                ),
+              ),
+            ],
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx),
+            child: const Text('取消'),
+          ),
+          FilledButton(
+            onPressed: () {
+              final name = nameController.text.trim();
+              if (name.isEmpty) return;
+              Navigator.pop(ctx, (name, promptController.text.trim()));
+            },
+            child: const Text('保存'),
+          ),
+        ],
+      ),
+    );
+    nameController.dispose();
+    promptController.dispose();
+    if (saved == null) return;
+    participant.name = saved.$1;
+    participant.prompt = saved.$2;
+    await _dao?.saveParticipant(participant);
+    await _load();
+  }
+
+  Future<void> _syncParticipantFromAssistant(
+    StoryParticipantModel participant,
+  ) async {
+    final assistantId = participant.assistantId;
+    if (assistantId == null) return;
+    final db = await HiDBManager.instance(dbName: HiDBManager.getAccountHash());
+    final assistant =
+        await (await AssistantDao.create(db)).getAssistant(assistantId);
+    if (!mounted) return;
+    if (assistant == null) {
+      HiDialog.showSnackBar(context, '原助手已不存在，房间快照保持不变');
+      return;
+    }
+    final avatar = _avatarFromAssistant(assistant);
+    participant
+      ..name = assistant.name
+      ..prompt = assistant.systemPromptFor('')
+      ..avatarType = avatar.$1
+      ..avatarValue = avatar.$2;
+    await _dao?.saveParticipant(participant);
+    await _load();
+    if (mounted) HiDialog.showSnackBar(context, '已同步助手最新资料');
+  }
+
+  Future<void> _swapParticipants(int firstIndex, int secondIndex) async {
+    if (firstIndex < 0 ||
+        secondIndex < 0 ||
+        firstIndex >= _participants.length ||
+        secondIndex >= _participants.length) {
+      return;
+    }
+    final first = _participants[firstIndex];
+    final second = _participants[secondIndex];
+    final firstOrder = first.sortOrder;
+    first.sortOrder = second.sortOrder;
+    second.sortOrder = firstOrder;
+    if (first.sortOrder == second.sortOrder) {
+      first.sortOrder = secondIndex;
+      second.sortOrder = firstIndex;
+    }
+    await _dao?.saveParticipant(first);
+    await _dao?.saveParticipant(second);
+    await _load();
+  }
+
+  Future<void> _deleteParticipant(StoryParticipantModel participant) async {
+    final id = participant.id;
+    if (id == null) return;
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('移出房间'),
+        content: Text('确定将「${participant.name}」移出房间吗？历史消息会保留原头像和名称。'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, false),
+            child: const Text('取消'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(ctx, true),
+            child: const Text('移出'),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true) return;
+    await _dao?.deleteParticipant(id);
     await _load();
   }
 
@@ -435,6 +958,150 @@ class _StoryRoomPageState extends State<StoryRoomPage> {
     await _dao?.saveRoom(widget.room);
     if (!mounted) return;
     setState(() {});
+  }
+
+  AISettings _effectiveSettings(AISettings settings) {
+    return StoryRoomSettingsResolver.apply(widget.room, settings);
+  }
+
+  Future<void> _editRoomModelSettings() async {
+    final global = context.read<AISettingsProvider>().settings;
+    var providerId = widget.room.modelProviderId?.trim() ?? '';
+    final modelController =
+        TextEditingController(text: widget.room.modelId ?? '');
+    final temperatureController = TextEditingController(
+      text: widget.room.temperature?.toString() ?? '',
+    );
+    final maxTokensController = TextEditingController(
+      text: widget.room.maxOutputTokens?.toString() ?? '',
+    );
+    final saved = await showDialog<(String?, String?, double?, int?)>(
+      context: context,
+      builder: (ctx) => StatefulBuilder(
+        builder: (ctx, setDialogState) => AlertDialog(
+          title: const Text('模型与生成参数'),
+          content: SingleChildScrollView(
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                if (global.mode == AIMode.local)
+                  DropdownButtonFormField<String>(
+                    initialValue: providerId,
+                    decoration: const InputDecoration(
+                      labelText: '服务商',
+                      border: OutlineInputBorder(),
+                    ),
+                    items: [
+                      const DropdownMenuItem(
+                        value: '',
+                        child: Text('跟随全局'),
+                      ),
+                      for (final provider in global.enabledProviders)
+                        DropdownMenuItem(
+                          value: provider.id,
+                          child: Text(provider.name),
+                        ),
+                    ],
+                    onChanged: (value) {
+                      setDialogState(() => providerId = value ?? '');
+                      if (providerId.isEmpty) return;
+                      final providers = global.enabledProviders
+                          .where((provider) => provider.id == providerId);
+                      if (providers.isNotEmpty &&
+                          modelController.text.trim().isEmpty) {
+                        modelController.text = providers.first.effectiveModelId;
+                      }
+                    },
+                  ),
+                if (global.mode == AIMode.local) const SizedBox(height: 12),
+                TextField(
+                  controller: modelController,
+                  decoration: InputDecoration(
+                    labelText: '模型 ID',
+                    hintText: '留空跟随全局：${global.effectiveModel}',
+                    border: const OutlineInputBorder(),
+                  ),
+                ),
+                const SizedBox(height: 12),
+                TextField(
+                  controller: temperatureController,
+                  keyboardType:
+                      const TextInputType.numberWithOptions(decimal: true),
+                  decoration: const InputDecoration(
+                    labelText: 'Temperature',
+                    hintText: '留空跟随全局，范围 0-2',
+                    border: OutlineInputBorder(),
+                  ),
+                ),
+                const SizedBox(height: 12),
+                TextField(
+                  controller: maxTokensController,
+                  keyboardType: TextInputType.number,
+                  decoration: const InputDecoration(
+                    labelText: '最大输出 Token',
+                    hintText: '留空跟随全局，0 表示不限制',
+                    border: OutlineInputBorder(),
+                  ),
+                ),
+              ],
+            ),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(ctx),
+              child: const Text('取消'),
+            ),
+            FilledButton(
+              onPressed: () {
+                final temperatureText = temperatureController.text.trim();
+                final maxTokensText = maxTokensController.text.trim();
+                final temperature = temperatureText.isEmpty
+                    ? null
+                    : double.tryParse(temperatureText);
+                final maxTokens =
+                    maxTokensText.isEmpty ? null : int.tryParse(maxTokensText);
+                if (temperatureText.isNotEmpty &&
+                    (temperature == null ||
+                        temperature < 0 ||
+                        temperature > 2)) {
+                  return;
+                }
+                if (maxTokensText.isNotEmpty &&
+                    (maxTokens == null || maxTokens < 0)) {
+                  return;
+                }
+                Navigator.pop(
+                  ctx,
+                  (
+                    providerId.isEmpty ? null : providerId,
+                    modelController.text.trim().isEmpty
+                        ? null
+                        : modelController.text.trim(),
+                    temperature,
+                    maxTokens,
+                  ),
+                );
+              },
+              child: const Text('保存'),
+            ),
+          ],
+        ),
+      ),
+    );
+    modelController.dispose();
+    temperatureController.dispose();
+    maxTokensController.dispose();
+    if (saved == null) return;
+    widget.room
+      ..modelProviderId = saved.$1
+      ..modelId = saved.$2
+      ..temperature = saved.$3
+      ..maxOutputTokens = saved.$4;
+    await _dao?.saveRoom(widget.room);
+    if (mounted) {
+      setState(() {});
+      HiDialog.showSnackBar(context, '房间模型设置已保存');
+    }
   }
 
   Future<void> _editTavernReplyMode() async {
@@ -549,7 +1216,8 @@ class _StoryRoomPageState extends State<StoryRoomPage> {
       HiDialog.showSnackBar(context, '请先添加至少一个角色卡');
       return;
     }
-    final settings = context.read<AISettingsProvider>().settings;
+    final settings =
+        _effectiveSettings(context.read<AISettingsProvider>().settings);
     final previousMessages = List<StoryMessageModel>.from(_messages);
     final userMessage = StoryMessageModel(
       roomId: widget.room.id!,
@@ -572,6 +1240,7 @@ class _StoryRoomPageState extends State<StoryRoomPage> {
           ? [if (manualSpeaker != null) manualSpeaker]
           : await _scheduleTavernSpeakers(
               chatService: chatService,
+              settings: settings,
               input: input,
               previousMessages: previousMessages,
             );
@@ -583,6 +1252,7 @@ class _StoryRoomPageState extends State<StoryRoomPage> {
         final reply = await _streamSpeakerReply(
           dao: dao,
           chatService: chatService,
+          settings: settings,
           input: input,
           speaker: speaker,
           historyMessages: workingHistory,
@@ -621,6 +1291,7 @@ class _StoryRoomPageState extends State<StoryRoomPage> {
 
   Future<List<StoryParticipantModel>> _scheduleTavernSpeakers({
     required ChatService chatService,
+    required AISettings settings,
     required String input,
     required List<StoryMessageModel> previousMessages,
   }) async {
@@ -635,24 +1306,39 @@ class _StoryRoomPageState extends State<StoryRoomPage> {
         : 1;
     try {
       final allowedIds = {for (final item in candidates) item.id!};
-      final response = await chatService.chat(
-        prompt: StorySpeakerScheduler.promptFor(
-          input,
-          maxSpeakers: maxSpeakers,
-        ),
-        history: [
-          {
-            'role': 'system',
-            'content': StorySpeakerScheduler.systemPrompt(
-              room: widget.room,
-              candidates: candidates,
-              recentMessages: previousMessages,
-              maxSpeakers: maxSpeakers,
-            ),
-          },
-        ],
-        timeout: const Duration(seconds: 20),
+      final prompt = StorySpeakerScheduler.promptFor(
+        input,
+        maxSpeakers: maxSpeakers,
       );
+      final history = [
+        {
+          'role': 'system',
+          'content': StorySpeakerScheduler.systemPrompt(
+            room: widget.room,
+            candidates: candidates,
+            recentMessages: previousMessages,
+            maxSpeakers: maxSpeakers,
+          ),
+        },
+      ];
+      final result = await chatService.chatWithUsage(
+        prompt: prompt,
+        history: history,
+      );
+      final response = result.content;
+      if (response != null && response.trim().isNotEmpty) {
+        await _recordUsage(
+          settings: settings,
+          prompt: _usagePromptText(history, prompt),
+          completion: response,
+          promptTokens: result.promptTokens,
+          cachedPromptTokens: result.cachedPromptTokens,
+          completionTokens: result.completionTokens,
+          estimated: result.estimated,
+          cost: result.cost,
+          createdAt: DateTime.now().millisecondsSinceEpoch,
+        );
+      }
       final ids = StorySpeakerScheduler.parseSpeakerIds(
         response,
         allowedIds,
@@ -674,6 +1360,7 @@ class _StoryRoomPageState extends State<StoryRoomPage> {
   Future<StoryMessageModel?> _streamSpeakerReply({
     required StoryRoomDao dao,
     required ChatService chatService,
+    required AISettings settings,
     required String input,
     required StoryParticipantModel speaker,
     required List<StoryMessageModel> historyMessages,
@@ -707,6 +1394,10 @@ class _StoryRoomPageState extends State<StoryRoomPage> {
     }
 
     final buffer = StringBuffer();
+    var promptTokens = 0;
+    var cachedPromptTokens = 0;
+    var completionTokens = 0;
+    var hasUsage = false;
     Object? streamError;
     final done = Completer<void>();
     final stream = chatService.chatStreamEvents(
@@ -717,10 +1408,18 @@ class _StoryRoomPageState extends State<StoryRoomPage> {
     sub = stream.listen(
       (event) {
         if (_stopRequested) return;
-        if (event.type != StreamEventType.text) return;
-        buffer.write(event.delta);
-        message.content = buffer.toString();
-        if (mounted) setState(() {});
+        if (event.type == StreamEventType.usage) {
+          hasUsage = true;
+          promptTokens += event.promptTokens ?? 0;
+          cachedPromptTokens += event.cachedPromptTokens ?? 0;
+          completionTokens += event.completionTokens ?? 0;
+          return;
+        }
+        if (event.type == StreamEventType.text) {
+          buffer.write(event.delta);
+          message.content = buffer.toString();
+          if (mounted) setState(() {});
+        }
       },
       onError: (Object e) {
         streamError = e;
@@ -755,6 +1454,65 @@ class _StoryRoomPageState extends State<StoryRoomPage> {
     }
     message.content = text;
     await dao.saveMessage(message);
+    await _recordUsage(
+      settings: settings,
+      prompt: _usagePromptText(
+        history,
+        StoryContextBuilder.promptFor(input: input, speaker: speaker),
+      ),
+      completion: text,
+      promptTokens: hasUsage ? promptTokens : null,
+      cachedPromptTokens: hasUsage ? cachedPromptTokens : null,
+      completionTokens: hasUsage ? completionTokens : null,
+      estimated: !hasUsage,
+      createdAt: message.createdAt,
+    );
     return message;
+  }
+
+  String _usagePromptText(
+    List<Map<String, dynamic>> history,
+    String prompt,
+  ) {
+    return [
+      for (final item in history) '${item['role']}：${item['content']}',
+      'user：$prompt',
+    ].join('\n');
+  }
+
+  Future<void> _recordUsage({
+    required AISettings settings,
+    required String prompt,
+    required String completion,
+    int? promptTokens,
+    int? cachedPromptTokens,
+    int? completionTokens,
+    bool estimated = false,
+    double cost = 0,
+    required int createdAt,
+  }) async {
+    final service = _usageRecordService;
+    final modelId = settings.effectiveModel.trim();
+    if (service == null || modelId.isEmpty) return;
+    try {
+      await service.recordTurn(
+        modelId: modelId,
+        providerId:
+            settings.mode == AIMode.local ? settings.activeProviderId : null,
+        projectId: null,
+        cid: null,
+        prompt: prompt,
+        completion: completion,
+        promptTokens: promptTokens,
+        cachedPromptTokens: cachedPromptTokens,
+        completionTokens: completionTokens,
+        estimated: estimated,
+        cost: cost,
+        costConfig: settings.usageCostConfig,
+        createdAt: createdAt,
+      );
+    } catch (_) {
+      // 用量记录失败不能阻断房间回复。
+    }
   }
 }

@@ -2,8 +2,10 @@ import 'package:chatgpt_app_core/capability/product_capabilities.dart';
 import 'package:chatgpt_app_core/db/conversation_dao.dart';
 import 'package:chatgpt_app_core/db/hi_db_manager.dart';
 import 'package:chatgpt_app_core/db/project_dao.dart';
+import 'package:chatgpt_app_core/db/story_room_dao.dart';
 import 'package:chatgpt_app_core/model/conversation_model.dart';
 import 'package:chatgpt_app_core/model/project_model.dart';
+import 'package:chatgpt_app_core/model/story_room_model.dart';
 import 'package:chatgpt_app_core/sync/local_sync_service.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:sqflite_common_ffi/sqflite_ffi.dart';
@@ -128,6 +130,260 @@ void main() {
     expect(rows.firstWhere((r) => r['cid'] == 1)['title'], '远端新标题');
     expect(rows.firstWhere((r) => r['cid'] == 2)['title'], '本地较新');
     expect(rows.firstWhere((r) => r['cid'] == 3)['title'], '本地冲突');
+    await storage.db.close();
+  });
+
+  test('Story Room 三表导出使用 updatedAt，并由同步服务初始化表', () async {
+    final storage = await newDb();
+    final sync = LocalSyncService(storage);
+
+    expect(await sync.exportChanges(), isEmpty);
+    await storage.db.insert('tb_story_room', {
+      'id': 1,
+      'title': '旧房间',
+      'mode': 'creation',
+      'replyMode': 'autoSingle',
+      'maxAutoReplies': 1,
+      'publicContext': '',
+      'createdAt': 10,
+      'updatedAt': 10,
+    });
+    await storage.db.insert('tb_story_room', {
+      'id': 2,
+      'title': '新房间',
+      'mode': 'tavern',
+      'replyMode': 'autoMulti',
+      'maxAutoReplies': 3,
+      'publicContext': '海边酒馆',
+      'createdAt': 20,
+      'updatedAt': 30,
+    });
+    await storage.db.insert('tb_story_participant', {
+      'id': 3,
+      'roomId': 2,
+      'assistantId': null,
+      'role': 'assistant',
+      'name': '角色',
+      'prompt': '',
+      'avatarType': null,
+      'avatarValue': null,
+      'sortOrder': 0,
+      'enabled': 1,
+      'createdAt': 20,
+      'updatedAt': 31,
+    });
+    await storage.db.insert('tb_story_message', {
+      'id': 4,
+      'roomId': 2,
+      'speakerId': 3,
+      'speakerRole': 'assistant',
+      'speakerName': '角色',
+      'speakerAvatarType': null,
+      'speakerAvatarValue': null,
+      'content': '欢迎来到酒馆。',
+      'createdAt': 20,
+      'updatedAt': 32,
+    });
+
+    final changes = await sync.exportChanges(updatedAfter: 20);
+
+    expect(
+      changes.map((change) => change.key),
+      containsAll(['story_room:2', 'story_participant:3', 'story_message:4']),
+    );
+    expect(
+        changes.map((change) => change.key), isNot(contains('story_room:1')));
+    expect(
+      changes
+          .singleWhere((change) => change.key == 'story_message:4')
+          .updatedAt,
+      32,
+    );
+    await storage.db.close();
+  });
+
+  test('Story Room 远端变更支持三表关联、删除和同时间戳冲突', () async {
+    final storage = await newDb();
+    final sync = LocalSyncService(storage);
+
+    final result = await sync.applyRemoteChanges([
+      const SyncChange(
+        entity: 'story_room',
+        id: '10',
+        op: SyncOp.upsert,
+        updatedAt: 100,
+        payload: {
+          'id': 10,
+          'title': '远端房间',
+          'mode': 'tavern',
+          'replyMode': 'autoMulti',
+          'maxAutoReplies': 2,
+          'publicContext': '远端场景',
+          'createdAt': 90,
+          'updatedAt': 100,
+        },
+      ),
+      const SyncChange(
+        entity: 'story_participant',
+        id: '20',
+        op: SyncOp.upsert,
+        updatedAt: 110,
+        payload: {
+          'id': 20,
+          'roomId': 10,
+          'assistantId': null,
+          'role': 'assistant',
+          'name': '远端角色',
+          'prompt': '保持角色设定',
+          'avatarType': 'emoji',
+          'avatarValue': 'R',
+          'sortOrder': 0,
+          'enabled': 1,
+          'createdAt': 100,
+          'updatedAt': 110,
+        },
+      ),
+      const SyncChange(
+        entity: 'story_message',
+        id: '30',
+        op: SyncOp.upsert,
+        updatedAt: 120,
+        payload: {
+          'id': 30,
+          'roomId': 10,
+          'speakerId': 20,
+          'speakerRole': 'assistant',
+          'speakerName': '远端角色',
+          'speakerAvatarType': 'emoji',
+          'speakerAvatarValue': 'R',
+          'content': '远端消息',
+          'createdAt': 110,
+          'updatedAt': 120,
+        },
+      ),
+    ]);
+
+    expect(result.accepted, hasLength(3));
+    final participant = await storage.db.query(
+      'tb_story_participant',
+      where: 'id = ?',
+      whereArgs: [20],
+    );
+    final message = await storage.db.query(
+      'tb_story_message',
+      where: 'id = ?',
+      whereArgs: [30],
+    );
+    expect(participant.single['roomId'], 10);
+    expect(message.single['roomId'], 10);
+    expect(message.single['speakerId'], 20);
+
+    await storage.db.insert('tb_story_participant', {
+      'id': 21,
+      'roomId': 10,
+      'assistantId': null,
+      'role': 'narrator',
+      'name': '待删除',
+      'prompt': '',
+      'avatarType': null,
+      'avatarValue': null,
+      'sortOrder': 1,
+      'enabled': 1,
+      'createdAt': 121,
+      'updatedAt': 121,
+    });
+    await storage.db.insert('tb_story_room', {
+      'id': 11,
+      'title': '本地标题',
+      'mode': 'creation',
+      'replyMode': 'autoSingle',
+      'maxAutoReplies': 1,
+      'publicContext': '',
+      'createdAt': 130,
+      'updatedAt': 130,
+    });
+
+    final merge = await sync.applyRemoteChanges([
+      const SyncChange(
+        entity: 'story_participant',
+        id: '21',
+        op: SyncOp.delete,
+        updatedAt: 122,
+      ),
+      const SyncChange(
+        entity: 'story_room',
+        id: '11',
+        op: SyncOp.upsert,
+        updatedAt: 130,
+        payload: {
+          'id': 11,
+          'title': '远端冲突标题',
+          'mode': 'creation',
+          'replyMode': 'autoSingle',
+          'maxAutoReplies': 1,
+          'publicContext': '',
+          'createdAt': 130,
+          'updatedAt': 130,
+        },
+      ),
+    ]);
+
+    expect(
+        merge.accepted.map((change) => change.key), ['story_participant:21']);
+    expect(merge.conflicts, ['story_room:11']);
+    expect(
+      await storage.db
+          .query('tb_story_participant', where: 'id = ?', whereArgs: [21]),
+      isEmpty,
+    );
+    final localRoom = await storage.db.query(
+      'tb_story_room',
+      where: 'id = ?',
+      whereArgs: [11],
+    );
+    expect(localRoom.single['title'], '本地标题');
+    await storage.db.close();
+  });
+
+  test('Story Room 本地删除导出墓碑并在远端确认后清理', () async {
+    final storage = await newDb();
+    final dao = await StoryRoomDao.create(storage);
+    final room = StoryRoomModel(title: '待同步删除');
+    final roomId = await dao.saveRoom(room);
+    final participant = StoryParticipantModel(
+      roomId: roomId,
+      role: StoryParticipantRole.assistant,
+      name: '角色',
+    );
+    await dao.saveParticipant(participant);
+    final message = StoryMessageModel(
+      roomId: roomId,
+      speakerId: participant.id,
+      speakerRole: StoryParticipantRole.assistant,
+      speakerName: participant.name,
+      content: '即将删除',
+    );
+    await dao.saveMessage(message);
+
+    await dao.deleteRoom(roomId);
+    final sync = LocalSyncService(storage);
+    final changes = await sync.exportChanges();
+    final deletes = changes.where((change) => change.op == SyncOp.delete);
+    expect(
+      deletes.map((change) => change.key),
+      containsAll([
+        'story_room:$roomId',
+        'story_participant:${participant.id}',
+        'story_message:${message.id}',
+      ]),
+    );
+
+    await sync.applyRemoteChanges(deletes);
+    final afterAck = await sync.exportChanges();
+    expect(
+      afterAck.where((change) => change.op == SyncOp.delete),
+      isEmpty,
+    );
     await storage.db.close();
   });
 }

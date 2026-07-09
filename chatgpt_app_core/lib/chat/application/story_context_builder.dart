@@ -1,5 +1,6 @@
 import 'package:chatgpt_app_core/chat/application/assistant_role_card_service.dart';
 import 'package:chatgpt_app_core/chat/application/story_room_role_card_importer.dart';
+import 'package:chatgpt_app_core/chat/application/story_context_window.dart';
 import 'package:chatgpt_app_core/model/story_room_model.dart';
 
 class StoryContextBuilder {
@@ -11,6 +12,7 @@ class StoryContextBuilder {
     List<StoryMessageModel> recentMessages = const [],
   }) {
     final isTavern = room.mode == StoryRoomMode.tavern;
+    final contextWindow = StoryContextWindow.fromMessages(recentMessages);
     final buffer = StringBuffer()
       ..writeln(isTavern ? '你正在一个酒馆角色扮演房间中对话。' : '你正在一个小说创作房间中协作。')
       ..writeln('当前房间：${room.title}')
@@ -35,9 +37,16 @@ class StoryContextBuilder {
         ..writeln(isTavern ? '【公共上下文 / 场景设定】' : '【公共上下文 / 世界设定】')
         ..writeln(publicContext);
     }
+    final continuitySummary = contextWindow.summary();
+    if (continuitySummary.isNotEmpty) {
+      buffer
+        ..writeln()
+        ..writeln('【长期剧情记忆】')
+        ..writeln(continuitySummary);
+    }
     final maxEntries = _worldBookHitLimit(room);
     final recentTexts = _recentMatchTexts(
-      recentMessages,
+      contextWindow.recentMessages,
       maxDepth: _worldBookScanDepth(room),
     );
     final worldBookHits = worldBook.isEmpty
@@ -98,7 +107,8 @@ class StoryContextBuilder {
 
   static List<Map<String, dynamic>> history(List<StoryMessageModel> messages) {
     return [
-      for (final message in messages)
+      for (final message
+          in StoryContextWindow.fromMessages(messages).recentMessages)
         {
           'role': message.isUser ? 'user' : 'assistant',
           'content': message.isUser
@@ -131,6 +141,7 @@ class StoryContextBuilder {
   }
 
   static int _worldBookHitLimit(StoryRoomModel room) {
+    // ignore: deprecated_member_use
     final budget = RegExp(r'Token 预算：(\d+)').firstMatch(room.publicContext);
     final value = int.tryParse(budget?.group(1) ?? '');
     if (value == null) return 8;
@@ -140,17 +151,20 @@ class StoryContextBuilder {
   }
 
   static int? _worldBookTokenBudget(StoryRoomModel room) {
+    // ignore: deprecated_member_use
     final budget = RegExp(r'Token 预算：(\d+)').firstMatch(room.publicContext);
     return int.tryParse(budget?.group(1) ?? '');
   }
 
   static int _worldBookScanDepth(StoryRoomModel room) {
+    // ignore: deprecated_member_use
     final depth = RegExp(r'扫描深度：(\d+)').firstMatch(room.publicContext);
     final value = int.tryParse(depth?.group(1) ?? '');
     return (value ?? 6).clamp(0, 50);
   }
 
   static bool _worldBookRecursiveScanning(StoryRoomModel room) {
+    // ignore: deprecated_member_use
     final match = RegExp(r'递归扫描：([^\n]+)').firstMatch(room.publicContext);
     final value = match?.group(1)?.trim().toLowerCase() ?? '';
     return value == '开启' || value == 'true' || value == 'yes' || value == '1';
@@ -274,8 +288,10 @@ class StoryContextBuilder {
   }
 
   static bool _isAfterCharWorldBookPosition(String position) {
+    // ignore: deprecated_member_use
+    final separatorPattern = RegExp(r'[\s-]+');
     final normalized =
-        position.trim().toLowerCase().replaceAll(RegExp(r'[\s-]+'), '_');
+        position.trim().toLowerCase().replaceAll(separatorPattern, '_');
     return normalized == 'after_char' ||
         normalized == 'afterchar' ||
         normalized == 'after_character' ||
@@ -304,6 +320,7 @@ class StoryContextBuilder {
   }
 
   static int _nextSectionStart(String text, int start) {
+    // ignore: deprecated_member_use
     final match = RegExp(r'\n【[^】]+】').firstMatch(text.substring(start));
     if (match == null) return -1;
     return start + match.start + 1;

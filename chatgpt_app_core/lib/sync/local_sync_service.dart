@@ -3,6 +3,8 @@ import 'dart:convert';
 import 'package:chatgpt_app_core/capability/product_capabilities.dart';
 import 'package:chatgpt_app_core/db/db_migration.dart';
 import 'package:chatgpt_app_core/db/hi_db_manager.dart';
+import 'package:chatgpt_app_core/db/story_room_dao.dart';
+import 'package:chatgpt_app_core/sync/sync_tombstone_store.dart';
 
 /// 本地同步服务：把 SQLite 里的核心业务表转换成可上传的增量变更，
 /// 并把服务端下发的变更按 Last-Write-Wins 应用回本机。
@@ -56,6 +58,24 @@ class LocalSyncService {
       table: 'tb_project_kb',
       idColumns: ['projectId', 'docId'],
     ),
+    _SyncEntitySpec(
+      entity: 'story_room',
+      table: 'tb_story_room',
+      idColumns: ['id'],
+      timestampColumn: 'updatedAt',
+    ),
+    _SyncEntitySpec(
+      entity: 'story_participant',
+      table: 'tb_story_participant',
+      idColumns: ['id'],
+      timestampColumn: 'updatedAt',
+    ),
+    _SyncEntitySpec(
+      entity: 'story_message',
+      table: 'tb_story_message',
+      idColumns: ['id'],
+      timestampColumn: 'updatedAt',
+    ),
   ];
 
   final HiDBManager storage;
@@ -63,7 +83,7 @@ class LocalSyncService {
   const LocalSyncService(this.storage);
 
   Future<List<SyncChange>> exportChanges({int updatedAfter = 0}) async {
-    await DbMigration.run(storage.db);
+    await _ensureTables();
     final changes = <SyncChange>[];
     for (final spec in _specs) {
       final rows = await storage.db.query(
@@ -80,6 +100,21 @@ class LocalSyncService {
         changes.add(spec.changeFromRow(row));
       }
     }
+    final tombstones = await storage.db.query(
+      SyncTombstoneStore.tableName,
+      where: updatedAfter <= 0 ? null : 'updatedAt > ?',
+      whereArgs: updatedAfter <= 0 ? null : [updatedAfter],
+      orderBy: 'updatedAt asc',
+    );
+    for (final row in tombstones) {
+      changes.add(SyncChange(
+        entity: row['entity'] as String,
+        id: '${row['entityId']}',
+        op: SyncOp.delete,
+        updatedAt: row['updatedAt'] as int,
+        payload: const {},
+      ));
+    }
     changes.sort((a, b) {
       final byTime = a.updatedAt.compareTo(b.updatedAt);
       return byTime == 0 ? a.key.compareTo(b.key) : byTime;
@@ -89,7 +124,7 @@ class LocalSyncService {
 
   Future<SyncMergeResult> applyRemoteChanges(
       Iterable<SyncChange> remoteChanges) async {
-    await DbMigration.run(storage.db);
+    await _ensureTables();
     final accepted = <SyncChange>[];
     final rejectedStale = <SyncChange>[];
     final conflicts = <String>[];
@@ -136,6 +171,11 @@ class LocalSyncService {
             whereArgs: spec.whereArgs(remote.id),
           );
         }
+        await SyncTombstoneStore.remove(
+          txn,
+          entity: remote.entity,
+          id: remote.id,
+        );
         accepted.add(remote);
       }
     });
@@ -152,6 +192,12 @@ class LocalSyncService {
       if (spec.entity == entity) return spec;
     }
     return null;
+  }
+
+  Future<void> _ensureTables() async {
+    await DbMigration.run(storage.db);
+    await StoryRoomDao.create(storage);
+    await SyncTombstoneStore.ensure(storage.db);
   }
 
   static bool _samePayload(

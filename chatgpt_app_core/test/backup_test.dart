@@ -14,11 +14,13 @@ import 'package:chatgpt_app_core/db/hi_db_manager.dart';
 import 'package:chatgpt_app_core/db/knowledge_dao.dart';
 import 'package:chatgpt_app_core/db/message_dao.dart';
 import 'package:chatgpt_app_core/db/project_dao.dart';
+import 'package:chatgpt_app_core/db/story_room_dao.dart';
 import 'package:chatgpt_app_core/db/story_template_dao.dart';
 import 'package:chatgpt_app_core/model/ai_settings.dart';
 import 'package:chatgpt_app_core/model/assistant_model.dart';
 import 'package:chatgpt_app_core/model/conversation_model.dart';
 import 'package:chatgpt_app_core/model/project_model.dart';
+import 'package:chatgpt_app_core/model/story_room_model.dart';
 import 'package:chatgpt_app_core/util/avatar_asset_service.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:sqflite_common_ffi/sqflite_ffi.dart';
@@ -120,6 +122,189 @@ void main() {
     );
     return aid!;
   }
+
+  Future<Map<String, int>> seedStoryRoom(
+    HiDBManager storage, {
+    int? assistantId,
+    String title = '雨夜酒馆',
+  }) async {
+    final dao = await StoryRoomDao.create(storage);
+    final room = StoryRoomModel(
+      title: title,
+      mode: StoryRoomMode.tavern,
+      replyMode: StoryReplyMode.autoMulti,
+      maxAutoReplies: 3,
+      publicContext: '旧城区的雨夜酒馆',
+    );
+    final roomId = await dao.saveRoom(room);
+    final participant = StoryParticipantModel(
+      roomId: roomId,
+      assistantId: assistantId,
+      role: StoryParticipantRole.assistant,
+      name: '风香',
+      prompt: '内向但敏锐',
+      avatarType: 'emoji',
+      avatarValue: '📚',
+      sortOrder: 1,
+    );
+    final participantId = await dao.saveParticipant(participant);
+    final message = StoryMessageModel(
+      roomId: roomId,
+      speakerId: participantId,
+      speakerRole: participant.role,
+      speakerName: participant.name,
+      speakerAvatarType: participant.avatarType,
+      speakerAvatarValue: participant.avatarValue,
+      content: '她抬起头，看向门口。',
+      createdAt: 777,
+    );
+    final messageId = await dao.saveMessage(message);
+    return {
+      'roomId': roomId,
+      'participantId': participantId,
+      'messageId': messageId,
+    };
+  }
+
+  List<int> zipOf(Map<String, Object> files) {
+    final archive = Archive();
+    files.forEach((name, content) {
+      archive
+          .addFile(ArchiveFile.bytes(name, utf8.encode(jsonEncode(content))));
+    });
+    return ZipEncoder().encodeBytes(archive);
+  }
+
+  group('酒馆房间备份', () {
+    test('导出、预览和覆盖恢复保留房间/参与者/消息关联与统计', () async {
+      final src = await newDb();
+      final aid = await seed(src);
+      final sourceIds = await seedStoryRoom(src, assistantId: aid);
+      final bytes = await BackupService(src).exportArchive(
+        settings: AISettings.defaults(),
+        accountHash: 'acc1',
+      );
+      await src.db.close();
+
+      final dst = await newDb();
+      await seedStoryRoom(dst, title: '本地旧酒馆');
+      final preview = await BackupService(dst).previewArchive(
+        bytes,
+        accountHash: 'acc1',
+      );
+      expect(preview.storyRooms, 1);
+      expect(preview.storyParticipants, 1);
+      expect(preview.storyMessages, 1);
+      expect(preview.totalRows, greaterThanOrEqualTo(3));
+      expect(
+        preview.conflictSummary.tableConflicts
+            .firstWhere((item) => item.table == 'tb_story_room')
+            .replacingRows,
+        1,
+      );
+      final mergePlan = preview.planFor(BackupImportMode.mergeAppend);
+      expect(mergePlan.backupOnlyRows, greaterThanOrEqualTo(3));
+
+      final result = await BackupService(dst).importArchive(
+        bytes,
+        accountHash: 'acc1',
+      );
+      expect(result.storyRooms, 1);
+      expect(result.storyParticipants, 1);
+      expect(result.storyMessages, 1);
+      expect(await dst.db.query('tb_story_room'), hasLength(1));
+      expect(await dst.db.query('tb_story_participant'), hasLength(1));
+      final messages = await dst.db.query('tb_story_message');
+      expect(messages, hasLength(1));
+      expect(messages.single['roomId'], sourceIds['roomId']);
+      expect(messages.single['speakerId'], sourceIds['participantId']);
+      expect(messages.single['content'], '她抬起头，看向门口。');
+      await dst.db.close();
+    });
+
+    test('合并恢复遇到相同 ID 时重映射房间、参与者和消息发言者', () async {
+      final src = await newDb();
+      final srcAid = await (await AssistantDao.create(src)).saveAssistant(
+        AssistantModel(name: '源角色', prompt: '源角色设定'),
+      );
+      await seedStoryRoom(src, assistantId: srcAid, title: '源酒馆');
+      final bytes = await BackupService(src).exportArchive(
+        settings: AISettings.defaults(),
+        accountHash: 'acc1',
+      );
+      await src.db.close();
+
+      final dst = await newDb();
+      final dstAid = await (await AssistantDao.create(dst)).saveAssistant(
+        AssistantModel(name: '本地角色', prompt: '本地角色设定'),
+      );
+      final localIds = await seedStoryRoom(
+        dst,
+        assistantId: dstAid,
+        title: '本地酒馆',
+      );
+      final result = await BackupService(dst).importArchive(
+        bytes,
+        accountHash: 'acc1',
+        mode: BackupImportMode.mergeAppend,
+      );
+
+      expect(result.storyRooms, 1);
+      expect(result.storyParticipants, 1);
+      expect(result.storyMessages, 1);
+      expect(result.warnings.join('\n'), contains('酒馆房间 ID'));
+      expect(await dst.db.query('tb_story_room'), hasLength(2));
+      expect(await dst.db.query('tb_story_participant'), hasLength(2));
+      expect(await dst.db.query('tb_story_message'), hasLength(2));
+      final importedRoom = (await dst.db.query(
+        'tb_story_room',
+        where: 'title = ?',
+        whereArgs: ['源酒馆'],
+      ))
+          .single;
+      final importedRoomId = importedRoom['id'] as int;
+      expect(importedRoomId, isNot(localIds['roomId']));
+      final importedParticipant = (await dst.db.query(
+        'tb_story_participant',
+        where: 'roomId = ?',
+        whereArgs: [importedRoomId],
+      ))
+          .single;
+      final importedParticipantId = importedParticipant['id'] as int;
+      expect(importedParticipantId, isNot(localIds['participantId']));
+      final importedMessage = (await dst.db.query(
+        'tb_story_message',
+        where: 'roomId = ?',
+        whereArgs: [importedRoomId],
+      ))
+          .single;
+      expect(importedMessage['speakerId'], importedParticipantId);
+      expect(importedParticipant['assistantId'], isNot(dstAid));
+      await dst.db.close();
+    });
+
+    test('旧备份没有酒馆文件时仍可覆盖导入并统计为零', () async {
+      final dst = await newDb();
+      await seedStoryRoom(dst, title: '待被清理的酒馆');
+      final bytes = zipOf({
+        'manifest.json': {'formatVersion': 1, 'accountHash': 'acc1'},
+        'conversations.json': <Object>[],
+        'assistants.json': <Object>[],
+      });
+
+      final result = await BackupService(dst).importArchive(
+        bytes,
+        accountHash: 'acc1',
+      );
+      expect(result.storyRooms, 0);
+      expect(result.storyParticipants, 0);
+      expect(result.storyMessages, 0);
+      expect(await dst.db.query('tb_story_room'), isEmpty);
+      expect(await dst.db.query('tb_story_participant'), isEmpty);
+      expect(await dst.db.query('tb_story_message'), isEmpty);
+      await dst.db.close();
+    });
+  });
 
   group('导出/导入 round-trip', () {
     test('导入前预览只读数量、账号和资源，不修改数据库', () async {

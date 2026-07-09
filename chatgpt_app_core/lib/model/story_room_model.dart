@@ -5,6 +5,10 @@ class StoryRoomModel {
   String replyMode;
   int maxAutoReplies;
   String publicContext;
+  String? modelProviderId;
+  String? modelId;
+  double? temperature;
+  int? maxOutputTokens;
   int createdAt;
   int updatedAt;
 
@@ -15,6 +19,10 @@ class StoryRoomModel {
     String? replyMode,
     this.maxAutoReplies = 1,
     this.publicContext = '',
+    this.modelProviderId,
+    this.modelId,
+    this.temperature,
+    this.maxOutputTokens,
     int? createdAt,
     int? updatedAt,
   })  : replyMode = StoryReplyMode.normalize(replyMode),
@@ -28,6 +36,10 @@ class StoryRoomModel {
         replyMode: StoryReplyMode.normalize(json['replyMode'] as String?),
         maxAutoReplies: _safeMaxAutoReplies(json['maxAutoReplies']),
         publicContext: json['publicContext'] as String? ?? '',
+        modelProviderId: json['modelProviderId'] as String?,
+        modelId: json['modelId'] as String?,
+        temperature: (json['temperature'] as num?)?.toDouble(),
+        maxOutputTokens: (json['maxOutputTokens'] as num?)?.toInt(),
         createdAt: json['createdAt'] as int?,
         updatedAt: json['updatedAt'] as int?,
       );
@@ -39,6 +51,10 @@ class StoryRoomModel {
         'replyMode': replyMode,
         'maxAutoReplies': maxAutoReplies.clamp(1, 3),
         'publicContext': publicContext,
+        'modelProviderId': modelProviderId,
+        'modelId': modelId,
+        'temperature': temperature,
+        'maxOutputTokens': maxOutputTokens,
         'createdAt': createdAt,
         'updatedAt': updatedAt,
       };
@@ -195,6 +211,7 @@ class StoryMessageModel {
   String? speakerAvatarValue;
   String content;
   int createdAt;
+  int updatedAt;
 
   StoryMessageModel({
     this.id,
@@ -206,7 +223,10 @@ class StoryMessageModel {
     this.speakerAvatarValue,
     required this.content,
     int? createdAt,
-  }) : createdAt = createdAt ?? DateTime.now().millisecondsSinceEpoch;
+    int? updatedAt,
+  })  : createdAt = createdAt ?? DateTime.now().millisecondsSinceEpoch,
+        updatedAt =
+            updatedAt ?? createdAt ?? DateTime.now().millisecondsSinceEpoch;
 
   bool get isUser => speakerRole == 'user';
 
@@ -221,6 +241,7 @@ class StoryMessageModel {
         speakerAvatarValue: json['speakerAvatarValue'] as String?,
         content: json['content'] as String? ?? '',
         createdAt: json['createdAt'] as int?,
+        updatedAt: json['updatedAt'] as int? ?? json['createdAt'] as int?,
       );
 
   Map<String, dynamic> toJson() => {
@@ -233,5 +254,6 @@ class StoryMessageModel {
         'speakerAvatarValue': speakerAvatarValue,
         'content': content,
         'createdAt': createdAt,
+        'updatedAt': updatedAt,
       };
 }

@@ -13,6 +13,7 @@ import 'package:chatgpt_app_core/db/hi_db_manager.dart';
 import 'package:chatgpt_app_core/db/knowledge_dao.dart';
 import 'package:chatgpt_app_core/db/message_dao.dart';
 import 'package:chatgpt_app_core/db/project_dao.dart';
+import 'package:chatgpt_app_core/db/story_room_dao.dart';
 import 'package:chatgpt_app_core/db/story_template_dao.dart';
 import 'package:chatgpt_app_core/model/ai_settings.dart';
 import 'package:chatgpt_app_core/util/avatar_asset_service.dart';
@@ -33,6 +34,9 @@ class BackupRestoreResult {
   final int knowledgeChunks;
   final int projectKnowledge;
   final int storyTemplates;
+  final int storyRooms;
+  final int storyParticipants;
+  final int storyMessages;
   final int generatedImageAssets;
 
   /// 备份里的 AI 设置（settings.json 缺失时为 null）。
@@ -51,6 +55,9 @@ class BackupRestoreResult {
     this.knowledgeChunks = 0,
     this.projectKnowledge = 0,
     this.storyTemplates = 0,
+    this.storyRooms = 0,
+    this.storyParticipants = 0,
+    this.storyMessages = 0,
     this.generatedImageAssets = 0,
     this.settings,
     this.warnings = const [],
@@ -89,6 +96,9 @@ class BackupPreview {
   final int knowledgeChunks;
   final int projectKnowledge;
   final int storyTemplates;
+  final int storyRooms;
+  final int storyParticipants;
+  final int storyMessages;
   final int avatarAssets;
   final int fileAssets;
   final int generatedImageAssets;
@@ -110,6 +120,9 @@ class BackupPreview {
     required this.knowledgeChunks,
     required this.projectKnowledge,
     this.storyTemplates = 0,
+    this.storyRooms = 0,
+    this.storyParticipants = 0,
+    this.storyMessages = 0,
     required this.avatarAssets,
     required this.fileAssets,
     this.generatedImageAssets = 0,
@@ -127,7 +140,10 @@ class BackupPreview {
       knowledgeDocs +
       knowledgeChunks +
       projectKnowledge +
-      storyTemplates;
+      storyTemplates +
+      storyRooms +
+      storyParticipants +
+      storyMessages;
 
   BackupImportPlan planFor(BackupImportMode mode) {
     BackupTableConflict? table(String name) {
@@ -192,6 +208,9 @@ class BackupPreview {
           'tb_kb_chunk',
           'tb_project_kb',
           'tb_story_template',
+          'tb_story_room',
+          'tb_story_participant',
+          'tb_story_message',
         ]);
         return BackupImportPlan(
           mode: mode,
@@ -297,6 +316,9 @@ class BackupService {
   static const _kKnowledgeChunks = 'knowledge_chunks.json';
   static const _kProjectKnowledge = 'project_knowledge.json';
   static const _kStoryTemplates = 'story_templates.json';
+  static const _kStoryRooms = 'story_rooms.json';
+  static const _kStoryParticipants = 'story_participants.json';
+  static const _kStoryMessages = 'story_messages.json';
   static const _kAvatarPrefix = 'assets/avatars/';
   static const _kFilePrefix = 'assets/files/';
   static const _kGeneratedImagePrefix = 'assets/generated_images/';
@@ -334,6 +356,9 @@ class BackupService {
     final knowledgeChunks = await storage.db.query('tb_kb_chunk');
     final projectKnowledge = await storage.db.query('tb_project_kb');
     final storyTemplates = await storage.db.query('tb_story_template');
+    final storyRooms = await storage.db.query('tb_story_room');
+    final storyParticipants = await storage.db.query('tb_story_participant');
+    final storyMessages = await storage.db.query('tb_story_message');
     final avatarFiles = await _collectAvatarFiles(conversations);
     final attachmentFiles = await _collectAttachmentFiles(messages);
     final generatedImageFiles = await _collectGeneratedImageFiles();
@@ -371,6 +396,9 @@ class BackupService {
         'knowledgeChunks': knowledgeChunks.length,
         'projectKnowledge': projectKnowledge.length,
         'storyTemplates': storyTemplates.length,
+        'storyRooms': storyRooms.length,
+        'storyParticipants': storyParticipants.length,
+        'storyMessages': storyMessages.length,
         'avatarAssets': avatarFiles.length,
         'fileAssets': attachmentFiles.length,
         'generatedImageAssets': generatedImageFiles.length,
@@ -388,6 +416,9 @@ class BackupService {
       ..addFile(_jsonFile(_kKnowledgeChunks, knowledgeChunks))
       ..addFile(_jsonFile(_kProjectKnowledge, projectKnowledge))
       ..addFile(_jsonFile(_kStoryTemplates, storyTemplates))
+      ..addFile(_jsonFile(_kStoryRooms, storyRooms))
+      ..addFile(_jsonFile(_kStoryParticipants, storyParticipants))
+      ..addFile(_jsonFile(_kStoryMessages, storyMessages))
       ..addFile(_jsonFile(_kSettings, exportedSettings.toJson()));
     for (final entry in avatarFiles.entries) {
       archive.addFile(
@@ -435,6 +466,9 @@ class BackupService {
     final knowledgeChunks = _readRows(archive, _kKnowledgeChunks);
     final projectKnowledge = _readRows(archive, _kProjectKnowledge);
     final storyTemplates = _readRows(archive, _kStoryTemplates);
+    final storyRooms = _readRows(archive, _kStoryRooms);
+    final storyParticipants = _readRows(archive, _kStoryParticipants);
+    final storyMessages = _readRows(archive, _kStoryMessages);
     int countOf(String key, String fileName) {
       final value = counts?[key];
       if (value is int) return value;
@@ -457,6 +491,12 @@ class BackupService {
           return projectKnowledge.length;
         case _kStoryTemplates:
           return storyTemplates.length;
+        case _kStoryRooms:
+          return storyRooms.length;
+        case _kStoryParticipants:
+          return storyParticipants.length;
+        case _kStoryMessages:
+          return storyMessages.length;
       }
       return 0;
     }
@@ -472,6 +512,9 @@ class BackupService {
       knowledgeChunks: knowledgeChunks,
       projectKnowledge: projectKnowledge,
       storyTemplates: storyTemplates,
+      storyRooms: storyRooms,
+      storyParticipants: storyParticipants,
+      storyMessages: storyMessages,
     );
     return BackupPreview(
       formatVersion: version,
@@ -487,6 +530,9 @@ class BackupService {
       knowledgeChunks: countOf('knowledgeChunks', _kKnowledgeChunks),
       projectKnowledge: countOf('projectKnowledge', _kProjectKnowledge),
       storyTemplates: countOf('storyTemplates', _kStoryTemplates),
+      storyRooms: countOf('storyRooms', _kStoryRooms),
+      storyParticipants: countOf('storyParticipants', _kStoryParticipants),
+      storyMessages: countOf('storyMessages', _kStoryMessages),
       avatarAssets: counts?['avatarAssets'] is int
           ? counts!['avatarAssets'] as int
           : archive.files
@@ -539,6 +585,9 @@ class BackupService {
     final knowledgeChunks = _readRows(archive, _kKnowledgeChunks);
     final projectKnowledge = _readRows(archive, _kProjectKnowledge);
     final storyTemplates = _readRows(archive, _kStoryTemplates);
+    final storyRooms = _readRows(archive, _kStoryRooms);
+    final storyParticipants = _readRows(archive, _kStoryParticipants);
+    final storyMessages = _readRows(archive, _kStoryMessages);
     if (mode == BackupImportMode.mergeAppend) {
       return _importMergeAppend(
         archive: archive,
@@ -552,6 +601,9 @@ class BackupService {
         knowledgeChunks: knowledgeChunks,
         projectKnowledge: projectKnowledge,
         storyTemplates: storyTemplates,
+        storyRooms: storyRooms,
+        storyParticipants: storyParticipants,
+        storyMessages: storyMessages,
         warnings: warnings,
       );
     }
@@ -648,6 +700,61 @@ class BackupService {
     if (fixedProjectKnowledge > 0) {
       warnings.add('$fixedProjectKnowledge 条项目知识库绑定无效，已跳过');
     }
+
+    final storyRoomIds = {
+      for (final row in storyRooms)
+        if (_intValue(row['id']) != null) _intValue(row['id'])!,
+    };
+    final normalizedStoryParticipants = <Map<String, dynamic>>[];
+    var skippedStoryParticipants = 0;
+    var fixedStoryParticipantAssistants = 0;
+    for (final row in storyParticipants) {
+      final roomId = _intValue(row['roomId']);
+      if (roomId == null || !storyRoomIds.contains(roomId)) {
+        skippedStoryParticipants++;
+        continue;
+      }
+      final next = Map<String, dynamic>.from(row)..['roomId'] = roomId;
+      final assistantId = _intValue(next['assistantId']);
+      if (assistantId != null && !assistantIds.contains(assistantId)) {
+        next['assistantId'] = null;
+        fixedStoryParticipantAssistants++;
+      }
+      normalizedStoryParticipants.add(next);
+    }
+    final storyParticipantIds = {
+      for (final row in normalizedStoryParticipants)
+        if (_intValue(row['id']) != null) _intValue(row['id'])!,
+    };
+    final normalizedStoryMessages = <Map<String, dynamic>>[];
+    var skippedStoryMessages = 0;
+    var fixedStoryMessageSpeakers = 0;
+    for (final row in storyMessages) {
+      final roomId = _intValue(row['roomId']);
+      if (roomId == null || !storyRoomIds.contains(roomId)) {
+        skippedStoryMessages++;
+        continue;
+      }
+      final next = Map<String, dynamic>.from(row)..['roomId'] = roomId;
+      final speakerId = _intValue(next['speakerId']);
+      if (speakerId != null && !storyParticipantIds.contains(speakerId)) {
+        next['speakerId'] = null;
+        fixedStoryMessageSpeakers++;
+      }
+      normalizedStoryMessages.add(next);
+    }
+    if (skippedStoryParticipants > 0) {
+      warnings.add('$skippedStoryParticipants 个酒馆参与者找不到所属房间，已跳过');
+    }
+    if (fixedStoryParticipantAssistants > 0) {
+      warnings.add('$fixedStoryParticipantAssistants 个酒馆参与者引用的助手不在备份中，已解除绑定');
+    }
+    if (skippedStoryMessages > 0) {
+      warnings.add('$skippedStoryMessages 条酒馆消息找不到所属房间，已跳过');
+    }
+    if (fixedStoryMessageSpeakers > 0) {
+      warnings.add('$fixedStoryMessageSpeakers 条酒馆消息引用的参与者不存在，已清除发言者绑定');
+    }
     await _restoreAvatarAssets(archive, normalizedConversations, warnings,
         accountHash: accountHash);
 
@@ -661,6 +768,9 @@ class BackupService {
       batch.delete('tb_favorite');
       batch.delete('tb_project_kb');
       batch.delete('tb_story_template');
+      batch.delete('tb_story_message');
+      batch.delete('tb_story_participant');
+      batch.delete('tb_story_room');
       batch.delete('tb_kb_chunk');
       batch.delete('tb_kb_doc');
       for (final row in projects) {
@@ -690,6 +800,15 @@ class BackupService {
       for (final row in storyTemplates) {
         batch.insert('tb_story_template', row);
       }
+      for (final row in storyRooms) {
+        batch.insert('tb_story_room', row);
+      }
+      for (final row in normalizedStoryParticipants) {
+        batch.insert('tb_story_participant', row);
+      }
+      for (final row in normalizedStoryMessages) {
+        batch.insert('tb_story_message', row);
+      }
       await batch.commit(noResult: true);
     });
 
@@ -717,6 +836,9 @@ class BackupService {
       knowledgeChunks: knowledgeChunks.length,
       projectKnowledge: projectKnowledge.length,
       storyTemplates: storyTemplates.length,
+      storyRooms: storyRooms.length,
+      storyParticipants: normalizedStoryParticipants.length,
+      storyMessages: normalizedStoryMessages.length,
       generatedImageAssets: generatedImageAssets,
       settings: settings,
       warnings: warnings,
@@ -837,6 +959,9 @@ class BackupService {
     required List<Map<String, dynamic>> knowledgeChunks,
     required List<Map<String, dynamic>> projectKnowledge,
     required List<Map<String, dynamic>> storyTemplates,
+    required List<Map<String, dynamic>> storyRooms,
+    required List<Map<String, dynamic>> storyParticipants,
+    required List<Map<String, dynamic>> storyMessages,
     required List<String> warnings,
   }) async {
     await _restoreAttachmentAssets(archive, messages, warnings);
@@ -856,6 +981,8 @@ class BackupService {
     final projectIdMap = <int, int>{};
     final cidMap = <int, int>{};
     final docIdMap = <int, int>{};
+    final storyRoomIdMap = <int, int>{};
+    final storyParticipantIdMap = <int, int>{};
     var skippedMessages = 0;
     var skippedChunks = 0;
     var skippedProjectKnowledge = 0;
@@ -864,8 +991,42 @@ class BackupService {
     var fixedProjectAssistants = 0;
     var remappedCids = 0;
     var insertedProjectKnowledge = 0;
+    var skippedStoryParticipants = 0;
+    var skippedStoryMessages = 0;
+    var fixedStoryParticipantAssistants = 0;
+    var fixedStoryMessageSpeakers = 0;
+    var insertedStoryParticipants = 0;
+    var insertedStoryMessages = 0;
+    var remappedStoryRooms = 0;
+    var remappedStoryParticipants = 0;
+    var remappedStoryMessages = 0;
 
     await storage.db.transaction((txn) async {
+      final localStoryRoomIds = {
+        for (final row in await txn.query('tb_story_room'))
+          if (_intValue(row['id']) != null) _intValue(row['id'])!,
+      };
+      final localStoryParticipantIds = {
+        for (final row in await txn.query('tb_story_participant'))
+          if (_intValue(row['id']) != null) _intValue(row['id'])!,
+      };
+      final localStoryMessageIds = {
+        for (final row in await txn.query('tb_story_message'))
+          if (_intValue(row['id']) != null) _intValue(row['id'])!,
+      };
+      remappedStoryRooms = storyRooms.where((row) {
+        final id = _intValue(row['id']);
+        return id != null && localStoryRoomIds.contains(id);
+      }).length;
+      remappedStoryParticipants = storyParticipants.where((row) {
+        final id = _intValue(row['id']);
+        return id != null && localStoryParticipantIds.contains(id);
+      }).length;
+      remappedStoryMessages = storyMessages.where((row) {
+        final id = _intValue(row['id']);
+        return id != null && localStoryMessageIds.contains(id);
+      }).length;
+
       for (final row in assistants) {
         final oldId = _intValue(row['id']);
         final newId = await txn.insert('tb_assistant', _withoutId(row));
@@ -883,6 +1044,32 @@ class BackupService {
         }
         final newId = await txn.insert('tb_project', next);
         if (oldId != null) projectIdMap[oldId] = newId;
+      }
+
+      for (final row in storyRooms) {
+        final oldId = _intValue(row['id']);
+        final newId = await txn.insert('tb_story_room', _withoutId(row));
+        if (oldId != null) storyRoomIdMap[oldId] = newId;
+      }
+
+      for (final row in storyParticipants) {
+        final oldRoomId = _intValue(row['roomId']);
+        final newRoomId = oldRoomId == null ? null : storyRoomIdMap[oldRoomId];
+        if (newRoomId == null) {
+          skippedStoryParticipants++;
+          continue;
+        }
+        final next = _withoutId(row)..['roomId'] = newRoomId;
+        final oldAssistantId = _intValue(next['assistantId']);
+        if (oldAssistantId != null) {
+          final newAssistantId = assistantIdMap[oldAssistantId];
+          next['assistantId'] = newAssistantId;
+          if (newAssistantId == null) fixedStoryParticipantAssistants++;
+        }
+        final newId = await txn.insert('tb_story_participant', next);
+        final oldId = _intValue(row['id']);
+        if (oldId != null) storyParticipantIdMap[oldId] = newId;
+        insertedStoryParticipants++;
       }
 
       final usedCids = {
@@ -942,6 +1129,24 @@ class BackupService {
         );
       }
 
+      for (final row in storyMessages) {
+        final oldRoomId = _intValue(row['roomId']);
+        final newRoomId = oldRoomId == null ? null : storyRoomIdMap[oldRoomId];
+        if (newRoomId == null) {
+          skippedStoryMessages++;
+          continue;
+        }
+        final next = _withoutId(row)..['roomId'] = newRoomId;
+        final oldSpeakerId = _intValue(next['speakerId']);
+        if (oldSpeakerId != null) {
+          final newSpeakerId = storyParticipantIdMap[oldSpeakerId];
+          next['speakerId'] = newSpeakerId;
+          if (newSpeakerId == null) fixedStoryMessageSpeakers++;
+        }
+        await txn.insert('tb_story_message', next);
+        insertedStoryMessages++;
+      }
+
       for (final row in favorites) {
         await txn.insert('tb_favorite', _withoutId(row));
       }
@@ -993,6 +1198,15 @@ class BackupService {
     if (remappedCids > 0) {
       warnings.add('$remappedCids 个会话 cid 与本地冲突，已改用新 cid 合并导入');
     }
+    if (remappedStoryRooms > 0) {
+      warnings.add('$remappedStoryRooms 个酒馆房间 ID 与本地冲突，已重映射');
+    }
+    if (remappedStoryParticipants > 0) {
+      warnings.add('$remappedStoryParticipants 个酒馆参与者 ID 与本地冲突，已重映射');
+    }
+    if (remappedStoryMessages > 0) {
+      warnings.add('$remappedStoryMessages 条酒馆消息 ID 与本地冲突，已重映射');
+    }
     if (fixedConversationAssistants > 0) {
       warnings.add('$fixedConversationAssistants 个会话引用的助手不在备份中，已解除绑定');
     }
@@ -1011,6 +1225,18 @@ class BackupService {
     if (skippedProjectKnowledge > 0) {
       warnings.add('$skippedProjectKnowledge 条项目知识库绑定无法匹配合并后的项目或文档，已跳过');
     }
+    if (skippedStoryParticipants > 0) {
+      warnings.add('$skippedStoryParticipants 个酒馆参与者找不到所属房间，已跳过');
+    }
+    if (fixedStoryParticipantAssistants > 0) {
+      warnings.add('$fixedStoryParticipantAssistants 个酒馆参与者引用的助手无法匹配，已解除绑定');
+    }
+    if (skippedStoryMessages > 0) {
+      warnings.add('$skippedStoryMessages 条酒馆消息找不到所属房间，已跳过');
+    }
+    if (fixedStoryMessageSpeakers > 0) {
+      warnings.add('$fixedStoryMessageSpeakers 条酒馆消息引用的参与者无法匹配，已清除发言者绑定');
+    }
 
     AILogger.log('backup import merge append: '
         '${projects.length} projects, ${conversations.length} conversations'
@@ -1020,6 +1246,9 @@ class BackupService {
         ', ${knowledgeChunks.length - skippedChunks} kb chunks'
         ', $insertedProjectKnowledge project kb refs'
         ', ${storyTemplates.length} story templates'
+        ', ${storyRooms.length} story rooms'
+        ', $insertedStoryParticipants story participants'
+        ', $insertedStoryMessages story messages'
         ', warnings: $warnings');
     restoreTick.value++;
     return BackupRestoreResult(
@@ -1032,6 +1261,9 @@ class BackupService {
       knowledgeChunks: knowledgeChunks.length - skippedChunks,
       projectKnowledge: insertedProjectKnowledge,
       storyTemplates: storyTemplates.length,
+      storyRooms: storyRooms.length,
+      storyParticipants: insertedStoryParticipants,
+      storyMessages: insertedStoryMessages,
       generatedImageAssets: generatedImageAssets,
       warnings: warnings,
     );
@@ -1176,6 +1408,7 @@ class BackupService {
     await FavoriteDao.create(storage);
     await ProjectDao.create(storage);
     await KnowledgeDao.create(storage);
+    await StoryRoomDao.create(storage);
     await StoryTemplateDao.create(storage);
     await _ensureConversationProjectIdColumn(storage.db);
   }
@@ -1239,6 +1472,9 @@ class BackupService {
     required List<Map<String, dynamic>> knowledgeChunks,
     required List<Map<String, dynamic>> projectKnowledge,
     required List<Map<String, dynamic>> storyTemplates,
+    required List<Map<String, dynamic>> storyRooms,
+    required List<Map<String, dynamic>> storyParticipants,
+    required List<Map<String, dynamic>> storyMessages,
   }) async {
     final specs = [
       _ConflictSpec('tb_conversation_list', 'cid', conversations),
@@ -1251,6 +1487,9 @@ class BackupService {
       _ConflictSpec('tb_project_kb', 'projectId', projectKnowledge,
           secondColumn: 'docId'),
       _ConflictSpec('tb_story_template', 'id', storyTemplates),
+      _ConflictSpec('tb_story_room', 'id', storyRooms),
+      _ConflictSpec('tb_story_participant', 'id', storyParticipants),
+      _ConflictSpec('tb_story_message', 'id', storyMessages),
     ];
 
     var localRows = 0;
