@@ -192,6 +192,10 @@ void main() {
       'speakerAvatarType': null,
       'speakerAvatarValue': null,
       'content': '欢迎来到酒馆。',
+      'nodeKey': 'welcome-node',
+      'parentNodeKey': null,
+      'candidateGroupKey': 'welcome-node',
+      'contextStateAfter': '{"scene":"tavern"}',
       'createdAt': 20,
       'updatedAt': 32,
     });
@@ -200,13 +204,17 @@ void main() {
 
     expect(
       changes.map((change) => change.key),
-      containsAll(['story_room:2', 'story_participant:3', 'story_message:4']),
+      containsAll([
+        'story_room:2',
+        'story_participant:3',
+        'story_message:welcome-node',
+      ]),
     );
     expect(
         changes.map((change) => change.key), isNot(contains('story_room:1')));
     expect(
       changes
-          .singleWhere((change) => change.key == 'story_message:4')
+          .singleWhere((change) => change.key == 'story_message:welcome-node')
           .updatedAt,
       32,
     );
@@ -256,11 +264,11 @@ void main() {
       ),
       const SyncChange(
         entity: 'story_message',
-        id: '30',
+        id: 'remote-message',
         op: SyncOp.upsert,
         updatedAt: 120,
         payload: {
-          'id': 30,
+          'id': 999,
           'roomId': 10,
           'speakerId': 20,
           'speakerRole': 'assistant',
@@ -268,6 +276,10 @@ void main() {
           'speakerAvatarType': 'emoji',
           'speakerAvatarValue': 'R',
           'content': '远端消息',
+          'nodeKey': 'remote-message',
+          'parentNodeKey': null,
+          'candidateGroupKey': 'remote-message',
+          'contextStateAfter': '{"chapter":1}',
           'createdAt': 110,
           'updatedAt': 120,
         },
@@ -282,12 +294,13 @@ void main() {
     );
     final message = await storage.db.query(
       'tb_story_message',
-      where: 'id = ?',
-      whereArgs: [30],
+      where: 'nodeKey = ?',
+      whereArgs: ['remote-message'],
     );
     expect(participant.single['roomId'], 10);
     expect(message.single['roomId'], 10);
     expect(message.single['speakerId'], 20);
+    expect(message.single['id'], isNot(999));
 
     await storage.db.insert('tb_story_participant', {
       'id': 21,
@@ -571,6 +584,8 @@ void main() {
   test('Story Room 本地删除导出墓碑并在远端确认后清理', () async {
     final storage = await newDb();
     final dao = await StoryRoomDao.create(storage);
+    final sync = LocalSyncService(storage);
+    await sync.exportChanges();
     final room = StoryRoomModel(title: '待同步删除');
     final roomId = await dao.saveRoom(room);
     final participant = StoryParticipantModel(
@@ -589,7 +604,6 @@ void main() {
     await dao.saveMessage(message);
 
     await dao.deleteRoom(roomId);
-    final sync = LocalSyncService(storage);
     final changes = await sync.exportChanges();
     final deletes = changes.where((change) => change.op == SyncOp.delete);
     expect(
@@ -597,7 +611,7 @@ void main() {
       containsAll([
         'story_room:$roomId',
         'story_participant:${participant.id}',
-        'story_message:${message.id}',
+        'story_message:${message.nodeKey}',
       ]),
     );
 
@@ -608,6 +622,252 @@ void main() {
       isEmpty,
     );
     await storage.db.close();
+  });
+
+  test('story_message 以 nodeKey 合并，保留本机 id 并往返分支状态', () async {
+    final sourceDir =
+        await Directory.systemTemp.createTemp('sync-node-source-');
+    final targetDir =
+        await Directory.systemTemp.createTemp('sync-node-target-');
+    final source = HiDBManager.test(
+      await databaseFactoryFfi.openDatabase('${sourceDir.path}/sync.db'),
+    );
+    final target = HiDBManager.test(
+      await databaseFactoryFfi.openDatabase('${targetDir.path}/sync.db'),
+    );
+    try {
+      final sourceSync = LocalSyncService(source);
+      final targetSync = LocalSyncService(target);
+      await sourceSync.exportChanges();
+      await targetSync.exportChanges();
+      await source.db.insert('tb_story_room', {
+        'id': 7,
+        'title': '源房间',
+        'mode': 'creation',
+        'replyMode': 'autoSingle',
+        'maxAutoReplies': 1,
+        'publicContext': '',
+        'worldBookState': '{"chapter":2}',
+        'activeMessageKey': 'shared-node',
+        'createdAt': 1,
+        'updatedAt': 200,
+      });
+      await source.db.insert('tb_story_message', {
+        'id': 41,
+        'roomId': 7,
+        'speakerId': null,
+        'speakerRole': 'assistant',
+        'speakerName': '源设备',
+        'speakerAvatarType': null,
+        'speakerAvatarValue': null,
+        'content': '稳定节点',
+        'nodeKey': 'shared-node',
+        'parentNodeKey': 'parent-node',
+        'candidateGroupKey': 'candidate-group',
+        'contextStateAfter': '{"chapter":2}',
+        'createdAt': 100,
+        'updatedAt': 200,
+      });
+      await target.db.insert('tb_story_message', {
+        'id': 7,
+        'roomId': 7,
+        'speakerId': null,
+        'speakerRole': 'assistant',
+        'speakerName': '目标设备',
+        'speakerAvatarType': null,
+        'speakerAvatarValue': null,
+        'content': '旧内容',
+        'nodeKey': 'shared-node',
+        'parentNodeKey': null,
+        'candidateGroupKey': 'old-group',
+        'contextStateAfter': '',
+        'createdAt': 100,
+        'updatedAt': 100,
+      });
+
+      final change = (await sourceSync.exportChanges()).singleWhere(
+        (item) => item.entity == 'story_message',
+      );
+      expect(change.id, 'shared-node');
+      expect(change.payload['id'], 41);
+      expect(change.payload['parentNodeKey'], 'parent-node');
+      expect(change.payload['candidateGroupKey'], 'candidate-group');
+      expect(change.payload['contextStateAfter'], '{"chapter":2}');
+
+      await targetSync.applyRemoteChanges([change]);
+      final rows = await target.db.query(
+        'tb_story_message',
+        where: 'nodeKey = ?',
+        whereArgs: ['shared-node'],
+      );
+      expect(rows, hasLength(1));
+      expect(rows.single['id'], 7);
+      expect(rows.single['content'], '稳定节点');
+      expect(rows.single['parentNodeKey'], 'parent-node');
+      expect(rows.single['candidateGroupKey'], 'candidate-group');
+      expect(rows.single['contextStateAfter'], '{"chapter":2}');
+
+      final sameTimestamp = await targetSync.applyRemoteChanges([change]);
+      expect(sameTimestamp.conflicts, isEmpty);
+      expect(sameTimestamp.accepted.single.key, 'story_message:shared-node');
+    } finally {
+      await source.db.close();
+      await target.db.close();
+      await sourceDir.delete(recursive: true);
+      await targetDir.delete(recursive: true);
+    }
+  });
+
+  test('活动节点缺失时回退最新节点，删除新 tombstone 后恢复快照并清空房间', () async {
+    final storage = await newDb();
+    try {
+      final sync = LocalSyncService(storage);
+      await sync.applyRemoteChanges([
+        const SyncChange(
+          entity: 'story_room',
+          id: '10',
+          op: SyncOp.upsert,
+          updatedAt: 300,
+          payload: {
+            'id': 10,
+            'title': '分支房间',
+            'mode': 'creation',
+            'replyMode': 'autoSingle',
+            'maxAutoReplies': 1,
+            'publicContext': '',
+            'worldBookState': '错误快照',
+            'activeMessageKey': 'missing-node',
+            'createdAt': 1,
+            'updatedAt': 300,
+          },
+        ),
+        const SyncChange(
+          entity: 'story_message',
+          id: 'node-b',
+          op: SyncOp.upsert,
+          updatedAt: 200,
+          payload: {
+            'id': 900,
+            'roomId': 10,
+            'speakerRole': 'assistant',
+            'speakerName': '乙',
+            'content': '后续',
+            'nodeKey': 'node-b',
+            'parentNodeKey': 'node-a',
+            'candidateGroupKey': 'node-b',
+            'contextStateAfter': 'state-b',
+            'createdAt': 200,
+            'updatedAt': 200,
+          },
+        ),
+        const SyncChange(
+          entity: 'story_message',
+          id: 'node-a',
+          op: SyncOp.upsert,
+          updatedAt: 100,
+          payload: {
+            'id': 901,
+            'roomId': 10,
+            'speakerRole': 'user',
+            'speakerName': '我',
+            'content': '起点',
+            'nodeKey': 'node-a',
+            'parentNodeKey': null,
+            'candidateGroupKey': 'node-a',
+            'contextStateAfter': 'state-a',
+            'createdAt': 100,
+            'updatedAt': 100,
+          },
+        ),
+      ]);
+      var room = (await storage.db.query(
+        'tb_story_room',
+        where: 'id = ?',
+        whereArgs: [10],
+      ))
+          .single;
+      expect(room['activeMessageKey'], 'node-b');
+      expect(room['worldBookState'], 'state-b');
+
+      final deleted = await sync.applyRemoteChanges([
+        const SyncChange(
+          entity: 'story_message',
+          id: 'node-b',
+          op: SyncOp.delete,
+          updatedAt: 400,
+        ),
+      ]);
+      expect(deleted.accepted.single.key, 'story_message:node-b');
+      room = (await storage.db.query(
+        'tb_story_room',
+        where: 'id = ?',
+        whereArgs: [10],
+      ))
+          .single;
+      expect(room['activeMessageKey'], 'node-a');
+      expect(room['worldBookState'], 'state-a');
+
+      await sync.applyRemoteChanges([
+        const SyncChange(
+          entity: 'story_message',
+          id: 'node-a',
+          op: SyncOp.delete,
+          updatedAt: 500,
+        ),
+      ]);
+      room = (await storage.db.query(
+        'tb_story_room',
+        where: 'id = ?',
+        whereArgs: [10],
+      ))
+          .single;
+      expect(room['activeMessageKey'], isNull);
+      expect(room['worldBookState'], '');
+    } finally {
+      await storage.db.close();
+    }
+  });
+
+  test('兼容旧整数 story_message 删除事件，但不把整数当 nodeKey', () async {
+    final storage = await newDb();
+    try {
+      final sync = LocalSyncService(storage);
+      await sync.exportChanges();
+      await storage.db.insert('tb_story_room', {
+        'id': 12,
+        'title': '旧同步房间',
+        'mode': 'creation',
+        'replyMode': 'autoSingle',
+        'maxAutoReplies': 1,
+        'publicContext': '',
+        'createdAt': 1,
+        'updatedAt': 1,
+      });
+      await storage.db.insert('tb_story_message', {
+        'id': 55,
+        'roomId': 12,
+        'speakerRole': 'user',
+        'speakerName': '我',
+        'content': '旧消息',
+        'nodeKey': 'legacy-stable-key',
+        'candidateGroupKey': 'legacy-stable-key',
+        'contextStateAfter': '',
+        'createdAt': 1,
+        'updatedAt': 1,
+      });
+      final result = await sync.applyRemoteChanges([
+        const SyncChange(
+          entity: 'story_message',
+          id: '55',
+          op: SyncOp.delete,
+          updatedAt: 2,
+        ),
+      ]);
+      expect(result.accepted.single.key, 'story_message:55');
+      expect(await storage.db.query('tb_story_message'), isEmpty);
+    } finally {
+      await storage.db.close();
+    }
   });
 
   test('CHARX 资源按稳定块同步、完整聚合，并在空清单时清理托管文件', () async {

@@ -1,4 +1,5 @@
 import 'dart:convert';
+import 'dart:math';
 
 class StoryRoomModel {
   int? id;
@@ -12,6 +13,7 @@ class StoryRoomModel {
   String? modelId;
   double? temperature;
   int? maxOutputTokens;
+  String? activeMessageKey;
   int createdAt;
   int updatedAt;
 
@@ -27,6 +29,7 @@ class StoryRoomModel {
     this.modelId,
     this.temperature,
     this.maxOutputTokens,
+    this.activeMessageKey,
     int? createdAt,
     int? updatedAt,
   })  : replyMode = StoryReplyMode.normalize(replyMode),
@@ -45,6 +48,7 @@ class StoryRoomModel {
         modelId: json['modelId'] as String?,
         temperature: (json['temperature'] as num?)?.toDouble(),
         maxOutputTokens: (json['maxOutputTokens'] as num?)?.toInt(),
+        activeMessageKey: json['activeMessageKey'] as String?,
         createdAt: json['createdAt'] as int?,
         updatedAt: json['updatedAt'] as int?,
       );
@@ -61,6 +65,7 @@ class StoryRoomModel {
         'modelId': modelId,
         'temperature': temperature,
         'maxOutputTokens': maxOutputTokens,
+        'activeMessageKey': activeMessageKey,
         'createdAt': createdAt,
         'updatedAt': updatedAt,
       };
@@ -242,6 +247,10 @@ class StoryMessageModel {
   List<String> citationUrls;
   List<String> filePaths;
   String attachmentContext;
+  String nodeKey;
+  String? parentNodeKey;
+  String? candidateGroupKey;
+  String contextStateAfter;
   int createdAt;
   int updatedAt;
 
@@ -260,9 +269,15 @@ class StoryMessageModel {
     this.citationUrls = const [],
     this.filePaths = const [],
     this.attachmentContext = '',
+    String? nodeKey,
+    this.parentNodeKey,
+    this.candidateGroupKey,
+    this.contextStateAfter = '',
     int? createdAt,
     int? updatedAt,
-  })  : createdAt = createdAt ?? DateTime.now().millisecondsSinceEpoch,
+  })  : nodeKey =
+            nodeKey?.trim().isNotEmpty == true ? nodeKey!.trim() : newNodeKey(),
+        createdAt = createdAt ?? DateTime.now().millisecondsSinceEpoch,
         updatedAt =
             updatedAt ?? createdAt ?? DateTime.now().millisecondsSinceEpoch;
 
@@ -284,6 +299,10 @@ class StoryMessageModel {
         citationUrls: _decodePaths(json['citationUrls']),
         filePaths: _decodePaths(json['filePaths']),
         attachmentContext: json['attachmentContext'] as String? ?? '',
+        nodeKey: json['nodeKey'] as String?,
+        parentNodeKey: json['parentNodeKey'] as String?,
+        candidateGroupKey: json['candidateGroupKey'] as String?,
+        contextStateAfter: json['contextStateAfter'] as String? ?? '',
         createdAt: json['createdAt'] as int?,
         updatedAt: json['updatedAt'] as int? ?? json['createdAt'] as int?,
       );
@@ -303,6 +322,10 @@ class StoryMessageModel {
         'citationUrls': jsonEncode(citationUrls),
         'filePaths': jsonEncode(filePaths),
         'attachmentContext': attachmentContext,
+        'nodeKey': nodeKey,
+        'parentNodeKey': parentNodeKey,
+        'candidateGroupKey': candidateGroupKey,
+        'contextStateAfter': contextStateAfter,
         'createdAt': createdAt,
         'updatedAt': updatedAt,
       };
@@ -325,5 +348,14 @@ class StoryMessageModel {
     } catch (_) {
       return const [];
     }
+  }
+
+  static String newNodeKey() {
+    final random = Random.secure();
+    final timestamp = DateTime.now().microsecondsSinceEpoch.toRadixString(36);
+    final entropy =
+        List.generate(3, (_) => random.nextInt(1 << 32).toRadixString(36))
+            .join();
+    return 'node-$timestamp-$entropy';
   }
 }

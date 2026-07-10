@@ -21,6 +21,8 @@ class LocalSyncService {
   static const assistantRoleAssetChunkEntity = 'assistant_role_asset_chunk';
   static const _roleAssetChunkBytes = 192 * 1024;
   static const _roleAssetStageTable = 'tb_sync_assistant_role_asset_chunk';
+  static const _storyMessageDeleteTrigger =
+      'tb_sync_story_message_delete_to_node_key';
   static const _specs = [
     _SyncEntitySpec(
       entity: 'project',
@@ -83,7 +85,7 @@ class LocalSyncService {
     _SyncEntitySpec(
       entity: 'story_message',
       table: 'tb_story_message',
-      idColumns: ['id'],
+      idColumns: ['nodeKey'],
       timestampColumn: 'updatedAt',
     ),
     _SyncEntitySpec(
@@ -161,13 +163,15 @@ class LocalSyncService {
   Future<SyncMergeResult> applyRemoteChanges(
       Iterable<SyncChange> remoteChanges) async {
     await _ensureTables();
-    final incoming = remoteChanges.toList(growable: false);
+    final incoming =
+        remoteChanges.map(_normalizeStoryMessageChange).toList(growable: false);
     final accepted = <SyncChange>[];
     final rejectedStale = <SyncChange>[];
     final conflicts = <String>[];
     final deletedAssistantIds = <int>{};
     final upsertedAssistantIds = <int>{};
     final assistantUpsertVersions = <int, int>{};
+    final affectedStoryRoomIds = <int>{};
     final assistantIdsWithChunks = {
       for (final change in incoming)
         if (change.entity == assistantRoleAssetChunkEntity)
@@ -184,11 +188,16 @@ class LocalSyncService {
         }
         final currentRows = await txn.query(
           spec.table,
-          where: spec.whereClause,
-          whereArgs: spec.whereArgs(remote.id),
+          where: _whereClauseFor(remote, spec),
+          whereArgs: _whereArgsFor(remote, spec),
           limit: 1,
         );
         final current = currentRows.isEmpty ? null : currentRows.first;
+        _collectAffectedStoryRoomIds(
+          remote,
+          current,
+          affectedStoryRoomIds,
+        );
         final currentUpdatedAt =
             current == null ? -1 : spec.updatedAtOf(current);
         if (currentUpdatedAt > remote.updatedAt) {
@@ -203,6 +212,8 @@ class LocalSyncService {
               payload,
               spec.idColumns,
               ignoreRoleCardAssets: remote.entity == 'assistant',
+              ignoredColumns:
+                  remote.entity == 'story_message' ? const {'id'} : const {},
             )) {
           conflicts.add(remote.key);
           continue;
@@ -210,8 +221,8 @@ class LocalSyncService {
         if (remote.op == SyncOp.delete) {
           await txn.delete(
             spec.table,
-            where: spec.whereClause,
-            whereArgs: spec.whereArgs(remote.id),
+            where: _whereClauseFor(remote, spec),
+            whereArgs: _whereArgsFor(remote, spec),
           );
         } else if (current == null) {
           await txn.insert(spec.table, payload);
@@ -228,6 +239,16 @@ class LocalSyncService {
           entity: remote.entity,
           id: remote.id,
         );
+        if (remote.entity == 'story_message' && current != null) {
+          final nodeKey = '${current['nodeKey'] ?? ''}';
+          if (nodeKey.isNotEmpty) {
+            await SyncTombstoneStore.remove(
+              txn,
+              entity: remote.entity,
+              id: nodeKey,
+            );
+          }
+        }
         accepted.add(remote);
         if (remote.entity == 'assistant' && remote.op == SyncOp.delete) {
           final id = int.tryParse(remote.id);
@@ -241,6 +262,7 @@ class LocalSyncService {
           }
         }
       }
+      await _reconcileStoryRooms(txn, affectedStoryRoomIds);
     });
 
     for (final id in deletedAssistantIds) {
@@ -355,11 +377,149 @@ class LocalSyncService {
 
   Map<String, dynamic> _payloadForApply(SyncChange remote) {
     final payload = Map<String, dynamic>.from(remote.payload);
+    if (remote.entity == 'story_message' && remote.op == SyncOp.upsert) {
+      // id 是接收设备的自增主键，不能跨设备写入；nodeKey 才是同步 identity。
+      payload.remove('id');
+    }
     if (remote.entity == 'assistant' && remote.op == SyncOp.upsert) {
       // 远端 payload 不能携带可访问的本机绝对路径。
       payload['roleCardAssets'] = '[]';
     }
     return payload;
+  }
+
+  static SyncChange _normalizeStoryMessageChange(SyncChange change) {
+    if (change.entity != 'story_message' || change.op != SyncOp.upsert) {
+      return change;
+    }
+    final payload = Map<String, dynamic>.from(change.payload);
+    final rawNodeKey = payload['nodeKey'];
+    if (rawNodeKey is String && rawNodeKey.trim().isNotEmpty) {
+      return SyncChange(
+        entity: change.entity,
+        id: rawNodeKey.trim(),
+        op: change.op,
+        updatedAt: change.updatedAt,
+        payload: payload,
+      );
+    }
+
+    // 兼容首版同步产生的整数 story_message upsert：迁移后的本地库会
+    // 使用同样的 legacy key 接住它，但之后仍按 nodeKey 参与同步。
+    final roomId = _asInt(payload['roomId']);
+    final legacyId = int.tryParse(change.id);
+    if (roomId > 0 && legacyId != null && legacyId > 0) {
+      final nodeKey = 'legacy-$roomId-$legacyId';
+      payload['nodeKey'] = nodeKey;
+      return SyncChange(
+        entity: change.entity,
+        id: nodeKey,
+        op: change.op,
+        updatedAt: change.updatedAt,
+        payload: payload,
+      );
+    }
+    payload['nodeKey'] = change.id;
+    return SyncChange(
+      entity: change.entity,
+      id: change.id,
+      op: change.op,
+      updatedAt: change.updatedAt,
+      payload: payload,
+    );
+  }
+
+  static String _whereClauseFor(SyncChange change, _SyncEntitySpec spec) {
+    if (_isLegacyStoryMessageDelete(change)) return 'id = ?';
+    return spec.whereClause;
+  }
+
+  static List<Object?> _whereArgsFor(
+    SyncChange change,
+    _SyncEntitySpec spec,
+  ) {
+    if (_isLegacyStoryMessageDelete(change)) {
+      return [int.parse(change.id)];
+    }
+    return spec.whereArgs(change.id);
+  }
+
+  static bool _isLegacyStoryMessageDelete(SyncChange change) =>
+      change.entity == 'story_message' &&
+      change.op == SyncOp.delete &&
+      int.tryParse(change.id) != null;
+
+  static void _collectAffectedStoryRoomIds(
+    SyncChange change,
+    Map<String, Object?>? current,
+    Set<int> roomIds,
+  ) {
+    if (change.entity == 'story_room') {
+      final roomId = int.tryParse(change.id);
+      if (roomId != null && roomId > 0) roomIds.add(roomId);
+      return;
+    }
+    if (change.entity != 'story_message') return;
+    final incomingRoomId = _asInt(change.payload['roomId']);
+    if (incomingRoomId > 0) roomIds.add(incomingRoomId);
+    final currentRoomId = _asInt(current?['roomId']);
+    if (currentRoomId > 0) roomIds.add(currentRoomId);
+  }
+
+  static Future<void> _reconcileStoryRooms(
+    DatabaseExecutor db,
+    Set<int> roomIds,
+  ) async {
+    for (final roomId in roomIds) {
+      final rooms = await db.query(
+        'tb_story_room',
+        where: 'id = ?',
+        whereArgs: [roomId],
+        limit: 1,
+      );
+      if (rooms.isEmpty) continue;
+      final rows = await db.query(
+        'tb_story_message',
+        where: 'roomId = ?',
+        whereArgs: [roomId],
+      );
+      if (rows.isEmpty) {
+        await db.update(
+          'tb_story_room',
+          {'activeMessageKey': null, 'worldBookState': ''},
+          where: 'id = ?',
+          whereArgs: [roomId],
+        );
+        continue;
+      }
+
+      final messages = rows.map(Map<String, Object?>.from).toList();
+      messages.sort((a, b) {
+        final byCreated = _asInt(b['createdAt']).compareTo(
+          _asInt(a['createdAt']),
+        );
+        if (byCreated != 0) return byCreated;
+        final byUpdated = _asInt(b['updatedAt']).compareTo(
+          _asInt(a['updatedAt']),
+        );
+        if (byUpdated != 0) return byUpdated;
+        return '${b['nodeKey']}'.compareTo('${a['nodeKey']}');
+      });
+      final activeKey = rooms.single['activeMessageKey'] as String?;
+      final active = messages.where(
+        (message) => message['nodeKey'] == activeKey,
+      );
+      final selected = active.isEmpty ? messages.first : active.first;
+      await db.update(
+        'tb_story_room',
+        {
+          'activeMessageKey': selected['nodeKey'],
+          'worldBookState': selected['contextStateAfter'] as String? ?? '',
+        },
+        where: 'id = ?',
+        whereArgs: [roomId],
+      );
+    }
   }
 
   Future<_RoleAssetApplyResult> _applyRoleAssetChunks(
@@ -607,6 +767,20 @@ class LocalSyncService {
       'metadata text not null, data text not null, '
       'primary key(assistantId, assistantUpdatedAt, assetIndex, chunkIndex))',
     );
+    await storage.db.execute(
+      'create trigger if not exists $_storyMessageDeleteTrigger '
+      'after delete on tb_story_message begin '
+      'delete from ${SyncTombstoneStore.tableName} '
+      "where entity = 'story_message' and entityId = old.nodeKey; "
+      'insert into ${SyncTombstoneStore.tableName} '
+      "(entity, entityId, updatedAt) values ('story_message', old.nodeKey, "
+      "coalesce((select updatedAt from ${SyncTombstoneStore.tableName} "
+      "where entity = 'story_message' and entityId = cast(old.id as text)), "
+      "cast((julianday('now') - 2440587.5) * 86400000 as integer))); "
+      'delete from ${SyncTombstoneStore.tableName} '
+      "where entity = 'story_message' and entityId = cast(old.id as text); "
+      'end',
+    );
   }
 
   static bool _samePayload(
@@ -614,6 +788,7 @@ class LocalSyncService {
     Map<String, dynamic> incoming,
     List<String> idColumns, {
     bool ignoreRoleCardAssets = false,
+    Set<String> ignoredColumns = const {},
   }) {
     final normalizedCurrent = Map<String, Object?>.from(current);
     for (final key in idColumns) {
@@ -621,6 +796,10 @@ class LocalSyncService {
     }
     if (ignoreRoleCardAssets) {
       normalizedCurrent['roleCardAssets'] = incoming['roleCardAssets'];
+    }
+    for (final key in ignoredColumns) {
+      normalizedCurrent.remove(key);
+      incoming.remove(key);
     }
     return jsonEncode(_sorted(normalizedCurrent)) ==
         jsonEncode(_sorted(incoming));

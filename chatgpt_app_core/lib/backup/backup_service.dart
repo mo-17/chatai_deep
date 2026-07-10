@@ -324,7 +324,7 @@ class BackupTableConflict {
 /// 因此可以用 sqflite_common_ffi 内存库做 round-trip 单测。
 class BackupService {
   /// 备份格式版本。导入时大于本值则拒绝（新版本备份导入旧 app）。
-  static const int formatVersion = 4;
+  static const int formatVersion = 5;
 
   static const _kManifest = 'manifest.json';
   static const _kConversations = 'conversations.json';
@@ -520,6 +520,7 @@ class BackupService {
     final storyMessages = _readRows(archive, _kStoryMessages);
     final storyArtifacts = _readRows(archive, _kStoryArtifacts);
     final storyArtifactRevisions = _readRows(archive, _kStoryArtifactRevisions);
+    _normalizeStoryMessageBranches(storyRooms, storyMessages, warnings);
     int countOf(String key, String fileName) {
       final value = counts?[key];
       if (value is int) return value;
@@ -659,6 +660,7 @@ class BackupService {
     final storyMessages = _readRows(archive, _kStoryMessages);
     final storyArtifacts = _readRows(archive, _kStoryArtifacts);
     final storyArtifactRevisions = _readRows(archive, _kStoryArtifactRevisions);
+    _normalizeStoryMessageBranches(storyRooms, storyMessages, warnings);
     if (mode == BackupImportMode.mergeAppend) {
       return _importMergeAppend(
         archive: archive,
@@ -1138,6 +1140,22 @@ class BackupService {
         .toList();
     await _restoreAvatarAssets(archive, normalizedConversations, warnings,
         accountHash: accountHash);
+    final localStoryNodeKeys = {
+      for (final row in await storage.db.query(
+        'tb_story_message',
+        columns: const ['nodeKey'],
+      ))
+        if ('${row['nodeKey'] ?? ''}'.trim().isNotEmpty)
+          '${row['nodeKey']}'.trim(),
+    };
+    final remappedBranchKeys = _remapStoryBranchKeyConflicts(
+      storyRooms,
+      storyMessages,
+      localStoryNodeKeys,
+    );
+    if (remappedBranchKeys > 0) {
+      warnings.add('$remappedBranchKeys 个故事分支节点与本地重复，已安全改键');
+    }
 
     final assistantIdMap = <int, int>{};
     final projectIdMap = <int, int>{};
@@ -1725,6 +1743,140 @@ class BackupService {
           rawProjectId is int ? rawProjectId : int.tryParse('$rawProjectId');
     }
     return r;
+  }
+
+  static void _normalizeStoryMessageBranches(
+    List<Map<String, dynamic>> rooms,
+    List<Map<String, dynamic>> messages,
+    List<String> warnings,
+  ) {
+    final roomById = <int, Map<String, dynamic>>{
+      for (final room in rooms)
+        if (_intValue(room['id']) != null) _intValue(room['id'])!: room,
+    };
+    final grouped = <int, List<Map<String, dynamic>>>{};
+    for (final message in messages) {
+      final roomId = _intValue(message['roomId']);
+      if (roomId == null) continue;
+      grouped.putIfAbsent(roomId, () => []).add(message);
+    }
+    final usedKeys = <String>{};
+    var repaired = 0;
+    for (final entry in grouped.entries) {
+      final roomId = entry.key;
+      final rows = entry.value
+        ..sort((a, b) {
+          final byId =
+              (_intValue(a['id']) ?? 0).compareTo(_intValue(b['id']) ?? 0);
+          if (byId != 0) return byId;
+          return (_intValue(a['createdAt']) ?? 0)
+              .compareTo(_intValue(b['createdAt']) ?? 0);
+        });
+      final hasBranchData = rows.any((row) =>
+          '${row['nodeKey'] ?? ''}'.trim().isNotEmpty ||
+          row.containsKey('parentNodeKey'));
+      final keyMap = <String, String>{};
+      final roomKeys = <String>{};
+      for (var index = 0; index < rows.length; index++) {
+        final row = rows[index];
+        final original = '${row['nodeKey'] ?? ''}'.trim();
+        var key = original;
+        if (key.isEmpty || usedKeys.contains(key)) {
+          final suffix = _intValue(row['id']) ?? index + 1;
+          final base = 'backup-node-$roomId-$suffix';
+          key = base;
+          var attempt = 1;
+          while (usedKeys.contains(key)) {
+            key = '$base-${++attempt}';
+          }
+          repaired++;
+        }
+        if (original.isNotEmpty) keyMap.putIfAbsent(original, () => key);
+        row['nodeKey'] = key;
+        row['contextStateAfter'] = '${row['contextStateAfter'] ?? ''}';
+        usedKeys.add(key);
+        roomKeys.add(key);
+      }
+      String? previous;
+      for (final row in rows) {
+        final key = row['nodeKey'] as String;
+        if (!hasBranchData) {
+          row['parentNodeKey'] = previous;
+        } else {
+          final rawParent = '${row['parentNodeKey'] ?? ''}'.trim();
+          final parent = keyMap[rawParent] ?? rawParent;
+          if (parent.isEmpty || !roomKeys.contains(parent) || parent == key) {
+            if (rawParent.isNotEmpty) repaired++;
+            row['parentNodeKey'] = null;
+          } else {
+            row['parentNodeKey'] = parent;
+          }
+        }
+        final rawGroup = '${row['candidateGroupKey'] ?? ''}'.trim();
+        row['candidateGroupKey'] =
+            rawGroup.isEmpty ? key : (keyMap[rawGroup] ?? rawGroup);
+        previous = key;
+      }
+      final room = roomById[roomId];
+      if (room == null || rows.isEmpty) continue;
+      final rawActive = '${room['activeMessageKey'] ?? ''}'.trim();
+      final active = keyMap[rawActive] ?? rawActive;
+      if (!roomKeys.contains(active)) {
+        room['activeMessageKey'] = rows.last['nodeKey'];
+        if (rawActive.isNotEmpty || !hasBranchData) repaired++;
+      } else {
+        room['activeMessageKey'] = active;
+      }
+      if (!hasBranchData) {
+        rows.last['contextStateAfter'] = '${room['worldBookState'] ?? ''}';
+      }
+    }
+    if (repaired > 0) {
+      warnings.add('$repaired 处旧故事分支关系已自动修复');
+    }
+  }
+
+  static int _remapStoryBranchKeyConflicts(
+    List<Map<String, dynamic>> rooms,
+    List<Map<String, dynamic>> messages,
+    Set<String> localKeys,
+  ) {
+    final used = <String>{...localKeys};
+    final keyMap = <String, String>{};
+    var remapped = 0;
+    for (final message in messages) {
+      final original = '${message['nodeKey'] ?? ''}'.trim();
+      if (original.isEmpty) continue;
+      var next = original;
+      if (used.contains(next)) {
+        var attempt = 1;
+        do {
+          next = '$original-import-${attempt++}';
+        } while (used.contains(next));
+        keyMap[original] = next;
+        remapped++;
+      }
+      message['nodeKey'] = next;
+      used.add(next);
+    }
+    if (keyMap.isEmpty) return 0;
+    for (final message in messages) {
+      final parent = '${message['parentNodeKey'] ?? ''}'.trim();
+      if (keyMap[parent] case final mapped?) {
+        message['parentNodeKey'] = mapped;
+      }
+      final group = '${message['candidateGroupKey'] ?? ''}'.trim();
+      if (keyMap[group] case final mapped?) {
+        message['candidateGroupKey'] = mapped;
+      }
+    }
+    for (final room in rooms) {
+      final active = '${room['activeMessageKey'] ?? ''}'.trim();
+      if (keyMap[active] case final mapped?) {
+        room['activeMessageKey'] = mapped;
+      }
+    }
+    return remapped;
   }
 
   static Map<String, dynamic> _withoutId(Map<String, dynamic> row) {

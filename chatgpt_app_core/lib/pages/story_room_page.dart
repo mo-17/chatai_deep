@@ -50,6 +50,7 @@ class _StoryRoomPageState extends State<StoryRoomPage> {
   UsageRecordService? _usageRecordService;
   List<StoryParticipantModel> _participants = const [];
   List<StoryMessageModel> _messages = const [];
+  List<StoryMessageModel> _allMessages = const [];
   int? _selectedParticipantId;
   int? _forcedNextParticipantId;
   bool _loading = true;
@@ -116,13 +117,20 @@ class _StoryRoomPageState extends State<StoryRoomPage> {
         includeDisabled: true,
       );
     }
-    final messages = await dao.getMessages(widget.room.id!);
+    final room = await dao.getRoom(widget.room.id!);
+    final allMessages = await dao.getMessages(widget.room.id!);
+    final messages = await dao.getActiveMessages(widget.room.id!);
     if (!mounted) return;
     setState(() {
+      if (room != null) {
+        widget.room.activeMessageKey = room.activeMessageKey;
+        widget.room.worldBookState = room.worldBookState;
+      }
       _dao = dao;
       _usageRecordService = usageRecordService;
       _participants = participants;
       _messages = messages;
+      _allMessages = allMessages;
       final selectedStillEnabled = participants.any(
         (item) => item.id == _selectedParticipantId && item.enabled,
       );
@@ -130,6 +138,24 @@ class _StoryRoomPageState extends State<StoryRoomPage> {
         _selectedParticipantId = _firstEnabledParticipantId(participants);
       }
       _loading = false;
+    });
+  }
+
+  Future<void> _reloadMessages() async {
+    final dao = _dao;
+    final roomId = widget.room.id;
+    if (dao == null || roomId == null) return;
+    final room = await dao.getRoom(roomId);
+    final allMessages = await dao.getMessages(roomId);
+    final messages = await dao.getActiveMessages(roomId);
+    if (!mounted) return;
+    setState(() {
+      if (room != null) {
+        widget.room.activeMessageKey = room.activeMessageKey;
+        widget.room.worldBookState = room.worldBookState;
+      }
+      _allMessages = allMessages;
+      _messages = messages;
     });
   }
 
@@ -170,6 +196,7 @@ class _StoryRoomPageState extends State<StoryRoomPage> {
               if (value == 'participant') _addAssistantParticipant();
               if (value == 'reply') _editTavernReplyMode();
               if (value == 'model') _editRoomModelSettings();
+              if (value == 'branches') _showStoryBranches();
               if (value == 'workbench') {
                 Navigator.push(
                   context,
@@ -213,6 +240,15 @@ class _StoryRoomPageState extends State<StoryRoomPage> {
                   contentPadding: EdgeInsets.zero,
                 ),
               ),
+              if (_allMessages.isNotEmpty)
+                const PopupMenuItem(
+                  value: 'branches',
+                  child: ListTile(
+                    leading: Icon(Icons.account_tree_outlined),
+                    title: Text('故事分支'),
+                    contentPadding: EdgeInsets.zero,
+                  ),
+                ),
               if (!_isTavern)
                 const PopupMenuItem(
                   value: 'workbench',
@@ -298,8 +334,7 @@ class _StoryRoomPageState extends State<StoryRoomPage> {
               maxWidth: MediaQuery.of(context).size.width * 0.82,
             ),
             child: GestureDetector(
-              onLongPress:
-                  _sending ? null : () => _showMessageActions(message, index),
+              onLongPress: _sending ? null : () => _showMessageActions(message),
               child: Card(
                 margin: const EdgeInsets.symmetric(vertical: 5),
                 child: Padding(
@@ -359,6 +394,9 @@ class _StoryRoomPageState extends State<StoryRoomPage> {
                         _messageAttachments(message),
                       if (message.citationUrls.isNotEmpty)
                         _messageCitations(message),
+                      if (!_streamingMessageCreatedAt
+                          .contains(message.createdAt))
+                        _candidateSwitcher(message),
                       if (!isUser) _readAloudButton(message),
                     ],
                   ),
@@ -369,6 +407,168 @@ class _StoryRoomPageState extends State<StoryRoomPage> {
         );
       },
     );
+  }
+
+  Widget _candidateSwitcher(StoryMessageModel message) {
+    final variants = _variantsOf(message);
+    if (variants.length <= 1) return const SizedBox.shrink();
+    final index =
+        variants.indexWhere((item) => item.nodeKey == message.nodeKey);
+    final selected = index < 0 ? 0 : index;
+    return Padding(
+      padding: const EdgeInsets.only(top: 6),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          IconButton(
+            tooltip: '上一个候选',
+            visualDensity: VisualDensity.compact,
+            icon: const Icon(Icons.chevron_left, size: 20),
+            onPressed: _sending || selected <= 0
+                ? null
+                : () => _activateCandidate(variants[selected - 1]),
+          ),
+          Text(
+            '${selected + 1}/${variants.length}',
+            style: const TextStyle(fontSize: 12, color: Colors.black54),
+          ),
+          IconButton(
+            tooltip: '下一个候选',
+            visualDensity: VisualDensity.compact,
+            icon: const Icon(Icons.chevron_right, size: 20),
+            onPressed: _sending || selected >= variants.length - 1
+                ? null
+                : () => _activateCandidate(variants[selected + 1]),
+          ),
+        ],
+      ),
+    );
+  }
+
+  List<StoryMessageModel> _variantsOf(StoryMessageModel message) {
+    final group = message.candidateGroupKey?.trim() ?? '';
+    if (group.isEmpty) return [message];
+    final variants = _allMessages
+        .where((item) => item.candidateGroupKey == group)
+        .toList(growable: false)
+      ..sort((a, b) {
+        final byTime = a.createdAt.compareTo(b.createdAt);
+        if (byTime != 0) return byTime;
+        return (a.id ?? 0).compareTo(b.id ?? 0);
+      });
+    return variants;
+  }
+
+  Future<void> _activateCandidate(StoryMessageModel target) async {
+    final dao = _dao;
+    final roomId = widget.room.id;
+    if (dao == null || roomId == null || target.nodeKey.trim().isEmpty) return;
+    await dao.activateMessage(roomId, target.nodeKey);
+    await _reloadMessages();
+  }
+
+  Future<void> _showStoryBranches() async {
+    if (_allMessages.isEmpty) return;
+    final rows = _branchRows(_allMessages);
+    final activeKeys = _messages.map((item) => item.nodeKey).toSet();
+    final selected = await showModalBottomSheet<StoryMessageModel>(
+      context: context,
+      showDragHandle: true,
+      isScrollControlled: true,
+      builder: (ctx) => SafeArea(
+        child: SizedBox(
+          height: MediaQuery.sizeOf(ctx).height * 0.72,
+          child: Column(
+            children: [
+              const ListTile(
+                leading: Icon(Icons.account_tree_outlined),
+                title: Text('故事分支'),
+                subtitle: Text('选择任意节点作为当前剧情终点，下一条消息会从这里继续'),
+              ),
+              const Divider(height: 1),
+              Expanded(
+                child: ListView.builder(
+                  itemCount: rows.length,
+                  itemBuilder: (_, index) {
+                    final row = rows[index];
+                    final message = row.message;
+                    final active = activeKeys.contains(message.nodeKey);
+                    return Padding(
+                      padding: EdgeInsets.only(left: row.depth * 18.0),
+                      child: ListTile(
+                        dense: true,
+                        leading: Icon(
+                          row.hasChildren
+                              ? Icons.account_tree_outlined
+                              : Icons.subdirectory_arrow_right,
+                          color:
+                              active ? Theme.of(ctx).colorScheme.primary : null,
+                        ),
+                        title: Text(
+                          message.speakerName,
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                        ),
+                        subtitle: Text(
+                          message.content.trim().isEmpty
+                              ? '（空消息）'
+                              : message.content.trim(),
+                          maxLines: 2,
+                          overflow: TextOverflow.ellipsis,
+                        ),
+                        trailing: active
+                            ? const Icon(Icons.check_circle_outline, size: 18)
+                            : null,
+                        onTap: () => Navigator.pop(ctx, message),
+                      ),
+                    );
+                  },
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+    if (selected == null || !mounted) return;
+    await _activateCandidate(selected);
+  }
+
+  static List<_StoryBranchRow> _branchRows(
+    List<StoryMessageModel> messages,
+  ) {
+    final ordered = List<StoryMessageModel>.from(messages)
+      ..sort((a, b) => (a.id ?? 0).compareTo(b.id ?? 0));
+    final byKey = {
+      for (final message in ordered)
+        if (message.nodeKey.trim().isNotEmpty) message.nodeKey: message,
+    };
+    final children = <String?, List<StoryMessageModel>>{};
+    for (final message in ordered) {
+      final parent = byKey.containsKey(message.parentNodeKey)
+          ? message.parentNodeKey
+          : null;
+      children.putIfAbsent(parent, () => []).add(message);
+    }
+    final result = <_StoryBranchRow>[];
+    final visited = <String>{};
+
+    void visit(StoryMessageModel message, int depth) {
+      if (!visited.add(message.nodeKey)) return;
+      final descendants = children[message.nodeKey] ?? const [];
+      result.add(_StoryBranchRow(message, depth, descendants.isNotEmpty));
+      for (final child in descendants) {
+        visit(child, depth + 1);
+      }
+    }
+
+    for (final root in children[null] ?? const []) {
+      visit(root, 0);
+    }
+    for (final message in ordered) {
+      if (!visited.contains(message.nodeKey)) visit(message, 0);
+    }
+    return result;
   }
 
   Widget _readAloudButton(StoryMessageModel message) {
@@ -657,10 +857,7 @@ class _StoryRoomPageState extends State<StoryRoomPage> {
     await _load();
   }
 
-  Future<void> _showMessageActions(
-    StoryMessageModel message,
-    int index,
-  ) async {
+  Future<void> _showMessageActions(StoryMessageModel message) async {
     final canRegenerate = !message.isUser && message.speakerId != null;
     final action = await showModalBottomSheet<String>(
       context: context,
@@ -677,13 +874,14 @@ class _StoryRoomPageState extends State<StoryRoomPage> {
             ListTile(
               leading: const Icon(Icons.edit_outlined),
               title: const Text('编辑内容'),
+              subtitle: const Text('保留原消息，并从编辑版本建立新分支'),
               onTap: () => Navigator.pop(ctx, 'edit'),
             ),
             if (canRegenerate)
               ListTile(
                 leading: const Icon(Icons.refresh_outlined),
-                title: const Text('重新生成'),
-                subtitle: const Text('使用这条回复之前的对话重新生成'),
+                title: const Text('生成备选回复'),
+                subtitle: const Text('保留当前候选，使用之前的上下文重新生成'),
                 onTap: () => Navigator.pop(ctx, 'regenerate'),
               ),
             if (canRegenerate)
@@ -718,7 +916,7 @@ class _StoryRoomPageState extends State<StoryRoomPage> {
         await _editMessage(message);
         return;
       case 'regenerate':
-        await _regenerateMessage(message, index);
+        await _regenerateMessage(message);
         return;
       case 'continue':
         await _continueMessage(message);
@@ -759,19 +957,37 @@ class _StoryRoomPageState extends State<StoryRoomPage> {
     );
     controller.dispose();
     if (content == null || content == message.content) return;
-    message.content = content;
-    await _dao?.updateMessage(message);
-    if (mounted) setState(() {});
+    final edited = StoryMessageModel(
+      roomId: message.roomId,
+      speakerId: message.speakerId,
+      speakerRole: message.speakerRole,
+      speakerName: message.speakerName,
+      speakerAvatarType: message.speakerAvatarType,
+      speakerAvatarValue: message.speakerAvatarValue,
+      speakerVoiceStyle: message.speakerVoiceStyle,
+      content: content,
+      imagePaths: message.imagePaths,
+      imageSources: message.imageSources,
+      citationUrls: message.citationUrls,
+      filePaths: message.filePaths,
+      attachmentContext: message.attachmentContext,
+      parentNodeKey: message.parentNodeKey,
+      candidateGroupKey: message.candidateGroupKey,
+      contextStateAfter: message.contextStateAfter,
+    );
+    await _dao?.saveMessage(edited);
+    await _reloadMessages();
   }
 
   Future<void> _deleteMessage(StoryMessageModel message) async {
-    final id = message.id;
-    if (id == null) return;
+    final nodeKey = message.nodeKey.trim();
+    final roomId = widget.room.id;
+    if (nodeKey.isEmpty || roomId == null) return;
     final confirmed = await showDialog<bool>(
       context: context,
       builder: (ctx) => AlertDialog(
         title: const Text('删除消息'),
-        content: const Text('删除后不会自动改写后续剧情，确定继续吗？'),
+        content: const Text('这会删除该消息以及从它继续产生的整条子分支，其他候选和分支会保留。'),
         actions: [
           TextButton(
             onPressed: () => Navigator.pop(ctx, false),
@@ -785,33 +1001,45 @@ class _StoryRoomPageState extends State<StoryRoomPage> {
       ),
     );
     if (confirmed != true) return;
-    await _dao?.deleteMessage(id);
-    if (mounted) {
-      setState(
-          () => _messages = _messages.where((item) => item.id != id).toList());
-    }
+    await _dao?.deleteMessageSubtree(roomId, nodeKey);
+    await _reloadMessages();
   }
 
-  Future<void> _regenerateMessage(
-    StoryMessageModel message,
-    int index,
-  ) async {
+  Future<void> _regenerateMessage(StoryMessageModel message) async {
     final speaker = _participantById(message.speakerId);
     if (speaker == null) {
       HiDialog.showSnackBar(context, '原角色已移出或暂停，无法重新生成');
       return;
     }
-    var userIndex = index - 1;
-    while (userIndex >= 0 && !_messages[userIndex].isUser) {
-      userIndex--;
-    }
-    if (userIndex < 0) {
-      HiDialog.showSnackBar(context, '找不到触发这条回复的用户消息');
+    final dao = _dao;
+    final roomId = widget.room.id;
+    final parentKey = message.parentNodeKey?.trim() ?? '';
+    if (dao == null || roomId == null || parentKey.isEmpty) {
+      HiDialog.showSnackBar(context, '找不到这条回复所属的剧情节点');
       return;
     }
-    final userMessage = _messages[userIndex];
+    final restoreKey = widget.room.activeMessageKey;
+    await dao.activateMessage(roomId, parentKey);
+    await _reloadMessages();
+    if (!mounted) return;
+    final userMessage =
+        _messages.reversed.cast<StoryMessageModel?>().firstWhere(
+              (item) => item?.isUser == true,
+              orElse: () => null,
+            );
+    if (userMessage == null) {
+      if (mounted) HiDialog.showSnackBar(context, '找不到触发这条回复的用户消息');
+      if (restoreKey?.isNotEmpty == true) {
+        await dao.activateMessage(roomId, restoreKey!);
+        await _reloadMessages();
+      }
+      return;
+    }
+    if (!mounted) return;
     final input = userMessage.content;
-    final history = _messages.sublist(0, userIndex);
+    final history = _messages.last.nodeKey == userMessage.nodeKey
+        ? _messages.sublist(0, _messages.length - 1)
+        : List<StoryMessageModel>.from(_messages);
     final settings =
         _effectiveSettings(context.read<AISettingsProvider>().settings);
     final attachmentBundle = await StoryRoomAttachmentService.prepare(
@@ -820,17 +1048,17 @@ class _StoryRoomPageState extends State<StoryRoomPage> {
       capabilities: ChatService.capabilitiesFor(settings),
       fallbackContext: userMessage.attachmentContext,
     );
-    if (message.id != null) await _dao?.deleteMessage(message.id!);
-    if (mounted) {
-      setState(() =>
-          _messages = _messages.where((item) => item != message).toList());
-    }
-    await _runSingleSpeakerGeneration(
+    final reply = await _runSingleSpeakerGeneration(
       input: input,
       speaker: speaker,
       historyMessages: history,
       attachmentBundle: attachmentBundle,
+      candidateGroupKey: message.candidateGroupKey,
     );
+    if (reply == null && restoreKey?.isNotEmpty == true) {
+      await dao.activateMessage(roomId, restoreKey!);
+    }
+    await _reloadMessages();
   }
 
   Future<void> _continueMessage(StoryMessageModel message) async {
@@ -839,11 +1067,21 @@ class _StoryRoomPageState extends State<StoryRoomPage> {
       HiDialog.showSnackBar(context, '原角色已移出或暂停，无法继续生成');
       return;
     }
-    await _runSingleSpeakerGeneration(
+    final dao = _dao;
+    final roomId = widget.room.id;
+    if (dao == null || roomId == null || message.nodeKey.trim().isEmpty) return;
+    final restoreKey = widget.room.activeMessageKey;
+    await dao.activateMessage(roomId, message.nodeKey);
+    await _reloadMessages();
+    final reply = await _runSingleSpeakerGeneration(
       input: '请从上一段中断处继续，保持相同语气和场景，不要重复已经生成的内容。',
       speaker: speaker,
       historyMessages: List<StoryMessageModel>.from(_messages),
     );
+    if (reply == null && restoreKey?.isNotEmpty == true) {
+      await dao.activateMessage(roomId, restoreKey!);
+    }
+    await _reloadMessages();
   }
 
   StoryParticipantModel? _participantById(int? id) {
@@ -853,14 +1091,15 @@ class _StoryRoomPageState extends State<StoryRoomPage> {
     return null;
   }
 
-  Future<void> _runSingleSpeakerGeneration({
+  Future<StoryMessageModel?> _runSingleSpeakerGeneration({
     required String input,
     required StoryParticipantModel speaker,
     required List<StoryMessageModel> historyMessages,
     StoryRoomAttachmentBundle? attachmentBundle,
+    String? candidateGroupKey,
   }) async {
     final dao = _dao;
-    if (dao == null || _sending) return;
+    if (dao == null || _sending) return null;
     final settings =
         _effectiveSettings(context.read<AISettingsProvider>().settings);
     setState(() {
@@ -868,14 +1107,16 @@ class _StoryRoomPageState extends State<StoryRoomPage> {
       _stopRequested = false;
       _generationStatus = '${speaker.name} 正在发言...';
     });
+    StoryMessageModel? reply;
     try {
-      await _streamSpeakerReply(
+      reply = await _streamSpeakerReply(
         dao: dao,
         settings: settings,
         input: input,
         speaker: speaker,
         historyMessages: historyMessages,
         attachmentBundle: attachmentBundle,
+        candidateGroupKey: candidateGroupKey,
       );
     } catch (e) {
       if (mounted) HiDialog.showSnackBar(context, '生成失败：$e');
@@ -888,6 +1129,7 @@ class _StoryRoomPageState extends State<StoryRoomPage> {
         });
       }
     }
+    return reply;
   }
 
   Future<void> _manageParticipant(StoryParticipantModel participant) async {
@@ -1644,14 +1886,17 @@ class _StoryRoomPageState extends State<StoryRoomPage> {
       imagePaths: attachmentBundle.imagePaths,
       filePaths: attachmentBundle.filePaths,
       attachmentContext: attachmentBundle.attachmentContext,
+      contextStateAfter: widget.room.worldBookState,
     );
     if (mounted) {
       setState(() {
         _generationStatus = '准备生成回复...';
         _messages = [..._messages, userMessage];
+        _allMessages = [..._allMessages, userMessage];
       });
     }
     await dao.saveMessage(userMessage);
+    widget.room.activeMessageKey = userMessage.nodeKey;
 
     try {
       final chatService = ChatService.from(settings);
@@ -1845,6 +2090,7 @@ class _StoryRoomPageState extends State<StoryRoomPage> {
     required StoryParticipantModel speaker,
     required List<StoryMessageModel> historyMessages,
     StoryRoomAttachmentBundle? attachmentBundle,
+    String? candidateGroupKey,
   }) async {
     final speakerSettings =
         StoryParticipantSettingsResolver.apply(settings, speaker);
@@ -1873,12 +2119,14 @@ class _StoryRoomPageState extends State<StoryRoomPage> {
       speakerAvatarValue: speaker.avatarValue,
       speakerVoiceStyle: speaker.voiceStyle,
       content: '',
+      candidateGroupKey: candidateGroupKey,
     );
     if (mounted) {
       setState(() {
         _generationStatus = '${speaker.name} 正在发言...';
         _streamingMessageCreatedAt.add(message.createdAt);
         _messages = [..._messages, message];
+        _allMessages = [..._allMessages, message];
       });
     }
 
@@ -1983,15 +2231,20 @@ class _StoryRoomPageState extends State<StoryRoomPage> {
           _messages = _messages
               .where((item) => item.createdAt != message.createdAt)
               .toList();
+          _allMessages = _allMessages
+              .where((item) => item.createdAt != message.createdAt)
+              .toList();
         });
       }
       if (_stopRequested) return null;
       throw Exception('${speaker.name} 没有返回内容');
     }
     message.content = text;
-    await dao.saveMessage(message);
     final nextWorldBookState =
         jsonEncode(contextResult.worldBookState.toJson());
+    message.contextStateAfter = nextWorldBookState;
+    await dao.saveMessage(message);
+    widget.room.activeMessageKey = message.nodeKey;
     if (widget.room.worldBookState != nextWorldBookState) {
       widget.room.worldBookState = nextWorldBookState;
       await dao.saveRoom(widget.room);
@@ -2057,4 +2310,12 @@ class _StoryRoomPageState extends State<StoryRoomPage> {
       // 用量记录失败不能阻断房间回复。
     }
   }
+}
+
+class _StoryBranchRow {
+  final StoryMessageModel message;
+  final int depth;
+  final bool hasChildren;
+
+  const _StoryBranchRow(this.message, this.depth, this.hasChildren);
 }

@@ -246,6 +246,9 @@ void main() {
       expect(messages.single['roomId'], isNot(sourceIds['roomId']));
       expect(messages.single['speakerId'], isNot(sourceIds['participantId']));
       expect(messages.single['content'], '她抬起头，看向门口。');
+      expect(messages.single['nodeKey'], isNotEmpty);
+      final restoredRoom = (await dst.db.query('tb_story_room')).single;
+      expect(restoredRoom['activeMessageKey'], messages.single['nodeKey']);
       final restoredRoomId = messages.single['roomId'] as int;
       final artifacts = await dst.db.query('tb_story_artifact');
       expect(artifacts, hasLength(1));
@@ -349,6 +352,142 @@ void main() {
       ))
           .single;
       expect(importedRevision['artifactId'], importedArtifact['id']);
+      await dst.db.close();
+    });
+
+    test('合并恢复会整树改写冲突节点键并保留父链、候选组和活动叶', () async {
+      final src = await newDb();
+      final srcDao = await StoryRoomDao.create(src);
+      final srcRoom = StoryRoomModel(title: '分支源房间');
+      await srcDao.saveRoom(srcRoom);
+      await srcDao.saveMessage(StoryMessageModel(
+        roomId: srcRoom.id!,
+        speakerRole: 'user',
+        speakerName: '我',
+        content: '选择道路',
+        nodeKey: 'shared-root',
+        candidateGroupKey: 'shared-root',
+        contextStateAfter: 'root-state',
+      ));
+      await srcDao.saveMessage(StoryMessageModel(
+        roomId: srcRoom.id!,
+        speakerRole: 'assistant',
+        speakerName: '角色',
+        content: '走左边',
+        nodeKey: 'source-left',
+        parentNodeKey: 'shared-root',
+        candidateGroupKey: 'reply-group',
+        contextStateAfter: 'left-state',
+      ));
+      await srcDao.activateMessage(srcRoom.id!, 'shared-root');
+      await srcDao.saveMessage(StoryMessageModel(
+        roomId: srcRoom.id!,
+        speakerRole: 'assistant',
+        speakerName: '角色',
+        content: '走右边',
+        nodeKey: 'shared-active',
+        parentNodeKey: 'shared-root',
+        candidateGroupKey: 'reply-group',
+        contextStateAfter: 'right-state',
+      ));
+      final bytes = await BackupService(src).exportArchive(
+        settings: AISettings.defaults(),
+        accountHash: 'acc1',
+      );
+      await src.db.close();
+
+      final dst = await newDb();
+      final dstDao = await StoryRoomDao.create(dst);
+      final localRoom = StoryRoomModel(title: '本地分支');
+      await dstDao.saveRoom(localRoom);
+      await dstDao.saveMessage(StoryMessageModel(
+        roomId: localRoom.id!,
+        speakerRole: 'user',
+        speakerName: '我',
+        content: '本地根',
+        nodeKey: 'shared-root',
+      ));
+      await dstDao.saveMessage(StoryMessageModel(
+        roomId: localRoom.id!,
+        speakerRole: 'assistant',
+        speakerName: '本地角色',
+        content: '本地回复',
+        nodeKey: 'shared-active',
+      ));
+
+      final result = await BackupService(dst).importArchive(
+        bytes,
+        accountHash: 'acc1',
+        mode: BackupImportMode.mergeAppend,
+      );
+      expect(result.warnings.join('\n'), contains('故事分支节点与本地重复'));
+      final importedRoom = StoryRoomModel.fromJson((await dst.db.query(
+        'tb_story_room',
+        where: 'title = ?',
+        whereArgs: ['分支源房间'],
+      ))
+          .single);
+      final imported = await dstDao.getMessages(importedRoom.id!);
+      final root = imported.singleWhere((item) => item.content == '选择道路');
+      final left = imported.singleWhere((item) => item.content == '走左边');
+      final right = imported.singleWhere((item) => item.content == '走右边');
+      expect(root.nodeKey, isNot('shared-root'));
+      expect(right.nodeKey, isNot('shared-active'));
+      expect(left.parentNodeKey, root.nodeKey);
+      expect(right.parentNodeKey, root.nodeKey);
+      expect(left.candidateGroupKey, right.candidateGroupKey);
+      expect(importedRoom.activeMessageKey, right.nodeKey);
+      expect(
+          (await dstDao.getActiveMessages(importedRoom.id!))
+              .map((item) => item.content),
+          ['选择道路', '走右边']);
+      await dst.db.close();
+    });
+
+    test('v4 线性故事消息恢复时自动生成节点父链和活动叶', () async {
+      final dst = await newDb();
+      final bytes = zipOf({
+        'manifest.json': {'formatVersion': 4, 'accountHash': 'acc1'},
+        'story_rooms.json': [
+          {
+            'id': 8,
+            'title': '旧线性房间',
+            'mode': StoryRoomMode.tavern,
+            'worldBookState': 'legacy-state',
+            'createdAt': 1,
+            'updatedAt': 2,
+          }
+        ],
+        'story_messages.json': [
+          {
+            'id': 10,
+            'roomId': 8,
+            'speakerRole': 'user',
+            'speakerName': '我',
+            'content': '第一句',
+            'createdAt': 10,
+            'updatedAt': 10,
+          },
+          {
+            'id': 11,
+            'roomId': 8,
+            'speakerRole': 'assistant',
+            'speakerName': '角色',
+            'content': '第二句',
+            'createdAt': 11,
+            'updatedAt': 11,
+          },
+        ],
+      });
+      await BackupService(dst).importArchive(bytes, accountHash: 'acc1');
+      final dao = await StoryRoomDao.create(dst);
+      final room = (await dao.getRooms()).single;
+      final messages = await dao.getMessages(room.id!);
+      expect(messages, hasLength(2));
+      expect(messages.first.parentNodeKey, isNull);
+      expect(messages.last.parentNodeKey, messages.first.nodeKey);
+      expect(room.activeMessageKey, messages.last.nodeKey);
+      expect(messages.last.contextStateAfter, 'legacy-state');
       await dst.db.close();
     });
 

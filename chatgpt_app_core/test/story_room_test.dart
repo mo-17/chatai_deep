@@ -285,6 +285,264 @@ void main() {
       expect(saved.filePaths, ['/tmp/world.pdf', '/tmp/notes.txt']);
       expect(saved.attachmentContext, '[附件 notes.txt 内容]');
     });
+
+    test('旧房间和消息表首次补分支键时回填稳定父链与活动节点', () async {
+      db = await databaseFactoryFfi.openDatabase(inMemoryDatabasePath);
+      await db.execute(
+        'create table tb_story_room (id integer primary key autoincrement'
+        ', title text, mode text, replyMode text, maxAutoReplies integer'
+        ', publicContext text, worldBookState text, modelProviderId text, modelId text'
+        ', temperature real, maxOutputTokens integer, createdAt integer, updatedAt integer)',
+      );
+      await db.execute(
+        'create table tb_story_message (id integer primary key autoincrement'
+        ', roomId integer not null, speakerId integer, speakerRole text'
+        ', speakerName text, speakerAvatarType text, speakerAvatarValue text'
+        ', speakerVoiceStyle text, content text, imagePaths text, imageSources text'
+        ', citationUrls text, filePaths text, attachmentContext text'
+        ', createdAt integer, updatedAt integer)',
+      );
+      final roomId = await db.insert('tb_story_room', {
+        'title': '旧分支房间',
+        'createdAt': 1,
+        'updatedAt': 1,
+      });
+      for (final content in ['一', '二', '三']) {
+        await db.insert('tb_story_message', {
+          'roomId': roomId,
+          'speakerRole': 'user',
+          'speakerName': '我',
+          'content': content,
+          'createdAt': 1,
+          'updatedAt': 1,
+        });
+      }
+
+      final dao = await StoryRoomDao.create(HiDBManager.test(db));
+      final messages = await dao.getMessages(roomId);
+      expect(
+        messages.map((message) => message.nodeKey),
+        ['legacy-$roomId-1', 'legacy-$roomId-2', 'legacy-$roomId-3'],
+      );
+      expect(
+        messages.map((message) => message.parentNodeKey),
+        [null, 'legacy-$roomId-1', 'legacy-$roomId-2'],
+      );
+      expect(
+        messages.map((message) => message.candidateGroupKey),
+        ['legacy-$roomId-1', 'legacy-$roomId-2', 'legacy-$roomId-3'],
+      );
+      expect(
+        (await dao.getRoom(roomId))?.activeMessageKey,
+        'legacy-$roomId-3',
+      );
+      expect(await dao.getActiveMessages(roomId), hasLength(3));
+
+      await db.update(
+        'tb_story_message',
+        {'parentNodeKey': 'legacy-$roomId-1'},
+        where: 'id = ?',
+        whereArgs: [3],
+      );
+      await StoryRoomDao.create(HiDBManager.test(db));
+      expect(
+        (await dao.getMessages(roomId)).last.parentNodeKey,
+        'legacy-$roomId-1',
+      );
+    });
+
+    test('新消息线性接到活动叶，并为候选回复保留显式分组', () async {
+      db = await databaseFactoryFfi.openDatabase(inMemoryDatabasePath);
+      final dao = await StoryRoomDao.create(HiDBManager.test(db));
+      final roomId = await dao.saveRoom(StoryRoomModel(title: '分支房间'));
+      final first = StoryMessageModel(
+        roomId: roomId,
+        speakerRole: 'user',
+        speakerName: '我',
+        content: '起点',
+        contextStateAfter: '{"location":"书店"}',
+      );
+      await dao.saveMessage(first);
+      final second = StoryMessageModel(
+        roomId: roomId,
+        speakerRole: 'assistant',
+        speakerName: '甲',
+        content: '主线',
+        contextStateAfter: '{"location":"门口"}',
+      );
+      await dao.saveMessage(second);
+      final alternative = StoryMessageModel(
+        roomId: roomId,
+        parentNodeKey: first.nodeKey,
+        candidateGroupKey: second.candidateGroupKey,
+        speakerRole: 'assistant',
+        speakerName: '乙',
+        content: '候选',
+        contextStateAfter: '{"location":"窗边"}',
+      );
+      await dao.saveMessage(alternative);
+
+      expect(first.parentNodeKey, isNull);
+      expect(first.candidateGroupKey, first.nodeKey);
+      expect(second.parentNodeKey, first.nodeKey);
+      expect(second.candidateGroupKey, second.nodeKey);
+      expect(alternative.candidateGroupKey, second.candidateGroupKey);
+      expect(
+        (await dao.getMessageVariants(roomId, second.candidateGroupKey!))
+            .map((message) => message.content),
+        ['主线', '候选'],
+      );
+      expect(
+          (await dao.getRoom(roomId))?.activeMessageKey, alternative.nodeKey);
+      expect(
+        StoryMessageModel.fromJson(alternative.toJson()).contextStateAfter,
+        '{"location":"窗边"}',
+      );
+    });
+
+    test('可切换活动叶，且拒绝其他房间的消息', () async {
+      db = await databaseFactoryFfi.openDatabase(inMemoryDatabasePath);
+      final dao = await StoryRoomDao.create(HiDBManager.test(db));
+      final roomId = await dao.saveRoom(StoryRoomModel(title: '活动路径'));
+      final otherRoomId = await dao.saveRoom(StoryRoomModel(title: '另一房间'));
+      final root = StoryMessageModel(
+        roomId: roomId,
+        speakerRole: 'user',
+        speakerName: '我',
+        content: '根',
+        contextStateAfter: '{"branch":"root"}',
+      );
+      await dao.saveMessage(root);
+      final left = StoryMessageModel(
+        roomId: roomId,
+        parentNodeKey: root.nodeKey,
+        speakerRole: 'assistant',
+        speakerName: '左',
+        content: '左路',
+        contextStateAfter: '{"branch":"left"}',
+      );
+      await dao.saveMessage(left);
+      final right = StoryMessageModel(
+        roomId: roomId,
+        parentNodeKey: root.nodeKey,
+        speakerRole: 'assistant',
+        speakerName: '右',
+        content: '右路',
+        contextStateAfter: '{"branch":"right"}',
+      );
+      await dao.saveMessage(right);
+      final outsider = StoryMessageModel(
+        roomId: otherRoomId,
+        speakerRole: 'user',
+        speakerName: '外部',
+        content: '不可切换',
+      );
+      await dao.saveMessage(outsider);
+
+      expect(await dao.activateMessage(roomId, left.nodeKey), isTrue);
+      expect(
+        (await dao.getActiveMessages(roomId)).map((message) => message.content),
+        ['根', '左路'],
+      );
+      expect((await dao.getRoom(roomId))?.worldBookState, '{"branch":"left"}');
+      expect(await dao.activateMessage(roomId, right.nodeKey), isTrue);
+      expect((await dao.getRoom(roomId))?.worldBookState, '{"branch":"right"}');
+      expect(await dao.activateMessage(roomId, outsider.nodeKey), isFalse);
+      expect((await dao.getRoom(roomId))?.activeMessageKey, right.nodeKey);
+
+      right.contextStateAfter = '{"branch":"right-updated"}';
+      await dao.updateMessage(right);
+      expect(
+        (await dao.getRoom(roomId))?.worldBookState,
+        '{"branch":"right-updated"}',
+      );
+    });
+
+    test('删除子树会回退活动叶并记录所有消息 tombstone', () async {
+      db = await databaseFactoryFfi.openDatabase(inMemoryDatabasePath);
+      final dao = await StoryRoomDao.create(HiDBManager.test(db));
+      final roomId = await dao.saveRoom(StoryRoomModel(title: '删除分支'));
+      final root = StoryMessageModel(
+        roomId: roomId,
+        speakerRole: 'user',
+        speakerName: '我',
+        content: '根',
+        contextStateAfter: '{"chapter":1}',
+      );
+      await dao.saveMessage(root);
+      final child = StoryMessageModel(
+        roomId: roomId,
+        speakerRole: 'assistant',
+        speakerName: '甲',
+        content: '子',
+        contextStateAfter: '{"chapter":2}',
+      );
+      await dao.saveMessage(child);
+      final leaf = StoryMessageModel(
+        roomId: roomId,
+        speakerRole: 'user',
+        speakerName: '我',
+        content: '叶',
+        contextStateAfter: '{"chapter":3}',
+      );
+      await dao.saveMessage(leaf);
+
+      await dao.deleteMessageSubtree(roomId, child.nodeKey);
+      expect((await dao.getMessages(roomId)).map((message) => message.content),
+          ['根']);
+      expect((await dao.getRoom(roomId))?.activeMessageKey, root.nodeKey);
+      expect((await dao.getRoom(roomId))?.worldBookState, '{"chapter":1}');
+      final tombstones = await db.query(
+        'tb_sync_tombstone',
+        where: 'entity = ?',
+        whereArgs: ['story_message'],
+        orderBy: 'entityId asc',
+      );
+      expect(
+          tombstones.map((row) => row['entityId']),
+          [
+            child.nodeKey,
+            leaf.nodeKey,
+          ]..sort());
+    });
+
+    test('坏链的活动路径会在环或缺父处安全停止', () async {
+      final one = StoryMessageModel(
+        roomId: 1,
+        nodeKey: 'one',
+        parentNodeKey: 'two',
+        speakerRole: 'user',
+        speakerName: '我',
+        content: '一',
+      );
+      final two = StoryMessageModel(
+        roomId: 1,
+        nodeKey: 'two',
+        parentNodeKey: 'one',
+        speakerRole: 'assistant',
+        speakerName: '甲',
+        content: '二',
+      );
+      final orphan = StoryMessageModel(
+        roomId: 1,
+        nodeKey: 'orphan',
+        parentNodeKey: 'missing',
+        speakerRole: 'assistant',
+        speakerName: '乙',
+        content: '孤儿',
+      );
+
+      expect(
+        StoryRoomDao.activePath([one, two], 'two')
+            .map((message) => message.nodeKey),
+        ['one', 'two'],
+      );
+      expect(
+        StoryRoomDao.activePath([orphan], 'orphan')
+            .map((message) => message.nodeKey),
+        ['orphan'],
+      );
+    });
   });
 
   group('StoryRoomSettingsResolver', () {

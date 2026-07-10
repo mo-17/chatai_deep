@@ -20,6 +20,7 @@ class StoryRoomDao implements ITable {
         ', title text, mode text, replyMode text, maxAutoReplies integer'
         ', publicContext text, worldBookState text, modelProviderId text, modelId text'
         ', temperature real, maxOutputTokens integer'
+        ', activeMessageKey text'
         ', createdAt integer, updatedAt integer)');
     await _ensureRoomColumns(storage);
     await storage.db.execute(
@@ -38,8 +39,10 @@ class StoryRoomDao implements ITable {
         ', speakerName text, speakerAvatarType text, speakerAvatarValue text'
         ', speakerVoiceStyle text, content text, imagePaths text, imageSources text'
         ', citationUrls text, filePaths text'
-        ', attachmentContext text, createdAt integer, updatedAt integer)');
-    await _ensureMessageColumns(storage);
+        ', attachmentContext text, nodeKey text not null, parentNodeKey text'
+        ', candidateGroupKey text, contextStateAfter text'
+        ', createdAt integer, updatedAt integer)');
+    final addedBranchColumns = await _ensureMessageColumns(storage);
     try {
       await storage.db
           .execute('alter table tb_story_message add column updatedAt integer');
@@ -50,6 +53,15 @@ class StoryRoomDao implements ITable {
         'update tb_story_message set updatedAt = createdAt where updatedAt is null');
     await storage.db.execute(
         'create index if not exists tb_story_message_room_idx on tb_story_message(roomId, id asc)');
+    await storage.db.execute(
+        'create unique index if not exists tb_story_message_node_key_uq on tb_story_message(nodeKey)');
+    await storage.db.execute(
+        'create index if not exists tb_story_message_parent_node_idx on tb_story_message(roomId, parentNodeKey)');
+    await storage.db.execute(
+        'create index if not exists tb_story_message_candidate_group_idx on tb_story_message(roomId, candidateGroupKey)');
+    if (addedBranchColumns) {
+      await _migrateLegacyMessageBranches(storage);
+    }
     await SyncTombstoneStore.ensure(storage.db);
     return StoryRoomDao._(storage);
   }
@@ -79,6 +91,7 @@ class StoryRoomDao implements ITable {
       'temperature real',
       'maxOutputTokens integer',
       'worldBookState text',
+      'activeMessageKey text',
     ]) {
       try {
         await storage.db
@@ -106,7 +119,8 @@ class StoryRoomDao implements ITable {
     }
   }
 
-  static Future<void> _ensureMessageColumns(HiDBManager storage) async {
+  static Future<bool> _ensureMessageColumns(HiDBManager storage) async {
+    var addedBranchColumns = false;
     for (final column in const [
       'speakerVoiceStyle text',
       'imagePaths text',
@@ -122,6 +136,71 @@ class StoryRoomDao implements ITable {
         // 已存在列时忽略，保持旧库可升级。
       }
     }
+    try {
+      await storage.db
+          .execute('alter table tb_story_message add column nodeKey text');
+      addedBranchColumns = true;
+    } catch (_) {
+      // 已存在 nodeKey 列时不回填，避免破坏已有分支根。
+    }
+    try {
+      await storage.db.execute(
+          'alter table tb_story_message add column parentNodeKey text');
+      addedBranchColumns = true;
+    } catch (_) {
+      // 已存在 parentNodeKey 列时忽略，保持旧库可升级。
+    }
+    for (final column in const [
+      'candidateGroupKey text',
+      'contextStateAfter text',
+    ]) {
+      try {
+        await storage.db
+            .execute('alter table tb_story_message add column $column');
+      } catch (_) {
+        // 已存在分支列时忽略，保持旧库可升级。
+      }
+    }
+    return addedBranchColumns;
+  }
+
+  /// 仅在首次引入节点键时把旧线性消息迁移成稳定键父链。
+  static Future<void> _migrateLegacyMessageBranches(HiDBManager storage) async {
+    await storage.db.transaction((txn) async {
+      final rooms = await txn.query('tb_story_room', columns: ['id']);
+      for (final room in rooms) {
+        final roomId = room['id'] as int;
+        final messages = await txn.query(
+          messageTable,
+          columns: ['id'],
+          where: 'roomId = ?',
+          whereArgs: [roomId],
+          orderBy: 'id asc',
+        );
+        String? parentNodeKey;
+        for (final message in messages) {
+          final id = message['id'] as int;
+          final nodeKey = 'legacy-$roomId-$id';
+          await txn.update(
+            messageTable,
+            {
+              'nodeKey': nodeKey,
+              'parentNodeKey': parentNodeKey,
+              'candidateGroupKey': nodeKey,
+            },
+            where: 'id = ?',
+            whereArgs: [id],
+          );
+          parentNodeKey = nodeKey;
+        }
+        await txn.update(
+          'tb_story_room',
+          {'activeMessageKey': parentNodeKey},
+          where: 'id = ?',
+          whereArgs: [roomId],
+        );
+      }
+    });
   }
 
   Future<int> saveRoom(StoryRoomModel model) async {
@@ -235,31 +314,57 @@ class StoryRoomDao implements ITable {
     await storage.db.delete(participantTable, where: 'id = ?', whereArgs: [id]);
   }
 
-  Future<int> saveMessage(StoryMessageModel model) async {
-    model.updatedAt = DateTime.now().millisecondsSinceEpoch;
-    if ((model.speakerVoiceStyle == null ||
-            model.speakerVoiceStyle!.trim().isEmpty) &&
-        model.speakerId != null) {
-      final participants = await storage.db.query(
-        participantTable,
-        columns: ['voiceStyle'],
-        where: 'id = ?',
-        whereArgs: [model.speakerId],
-      );
-      if (participants.isNotEmpty) {
-        model.speakerVoiceStyle = participants.first['voiceStyle'] as String?;
+  Future<int> saveMessage(StoryMessageModel model) {
+    return storage.db.transaction((txn) async {
+      final now = DateTime.now().millisecondsSinceEpoch;
+      model.updatedAt = now;
+      if (model.parentNodeKey == null) {
+        final rooms = await txn.query(
+          tableName,
+          columns: ['activeMessageKey'],
+          where: 'id = ?',
+          whereArgs: [model.roomId],
+        );
+        if (rooms.isNotEmpty) {
+          model.parentNodeKey = rooms.first['activeMessageKey'] as String?;
+        }
       }
-    }
-    final data = model.toJson()..remove('id');
-    final id = await storage.db.insert(messageTable, data);
-    model.id = id;
-    await storage.db.update(
-      tableName,
-      {'updatedAt': DateTime.now().millisecondsSinceEpoch},
-      where: 'id = ?',
-      whereArgs: [model.roomId],
-    );
-    return id;
+      if ((model.speakerVoiceStyle == null ||
+              model.speakerVoiceStyle!.trim().isEmpty) &&
+          model.speakerId != null) {
+        final participants = await txn.query(
+          participantTable,
+          columns: ['voiceStyle'],
+          where: 'id = ?',
+          whereArgs: [model.speakerId],
+        );
+        if (participants.isNotEmpty) {
+          model.speakerVoiceStyle = participants.first['voiceStyle'] as String?;
+        }
+      }
+      if (model.nodeKey.trim().isEmpty) {
+        model.nodeKey = StoryMessageModel.newNodeKey();
+      }
+      final data = model.toJson()..remove('id');
+      final id = await txn.insert(messageTable, data);
+      model.id = id;
+      if (model.candidateGroupKey == null) {
+        model.candidateGroupKey = model.nodeKey;
+        await txn.update(
+          messageTable,
+          {'candidateGroupKey': model.candidateGroupKey},
+          where: 'id = ?',
+          whereArgs: [id],
+        );
+      }
+      await txn.update(
+        tableName,
+        {'activeMessageKey': model.nodeKey, 'updatedAt': now},
+        where: 'id = ?',
+        whereArgs: [model.roomId],
+      );
+      return id;
+    });
   }
 
   Future<List<StoryMessageModel>> getMessages(int roomId) async {
@@ -272,23 +377,176 @@ class StoryRoomDao implements ITable {
     return rows.map(StoryMessageModel.fromJson).toList();
   }
 
+  /// 从全量消息沿活动叶向上回溯；坏链只保留可安全到达的部分。
+  static List<StoryMessageModel> activePath(
+    Iterable<StoryMessageModel> messages,
+    String? activeMessageKey,
+  ) {
+    if (activeMessageKey == null || activeMessageKey.isEmpty) return const [];
+    final byNodeKey = <String, StoryMessageModel>{
+      for (final message in messages)
+        if (message.nodeKey.isNotEmpty) message.nodeKey: message,
+    };
+    final start = byNodeKey[activeMessageKey];
+    if (start == null) return const [];
+    var current = start;
+
+    final reversePath = <StoryMessageModel>[];
+    final visited = <String>{};
+    while (true) {
+      final nodeKey = current.nodeKey;
+      if (!visited.add(nodeKey)) break;
+      reversePath.add(current);
+      final parentNodeKey = current.parentNodeKey;
+      if (parentNodeKey == null || parentNodeKey.isEmpty) break;
+      final parent = byNodeKey[parentNodeKey];
+      if (parent == null || visited.contains(parentNodeKey)) break;
+      current = parent;
+    }
+    return reversePath.reversed.toList(growable: false);
+  }
+
+  Future<List<StoryMessageModel>> getActiveMessages(int roomId) async {
+    final room = await getRoom(roomId);
+    if (room == null) return const [];
+    return activePath(
+      await getMessages(roomId),
+      room.activeMessageKey,
+    );
+  }
+
+  Future<bool> activateMessage(int roomId, String nodeKey) async {
+    return storage.db.transaction((txn) async {
+      final messages = await txn.query(
+        messageTable,
+        columns: ['contextStateAfter'],
+        where: 'roomId = ? and nodeKey = ?',
+        whereArgs: [roomId, nodeKey],
+        limit: 1,
+      );
+      if (messages.isEmpty) return false;
+      await txn.update(
+        tableName,
+        {
+          'activeMessageKey': nodeKey,
+          'worldBookState':
+              messages.first['contextStateAfter'] as String? ?? '',
+          'updatedAt': DateTime.now().millisecondsSinceEpoch,
+        },
+        where: 'id = ?',
+        whereArgs: [roomId],
+      );
+      return true;
+    });
+  }
+
+  Future<List<StoryMessageModel>> getMessageVariants(
+    int roomId,
+    String candidateGroupKey,
+  ) async {
+    final rows = await storage.db.query(
+      messageTable,
+      where: 'roomId = ? and candidateGroupKey = ?',
+      whereArgs: [roomId, candidateGroupKey],
+      orderBy: 'id asc',
+    );
+    return rows.map(StoryMessageModel.fromJson).toList();
+  }
+
+  Future<void> deleteMessageSubtree(int roomId, String nodeKey) async {
+    await storage.db.transaction((txn) async {
+      final rows = await txn.query(
+        messageTable,
+        where: 'roomId = ?',
+        whereArgs: [roomId],
+        orderBy: 'id asc',
+      );
+      final messages = rows.map(StoryMessageModel.fromJson).toList();
+      final root = messages.where((message) => message.nodeKey == nodeKey);
+      if (root.isEmpty) return;
+
+      final children = <String, List<String>>{};
+      for (final message in messages) {
+        final parentNodeKey = message.parentNodeKey;
+        if (parentNodeKey != null && parentNodeKey.isNotEmpty) {
+          (children[parentNodeKey] ??= []).add(message.nodeKey);
+        }
+      }
+      final deletedNodeKeys = <String>{};
+      final pending = <String>[nodeKey];
+      while (pending.isNotEmpty) {
+        final currentNodeKey = pending.removeLast();
+        if (!deletedNodeKeys.add(currentNodeKey)) continue;
+        pending.addAll(children[currentNodeKey] ?? const []);
+      }
+
+      final rootParentNodeKey = root.single.parentNodeKey;
+      final nextActiveMessageKey = deletedNodeKeys.contains(rootParentNodeKey)
+          ? null
+          : rootParentNodeKey;
+      final parent = messages.where(
+        (message) => message.nodeKey == nextActiveMessageKey,
+      );
+      final nextWorldBookState =
+          parent.isEmpty ? '' : parent.single.contextStateAfter;
+      final now = DateTime.now().millisecondsSinceEpoch;
+      for (final deletedNodeKey in deletedNodeKeys) {
+        final message = messages.firstWhere(
+          (item) => item.nodeKey == deletedNodeKey,
+        );
+        await SyncTombstoneStore.record(
+          txn,
+          entity: 'story_message',
+          id: deletedNodeKey,
+          updatedAt: now,
+        );
+        await txn
+            .delete(messageTable, where: 'id = ?', whereArgs: [message.id]);
+      }
+      await txn.update(
+        tableName,
+        {
+          'activeMessageKey': nextActiveMessageKey,
+          'worldBookState': nextWorldBookState,
+          'updatedAt': now,
+        },
+        where: 'id = ?',
+        whereArgs: [roomId],
+      );
+    });
+  }
+
   Future<void> updateMessage(StoryMessageModel model) async {
     final id = model.id;
     if (id == null) throw ArgumentError('更新消息需要 id');
     model.updatedAt = DateTime.now().millisecondsSinceEpoch;
     final data = model.toJson()..remove('id');
-    await storage.db.update(
-      messageTable,
-      data,
-      where: 'id = ?',
-      whereArgs: [id],
-    );
-    await storage.db.update(
-      tableName,
-      {'updatedAt': DateTime.now().millisecondsSinceEpoch},
-      where: 'id = ?',
-      whereArgs: [model.roomId],
-    );
+    await storage.db.transaction((txn) async {
+      await txn.update(
+        messageTable,
+        data,
+        where: 'id = ?',
+        whereArgs: [id],
+      );
+      final rooms = await txn.query(
+        tableName,
+        columns: ['activeMessageKey'],
+        where: 'id = ?',
+        whereArgs: [model.roomId],
+        limit: 1,
+      );
+      final room = rooms.isEmpty ? null : rooms.first;
+      await txn.update(
+        tableName,
+        {
+          'updatedAt': model.updatedAt,
+          if (room?['activeMessageKey'] == model.nodeKey)
+            'worldBookState': model.contextStateAfter,
+        },
+        where: 'id = ?',
+        whereArgs: [model.roomId],
+      );
+    });
   }
 
   Future<void> deleteMessage(int id) async {
