@@ -8,6 +8,7 @@ import 'package:chatgpt_app_core/db/assistant_dao.dart';
 import 'package:chatgpt_app_core/db/hi_db_manager.dart';
 import 'package:chatgpt_app_core/model/ai_settings.dart';
 import 'package:chatgpt_app_core/model/assistant_model.dart';
+import 'package:chatgpt_app_core/model/world_book.dart';
 import 'package:chatgpt_app_core/provider/ai_settings_provider.dart';
 import 'package:chatgpt_app_core/util/avatar_asset_service.dart';
 import 'package:chatgpt_app_core/util/hi_dialog.dart';
@@ -951,6 +952,7 @@ class _AssistantEditPageState extends State<AssistantEditPage> {
     }
     setState(() => _saving = true);
     final model = widget.assistant ?? AssistantModel(name: name);
+    final memoryBook = _memoryBookCtl.text.trim();
     model
       ..name = name
       ..emoji = _emojiCtl.text.trim().isEmpty ? '🤖' : _emojiCtl.text.trim()
@@ -962,7 +964,10 @@ class _AssistantEditPageState extends State<AssistantEditPage> {
       ..description = _descriptionCtl.text.trim()
       ..openingMessage = _openingMessageCtl.text.trim()
       ..exampleDialogs = _exampleDialogsCtl.text.trim()
-      ..memoryBook = _memoryBookCtl.text.trim()
+      ..memoryBook = memoryBook
+      ..worldBookJson = WorldBookCodec.encode(
+        WorldBookCodec.decode(legacyText: memoryBook),
+      )
       ..defaultVoiceStyle = _defaultVoiceStyle.trim()
       ..avatarType = _avatarType
       ..avatarValue = _avatarValue

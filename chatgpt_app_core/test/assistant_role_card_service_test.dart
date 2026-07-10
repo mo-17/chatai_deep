@@ -2414,6 +2414,126 @@ void main() {
     final second = AssistantRoleCardService.uniqueImportName('旅人', batchNames);
     expect([first, second], ['旅人 (2)', '旅人 (3)']);
   });
+
+  test('Tavern 世界书高级触发字段结构化导入并可无损导出', () {
+    final imported = AssistantRoleCardService.importJson(jsonEncode({
+      'spec': 'chara_card_v2',
+      'data': {
+        'name': '艾琳',
+        'description': '守钟人。',
+        'first_mes': '钟声响了。',
+        'character_book': {
+          'entries': [
+            {
+              'keys': ['钟声'],
+              'secondary_keys': ['雨夜', '潮汐'],
+              'selective': true,
+              'content': '只有雨夜与潮汐同时出现时激活。',
+              'probability': 0,
+              'useProbability': false,
+              'group': 'bell',
+              'groupWeight': 25,
+              'groupOverride': true,
+              'useGroupScoring': true,
+              'selectiveLogic': 3,
+              'sticky': 2,
+              'cooldown': 3,
+              'delay': 2,
+              'characterFilter': {
+                'names': ['艾琳'],
+                'tags': [],
+                'isExclude': false,
+              },
+              'matchScenario': true,
+              'matchCreatorNotes': true,
+            },
+          ],
+        },
+      },
+    }));
+
+    expect(imported.worldBookJson, isNotEmpty);
+    final entry = AssistantRoleCardService.parseMemoryEntries(
+      imported.memoryBook,
+      structuredJson: imported.worldBookJson,
+    ).single;
+    expect(entry.probabilityEnabled, isFalse);
+    expect(entry.selectiveLogic, 3);
+    expect(entry.groupOverride, isTrue);
+    expect(entry.useGroupScoring, isTrue);
+    expect(entry.sticky, 2);
+    expect(entry.cooldown, 3);
+    expect(entry.delay, 2);
+    expect(entry.characterFilterNames, ['艾琳']);
+    expect(entry.matchScenario, isTrue);
+    expect(entry.matchCreatorNotes, isTrue);
+
+    final exported = jsonDecode(
+      AssistantRoleCardService.exportTavernV2Json(imported),
+    ) as Map<String, dynamic>;
+    final data = exported['data'] as Map<String, dynamic>;
+    final book = data['character_book'] as Map<String, dynamic>;
+    final exportedEntry =
+        (book['entries'] as List).single as Map<String, dynamic>;
+    expect(exportedEntry['useProbability'], isFalse);
+    expect(exportedEntry['selectiveLogic'], 3);
+    expect(exportedEntry['groupOverride'], isTrue);
+    expect(exportedEntry['useGroupScoring'], isTrue);
+    expect(exportedEntry['sticky'], 2);
+    expect(exportedEntry['cooldown'], 3);
+    expect(exportedEntry['delay'], 2);
+    expect(
+      (exportedEntry['characterFilter'] as Map<String, dynamic>)['names'],
+      ['艾琳'],
+    );
+  });
+
+  test('高级 matcher 执行 selective logic、角色过滤和 delay', () {
+    const book = '[prob=0] [prob_disabled] [group=bell] [group_override] '
+        '[logic=3] [delay=2] [characters=艾琳] [scenario] '
+        '[sec=雨夜|潮汐] 钟声 => 雨夜潮汐设定';
+
+    expect(
+      AssistantRoleCardService.matchMemoryEntries(
+        book,
+        '钟声 雨夜 潮汐',
+        characterName: '艾琳',
+        scenario: '港口',
+        messageCount: 1,
+      ),
+      isEmpty,
+    );
+    expect(
+      AssistantRoleCardService.matchMemoryEntries(
+        book,
+        '钟声 雨夜',
+        characterName: '艾琳',
+        scenario: '港口',
+        messageCount: 2,
+      ),
+      isEmpty,
+    );
+    expect(
+      AssistantRoleCardService.matchMemoryEntries(
+        book,
+        '钟声 雨夜 潮汐',
+        characterName: '其他角色',
+        scenario: '港口',
+        messageCount: 2,
+      ),
+      isEmpty,
+    );
+    expect(
+      AssistantRoleCardService.matchMemoryEntries(
+        book,
+        '钟声 雨夜 潮汐',
+        characterName: '艾琳',
+        scenario: '港口',
+        messageCount: 2,
+      ).single.content,
+      '雨夜潮汐设定',
+    );
+  });
 }
 
 List<int> _zipOf(Map<String, String> files) {

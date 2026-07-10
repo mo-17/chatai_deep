@@ -18,7 +18,7 @@ class StoryRoomDao implements ITable {
     await storage.db.execute(
         'create table if not exists tb_story_room (id integer primary key autoincrement'
         ', title text, mode text, replyMode text, maxAutoReplies integer'
-        ', publicContext text, modelProviderId text, modelId text'
+        ', publicContext text, worldBookState text, modelProviderId text, modelId text'
         ', temperature real, maxOutputTokens integer'
         ', createdAt integer, updatedAt integer)');
     await _ensureRoomColumns(storage);
@@ -78,6 +78,7 @@ class StoryRoomDao implements ITable {
       'modelId text',
       'temperature real',
       'maxOutputTokens integer',
+      'worldBookState text',
     ]) {
       try {
         await storage.db

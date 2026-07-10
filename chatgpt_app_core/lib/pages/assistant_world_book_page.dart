@@ -2,6 +2,7 @@ import 'package:chatgpt_app_core/chat/application/assistant_role_card_service.da
 import 'package:chatgpt_app_core/db/assistant_dao.dart';
 import 'package:chatgpt_app_core/db/hi_db_manager.dart';
 import 'package:chatgpt_app_core/model/assistant_model.dart';
+import 'package:chatgpt_app_core/model/world_book.dart';
 import 'package:chatgpt_app_core/util/hi_dialog.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -325,6 +326,7 @@ class _AssistantWorldBookPageState extends State<AssistantWorldBookPage> {
       }
       _reparse();
       widget.assistant.memoryBook = _normalizedMemoryBook();
+      _syncStructuredWorldBook();
     });
     await _saveAssistant(entry == null ? '已新增世界书设定' : '已更新世界书设定');
   }
@@ -350,6 +352,7 @@ class _AssistantWorldBookPageState extends State<AssistantWorldBookPage> {
       _lines.removeAt(entry.lineIndex);
       _reparse();
       widget.assistant.memoryBook = _normalizedMemoryBook();
+      _syncStructuredWorldBook();
     });
     await _saveAssistant('已删除世界书设定');
   }
@@ -389,46 +392,55 @@ class _AssistantWorldBookPageState extends State<AssistantWorldBookPage> {
       HiDialog.showSnackBar(context, '保存失败：$e');
     }
   }
+
+  void _syncStructuredWorldBook() {
+    widget.assistant.worldBookJson = WorldBookCodec.encode(
+      WorldBookCodec.decode(legacyText: widget.assistant.memoryBook),
+    );
+  }
 }
 
 class _WorldBookEntry {
   final int lineIndex;
-  final List<String> keywords;
-  final String content;
-  final bool enabled;
-  final int priority;
-  final List<String> excludeKeywords;
-  final List<String> secondaryKeywords;
-  final bool regex;
-  final bool caseSensitive;
-  final bool wholeWords;
-  final String position;
-  final int? depth;
-  final int? probability;
-  final bool excludeFromRecursion;
-  final String group;
-  final int groupWeight;
+  final WorldBookEntry value;
 
   const _WorldBookEntry({
     required this.lineIndex,
-    required this.keywords,
-    required this.content,
-    this.enabled = true,
-    this.priority = 0,
-    this.excludeKeywords = const [],
-    this.secondaryKeywords = const [],
-    this.regex = false,
-    this.caseSensitive = false,
-    this.wholeWords = false,
-    this.position = '',
-    this.depth,
-    this.probability,
-    this.excludeFromRecursion = false,
-    this.group = '',
-    this.groupWeight = 0,
+    required this.value,
   });
 
+  List<String> get keywords => value.keywords;
+  String get content => value.content;
+  bool get enabled => value.enabled;
+  int get priority => value.priority;
+  List<String> get excludeKeywords => value.excludeKeywords;
+  List<String> get secondaryKeywords => value.secondaryKeywords;
+  bool get regex => value.regex;
+  bool get caseSensitive => value.caseSensitive;
+  bool get wholeWords => value.wholeWords;
+  String get position => value.position;
+  int? get depth => value.depth;
+  int? get probability => value.probability;
+  bool get probabilityEnabled => value.probabilityEnabled;
+  bool get excludeFromRecursion => value.excludeFromRecursion;
+  String get group => value.group;
+  int get groupWeight => value.groupWeight;
+  bool get groupOverride => value.groupOverride;
+  bool get useGroupScoring => value.useGroupScoring;
+  WorldBookSelectiveLogic get selectiveLogic => value.selectiveLogic;
+  int get sticky => value.sticky;
+  int get cooldown => value.cooldown;
+  int get delay => value.delay;
+  List<String> get characterFilterNames => value.characterFilterNames;
+  bool get characterFilterExclude => value.characterFilterExclude;
+  bool get matchPersonaDescription => value.matchPersonaDescription;
+  bool get matchCharacterDescription => value.matchCharacterDescription;
+  bool get matchCharacterPersonality => value.matchCharacterPersonality;
+  bool get matchCharacterDepthPrompt => value.matchCharacterDepthPrompt;
+  bool get matchScenario => value.matchScenario;
+  bool get matchCreatorNotes => value.matchCreatorNotes;
   bool get alwaysOn => keywords.isEmpty;
+
   String get subtitle {
     final parts = <String>[
       enabled ? '启用' : '已禁用',
@@ -442,210 +454,38 @@ class _WorldBookEntry {
       if (position.isNotEmpty) '位置 $position',
       if (depth != null) '深度 $depth',
       if (probability != null) '概率 $probability%',
+      if (!probabilityEnabled) '概率关闭',
       if (excludeFromRecursion) '不递归',
       if (group.isNotEmpty) '组 $group',
       if (groupWeight != 0) '组权重 $groupWeight',
+      if (groupOverride) '组优先',
+      if (useGroupScoring) '组评分',
+      if (selectiveLogic != WorldBookSelectiveLogic.andAny)
+        '二级逻辑 ${_selectiveLogicLabel(selectiveLogic)}',
+      if (sticky > 0) '粘滞 $sticky 轮',
+      if (cooldown > 0) '冷却 $cooldown 轮',
+      if (delay > 0) '延迟 $delay 轮',
+      if (characterFilterNames.isNotEmpty)
+        '${characterFilterExclude ? '排除' : '限定'}角色 ${characterFilterNames.join(' / ')}',
     ];
     return parts.join(' · ');
   }
 
-  String toLine() {
-    final prefixes = <String>[
-      if (!enabled) '[off]',
-      if (regex) '[re]',
-      if (caseSensitive) '[cs]',
-      if (wholeWords) '[ww]',
-      if (secondaryKeywords.isNotEmpty) '[sec=${secondaryKeywords.join('|')}]',
-      if (priority != 0) '[p=$priority]',
-      if (excludeKeywords.isNotEmpty) '[exclude=${excludeKeywords.join('|')}]',
-      if (position.isNotEmpty) '[pos=$position]',
-      if (depth != null) '[depth=$depth]',
-      if (probability != null) '[prob=$probability]',
-      if (excludeFromRecursion) '[norec]',
-      if (group.isNotEmpty) '[group=$group]',
-      if (groupWeight != 0) '[gw=$groupWeight]',
-    ];
-    final keywordText = regex ? keywords.join(' || ') : keywords.join(', ');
-    final body = alwaysOn ? content : '$keywordText => $content';
-    return [...prefixes, body].join(' ');
-  }
+  String toLine() => value.toLine(preserveSource: false);
 
   static _WorldBookEntry? tryParse(String raw, int lineIndex) {
-    final line = raw.trim();
-    if (line.isEmpty || line.startsWith('#')) return null;
-    final meta = _parseMeta(line);
-    final body = meta.body;
-    final idx = body.indexOf('=>');
-    if (idx < 0) {
-      return _WorldBookEntry(
-        lineIndex: lineIndex,
-        keywords: const [],
-        content: body,
-        enabled: meta.enabled,
-        priority: meta.priority,
-        excludeKeywords: meta.excludeKeywords,
-        secondaryKeywords: meta.secondaryKeywords,
-        regex: meta.regex,
-        caseSensitive: meta.caseSensitive,
-        wholeWords: meta.wholeWords,
-        position: meta.position,
-        depth: meta.depth,
-        probability: meta.probability,
-        excludeFromRecursion: meta.excludeFromRecursion,
-        group: meta.group,
-        groupWeight: meta.groupWeight,
-      );
-    }
-    final content = body.substring(idx + 2).trim();
-    if (content.isEmpty) return null;
-    final keywords = _splitKeywords(body.substring(0, idx), regex: meta.regex);
-    if (keywords.isEmpty) return null;
-    return _WorldBookEntry(
-      lineIndex: lineIndex,
-      keywords: keywords,
-      content: content,
-      enabled: meta.enabled,
-      priority: meta.priority,
-      excludeKeywords: meta.excludeKeywords,
-      secondaryKeywords: meta.secondaryKeywords,
-      regex: meta.regex,
-      caseSensitive: meta.caseSensitive,
-      wholeWords: meta.wholeWords,
-      position: meta.position,
-      depth: meta.depth,
-      probability: meta.probability,
-      excludeFromRecursion: meta.excludeFromRecursion,
-      group: meta.group,
-      groupWeight: meta.groupWeight,
-    );
-  }
-
-  static _WorldBookMeta _parseMeta(String line) {
-    var rest = line.trim();
-    var enabled = true;
-    var priority = 0;
-    var excludeKeywords = const <String>[];
-    var secondaryKeywords = const <String>[];
-    var regex = false;
-    var caseSensitive = false;
-    var wholeWords = false;
-    var position = '';
-    int? depth;
-    int? probability;
-    var excludeFromRecursion = false;
-    var group = '';
-    var groupWeight = 0;
-    var changed = true;
-    while (changed && rest.startsWith('[')) {
-      changed = false;
-      final end = rest.indexOf(']');
-      if (end <= 0) break;
-      final rawTag = rest.substring(1, end).trim();
-      final tag = rawTag.toLowerCase();
-      if (tag == 'off' || tag == 'disabled') {
-        enabled = false;
-        rest = rest.substring(end + 1).trimLeft();
-        changed = true;
-      } else if (tag == 'on' || tag == 'enabled') {
-        enabled = true;
-        rest = rest.substring(end + 1).trimLeft();
-        changed = true;
-      } else if (tag.startsWith('p=')) {
-        priority = int.tryParse(tag.substring(2).trim()) ?? priority;
-        rest = rest.substring(end + 1).trimLeft();
-        changed = true;
-      } else if (tag == 're' || tag == 'regex') {
-        regex = true;
-        rest = rest.substring(end + 1).trimLeft();
-        changed = true;
-      } else if (tag == 'cs' || tag == 'case') {
-        caseSensitive = true;
-        rest = rest.substring(end + 1).trimLeft();
-        changed = true;
-      } else if (tag == 'ww' || tag == 'whole') {
-        wholeWords = true;
-        rest = rest.substring(end + 1).trimLeft();
-        changed = true;
-      } else if (tag.startsWith('sec=') || tag.startsWith('secondary=')) {
-        final rawValue = rawTag.substring(rawTag.indexOf('=') + 1);
-        secondaryKeywords = _splitKeywords(rawValue, regex: regex);
-        rest = rest.substring(end + 1).trimLeft();
-        changed = true;
-      } else if (tag.startsWith('exclude=') ||
-          tag.startsWith('excludes=') ||
-          tag.startsWith('exclude_keys=') ||
-          tag.startsWith('excludekeys=')) {
-        final rawValue = rawTag.substring(rawTag.indexOf('=') + 1);
-        excludeKeywords = _splitKeywords(rawValue);
-        rest = rest.substring(end + 1).trimLeft();
-        changed = true;
-      } else if (tag.startsWith('pos=') || tag.startsWith('position=')) {
-        position = rawTag.substring(rawTag.indexOf('=') + 1).trim();
-        rest = rest.substring(end + 1).trimLeft();
-        changed = true;
-      } else if (tag.startsWith('depth=')) {
-        depth = int.tryParse(tag.substring(6).trim()) ?? depth;
-        rest = rest.substring(end + 1).trimLeft();
-        changed = true;
-      } else if (tag.startsWith('prob=') || tag.startsWith('probability=')) {
-        probability =
-            int.tryParse(rawTag.substring(rawTag.indexOf('=') + 1).trim()) ??
-                probability;
-        rest = rest.substring(end + 1).trimLeft();
-        changed = true;
-      } else if (tag == 'norec' ||
-          tag == 'nonrec' ||
-          tag == 'no_recursion' ||
-          tag == 'exclude_recursion' ||
-          tag == 'prevent_recursion') {
-        excludeFromRecursion = true;
-        rest = rest.substring(end + 1).trimLeft();
-        changed = true;
-      } else if (tag.startsWith('group=')) {
-        group = rawTag.substring(rawTag.indexOf('=') + 1).trim();
-        rest = rest.substring(end + 1).trimLeft();
-        changed = true;
-      } else if (tag.startsWith('gw=') || tag.startsWith('groupweight=')) {
-        groupWeight =
-            int.tryParse(rawTag.substring(rawTag.indexOf('=') + 1).trim()) ??
-                groupWeight;
-        rest = rest.substring(end + 1).trimLeft();
-        changed = true;
-      }
-    }
-    return _WorldBookMeta(
-      body: rest,
-      enabled: enabled,
-      priority: priority,
-      excludeKeywords: excludeKeywords,
-      secondaryKeywords: secondaryKeywords,
-      regex: regex,
-      caseSensitive: caseSensitive,
-      wholeWords: wholeWords,
-      position: position,
-      depth: depth,
-      probability: probability,
-      excludeFromRecursion: excludeFromRecursion,
-      group: group,
-      groupWeight: groupWeight,
-    );
-  }
-
-  static List<String> _splitKeywords(String raw, {bool regex = false}) {
-    if (regex) {
-      return raw
-          .split(RegExp(r'\s*\|\|\s*'))
-          .map((item) => item.trim())
-          .where((item) => item.isNotEmpty)
-          .toList();
-    }
-    return raw
-        .split(RegExp(r'[,，、|/]+'))
-        .map((item) => item.trim())
-        .where((item) => item.isNotEmpty)
-        .toList();
+    final value = WorldBookEntry.tryParse(raw, id: 'legacy-$lineIndex');
+    if (value == null) return null;
+    return _WorldBookEntry(lineIndex: lineIndex, value: value);
   }
 }
+
+String _selectiveLogicLabel(WorldBookSelectiveLogic value) => switch (value) {
+      WorldBookSelectiveLogic.andAny => '任一匹配',
+      WorldBookSelectiveLogic.notAll => '不全部匹配',
+      WorldBookSelectiveLogic.notAny => '均不匹配',
+      WorldBookSelectiveLogic.andAll => '全部匹配',
+    };
 
 class _WorldBookEditResult {
   final String keywords;
@@ -663,6 +503,21 @@ class _WorldBookEditResult {
   final bool excludeFromRecursion;
   final String group;
   final int groupWeight;
+  final bool probabilityEnabled;
+  final bool groupOverride;
+  final bool useGroupScoring;
+  final WorldBookSelectiveLogic selectiveLogic;
+  final int sticky;
+  final int cooldown;
+  final int delay;
+  final List<String> characterFilterNames;
+  final bool characterFilterExclude;
+  final bool matchPersonaDescription;
+  final bool matchCharacterDescription;
+  final bool matchCharacterPersonality;
+  final bool matchCharacterDepthPrompt;
+  final bool matchScenario;
+  final bool matchCreatorNotes;
 
   const _WorldBookEditResult({
     required this.keywords,
@@ -680,81 +535,65 @@ class _WorldBookEditResult {
     this.excludeFromRecursion = false,
     this.group = '',
     this.groupWeight = 0,
+    this.probabilityEnabled = true,
+    this.groupOverride = false,
+    this.useGroupScoring = false,
+    this.selectiveLogic = WorldBookSelectiveLogic.andAny,
+    this.sticky = 0,
+    this.cooldown = 0,
+    this.delay = 0,
+    this.characterFilterNames = const [],
+    this.characterFilterExclude = false,
+    this.matchPersonaDescription = false,
+    this.matchCharacterDescription = false,
+    this.matchCharacterPersonality = false,
+    this.matchCharacterDepthPrompt = false,
+    this.matchScenario = false,
+    this.matchCreatorNotes = false,
   });
 
   String toLine() {
-    final k = keywords.trim();
-    final c = content.trim();
-    final prefixes = <String>[
-      if (!enabled) '[off]',
-      if (regex) '[re]',
-      if (caseSensitive) '[cs]',
-      if (wholeWords) '[ww]',
-      if (secondaryKeywords.isNotEmpty) '[sec=${secondaryKeywords.join('|')}]',
-      if (priority != 0) '[p=$priority]',
-      if (excludeKeywords.trim().isNotEmpty)
-        '[exclude=${_normalizeKeywordList(excludeKeywords)}]',
-      if (position.trim().isNotEmpty) '[pos=${position.trim()}]',
-      if (depth != null) '[depth=$depth]',
-      if (probability != null) '[prob=$probability]',
-      if (excludeFromRecursion) '[norec]',
-      if (group.trim().isNotEmpty) '[group=${group.trim()}]',
-      if (groupWeight != 0) '[gw=$groupWeight]',
-    ];
-    final keywordText = regex ? _normalizeRegexKeywordList(k) : k;
-    final body = keywordText.isEmpty ? c : '$keywordText => $c';
-    return [...prefixes, body].join(' ');
+    return WorldBookEntry(
+      keywords: _splitList(keywords, regex: regex),
+      content: content.trim(),
+      enabled: enabled,
+      priority: priority,
+      excludeKeywords: _splitList(excludeKeywords),
+      secondaryKeywords: secondaryKeywords,
+      regex: regex,
+      caseSensitive: caseSensitive,
+      wholeWords: wholeWords,
+      position: position.trim(),
+      depth: depth,
+      probability: probability,
+      probabilityEnabled: probabilityEnabled,
+      excludeFromRecursion: excludeFromRecursion,
+      group: group.trim(),
+      groupWeight: groupWeight,
+      groupOverride: groupOverride,
+      useGroupScoring: useGroupScoring,
+      selectiveLogic: selectiveLogic,
+      sticky: sticky,
+      cooldown: cooldown,
+      delay: delay,
+      characterFilterNames: characterFilterNames,
+      characterFilterExclude: characterFilterExclude,
+      matchPersonaDescription: matchPersonaDescription,
+      matchCharacterDescription: matchCharacterDescription,
+      matchCharacterPersonality: matchCharacterPersonality,
+      matchCharacterDepthPrompt: matchCharacterDepthPrompt,
+      matchScenario: matchScenario,
+      matchCreatorNotes: matchCreatorNotes,
+    ).toLine(preserveSource: false);
   }
 
-  String _normalizeRegexKeywordList(String raw) {
+  List<String> _splitList(String raw, {bool regex = false}) {
     return raw
-        .split(RegExp(r'\s*\|\|\s*|[,，、/]+'))
+        .split(regex ? RegExp(r'\s*\|\|\s*|[,，、/]+') : RegExp(r'[,，、|/]+'))
         .map((item) => item.trim())
         .where((item) => item.isNotEmpty)
-        .join(' || ');
+        .toList();
   }
-
-  String _normalizeKeywordList(String raw) {
-    return raw
-        .split(RegExp(r'[,，、|/]+'))
-        .map((item) => item.trim())
-        .where((item) => item.isNotEmpty)
-        .join('|');
-  }
-}
-
-class _WorldBookMeta {
-  final String body;
-  final bool enabled;
-  final int priority;
-  final List<String> excludeKeywords;
-  final List<String> secondaryKeywords;
-  final bool regex;
-  final bool caseSensitive;
-  final bool wholeWords;
-  final String position;
-  final int? depth;
-  final int? probability;
-  final bool excludeFromRecursion;
-  final String group;
-  final int groupWeight;
-
-  const _WorldBookMeta({
-    required this.body,
-    required this.enabled,
-    required this.priority,
-    this.excludeKeywords = const [],
-    this.secondaryKeywords = const [],
-    this.regex = false,
-    this.caseSensitive = false,
-    this.wholeWords = false,
-    this.position = '',
-    this.depth,
-    this.probability,
-    this.excludeFromRecursion = false,
-    this.group = '',
-    this.groupWeight = 0,
-  });
 }
 
 class _WorldBookEditDialog extends StatefulWidget {
@@ -773,7 +612,29 @@ class _WorldBookEditDialogState extends State<_WorldBookEditDialog> {
   late final TextEditingController _priorityCtl;
   late final TextEditingController _depthCtl;
   late final TextEditingController _probabilityCtl;
+  late final TextEditingController _secondaryCtl;
+  late final TextEditingController _groupCtl;
+  late final TextEditingController _groupWeightCtl;
+  late final TextEditingController _stickyCtl;
+  late final TextEditingController _cooldownCtl;
+  late final TextEditingController _delayCtl;
+  late final TextEditingController _charactersCtl;
   late bool _enabled;
+  late bool _regex;
+  late bool _caseSensitive;
+  late bool _wholeWords;
+  late bool _probabilityEnabled;
+  late bool _excludeFromRecursion;
+  late bool _groupOverride;
+  late bool _useGroupScoring;
+  late bool _characterFilterExclude;
+  late bool _matchPersonaDescription;
+  late bool _matchCharacterDescription;
+  late bool _matchCharacterPersonality;
+  late bool _matchCharacterDepthPrompt;
+  late bool _matchScenario;
+  late bool _matchCreatorNotes;
+  late WorldBookSelectiveLogic _selectiveLogic;
   late String _position;
   String? _contentError;
 
@@ -790,7 +651,37 @@ class _WorldBookEditDialogState extends State<_WorldBookEditDialog> {
     _depthCtl = TextEditingController(text: '${widget.entry?.depth ?? ''}');
     _probabilityCtl =
         TextEditingController(text: '${widget.entry?.probability ?? ''}');
+    _secondaryCtl = TextEditingController(
+        text: widget.entry?.secondaryKeywords.join(', ') ?? '');
+    _groupCtl = TextEditingController(text: widget.entry?.group ?? '');
+    _groupWeightCtl =
+        TextEditingController(text: '${widget.entry?.groupWeight ?? 0}');
+    _stickyCtl = TextEditingController(text: '${widget.entry?.sticky ?? 0}');
+    _cooldownCtl =
+        TextEditingController(text: '${widget.entry?.cooldown ?? 0}');
+    _delayCtl = TextEditingController(text: '${widget.entry?.delay ?? 0}');
+    _charactersCtl = TextEditingController(
+        text: widget.entry?.characterFilterNames.join(', ') ?? '');
     _enabled = widget.entry?.enabled ?? true;
+    _regex = widget.entry?.regex ?? false;
+    _caseSensitive = widget.entry?.caseSensitive ?? false;
+    _wholeWords = widget.entry?.wholeWords ?? false;
+    _probabilityEnabled = widget.entry?.probabilityEnabled ?? true;
+    _excludeFromRecursion = widget.entry?.excludeFromRecursion ?? false;
+    _groupOverride = widget.entry?.groupOverride ?? false;
+    _useGroupScoring = widget.entry?.useGroupScoring ?? false;
+    _characterFilterExclude = widget.entry?.characterFilterExclude ?? false;
+    _matchPersonaDescription = widget.entry?.matchPersonaDescription ?? false;
+    _matchCharacterDescription =
+        widget.entry?.matchCharacterDescription ?? false;
+    _matchCharacterPersonality =
+        widget.entry?.matchCharacterPersonality ?? false;
+    _matchCharacterDepthPrompt =
+        widget.entry?.matchCharacterDepthPrompt ?? false;
+    _matchScenario = widget.entry?.matchScenario ?? false;
+    _matchCreatorNotes = widget.entry?.matchCreatorNotes ?? false;
+    _selectiveLogic =
+        widget.entry?.selectiveLogic ?? WorldBookSelectiveLogic.andAny;
     _position = widget.entry?.position ?? '';
   }
 
@@ -802,6 +693,13 @@ class _WorldBookEditDialogState extends State<_WorldBookEditDialog> {
     _priorityCtl.dispose();
     _depthCtl.dispose();
     _probabilityCtl.dispose();
+    _secondaryCtl.dispose();
+    _groupCtl.dispose();
+    _groupWeightCtl.dispose();
+    _stickyCtl.dispose();
+    _cooldownCtl.dispose();
+    _delayCtl.dispose();
+    _charactersCtl.dispose();
     super.dispose();
   }
 
@@ -829,6 +727,8 @@ class _WorldBookEditDialogState extends State<_WorldBookEditDialog> {
                 border: OutlineInputBorder(),
               ),
             ),
+            const SizedBox(height: 12),
+            _advancedTriggerSection,
             const SizedBox(height: 12),
             TextField(
               controller: _excludeCtl,
@@ -918,6 +818,173 @@ class _WorldBookEditDialogState extends State<_WorldBookEditDialog> {
     );
   }
 
+  Widget get _advancedTriggerSection => ExpansionTile(
+        tilePadding: EdgeInsets.zero,
+        childrenPadding: const EdgeInsets.only(bottom: 4),
+        title: const Text('高级触发'),
+        subtitle: const Text('二级逻辑、组竞争、持续效果和角色过滤'),
+        children: [
+          TextField(
+            controller: _secondaryCtl,
+            decoration: const InputDecoration(
+              labelText: '二级关键词',
+              hintText: '多个关键词用逗号分隔',
+              border: OutlineInputBorder(),
+            ),
+          ),
+          const SizedBox(height: 12),
+          DropdownButtonFormField<WorldBookSelectiveLogic>(
+            initialValue: _selectiveLogic,
+            decoration: const InputDecoration(
+              labelText: '二级关键词逻辑',
+              border: OutlineInputBorder(),
+            ),
+            items: [
+              for (final logic in WorldBookSelectiveLogic.values)
+                DropdownMenuItem(
+                  value: logic,
+                  child: Text(_selectiveLogicLabel(logic)),
+                ),
+            ],
+            onChanged: (value) => setState(() =>
+                _selectiveLogic = value ?? WorldBookSelectiveLogic.andAny),
+          ),
+          const SizedBox(height: 8),
+          CheckboxListTile(
+            contentPadding: EdgeInsets.zero,
+            value: _regex,
+            title: const Text('主关键词使用正则表达式'),
+            onChanged: (value) => setState(() => _regex = value ?? false),
+          ),
+          CheckboxListTile(
+            contentPadding: EdgeInsets.zero,
+            value: _caseSensitive,
+            title: const Text('区分大小写'),
+            onChanged: (value) =>
+                setState(() => _caseSensitive = value ?? false),
+          ),
+          CheckboxListTile(
+            contentPadding: EdgeInsets.zero,
+            value: _wholeWords,
+            title: const Text('仅匹配完整单词'),
+            onChanged: (value) => setState(() => _wholeWords = value ?? false),
+          ),
+          SwitchListTile(
+            contentPadding: EdgeInsets.zero,
+            value: _probabilityEnabled,
+            title: const Text('启用概率判定'),
+            onChanged: (value) => setState(() => _probabilityEnabled = value),
+          ),
+          TextField(
+            controller: _groupCtl,
+            decoration: const InputDecoration(
+              labelText: '包含组',
+              hintText: '同组只选一条；多个组用逗号分隔',
+              border: OutlineInputBorder(),
+            ),
+          ),
+          const SizedBox(height: 12),
+          TextField(
+            controller: _groupWeightCtl,
+            keyboardType: TextInputType.number,
+            decoration: const InputDecoration(
+              labelText: '组权重',
+              hintText: '默认 0',
+              border: OutlineInputBorder(),
+            ),
+          ),
+          CheckboxListTile(
+            contentPadding: EdgeInsets.zero,
+            value: _groupOverride,
+            title: const Text('组内优先选择最高优先级'),
+            onChanged: (value) =>
+                setState(() => _groupOverride = value ?? false),
+          ),
+          CheckboxListTile(
+            contentPadding: EdgeInsets.zero,
+            value: _useGroupScoring,
+            title: const Text('按关键词命中分数选择组内条目'),
+            onChanged: (value) =>
+                setState(() => _useGroupScoring = value ?? false),
+          ),
+          Row(
+            children: [
+              Expanded(child: _turnField(_delayCtl, '延迟')),
+              const SizedBox(width: 8),
+              Expanded(child: _turnField(_stickyCtl, '粘滞')),
+              const SizedBox(width: 8),
+              Expanded(child: _turnField(_cooldownCtl, '冷却')),
+            ],
+          ),
+          const SizedBox(height: 12),
+          TextField(
+            controller: _charactersCtl,
+            decoration: const InputDecoration(
+              labelText: '角色过滤',
+              hintText: '角色名用逗号分隔；留空不限制',
+              border: OutlineInputBorder(),
+            ),
+          ),
+          SwitchListTile(
+            contentPadding: EdgeInsets.zero,
+            value: _characterFilterExclude,
+            title: const Text('将上述角色作为排除名单'),
+            onChanged: (value) =>
+                setState(() => _characterFilterExclude = value),
+          ),
+          CheckboxListTile(
+            contentPadding: EdgeInsets.zero,
+            value: _excludeFromRecursion,
+            title: const Text('不参与递归触发'),
+            onChanged: (value) =>
+                setState(() => _excludeFromRecursion = value ?? false),
+          ),
+          const Align(
+            alignment: Alignment.centerLeft,
+            child: Padding(
+              padding: EdgeInsets.only(top: 8, bottom: 4),
+              child: Text('额外扫描角色卡字段'),
+            ),
+          ),
+          _matchFieldTile('用户人设', _matchPersonaDescription,
+              (value) => _matchPersonaDescription = value),
+          _matchFieldTile('角色简介', _matchCharacterDescription,
+              (value) => _matchCharacterDescription = value),
+          _matchFieldTile('角色性格', _matchCharacterPersonality,
+              (value) => _matchCharacterPersonality = value),
+          _matchFieldTile('深度提示词', _matchCharacterDepthPrompt,
+              (value) => _matchCharacterDepthPrompt = value),
+          _matchFieldTile(
+              '场景', _matchScenario, (value) => _matchScenario = value),
+          _matchFieldTile('创建者备注', _matchCreatorNotes,
+              (value) => _matchCreatorNotes = value),
+        ],
+      );
+
+  Widget _turnField(TextEditingController controller, String label) =>
+      TextField(
+        controller: controller,
+        keyboardType: TextInputType.number,
+        decoration: InputDecoration(
+          labelText: label,
+          suffixText: '轮',
+          border: const OutlineInputBorder(),
+        ),
+      );
+
+  Widget _matchFieldTile(
+    String title,
+    bool value,
+    ValueChanged<bool> update,
+  ) =>
+      CheckboxListTile(
+        dense: true,
+        contentPadding: EdgeInsets.zero,
+        value: value,
+        title: Text(title),
+        onChanged: (next) => setState(() => update(next ?? false)),
+      );
+
   void _save() {
     if (_contentCtl.text.trim().isEmpty) {
       setState(() => _contentError = '请填写设定内容');
@@ -931,16 +998,31 @@ class _WorldBookEditDialogState extends State<_WorldBookEditDialog> {
         enabled: _enabled,
         priority: int.tryParse(_priorityCtl.text.trim()) ?? 0,
         excludeKeywords: _excludeCtl.text,
-        secondaryKeywords: widget.entry?.secondaryKeywords ?? const [],
-        regex: widget.entry?.regex ?? false,
-        caseSensitive: widget.entry?.caseSensitive ?? false,
-        wholeWords: widget.entry?.wholeWords ?? false,
+        secondaryKeywords: _splitKeywords(_secondaryCtl.text),
+        regex: _regex,
+        caseSensitive: _caseSensitive,
+        wholeWords: _wholeWords,
         position: _position,
         depth: _optionalInt(_depthCtl.text),
         probability: _optionalClampedInt(_probabilityCtl.text, 0, 100),
-        excludeFromRecursion: widget.entry?.excludeFromRecursion ?? false,
-        group: widget.entry?.group ?? '',
-        groupWeight: widget.entry?.groupWeight ?? 0,
+        probabilityEnabled: _probabilityEnabled,
+        excludeFromRecursion: _excludeFromRecursion,
+        group: _groupCtl.text,
+        groupWeight: int.tryParse(_groupWeightCtl.text.trim()) ?? 0,
+        groupOverride: _groupOverride,
+        useGroupScoring: _useGroupScoring,
+        selectiveLogic: _selectiveLogic,
+        sticky: _nonNegativeInt(_stickyCtl.text),
+        cooldown: _nonNegativeInt(_cooldownCtl.text),
+        delay: _nonNegativeInt(_delayCtl.text),
+        characterFilterNames: _splitKeywords(_charactersCtl.text),
+        characterFilterExclude: _characterFilterExclude,
+        matchPersonaDescription: _matchPersonaDescription,
+        matchCharacterDescription: _matchCharacterDescription,
+        matchCharacterPersonality: _matchCharacterPersonality,
+        matchCharacterDepthPrompt: _matchCharacterDepthPrompt,
+        matchScenario: _matchScenario,
+        matchCreatorNotes: _matchCreatorNotes,
       ),
     );
   }
@@ -956,4 +1038,15 @@ class _WorldBookEditDialogState extends State<_WorldBookEditDialog> {
     if (parsed == null) return null;
     return parsed.clamp(min, max);
   }
+
+  int _nonNegativeInt(String value) {
+    final parsed = int.tryParse(value.trim()) ?? 0;
+    return parsed < 0 ? 0 : parsed;
+  }
+
+  List<String> _splitKeywords(String raw) => raw
+      .split(RegExp(r'[,，、|/]+'))
+      .map((item) => item.trim())
+      .where((item) => item.isNotEmpty)
+      .toList();
 }

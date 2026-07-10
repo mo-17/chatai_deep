@@ -49,16 +49,21 @@ class ConversationRoleContextPreview {
     if (assistant == null) return '当前会话未绑定角色';
     final lines = <String>[];
     final prompt = assistant.prompt.trim();
-    final memoryBook = assistant.memoryBook.trim();
+    final hasWorldBook = assistant.memoryBook.trim().isNotEmpty ||
+        assistant.worldBookJson.trim().isNotEmpty;
     final List<AssistantMemoryEntryPreview> memoryHits =
         userInput.trim().isEmpty
             ? const []
             : AssistantRoleCardService.matchMemoryEntries(
                 assistant.memoryBook,
                 userInput,
+                structuredJson: assistant.worldBookJson,
+                characterName: assistant.name,
+                characterDescription: assistant.prompt,
+                creatorNotes: assistant.description,
               );
     lines.add(prompt.isEmpty ? '角色卡：未设置系统提示词' : '角色卡：会注入系统提示词');
-    if (memoryBook.isEmpty) {
+    if (!hasWorldBook) {
       lines.add('世界书：未配置');
     } else if (userInput.trim().isEmpty) {
       lines.add('世界书：会按输入命中注入');
@@ -72,6 +77,10 @@ class ConversationRoleContextPreview {
       final budget = AssistantMemoryBook.budgetContext(
         assistant.memoryBook,
         userInput,
+        structuredJson: assistant.worldBookJson,
+        characterName: assistant.name,
+        characterDescription: assistant.prompt,
+        creatorNotes: assistant.description,
       );
       if (budget.affected) {
         lines.add('世界书预算：${budget.compactSummary}');

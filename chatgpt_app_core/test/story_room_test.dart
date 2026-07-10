@@ -38,6 +38,7 @@ void main() {
         replyMode: StoryReplyMode.autoMulti,
         maxAutoReplies: 3,
         publicContext: '现代奇幻',
+        worldBookState: '{"activations":[]}',
         modelProviderId: 'deepseek',
         modelId: 'deepseek-v4-pro',
         temperature: 0.7,
@@ -89,6 +90,7 @@ void main() {
       expect(savedRoom?.mode, StoryRoomMode.tavern);
       expect(savedRoom?.replyMode, StoryReplyMode.autoMulti);
       expect(savedRoom?.maxAutoReplies, 3);
+      expect(savedRoom?.worldBookState, '{"activations":[]}');
       expect(savedRoom?.modelProviderId, 'deepseek');
       expect(savedRoom?.modelId, 'deepseek-v4-pro');
       expect(savedRoom?.temperature, 0.7);
@@ -1539,6 +1541,68 @@ void main() {
       expect(system, contains('speakerId=2'));
       expect(system, contains('只输出 JSON'));
       expect(StorySpeakerScheduler.promptFor('你好'), contains('用户最新输入'));
+    });
+
+    test('酒馆世界书 sticky cooldown delay 跨轮生效且回退消息会清理未来状态', () {
+      final room = StoryRoomModel(
+        id: 1,
+        title: '钟楼',
+        mode: StoryRoomMode.tavern,
+        publicContext: '''
+【关键词记忆 / 世界书】
+[sticky=2] [cooldown=2] [delay=2] 钟声 => 钟楼暗门已经开启。
+''',
+      );
+      final speaker = StoryParticipantModel(
+        id: 2,
+        roomId: 1,
+        role: StoryParticipantRole.assistant,
+        name: '艾琳',
+      );
+      StoryMessageModel message(int index) => StoryMessageModel(
+            id: index,
+            roomId: 1,
+            speakerRole: 'user',
+            speakerName: '我',
+            content: '历史 $index',
+          );
+
+      final first = StoryContextBuilder.buildSystemPrompt(
+        room: room,
+        participants: [speaker],
+        speaker: speaker,
+        latestInput: '我听见钟声',
+        recentMessages: [message(1)],
+      );
+      expect(first.prompt, contains('钟楼暗门已经开启'));
+      room.worldBookState = jsonEncode(first.worldBookState.toJson());
+
+      final sticky = StoryContextBuilder.buildSystemPrompt(
+        room: room,
+        participants: [speaker],
+        speaker: speaker,
+        latestInput: '现在很安静',
+        recentMessages: [message(1), message(2)],
+      );
+      expect(sticky.prompt, contains('钟楼暗门已经开启'));
+
+      final cooldown = StoryContextBuilder.buildSystemPrompt(
+        room: room,
+        participants: [speaker],
+        speaker: speaker,
+        latestInput: '钟声再次响起',
+        recentMessages: [message(1), message(2), message(3), message(4)],
+      );
+      expect(cooldown.prompt, isNot(contains('钟楼暗门已经开启')));
+
+      final rolledBack = StoryContextBuilder.buildSystemPrompt(
+        room: room,
+        participants: [speaker],
+        speaker: speaker,
+        latestInput: '没有关键词',
+      );
+      expect(rolledBack.prompt, isNot(contains('钟楼暗门已经开启')));
+      expect(rolledBack.worldBookState.activations, isEmpty);
     });
 
     test('群聊轮换提示词要求 speakerIds', () {

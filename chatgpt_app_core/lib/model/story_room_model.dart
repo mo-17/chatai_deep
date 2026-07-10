@@ -7,6 +7,7 @@ class StoryRoomModel {
   String replyMode;
   int maxAutoReplies;
   String publicContext;
+  String worldBookState;
   String? modelProviderId;
   String? modelId;
   double? temperature;
@@ -21,6 +22,7 @@ class StoryRoomModel {
     String? replyMode,
     this.maxAutoReplies = 1,
     this.publicContext = '',
+    this.worldBookState = '',
     this.modelProviderId,
     this.modelId,
     this.temperature,
@@ -38,6 +40,7 @@ class StoryRoomModel {
         replyMode: StoryReplyMode.normalize(json['replyMode'] as String?),
         maxAutoReplies: _safeMaxAutoReplies(json['maxAutoReplies']),
         publicContext: json['publicContext'] as String? ?? '',
+        worldBookState: json['worldBookState'] as String? ?? '',
         modelProviderId: json['modelProviderId'] as String?,
         modelId: json['modelId'] as String?,
         temperature: (json['temperature'] as num?)?.toDouble(),
@@ -53,6 +56,7 @@ class StoryRoomModel {
         'replyMode': replyMode,
         'maxAutoReplies': maxAutoReplies.clamp(1, 3),
         'publicContext': publicContext,
+        'worldBookState': worldBookState,
         'modelProviderId': modelProviderId,
         'modelId': modelId,
         'temperature': temperature,

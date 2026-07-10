@@ -33,6 +33,7 @@ void main() {
         openingMessage: '把要翻译的内容发给我。',
         exampleDialogs: '用户：hello\n助手：你好',
         memoryBook: '术语 => 一律把 Flutter 翻译为 Flutter，不翻成颤振',
+        worldBookJson: '{"entries":[]}',
         defaultVoiceStyle: 'female',
         providerId: 'openai',
         model: 'gpt-4o',
@@ -53,6 +54,7 @@ void main() {
       expect(restored.openingMessage, '把要翻译的内容发给我。');
       expect(restored.exampleDialogs, '用户：hello\n助手：你好');
       expect(restored.memoryBook, '术语 => 一律把 Flutter 翻译为 Flutter，不翻成颤振');
+      expect(restored.worldBookJson, '{"entries":[]}');
       expect(restored.defaultVoiceStyle, 'female');
       expect(restored.providerId, 'openai');
       expect(restored.model, 'gpt-4o');
@@ -72,6 +74,7 @@ void main() {
       expect(a.openingMessage, '');
       expect(a.exampleDialogs, '');
       expect(a.memoryBook, '');
+      expect(a.worldBookJson, '');
       expect(a.defaultVoiceStyle, '');
     });
 
@@ -513,6 +516,7 @@ void main() {
         openingMessage: '贴代码给我。',
         exampleDialogs: '用户：review\n助手：先看风险。',
         memoryBook: 'repo => 当前仓库只用 provider',
+        worldBookJson: '{"entries":[{"content":"只用 provider"}]}',
         defaultVoiceStyle: 'sherpa_matcha_zh_baker',
         avatarType: 'image',
         avatarValue: '/tmp/reviewer.png',
@@ -535,6 +539,7 @@ void main() {
       expect(loaded.openingMessage, '贴代码给我。');
       expect(loaded.exampleDialogs, '用户：review\n助手：先看风险。');
       expect(loaded.memoryBook, 'repo => 当前仓库只用 provider');
+      expect(loaded.worldBookJson, '{"entries":[{"content":"只用 provider"}]}');
       expect(loaded.defaultVoiceStyle, 'sherpa_matcha_zh_baker');
       expect(loaded.avatarType, 'image');
       expect(loaded.avatarValue, '/tmp/reviewer.png');
@@ -583,6 +588,7 @@ void main() {
         openingMessage: '你好',
         exampleDialogs: '示例',
         memoryBook: '关键词 => 设定',
+        worldBookJson: '{"entries":[]}',
         defaultVoiceStyle: 'female',
         avatarType: 'image',
         avatarValue: '/tmp/role.png',
@@ -594,6 +600,7 @@ void main() {
       expect(loaded.openingMessage, '你好');
       expect(loaded.exampleDialogs, '示例');
       expect(loaded.memoryBook, '关键词 => 设定');
+      expect(loaded.worldBookJson, '{"entries":[]}');
       expect(loaded.defaultVoiceStyle, 'female');
       expect(loaded.avatarType, 'image');
       expect(loaded.avatarValue, '/tmp/role.png');

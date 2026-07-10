@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:convert';
 import 'dart:io';
 
 import 'package:chatgpt_app_core/chat/application/story_room_attachments.dart';
@@ -1847,13 +1848,14 @@ class _StoryRoomPageState extends State<StoryRoomPage> {
   }) async {
     final speakerSettings =
         StoryParticipantSettingsResolver.apply(settings, speaker);
-    final system = StoryContextBuilder.systemPrompt(
+    final contextResult = StoryContextBuilder.buildSystemPrompt(
       room: widget.room,
       participants: _participants,
       speaker: speaker,
       latestInput: input,
       recentMessages: historyMessages,
     );
+    final system = contextResult.prompt;
     final history = [
       {'role': 'system', 'content': system},
       ...StoryContextBuilder.history(
@@ -1988,6 +1990,12 @@ class _StoryRoomPageState extends State<StoryRoomPage> {
     }
     message.content = text;
     await dao.saveMessage(message);
+    final nextWorldBookState =
+        jsonEncode(contextResult.worldBookState.toJson());
+    if (widget.room.worldBookState != nextWorldBookState) {
+      widget.room.worldBookState = nextWorldBookState;
+      await dao.saveRoom(widget.room);
+    }
     await _recordUsage(
       settings: speakerSettings,
       prompt: _usagePromptText(

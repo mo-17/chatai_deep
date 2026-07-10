@@ -31,7 +31,7 @@ class AssistantDao implements IAssistant, ITable {
         'create table if not exists $_kTableName (id integer primary key autoincrement'
         ', name text, emoji text, avatarType text, avatarValue text'
         ', prompt text, description text'
-        ', openingMessage text, exampleDialogs text, memoryBook text, roleCardAssets text'
+        ', openingMessage text, exampleDialogs text, memoryBook text, worldBookJson text, roleCardAssets text'
         ', defaultVoiceStyle text'
         ', providerId text, model text'
         ', useTools integer, tools text, createdAt integer, updatedAt integer);');
@@ -54,6 +54,7 @@ class AssistantDao implements IAssistant, ITable {
       'openingMessage text',
       'exampleDialogs text',
       'memoryBook text',
+      'worldBookJson text',
       'roleCardAssets text',
       'defaultVoiceStyle text',
       'avatarType text',

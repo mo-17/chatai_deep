@@ -285,6 +285,8 @@ void main() {
 
     await tester.tap(find.text('钟楼会在远处响起'));
     await tester.pump(const Duration(milliseconds: 300));
+    await tester.ensureVisible(find.text('角色人设前'));
+    await tester.pumpAndSettle();
     await tester.tap(find.text('角色人设前'));
     await tester.pumpAndSettle();
     await tester.tap(find.text('角色人设后').last);
@@ -311,7 +313,7 @@ void main() {
       id: 1,
       name: '艾琳',
       memoryBook:
-          '[re] [cs] [ww] [sec=潮汐|浮岛] [exclude=白天] [p=12] [pos=after_char] [depth=3] [prob=40] [norec] [group=bell] [gw=7] 钟声 || Bell\\s+\\d+ => 钟声代表潮汐',
+          '[re] [cs] [ww] [sec=潮汐|浮岛] [exclude=白天] [p=12] [pos=after_char] [depth=3] [prob=40] [prob_disabled] [norec] [group=bell] [gw=7] [group_override] [group_scoring] [logic=3] [sticky=2] [cooldown=4] [delay=1] [characters=艾琳|船长] [characters_exclude] [persona] [character_description] [character_personality] [character_depth_prompt] [scenario] [creator_notes] 钟声 || Bell\\s+\\d+ => 钟声代表潮汐',
     );
     final saved = <String>[];
     await pumpPage(tester, assistant, saved: saved);
@@ -324,8 +326,10 @@ void main() {
 
     expect(
       assistant.memoryBook,
-      '[re] [cs] [ww] [sec=潮汐|浮岛] [p=12] [exclude=白天] [pos=after_char] [depth=3] [prob=40] [norec] [group=bell] [gw=7] 钟声 || Bell\\s+\\d+ => 钟声代表新的潮汐',
+      '[re] [cs] [ww] [sec=潮汐|浮岛] [p=12] [exclude=白天] [pos=after_char] [depth=3] [prob=40] [prob_disabled] [norec] [group=bell] [gw=7] [group_override] [group_scoring] [logic=3] [sticky=2] [cooldown=4] [delay=1] [characters=艾琳|船长] [characters_exclude] [persona] [character_description] [character_personality] [character_depth_prompt] [scenario] [creator_notes] 钟声 || Bell\\s+\\d+ => 钟声代表新的潮汐',
     );
+    expect(assistant.worldBookJson, contains('"sticky":2'));
+    expect(assistant.worldBookJson, contains('"matchScenario":true'));
     expect(saved.single, assistant.memoryBook);
   });
 

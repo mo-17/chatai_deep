@@ -2,6 +2,7 @@ import 'dart:convert';
 
 import 'package:chatgpt_app_core/chat/application/assistant_example_dialogs.dart';
 import 'package:chatgpt_app_core/model/ai_settings.dart';
+import 'package:chatgpt_app_core/model/world_book.dart';
 
 /// 助手（阶段七）。对应源项目 `src/types/assistant.ts` 的 Assistant 精简版：
 /// 「系统提示词 + 可选模型覆盖 + 工具开关」三件套，会话通过
@@ -38,6 +39,10 @@ class AssistantModel {
   /// 关键词记忆 / 轻量世界书：每行 `关键词1,关键词2 => 设定内容`。
   /// 发送时只把命中的条目注入 system prompt，避免长期上下文膨胀。
   String memoryBook;
+
+  /// 结构化世界书 JSON。用于无损保存 Tavern 的高级触发条件和运行时字段；
+  /// [memoryBook] 继续作为旧版兼容与人工编辑表示，空串表示仅使用旧格式。
+  String worldBookJson;
 
   /// CHARX/V3 内嵌资源的本地托管清单（JSON）。仅保存文件引用，不执行资源。
   String roleCardAssets;
@@ -77,6 +82,7 @@ class AssistantModel {
     this.openingMessage = '',
     this.exampleDialogs = '',
     this.memoryBook = '',
+    this.worldBookJson = '',
     this.roleCardAssets = '',
     this.defaultVoiceStyle = '',
     this.providerId = '',
@@ -99,6 +105,7 @@ class AssistantModel {
         openingMessage: json['openingMessage'] as String? ?? '',
         exampleDialogs: json['exampleDialogs'] as String? ?? '',
         memoryBook: json['memoryBook'] as String? ?? '',
+        worldBookJson: json['worldBookJson'] as String? ?? '',
         roleCardAssets: json['roleCardAssets'] as String? ?? '',
         defaultVoiceStyle: json['defaultVoiceStyle'] as String? ?? '',
         providerId: json['providerId'] as String? ?? '',
@@ -135,6 +142,7 @@ class AssistantModel {
         'openingMessage': openingMessage,
         'exampleDialogs': exampleDialogs,
         'memoryBook': memoryBook,
+        'worldBookJson': worldBookJson,
         'roleCardAssets': roleCardAssets,
         'defaultVoiceStyle': defaultVoiceStyle,
         'providerId': providerId,
@@ -182,7 +190,17 @@ class AssistantModel {
   String systemPromptFor(String userText) {
     final base = prompt.trim();
     final examples = _exampleDialogContext();
-    final memory = AssistantMemoryBook.buildContext(memoryBook, userText);
+    final memory = AssistantMemoryBook.buildContext(
+      memoryBook,
+      userText,
+      structuredJson: worldBookJson,
+      characterName: name,
+      characterDescription: _promptSection('角色设定'),
+      characterPersonality: _promptSection('性格'),
+      characterDepthPrompt: _promptSection('系统提示'),
+      scenario: _promptSection('场景'),
+      creatorNotes: description,
+    );
     final parts = [
       if (base.isNotEmpty) base,
       if (examples.isNotEmpty) examples,
@@ -196,6 +214,17 @@ class AssistantModel {
     if (examples.isEmpty) return '';
     return '[示例对话]\n$examples';
   }
+
+  String _promptSection(String title) {
+    final marker = '[$title]';
+    final start = prompt.indexOf(marker);
+    if (start < 0) return '';
+    final bodyStart = start + marker.length;
+    final next = RegExp(r'\n\[(系统提示|角色设定|性格|场景|后续指令)\]')
+        .firstMatch(prompt.substring(bodyStart));
+    final end = next == null ? prompt.length : bodyStart + next.start;
+    return prompt.substring(bodyStart, end).trim();
+  }
 }
 
 class AssistantMemoryBook {
@@ -206,12 +235,28 @@ class AssistantMemoryBook {
     String userText, {
     int maxEntries = 6,
     int maxContextChars = defaultMaxContextChars,
+    String structuredJson = '',
+    String characterName = '',
+    String personaDescription = '',
+    String characterDescription = '',
+    String characterPersonality = '',
+    String characterDepthPrompt = '',
+    String scenario = '',
+    String creatorNotes = '',
   }) {
     final budget = budgetContext(
       raw,
       userText,
       maxEntries: maxEntries,
       maxContextChars: maxContextChars,
+      structuredJson: structuredJson,
+      characterName: characterName,
+      personaDescription: personaDescription,
+      characterDescription: characterDescription,
+      characterPersonality: characterPersonality,
+      characterDepthPrompt: characterDepthPrompt,
+      scenario: scenario,
+      creatorNotes: creatorNotes,
     );
     return budget.context;
   }
@@ -221,8 +266,28 @@ class AssistantMemoryBook {
     String userText, {
     int maxEntries = 6,
     int maxContextChars = defaultMaxContextChars,
+    String structuredJson = '',
+    String characterName = '',
+    String personaDescription = '',
+    String characterDescription = '',
+    String characterPersonality = '',
+    String characterDepthPrompt = '',
+    String scenario = '',
+    String creatorNotes = '',
   }) {
-    final entries = match(raw, userText, maxEntries: maxEntries);
+    final entries = match(
+      raw,
+      userText,
+      maxEntries: maxEntries,
+      structuredJson: structuredJson,
+      characterName: characterName,
+      personaDescription: personaDescription,
+      characterDescription: characterDescription,
+      characterPersonality: characterPersonality,
+      characterDepthPrompt: characterDepthPrompt,
+      scenario: scenario,
+      creatorNotes: creatorNotes,
+    );
     if (entries.isEmpty) {
       return AssistantMemoryContextBudget.empty(
         maxContextChars: maxContextChars,
@@ -241,30 +306,36 @@ class AssistantMemoryBook {
     );
   }
 
-  static List<String> match(String raw, String userText, {int maxEntries = 6}) {
-    final text = userText.toLowerCase();
-    final matched = <_MemoryEntry>[];
-    final seen = <String>{};
-    var order = 0;
-    for (final originalLine in raw.split('\n')) {
-      final line = originalLine.trim();
-      if (line.isEmpty || line.startsWith('#')) continue;
-      final entry = _parseLine(line, order++);
-      if (entry == null || entry.content.isEmpty) continue;
-      if (!entry.enabled) continue;
-      if (!entry.alwaysOn && !entry.matches(userText, text)) continue;
-      if (!seen.add(entry.content)) continue;
-      matched.add(entry);
-    }
-    matched.sort((a, b) {
-      final byPriority = b.priority.compareTo(a.priority);
-      return byPriority == 0 ? a.order.compareTo(b.order) : byPriority;
-    });
-    return matched
-        .take(maxEntries.clamp(1, 50))
-        .map((entry) => entry.content)
-        .toList();
-  }
+  static List<String> match(
+    String raw,
+    String userText, {
+    int maxEntries = 6,
+    String structuredJson = '',
+    String characterName = '',
+    String personaDescription = '',
+    String characterDescription = '',
+    String characterPersonality = '',
+    String characterDepthPrompt = '',
+    String scenario = '',
+    String creatorNotes = '',
+  }) =>
+      WorldBookMatcher.match(
+        WorldBookCodec.decode(
+          structuredJson: structuredJson,
+          legacyText: raw,
+        ),
+        WorldBookMatchContext(
+          input: userText,
+          characterName: characterName,
+          personaDescription: personaDescription,
+          characterDescription: characterDescription,
+          characterPersonality: characterPersonality,
+          characterDepthPrompt: characterDepthPrompt,
+          scenario: scenario,
+          creatorNotes: creatorNotes,
+        ),
+        maxEntries: maxEntries.clamp(1, 50),
+      ).entries.map((entry) => entry.content).toList();
 
   static List<String> _budgetedLines(
     List<String> entries, {
@@ -300,6 +371,7 @@ class AssistantMemoryBook {
     return '${line.substring(0, maxChars - 3).trimRight()}...';
   }
 
+  // ignore: unused_element
   static _MemoryEntry? _parseLine(String line, int order) {
     final parsed = _parseMeta(line);
     final body = parsed.body;

@@ -5,6 +5,7 @@ import 'dart:typed_data';
 import 'package:archive/archive.dart' as archive;
 import 'package:chatgpt_app_core/chat/application/assistant_example_dialogs.dart';
 import 'package:chatgpt_app_core/model/assistant_model.dart';
+import 'package:chatgpt_app_core/model/world_book.dart';
 
 class AssistantRoleCardService {
   static const format = 'chatai_deep_assistant_card';
@@ -652,6 +653,7 @@ class AssistantRoleCardService {
       openingMessage: _string(payload['openingMessage']),
       exampleDialogs: _string(payload['exampleDialogs']),
       memoryBook: _string(payload['memoryBook']),
+      worldBookJson: _string(payload['worldBookJson']),
       roleCardAssets: _string(payload['roleCardAssets']),
       defaultVoiceStyle: _string(payload['defaultVoiceStyle']),
       providerId: _string(payload['providerId']),
@@ -677,6 +679,7 @@ class AssistantRoleCardService {
       openingMessage: assistant.openingMessage,
       exampleDialogs: assistant.exampleDialogs,
       memoryBook: assistant.memoryBook,
+      worldBookJson: assistant.worldBookJson,
       roleCardAssets: assistant.roleCardAssets,
       defaultVoiceStyle:
           keepDefaultVoice ? assistant.defaultVoiceStyle.trim() : '',
@@ -769,7 +772,10 @@ class AssistantRoleCardService {
   }
 
   static AssistantRoleCardSummary summarize(AssistantModel assistant) {
-    final memoryEntries = parseMemoryEntries(assistant.memoryBook);
+    final memoryEntries = parseMemoryEntries(
+      assistant.memoryBook,
+      structuredJson: assistant.worldBookJson,
+    );
     final toolIds = assistant.toolIds ?? const <String>[];
     final exampleText = exampleDialogPromptText(assistant.exampleDialogs);
     final alternateGreetingCount =
@@ -822,149 +828,88 @@ class AssistantRoleCardService {
     return parts.join(' · ');
   }
 
-  static List<AssistantMemoryEntryPreview> parseMemoryEntries(String raw) {
-    final entries = <AssistantMemoryEntryPreview>[];
-    for (final originalLine in raw.split('\n')) {
-      final line = originalLine.trim();
-      if (line.isEmpty || line.startsWith('#')) continue;
-      final meta = _parseMemoryMeta(line);
-      final body = meta.body;
-      final idx = body.indexOf('=>');
-      if (idx < 0) {
-        entries.add(AssistantMemoryEntryPreview(
-          keywords: const [],
-          content: body,
-          alwaysOn: true,
-          enabled: meta.enabled,
-          priority: meta.priority,
-          secondaryKeywords: meta.secondaryKeywords,
-          excludeKeywords: meta.excludeKeywords,
-          caseSensitive: meta.caseSensitive,
-          wholeWords: meta.wholeWords,
-          position: meta.position,
-          depth: meta.depth,
-          probability: meta.probability,
-          excludeFromRecursion: meta.excludeFromRecursion,
-          group: meta.group,
-          groupWeight: meta.groupWeight,
-        ));
-        continue;
-      }
-      final content = body.substring(idx + 2).trim();
-      if (content.isEmpty) continue;
-      final keywords = _splitMemoryKeywords(
-        body.substring(0, idx),
-        regex: meta.regex,
-      );
-      if (keywords.isEmpty) continue;
-      entries.add(AssistantMemoryEntryPreview(
-        keywords: keywords,
-        content: content,
-        alwaysOn: false,
-        enabled: meta.enabled,
-        priority: meta.priority,
-        regex: meta.regex,
-        secondaryKeywords: meta.secondaryKeywords,
-        excludeKeywords: meta.excludeKeywords,
-        caseSensitive: meta.caseSensitive,
-        wholeWords: meta.wholeWords,
-        position: meta.position,
-        depth: meta.depth,
-        probability: meta.probability,
-        excludeFromRecursion: meta.excludeFromRecursion,
-        group: meta.group,
-        groupWeight: meta.groupWeight,
-      ));
-    }
-    return entries;
-  }
+  static List<AssistantMemoryEntryPreview> parseMemoryEntries(
+    String raw, {
+    String structuredJson = '',
+  }) =>
+      WorldBookCodec.decode(
+        structuredJson: structuredJson,
+        legacyText: raw,
+      ).map(AssistantMemoryEntryPreview.fromWorldBook).toList();
 
   static List<AssistantMemoryEntryPreview> matchMemoryEntries(
     String raw,
     String userText, {
     int maxEntries = 6,
     List<String> recentTexts = const [],
-  }) {
-    final matched = <AssistantMemoryEntryPreview>[];
-    final seen = <String>{};
-    for (final entry in parseMemoryEntries(raw)) {
-      if (!entry.enabled) continue;
-      final scanText = _scanTextForEntry(entry, userText, recentTexts);
-      final lowerScanText = scanText.toLowerCase();
-      final hit = entry.alwaysOn ||
-          _keywordsHit(
-            entry.keywords,
-            scanText,
-            lowerScanText,
-            regex: entry.regex,
-            caseSensitive: entry.caseSensitive,
-            wholeWords: entry.wholeWords,
-          );
-      if (!hit) continue;
-      if (!_secondaryHit(entry, scanText, lowerScanText)) continue;
-      if (_excludeHit(entry, scanText, lowerScanText)) continue;
-      if (!_probabilityHit(entry, scanText)) continue;
-      if (!seen.add(entry.content)) continue;
-      matched.add(entry);
-    }
-    matched.sort((a, b) {
-      final byPriority = b.priority.compareTo(a.priority);
-      return byPriority == 0 ? 0 : byPriority;
-    });
-    return _applyMemoryGroups(matched).take(maxEntries.clamp(1, 50)).toList();
-  }
+    String structuredJson = '',
+    String characterName = '',
+    String personaDescription = '',
+    String characterDescription = '',
+    String characterPersonality = '',
+    String characterDepthPrompt = '',
+    String scenario = '',
+    String creatorNotes = '',
+    int messageCount = 0,
+    int generationSeed = 0,
+    Map<String, WorldBookActivation> activations = const {},
+  }) =>
+      matchWorldBookEntries(
+        raw,
+        userText,
+        maxEntries: maxEntries,
+        recentTexts: recentTexts,
+        structuredJson: structuredJson,
+        characterName: characterName,
+        personaDescription: personaDescription,
+        characterDescription: characterDescription,
+        characterPersonality: characterPersonality,
+        characterDepthPrompt: characterDepthPrompt,
+        scenario: scenario,
+        creatorNotes: creatorNotes,
+        messageCount: messageCount,
+        generationSeed: generationSeed,
+        activations: activations,
+      ).entries.map(AssistantMemoryEntryPreview.fromWorldBook).toList();
 
-  static List<AssistantMemoryEntryPreview> _applyMemoryGroups(
-    List<AssistantMemoryEntryPreview> entries,
-  ) {
-    final ungrouped = <AssistantMemoryEntryPreview>[];
-    final grouped = <String, AssistantMemoryEntryPreview>{};
-    for (final entry in entries) {
-      final group = entry.group.trim();
-      if (group.isEmpty) {
-        ungrouped.add(entry);
-        continue;
-      }
-      final current = grouped[group];
-      if (current == null || _compareGroupedMemoryEntry(entry, current) < 0) {
-        grouped[group] = entry;
-      }
-    }
-    final merged = [...ungrouped, ...grouped.values];
-    merged.sort((a, b) {
-      final byPriority = b.priority.compareTo(a.priority);
-      return byPriority == 0 ? 0 : byPriority;
-    });
-    return merged;
-  }
-
-  static int _compareGroupedMemoryEntry(
-    AssistantMemoryEntryPreview a,
-    AssistantMemoryEntryPreview b,
-  ) {
-    final byWeight = b.groupWeight.compareTo(a.groupWeight);
-    if (byWeight != 0) return byWeight;
-    final byPriority = b.priority.compareTo(a.priority);
-    if (byPriority != 0) return byPriority;
-    return 0;
-  }
-
-  static String _scanTextForEntry(
-    AssistantMemoryEntryPreview entry,
-    String userText,
-    List<String> recentTexts,
-  ) {
-    if (recentTexts.isEmpty) return userText;
-    final depth = entry.depth;
-    if (depth == null) {
-      return [userText, ...recentTexts].join('\n');
-    }
-    if (depth <= 0) return userText;
-    final capped = depth >= recentTexts.length
-        ? recentTexts
-        : recentTexts.sublist(recentTexts.length - depth);
-    return [userText, ...capped].join('\n');
-  }
+  static WorldBookMatchResult matchWorldBookEntries(
+    String raw,
+    String userText, {
+    int maxEntries = 6,
+    List<String> recentTexts = const [],
+    String structuredJson = '',
+    String characterName = '',
+    String personaDescription = '',
+    String characterDescription = '',
+    String characterPersonality = '',
+    String characterDepthPrompt = '',
+    String scenario = '',
+    String creatorNotes = '',
+    int messageCount = 0,
+    int generationSeed = 0,
+    Map<String, WorldBookActivation> activations = const {},
+  }) =>
+      WorldBookMatcher.match(
+        WorldBookCodec.decode(
+          structuredJson: structuredJson,
+          legacyText: raw,
+        ),
+        WorldBookMatchContext(
+          input: userText,
+          recentTexts: recentTexts,
+          characterName: characterName,
+          personaDescription: personaDescription,
+          characterDescription: characterDescription,
+          characterPersonality: characterPersonality,
+          characterDepthPrompt: characterDepthPrompt,
+          scenario: scenario,
+          creatorNotes: creatorNotes,
+          messageCount: messageCount,
+          generationSeed: generationSeed,
+          activations: activations,
+        ),
+        maxEntries: maxEntries.clamp(1, 50),
+      );
 
   static String memoryHitSummary(List<AssistantMemoryEntryPreview> hits) {
     if (hits.isEmpty) return '未命中角色记忆';
@@ -1240,9 +1185,15 @@ class AssistantRoleCardService {
     return tags;
   }
 
-  static Map<String, dynamic> _tavernWorldBookPayload(String raw) {
+  static Map<String, dynamic> _tavernWorldBookPayload(
+    String raw, {
+    String structuredJson = '',
+  }) {
     final entries = <Map<String, dynamic>>[];
-    for (final entry in parseMemoryEntries(raw)) {
+    for (final entry in parseMemoryEntries(
+      raw,
+      structuredJson: structuredJson,
+    )) {
       final item = <String, dynamic>{
         'content': entry.content,
         'enabled': entry.enabled,
@@ -1255,6 +1206,9 @@ class AssistantRoleCardService {
       if (entry.secondaryKeywords.isNotEmpty) {
         item['selective'] = true;
         item['secondary_keys'] = entry.secondaryKeywords;
+        if (entry.selectiveLogic != 0) {
+          item['selectiveLogic'] = entry.selectiveLogic;
+        }
       }
       if (entry.excludeKeywords.isNotEmpty) {
         item['exclude_keys'] = entry.excludeKeywords;
@@ -1265,13 +1219,40 @@ class AssistantRoleCardService {
       if (entry.wholeWords) item['match_whole_words'] = true;
       if (entry.position.trim().isNotEmpty) item['position'] = entry.position;
       if (entry.depth != null) item['depth'] = entry.depth;
-      if (entry.probability != null) {
-        item['probability'] = entry.probability;
-        item['useProbability'] = true;
+      if (entry.probability != null || !entry.probabilityEnabled) {
+        item['probability'] = entry.probability ?? 100;
+        item['useProbability'] = entry.probabilityEnabled;
       }
       if (entry.excludeFromRecursion) item['excludeRecursion'] = true;
       if (entry.group.trim().isNotEmpty) item['group'] = entry.group.trim();
       if (entry.groupWeight != 0) item['groupWeight'] = entry.groupWeight;
+      if (entry.groupOverride) item['groupOverride'] = true;
+      if (entry.useGroupScoring) item['useGroupScoring'] = true;
+      if (entry.sticky > 0) item['sticky'] = entry.sticky;
+      if (entry.cooldown > 0) item['cooldown'] = entry.cooldown;
+      if (entry.delay > 0) item['delay'] = entry.delay;
+      if (entry.characterFilterNames.isNotEmpty ||
+          entry.characterFilterExclude) {
+        item['characterFilter'] = {
+          'names': entry.characterFilterNames,
+          'tags': const <String>[],
+          'isExclude': entry.characterFilterExclude,
+        };
+      }
+      if (entry.matchPersonaDescription) {
+        item['matchPersonaDescription'] = true;
+      }
+      if (entry.matchCharacterDescription) {
+        item['matchCharacterDescription'] = true;
+      }
+      if (entry.matchCharacterPersonality) {
+        item['matchCharacterPersonality'] = true;
+      }
+      if (entry.matchCharacterDepthPrompt) {
+        item['matchCharacterDepthPrompt'] = true;
+      }
+      if (entry.matchScenario) item['matchScenario'] = true;
+      if (entry.matchCreatorNotes) item['matchCreatorNotes'] = true;
       entries.add(item);
     }
     return {'entries': entries};
@@ -1363,6 +1344,7 @@ class AssistantRoleCardService {
   static String _wholeWordPattern(String source) =>
       '(^|[^A-Za-z0-9_])(?:$source)([^A-Za-z0-9_]|\$)';
 
+  // ignore: unused_element
   static bool _secondaryHit(
     AssistantMemoryEntryPreview entry,
     String userText,
@@ -1379,6 +1361,7 @@ class AssistantRoleCardService {
     );
   }
 
+  // ignore: unused_element
   static bool _excludeHit(
     AssistantMemoryEntryPreview entry,
     String userText,
@@ -1395,6 +1378,7 @@ class AssistantRoleCardService {
     );
   }
 
+  // ignore: unused_element
   static bool _probabilityHit(
     AssistantMemoryEntryPreview entry,
     String scanText,
@@ -1420,6 +1404,7 @@ class AssistantRoleCardService {
     return hash % 100;
   }
 
+  // ignore: unused_element
   static _MemoryPreviewMeta _parseMemoryMeta(String line) {
     var rest = line.trim();
     var enabled = true;
@@ -1539,6 +1524,7 @@ class AssistantRoleCardService {
         'openingMessage': assistant.openingMessage,
         'exampleDialogs': assistant.exampleDialogs,
         'memoryBook': assistant.memoryBook,
+        'worldBookJson': assistant.worldBookJson,
         'roleCardAssets': assistant.roleCardAssets,
         'defaultVoiceStyle': assistant.defaultVoiceStyle,
         'providerId': assistant.providerId,
@@ -1840,6 +1826,7 @@ class AssistantRoleCardService {
       preferCreatorNotes: extension.isNotEmpty,
     );
     final exampleDialogs = _tavernExampleDialogs(data, promptName);
+    final characterBook = _tavernCharacterBook(data);
     final payload = <String, dynamic>{
       'name': name,
       'emoji': '🤖',
@@ -1848,7 +1835,8 @@ class AssistantRoleCardService {
       'prompt': promptParts.join('\n\n'),
       'openingMessage': _tavernLocalizedText(data['first_mes'], promptName),
       'exampleDialogs': exampleDialogs,
-      'memoryBook': _tavernWorldBook(_tavernCharacterBook(data), promptName),
+      'memoryBook': _tavernWorldBook(characterBook, promptName),
+      'worldBookJson': _canonicalWorldBookJson(characterBook, promptName),
       'defaultVoiceStyle': _string(extension['defaultVoiceStyle']),
       'providerId': _string(extension['providerId']),
       'model': _string(extension['model']),
@@ -1976,7 +1964,10 @@ class AssistantRoleCardService {
       'system_prompt': sections['系统提示'] ?? '',
       'post_history_instructions': sections['后续指令'] ?? '',
       'alternate_greetings': alternateGreetings(assistant.exampleDialogs),
-      'character_book': _tavernWorldBookPayload(assistant.memoryBook),
+      'character_book': _tavernWorldBookPayload(
+        assistant.memoryBook,
+        structuredJson: assistant.worldBookJson,
+      ),
       'tags': _exportTags(assistant),
       'extensions': {
         'chatai_deep': _chataiDeepExportExtension(
@@ -2044,7 +2035,10 @@ class AssistantRoleCardService {
       'memoryBook',
       _withoutTavernRawCardMarker(assistant.memoryBook),
     )) {
-      data['character_book'] = _tavernWorldBookPayload(assistant.memoryBook);
+      data['character_book'] = _tavernWorldBookPayload(
+        assistant.memoryBook,
+        structuredJson: assistant.worldBookJson,
+      );
     }
 
     final extensions =
@@ -2227,6 +2221,30 @@ class AssistantRoleCardService {
     'groupWeight',
     'group_override',
     'groupOverride',
+    'use_group_scoring',
+    'useGroupScoring',
+    'selectiveLogic',
+    'selective_logic',
+    'sticky',
+    'cooldown',
+    'delay',
+    'characterFilter',
+    'character_filter',
+    'characterFilterNames',
+    'characterFilterExclude',
+    'character_filter_exclude',
+    'matchPersonaDescription',
+    'match_persona_description',
+    'matchCharacterDescription',
+    'match_character_description',
+    'matchCharacterPersonality',
+    'match_character_personality',
+    'matchCharacterDepthPrompt',
+    'match_character_depth_prompt',
+    'matchScenario',
+    'match_scenario',
+    'matchCreatorNotes',
+    'match_creator_notes',
     'case_sensitive',
     'caseSensitive',
     'match_whole_words',
@@ -2594,6 +2612,14 @@ class AssistantRoleCardService {
     return lines.join('\n');
   }
 
+  static String _canonicalWorldBookJson(Object? raw, String name) {
+    final legacy = _tavernWorldBook(raw, name);
+    if (legacy.trim().isEmpty) return '';
+    return WorldBookCodec.encode(
+      WorldBookCodec.decode(legacyText: legacy),
+    );
+  }
+
   static String _tavernEntryComment(Map<String, dynamic> item, String name) {
     for (final key in const [
       'comment',
@@ -2683,11 +2709,52 @@ class AssistantRoleCardService {
     if (depth != null) parts.add('[depth=$depth]');
     final probability = _tavernEntryProbability(item);
     if (probability != null) parts.add('[prob=$probability]');
+    if (!_tavernEntryProbabilityEnabled(item)) parts.add('[prob_disabled]');
     if (_tavernEntryExcludeFromRecursion(item)) parts.add('[norec]');
     final group = _tavernEntryGroup(item);
     if (group.isNotEmpty) parts.add('[group=$group]');
     final groupWeight = _tavernEntryGroupWeight(item);
     if (groupWeight != 0) parts.add('[gw=$groupWeight]');
+    if (_tavernEntryGroupOverride(item)) parts.add('[group_override]');
+    if (_tavernEntryUseGroupScoring(item)) parts.add('[group_scoring]');
+    final selectiveLogic = _tavernEntrySelectiveLogic(item);
+    if (secondaryKeys.isNotEmpty && selectiveLogic != 0) {
+      parts.add('[logic=$selectiveLogic]');
+    }
+    final sticky = _tavernEntryInt(item, const ['sticky']);
+    if (sticky != null && sticky > 0) parts.add('[sticky=$sticky]');
+    final cooldown = _tavernEntryInt(item, const ['cooldown']);
+    if (cooldown != null && cooldown > 0) parts.add('[cooldown=$cooldown]');
+    final delay = _tavernEntryInt(item, const ['delay']);
+    if (delay != null && delay > 0) parts.add('[delay=$delay]');
+    final characterFilter = _tavernCharacterFilter(item);
+    if (characterFilter.names.isNotEmpty) {
+      parts.add('[characters=${characterFilter.names.join('|')}]');
+    }
+    if (characterFilter.exclude) parts.add('[characters_exclude]');
+    if (_tavernEntryFlag(
+        item, const ['matchPersonaDescription', 'match_persona_description'])) {
+      parts.add('[persona]');
+    }
+    if (_tavernEntryFlag(item,
+        const ['matchCharacterDescription', 'match_character_description'])) {
+      parts.add('[character_description]');
+    }
+    if (_tavernEntryFlag(item,
+        const ['matchCharacterPersonality', 'match_character_personality'])) {
+      parts.add('[character_personality]');
+    }
+    if (_tavernEntryFlag(item,
+        const ['matchCharacterDepthPrompt', 'match_character_depth_prompt'])) {
+      parts.add('[character_depth_prompt]');
+    }
+    if (_tavernEntryFlag(item, const ['matchScenario', 'match_scenario'])) {
+      parts.add('[scenario]');
+    }
+    if (_tavernEntryFlag(
+        item, const ['matchCreatorNotes', 'match_creator_notes'])) {
+      parts.add('[creator_notes]');
+    }
     return parts.isEmpty ? '' : '${parts.join(' ')} ';
   }
 
@@ -2749,14 +2816,17 @@ class AssistantRoleCardService {
     final direct = _intOrNull(item['probability']);
     final extensions = item['extensions'];
     final useProbability =
-        _tavernBool(item, const ['useProbability', 'use_probability']) == true;
+        _tavernBool(item, const ['useProbability', 'use_probability']);
     final extProbability =
         extensions is Map ? _intOrNull(extensions['probability']) : null;
     final value = direct ?? extProbability;
     if (value == null) return null;
-    if (!useProbability && value >= 100) return null;
+    if (useProbability == null && value >= 100) return null;
     return value.clamp(0, 100).toInt();
   }
+
+  static bool _tavernEntryProbabilityEnabled(Map<String, dynamic> item) =>
+      _tavernBool(item, const ['useProbability', 'use_probability']) ?? true;
 
   static num? _tavernEntryPriority(Map<String, dynamic> item) {
     for (final key in const [
@@ -2799,28 +2869,111 @@ class AssistantRoleCardService {
   }
 
   static int _tavernEntryGroupWeight(Map<String, dynamic> item) {
-    for (final key in const [
-      'group_weight',
-      'groupWeight',
-      'group_override',
-      'groupOverride',
-    ]) {
+    for (final key in const ['group_weight', 'groupWeight']) {
       final value = _intOrNull(item[key]);
       if (value != null) return value;
     }
     final extensions = item['extensions'];
     if (extensions is Map) {
-      for (final key in const [
-        'group_weight',
-        'groupWeight',
-        'group_override',
-        'groupOverride',
-      ]) {
+      for (final key in const ['group_weight', 'groupWeight']) {
         final value = _intOrNull(extensions[key]);
         if (value != null) return value;
       }
     }
     return 0;
+  }
+
+  static bool _tavernEntryGroupOverride(Map<String, dynamic> item) =>
+      _tavernBool(item, const ['group_override', 'groupOverride']) == true;
+
+  static bool _tavernEntryUseGroupScoring(Map<String, dynamic> item) =>
+      _tavernBool(item, const ['use_group_scoring', 'useGroupScoring']) == true;
+
+  static int _tavernEntrySelectiveLogic(Map<String, dynamic> item) {
+    Object? value = item['selectiveLogic'] ?? item['selective_logic'];
+    final extensions = item['extensions'];
+    if (value == null && extensions is Map) {
+      value = extensions['selectiveLogic'] ?? extensions['selective_logic'];
+    }
+    final number = _intOrNull(value);
+    if (number != null) return number.clamp(0, 3).toInt();
+    return switch (value?.toString().trim().toLowerCase()) {
+      'not_all' || 'not all' => 1,
+      'not_any' || 'not any' => 2,
+      'and_all' || 'and all' => 3,
+      _ => 0,
+    };
+  }
+
+  static int? _tavernEntryInt(
+    Map<String, dynamic> item,
+    List<String> keys,
+  ) {
+    for (final key in keys) {
+      final value = _intOrNull(item[key]);
+      if (value != null) return value;
+    }
+    final extensions = item['extensions'];
+    if (extensions is Map) {
+      for (final key in keys) {
+        final value = _intOrNull(extensions[key]);
+        if (value != null) return value;
+      }
+    }
+    return null;
+  }
+
+  static bool _tavernEntryFlag(
+    Map<String, dynamic> item,
+    List<String> keys,
+  ) =>
+      _tavernBool(item, keys) == true;
+
+  static _TavernCharacterFilter _tavernCharacterFilter(
+    Map<String, dynamic> item,
+  ) {
+    Object? raw = item['characterFilter'] ?? item['character_filter'];
+    final extensions = item['extensions'];
+    if (raw == null && extensions is Map) {
+      raw = extensions['characterFilter'] ?? extensions['character_filter'];
+    }
+    final filter = raw is Map ? _mapStringDynamic(raw) : null;
+    final names = <String>[];
+    if (filter != null) {
+      names.addAll(_tavernFilterNames(filter['names']));
+    }
+    names.addAll(_tavernFilterNames(item['characterFilterNames']));
+    if (extensions is Map) {
+      names.addAll(_tavernFilterNames(extensions['characterFilterNames']));
+    }
+    final seen = <String>{};
+    final uniqueNames = [
+      for (final name in names)
+        if (name.trim().isNotEmpty && seen.add(name.trim())) name.trim(),
+    ];
+    final exclude = _boolOrNull(filter?['isExclude']) ??
+        _boolOrNull(filter?['is_exclude']) ??
+        _tavernBool(item,
+            const ['characterFilterExclude', 'character_filter_exclude']) ??
+        false;
+    return _TavernCharacterFilter(uniqueNames, exclude);
+  }
+
+  static List<String> _tavernFilterNames(Object? raw) {
+    if (raw is List) {
+      return raw
+          .map((item) => item.toString().trim())
+          .where((item) => item.isNotEmpty)
+          .toList();
+    }
+    if (raw is String) {
+      return raw
+          .split(RegExp(r'[,，|]+'))
+          .map((item) => item.trim())
+          .where((item) => item.isNotEmpty)
+          .toList();
+    }
+    return const [];
   }
 
   static bool _tavernEntryDisabled(Map<String, dynamic> item) {
@@ -2937,11 +3090,7 @@ class AssistantRoleCardService {
   }
 
   static bool _tavernEntryUsesSelective(Map<String, dynamic> item) {
-    return _tavernBool(
-          item,
-          const ['selective', 'selectiveLogic', 'selective_logic'],
-        ) ==
-        true;
+    return _tavernBool(item, const ['selective']) == true;
   }
 
   static bool _tavernEntryCaseSensitive(Map<String, dynamic> item) {
@@ -3414,6 +3563,7 @@ class AssistantRoleCardSkippedImport {
 }
 
 class AssistantMemoryEntryPreview {
+  final String id;
   final List<String> keywords;
   final String content;
   final bool alwaysOn;
@@ -3427,11 +3577,27 @@ class AssistantMemoryEntryPreview {
   final String position;
   final int? depth;
   final int? probability;
+  final bool probabilityEnabled;
   final bool excludeFromRecursion;
   final String group;
   final int groupWeight;
+  final bool groupOverride;
+  final bool useGroupScoring;
+  final int selectiveLogic;
+  final int sticky;
+  final int cooldown;
+  final int delay;
+  final List<String> characterFilterNames;
+  final bool characterFilterExclude;
+  final bool matchPersonaDescription;
+  final bool matchCharacterDescription;
+  final bool matchCharacterPersonality;
+  final bool matchCharacterDepthPrompt;
+  final bool matchScenario;
+  final bool matchCreatorNotes;
 
   const AssistantMemoryEntryPreview({
+    this.id = '',
     required this.keywords,
     required this.content,
     required this.alwaysOn,
@@ -3445,13 +3611,67 @@ class AssistantMemoryEntryPreview {
     this.position = '',
     this.depth,
     this.probability,
+    this.probabilityEnabled = true,
     this.excludeFromRecursion = false,
     this.group = '',
     this.groupWeight = 0,
+    this.groupOverride = false,
+    this.useGroupScoring = false,
+    this.selectiveLogic = 0,
+    this.sticky = 0,
+    this.cooldown = 0,
+    this.delay = 0,
+    this.characterFilterNames = const [],
+    this.characterFilterExclude = false,
+    this.matchPersonaDescription = false,
+    this.matchCharacterDescription = false,
+    this.matchCharacterPersonality = false,
+    this.matchCharacterDepthPrompt = false,
+    this.matchScenario = false,
+    this.matchCreatorNotes = false,
   });
+
+  factory AssistantMemoryEntryPreview.fromWorldBook(WorldBookEntry entry) =>
+      AssistantMemoryEntryPreview(
+        id: entry.id,
+        keywords: entry.keywords,
+        content: entry.content,
+        alwaysOn: entry.alwaysOn,
+        enabled: entry.enabled,
+        priority: entry.priority,
+        regex: entry.regex,
+        secondaryKeywords: entry.secondaryKeywords,
+        excludeKeywords: entry.excludeKeywords,
+        caseSensitive: entry.caseSensitive,
+        wholeWords: entry.wholeWords,
+        position: entry.position,
+        depth: entry.depth,
+        probability: entry.probability,
+        probabilityEnabled: entry.probabilityEnabled,
+        excludeFromRecursion: entry.excludeFromRecursion,
+        group: entry.group,
+        groupWeight: entry.groupWeight,
+        groupOverride: entry.groupOverride,
+        useGroupScoring: entry.useGroupScoring,
+        selectiveLogic: entry.selectiveLogic.index,
+        sticky: entry.sticky,
+        cooldown: entry.cooldown,
+        delay: entry.delay,
+        characterFilterNames: entry.characterFilterNames,
+        characterFilterExclude: entry.characterFilterExclude,
+        matchPersonaDescription: entry.matchPersonaDescription,
+        matchCharacterDescription: entry.matchCharacterDescription,
+        matchCharacterPersonality: entry.matchCharacterPersonality,
+        matchCharacterDepthPrompt: entry.matchCharacterDepthPrompt,
+        matchScenario: entry.matchScenario,
+        matchCreatorNotes: entry.matchCreatorNotes,
+      );
+
+  WorldBookEntry toWorldBook() => WorldBookEntry.fromJson(toJson());
 
   factory AssistantMemoryEntryPreview.fromJson(Map<String, dynamic> json) {
     return AssistantMemoryEntryPreview(
+      id: json['id'] as String? ?? '',
       keywords: [
         for (final item in (json['keywords'] as List? ?? const []))
           if (item is String) item,
@@ -3474,13 +3694,36 @@ class AssistantMemoryEntryPreview {
       position: json['position'] as String? ?? '',
       depth: json['depth'] as int?,
       probability: json['probability'] as int?,
+      probabilityEnabled: json['probabilityEnabled'] as bool? ?? true,
       excludeFromRecursion: json['excludeFromRecursion'] as bool? ?? false,
       group: json['group'] as String? ?? '',
       groupWeight: json['groupWeight'] as int? ?? 0,
+      groupOverride: json['groupOverride'] as bool? ?? false,
+      useGroupScoring: json['useGroupScoring'] as bool? ?? false,
+      selectiveLogic: json['selectiveLogic'] as int? ?? 0,
+      sticky: json['sticky'] as int? ?? 0,
+      cooldown: json['cooldown'] as int? ?? 0,
+      delay: json['delay'] as int? ?? 0,
+      characterFilterNames: [
+        for (final item in (json['characterFilterNames'] as List? ?? const []))
+          if (item is String) item,
+      ],
+      characterFilterExclude: json['characterFilterExclude'] as bool? ?? false,
+      matchPersonaDescription:
+          json['matchPersonaDescription'] as bool? ?? false,
+      matchCharacterDescription:
+          json['matchCharacterDescription'] as bool? ?? false,
+      matchCharacterPersonality:
+          json['matchCharacterPersonality'] as bool? ?? false,
+      matchCharacterDepthPrompt:
+          json['matchCharacterDepthPrompt'] as bool? ?? false,
+      matchScenario: json['matchScenario'] as bool? ?? false,
+      matchCreatorNotes: json['matchCreatorNotes'] as bool? ?? false,
     );
   }
 
   Map<String, dynamic> toJson() => {
+        'id': id,
         'keywords': keywords,
         'content': content,
         'alwaysOn': alwaysOn,
@@ -3494,9 +3737,24 @@ class AssistantMemoryEntryPreview {
         'position': position,
         'depth': depth,
         'probability': probability,
+        'probabilityEnabled': probabilityEnabled,
         'excludeFromRecursion': excludeFromRecursion,
         'group': group,
         'groupWeight': groupWeight,
+        'groupOverride': groupOverride,
+        'useGroupScoring': useGroupScoring,
+        'selectiveLogic': selectiveLogic,
+        'sticky': sticky,
+        'cooldown': cooldown,
+        'delay': delay,
+        'characterFilterNames': characterFilterNames,
+        'characterFilterExclude': characterFilterExclude,
+        'matchPersonaDescription': matchPersonaDescription,
+        'matchCharacterDescription': matchCharacterDescription,
+        'matchCharacterPersonality': matchCharacterPersonality,
+        'matchCharacterDepthPrompt': matchCharacterDepthPrompt,
+        'matchScenario': matchScenario,
+        'matchCreatorNotes': matchCreatorNotes,
       };
 
   String get label {
@@ -3516,11 +3774,19 @@ class AssistantMemoryEntryPreview {
     final positionLabel = position.isEmpty ? '' : ' · pos=$position';
     final depthLabel = depth == null ? '' : ' · depth=$depth';
     final probabilityLabel = probability == null ? '' : ' · prob=$probability';
+    final probabilityEnabledLabel = probabilityEnabled ? '' : ' · 概率关闭';
     final recursionLabel = excludeFromRecursion ? ' · 不参与递归' : '';
     final groupLabel = group.trim().isEmpty ? '' : ' · 组：$group';
     final groupWeightLabel = groupWeight == 0 ? '' : ' · gw=$groupWeight';
+    final groupOverrideLabel = groupOverride ? ' · 组优先' : '';
+    final timedLabel = [
+      if (sticky > 0) 'sticky=$sticky',
+      if (cooldown > 0) 'cooldown=$cooldown',
+      if (delay > 0) 'delay=$delay',
+    ];
+    final timedText = timedLabel.isEmpty ? '' : ' · ${timedLabel.join(' / ')}';
     final enabledLabel = enabled ? '' : ' · 已禁用';
-    return '$base$secondaryLabel$excludeLabel$caseLabel$wholeWordsLabel$priorityLabel$positionLabel$depthLabel$probabilityLabel$recursionLabel$groupLabel$groupWeightLabel$enabledLabel';
+    return '$base$secondaryLabel$excludeLabel$caseLabel$wholeWordsLabel$priorityLabel$positionLabel$depthLabel$probabilityLabel$probabilityEnabledLabel$recursionLabel$groupLabel$groupWeightLabel$groupOverrideLabel$timedText$enabledLabel';
   }
 }
 
@@ -3556,4 +3822,11 @@ class _MemoryPreviewMeta {
     this.group = '',
     this.groupWeight = 0,
   });
+}
+
+class _TavernCharacterFilter {
+  final List<String> names;
+  final bool exclude;
+
+  const _TavernCharacterFilter(this.names, this.exclude);
 }
