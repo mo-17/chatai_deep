@@ -285,6 +285,41 @@ void main() {
     expect(translated.memoryBook.split('\n'), hasLength(60));
   });
 
+  test('字段检查点会跳过已完成字段并逐字段持久化', () async {
+    final calledFields = <String>[];
+    final checkpoints = <String, String>{};
+
+    final translated =
+        await AssistantRoleCardTranslationService.translateToSimplifiedChinese(
+      sampleAssistant(),
+      initialTranslatedFields: const {
+        'name': '爱丽丝',
+        'description': '伦敦侦探',
+      },
+      onFieldCheckpoint: (field, value) async {
+        checkpoints[field] = value;
+      },
+      complete: (prompt) async {
+        final payload =
+            jsonDecode(prompt.split('\n').last) as Map<String, dynamic>;
+        final field = payload.keys.single;
+        calledFields.add(field);
+        return jsonEncode({field: '已翻译:$field'});
+      },
+    );
+
+    expect(calledFields, [
+      'prompt',
+      'openingMessage',
+      'exampleDialogs',
+      'memoryBook',
+    ]);
+    expect(checkpoints.keys, calledFields);
+    expect(translated.name, '爱丽丝');
+    expect(translated.description, '伦敦侦探');
+    expect(translated.prompt, '已翻译:prompt');
+  });
+
   test('decodeTranslation rejects non json output', () {
     expect(
       () => AssistantRoleCardTranslationService.decodeTranslation('已翻译完成'),

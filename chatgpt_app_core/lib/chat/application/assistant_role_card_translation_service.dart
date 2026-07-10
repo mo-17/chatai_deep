@@ -7,6 +7,15 @@ typedef RoleCardTranslationCall = Future<String?> Function(String prompt);
 typedef RoleCardTranslationProgressCallback = void Function(
   RoleCardTranslationProgress progress,
 );
+typedef RoleCardFieldCheckpoint = Future<void> Function(
+  String field,
+  String value,
+);
+
+/// 由上层任务运行器发出的立即停止信号，不能被字段降级逻辑吞掉。
+class RoleCardTranslationCancelled implements Exception {
+  const RoleCardTranslationCancelled();
+}
 
 class RoleCardTranslationProgress {
   final String field;
@@ -50,12 +59,17 @@ class AssistantRoleCardTranslationService {
     AssistantModel assistant, {
     required RoleCardTranslationCall complete,
     RoleCardTranslationProgressCallback? onProgress,
+    Map<String, String> initialTranslatedFields = const {},
+    RoleCardFieldCheckpoint? onFieldCheckpoint,
   }) async {
-    if (!_shouldUseWholeCardTranslation(assistant)) {
+    if (initialTranslatedFields.isNotEmpty ||
+        !_shouldUseWholeCardTranslation(assistant)) {
       final translated = await translateFieldsIndividually(
         assistant,
         complete: complete,
         onProgress: onProgress,
+        initialTranslatedFields: initialTranslatedFields,
+        onFieldCheckpoint: onFieldCheckpoint,
       );
       return applyTranslatedFields(assistant, translated);
     }
@@ -77,7 +91,14 @@ class AssistantRoleCardTranslationService {
         stage: '解析整卡翻译',
       ));
       final translated = decodeTranslation(response);
+      await _checkpointTranslatedFields(
+        assistant,
+        translated,
+        onFieldCheckpoint,
+      );
       return applyTranslatedFields(assistant, translated);
+    } on RoleCardTranslationCancelled {
+      rethrow;
     } catch (_) {
       onProgress?.call(const RoleCardTranslationProgress(
         field: 'wholeCard',
@@ -90,6 +111,8 @@ class AssistantRoleCardTranslationService {
         assistant,
         complete: complete,
         onProgress: onProgress,
+        initialTranslatedFields: initialTranslatedFields,
+        onFieldCheckpoint: onFieldCheckpoint,
       );
       return applyTranslatedFields(assistant, translated);
     }
@@ -99,13 +122,30 @@ class AssistantRoleCardTranslationService {
     AssistantModel assistant, {
     required RoleCardTranslationCall complete,
     RoleCardTranslationProgressCallback? onProgress,
+    Map<String, String> initialTranslatedFields = const {},
+    RoleCardFieldCheckpoint? onFieldCheckpoint,
   }) async {
-    final translated = <String, dynamic>{};
+    final translated = <String, dynamic>{
+      for (final entry in initialTranslatedFields.entries)
+        if (_fields.contains(entry.key)) entry.key: entry.value,
+    };
     for (var i = 0; i < _fields.length; i++) {
       final field = _fields[i];
+      if (translated.containsKey(field)) {
+        onProgress?.call(RoleCardTranslationProgress(
+          field: field,
+          fieldLabel: _fieldLabel(field),
+          current: i + 1,
+          total: _fields.length,
+          stage: '从检查点恢复字段',
+          fieldProgress: 1,
+        ));
+        continue;
+      }
       final value = _fieldValue(assistant, field);
       if (value.trim().isEmpty) {
         translated[field] = value;
+        await onFieldCheckpoint?.call(field, value);
         onProgress?.call(RoleCardTranslationProgress(
           field: field,
           fieldLabel: _fieldLabel(field),
@@ -146,7 +186,9 @@ class AssistantRoleCardTranslationService {
                 stage: '等待 AI 返回字段翻译',
               ),
             );
-      translated[field] = result ?? value;
+      final checkpointValue = result ?? value;
+      translated[field] = checkpointValue;
+      await onFieldCheckpoint?.call(field, checkpointValue);
       onProgress?.call(RoleCardTranslationProgress(
         field: field,
         fieldLabel: _fieldLabel(field),
@@ -157,6 +199,21 @@ class AssistantRoleCardTranslationService {
       ));
     }
     return translated;
+  }
+
+  static Future<void> _checkpointTranslatedFields(
+    AssistantModel assistant,
+    Map<String, dynamic> translated,
+    RoleCardFieldCheckpoint? checkpoint,
+  ) async {
+    if (checkpoint == null) return;
+    for (final field in _fields) {
+      final value = translated[field];
+      await checkpoint(
+        field,
+        value is String ? value : _fieldValue(assistant, field),
+      );
+    }
   }
 
   static String buildPrompt(AssistantModel assistant) {
@@ -315,6 +372,7 @@ class AssistantRoleCardTranslationService {
         final result = translated[field];
         return result is String ? result : null;
       } catch (e) {
+        if (e is RoleCardTranslationCancelled) rethrow;
         if (attempt == maxAttempts - 1) {
           if (progress != null) {
             onProgress?.call(RoleCardTranslationProgress(

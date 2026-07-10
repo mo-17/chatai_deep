@@ -51,7 +51,12 @@ class StoryTemplateTranslationTaskModel {
   int fieldTotal;
   String fieldLabel;
   double fieldProgress;
+  String fieldPayload;
   String partialPayload;
+  String? leaseOwner;
+  int? leaseUntil;
+  int attempts;
+  int? nextRunAt;
   int createdAt;
   int updatedAt;
 
@@ -75,7 +80,12 @@ class StoryTemplateTranslationTaskModel {
     this.fieldTotal = 0,
     this.fieldLabel = '',
     this.fieldProgress = 0,
+    this.fieldPayload = '',
     this.partialPayload = '',
+    this.leaseOwner,
+    this.leaseUntil,
+    this.attempts = 0,
+    this.nextRunAt,
     int? createdAt,
     int? updatedAt,
   })  : createdAt = createdAt ?? DateTime.now().millisecondsSinceEpoch,
@@ -105,7 +115,12 @@ class StoryTemplateTranslationTaskModel {
         fieldTotal: _intOrNull(json['fieldTotal']) ?? 0,
         fieldLabel: json['fieldLabel'] as String? ?? '',
         fieldProgress: _double(json['fieldProgress']),
+        fieldPayload: json['fieldPayload'] as String? ?? '',
         partialPayload: json['partialPayload'] as String? ?? '',
+        leaseOwner: json['leaseOwner'] as String?,
+        leaseUntil: _intOrNull(json['leaseUntil']),
+        attempts: _intOrNull(json['attempts']) ?? 0,
+        nextRunAt: _intOrNull(json['nextRunAt']),
         createdAt: _intOrNull(json['createdAt']),
         updatedAt: _intOrNull(json['updatedAt']),
       );
@@ -130,7 +145,12 @@ class StoryTemplateTranslationTaskModel {
         'fieldTotal': fieldTotal,
         'fieldLabel': fieldLabel,
         'fieldProgress': fieldProgress.clamp(0, 1),
+        'fieldPayload': fieldPayload,
         'partialPayload': partialPayload,
+        'leaseOwner': leaseOwner,
+        'leaseUntil': leaseUntil,
+        'attempts': attempts,
+        'nextRunAt': nextRunAt,
         'createdAt': createdAt,
         'updatedAt': updatedAt,
       };

@@ -30,6 +30,11 @@ class TavernRoomImportProgress {
 typedef TavernRoomImportProgressCallback = void Function(
   TavernRoomImportProgress progress,
 );
+typedef TavernRoomImportFieldCheckpoint = Future<void> Function(
+  int resultIndex,
+  String field,
+  String value,
+);
 
 class TavernRoomImportPreparer {
   const TavernRoomImportPreparer._();
@@ -39,6 +44,8 @@ class TavernRoomImportPreparer {
     required bool translateToSimplifiedChinese,
     required RoleCardTranslationCall complete,
     TavernRoomImportProgressCallback? onProgress,
+    Map<int, Map<String, String>> initialTranslatedFields = const {},
+    TavernRoomImportFieldCheckpoint? onFieldCheckpoint,
   }) async {
     if (!translateToSimplifiedChinese) return results;
     final translated = <AssistantRoleCardImportResult>[];
@@ -54,6 +61,10 @@ class TavernRoomImportPreparer {
           .translateToSimplifiedChinese(
         result.assistant,
         complete: complete,
+        initialTranslatedFields: initialTranslatedFields[i] ?? const {},
+        onFieldCheckpoint: onFieldCheckpoint == null
+            ? null
+            : (field, value) => onFieldCheckpoint(i, field, value),
         onProgress: (value) => onProgress?.call(TavernRoomImportProgress(
           current: i + 1,
           total: results.length,

@@ -28,6 +28,9 @@ class StoryTemplateTranslationCoordinator extends ChangeNotifier {
   List<StoryTemplateTranslationTaskModel> _tasks = const [];
   final Set<int> _cancelledIds = <int>{};
   final Set<int> _runningIds = <int>{};
+  final String _workerId =
+      'foreground-${DateTime.now().microsecondsSinceEpoch}-${Object().hashCode}';
+  static const _leaseDuration = Duration(minutes: 5);
 
   List<StoryTemplateTranslationTaskModel> get tasks =>
       List.unmodifiable(_tasks);
@@ -77,6 +80,10 @@ class StoryTemplateTranslationCoordinator extends ChangeNotifier {
     if (!task.canRetry || task.id == null) return;
     _cancelledIds.remove(task.id);
     task.status = StoryTemplateTranslationTaskStatus.queued;
+    task
+      ..leaseOwner = null
+      ..leaseUntil = null
+      ..nextRunAt = 0;
     task.stage = '等待重试';
     task.detail = StoryTemplateTranslationTaskDao.taskCheckpointDetail(task);
     task.error = '';
@@ -91,11 +98,14 @@ class StoryTemplateTranslationCoordinator extends ChangeNotifier {
     final id = task.id;
     if (id == null || task.isTerminal) return;
     _cancelledIds.add(id);
-    task.status = StoryTemplateTranslationTaskStatus.cancelled;
-    task.stage = '已取消';
-    task.detail = StoryTemplateTranslationTaskDao.taskCheckpointDetail(task);
-    task.log = _appendLog(task.log, '用户取消任务');
-    await _requireTaskDao().saveTask(task);
+    await _requireTaskDao().cancelTask(id);
+    task
+      ..status = StoryTemplateTranslationTaskStatus.cancelled
+      ..stage = '已取消'
+      ..detail = StoryTemplateTranslationTaskDao.taskCheckpointDetail(task)
+      ..log = _appendLog(task.log, '用户取消任务')
+      ..leaseOwner = null
+      ..leaseUntil = null;
     _sortTasks();
     notifyListeners();
   }
@@ -145,14 +155,28 @@ class StoryTemplateTranslationCoordinator extends ChangeNotifier {
   ) async {
     final id = task.id;
     if (id == null || !_runningIds.add(id)) return;
+    final leaseOwner = '$_workerId:$id';
     try {
+      final claimed = await _requireTaskDao().claimTask(
+        id,
+        leaseOwner: leaseOwner,
+        leaseDuration: _leaseDuration,
+      );
+      if (!claimed) return;
+      final claimedTask = await _requireTaskDao().getTask(id);
+      if (claimedTask == null) return;
+      final index = _tasks.indexWhere((item) => item.id == id);
+      if (index >= 0) _tasks[index] = claimedTask;
       await StoryTemplateTranslationTaskRunner(
         taskDao: _requireTaskDao(),
         templateDao: _requireTemplateDao(),
-        task: task,
+        task: claimedTask,
+        leaseOwner: leaseOwner,
+        leaseDuration: _leaseDuration,
         complete: complete,
         isCancelled: () =>
-            task.status == StoryTemplateTranslationTaskStatus.cancelled ||
+            claimedTask.status ==
+                StoryTemplateTranslationTaskStatus.cancelled ||
             _cancelledIds.contains(id),
         onChanged: () {
           _sortTasks();
@@ -203,6 +227,8 @@ class StoryTemplateTranslationTaskRunner {
   final StoryTemplateTranslationTaskDao taskDao;
   final StoryTemplateDao templateDao;
   final StoryTemplateTranslationTaskModel task;
+  final String leaseOwner;
+  final Duration leaseDuration;
   final StoryTemplateTranslationCall complete;
   final bool Function() isCancelled;
   final VoidCallback? onChanged;
@@ -212,6 +238,8 @@ class StoryTemplateTranslationTaskRunner {
     required this.taskDao,
     required this.templateDao,
     required this.task,
+    required this.leaseOwner,
+    this.leaseDuration = const Duration(minutes: 5),
     required this.complete,
     required this.isCancelled,
     this.onChanged,
@@ -252,6 +280,15 @@ class StoryTemplateTranslationTaskRunner {
           [sourceRole],
           translateToSimplifiedChinese: true,
           complete: _completeWithCancellation,
+          initialTranslatedFields: {
+            0: _resumeFieldCheckpoint(scope: 'role', roleIndex: index),
+          },
+          onFieldCheckpoint: (_, field, value) => _saveFieldCheckpoint(
+            scope: 'role',
+            roleIndex: index,
+            field: field,
+            value: value,
+          ),
           onProgress: (value) {
             task
               ..roleIndex = index
@@ -283,6 +320,7 @@ class StoryTemplateTranslationTaskRunner {
           ..stage = '角色已翻译'
           ..detail = '角色 ${index + 1}/${source.results.length}'
           ..progress = _progressFor(source.results.length, index + 1, 0)
+          ..fieldPayload = ''
           ..partialPayload = jsonEncode(
             StoryRoomTemplatePayload(results: translated).toJson(),
           );
@@ -303,6 +341,16 @@ class StoryTemplateTranslationTaskRunner {
             .translateToSimplifiedChinese(
           AssistantModel(name: '模板开场', openingMessage: opening),
           complete: _completeWithCancellation,
+          initialTranslatedFields: _resumeFieldCheckpoint(
+            scope: 'opening',
+            roleIndex: source.results.length,
+          ),
+          onFieldCheckpoint: (field, value) => _saveFieldCheckpoint(
+            scope: 'opening',
+            roleIndex: source.results.length,
+            field: field,
+            value: value,
+          ),
           onProgress: (value) {
             task
               ..fieldIndex = value.current
@@ -318,6 +366,9 @@ class StoryTemplateTranslationTaskRunner {
         _throwIfCancelled();
         final value = translatedOpening.openingMessage.trim();
         if (value.isNotEmpty) opening = value;
+        task.fieldPayload = '';
+        _checkpoint();
+        await _flush();
       }
 
       task
@@ -342,26 +393,39 @@ class StoryTemplateTranslationTaskRunner {
         sourceTitle: task.sourceTitle,
         translated: true,
       );
-      await templateDao.saveTemplate(copy);
       task
         ..outputTitle = title
-        ..outputTemplateId = copy.id
         ..status = StoryTemplateTranslationTaskStatus.completed
         ..stage = '已生成中文副本'
         ..detail = ''
         ..progress = 1
         ..error = '';
-      _checkpoint('中文副本已保存：$title');
-      await _flush();
-    } on _StoryTemplateTranslationCancelled {
-      if (task.status != StoryTemplateTranslationTaskStatus.cancelled) {
-        task
-          ..status = StoryTemplateTranslationTaskStatus.cancelled
-          ..stage = '已取消'
-          ..detail = StoryTemplateTranslationTaskDao.taskCheckpointDetail(task);
-        _checkpoint('翻译任务已取消');
+      task.log = _appendLog(task.log, '中文副本已保存：$title');
+      final outputId = await taskDao.completeWithTemplate(
+        task,
+        outputTemplate: copy,
+        leaseOwner: leaseOwner,
+      );
+      if (outputId == null) throw const _StoryTemplateTranslationLeaseLost();
+      task.outputTemplateId = outputId;
+      onChanged?.call();
+    } on RoleCardTranslationCancelled {
+      try {
         await _flush();
+      } on _StoryTemplateTranslationLeaseLost {
+        // UI/另一个 worker 可能已经清除了租约，等待队列结束即可。
       }
+      await taskDao.cancelTask(task.id!, leaseOwner: leaseOwner);
+      task
+        ..status = StoryTemplateTranslationTaskStatus.cancelled
+        ..stage = '已取消'
+        ..detail = StoryTemplateTranslationTaskDao.taskCheckpointDetail(task)
+        ..leaseOwner = null
+        ..leaseUntil = null;
+      onChanged?.call();
+    } on _StoryTemplateTranslationLeaseLost {
+      // 另一个前台/系统 worker 已接管，当前运行器立即静默停止。
+      return;
     } catch (error, stackTrace) {
       task
         ..status = StoryTemplateTranslationTaskStatus.failed
@@ -371,7 +435,7 @@ class StoryTemplateTranslationTaskRunner {
         task.log,
         '失败：${task.error}\n${stackTrace.toString().trim()}',
       );
-      _queueSave();
+      _queueSave(releaseLease: true);
       await _flush();
     }
   }
@@ -412,6 +476,51 @@ class StoryTemplateTranslationTaskRunner {
     }
   }
 
+  Map<String, String> _resumeFieldCheckpoint({
+    required String scope,
+    required int roleIndex,
+  }) {
+    final raw = task.fieldPayload.trim();
+    if (raw.isEmpty) return const {};
+    try {
+      final decoded = jsonDecode(raw);
+      if (decoded is! Map ||
+          decoded['scope'] != scope ||
+          decoded['roleIndex'] != roleIndex ||
+          decoded['fields'] is! Map) {
+        return const {};
+      }
+      return {
+        for (final entry in (decoded['fields'] as Map).entries)
+          if (entry.key is String && entry.value is String)
+            entry.key as String: entry.value as String,
+      };
+    } catch (_) {
+      return const {};
+    }
+  }
+
+  Future<void> _saveFieldCheckpoint({
+    required String scope,
+    required int roleIndex,
+    required String field,
+    required String value,
+  }) async {
+    final fields = Map<String, String>.from(_resumeFieldCheckpoint(
+      scope: scope,
+      roleIndex: roleIndex,
+    ));
+    fields[field] = value;
+    task.fieldPayload = jsonEncode({
+      'scope': scope,
+      'roleIndex': roleIndex,
+      'fields': fields,
+    });
+    _checkpoint(
+        '已保存字段检查点：${task.fieldLabel.isEmpty ? field : task.fieldLabel}');
+    await _flush();
+  }
+
   Future<String> _completeWithCancellation(String prompt) async {
     _throwIfCancelled();
     final response = await complete(prompt);
@@ -420,7 +529,7 @@ class StoryTemplateTranslationTaskRunner {
   }
 
   void _throwIfCancelled() {
-    if (isCancelled()) throw const _StoryTemplateTranslationCancelled();
+    if (isCancelled()) throw const RoleCardTranslationCancelled();
   }
 
   void _checkpoint([String? log]) {
@@ -441,8 +550,24 @@ class StoryTemplateTranslationTaskRunner {
     onChanged?.call();
   }
 
-  void _queueSave() {
-    _writes = _writes.catchError((_) {}).then((_) => taskDao.saveTask(task));
+  void _queueSave({bool releaseLease = false}) {
+    // task 会在翻译流程中持续变化；每次排队必须冻结当时快照，
+    // 否则早期检查点可能在执行时误读到后来的 completed 状态。
+    final snapshot = StoryTemplateTranslationTaskModel.fromJson(task.toJson());
+    _writes = _writes.then((_) async {
+      final saved = await taskDao.saveClaimedTask(
+        snapshot,
+        leaseOwner: leaseOwner,
+        leaseDuration: leaseDuration,
+        releaseLease: releaseLease,
+      );
+      if (!saved) throw const _StoryTemplateTranslationLeaseLost();
+      if (!releaseLease && task.leaseOwner == leaseOwner) {
+        task
+          ..leaseUntil = snapshot.leaseUntil
+          ..updatedAt = snapshot.updatedAt;
+      }
+    });
   }
 
   Future<void> _flush() => _writes;
@@ -509,6 +634,6 @@ class StoryTemplateTranslationTaskRunner {
   }
 }
 
-class _StoryTemplateTranslationCancelled implements Exception {
-  const _StoryTemplateTranslationCancelled();
+class _StoryTemplateTranslationLeaseLost implements Exception {
+  const _StoryTemplateTranslationLeaseLost();
 }
