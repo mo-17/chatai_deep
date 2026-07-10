@@ -1,6 +1,7 @@
 import 'package:chatgpt_app_core/db/hi_db_manager.dart';
 import 'package:chatgpt_app_core/db/table_name.dart';
 import 'package:chatgpt_app_core/model/story_template_model.dart';
+import 'package:chatgpt_app_core/sync/sync_tombstone_store.dart';
 
 class StoryTemplateDao implements ITable {
   final HiDBManager storage;
@@ -17,6 +18,7 @@ class StoryTemplateDao implements ITable {
         ', payload text, createdAt integer, updatedAt integer)');
     await storage.db.execute(
         'create index if not exists tb_story_template_kind_idx on tb_story_template(kind, updatedAt desc)');
+    await SyncTombstoneStore.ensure(storage.db);
     return StoryTemplateDao._(storage);
   }
 
@@ -60,6 +62,14 @@ class StoryTemplateDao implements ITable {
   }
 
   Future<void> deleteTemplate(int id) async {
-    await storage.db.delete(tableName, where: 'id = ?', whereArgs: [id]);
+    await storage.db.transaction((txn) async {
+      await SyncTombstoneStore.record(
+        txn,
+        entity: 'story_template',
+        id: id,
+        updatedAt: DateTime.now().millisecondsSinceEpoch,
+      );
+      await txn.delete(tableName, where: 'id = ?', whereArgs: [id]);
+    });
   }
 }

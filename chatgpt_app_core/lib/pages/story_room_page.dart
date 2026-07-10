@@ -21,9 +21,12 @@ import 'package:chatgpt_app_core/db/story_room_dao.dart';
 import 'package:chatgpt_app_core/db/usage_dao.dart';
 import 'package:chatgpt_app_core/model/ai_settings.dart';
 import 'package:chatgpt_app_core/model/assistant_model.dart';
+import 'package:chatgpt_app_core/model/story_quick_reply.dart';
 import 'package:chatgpt_app_core/model/story_room_model.dart';
 import 'package:chatgpt_app_core/provider/ai_settings_provider.dart';
 import 'package:chatgpt_app_core/pages/story_workbench_page.dart';
+import 'package:chatgpt_app_core/pages/story_prompt_manager_page.dart';
+import 'package:chatgpt_app_core/pages/story_quick_replies_page.dart';
 import 'package:chatgpt_app_core/util/avatar_asset_service.dart';
 import 'package:chatgpt_app_core/util/hi_dialog.dart';
 import 'package:chatgpt_app_core/widget/assistant_avatar.dart';
@@ -46,6 +49,7 @@ class StoryRoomPage extends StatefulWidget {
 
 class _StoryRoomPageState extends State<StoryRoomPage> {
   final _publicContextCtl = TextEditingController();
+  final _inputController = TextEditingController();
   StoryRoomDao? _dao;
   UsageRecordService? _usageRecordService;
   List<StoryParticipantModel> _participants = const [];
@@ -62,6 +66,7 @@ class _StoryRoomPageState extends State<StoryRoomPage> {
   String _inputText = '';
   List<String> _pendingImages = [];
   List<String> _pendingFiles = [];
+  String? _selectedQuickReplyGroupKey;
   final Set<int> _streamingMessageCreatedAt = {};
   late final StoryRoomReadAloudController _readAloudController;
   final StoryRoomToolRunner _toolRunner = StoryRoomToolRunner();
@@ -95,6 +100,7 @@ class _StoryRoomPageState extends State<StoryRoomPage> {
       ..removeListener(_onReadAloudChanged)
       ..dispose();
     _publicContextCtl.dispose();
+    _inputController.dispose();
     super.dispose();
   }
 
@@ -125,6 +131,8 @@ class _StoryRoomPageState extends State<StoryRoomPage> {
       if (room != null) {
         widget.room.activeMessageKey = room.activeMessageKey;
         widget.room.worldBookState = room.worldBookState;
+        widget.room.promptConfigJson = room.promptConfigJson;
+        widget.room.quickRepliesJson = room.quickRepliesJson;
       }
       _dao = dao;
       _usageRecordService = usageRecordService;
@@ -153,6 +161,8 @@ class _StoryRoomPageState extends State<StoryRoomPage> {
       if (room != null) {
         widget.room.activeMessageKey = room.activeMessageKey;
         widget.room.worldBookState = room.worldBookState;
+        widget.room.promptConfigJson = room.promptConfigJson;
+        widget.room.quickRepliesJson = room.quickRepliesJson;
       }
       _allMessages = allMessages;
       _messages = messages;
@@ -196,6 +206,8 @@ class _StoryRoomPageState extends State<StoryRoomPage> {
               if (value == 'participant') _addAssistantParticipant();
               if (value == 'reply') _editTavernReplyMode();
               if (value == 'model') _editRoomModelSettings();
+              if (value == 'prompts') _openPromptManager();
+              if (value == 'quick_replies') _openQuickReplies();
               if (value == 'branches') _showStoryBranches();
               if (value == 'workbench') {
                 Navigator.push(
@@ -237,6 +249,22 @@ class _StoryRoomPageState extends State<StoryRoomPage> {
                 child: ListTile(
                   leading: Icon(Icons.tune_outlined),
                   title: Text('模型与生成参数'),
+                  contentPadding: EdgeInsets.zero,
+                ),
+              ),
+              const PopupMenuItem(
+                value: 'prompts',
+                child: ListTile(
+                  leading: Icon(Icons.view_list_outlined),
+                  title: Text('提示词编排'),
+                  contentPadding: EdgeInsets.zero,
+                ),
+              ),
+              const PopupMenuItem(
+                value: 'quick_replies',
+                child: ListTile(
+                  leading: Icon(Icons.bolt_outlined),
+                  title: Text('快捷回复'),
                   contentPadding: EdgeInsets.zero,
                 ),
               ),
@@ -694,8 +722,13 @@ class _StoryRoomPageState extends State<StoryRoomPage> {
               ),
               const SizedBox(height: 8),
             ],
+            if (_quickReplyGroups.isNotEmpty) ...[
+              _quickReplyBar,
+              const SizedBox(height: 6),
+            ],
             MessageInputWidget(
               _isTavern ? '输入对话或场景动作' : '输入剧情、台词或创作指令',
+              controller: _inputController,
               enable: !_sending,
               isStreaming: _sending,
               onChanged: (value) => _inputText = value,
@@ -737,6 +770,110 @@ class _StoryRoomPageState extends State<StoryRoomPage> {
       avatarValue: item.avatarValue,
       radius: radius,
     );
+  }
+
+  List<StoryQuickReplyGroupModel> get _quickReplyGroups =>
+      StoryQuickReplyCollectionModel.tryParse(widget.room.quickRepliesJson)
+          .sortedGroups(enabledOnly: true)
+          .where((group) => group.sortedItems(enabledOnly: true).isNotEmpty)
+          .toList(growable: false);
+
+  StoryQuickReplyGroupModel? get _selectedQuickReplyGroup {
+    final groups = _quickReplyGroups;
+    if (groups.isEmpty) return null;
+    for (final group in groups) {
+      if (group.key == _selectedQuickReplyGroupKey) return group;
+    }
+    return groups.first;
+  }
+
+  Widget get _quickReplyBar {
+    final groups = _quickReplyGroups;
+    final selected = _selectedQuickReplyGroup ?? groups.first;
+    final replies = selected.sortedItems(enabledOnly: true);
+    return SizedBox(
+      height: 38,
+      child: Row(
+        children: [
+          if (groups.length > 1)
+            SizedBox(
+              width: 108,
+              child: DropdownButtonHideUnderline(
+                child: DropdownButton<String>(
+                  isExpanded: true,
+                  value: selected.key,
+                  items: [
+                    for (final group in groups)
+                      DropdownMenuItem(
+                        value: group.key,
+                        child: Text(
+                          group.label.isEmpty ? '快捷回复' : group.label,
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                        ),
+                      ),
+                  ],
+                  onChanged: _sending
+                      ? null
+                      : (value) =>
+                          setState(() => _selectedQuickReplyGroupKey = value),
+                ),
+              ),
+            )
+          else
+            Padding(
+              padding: const EdgeInsets.only(right: 6),
+              child: Text(
+                selected.label.isEmpty ? '快捷回复' : selected.label,
+                style: Theme.of(context).textTheme.labelMedium,
+              ),
+            ),
+          Expanded(
+            child: ListView.separated(
+              scrollDirection: Axis.horizontal,
+              itemCount: replies.length,
+              separatorBuilder: (_, __) => const SizedBox(width: 6),
+              itemBuilder: (_, index) {
+                final reply = replies[index];
+                return ActionChip(
+                  avatar: reply.sendImmediately
+                      ? const Icon(Icons.send_outlined, size: 15)
+                      : null,
+                  label: Text(
+                    reply.label.trim().isEmpty ? reply.content : reply.label,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                  ),
+                  onPressed: _sending
+                      ? null
+                      : () => unawaited(_applyQuickReply(reply)),
+                );
+              },
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Future<void> _applyQuickReply(StoryQuickReplyModel reply) async {
+    final current = _inputController.text;
+    final resolved = reply.resolveContent(
+      char: _selectedParticipant?.name ?? '',
+      user: '我',
+      room: widget.room.title,
+      input: current,
+    );
+    if (resolved.trim().isEmpty) return;
+    final next = current.trim().isEmpty || reply.content.contains('{{input}}')
+        ? resolved
+        : '$current\n$resolved';
+    _inputController.value = TextEditingValue(
+      text: next,
+      selection: TextSelection.collapsed(offset: next.length),
+    );
+    _inputText = next;
+    if (reply.sendImmediately) await _send();
   }
 
   Widget _avatarForMessage(StoryMessageModel message, {double radius = 18}) {
@@ -1932,6 +2069,40 @@ class _StoryRoomPageState extends State<StoryRoomPage> {
     );
   }
 
+  Future<void> _openPromptManager() async {
+    final dao = _dao;
+    if (dao == null) return;
+    await Navigator.push(
+      context,
+      MaterialPageRoute(
+        builder: (_) => StoryPromptManagerPage(
+          room: widget.room,
+          onSave: (room) async {
+            await dao.saveRoom(room);
+          },
+        ),
+      ),
+    );
+    if (mounted) setState(() {});
+  }
+
+  Future<void> _openQuickReplies() async {
+    final dao = _dao;
+    if (dao == null) return;
+    await Navigator.push(
+      context,
+      MaterialPageRoute(
+        builder: (_) => StoryQuickRepliesPage(
+          room: widget.room,
+          onSave: (room) async {
+            await dao.saveRoom(room);
+          },
+        ),
+      ),
+    );
+    if (mounted) setState(() {});
+  }
+
   Future<void> _send() async {
     final dao = _dao;
     final manualSpeaker = _selectedParticipant;
@@ -1965,6 +2136,7 @@ class _StoryRoomPageState extends State<StoryRoomPage> {
         _pendingFiles = [];
       });
     }
+    _inputController.clear();
     final attachmentBundle = await StoryRoomAttachmentService.prepare(
       imagePaths: pendingImages,
       filePaths: pendingFiles,
@@ -2194,15 +2366,13 @@ class _StoryRoomPageState extends State<StoryRoomPage> {
       latestInput: input,
       recentMessages: historyMessages,
     );
-    final system = contextResult.prompt;
-    final history = [
-      {'role': 'system', 'content': system},
-      ...StoryContextBuilder.history(
+    final history = contextResult.applyToHistory(
+      StoryContextBuilder.history(
         historyMessages,
         room: widget.room,
         speaker: speaker,
       ),
-    ];
+    );
     final message = StoryMessageModel(
       roomId: widget.room.id!,
       speakerId: speaker.id,
@@ -2232,8 +2402,9 @@ class _StoryRoomPageState extends State<StoryRoomPage> {
     final citationUrls = <String>{};
     Object? streamError;
     final done = Completer<void>();
-    final speakerPrompt =
-        StoryContextBuilder.promptFor(input: input, speaker: speaker);
+    final speakerPrompt = contextResult.inputPrompt.trim().isEmpty
+        ? StoryContextBuilder.promptFor(input: input, speaker: speaker)
+        : contextResult.inputPrompt;
     final stream = _toolRunner.run(
       speakerAssistantId: speaker.assistantId,
       settings: speakerSettings,

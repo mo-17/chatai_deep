@@ -2,6 +2,8 @@ import 'dart:convert';
 
 import 'package:chatgpt_app_core/db/story_room_dao.dart';
 import 'package:chatgpt_app_core/model/assistant_model.dart';
+import 'package:chatgpt_app_core/model/story_prompt_config.dart';
+import 'package:chatgpt_app_core/model/story_quick_reply.dart';
 import 'package:chatgpt_app_core/model/story_room_model.dart';
 import 'package:chatgpt_app_core/model/story_template_model.dart';
 
@@ -87,6 +89,8 @@ class StoryRoomRoleCardImporter {
           : StoryReplyMode.autoSingle,
       maxAutoReplies: multiParticipant ? 2 : 1,
       publicContext: buildPublicContext(assistant, tavernMeta: effectiveMeta),
+      promptConfigJson: promptConfigJsonForAssistant(assistant),
+      quickRepliesJson: quickRepliesJsonForAssistant(assistant),
     );
     if (participants.isEmpty) {
       participants.add(StoryParticipantModel(
@@ -145,6 +149,12 @@ class StoryRoomRoleCardImporter {
       replyMode: StoryReplyMode.autoMulti,
       maxAutoReplies: 2,
       publicContext: buildBatchPublicContext(results),
+      promptConfigJson: _firstNonEmpty(
+        results.map((item) => promptConfigJsonForAssistant(item.assistant)),
+      ),
+      quickRepliesJson: _firstNonEmpty(
+        results.map((item) => quickRepliesJsonForAssistant(item.assistant)),
+      ),
     );
     final participants = <StoryParticipantModel>[];
     var sortOrder = 0;
@@ -196,6 +206,39 @@ class StoryRoomRoleCardImporter {
       title: title,
     ).participants.length;
   }
+
+  static String promptConfigJsonForAssistant(AssistantModel assistant) {
+    final extensions =
+        AssistantRoleCardService.tavernDeclarativeExtensions(assistant);
+    const keys = {
+      'prompt_manager',
+      'promptManager',
+      'prompt_order',
+      'promptOrder',
+      'prompts',
+    };
+    if (!keys.any(extensions.containsKey)) return '';
+    return StoryPromptConfigCodec.encode(
+      StoryPromptConfigCodec.fromTavernExtensions(extensions),
+    );
+  }
+
+  static String quickRepliesJsonForAssistant(AssistantModel assistant) {
+    final extensions =
+        AssistantRoleCardService.tavernDeclarativeExtensions(assistant);
+    if (!extensions.containsKey('quick_replies') &&
+        !extensions.containsKey('quickReplies')) {
+      return '';
+    }
+    final collection =
+        StoryQuickReplyCollectionModel.fromTavernExtensions(extensions);
+    return collection.groups.isEmpty ? '' : collection.toJsonString();
+  }
+
+  static String _firstNonEmpty(Iterable<String> values) => values.firstWhere(
+        (value) => value.trim().isNotEmpty,
+        orElse: () => '',
+      );
 
   static List<StoryParticipantModel> resolveParticipantsForAssistant(
     AssistantModel assistant, {
@@ -595,6 +638,8 @@ class StoryRoomRoleCardImportService {
     required String title,
     AssistantRoleCardTavernMeta? tavernMeta,
     String? initialOpening,
+    String? promptConfigJson,
+    String? quickRepliesJson,
   }) async {
     final plan = StoryRoomRoleCardImporter.buildPlan(
       assistant,
@@ -602,6 +647,12 @@ class StoryRoomRoleCardImportService {
       title: title,
       tavernMeta: tavernMeta,
     );
+    if (promptConfigJson != null) {
+      plan.room.promptConfigJson = promptConfigJson;
+    }
+    if (quickRepliesJson != null) {
+      plan.room.quickRepliesJson = quickRepliesJson;
+    }
     final roomId = await dao.saveRoom(plan.room);
     for (final participant in plan.participants) {
       participant.roomId = roomId;
@@ -627,12 +678,20 @@ class StoryRoomRoleCardImportService {
     List<AssistantRoleCardImportResult> results, {
     required String title,
     String? initialOpening,
+    String? promptConfigJson,
+    String? quickRepliesJson,
   }) async {
     final plan = StoryRoomRoleCardImporter.buildBatchPlan(
       results,
       roomId: 0,
       title: title,
     );
+    if (promptConfigJson != null) {
+      plan.room.promptConfigJson = promptConfigJson;
+    }
+    if (quickRepliesJson != null) {
+      plan.room.quickRepliesJson = quickRepliesJson;
+    }
     final roomId = await dao.saveRoom(plan.room);
     for (final participant in plan.participants) {
       participant.roomId = roomId;
@@ -666,25 +725,37 @@ class StoryRoomRoleCardImportService {
         title: roomTitle,
         tavernMeta: data.results.single.tavernMeta,
         initialOpening: data.initialOpening,
+        promptConfigJson:
+            data.promptConfigJson.trim().isEmpty ? null : data.promptConfigJson,
+        quickRepliesJson:
+            data.quickRepliesJson.trim().isEmpty ? null : data.quickRepliesJson,
       );
     }
     return importBatchAsTavernRoom(
       data.results,
       title: roomTitle,
       initialOpening: data.initialOpening,
+      promptConfigJson:
+          data.promptConfigJson.trim().isEmpty ? null : data.promptConfigJson,
+      quickRepliesJson:
+          data.quickRepliesJson.trim().isEmpty ? null : data.quickRepliesJson,
     );
   }
 }
 
 class StoryRoomTemplatePayload {
-  static const formatVersion = 1;
+  static const formatVersion = 2;
 
   final List<AssistantRoleCardImportResult> results;
   final String initialOpening;
+  final String promptConfigJson;
+  final String quickRepliesJson;
 
   const StoryRoomTemplatePayload({
     required this.results,
     this.initialOpening = '',
+    this.promptConfigJson = '',
+    this.quickRepliesJson = '',
   });
 
   factory StoryRoomTemplatePayload.fromTemplate(StoryTemplateModel template) {
@@ -706,6 +777,8 @@ class StoryRoomTemplatePayload {
             ]
           : const [],
       initialOpening: json['initialOpening'] as String? ?? '',
+      promptConfigJson: json['promptConfigJson'] as String? ?? '',
+      quickRepliesJson: json['quickRepliesJson'] as String? ?? '',
     );
   }
 
@@ -725,6 +798,8 @@ class StoryRoomTemplatePayload {
   Map<String, dynamic> toJson() => {
         'formatVersion': formatVersion,
         'initialOpening': initialOpening,
+        'promptConfigJson': promptConfigJson,
+        'quickRepliesJson': quickRepliesJson,
         'results': results.map(_resultToJson).toList(),
       };
 

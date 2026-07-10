@@ -493,8 +493,8 @@ class AssistantRoleCardService {
     return rawCard == null ? null : _tavernMetaFromDecoded(rawCard);
   }
 
-  /// 识别需要沙箱/插件宿主的 Tavern 扩展。导入时保留原始数据，但移动端不会
-  /// 直接执行第三方脚本、正则替换脚本、快捷指令或 Prompt Manager 配置。
+  /// 识别仍需要沙箱/插件宿主的 Tavern 扩展。Prompt Manager 与纯文本
+  /// Quick Replies 由受控解析器消费；第三方脚本、正则替换和快捷命令不执行。
   static TavernExtensionSafetyReport extensionSafetyReport(
     AssistantModel assistant,
   ) {
@@ -525,15 +525,25 @@ class AssistantRoleCardService {
     );
   }
 
+  /// 返回角色卡中的声明式 Tavern 扩展副本，供受控 Prompt Manager、
+  /// Quick Replies 等解析器读取。这里只复制 JSON，不执行脚本或命令。
+  static Map<String, dynamic> tavernDeclarativeExtensions(
+    AssistantModel assistant,
+  ) {
+    final raw = _tavernRawCardPayload(assistant.memoryBook);
+    if (raw == null) return const {};
+    final data = _mapStringDynamic(raw['data']) ?? raw;
+    final extensions = _mapStringDynamic(data['extensions']);
+    return extensions == null ? const {} : _copyJsonMap(extensions);
+  }
+
   static const Map<String, String> _tavernExecutableExtensionLabels = {
     'scripts': '脚本',
     'javascript': 'JavaScript',
     'regex_scripts': 'Regex Scripts',
     'regexscripts': 'Regex Scripts',
-    'quick_replies': 'Quick Replies',
-    'quickreplies': 'Quick Replies',
-    'prompt_manager': 'Prompt Manager',
-    'promptmanager': 'Prompt Manager',
+    'quick_replies': 'Quick Replies 命令',
+    'quickreplies': 'Quick Replies 命令',
   };
 
   /// 移除仅用于往返导出的内部标记，供运行时世界书消费方使用。
@@ -3252,7 +3262,7 @@ class TavernExtensionSafetyReport {
   bool get hasBlockedExtensions => blockedExtensionLabels.isNotEmpty;
 
   String get warningText => hasBlockedExtensions
-      ? '检测到 ${blockedExtensionLabels.join('、')}；数据会保留用于往返导出，但不会在 App 内执行。'
+      ? '检测到 ${blockedExtensionLabels.join('、')}；仅安全声明式文本会启用，脚本和命令不会执行。'
       : '';
 }
 

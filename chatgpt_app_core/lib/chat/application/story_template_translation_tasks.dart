@@ -331,7 +331,11 @@ class StoryTemplateTranslationTaskRunner {
           ..progress = _progressFor(source.results.length, index + 1, 0)
           ..fieldPayload = ''
           ..partialPayload = jsonEncode(
-            StoryRoomTemplatePayload(results: translated).toJson(),
+            StoryRoomTemplatePayload(
+              results: translated,
+              promptConfigJson: source.promptConfigJson,
+              quickRepliesJson: source.quickRepliesJson,
+            ).toJson(),
           );
         _checkpoint();
         await _flush();
@@ -397,6 +401,8 @@ class StoryTemplateTranslationTaskRunner {
       final copy = StoryRoomTemplatePayload(
         results: translated,
         initialOpening: opening,
+        promptConfigJson: source.promptConfigJson,
+        quickRepliesJson: source.quickRepliesJson,
       ).toTemplate(
         title: title,
         sourceTitle: task.sourceTitle,

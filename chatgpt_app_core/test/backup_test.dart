@@ -141,6 +141,8 @@ void main() {
       replyMode: StoryReplyMode.autoMulti,
       maxAutoReplies: 3,
       publicContext: '旧城区的雨夜酒馆',
+      promptConfigJson: '{"version":1,"modules":[]}',
+      quickRepliesJson: '{"roomId":0,"groups":[]}',
     );
     final roomId = await dao.saveRoom(room);
     final participant = StoryParticipantModel(
@@ -249,6 +251,8 @@ void main() {
       expect(messages.single['nodeKey'], isNotEmpty);
       final restoredRoom = (await dst.db.query('tb_story_room')).single;
       expect(restoredRoom['activeMessageKey'], messages.single['nodeKey']);
+      expect(restoredRoom['promptConfigJson'], '{"version":1,"modules":[]}');
+      expect(restoredRoom['quickRepliesJson'], '{"roomId":0,"groups":[]}');
       final restoredRoomId = messages.single['roomId'] as int;
       final artifacts = await dst.db.query('tb_story_artifact');
       expect(artifacts, hasLength(1));

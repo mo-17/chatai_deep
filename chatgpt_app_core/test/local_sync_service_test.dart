@@ -10,11 +10,13 @@ import 'package:chatgpt_app_core/db/conversation_dao.dart';
 import 'package:chatgpt_app_core/db/hi_db_manager.dart';
 import 'package:chatgpt_app_core/db/project_dao.dart';
 import 'package:chatgpt_app_core/db/story_room_dao.dart';
+import 'package:chatgpt_app_core/db/story_template_dao.dart';
 import 'package:chatgpt_app_core/db/story_template_translation_task_dao.dart';
 import 'package:chatgpt_app_core/model/conversation_model.dart';
 import 'package:chatgpt_app_core/model/assistant_model.dart';
 import 'package:chatgpt_app_core/model/project_model.dart';
 import 'package:chatgpt_app_core/model/story_room_model.dart';
+import 'package:chatgpt_app_core/model/story_template_model.dart';
 import 'package:chatgpt_app_core/model/story_artifact_model.dart';
 import 'package:chatgpt_app_core/model/story_template_translation_task_model.dart';
 import 'package:chatgpt_app_core/sync/local_sync_service.dart';
@@ -306,6 +308,14 @@ void main() {
       where: 'nodeKey = ?',
       whereArgs: ['remote-message'],
     );
+    final room = (await storage.db.query(
+      'tb_story_room',
+      where: 'id = ?',
+      whereArgs: [10],
+    ))
+        .single;
+    expect(room['promptConfigJson'], '');
+    expect(room['quickRepliesJson'], '');
     expect(participant.single['roomId'], 10);
     expect(
       participant.single['participantKey'],
@@ -383,6 +393,48 @@ void main() {
       whereArgs: [11],
     );
     expect(localRoom.single['title'], '本地标题');
+    await storage.db.close();
+  });
+
+  test('酒馆模板 payload 可跨设备同步并为本地删除生成墓碑', () async {
+    final storage = await newDb();
+    final sync = LocalSyncService(storage);
+    final result = await sync.applyRemoteChanges([
+      const SyncChange(
+        entity: 'story_template',
+        id: '7',
+        op: SyncOp.upsert,
+        updatedAt: 200,
+        payload: {
+          'id': 7,
+          'title': '远端酒馆模板',
+          'sourceTitle': '来源',
+          'kind': StoryTemplateKind.tavernRoom,
+          'translated': 0,
+          'payload':
+              '{"formatVersion":2,"promptConfigJson":"prompt","quickRepliesJson":"quick","results":[]}',
+          'createdAt': 100,
+          'updatedAt': 200,
+        },
+      ),
+    ]);
+    expect(result.accepted.single.key, 'story_template:7');
+    final row = (await storage.db.query(
+      'tb_story_template',
+      where: 'id = ?',
+      whereArgs: [7],
+    ))
+        .single;
+    expect('${row['payload']}', contains('promptConfigJson'));
+
+    final dao = await StoryTemplateDao.create(storage);
+    await dao.deleteTemplate(7);
+    final changes = await sync.exportChanges();
+    final deletion = changes.singleWhere(
+      (change) =>
+          change.entity == 'story_template' && change.op == SyncOp.delete,
+    );
+    expect(deletion.id, '7');
     await storage.db.close();
   });
 

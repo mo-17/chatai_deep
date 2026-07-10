@@ -745,6 +745,8 @@ class _StoryRoomListPageState extends State<StoryRoomListPage> {
     template.payload = StoryRoomTemplatePayload(
       results: payload.results,
       initialOpening: opening,
+      promptConfigJson: payload.promptConfigJson,
+      quickRepliesJson: payload.quickRepliesJson,
     )
         .toTemplate(
           title: template.title,
@@ -1051,6 +1053,8 @@ class _StoryTemplateTranslationCoordinator extends ChangeNotifier {
       final copy = StoryRoomTemplatePayload(
         results: translatedResults,
         initialOpening: translatedOpening,
+        promptConfigJson: payload.promptConfigJson,
+        quickRepliesJson: payload.quickRepliesJson,
       ).toTemplate(
         title: title,
         sourceTitle: template.sourceTitle.trim().isEmpty
@@ -1867,6 +1871,8 @@ class _StoryTemplateEditorPageState extends State<_StoryTemplateEditorPage> {
         StoryRoomTemplatePayload(
           results: _roles,
           initialOpening: _openingController.text.trim(),
+          promptConfigJson: widget.payload.promptConfigJson,
+          quickRepliesJson: widget.payload.quickRepliesJson,
         ).toJson(),
       ),
       createdAt: widget.template.createdAt,

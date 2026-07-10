@@ -4,6 +4,7 @@ import 'package:chatgpt_app_core/chat/application/assistant_role_card_service.da
 import 'package:chatgpt_app_core/chat/application/story_room_role_card_importer.dart';
 import 'package:chatgpt_app_core/chat/application/story_context_window.dart';
 import 'package:chatgpt_app_core/chat/application/story_room_attachments.dart';
+import 'package:chatgpt_app_core/model/story_prompt_config.dart';
 import 'package:chatgpt_app_core/model/story_room_model.dart';
 import 'package:chatgpt_app_core/model/world_book.dart';
 
@@ -11,12 +12,36 @@ class StoryContextBuildResult {
   final String prompt;
   final WorldBookRuntimeState worldBookState;
   final List<AssistantMemoryEntryPreview> worldBookHits;
+  final List<Map<String, dynamic>> leadingMessages;
+  final List<StoryPromptMessage> historyDepthMessages;
+  final bool includeHistory;
+  final String inputPrompt;
 
   const StoryContextBuildResult({
     required this.prompt,
     required this.worldBookState,
     required this.worldBookHits,
+    this.leadingMessages = const [],
+    this.historyDepthMessages = const [],
+    this.includeHistory = true,
+    this.inputPrompt = '',
   });
+
+  List<Map<String, dynamic>> applyToHistory(
+    List<Map<String, dynamic>> chatHistory,
+  ) {
+    final chat = <Map<String, dynamic>>[
+      if (includeHistory) ...chatHistory,
+    ];
+    for (final message in historyDepthMessages) {
+      final insertAt = (chat.length - message.depth).clamp(0, chat.length);
+      chat.insert(insertAt, {
+        'role': message.role,
+        'content': message.content,
+      });
+    }
+    return [...leadingMessages, ...chat];
+  }
 }
 
 class StoryContextBuilder {
@@ -44,44 +69,46 @@ class StoryContextBuilder {
   }) {
     final isTavern = room.mode == StoryRoomMode.tavern;
     final contextWindow = StoryContextWindow.fromMessages(recentMessages);
-    final buffer = StringBuffer()
+    final decoded = StoryPromptConfigCodec.decode(room.promptConfigJson);
+    final modules = _withRequiredPromptRules(decoded.modules);
+    final rules = StringBuffer()
       ..writeln(isTavern ? '你正在一个酒馆角色扮演房间中对话。' : '你正在一个小说创作房间中协作。')
-      ..writeln('当前房间：${room.title}')
       ..writeln(isTavern ? '酒馆规则：' : '创作规则：')
       ..writeln('- 只以当前发言者身份输出，不要替其他角色做决定。')
       ..writeln('- 可以参考历史对话和公共设定，但不要混淆不同发言者的身份。')
       ..writeln('- 如果当前发言者是角色，只写该角色的台词、动作、心理或反应。');
     if (isTavern) {
-      buffer
+      rules
         ..writeln('- 不要以作者、旁白或系统解说身份输出，除非用户明确要求。')
         ..writeln('- 不要总结创作建议，优先保持沉浸式角色互动。');
     } else {
-      buffer
+      rules
         ..writeln('- 如果当前发言者是旁白，负责场景、动作、氛围和转场。')
         ..writeln('- 如果当前发言者是作者，负责续写、改写、剧情推进和创作建议。');
     }
     final worldBook = _worldBookSection(room.publicContext);
     final publicContext = _withoutWorldBookSection(room.publicContext).trim();
+    final roomSection = StringBuffer()..writeln('当前房间：${room.title}');
     if (publicContext.isNotEmpty) {
-      buffer
+      roomSection
         ..writeln()
         ..writeln(isTavern ? '【公共上下文 / 场景设定】' : '【公共上下文 / 世界设定】')
         ..writeln(publicContext);
     }
     final continuitySummary = contextWindow.summary();
-    if (continuitySummary.isNotEmpty) {
-      buffer
-        ..writeln()
-        ..writeln('【长期剧情记忆】')
-        ..writeln(continuitySummary);
-    }
+    final continuitySection =
+        continuitySummary.isEmpty ? '' : '【长期剧情记忆】\n$continuitySummary';
     final maxEntries = _worldBookHitLimit(room);
     final recentTexts = _recentMatchTexts(
       contextWindow.recentMessages,
       maxDepth: _worldBookScanDepth(room),
     );
     final previousWorldBookState = _decodeWorldBookState(room.worldBookState);
-    final worldBookMatch = worldBook.isEmpty
+    final worldBookEnabled = modules.any((module) =>
+        module.enabled &&
+        (module.builtInSlot == StoryPromptBuiltInSlot.worldBookBefore ||
+            module.builtInSlot == StoryPromptBuiltInSlot.worldBookAfter));
+    final worldBookMatch = worldBook.isEmpty || !worldBookEnabled
         ? _WorldBookMatchBundle(
             const [],
             previousWorldBookState,
@@ -108,53 +135,115 @@ class StoryContextBuilder {
     final afterCharHits = budgetedWorldBookHits
         .where((hit) => _isAfterCharWorldBookPosition(hit.position))
         .toList();
-    if (beforeCharHits.isNotEmpty) {
-      buffer
-        ..writeln()
-        ..writeln('【本轮命中世界书】')
-        ..writeln(AssistantRoleCardService.memoryHitCopyText(beforeCharHits));
-    }
+    final worldBookBeforeSection = beforeCharHits.isEmpty
+        ? ''
+        : '【本轮命中世界书】\n'
+            '${AssistantRoleCardService.memoryHitCopyText(beforeCharHits)}';
     final roster = participants.where((item) => item.enabled).map((item) {
       final role = StoryParticipantRole.labelOf(item.role);
       return '- $role：${item.name}';
     }).join('\n');
-    if (roster.isNotEmpty) {
-      buffer
-        ..writeln()
-        ..writeln('【房间参与者】')
-        ..writeln(roster);
-    }
+    final participantsSection = roster.isEmpty ? '' : '【房间参与者】\n$roster';
     final roleStates = _roleStateSection(participants);
-    if (roleStates.isNotEmpty) {
-      buffer
-        ..writeln()
-        ..writeln('【当前分支角色长期状态】')
-        ..writeln('这些状态只属于当前故事分支；延续关系、情绪、身体状态和未完成动作。')
-        ..writeln(roleStates);
-    }
-    buffer
-      ..writeln()
+    final roleStatesSection = roleStates.isEmpty
+        ? ''
+        : '【当前分支角色长期状态】\n'
+            '这些状态只属于当前故事分支；延续关系、情绪、身体状态和未完成动作。\n'
+            '$roleStates';
+    final speakerSection = StringBuffer()
       ..writeln('【当前发言者】')
       ..writeln(
           '${StoryParticipantRole.labelOf(speaker.role)}：${speaker.name}');
-    final prompt = _speakerPrompt(speaker).trim();
-    if (prompt.isNotEmpty) {
-      buffer
+    final speakerPrompt = _speakerPrompt(speaker).trim();
+    if (speakerPrompt.isNotEmpty) {
+      speakerSection
         ..writeln()
         ..writeln('【当前发言者人设 / 写作职责】')
-        ..writeln(prompt);
+        ..writeln(speakerPrompt);
     }
-    if (afterCharHits.isNotEmpty) {
-      buffer
-        ..writeln()
-        ..writeln('【本轮命中世界书 / 角色后置】')
-        ..writeln(AssistantRoleCardService.memoryHitCopyText(afterCharHits));
-    }
+    final worldBookAfterSection = afterCharHits.isEmpty
+        ? ''
+        : '【本轮命中世界书 / 角色后置】\n'
+            '${AssistantRoleCardService.memoryHitCopyText(afterCharHits)}';
+    final variables = StoryPromptVariables(
+      character: speaker.name,
+      user: '我',
+      room: room.title,
+      input: latestInput,
+    );
+    final relativeModules = modules
+        .where((module) =>
+            module.builtInSlot != StoryPromptBuiltInSlot.history &&
+            module.builtInSlot != StoryPromptBuiltInSlot.input)
+        .toList(growable: false);
+    final composition = StoryPromptComposer.compose(
+      StoryPromptConfig(modules: relativeModules),
+      builtInSlots: {
+        StoryPromptBuiltInSlot.rules: rules.toString().trim(),
+        StoryPromptBuiltInSlot.room: roomSection.toString().trim(),
+        StoryPromptBuiltInSlot.continuity: continuitySection,
+        StoryPromptBuiltInSlot.worldBookBefore: worldBookBeforeSection,
+        StoryPromptBuiltInSlot.participants: participantsSection,
+        StoryPromptBuiltInSlot.roleStates: roleStatesSection,
+        StoryPromptBuiltInSlot.speaker: speakerSection.toString().trim(),
+        StoryPromptBuiltInSlot.worldBookAfter: worldBookAfterSection,
+      },
+      variables: variables,
+    );
+    final inputModules = modules
+        .where((module) =>
+            module.enabled &&
+            module.builtInSlot == StoryPromptBuiltInSlot.input)
+        .toList(growable: false);
+    final inputComposition = StoryPromptComposer.compose(
+      StoryPromptConfig(modules: inputModules),
+      builtInSlots: {
+        StoryPromptBuiltInSlot.input:
+            promptFor(input: latestInput, speaker: speaker),
+      },
+      variables: variables,
+    );
+    final inputPrompt = inputComposition.messages.isEmpty
+        ? latestInput
+        : inputComposition.messages.map((item) => item.content).join('\n\n');
+    final includeHistory = modules.any((module) =>
+        module.enabled && module.builtInSlot == StoryPromptBuiltInSlot.history);
+    final leadingMessages = [
+      for (final message in composition.systemMessages)
+        {'role': message.role, 'content': message.content},
+    ];
+    final mergedPrompt =
+        composition.systemMessages.map((item) => item.content).join('\n\n');
     return StoryContextBuildResult(
-      prompt: buffer.toString().trim(),
+      prompt: mergedPrompt,
       worldBookState: worldBookMatch.state,
       worldBookHits: budgetedWorldBookHits,
+      leadingMessages: leadingMessages,
+      historyDepthMessages: composition.historyDepthMessages,
+      includeHistory: includeHistory,
+      inputPrompt: inputPrompt,
     );
+  }
+
+  static List<StoryPromptModule> _withRequiredPromptRules(
+    List<StoryPromptModule> modules,
+  ) {
+    final result = List<StoryPromptModule>.from(modules);
+    final index = result.indexWhere(
+      (module) => module.builtInSlot == StoryPromptBuiltInSlot.rules,
+    );
+    if (index < 0) {
+      result.insert(0, StoryPromptConfigCodec.defaultModules.first);
+    } else if (!result[index].enabled ||
+        result[index].role != StoryPromptRole.system ||
+        result[index].placement != StoryPromptPlacement.system) {
+      result[index] = result[index].copyWith(
+        enabled: true,
+        role: StoryPromptRole.system,
+        placement: StoryPromptPlacement.system,
+      );
+    }
+    return result;
   }
 
   static List<Map<String, dynamic>> history(

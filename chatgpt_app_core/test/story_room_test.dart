@@ -12,6 +12,8 @@ import 'package:chatgpt_app_core/db/story_room_dao.dart';
 import 'package:chatgpt_app_core/db/story_template_dao.dart';
 import 'package:chatgpt_app_core/model/ai_settings.dart';
 import 'package:chatgpt_app_core/model/assistant_model.dart';
+import 'package:chatgpt_app_core/model/story_prompt_config.dart';
+import 'package:chatgpt_app_core/model/story_quick_reply.dart';
 import 'package:chatgpt_app_core/model/story_room_model.dart';
 import 'package:chatgpt_app_core/model/story_template_model.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -35,10 +37,12 @@ void main() {
       final room = StoryRoomModel(
         title: '雨夜书店',
         mode: StoryRoomMode.tavern,
+        publicContext: '【关键词记忆 / 世界书】\n钟声 => 门会自动打开。',
         replyMode: StoryReplyMode.autoMulti,
         maxAutoReplies: 3,
-        publicContext: '现代奇幻',
         worldBookState: '{"activations":[]}',
+        promptConfigJson: '{"version":1,"modules":[]}',
+        quickRepliesJson: '{"roomId":0,"groups":[]}',
         modelProviderId: 'deepseek',
         modelId: 'deepseek-v4-pro',
         temperature: 0.7,
@@ -91,6 +95,8 @@ void main() {
       expect(savedRoom?.replyMode, StoryReplyMode.autoMulti);
       expect(savedRoom?.maxAutoReplies, 3);
       expect(savedRoom?.worldBookState, '{"activations":[]}');
+      expect(savedRoom?.promptConfigJson, '{"version":1,"modules":[]}');
+      expect(savedRoom?.quickRepliesJson, '{"roomId":0,"groups":[]}');
       expect(savedRoom?.modelProviderId, 'deepseek');
       expect(savedRoom?.modelId, 'deepseek-v4-pro');
       expect(savedRoom?.temperature, 0.7);
@@ -1253,6 +1259,8 @@ void main() {
           AssistantRoleCardImportResult(assistant: chandra),
         ],
         initialOpening: fuka.openingMessage,
+        promptConfigJson: '{"version":1,"modules":[]}',
+        quickRepliesJson: '{"roomId":0,"groups":[]}',
       ).toTemplate(
         title: 'Imported Tavern',
         sourceTitle: 'cards.zip',
@@ -1293,6 +1301,8 @@ void main() {
       expect(first?.title, 'Imported Tavern A');
       expect(second?.title, 'Imported Tavern B');
       expect(third?.title, 'Imported Tavern C');
+      expect(first?.promptConfigJson, '{"version":1,"modules":[]}');
+      expect(first?.quickRepliesJson, '{"roomId":0,"groups":[]}');
       expect(await dao.getParticipants(firstId), hasLength(2));
       expect(await dao.getParticipants(secondId), hasLength(2));
       expect(await dao.getParticipants(thirdId), hasLength(2));
@@ -1345,7 +1355,126 @@ void main() {
     });
   });
 
+  test('Tavern 声明式 Prompt Manager 与文本 Quick Replies 会进入房间配置', () {
+    final assistant = AssistantRoleCardService.importJson(jsonEncode({
+      'spec': 'chara_card_v3',
+      'spec_version': '3.0',
+      'data': {
+        'name': '艾琳',
+        'description': '雨夜书店店员',
+        'personality': '冷静',
+        'extensions': {
+          'prompt_manager': {
+            'prompts': [
+              {
+                'identifier': 'weather',
+                'content': '{{room}} 正在下雨。',
+                'position': 'in_chat',
+                'depth': 1,
+              },
+            ],
+            'order': [
+              {'identifier': 'weather', 'enabled': true},
+            ],
+          },
+          'quick_replies': {
+            'sets': [
+              {
+                'name': '动作',
+                'items': [
+                  {'id': 'look', 'label': '观察', 'message': '环顾四周。'},
+                  {'id': 'script', 'label': '脚本', 'command': '/setvar x=1'},
+                ],
+              },
+            ],
+          },
+        },
+      },
+    }));
+    final plan = StoryRoomRoleCardImporter.buildPlan(
+      assistant,
+      roomId: 0,
+      title: '测试酒馆',
+    );
+    final prompts = StoryPromptConfigCodec.decode(plan.room.promptConfigJson);
+    final quick = StoryQuickReplyCollectionModel.tryParse(
+      plan.room.quickRepliesJson,
+    );
+
+    expect(prompts.modules.any((item) => item.key == 'tavern.weather'), isTrue);
+    expect(quick.groups.single.label, '动作');
+    expect(quick.groups.single.items.map((item) => item.key), ['look']);
+  });
+
   group('StoryContextBuilder', () {
+    test('Prompt Manager 保留安全规则、角色顺序、历史开关和深度插入', () {
+      final room = StoryRoomModel(
+        title: '雨夜书店',
+        mode: StoryRoomMode.tavern,
+        promptConfigJson: StoryPromptConfigCodec.encode(
+          const StoryPromptConfig(modules: [
+            StoryPromptModule(
+              key: 'builtin.rules',
+              builtInSlot: StoryPromptBuiltInSlot.rules,
+              enabled: false,
+              role: StoryPromptRole.user,
+              sortOrder: 20,
+            ),
+            StoryPromptModule(
+              key: 'custom.before',
+              content: '{{room}} 的钟声响起。',
+              role: StoryPromptRole.user,
+              sortOrder: 10,
+            ),
+            StoryPromptModule(
+              key: 'custom.depth',
+              content: '{{char}} 记得门没有锁。',
+              role: StoryPromptRole.assistant,
+              placement: StoryPromptPlacement.historyDepth,
+              depth: 1,
+              sortOrder: 30,
+            ),
+            StoryPromptModule(
+              key: 'builtin.input',
+              builtInSlot: StoryPromptBuiltInSlot.input,
+              content: '本轮输入：{{input}}',
+              placement: StoryPromptPlacement.historyDepth,
+              role: StoryPromptRole.user,
+              sortOrder: 40,
+            ),
+          ]),
+        ),
+      );
+      final speaker = StoryParticipantModel(
+        roomId: 1,
+        role: StoryParticipantRole.assistant,
+        name: '艾琳',
+      );
+      final result = StoryContextBuilder.buildSystemPrompt(
+        room: room,
+        participants: [speaker],
+        speaker: speaker,
+        latestInput: '你听见了吗？',
+      );
+      final history = result.applyToHistory([
+        {'role': 'user', 'content': '这条历史应被关闭'},
+      ]);
+
+      expect(result.prompt, contains('酒馆规则：'));
+      expect(result.leadingMessages.first['role'], StoryPromptRole.user);
+      expect(result.leadingMessages.first['content'], contains('雨夜书店'));
+      expect(result.leadingMessages.last['role'], StoryPromptRole.system);
+      expect(result.includeHistory, isFalse);
+      expect(result.worldBookHits, isEmpty);
+      expect(history.any((item) => item['content'] == '这条历史应被关闭'), isFalse);
+      final depthMessage = history.singleWhere(
+        (item) => '${item['content']}'.contains('艾琳 记得门没有锁'),
+      );
+      expect(depthMessage['role'], StoryPromptRole.assistant);
+      expect(result.inputPrompt, contains('你听见了吗？'));
+      expect(result.inputPrompt, contains('本轮输入：你听见了吗？'));
+    });
+
     test('按 Tavern depth_prompt 的深度和角色插入历史消息', () {
       final room = StoryRoomModel(
         title: '实验室',

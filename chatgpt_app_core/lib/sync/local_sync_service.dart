@@ -9,6 +9,7 @@ import 'package:chatgpt_app_core/db/db_migration.dart';
 import 'package:chatgpt_app_core/db/hi_db_manager.dart';
 import 'package:chatgpt_app_core/db/story_artifact_dao.dart';
 import 'package:chatgpt_app_core/db/story_room_dao.dart';
+import 'package:chatgpt_app_core/db/story_template_dao.dart';
 import 'package:chatgpt_app_core/db/story_template_translation_task_dao.dart';
 import 'package:chatgpt_app_core/sync/sync_tombstone_store.dart';
 import 'package:sqflite/sqflite.dart';
@@ -99,6 +100,12 @@ class LocalSyncService {
       table: 'tb_story_artifact_revision',
       idColumns: ['id'],
       timestampColumn: 'createdAt',
+    ),
+    _SyncEntitySpec(
+      entity: 'story_template',
+      table: 'tb_story_template',
+      idColumns: ['id'],
+      timestampColumn: 'updatedAt',
     ),
     _SyncEntitySpec(
       entity: 'story_template_translation_task',
@@ -389,6 +396,18 @@ class LocalSyncService {
   }
 
   static SyncChange _normalizeStoryChange(SyncChange change) {
+    if (change.entity == 'story_room' && change.op == SyncOp.upsert) {
+      final payload = Map<String, dynamic>.from(change.payload);
+      payload['promptConfigJson'] = '${payload['promptConfigJson'] ?? ''}';
+      payload['quickRepliesJson'] = '${payload['quickRepliesJson'] ?? ''}';
+      return SyncChange(
+        entity: change.entity,
+        id: change.id,
+        op: change.op,
+        updatedAt: change.updatedAt,
+        payload: payload,
+      );
+    }
     if (change.entity == 'story_participant' && change.op == SyncOp.upsert) {
       final payload = Map<String, dynamic>.from(change.payload);
       final roomId = _asInt(payload['roomId']);
@@ -774,6 +793,7 @@ class LocalSyncService {
     await AssistantDao.create(storage);
     await StoryRoomDao.create(storage);
     await StoryArtifactDao.create(storage);
+    await StoryTemplateDao.create(storage);
     await StoryTemplateTranslationTaskDao.create(storage);
     await SyncTombstoneStore.ensure(storage.db);
     await storage.db.execute(

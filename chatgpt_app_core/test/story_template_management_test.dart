@@ -32,6 +32,8 @@ void main() {
           ),
         ],
         initialOpening: '房间开场',
+        promptConfigJson: '{"version":1,"modules":[]}',
+        quickRepliesJson: '{"roomId":0,"groups":[]}',
       ).toTemplate(title: '午夜案件', sourceTitle: '来源', translated: true);
 
       final restored = StoryTemplateTransfer.importJson(
@@ -43,6 +45,8 @@ void main() {
       expect(restored.title, '午夜案件');
       expect(restored.translated, isTrue);
       expect(payload.initialOpening, '房间开场');
+      expect(payload.promptConfigJson, '{"version":1,"modules":[]}');
+      expect(payload.quickRepliesJson, '{"roomId":0,"groups":[]}');
       expect(assistant.name, 'Alice');
       expect(assistant.description, '侦探');
       expect(assistant.prompt, '保持冷静');
@@ -287,6 +291,8 @@ void main() {
           ),
         ],
         initialOpening: 'Welcome.',
+        promptConfigJson: '{"version":1,"modules":[]}',
+        quickRepliesJson: '{"roomId":0,"groups":[]}',
       );
       final task = StoryTemplateTranslationTaskModel(
         sourceTitle: 'Party',
@@ -346,6 +352,8 @@ void main() {
       expect(copyPayload.results.map((item) => item.assistant.name),
           ['爱丽丝', '鲍勃']);
       expect(copyPayload.initialOpening, '欢迎。');
+      expect(copyPayload.promptConfigJson, '{"version":1,"modules":[]}');
+      expect(copyPayload.quickRepliesJson, '{"roomId":0,"groups":[]}');
     });
 
     test('运行器从字段检查点恢复时不重复请求已完成字段', () async {

@@ -202,9 +202,9 @@ void main() {
     final report = AssistantRoleCardService.extensionSafetyReport(assistant);
     expect(report.hasBlockedExtensions, isTrue);
     expect(report.blockedExtensionLabels, contains('Regex Scripts'));
-    expect(report.blockedExtensionLabels, contains('Quick Replies'));
-    expect(report.blockedExtensionLabels, contains('Prompt Manager'));
-    expect(report.warningText, contains('不会在 App 内执行'));
+    expect(report.blockedExtensionLabels, contains('Quick Replies 命令'));
+    expect(report.blockedExtensionLabels, isNot(contains('Prompt Manager')));
+    expect(report.warningText, contains('脚本和命令不会执行'));
   });
 
   test('导入 Tavern V2 时保留原卡作者与提示元信息', () {

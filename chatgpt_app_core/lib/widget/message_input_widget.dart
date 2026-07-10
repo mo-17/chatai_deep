@@ -76,6 +76,7 @@ class MessageInputWidget extends StatefulWidget {
   final VoidCallback? onModelTap;
   final String hint;
   final String initialText;
+  final TextEditingController? controller;
   final bool enable;
   final bool isStreaming;
   final bool speechInputEnabled;
@@ -101,6 +102,7 @@ class MessageInputWidget extends StatefulWidget {
     this.modelLabel,
     this.onModelTap,
     this.initialText = '',
+    this.controller,
     this.enable = true,
     this.isStreaming = false,
     this.speechInputEnabled = true,
@@ -113,7 +115,8 @@ class MessageInputWidget extends StatefulWidget {
 
 class _MessageInputWidgetState extends State<MessageInputWidget> {
   bool _showSend = false;
-  final _controller = TextEditingController();
+  late TextEditingController _controller;
+  late bool _ownsController;
   final _focusNode = FocusNode();
   stt.SpeechToText? _speech;
   bool _hasSpeech = true; // 默认显示，初始化失败才隐藏
@@ -124,12 +127,35 @@ class _MessageInputWidgetState extends State<MessageInputWidget> {
   @override
   void initState() {
     super.initState();
-    if (widget.initialText.isNotEmpty) {
+    _ownsController = widget.controller == null;
+    _controller = widget.controller ?? TextEditingController();
+    if (_controller.text.isEmpty && widget.initialText.isNotEmpty) {
       _controller.text = widget.initialText;
-      _showSend = true;
-      widget.onChanged?.call(widget.initialText);
     }
+    _showSend = _controller.text.isNotEmpty;
+    _controller.addListener(_onControllerChanged);
+    if (_controller.text.isNotEmpty) widget.onChanged?.call(_controller.text);
     _initSpeech();
+  }
+
+  @override
+  void didUpdateWidget(covariant MessageInputWidget oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (identical(oldWidget.controller, widget.controller)) return;
+    _controller.removeListener(_onControllerChanged);
+    if (_ownsController) _controller.dispose();
+    _ownsController = widget.controller == null;
+    _controller = widget.controller ?? TextEditingController();
+    _controller.addListener(_onControllerChanged);
+    _showSend = _controller.text.isNotEmpty;
+  }
+
+  void _onControllerChanged() {
+    final text = _controller.text;
+    widget.onChanged?.call(text);
+    if (mounted && _showSend != text.isNotEmpty) {
+      setState(() => _showSend = text.isNotEmpty);
+    }
   }
 
   // iOS 17.0–17.4 模拟器存在 AVAudioEngine sampleRate 不匹配的 bug，
@@ -226,7 +252,6 @@ class _MessageInputWidgetState extends State<MessageInputWidget> {
             TextPosition(offset: text.length),
           );
           setState(() => _showSend = text.isNotEmpty);
-          widget.onChanged?.call(text);
         },
         localeId: localeId,
       );
@@ -359,7 +384,8 @@ class _MessageInputWidgetState extends State<MessageInputWidget> {
   void dispose() {
     _speech?.cancel();
     _focusNode.dispose();
-    _controller.dispose();
+    _controller.removeListener(_onControllerChanged);
+    if (_ownsController) _controller.dispose();
     super.dispose();
   }
 
@@ -623,7 +649,6 @@ class _MessageInputWidgetState extends State<MessageInputWidget> {
   }
 
   void _onChanged(String value) {
-    if (widget.onChanged != null) widget.onChanged!(value);
     setState(() {
       _showSend = value.isNotEmpty;
     });
