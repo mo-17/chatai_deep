@@ -4,6 +4,7 @@ import 'dart:io';
 
 import 'package:archive/archive.dart';
 import 'package:chatgpt_app_core/capability/generated_image_save_service.dart';
+import 'package:chatgpt_app_core/chat/application/assistant_role_card_asset_store.dart';
 import 'package:chatgpt_app_core/chat/domain/message_block.dart';
 import 'package:chatgpt_app_core/db/assistant_dao.dart';
 import 'package:chatgpt_app_core/db/conversation_dao.dart';
@@ -346,10 +347,14 @@ class BackupService {
   static const _kAvatarPrefix = 'assets/avatars/';
   static const _kFilePrefix = 'assets/files/';
   static const _kGeneratedImagePrefix = 'assets/generated_images/';
+  static const _kRoleCardAssetPrefix = 'assets/assistant_role_assets/';
   static const _imageExtensions = {'.png', '.jpg', '.jpeg', '.webp', '.gif'};
 
   @visibleForTesting
   static Future<Directory> Function()? debugGeneratedImageDirectoryResolver;
+
+  @visibleForTesting
+  static RoleCardAssetDirectoryResolver? debugRoleCardAssetsDirectoryResolver;
 
   /// 导入完成后 +1，会话列表等常驻页面监听它重新加载数据
   /// （不强求重启，对应源项目 restore 后 resetAppInitializationState）。
@@ -391,6 +396,7 @@ class BackupService {
     final avatarFiles = await _collectAvatarFiles(conversations);
     final attachmentFiles = await _collectAttachmentFiles(messages);
     final generatedImageFiles = await _collectGeneratedImageFiles();
+    final roleCardAssetFiles = await _collectRoleCardAssetFiles(assistants);
 
     final exportedSettings = settings.clone();
     if (!includeApiKeys) {
@@ -434,6 +440,7 @@ class BackupService {
         'avatarAssets': avatarFiles.length,
         'fileAssets': attachmentFiles.length,
         'generatedImageAssets': generatedImageFiles.length,
+        'roleCardAssets': roleCardAssetFiles.length,
       },
     };
 
@@ -467,6 +474,10 @@ class BackupService {
     for (final entry in generatedImageFiles.entries) {
       archive.addFile(ArchiveFile.bytes(
           '$_kGeneratedImagePrefix${entry.key}', entry.value));
+    }
+    for (final entry in roleCardAssetFiles.entries) {
+      archive.addFile(
+          ArchiveFile.bytes('$_kRoleCardAssetPrefix${entry.key}', entry.value));
     }
     AILogger.log('backup export: ${manifest['counts']}');
     return ZipEncoder().encodeBytes(archive);
@@ -682,6 +693,7 @@ class BackupService {
     }
     if (mode == BackupImportMode.assistantsOnly) {
       return _importAssistantsOnly(
+        archive: archive,
         assistants: assistants,
         warnings: warnings,
       );
@@ -699,6 +711,13 @@ class BackupService {
         await _restoreGeneratedImageAssets(archive, replaceExisting: true);
 
     await _ensureSchema();
+    await _restoreRoleCardAssets(
+      archive,
+      assistants,
+      _identityAssistantIdMap(assistants),
+      warnings,
+      replaceExisting: true,
+    );
     final hasProjectColumn =
         await _hasColumn(storage.db, 'tb_conversation_list', 'projectId');
     final normalizedConversations = conversations
@@ -1404,6 +1423,27 @@ class BackupService {
       }
     });
 
+    await _restoreRoleCardAssets(
+      archive,
+      assistants,
+      assistantIdMap,
+      warnings,
+      replaceExisting: false,
+    );
+    await storage.db.transaction((txn) async {
+      for (final row in assistants) {
+        final oldId = _intValue(row['id']);
+        final newId = oldId == null ? null : assistantIdMap[oldId];
+        if (newId == null) continue;
+        await txn.update(
+          'tb_assistant',
+          {'roleCardAssets': row['roleCardAssets']},
+          where: 'id = ?',
+          whereArgs: [newId],
+        );
+      }
+    });
+
     if (remappedCids > 0) {
       warnings.add('$remappedCids 个会话 cid 与本地冲突，已改用新 cid 合并导入');
     }
@@ -1501,10 +1541,18 @@ class BackupService {
   }
 
   Future<BackupRestoreResult> _importAssistantsOnly({
+    required Archive archive,
     required List<Map<String, dynamic>> assistants,
     required List<String> warnings,
   }) async {
     await _ensureSchema();
+    await _restoreRoleCardAssets(
+      archive,
+      assistants,
+      _identityAssistantIdMap(assistants),
+      warnings,
+      replaceExisting: true,
+    );
     final assistantIds = {
       for (final a in assistants)
         if (a['id'] != null) a['id'],
@@ -1850,6 +1898,191 @@ class BackupService {
       // 应用内相册资源缺失不阻塞备份。
     }
     return files;
+  }
+
+  static Future<Directory> _roleCardAssetsRootDir() async {
+    final base = await (debugRoleCardAssetsDirectoryResolver ??
+        getApplicationDocumentsDirectory)();
+    return Directory(
+        '${base.path}/${AssistantRoleCardAssetStore.directoryName}');
+  }
+
+  static Future<Map<String, List<int>>> _collectRoleCardAssetFiles(
+    List<Map<String, Object?>> assistants,
+  ) async {
+    final files = <String, List<int>>{};
+    final hasReferences = assistants.any((assistant) {
+      final manifest = _roleCardAssetManifest(assistant['roleCardAssets']);
+      return manifest?.any((entry) =>
+              entry is Map &&
+              (entry['localPath']?.toString().trim().isNotEmpty ?? false)) ??
+          false;
+    });
+    if (!hasReferences) return files;
+    late final Directory root;
+    try {
+      root = await _roleCardAssetsRootDir();
+    } catch (_) {
+      // 纯 Dart 测试或平台目录暂不可用时，仍允许导出数据库元数据。
+      return files;
+    }
+    for (final assistant in assistants) {
+      final assistantId = _intValue(assistant['id']);
+      final manifest = _roleCardAssetManifest(assistant['roleCardAssets']);
+      if (assistantId == null || manifest == null) continue;
+      for (final entry in manifest.asMap().entries) {
+        if (entry.value is! Map) continue;
+        final asset = Map<String, dynamic>.from(entry.value as Map);
+        final localPath = asset['localPath']?.toString().trim() ?? '';
+        if (localPath.isEmpty ||
+            !_isManagedRoleCardAssetPath(localPath, assistantId, root)) {
+          continue;
+        }
+        try {
+          final file = File(localPath);
+          if (!await file.exists()) continue;
+          files[_roleCardAssetArchiveName(assistantId, entry.key, asset)] =
+              await file.readAsBytes();
+        } catch (_) {
+          // 单个角色卡资源缺失不阻塞整包备份。
+        }
+      }
+    }
+    return files;
+  }
+
+  static Future<void> _restoreRoleCardAssets(
+    Archive archive,
+    List<Map<String, dynamic>> assistants,
+    Map<int, int> assistantIdMap,
+    List<String> warnings, {
+    required bool replaceExisting,
+  }) async {
+    if (!_hasRoleCardAssetReferences(assistants)) return;
+    late final Directory root;
+    try {
+      root = await _roleCardAssetsRootDir();
+      if (replaceExisting && await root.exists()) {
+        await root.delete(recursive: true);
+      }
+    } catch (_) {
+      warnings.add('角色卡资源目录无法重建，已跳过资源恢复');
+      return;
+    }
+
+    var missing = 0;
+    var failed = 0;
+    for (final assistant in assistants) {
+      final oldId = _intValue(assistant['id']);
+      final newId = oldId == null ? null : assistantIdMap[oldId];
+      final manifest = _roleCardAssetManifest(assistant['roleCardAssets']);
+      if (manifest == null) continue;
+      var changed = false;
+      for (final entry in manifest.asMap().entries) {
+        if (entry.value is! Map) continue;
+        final asset = Map<String, dynamic>.from(entry.value as Map);
+        final localPath = asset['localPath']?.toString().trim() ?? '';
+        if (localPath.isEmpty) continue;
+        final archiveFile = oldId == null
+            ? null
+            : archive.findFile(
+                '$_kRoleCardAssetPrefix${_roleCardAssetArchiveName(oldId, entry.key, asset)}',
+              );
+        if (newId == null || archiveFile == null) {
+          asset['localPath'] = '';
+          manifest[entry.key] = asset;
+          changed = true;
+          missing++;
+          continue;
+        }
+        try {
+          final dir = Directory('${root.path}/$newId');
+          if (!await dir.exists()) await dir.create(recursive: true);
+          final target =
+              File('${dir.path}/${_roleCardAssetFileName(entry.key, asset)}');
+          await target.writeAsBytes(archiveFile.content as List<int>,
+              flush: true);
+          asset['localPath'] = target.path;
+          manifest[entry.key] = asset;
+          changed = true;
+        } catch (_) {
+          asset['localPath'] = '';
+          manifest[entry.key] = asset;
+          changed = true;
+          failed++;
+        }
+      }
+      if (changed) assistant['roleCardAssets'] = jsonEncode(manifest);
+    }
+    if (missing > 0) {
+      warnings.add('$missing 个角色卡资源不在备份中，已保留资源元数据');
+    }
+    if (failed > 0) {
+      warnings.add('$failed 个角色卡资源写入失败，已保留资源元数据');
+    }
+  }
+
+  static Map<int, int> _identityAssistantIdMap(
+    List<Map<String, dynamic>> assistants,
+  ) =>
+      {
+        for (final assistant in assistants)
+          if (_intValue(assistant['id']) != null)
+            _intValue(assistant['id'])!: _intValue(assistant['id'])!,
+      };
+
+  static List<dynamic>? _roleCardAssetManifest(Object? raw) {
+    final value = raw?.toString().trim() ?? '';
+    if (value.isEmpty) return null;
+    try {
+      final decoded = jsonDecode(value);
+      return decoded is List ? List<dynamic>.from(decoded) : null;
+    } catch (_) {
+      return null;
+    }
+  }
+
+  static bool _hasRoleCardAssetReferences(
+    List<Map<String, dynamic>> assistants,
+  ) =>
+      assistants.any((assistant) {
+        final manifest = _roleCardAssetManifest(assistant['roleCardAssets']);
+        return manifest?.any((entry) =>
+                entry is Map &&
+                (entry['localPath']?.toString().trim().isNotEmpty ?? false)) ??
+            false;
+      });
+
+  static bool _isManagedRoleCardAssetPath(
+    String path,
+    int assistantId,
+    Directory root,
+  ) {
+    final expected = Directory('${root.path}/$assistantId').absolute.path;
+    final actual = File(path).absolute.path;
+    return actual.startsWith('$expected${Platform.pathSeparator}');
+  }
+
+  static String _roleCardAssetArchiveName(
+    int assistantId,
+    int index,
+    Map<String, dynamic> asset,
+  ) =>
+      '$assistantId/${_roleCardAssetFileName(index, asset)}';
+
+  static String _roleCardAssetFileName(
+    int index,
+    Map<String, dynamic> asset,
+  ) {
+    final extension = asset['ext']?.toString().trim().replaceFirst(
+              RegExp(r'^\\.+'),
+              '',
+            ) ??
+        '';
+    final safeExtension = RegExp(r'^[A-Za-z0-9]{1,16}$').hasMatch(extension)
+        ? extension.toLowerCase()
+        : 'bin';
+    return '${index.toString().padLeft(3, '0')}.$safeExtension';
   }
 
   static Future<Map<String, List<int>>> _collectAvatarFiles(

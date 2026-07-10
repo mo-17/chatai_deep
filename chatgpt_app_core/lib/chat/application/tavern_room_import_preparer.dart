@@ -76,6 +76,8 @@ class TavernRoomImportPreparer {
       translated.add(AssistantRoleCardImportResult(
         assistant: protectedAssistant,
         avatarPngBytes: result.avatarPngBytes,
+        avatarExtension: result.avatarExtension,
+        resources: result.resources,
         sourceName: result.sourceName,
         tavernMeta:
             result.tavernMeta?.syncTranslatedOpenings(protectedAssistant),

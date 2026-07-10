@@ -227,6 +227,7 @@ class AssistantRoleCardTranslationService {
       exampleDialogs:
           _translated(translated, 'exampleDialogs', assistant.exampleDialogs),
       memoryBook: _translated(translated, 'memoryBook', assistant.memoryBook),
+      roleCardAssets: assistant.roleCardAssets,
       defaultVoiceStyle: assistant.defaultVoiceStyle,
       providerId: assistant.providerId,
       model: assistant.model,

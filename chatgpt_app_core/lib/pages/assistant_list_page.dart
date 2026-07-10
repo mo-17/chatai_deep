@@ -3,6 +3,7 @@ import 'dart:io';
 
 import 'package:chatgpt_app_core/chat/application/assistant_conversation_factory.dart';
 import 'package:chatgpt_app_core/chat/application/assistant_role_card_service.dart';
+import 'package:chatgpt_app_core/chat/application/assistant_role_card_asset_store.dart';
 import 'package:chatgpt_app_core/chat/application/assistant_role_card_translation_service.dart';
 import 'package:chatgpt_app_core/chat/application/story_room_role_card_importer.dart';
 import 'package:chatgpt_app_core/chat/application/tavern_room_import_preparer.dart';
@@ -230,6 +231,9 @@ class _AssistantListPageState extends State<AssistantListPage> {
                   case 'export_tavern_png':
                     _exportTavernRoleCardPng(a);
                     break;
+                  case 'export_charx':
+                    _exportCharxRoleCard(a);
+                    break;
                   case 'delete':
                     _delete(a);
                     break;
@@ -306,6 +310,16 @@ class _AssistantListPageState extends State<AssistantListPage> {
                     title: Text(AssistantRoleCardService.tavernPngExportLabel),
                     subtitle: Text(
                         AssistantRoleCardService.tavernPngExportDescription),
+                  ),
+                ),
+                PopupMenuItem(
+                  value: 'export_charx',
+                  child: ListTile(
+                    contentPadding: EdgeInsets.zero,
+                    leading: Icon(Icons.inventory_2_outlined),
+                    title: Text(AssistantRoleCardService.charxExportLabel),
+                    subtitle:
+                        Text(AssistantRoleCardService.charxExportDescription),
                   ),
                 ),
                 PopupMenuItem(
@@ -1409,6 +1423,26 @@ class _AssistantListPageState extends State<AssistantListPage> {
     }
   }
 
+  void _exportCharxRoleCard(AssistantModel assistant) async {
+    try {
+      final resources =
+          await AssistantRoleCardAssetStore.load(assistant.roleCardAssets);
+      final dir = await getTemporaryDirectory();
+      final file = File(
+        '${dir.path}/${AssistantRoleCardService.charxFilenameFor(assistant)}',
+      );
+      final bytes = AssistantRoleCardService.exportCharx(
+        assistant,
+        resources: resources,
+        avatarPngBytes: await _readAssistantAvatarBytes(assistant),
+      );
+      await file.writeAsBytes(bytes, flush: true);
+      await SharePlus.instance.share(ShareParams(files: [XFile(file.path)]));
+    } catch (e) {
+      if (mounted) HiDialog.showSnackBar(context, '导出 CHARX 失败：$e');
+    }
+  }
+
   Future<List<int>?> _readAssistantAvatarBytes(AssistantModel assistant) async {
     final avatarType = assistant.avatarType;
     final avatarValue = assistant.avatarValue?.trim() ?? '';
@@ -1552,6 +1586,7 @@ class _AssistantListPageState extends State<AssistantListPage> {
     );
     if (confirmed != true || a.id == null) return;
     await _dao!.deleteAssistant(a.id!);
+    await AssistantRoleCardAssetStore.delete(assistantId: a.id!);
     if (!mounted) return;
     HiDialog.showSnackBar(context, '已删除「${a.name}」');
     _loadData();
@@ -1753,6 +1788,14 @@ class _RoleCardImportCoordinator extends ChangeNotifier {
           progress: 0.78,
         );
         await dao.saveAssistant(assistant);
+        final assistantId = assistant.id;
+        if (assistantId != null && plan.result.resources.isNotEmpty) {
+          assistant.roleCardAssets = await AssistantRoleCardAssetStore.save(
+            assistantId: assistantId,
+            resources: plan.result.resources,
+          );
+          await dao.saveAssistant(assistant);
+        }
         _update(
           job,
           status: _RoleCardImportJobStatus.completed,
@@ -1987,6 +2030,7 @@ class _RoleCardImportCoordinator extends ChangeNotifier {
       assistant.id = overwriteTarget.id;
       assistant.createdAt = overwriteTarget.createdAt;
       assistant.name = overwriteTarget.name;
+      assistant.roleCardAssets = overwriteTarget.roleCardAssets;
       AssistantRoleCardService.preserveLocalOverwriteSettings(
         assistant,
         overwriteTarget,
@@ -2012,7 +2056,7 @@ class _RoleCardImportCoordinator extends ChangeNotifier {
             await AvatarAssetService.saveAssistantAvatarBytes(
           bytes: avatarBytes,
           assistantName: assistant.name,
-          extension: '.png',
+          extension: plan.result.avatarExtension ?? '.png',
         );
       } catch (_) {
         assistant.avatarType = null;
@@ -2414,6 +2458,8 @@ class _RoleCardPreviewDialogState extends State<_RoleCardPreviewDialog> {
   Widget build(BuildContext context) {
     final assistant = widget.assistant;
     final summary = widget.summary;
+    final extensionSafety =
+        AssistantRoleCardService.extensionSafetyReport(assistant);
     final targetName = widget.targetName?.trim() ?? '';
     final hasConflict = widget.conflictingAssistant != null;
     final renamed = widget.importMode &&
@@ -2557,6 +2603,21 @@ class _RoleCardPreviewDialogState extends State<_RoleCardPreviewDialog> {
                     : '跟随全局'),
             _RoleCardPreviewLine(
                 '工具', assistant.useTools ? '${summary.toolCount} 个绑定' : '已关闭'),
+            if (extensionSafety.hasBlockedExtensions) ...[
+              const SizedBox(height: 10),
+              Container(
+                width: double.infinity,
+                padding: const EdgeInsets.all(10),
+                decoration: BoxDecoration(
+                  color: Colors.orange.withValues(alpha: 0.1),
+                  borderRadius: BorderRadius.circular(6),
+                ),
+                child: Text(
+                  extensionSafety.warningText,
+                  style: TextStyle(fontSize: 12, color: Colors.orange[900]),
+                ),
+              ),
+            ],
             if (widget.importMode) ...[
               const SizedBox(height: 12),
               Text(
@@ -2688,6 +2749,8 @@ class _RoleCardBatchPreviewTile extends StatelessWidget {
       assistant,
       hasAvatar: result.avatarPngBytes != null,
     );
+    final extensionSafety =
+        AssistantRoleCardService.extensionSafetyReport(assistant);
     final detail = [
       if (sourceName.isNotEmpty) sourceName,
       if (overwrite &&
@@ -2697,6 +2760,7 @@ class _RoleCardBatchPreviewTile extends StatelessWidget {
         '将覆盖 ${plan.conflictingAssistant!.name}',
       if (!overwrite && plan.renamed) '原名 ${plan.originalName}',
       summaryText,
+      if (extensionSafety.hasBlockedExtensions) '含未执行的第三方扩展',
     ].join(' · ');
     return ListTile(
       contentPadding: EdgeInsets.zero,

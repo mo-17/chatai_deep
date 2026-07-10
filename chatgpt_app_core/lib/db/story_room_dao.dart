@@ -36,7 +36,8 @@ class StoryRoomDao implements ITable {
         'create table if not exists tb_story_message (id integer primary key autoincrement'
         ', roomId integer not null, speakerId integer, speakerRole text'
         ', speakerName text, speakerAvatarType text, speakerAvatarValue text'
-        ', speakerVoiceStyle text, content text, imagePaths text, filePaths text'
+        ', speakerVoiceStyle text, content text, imagePaths text, imageSources text'
+        ', citationUrls text, filePaths text'
         ', attachmentContext text, createdAt integer, updatedAt integer)');
     await _ensureMessageColumns(storage);
     try {
@@ -108,6 +109,8 @@ class StoryRoomDao implements ITable {
     for (final column in const [
       'speakerVoiceStyle text',
       'imagePaths text',
+      'imageSources text',
+      'citationUrls text',
       'filePaths text',
       'attachmentContext text',
     ]) {

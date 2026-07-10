@@ -1,5 +1,6 @@
 import 'dart:convert';
 import 'dart:io';
+import 'dart:typed_data';
 
 import 'package:archive/archive.dart';
 import 'package:chatgpt_app_core/chat/application/assistant_role_card_service.dart';
@@ -178,6 +179,32 @@ void main() {
     expect(sanitized.providerId, isEmpty);
     expect(sanitized.model, isEmpty);
     expect(sanitized.toolIds, isNull);
+  });
+
+  test('Tavern 可执行扩展会告警但不进入执行路径', () {
+    final assistant = AssistantRoleCardService.importJson(jsonEncode({
+      'spec': 'chara_card_v3',
+      'spec_version': '3.0',
+      'data': {
+        'name': '安全测试',
+        'description': '角色',
+        'personality': '谨慎',
+        'extensions': {
+          'regex_scripts': [
+            {'find': 'a', 'replace': 'b'}
+          ],
+          'quick_replies': ['执行命令'],
+          'prompt_manager': {'order': []},
+        },
+      },
+    }));
+
+    final report = AssistantRoleCardService.extensionSafetyReport(assistant);
+    expect(report.hasBlockedExtensions, isTrue);
+    expect(report.blockedExtensionLabels, contains('Regex Scripts'));
+    expect(report.blockedExtensionLabels, contains('Quick Replies'));
+    expect(report.blockedExtensionLabels, contains('Prompt Manager'));
+    expect(report.warningText, contains('不会在 App 内执行'));
   });
 
   test('导入 Tavern V2 时保留原卡作者与提示元信息', () {
@@ -1880,6 +1907,137 @@ void main() {
       () => AssistantRoleCardService.importBytes(zip, filename: 'empty.zip'),
       throwsFormatException,
     );
+  });
+
+  test('CHARX 导入 V3 card.json、头像及背景音频资源清单', () {
+    final jpeg = <int>[0xff, 0xd8, 0xff, 0xe0, 0, 16, 0xff, 0xd9];
+    final audio = <int>[0x49, 0x44, 0x33, 0x04];
+    final card = jsonEncode({
+      'spec': 'chara_card_v3',
+      'spec_version': '3.0',
+      'data': {
+        'name': 'CHARX 角色',
+        'description': '带资源的 V3 角色。',
+        'first_mes': '欢迎来到档案馆。',
+        'assets': [
+          {
+            'type': 'icon',
+            'uri': 'embeded://assets/icon/main.jpg',
+            'name': 'main',
+            'ext': 'jpg',
+          },
+          {
+            'type': 'background',
+            'uri': 'embeded://assets/background/archive.png',
+            'name': 'archive',
+            'ext': 'png',
+          },
+          {
+            'type': 'audio',
+            'uri': 'embeded://assets/audio/greeting.mp3',
+            'name': 'greeting',
+            'ext': 'mp3',
+          },
+        ],
+      },
+    });
+    final zip = _zipBytesOf({
+      'card.json': utf8.encode(card),
+      'assets/icon/main.jpg': jpeg,
+      'assets/background/archive.png': _pngWithTextChunk('comment', 'bg'),
+      'assets/audio/greeting.mp3': audio,
+      'assets/other/notes.txt': utf8.encode('keep this file'),
+    });
+
+    final result = AssistantRoleCardService.importPackageBytes(
+      zip,
+      filename: 'archive.charx',
+    );
+
+    expect(result.assistant.name, 'CHARX 角色');
+    expect(result.avatarPngBytes, jpeg);
+    expect(result.avatarExtension, '.jpg');
+    expect(result.sourceName, 'archive.charx');
+    expect(result.resources, hasLength(4));
+    expect(result.resources.map((resource) => resource.type), [
+      'icon',
+      'background',
+      'audio',
+      'other',
+    ]);
+    expect(result.resources[1].mimeType, 'image/png');
+    expect(result.resources[1].size, greaterThan(0));
+    expect(result.resources[2].mimeType, 'audio/mpeg');
+    expect(result.resources.last.includeInCard, isFalse);
+    expect(result.resources.last.bytes, isNotNull);
+  });
+
+  test('CHARX 纯服务导出可保留 V3 资源并再次导入', () {
+    final png = base64.decode(
+      'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/p9sAAAAASUVORK5CYII=',
+    );
+    final result = AssistantRoleCardImportResult(
+      assistant: AssistantModel(
+        name: '导出角色',
+        prompt: '[角色设定]\n会整理档案。',
+        openingMessage: '请进。',
+      ),
+      avatarPngBytes: png,
+      avatarExtension: '.png',
+      resources: [
+        AssistantRoleCardResource(
+          type: 'background',
+          uri: 'embeded://assets/background/archive.png',
+          name: 'archive',
+          ext: 'png',
+          archivePath: 'assets/background/archive.png',
+          bytes: Uint8List.fromList(png),
+          size: png.length,
+        ),
+      ],
+    );
+
+    final exported = AssistantRoleCardService.exportCharx(result);
+    final archive = ZipDecoder().decodeBytes(exported);
+    final card = jsonDecode(
+      utf8.decode(archive.files
+          .firstWhere((file) => file.name == 'card.json')
+          .readBytes()!),
+    ) as Map<String, dynamic>;
+    expect(card['spec'], 'chara_card_v3');
+    expect((card['data'] as Map<String, dynamic>)['assets'], [
+      {
+        'type': 'background',
+        'uri': 'embeded://assets/background/archive.png',
+        'name': 'archive',
+        'ext': 'png',
+      },
+      {
+        'type': 'icon',
+        'uri': 'embeded://assets/icon/main.png',
+        'name': 'main',
+        'ext': 'png',
+      },
+    ]);
+    expect(
+      archive.files.any((file) => file.name == 'assets/icon/main.png'),
+      isTrue,
+    );
+    expect(
+      archive.files.any((file) => file.name == 'assets/background/archive.png'),
+      isTrue,
+    );
+
+    final roundTrip = AssistantRoleCardService.importPackageBytes(
+      exported,
+      filename: 'export.charx',
+    );
+    expect(roundTrip.assistant.name, '导出角色');
+    expect(roundTrip.avatarPngBytes, png);
+    expect(roundTrip.resources.map((resource) => resource.type), [
+      'background',
+      'icon',
+    ]);
   });
 
   test('PNG 角色卡头像 bytes 可保存到托管头像目录', () async {

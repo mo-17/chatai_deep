@@ -1,8 +1,11 @@
 import 'dart:async';
 
 import 'package:chatgpt_app_core/dao/ai_settings_dao.dart';
+import 'package:chatgpt_app_core/chat/application/story_template_translation_tasks.dart';
+import 'package:chatgpt_app_core/dao/chat/chat_service.dart';
 import 'package:chatgpt_app_core/dao/hi_api_cache.dart';
 import 'package:chatgpt_app_core/db/hi_db_manager.dart';
+import 'package:chatgpt_app_core/model/ai_settings.dart';
 import 'package:chatgpt_app_core/pages/bottom_navigator.dart';
 import 'package:chatgpt_app_core/provider/ai_settings_provider.dart';
 import 'package:chatgpt_app_core/provider/hi_provider.dart';
@@ -134,7 +137,8 @@ class _MyAppState extends State<MyApp> {
 
     // 已登录状态预加载 AI 设置，避免 BottomNavigator 首帧读到默认值
     if (LoginDao.getBoardingPass() != null) {
-      AISettingsDao.load();
+      final settings = AISettingsDao.load();
+      unawaited(_resumeStoryTemplateTranslations(settings));
     }
 
     if (!LoginDao.hooksRegistered) {
@@ -161,8 +165,33 @@ class _MyAppState extends State<MyApp> {
         AISettingsProvider.reloadInstance();
       });
       LoginDao.addLoginHook(() {
+        unawaited(_resumeStoryTemplateTranslations(AISettingsDao.load()));
+      });
+      LoginDao.addLoginHook(() {
         CloudSyncCoordinator.syncOnLogin();
       });
+    }
+  }
+
+  Future<void> _resumeStoryTemplateTranslations(AISettings settings) async {
+    try {
+      final accountHash = HiDBManager.getAccountHash();
+      final storage = await HiDBManager.instance(dbName: accountHash);
+      final coordinator = StoryTemplateTranslationCoordinator.instance;
+      await coordinator.initialize(storage, accountHash: accountHash);
+      final chatService = ChatService.from(settings);
+      await coordinator.resumeRecoverable(
+        complete: (prompt) async =>
+            (await chatService.chat(
+              prompt: prompt,
+              history: const [],
+              timeout: const Duration(minutes: 2),
+            )) ??
+            '',
+      );
+    } catch (error, stackTrace) {
+      debugPrint(
+          'resume story template translations failed: $error\n$stackTrace');
     }
   }
 }

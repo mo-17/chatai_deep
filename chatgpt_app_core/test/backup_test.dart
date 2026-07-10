@@ -4,6 +4,7 @@ import 'dart:io';
 import 'package:archive/archive.dart';
 import 'package:chatgpt_app_core/backup/backup_service.dart';
 import 'package:chatgpt_app_core/capability/generated_image_save_service.dart';
+import 'package:chatgpt_app_core/chat/application/assistant_role_card_asset_store.dart';
 import 'package:chatgpt_app_core/chat/application/assistant_role_card_service.dart';
 import 'package:chatgpt_app_core/chat/application/story_room_role_card_importer.dart';
 import 'package:chatgpt_app_core/chat/domain/message_block.dart';
@@ -1382,6 +1383,226 @@ void main() {
       expect(await File('${dstAlbum.path}/chatai_sample_1.png').readAsBytes(),
           [1, 2, 3]);
       await dst.db.close();
+    });
+  });
+
+  group('CHARX 角色卡资源备份', () {
+    Future<List<int>> exportRoleCardAssistant({
+      required Directory documents,
+      required int assistantId,
+      required List<int> content,
+    }) async {
+      final asset = File(
+        '${documents.path}/${AssistantRoleCardAssetStore.directoryName}/$assistantId/000.webp',
+      );
+      await asset.parent.create(recursive: true);
+      await asset.writeAsBytes(content);
+      final source = await newDb();
+      await AssistantDao.create(source);
+      await source.db.insert(
+        'tb_assistant',
+        AssistantModel(
+          name: '资源角色$assistantId',
+          roleCardAssets: jsonEncode([
+            {
+              'type': 'background',
+              'name': 'moon',
+              'ext': 'webp',
+              'localPath': asset.path,
+            },
+          ]),
+        ).toJson()
+          ..['id'] = assistantId,
+      );
+      final bytes = await BackupService(source).exportArchive(
+        settings: AISettings.defaults(),
+        accountHash: 'acc1',
+      );
+      await source.db.close();
+      return bytes;
+    }
+
+    String restoredAssetPath(Map<String, Object?> assistant) {
+      final manifest =
+          jsonDecode(assistant['roleCardAssets'] as String) as List;
+      return (manifest.single as Map)['localPath'] as String;
+    }
+
+    test('覆盖恢复打包托管文件并改写角色卡清单路径', () async {
+      final sourceDocuments =
+          await Directory.systemTemp.createTemp('backup-role-card-source-');
+      final targetDocuments =
+          await Directory.systemTemp.createTemp('backup-role-card-target-');
+      addTearDown(() async {
+        BackupService.debugRoleCardAssetsDirectoryResolver = null;
+        if (sourceDocuments.existsSync()) {
+          await sourceDocuments.delete(recursive: true);
+        }
+        if (targetDocuments.existsSync()) {
+          await targetDocuments.delete(recursive: true);
+        }
+      });
+
+      BackupService.debugRoleCardAssetsDirectoryResolver =
+          () async => sourceDocuments;
+      final bytes = await exportRoleCardAssistant(
+        documents: sourceDocuments,
+        assistantId: 73,
+        content: [1, 2, 3],
+      );
+      final archive = ZipDecoder().decodeBytes(bytes);
+      expect(
+        archive.findFile('assets/assistant_role_assets/73/000.webp'),
+        isNotNull,
+      );
+
+      BackupService.debugRoleCardAssetsDirectoryResolver =
+          () async => targetDocuments;
+      final target = await newDb();
+      final result =
+          await BackupService(target).importArchive(bytes, accountHash: 'acc1');
+      expect(result.warnings, isEmpty);
+      final assistant = (await target.db.query('tb_assistant')).single;
+      final restoredPath = restoredAssetPath(assistant);
+      expect(restoredPath, isNot(contains(sourceDocuments.path)));
+      expect(restoredPath, contains('/assistant_role_assets/73/'));
+      expect(await File(restoredPath).readAsBytes(), [1, 2, 3]);
+      await target.db.close();
+    });
+
+    test('仅助手恢复重建资源目录并清理旧资源', () async {
+      final sourceDocuments =
+          await Directory.systemTemp.createTemp('backup-role-card-only-src-');
+      final targetDocuments =
+          await Directory.systemTemp.createTemp('backup-role-card-only-dst-');
+      addTearDown(() async {
+        BackupService.debugRoleCardAssetsDirectoryResolver = null;
+        if (sourceDocuments.existsSync()) {
+          await sourceDocuments.delete(recursive: true);
+        }
+        if (targetDocuments.existsSync()) {
+          await targetDocuments.delete(recursive: true);
+        }
+      });
+
+      BackupService.debugRoleCardAssetsDirectoryResolver =
+          () async => sourceDocuments;
+      final bytes = await exportRoleCardAssistant(
+        documents: sourceDocuments,
+        assistantId: 74,
+        content: [4, 5, 6],
+      );
+
+      final oldAsset = File(
+        '${targetDocuments.path}/${AssistantRoleCardAssetStore.directoryName}/1/old.bin',
+      );
+      await oldAsset.parent.create(recursive: true);
+      await oldAsset.writeAsBytes([9]);
+      BackupService.debugRoleCardAssetsDirectoryResolver =
+          () async => targetDocuments;
+      final target = await newDb();
+      final result = await BackupService(target).importArchive(
+        bytes,
+        accountHash: 'acc1',
+        mode: BackupImportMode.assistantsOnly,
+      );
+      expect(result.warnings, isEmpty);
+      expect(oldAsset.existsSync(), isFalse);
+      final assistant = (await target.db.query('tb_assistant')).single;
+      final restoredPath = restoredAssetPath(assistant);
+      expect(restoredPath, contains('/assistant_role_assets/74/'));
+      expect(await File(restoredPath).readAsBytes(), [4, 5, 6]);
+      await target.db.close();
+    });
+
+    test('合并追加按重映射后的助手 ID 重建资源并更新清单', () async {
+      final sourceDocuments =
+          await Directory.systemTemp.createTemp('backup-role-card-merge-src-');
+      final targetDocuments =
+          await Directory.systemTemp.createTemp('backup-role-card-merge-dst-');
+      addTearDown(() async {
+        BackupService.debugRoleCardAssetsDirectoryResolver = null;
+        if (sourceDocuments.existsSync()) {
+          await sourceDocuments.delete(recursive: true);
+        }
+        if (targetDocuments.existsSync()) {
+          await targetDocuments.delete(recursive: true);
+        }
+      });
+
+      BackupService.debugRoleCardAssetsDirectoryResolver =
+          () async => sourceDocuments;
+      final bytes = await exportRoleCardAssistant(
+        documents: sourceDocuments,
+        assistantId: 75,
+        content: [7, 8, 9],
+      );
+
+      BackupService.debugRoleCardAssetsDirectoryResolver =
+          () async => targetDocuments;
+      final target = await newDb();
+      final targetDao = await AssistantDao.create(target);
+      await targetDao.saveAssistant(AssistantModel(name: '本地角色'));
+      final result = await BackupService(target).importArchive(
+        bytes,
+        accountHash: 'acc1',
+        mode: BackupImportMode.mergeAppend,
+      );
+      expect(result.warnings, isEmpty);
+      final imported = (await target.db.query(
+        'tb_assistant',
+        where: 'name = ?',
+        whereArgs: ['资源角色75'],
+      ))
+          .single;
+      final importedId = imported['id'] as int;
+      final restoredPath = restoredAssetPath(imported);
+      expect(importedId, isNot(75));
+      expect(restoredPath, contains('/assistant_role_assets/$importedId/'));
+      expect(await File(restoredPath).readAsBytes(), [7, 8, 9]);
+      await target.db.close();
+    });
+
+    test('角色卡资源缺失时告警但仍导入助手与资源元数据', () async {
+      final documents =
+          await Directory.systemTemp.createTemp('backup-role-card-missing-');
+      addTearDown(() async {
+        BackupService.debugRoleCardAssetsDirectoryResolver = null;
+        if (documents.existsSync()) await documents.delete(recursive: true);
+      });
+      final archive = Archive()
+        ..addFile(ArchiveFile.bytes(
+          'manifest.json',
+          utf8.encode(
+              jsonEncode({'formatVersion': BackupService.formatVersion})),
+        ))
+        ..addFile(ArchiveFile.bytes(
+          'assistants.json',
+          utf8.encode(jsonEncode([
+            AssistantModel(
+              name: '缺资源角色',
+              roleCardAssets: jsonEncode([
+                {
+                  'type': 'background',
+                  'ext': 'webp',
+                  'localPath': '/old/assistant_role_assets/76/000.webp',
+                },
+              ]),
+            ).toJson()
+              ..['id'] = 76,
+          ])),
+        ));
+      BackupService.debugRoleCardAssetsDirectoryResolver =
+          () async => documents;
+      final target = await newDb();
+      final result = await BackupService(target).importArchive(
+        ZipEncoder().encodeBytes(archive),
+        accountHash: 'acc1',
+      );
+      expect(result.warnings.single, contains('角色卡资源不在备份中'));
+      final assistant = (await target.db.query('tb_assistant')).single;
+      expect(restoredAssetPath(assistant), isEmpty);
+      await target.db.close();
     });
   });
 

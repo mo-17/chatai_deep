@@ -172,5 +172,42 @@ void main() {
           ['爱丽丝', '鲍勃']);
       expect(copyPayload.initialOpening, '欢迎。');
     });
+
+    test('协调器启动后串行自动恢复意外中断任务', () async {
+      final source = StoryRoomTemplatePayload(
+        results: [
+          AssistantRoleCardImportResult(
+            assistant: AssistantModel(name: 'Alice', prompt: 'Careful.'),
+          ),
+        ],
+      );
+      final task = StoryTemplateTranslationTaskModel(
+        sourceTitle: 'Party',
+        sourcePayload: jsonEncode(source.toJson()),
+        outputTitle: 'Party（简中）',
+        roleTotal: 1,
+        status: StoryTemplateTranslationTaskStatus.running,
+      );
+      await taskDao.saveTask(task);
+      final coordinator = StoryTemplateTranslationCoordinator();
+      await coordinator.initialize(storage, accountHash: 'test');
+
+      final resumed = await coordinator.resumeRecoverable(
+        complete: (_) async => jsonEncode({
+          'name': '爱丽丝',
+          'description': '中文简介',
+          'prompt': '谨慎。',
+          'openingMessage': '',
+          'exampleDialogs': '',
+          'memoryBook': '',
+        }),
+      );
+
+      final restored = await taskDao.getTask(task.id!);
+      expect(resumed, 1);
+      expect(restored?.status, StoryTemplateTranslationTaskStatus.completed);
+      expect(restored?.log, contains('从检查点自动恢复'));
+      expect(restored?.outputTemplateId, isNotNull);
+    });
   });
 }

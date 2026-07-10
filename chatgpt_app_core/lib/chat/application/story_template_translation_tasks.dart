@@ -19,6 +19,9 @@ typedef StoryTemplateTranslationCall = Future<String> Function(String prompt);
 /// 页面可复用的任务协调器。任务行先写入数据库，再启动网络翻译；完成、失败、取消
 /// 都留在数据库中以便重启后查看。
 class StoryTemplateTranslationCoordinator extends ChangeNotifier {
+  static final StoryTemplateTranslationCoordinator instance =
+      StoryTemplateTranslationCoordinator();
+
   StoryTemplateTranslationTaskDao? _taskDao;
   StoryTemplateDao? _templateDao;
   String? _accountHash;
@@ -95,6 +98,37 @@ class StoryTemplateTranslationCoordinator extends ChangeNotifier {
     await _requireTaskDao().saveTask(task);
     _sortTasks();
     notifyListeners();
+  }
+
+  /// App 重启或账号重新登录后，按检查点串行恢复「排队中 / 意外中断」任务。
+  ///
+  /// 明确失败和用户取消的任务仍留给用户手动决定，避免在网络或配置持续异常时
+  /// 自动重复消耗 token。串行执行也避免多个大模板同时占满上游并触发限流。
+  Future<int> resumeRecoverable({
+    required StoryTemplateTranslationCall complete,
+  }) async {
+    final recoverable = _tasks
+        .where((task) =>
+            task.status == StoryTemplateTranslationTaskStatus.queued ||
+            task.status == StoryTemplateTranslationTaskStatus.retryable)
+        .toList()
+      ..sort((a, b) => a.createdAt.compareTo(b.createdAt));
+    var resumed = 0;
+    for (final task in recoverable) {
+      final id = task.id;
+      if (id == null || _runningIds.contains(id)) continue;
+      _cancelledIds.remove(id);
+      task.status = StoryTemplateTranslationTaskStatus.queued;
+      task.stage = '自动恢复翻译';
+      task.detail = StoryTemplateTranslationTaskDao.taskCheckpointDetail(task);
+      task.error = '';
+      task.log = _appendLog(task.log, '应用启动后从检查点自动恢复');
+      await _requireTaskDao().saveTask(task);
+      notifyListeners();
+      resumed += 1;
+      await _run(task, complete);
+    }
+    return resumed;
   }
 
   Future<void> dismiss(StoryTemplateTranslationTaskModel task) async {

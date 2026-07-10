@@ -15,6 +15,8 @@ class AssistantRoleCardService {
   static const tavernExportDescription = '导出 SillyTavern V2 JSON，适合检查或二次编辑';
   static const tavernPngExportLabel = 'Tavern V2 PNG';
   static const tavernPngExportDescription = '导出酒馆常用 PNG 角色卡，可直接导入 SillyTavern';
+  static const charxExportLabel = 'CHARX V3';
+  static const charxExportDescription = '导出 Character Card V3 角色卡及资源包';
   // 只写入 memoryBook 的注释行，因此不会参与角色记忆匹配或系统提示注入。
   static const _tavernRawMarker = '# [chatai_deep.tavern_raw.v1] ';
   static const _tavernPreferredLocaleKeys = [
@@ -85,6 +87,91 @@ class AssistantRoleCardService {
     );
   }
 
+  /// 导出 CHARX。传入导入结果时会携带已解析的资源清单和包内字节；传入
+  /// [AssistantModel] 时也可通过 [resources] / [avatarPngBytes] 提供资源。
+  /// 该 API 只生成 ZIP，不访问网络、不执行资源文件。
+  static Uint8List exportCharx(
+    Object source, {
+    DateTime? exportedAt,
+    List<AssistantRoleCardResource> resources = const [],
+    List<int>? avatarPngBytes,
+    Map<String, List<int>> resourceBytes = const {},
+  }) {
+    final assistant = source is AssistantRoleCardImportResult
+        ? source.assistant
+        : source is AssistantModel
+            ? source
+            : throw ArgumentError.value(source, 'source', '不是角色卡导入结果');
+    final sourceResources = source is AssistantRoleCardImportResult
+        ? source.resources
+        : const <AssistantRoleCardResource>[];
+    final effectiveResources = [
+      ...(resources.isEmpty ? sourceResources : resources),
+    ];
+    final imageBytes = avatarPngBytes ??
+        (source is AssistantRoleCardImportResult
+            ? source.avatarPngBytes
+            : null);
+    if (imageBytes != null &&
+        !_hasIconResource(effectiveResources) &&
+        (_isPng(imageBytes) || _isJpeg(imageBytes))) {
+      final ext = _isJpeg(imageBytes) ? 'jpg' : 'png';
+      effectiveResources.add(AssistantRoleCardResource(
+        type: 'icon',
+        uri: 'embeded://assets/icon/main.$ext',
+        name: 'main',
+        ext: ext,
+        archivePath: 'assets/icon/main.$ext',
+        mimeType: _mimeTypeForExtension(ext),
+        size: imageBytes.length,
+        bytes: Uint8List.fromList(imageBytes),
+      ));
+    }
+
+    final card = jsonDecode(exportTavernV2Json(
+      assistant,
+      exportedAt: exportedAt,
+    )) as Map<String, dynamic>;
+    card['spec'] = 'chara_card_v3';
+    card['spec_version'] = '3.0';
+    final data = Map<String, dynamic>.from(card['data'] as Map);
+    if (effectiveResources.any((resource) => resource.includeInCard)) {
+      data['assets'] = [
+        for (final resource in effectiveResources)
+          if (resource.includeInCard) resource.toCardJson(),
+      ];
+    }
+    card['data'] = data;
+
+    final output = archive.Archive()
+      ..addFile(archive.ArchiveFile.bytes(
+        'card.json',
+        utf8.encode(const JsonEncoder.withIndent('  ').convert(card)),
+      ));
+    final emittedPaths = <String>{'card.json'};
+    for (final resource in effectiveResources) {
+      final path = _charxArchivePath(resource);
+      if (path == null || !emittedPaths.add(path)) continue;
+      final bytes = resource.bytes ??
+          resourceBytes[resource.archivePath] ??
+          resourceBytes[resource.uri];
+      if (bytes == null || bytes.isEmpty) continue;
+      output.addFile(archive.ArchiveFile.bytes(path, bytes));
+    }
+    return Uint8List.fromList(archive.ZipEncoder().encodeBytes(output));
+  }
+
+  static Uint8List exportCharxImportResult(
+    AssistantRoleCardImportResult result, {
+    DateTime? exportedAt,
+    Map<String, List<int>> resourceBytes = const {},
+  }) =>
+      exportCharx(
+        result,
+        exportedAt: exportedAt,
+        resourceBytes: resourceBytes,
+      );
+
   static AssistantModel importBytes(List<int> bytes, {String? filename}) {
     return importPackageBytes(bytes, filename: filename).assistant;
   }
@@ -92,33 +179,300 @@ class AssistantRoleCardService {
   static AssistantRoleCardImportResult importPackageBytes(List<int> bytes,
       {String? filename}) {
     if (_isZip(bytes, filename: filename)) {
-      return _importZip(bytes);
+      return _isCharx(bytes, filename: filename)
+          ? _importCharx(bytes, filename: filename)
+          : _importZip(bytes);
     }
     if (_isPng(bytes)) {
       final json = _extractPngRoleCardJson(bytes);
-      return AssistantRoleCardImportResult(
-        assistant: importJson(json),
-        avatarPngBytes: bytes,
+      return _importJsonResult(
+        json,
         sourceName: filename,
-        tavernMeta: tavernMetaFromJson(json),
+        avatarPngBytes: bytes,
       );
     }
     try {
-      final json = utf8.decode(bytes);
-      return AssistantRoleCardImportResult(
-        assistant: importJson(json),
+      return _importJsonResult(
+        utf8.decode(bytes),
         sourceName: filename,
-        tavernMeta: tavernMetaFromJson(json),
       );
     } catch (_) {
-      final json = latin1.decode(bytes);
-      return AssistantRoleCardImportResult(
-        assistant: importJson(json),
+      return _importJsonResult(
+        latin1.decode(bytes),
         sourceName: filename,
-        tavernMeta: tavernMetaFromJson(json),
       );
     }
   }
+
+  static AssistantRoleCardImportResult _importJsonResult(
+    String json, {
+    String? sourceName,
+    List<int>? avatarPngBytes,
+  }) {
+    final decoded = jsonDecode(json);
+    if (decoded is! Map<String, dynamic>) {
+      throw const FormatException('角色卡 JSON 必须是对象');
+    }
+    return AssistantRoleCardImportResult(
+      assistant: importJson(json),
+      avatarPngBytes: avatarPngBytes,
+      avatarExtension: avatarPngBytes == null
+          ? null
+          : (_isJpeg(avatarPngBytes) ? '.jpg' : '.png'),
+      resources: _resourcesFromDecoded(decoded),
+      sourceName: sourceName,
+      tavernMeta: tavernMetaFromJson(json),
+    );
+  }
+
+  static AssistantRoleCardImportResult _importCharx(
+    List<int> bytes, {
+    String? filename,
+  }) {
+    final roleArchive = _decodeRoleArchive(bytes);
+    archive.ArchiveFile? cardFile;
+    for (final file in roleArchive.files) {
+      if (file.isFile == true && file.name == 'card.json') {
+        cardFile = file;
+        break;
+      }
+    }
+    if (cardFile == null) {
+      throw const FormatException('CHARX 根目录缺少 card.json');
+    }
+    final cardBytes = cardFile.readBytes();
+    if (cardBytes == null || cardBytes.isEmpty) {
+      throw const FormatException('CHARX 的 card.json 为空');
+    }
+    final json = utf8.decode(cardBytes);
+    final decoded = jsonDecode(json);
+    if (decoded is! Map<String, dynamic> ||
+        _string(decoded['spec']) != 'chara_card_v3') {
+      throw const FormatException('CHARX 的 card.json 必须是 Character Card V3');
+    }
+    final resources = _resourcesFromCharx(decoded, roleArchive);
+    final avatar = _selectAvatarResource(resources);
+    return AssistantRoleCardImportResult(
+      assistant: importJson(json),
+      avatarPngBytes: avatar?.bytes,
+      avatarExtension:
+          avatar == null ? null : (_isJpeg(avatar.bytes!) ? '.jpg' : '.png'),
+      resources: resources,
+      sourceName: filename ?? 'card.json',
+      tavernMeta: tavernMetaFromJson(json),
+    );
+  }
+
+  static archive.Archive _decodeRoleArchive(List<int> bytes) {
+    try {
+      return archive.ZipDecoder().decodeBytes(bytes);
+    } catch (_) {
+      throw const FormatException('无法解析角色卡 ZIP');
+    }
+  }
+
+  static List<AssistantRoleCardResource> _resourcesFromDecoded(
+    Map<String, dynamic> decoded,
+  ) {
+    final data = decoded['data'];
+    final cardData = data is Map<String, dynamic> ? data : decoded;
+    return _resourcesFromAssetList(cardData['assets']);
+  }
+
+  static List<AssistantRoleCardResource> _resourcesFromCharx(
+    Map<String, dynamic> decoded,
+    archive.Archive roleArchive,
+  ) {
+    final files = <String, List<int>>{};
+    for (final file in roleArchive.files) {
+      if (file.isFile != true || file.name == 'card.json') continue;
+      final path = _safeArchivePath(file.name);
+      if (path == null) continue;
+      final bytes = file.readBytes();
+      if (bytes != null) files[path] = Uint8List.fromList(bytes);
+    }
+    final resources = <AssistantRoleCardResource>[];
+    final referenced = <String>{};
+    final data = decoded['data'];
+    final cardData = data is Map<String, dynamic> ? data : decoded;
+    final assets = cardData['assets'];
+    if (assets is List) {
+      for (final raw in assets) {
+        if (raw is! Map) continue;
+        final asset = Map<String, dynamic>.from(raw);
+        final uri = _string(asset['uri']);
+        final embeddedPath = _embeddedAssetPath(uri);
+        if (embeddedPath != null) referenced.add(embeddedPath);
+        final bytes = embeddedPath == null ? null : files[embeddedPath];
+        final ext = _assetExtension(asset['ext'], embeddedPath);
+        resources.add(AssistantRoleCardResource(
+          type: _string(asset['type'], fallback: 'other'),
+          uri: uri,
+          name:
+              _string(asset['name'], fallback: _basename(embeddedPath ?? uri)),
+          ext: ext,
+          archivePath: embeddedPath ?? '',
+          mimeType: _mimeTypeForExtension(ext),
+          size: bytes?.length ?? 0,
+          bytes: bytes == null ? null : Uint8List.fromList(bytes),
+        ));
+      }
+    }
+    for (final entry in files.entries) {
+      if (referenced.contains(entry.key)) continue;
+      final ext = _assetExtension('', entry.key);
+      resources.add(AssistantRoleCardResource(
+        type: _assetTypeForPath(entry.key),
+        uri: 'embeded://${entry.key}',
+        name: _basename(entry.key),
+        ext: ext,
+        archivePath: entry.key,
+        mimeType: _mimeTypeForExtension(ext),
+        size: entry.value.length,
+        bytes: Uint8List.fromList(entry.value),
+        includeInCard: false,
+      ));
+    }
+    return resources;
+  }
+
+  static List<AssistantRoleCardResource> _resourcesFromAssetList(Object? raw) {
+    if (raw is! List) return const [];
+    return [
+      for (final item in raw)
+        if (item is Map) _resourceFromAsset(Map<String, dynamic>.from(item)),
+    ];
+  }
+
+  static AssistantRoleCardResource _resourceFromAsset(
+    Map<String, dynamic> asset,
+  ) {
+    final uri = _string(asset['uri']);
+    final embeddedPath = _embeddedAssetPath(uri);
+    final ext = _assetExtension(asset['ext'], embeddedPath);
+    return AssistantRoleCardResource(
+      type: _string(asset['type'], fallback: 'other'),
+      uri: uri,
+      name: _string(asset['name'], fallback: _basename(embeddedPath ?? uri)),
+      ext: ext,
+      archivePath: embeddedPath ?? '',
+      mimeType: _mimeTypeForExtension(ext),
+      size: 0,
+    );
+  }
+
+  static bool _hasIconResource(List<AssistantRoleCardResource> resources) =>
+      resources.any((resource) =>
+          resource.includeInCard && resource.type.toLowerCase() == 'icon');
+
+  static AssistantRoleCardResource? _selectAvatarResource(
+    List<AssistantRoleCardResource> resources,
+  ) {
+    final icons = resources.where((resource) {
+      final type = resource.type.toLowerCase();
+      return resource.includeInCard &&
+          type == 'icon' &&
+          resource.bytes != null &&
+          (_isPng(resource.bytes!) || _isJpeg(resource.bytes!));
+    }).toList();
+    icons.sort((a, b) {
+      final aMain = a.name.toLowerCase() == 'main' ? 0 : 1;
+      final bMain = b.name.toLowerCase() == 'main' ? 0 : 1;
+      return aMain == bMain ? a.name.compareTo(b.name) : aMain - bMain;
+    });
+    return icons.isEmpty ? null : icons.first;
+  }
+
+  static String? _charxArchivePath(AssistantRoleCardResource resource) {
+    final original = _safeArchivePath(resource.archivePath);
+    if (original != null && original != 'card.json') return original;
+    final type = _safePathPart(resource.type, fallback: 'other');
+    final name = _safePathPart(resource.name, fallback: 'asset');
+    final ext = resource.ext.trim().toLowerCase().replaceFirst('.', '');
+    return 'assets/$type/$name${ext.isEmpty ? '' : '.$ext'}';
+  }
+
+  static String? _safeArchivePath(String raw) {
+    final value = raw.replaceAll('\\', '/').trim();
+    if (value.isEmpty || value.startsWith('/') || value.contains(':')) {
+      return null;
+    }
+    final parts = value.split('/');
+    if (parts.any((part) => part.isEmpty || part == '.' || part == '..')) {
+      return null;
+    }
+    return parts.join('/');
+  }
+
+  static String? _embeddedAssetPath(String uri) {
+    final lower = uri.toLowerCase();
+    const prefixes = ['embeded://', 'embedded://'];
+    for (final prefix in prefixes) {
+      if (lower.startsWith(prefix)) {
+        return _safeArchivePath(uri.substring(prefix.length));
+      }
+    }
+    return null;
+  }
+
+  static String _assetExtension(Object? raw, String? path) {
+    final explicit = _string(raw).toLowerCase().replaceFirst('.', '');
+    if (explicit.isNotEmpty) return explicit;
+    final value = path ?? '';
+    final dot = value.lastIndexOf('.');
+    return dot >= 0 && dot + 1 < value.length
+        ? value.substring(dot + 1).toLowerCase()
+        : 'unknown';
+  }
+
+  static String _assetTypeForPath(String path) {
+    final lower = path.toLowerCase();
+    if (lower.contains('/audio/')) return 'audio';
+    if (lower.contains('/background/')) return 'background';
+    if (lower.contains('/icon/')) return 'icon';
+    return 'other';
+  }
+
+  static String _mimeTypeForExtension(String ext) {
+    switch (ext.toLowerCase()) {
+      case 'png':
+        return 'image/png';
+      case 'jpg':
+      case 'jpeg':
+        return 'image/jpeg';
+      case 'webp':
+        return 'image/webp';
+      case 'gif':
+        return 'image/gif';
+      case 'mp3':
+        return 'audio/mpeg';
+      case 'wav':
+        return 'audio/wav';
+      case 'ogg':
+        return 'audio/ogg';
+      case 'm4a':
+        return 'audio/mp4';
+      default:
+        return 'application/octet-stream';
+    }
+  }
+
+  static String _safePathPart(String raw, {required String fallback}) {
+    final value = raw.trim().replaceAll(RegExp(r'[^a-zA-Z0-9._-]'), '_');
+    return value.isEmpty ? fallback : value;
+  }
+
+  static String _basename(String path) {
+    final value = path.replaceAll('\\', '/');
+    final slash = value.lastIndexOf('/');
+    return slash < 0 ? value : value.substring(slash + 1);
+  }
+
+  static bool _isJpeg(List<int> bytes) =>
+      bytes.length >= 3 &&
+      bytes[0] == 0xff &&
+      bytes[1] == 0xd8 &&
+      bytes[2] == 0xff;
 
   static AssistantRoleCardTavernMeta? tavernMetaFromJson(String jsonText) {
     try {
@@ -138,6 +492,49 @@ class AssistantRoleCardService {
     return rawCard == null ? null : _tavernMetaFromDecoded(rawCard);
   }
 
+  /// 识别需要沙箱/插件宿主的 Tavern 扩展。导入时保留原始数据，但移动端不会
+  /// 直接执行第三方脚本、正则替换脚本、快捷指令或 Prompt Manager 配置。
+  static TavernExtensionSafetyReport extensionSafetyReport(
+    AssistantModel assistant,
+  ) {
+    final raw = _tavernRawCardPayload(assistant.memoryBook);
+    if (raw == null) return const TavernExtensionSafetyReport();
+    final detected = <String>{};
+    void scan(Object? value) {
+      if (value is List) {
+        for (final item in value) {
+          scan(item);
+        }
+        return;
+      }
+      if (value is! Map) return;
+      for (final entry in value.entries) {
+        final key = '${entry.key}'.trim().toLowerCase().replaceAll('-', '_');
+        if (_tavernExecutableExtensionLabels.containsKey(key) &&
+            !_isEmptyTavernValue(entry.value)) {
+          detected.add(_tavernExecutableExtensionLabels[key]!);
+        }
+        scan(entry.value);
+      }
+    }
+
+    scan(raw);
+    return TavernExtensionSafetyReport(
+      blockedExtensionLabels: detected.toList()..sort(),
+    );
+  }
+
+  static const Map<String, String> _tavernExecutableExtensionLabels = {
+    'scripts': '脚本',
+    'javascript': 'JavaScript',
+    'regex_scripts': 'Regex Scripts',
+    'regexscripts': 'Regex Scripts',
+    'quick_replies': 'Quick Replies',
+    'quickreplies': 'Quick Replies',
+    'prompt_manager': 'Prompt Manager',
+    'promptmanager': 'Prompt Manager',
+  };
+
   /// 移除仅用于往返导出的内部标记，供运行时世界书消费方使用。
   static String memoryBookForRuntime(String memoryBook) =>
       _withoutTavernRawCardMarker(memoryBook);
@@ -152,6 +549,11 @@ class AssistantRoleCardService {
       List<int> bytes,
       {String? filename}) {
     if (_isZip(bytes, filename: filename)) {
+      if (_isCharx(bytes, filename: filename)) {
+        return AssistantRoleCardImportBatchResult(
+          results: [importPackageBytes(bytes, filename: filename)],
+        );
+      }
       return _importZipBatch(bytes);
     }
     return AssistantRoleCardImportBatchResult(
@@ -164,12 +566,7 @@ class AssistantRoleCardService {
   }
 
   static AssistantRoleCardImportBatchResult _importZipBatch(List<int> bytes) {
-    final archive.Archive roleArchive;
-    try {
-      roleArchive = archive.ZipDecoder().decodeBytes(bytes);
-    } catch (_) {
-      throw const FormatException('无法解析角色卡 ZIP');
-    }
+    final roleArchive = _decodeRoleArchive(bytes);
 
     final candidates = roleArchive.files.where((file) {
       if (file.isFile != true) return false;
@@ -218,6 +615,25 @@ class AssistantRoleCardService {
     throw FormatException('ZIP 中未找到可导入的角色卡 JSON 或 PNG$detail');
   }
 
+  static bool _isCharx(List<int> bytes, {String? filename}) {
+    if (filename?.toLowerCase().endsWith('.charx') == true) return true;
+    if (!_isZip(bytes, filename: filename)) return false;
+    try {
+      final roleArchive = _decodeRoleArchive(bytes);
+      for (final file in roleArchive.files) {
+        if (file.isFile != true || file.name != 'card.json') continue;
+        final content = file.readBytes();
+        if (content == null || content.isEmpty) return false;
+        final decoded = jsonDecode(utf8.decode(content));
+        return decoded is Map<String, dynamic> &&
+            _string(decoded['spec']) == 'chara_card_v3';
+      }
+    } catch (_) {
+      return false;
+    }
+    return false;
+  }
+
   static AssistantModel importJson(String source) {
     final decoded = jsonDecode(source);
     if (decoded is! Map<String, dynamic>) {
@@ -236,6 +652,7 @@ class AssistantRoleCardService {
       openingMessage: _string(payload['openingMessage']),
       exampleDialogs: _string(payload['exampleDialogs']),
       memoryBook: _string(payload['memoryBook']),
+      roleCardAssets: _string(payload['roleCardAssets']),
       defaultVoiceStyle: _string(payload['defaultVoiceStyle']),
       providerId: _string(payload['providerId']),
       model: _string(payload['model']),
@@ -260,6 +677,7 @@ class AssistantRoleCardService {
       openingMessage: assistant.openingMessage,
       exampleDialogs: assistant.exampleDialogs,
       memoryBook: assistant.memoryBook,
+      roleCardAssets: assistant.roleCardAssets,
       defaultVoiceStyle:
           keepDefaultVoice ? assistant.defaultVoiceStyle.trim() : '',
       providerId: keepModelOverride ? assistant.providerId.trim() : '',
@@ -318,6 +736,12 @@ class AssistantRoleCardService {
     final name = assistant.name.trim().isEmpty ? 'character' : assistant.name;
     final safe = name.replaceAll(RegExp(r'[\\/:*?"<>|\s]+'), '_');
     return 'tavern_$safe.png';
+  }
+
+  static String charxFilenameFor(AssistantModel assistant) {
+    final name = assistant.name.trim().isEmpty ? 'character' : assistant.name;
+    final safe = name.replaceAll(RegExp(r'[\\/:*?"<>|\s]+'), '_');
+    return 'character_$safe.charx';
   }
 
   static String uniqueImportName(
@@ -1115,6 +1539,7 @@ class AssistantRoleCardService {
         'openingMessage': assistant.openingMessage,
         'exampleDialogs': assistant.exampleDialogs,
         'memoryBook': assistant.memoryBook,
+        'roleCardAssets': assistant.roleCardAssets,
         'defaultVoiceStyle': assistant.defaultVoiceStyle,
         'providerId': assistant.providerId,
         'model': assistant.model,
@@ -2649,15 +3074,93 @@ class AssistantMemoryBookMergePreview {
 class AssistantRoleCardImportResult {
   final AssistantModel assistant;
   final List<int>? avatarPngBytes;
+
+  /// PNG/JPEG 头像的扩展名，兼容旧字段 [avatarPngBytes] 的命名。
+  final String? avatarExtension;
+
+  /// V3 `data.assets` 及包内未引用文件的清单。资源不会被执行。
+  final List<AssistantRoleCardResource> resources;
   final String? sourceName;
   final AssistantRoleCardTavernMeta? tavernMeta;
 
   const AssistantRoleCardImportResult({
     required this.assistant,
     this.avatarPngBytes,
+    this.avatarExtension,
+    this.resources = const [],
     this.sourceName,
     this.tavernMeta,
   });
+}
+
+class TavernExtensionSafetyReport {
+  final List<String> blockedExtensionLabels;
+
+  const TavernExtensionSafetyReport({
+    this.blockedExtensionLabels = const [],
+  });
+
+  bool get hasBlockedExtensions => blockedExtensionLabels.isNotEmpty;
+
+  String get warningText => hasBlockedExtensions
+      ? '检测到 ${blockedExtensionLabels.join('、')}；数据会保留用于往返导出，但不会在 App 内执行。'
+      : '';
+}
+
+/// CHARX 资源的可序列化元数据和可选包内字节。
+///
+/// [bytes] 只来自 ZIP 内部，导出时用于恢复包内资源；HTTP、data URL 等外部
+/// URI 不会被访问或下载。未知/未引用文件仍保留为清单项，但不会自动加入
+/// `card.json` 的 `assets` 数组。
+class AssistantRoleCardResource {
+  final String type;
+  final String uri;
+  final String name;
+  final String ext;
+  final String archivePath;
+  final String mimeType;
+  final int size;
+  final Uint8List? bytes;
+  final bool includeInCard;
+
+  const AssistantRoleCardResource({
+    required this.type,
+    required this.uri,
+    required this.name,
+    required this.ext,
+    this.archivePath = '',
+    this.mimeType = 'application/octet-stream',
+    this.size = 0,
+    this.bytes,
+    this.includeInCard = true,
+  });
+
+  Map<String, dynamic> toCardJson() => {
+        'type': type,
+        'uri': uri,
+        'name': name,
+        'ext': ext,
+      };
+
+  Map<String, dynamic> toJson() => {
+        ...toCardJson(),
+        'archivePath': archivePath,
+        'mimeType': mimeType,
+        'size': size,
+        'includeInCard': includeInCard,
+      };
+
+  factory AssistantRoleCardResource.fromJson(Map<String, dynamic> json) =>
+      AssistantRoleCardResource(
+        type: json['type'] as String? ?? 'other',
+        uri: json['uri'] as String? ?? '',
+        name: json['name'] as String? ?? '',
+        ext: json['ext'] as String? ?? 'unknown',
+        archivePath: json['archivePath'] as String? ?? '',
+        mimeType: json['mimeType'] as String? ?? 'application/octet-stream',
+        size: json['size'] as int? ?? 0,
+        includeInCard: json['includeInCard'] as bool? ?? true,
+      );
 }
 
 class AssistantRoleCardTavernMeta {

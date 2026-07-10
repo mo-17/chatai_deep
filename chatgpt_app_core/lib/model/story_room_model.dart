@@ -234,6 +234,8 @@ class StoryMessageModel {
   String? speakerVoiceStyle;
   String content;
   List<String> imagePaths;
+  List<String> imageSources;
+  List<String> citationUrls;
   List<String> filePaths;
   String attachmentContext;
   int createdAt;
@@ -250,6 +252,8 @@ class StoryMessageModel {
     this.speakerVoiceStyle,
     required this.content,
     this.imagePaths = const [],
+    this.imageSources = const [],
+    this.citationUrls = const [],
     this.filePaths = const [],
     this.attachmentContext = '',
     int? createdAt,
@@ -272,6 +276,8 @@ class StoryMessageModel {
         speakerVoiceStyle: json['speakerVoiceStyle'] as String?,
         content: json['content'] as String? ?? '',
         imagePaths: _decodePaths(json['imagePaths']),
+        imageSources: _decodePaths(json['imageSources']),
+        citationUrls: _decodePaths(json['citationUrls']),
         filePaths: _decodePaths(json['filePaths']),
         attachmentContext: json['attachmentContext'] as String? ?? '',
         createdAt: json['createdAt'] as int?,
@@ -289,6 +295,8 @@ class StoryMessageModel {
         'speakerVoiceStyle': speakerVoiceStyle,
         'content': content,
         'imagePaths': jsonEncode(imagePaths),
+        'imageSources': jsonEncode(imageSources),
+        'citationUrls': jsonEncode(citationUrls),
         'filePaths': jsonEncode(filePaths),
         'attachmentContext': attachmentContext,
         'createdAt': createdAt,

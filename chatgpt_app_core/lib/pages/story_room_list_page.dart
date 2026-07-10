@@ -28,7 +28,7 @@ import 'package:provider/provider.dart';
 import 'package:share_plus/share_plus.dart';
 
 final _storyTemplateTranslationCoordinator =
-    StoryTemplateTranslationCoordinator();
+    StoryTemplateTranslationCoordinator.instance;
 
 class StoryRoomListPage extends StatefulWidget {
   const StoryRoomListPage({super.key});

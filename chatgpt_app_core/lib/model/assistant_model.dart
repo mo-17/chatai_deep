@@ -39,6 +39,9 @@ class AssistantModel {
   /// 发送时只把命中的条目注入 system prompt，避免长期上下文膨胀。
   String memoryBook;
 
+  /// CHARX/V3 内嵌资源的本地托管清单（JSON）。仅保存文件引用，不执行资源。
+  String roleCardAssets;
+
   /// 默认朗读声音：空串 = 跟随会话/系统设置；可为内置 TTS 风格或 custom_sherpa:<id>。
   String defaultVoiceStyle;
 
@@ -74,6 +77,7 @@ class AssistantModel {
     this.openingMessage = '',
     this.exampleDialogs = '',
     this.memoryBook = '',
+    this.roleCardAssets = '',
     this.defaultVoiceStyle = '',
     this.providerId = '',
     this.model = '',
@@ -95,6 +99,7 @@ class AssistantModel {
         openingMessage: json['openingMessage'] as String? ?? '',
         exampleDialogs: json['exampleDialogs'] as String? ?? '',
         memoryBook: json['memoryBook'] as String? ?? '',
+        roleCardAssets: json['roleCardAssets'] as String? ?? '',
         defaultVoiceStyle: json['defaultVoiceStyle'] as String? ?? '',
         providerId: json['providerId'] as String? ?? '',
         model: json['model'] as String? ?? '',
@@ -130,6 +135,7 @@ class AssistantModel {
         'openingMessage': openingMessage,
         'exampleDialogs': exampleDialogs,
         'memoryBook': memoryBook,
+        'roleCardAssets': roleCardAssets,
         'defaultVoiceStyle': defaultVoiceStyle,
         'providerId': providerId,
         'model': model,

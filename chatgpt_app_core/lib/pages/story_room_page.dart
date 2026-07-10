@@ -4,8 +4,10 @@ import 'dart:io';
 import 'package:chatgpt_app_core/chat/application/story_room_attachments.dart';
 import 'package:chatgpt_app_core/chat/application/read_aloud_service.dart';
 import 'package:chatgpt_app_core/chat/application/story_context_builder.dart';
+import 'package:chatgpt_app_core/chat/application/story_room_image_service.dart';
 import 'package:chatgpt_app_core/chat/application/story_room_read_aloud_controller.dart';
 import 'package:chatgpt_app_core/chat/application/story_room_settings_resolver.dart';
+import 'package:chatgpt_app_core/chat/application/story_room_tool_runner.dart';
 import 'package:chatgpt_app_core/chat/application/story_participant_settings_resolver.dart';
 import 'package:chatgpt_app_core/chat/application/story_speaker_scheduler.dart';
 import 'package:chatgpt_app_core/chat/application/usage_record_service.dart';
@@ -29,6 +31,7 @@ import 'package:chatgpt_app_core/widget/message_input_widget.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:provider/provider.dart';
+import 'package:url_launcher/url_launcher.dart';
 
 class StoryRoomPage extends StatefulWidget {
   final StoryRoomModel room;
@@ -59,6 +62,7 @@ class _StoryRoomPageState extends State<StoryRoomPage> {
   List<String> _pendingFiles = [];
   final Set<int> _streamingMessageCreatedAt = {};
   late final StoryRoomReadAloudController _readAloudController;
+  final StoryRoomToolRunner _toolRunner = StoryRoomToolRunner();
 
   bool get _isTavern => widget.room.mode == StoryRoomMode.tavern;
 
@@ -352,6 +356,8 @@ class _StoryRoomPageState extends State<StoryRoomPage> {
                           message.filePaths.isNotEmpty ||
                           message.attachmentContext.trim().isNotEmpty)
                         _messageAttachments(message),
+                      if (message.citationUrls.isNotEmpty)
+                        _messageCitations(message),
                       if (!isUser) _readAloudButton(message),
                     ],
                   ),
@@ -494,6 +500,9 @@ class _StoryRoomPageState extends State<StoryRoomPage> {
               onChanged: (value) => _inputText = value,
               onSend: () => unawaited(_send()),
               onStop: _stopGeneration,
+              showWebSearch: settings.webSearchConfigured,
+              webSearchEnabled: settings.webSearchEnabled,
+              onToggleWebSearch: () => unawaited(_toggleWebSearch()),
               pendingImages: _pendingImages,
               imagesEnabled: capabilities.image,
               imagesDisabledReason: '当前模型不支持图片，请切换多模态模型',
@@ -596,6 +605,31 @@ class _StoryRoomPageState extends State<StoryRoomPage> {
           Flexible(
             child: Text(label, maxLines: 1, overflow: TextOverflow.ellipsis),
           ),
+        ],
+      ),
+    );
+  }
+
+  Widget _messageCitations(StoryMessageModel message) {
+    return Padding(
+      padding: const EdgeInsets.only(top: 6),
+      child: Wrap(
+        spacing: 4,
+        runSpacing: 4,
+        children: [
+          for (var index = 0; index < message.citationUrls.length; index++)
+            TextButton.icon(
+              onPressed: () async {
+                final uri = Uri.tryParse(message.citationUrls[index]);
+                if (uri != null) await launchUrl(uri);
+              },
+              icon: const Icon(Icons.link, size: 14),
+              label: Text('来源 ${index + 1}'),
+              style: TextButton.styleFrom(
+                visualDensity: VisualDensity.compact,
+                padding: const EdgeInsets.symmetric(horizontal: 6),
+              ),
+            ),
         ],
       ),
     );
@@ -1673,6 +1707,35 @@ class _StoryRoomPageState extends State<StoryRoomPage> {
     }
   }
 
+  Future<void> _toggleWebSearch() async {
+    final provider = context.read<AISettingsProvider>();
+    final next = provider.settings.clone()
+      ..webSearchEnabled = !provider.settings.webSearchEnabled;
+    await provider.update(next);
+  }
+
+  Future<bool> _confirmRoomToolAction(String title, String detail) async {
+    if (!mounted) return false;
+    return await showDialog<bool>(
+          context: context,
+          builder: (dialogContext) => AlertDialog(
+            title: Text(title),
+            content: SingleChildScrollView(child: Text(detail)),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.of(dialogContext).pop(false),
+                child: const Text('拒绝'),
+              ),
+              FilledButton(
+                onPressed: () => Navigator.of(dialogContext).pop(true),
+                child: const Text('允许'),
+              ),
+            ],
+          ),
+        ) ??
+        false;
+  }
+
   Future<List<StoryParticipantModel>> _scheduleTavernSpeakers({
     required ChatService chatService,
     required AISettings settings,
@@ -1784,7 +1847,6 @@ class _StoryRoomPageState extends State<StoryRoomPage> {
   }) async {
     final speakerSettings =
         StoryParticipantSettingsResolver.apply(settings, speaker);
-    final speakerChatService = ChatService.from(speakerSettings);
     final system = StoryContextBuilder.systemPrompt(
       room: widget.room,
       participants: _participants,
@@ -1823,12 +1885,21 @@ class _StoryRoomPageState extends State<StoryRoomPage> {
     var cachedPromptTokens = 0;
     var completionTokens = 0;
     var hasUsage = false;
+    final imageEvents = <StreamEvent>[];
+    final citationUrls = <String>{};
     Object? streamError;
     final done = Completer<void>();
-    final stream = speakerChatService.chatStreamEvents(
-      prompt: StoryContextBuilder.promptFor(input: input, speaker: speaker),
+    final speakerPrompt =
+        StoryContextBuilder.promptFor(input: input, speaker: speaker);
+    final stream = _toolRunner.run(
+      speakerAssistantId: speaker.assistantId,
+      settings: speakerSettings,
+      prompt: speakerPrompt,
       history: history,
       attachments: attachmentBundle?.attachments,
+      confirm: _confirmRoomToolAction,
+      forceWebSearch: speakerSettings.webSearchEnabled &&
+          speakerSettings.webSearchConfigured,
     );
     late final StreamSubscription<StreamEvent> sub;
     sub = stream.listen(
@@ -1845,6 +1916,28 @@ class _StoryRoomPageState extends State<StoryRoomPage> {
           buffer.write(event.delta);
           message.content = buffer.toString();
           if (mounted) setState(() {});
+          return;
+        }
+        if (event.type == StreamEventType.image &&
+            event.imageUrl?.trim().isNotEmpty == true) {
+          imageEvents.add(event);
+          if (mounted) setState(() => _generationStatus = '正在保存生成图片...');
+          return;
+        }
+        if (event.type == StreamEventType.citation) {
+          for (final result in event.webResults ?? const []) {
+            final url = result.url.trim();
+            if (url.isNotEmpty) citationUrls.add(url);
+          }
+          return;
+        }
+        if (event.type == StreamEventType.toolCall && mounted) {
+          setState(() => _generationStatus =
+              '${speaker.name} 正在使用 ${event.toolName ?? '工具'}...');
+          return;
+        }
+        if (event.type == StreamEventType.toolResult && mounted) {
+          setState(() => _generationStatus = '工具执行完成，继续生成...');
         }
       },
       onError: (Object e) {
@@ -1866,8 +1959,23 @@ class _StoryRoomPageState extends State<StoryRoomPage> {
       setState(() => _streamingMessageCreatedAt.remove(message.createdAt));
     }
     if (streamError != null) throw streamError!;
+    for (var index = 0; index < imageEvents.length; index++) {
+      try {
+        final saved = await StoryRoomImageService.saveEvent(
+          imageEvents[index],
+          filename:
+              'room_${widget.room.id}_${speaker.id ?? 0}_${message.createdAt}_$index.png',
+        );
+        saved?.attachTo(message);
+      } catch (error) {
+        if (mounted) {
+          HiDialog.showSnackBar(context, '第 ${index + 1} 张生成图片保存失败：$error');
+        }
+      }
+    }
+    message.citationUrls = citationUrls.toList(growable: false);
     final text = buffer.toString().trim();
-    if (text.isEmpty) {
+    if (text.isEmpty && message.imagePaths.isEmpty) {
       if (mounted) {
         setState(() {
           _messages = _messages
@@ -1884,7 +1992,7 @@ class _StoryRoomPageState extends State<StoryRoomPage> {
       settings: speakerSettings,
       prompt: _usagePromptText(
         history,
-        StoryContextBuilder.promptFor(input: input, speaker: speaker),
+        speakerPrompt,
       ),
       completion: text,
       promptTokens: hasUsage ? promptTokens : null,
