@@ -1,18 +1,26 @@
 import 'dart:convert';
+import 'dart:typed_data';
 
+import 'package:chatgpt_app_core/chat/application/assistant_role_card_asset_store.dart';
+import 'package:chatgpt_app_core/chat/application/assistant_role_card_service.dart';
 import 'package:chatgpt_app_core/capability/product_capabilities.dart';
+import 'package:chatgpt_app_core/db/assistant_dao.dart';
 import 'package:chatgpt_app_core/db/db_migration.dart';
 import 'package:chatgpt_app_core/db/hi_db_manager.dart';
 import 'package:chatgpt_app_core/db/story_artifact_dao.dart';
 import 'package:chatgpt_app_core/db/story_room_dao.dart';
 import 'package:chatgpt_app_core/db/story_template_translation_task_dao.dart';
 import 'package:chatgpt_app_core/sync/sync_tombstone_store.dart';
+import 'package:sqflite/sqflite.dart';
 
 /// 本地同步服务：把 SQLite 里的核心业务表转换成可上传的增量变更，
 /// 并把服务端下发的变更按 Last-Write-Wins 应用回本机。
 ///
 /// 网络层由 [CloudSyncClient] 负责；这里保持纯 SQLite 合并逻辑，便于离线测试。
 class LocalSyncService {
+  static const assistantRoleAssetChunkEntity = 'assistant_role_asset_chunk';
+  static const _roleAssetChunkBytes = 192 * 1024;
+  static const _roleAssetStageTable = 'tb_sync_assistant_role_asset_chunk';
   static const _specs = [
     _SyncEntitySpec(
       entity: 'project',
@@ -99,8 +107,12 @@ class LocalSyncService {
   ];
 
   final HiDBManager storage;
+  final RoleCardAssetDirectoryResolver? roleCardAssetDirectoryResolver;
 
-  const LocalSyncService(this.storage);
+  const LocalSyncService(
+    this.storage, {
+    this.roleCardAssetDirectoryResolver,
+  });
 
   Future<List<SyncChange>> exportChanges({int updatedAfter = 0}) async {
     await _ensureTables();
@@ -117,7 +129,11 @@ class LocalSyncService {
         orderBy: spec.timestampColumn,
       );
       for (final row in rows) {
-        changes.add(spec.changeFromRow(row));
+        if (spec.entity == 'assistant') {
+          changes.addAll(await _assistantChangesFromRow(row));
+        } else {
+          changes.add(spec.changeFromRow(row));
+        }
       }
     }
     final tombstones = await storage.db.query(
@@ -145,12 +161,22 @@ class LocalSyncService {
   Future<SyncMergeResult> applyRemoteChanges(
       Iterable<SyncChange> remoteChanges) async {
     await _ensureTables();
+    final incoming = remoteChanges.toList(growable: false);
     final accepted = <SyncChange>[];
     final rejectedStale = <SyncChange>[];
     final conflicts = <String>[];
+    final deletedAssistantIds = <int>{};
+    final upsertedAssistantIds = <int>{};
+    final assistantUpsertVersions = <int, int>{};
+    final assistantIdsWithChunks = {
+      for (final change in incoming)
+        if (change.entity == assistantRoleAssetChunkEntity)
+          _asInt(change.payload['assistantId']),
+    }..removeWhere((id) => id <= 0);
 
     await storage.db.transaction((txn) async {
-      for (final remote in remoteChanges) {
+      for (final remote in incoming) {
+        if (remote.entity == assistantRoleAssetChunkEntity) continue;
         final spec = _specFor(remote.entity);
         if (spec == null) {
           rejectedStale.add(remote);
@@ -169,9 +195,15 @@ class LocalSyncService {
           rejectedStale.add(remote);
           continue;
         }
+        final payload = _payloadForApply(remote);
         if (currentUpdatedAt == remote.updatedAt &&
             current != null &&
-            !_samePayload(current, remote.payload, spec.idColumns)) {
+            !_samePayload(
+              current,
+              payload,
+              spec.idColumns,
+              ignoreRoleCardAssets: remote.entity == 'assistant',
+            )) {
           conflicts.add(remote.key);
           continue;
         }
@@ -182,11 +214,11 @@ class LocalSyncService {
             whereArgs: spec.whereArgs(remote.id),
           );
         } else if (current == null) {
-          await txn.insert(spec.table, remote.payload);
+          await txn.insert(spec.table, payload);
         } else {
           await txn.update(
             spec.table,
-            remote.payload,
+            payload,
             where: spec.whereClause,
             whereArgs: spec.whereArgs(remote.id),
           );
@@ -197,14 +229,360 @@ class LocalSyncService {
           id: remote.id,
         );
         accepted.add(remote);
+        if (remote.entity == 'assistant' && remote.op == SyncOp.delete) {
+          final id = int.tryParse(remote.id);
+          if (id != null && id > 0) deletedAssistantIds.add(id);
+        }
+        if (remote.entity == 'assistant' && remote.op == SyncOp.upsert) {
+          final id = int.tryParse(remote.id);
+          if (id != null && id > 0) {
+            upsertedAssistantIds.add(id);
+            assistantUpsertVersions[id] = remote.updatedAt;
+          }
+        }
       }
     });
+
+    for (final id in deletedAssistantIds) {
+      await AssistantRoleCardAssetStore.delete(
+        assistantId: id,
+        directoryResolver: roleCardAssetDirectoryResolver,
+      );
+      await _deleteStagedAssets(id);
+    }
+    for (final id in upsertedAssistantIds) {
+      if (assistantIdsWithChunks.contains(id)) {
+        await _deleteOtherStagedAssetVersions(
+          id,
+          assistantUpsertVersions[id]!,
+        );
+        continue;
+      }
+      await AssistantRoleCardAssetStore.delete(
+        assistantId: id,
+        directoryResolver: roleCardAssetDirectoryResolver,
+      );
+      await _deleteStagedAssets(id);
+    }
+    final assetResult = await _applyRoleAssetChunks(incoming);
+    accepted.addAll(assetResult.accepted);
+    rejectedStale.addAll(assetResult.rejectedStale);
 
     return SyncMergeResult(
       accepted: accepted,
       rejectedStale: rejectedStale,
       conflicts: conflicts.toSet().toList()..sort(),
     );
+  }
+
+  Future<List<SyncChange>> _assistantChangesFromRow(
+    Map<String, Object?> row,
+  ) async {
+    final assistant = _specs
+        .firstWhere((spec) => spec.entity == 'assistant')
+        .changeFromRow(row);
+    final normal = SyncChange(
+      entity: assistant.entity,
+      id: assistant.id,
+      op: assistant.op,
+      updatedAt: assistant.updatedAt,
+      // 文件引用属于设备本地状态，资源由独立块传输。
+      payload: Map<String, dynamic>.from(assistant.payload)
+        ..['roleCardAssets'] = '[]',
+    );
+    final assistantId = int.tryParse(assistant.id);
+    if (assistantId == null || assistantId <= 0) return [normal];
+    final resources =
+        await _loadExportableAssets('${row['roleCardAssets'] ?? ''}');
+    if (resources.isEmpty) return [normal];
+
+    final changes = <SyncChange>[normal];
+    for (final entry in resources.asMap().entries) {
+      final bytes = entry.value.bytes!;
+      final totalChunks =
+          (bytes.length + _roleAssetChunkBytes - 1) ~/ _roleAssetChunkBytes;
+      final metadata = {...entry.value.toJson(), 'size': bytes.length};
+      for (var chunkIndex = 0; chunkIndex < totalChunks; chunkIndex++) {
+        final start = chunkIndex * _roleAssetChunkBytes;
+        final end = (start + _roleAssetChunkBytes).clamp(0, bytes.length);
+        changes.add(SyncChange(
+          entity: assistantRoleAssetChunkEntity,
+          id: '$assistantId:${entry.key}:$chunkIndex',
+          op: SyncOp.upsert,
+          updatedAt: assistant.updatedAt,
+          payload: {
+            'assistantId': assistantId,
+            'assetIndex': entry.key,
+            'chunkIndex': chunkIndex,
+            'totalChunks': totalChunks,
+            'assetCount': resources.length,
+            'assistantUpdatedAt': assistant.updatedAt,
+            'metadata': metadata,
+            'base64': base64Encode(bytes.sublist(start, end)),
+          },
+        ));
+      }
+    }
+    return changes;
+  }
+
+  Future<List<AssistantRoleCardResource>> _loadExportableAssets(
+    String raw,
+  ) async {
+    try {
+      final loaded = await AssistantRoleCardAssetStore.load(
+        raw,
+        directoryResolver: roleCardAssetDirectoryResolver,
+      );
+      var total = 0;
+      final result = <AssistantRoleCardResource>[];
+      for (final resource
+          in loaded.take(AssistantRoleCardAssetStore.maxAssets)) {
+        final bytes = resource.bytes;
+        if (bytes == null || bytes.isEmpty) continue;
+        if (bytes.length > AssistantRoleCardAssetStore.maxAssetBytes ||
+            total + bytes.length > AssistantRoleCardAssetStore.maxTotalBytes) {
+          break;
+        }
+        total += bytes.length;
+        result.add(resource);
+      }
+      return result;
+    } catch (_) {
+      return const [];
+    }
+  }
+
+  Map<String, dynamic> _payloadForApply(SyncChange remote) {
+    final payload = Map<String, dynamic>.from(remote.payload);
+    if (remote.entity == 'assistant' && remote.op == SyncOp.upsert) {
+      // 远端 payload 不能携带可访问的本机绝对路径。
+      payload['roleCardAssets'] = '[]';
+    }
+    return payload;
+  }
+
+  Future<_RoleAssetApplyResult> _applyRoleAssetChunks(
+    Iterable<SyncChange> changes,
+  ) async {
+    final accepted = <SyncChange>[];
+    final rejected = <SyncChange>[];
+    final candidates = <_RoleAssetChunk>[];
+    for (final change in changes) {
+      if (change.entity != assistantRoleAssetChunkEntity) continue;
+      final chunk = _RoleAssetChunk.tryParse(change);
+      if (chunk == null) {
+        rejected.add(change);
+      } else {
+        candidates.add(chunk);
+      }
+    }
+    await storage.db.transaction((txn) async {
+      for (final chunk in candidates) {
+        final current = await txn.query(
+          'tb_assistant',
+          columns: const ['updatedAt'],
+          where: 'id = ?',
+          whereArgs: [chunk.assistantId],
+          limit: 1,
+        );
+        if (current.isEmpty ||
+            _asInt(current.single['updatedAt']) != chunk.assistantUpdatedAt) {
+          rejected.add(chunk.change);
+          continue;
+        }
+        if (!await _canStageAssetChunk(txn, chunk)) {
+          rejected.add(chunk.change);
+          continue;
+        }
+        await txn.insert(
+          _roleAssetStageTable,
+          chunk.toRow(),
+          conflictAlgorithm: ConflictAlgorithm.replace,
+        );
+        accepted.add(chunk.change);
+      }
+    });
+    // 不只处理本轮新到块：若上次完整包因磁盘瞬时错误
+    // 写入失败，远端游标已推进，必须从暂存表继续重试。
+    for (final key in await _stagedBundleKeys()) {
+      final resources = await _completeBundle(key);
+      if (resources == null) continue;
+      try {
+        final manifest = await AssistantRoleCardAssetStore.save(
+          assistantId: key.assistantId,
+          resources: resources,
+          directoryResolver: roleCardAssetDirectoryResolver,
+        );
+        await storage.db.transaction((txn) async {
+          final current = await txn.query(
+            'tb_assistant',
+            columns: const ['updatedAt'],
+            where: 'id = ?',
+            whereArgs: [key.assistantId],
+            limit: 1,
+          );
+          if (current.isEmpty ||
+              _asInt(current.single['updatedAt']) != key.assistantUpdatedAt) {
+            return;
+          }
+          await txn.update(
+            'tb_assistant',
+            {'roleCardAssets': manifest},
+            where: 'id = ?',
+            whereArgs: [key.assistantId],
+          );
+          await txn.delete(
+            _roleAssetStageTable,
+            where: 'assistantId = ? and assistantUpdatedAt = ?',
+            whereArgs: [key.assistantId, key.assistantUpdatedAt],
+          );
+        });
+      } catch (_) {
+        // 保留完整暂存块，后续同步可重试；绝不写入部分资源。
+      }
+    }
+    return _RoleAssetApplyResult(accepted, rejected);
+  }
+
+  Future<List<AssistantRoleCardResource>?> _completeBundle(
+    _RoleAssetBundleKey key,
+  ) async {
+    final rows = await storage.db.query(
+      _roleAssetStageTable,
+      where: 'assistantId = ? and assistantUpdatedAt = ?',
+      whereArgs: [key.assistantId, key.assistantUpdatedAt],
+      orderBy: 'assetIndex asc, chunkIndex asc',
+    );
+    if (rows.isEmpty) return null;
+    final assetCount = _asInt(rows.first['assetCount']);
+    if (assetCount <= 0 || assetCount > AssistantRoleCardAssetStore.maxAssets) {
+      return null;
+    }
+    final resources = <AssistantRoleCardResource>[];
+    var totalBytes = 0;
+    for (var assetIndex = 0; assetIndex < assetCount; assetIndex++) {
+      final assetRows =
+          rows.where((row) => _asInt(row['assetIndex']) == assetIndex).toList();
+      if (assetRows.isEmpty) {
+        return null;
+      }
+      final totalChunks = _asInt(assetRows.first['totalChunks']);
+      if (totalChunks <= 0 || assetRows.length != totalChunks) {
+        return null;
+      }
+      for (var chunkIndex = 0; chunkIndex < totalChunks; chunkIndex++) {
+        final row = assetRows[chunkIndex];
+        if (_asInt(row['chunkIndex']) != chunkIndex ||
+            _asInt(row['totalChunks']) != totalChunks ||
+            _asInt(row['assetCount']) != assetCount ||
+            row['metadata'] != assetRows.first['metadata']) {
+          return null;
+        }
+      }
+      try {
+        final metadata = jsonDecode(assetRows.first['metadata'] as String);
+        if (metadata is! Map) {
+          return null;
+        }
+        final bytes = <int>[];
+        for (final row in assetRows) {
+          final chunk = base64Decode(row['data'] as String);
+          if (chunk.isEmpty || chunk.length > _roleAssetChunkBytes) {
+            return null;
+          }
+          bytes.addAll(chunk);
+        }
+        if (bytes.length > AssistantRoleCardAssetStore.maxAssetBytes ||
+            bytes.length != _asInt(metadata['size'])) {
+          return null;
+        }
+        totalBytes += bytes.length;
+        if (totalBytes > AssistantRoleCardAssetStore.maxTotalBytes) {
+          return null;
+        }
+        final resource = AssistantRoleCardResource.fromJson(
+          Map<String, dynamic>.from(metadata),
+        );
+        resources.add(AssistantRoleCardResource(
+          type: resource.type,
+          uri: resource.uri,
+          name: resource.name,
+          ext: resource.ext,
+          archivePath: resource.archivePath,
+          mimeType: resource.mimeType,
+          size: bytes.length,
+          bytes: Uint8List.fromList(bytes),
+          includeInCard: resource.includeInCard,
+        ));
+      } catch (_) {
+        return null;
+      }
+    }
+    return resources;
+  }
+
+  Future<void> _deleteStagedAssets(int assistantId) => storage.db.delete(
+        _roleAssetStageTable,
+        where: 'assistantId = ?',
+        whereArgs: [assistantId],
+      );
+
+  Future<void> _deleteOtherStagedAssetVersions(
+    int assistantId,
+    int assistantUpdatedAt,
+  ) =>
+      storage.db.delete(
+        _roleAssetStageTable,
+        where: 'assistantId = ? and assistantUpdatedAt != ?',
+        whereArgs: [assistantId, assistantUpdatedAt],
+      );
+
+  Future<Set<_RoleAssetBundleKey>> _stagedBundleKeys() async {
+    final rows = await storage.db.rawQuery(
+      'select distinct assistantId, assistantUpdatedAt '
+      'from $_roleAssetStageTable',
+    );
+    return {
+      for (final row in rows)
+        if (_asInt(row['assistantId']) > 0 &&
+            _asInt(row['assistantUpdatedAt']) >= 0)
+          _RoleAssetBundleKey(
+            _asInt(row['assistantId']),
+            _asInt(row['assistantUpdatedAt']),
+          ),
+    };
+  }
+
+  Future<bool> _canStageAssetChunk(
+    Transaction txn,
+    _RoleAssetChunk chunk,
+  ) async {
+    final rows = await txn.query(
+      _roleAssetStageTable,
+      columns: const ['assetIndex', 'metadata'],
+      where: 'assistantId = ? and assistantUpdatedAt = ?',
+      whereArgs: [chunk.assistantId, chunk.assistantUpdatedAt],
+    );
+    final sizes = <int, int>{};
+    for (final row in rows) {
+      try {
+        final metadata = jsonDecode(row['metadata'] as String);
+        if (metadata is! Map) return false;
+        sizes[_asInt(row['assetIndex'])] = _asInt(metadata['size']);
+      } catch (_) {
+        return false;
+      }
+    }
+    sizes[chunk.assetIndex] = chunk.declaredSize;
+    return sizes.values.fold<int>(0, (sum, size) => sum + size) <=
+        AssistantRoleCardAssetStore.maxTotalBytes;
+  }
+
+  static int _asInt(Object? value) {
+    if (value is int) return value;
+    if (value is num) return value.toInt();
+    return int.tryParse('$value') ?? -1;
   }
 
   static _SyncEntitySpec? _specFor(String entity) {
@@ -216,20 +594,33 @@ class LocalSyncService {
 
   Future<void> _ensureTables() async {
     await DbMigration.run(storage.db);
+    await AssistantDao.create(storage);
     await StoryRoomDao.create(storage);
     await StoryArtifactDao.create(storage);
     await StoryTemplateTranslationTaskDao.create(storage);
     await SyncTombstoneStore.ensure(storage.db);
+    await storage.db.execute(
+      'create table if not exists $_roleAssetStageTable ('
+      'assistantId integer not null, assistantUpdatedAt integer not null, '
+      'assetIndex integer not null, chunkIndex integer not null, '
+      'totalChunks integer not null, assetCount integer not null, '
+      'metadata text not null, data text not null, '
+      'primary key(assistantId, assistantUpdatedAt, assetIndex, chunkIndex))',
+    );
   }
 
   static bool _samePayload(
     Map<String, Object?> current,
     Map<String, dynamic> incoming,
-    List<String> idColumns,
-  ) {
+    List<String> idColumns, {
+    bool ignoreRoleCardAssets = false,
+  }) {
     final normalizedCurrent = Map<String, Object?>.from(current);
     for (final key in idColumns) {
       normalizedCurrent[key] = incoming[key] ?? normalizedCurrent[key];
+    }
+    if (ignoreRoleCardAssets) {
+      normalizedCurrent['roleCardAssets'] = incoming['roleCardAssets'];
     }
     return jsonEncode(_sorted(normalizedCurrent)) ==
         jsonEncode(_sorted(incoming));
@@ -244,6 +635,135 @@ class LocalSyncService {
     }
     if (value is Iterable) return value.map(_sorted).toList();
     return value;
+  }
+}
+
+class _RoleAssetApplyResult {
+  final List<SyncChange> accepted;
+  final List<SyncChange> rejectedStale;
+
+  const _RoleAssetApplyResult(this.accepted, this.rejectedStale);
+}
+
+class _RoleAssetBundleKey {
+  final int assistantId;
+  final int assistantUpdatedAt;
+
+  const _RoleAssetBundleKey(this.assistantId, this.assistantUpdatedAt);
+
+  @override
+  bool operator ==(Object other) =>
+      other is _RoleAssetBundleKey &&
+      other.assistantId == assistantId &&
+      other.assistantUpdatedAt == assistantUpdatedAt;
+
+  @override
+  int get hashCode => Object.hash(assistantId, assistantUpdatedAt);
+}
+
+class _RoleAssetChunk {
+  final SyncChange change;
+  final int assistantId;
+  final int assetIndex;
+  final int chunkIndex;
+  final int totalChunks;
+  final int assetCount;
+  final int assistantUpdatedAt;
+  final int declaredSize;
+  final Map<String, dynamic> metadata;
+  final String base64;
+
+  const _RoleAssetChunk({
+    required this.change,
+    required this.assistantId,
+    required this.assetIndex,
+    required this.chunkIndex,
+    required this.totalChunks,
+    required this.assetCount,
+    required this.assistantUpdatedAt,
+    required this.declaredSize,
+    required this.metadata,
+    required this.base64,
+  });
+
+  _RoleAssetBundleKey get bundleKey =>
+      _RoleAssetBundleKey(assistantId, assistantUpdatedAt);
+
+  Map<String, Object?> toRow() => {
+        'assistantId': assistantId,
+        'assistantUpdatedAt': assistantUpdatedAt,
+        'assetIndex': assetIndex,
+        'chunkIndex': chunkIndex,
+        'totalChunks': totalChunks,
+        'assetCount': assetCount,
+        'metadata': jsonEncode(LocalSyncService._sorted(metadata)),
+        'data': base64,
+      };
+
+  static _RoleAssetChunk? tryParse(SyncChange change) {
+    if (change.op != SyncOp.upsert) {
+      return null;
+    }
+    final payload = change.payload;
+    final assistantId = LocalSyncService._asInt(payload['assistantId']);
+    final assetIndex = LocalSyncService._asInt(payload['assetIndex']);
+    final chunkIndex = LocalSyncService._asInt(payload['chunkIndex']);
+    final totalChunks = LocalSyncService._asInt(payload['totalChunks']);
+    final assetCount = LocalSyncService._asInt(payload['assetCount']);
+    final assistantUpdatedAt =
+        LocalSyncService._asInt(payload['assistantUpdatedAt']);
+    const maxChunks = (AssistantRoleCardAssetStore.maxAssetBytes +
+            LocalSyncService._roleAssetChunkBytes -
+            1) ~/
+        LocalSyncService._roleAssetChunkBytes;
+    if (assistantId <= 0 ||
+        assetIndex < 0 ||
+        assetIndex >= AssistantRoleCardAssetStore.maxAssets ||
+        chunkIndex < 0 ||
+        totalChunks <= 0 ||
+        totalChunks > maxChunks ||
+        chunkIndex >= totalChunks ||
+        assetCount <= 0 ||
+        assetCount > AssistantRoleCardAssetStore.maxAssets ||
+        assetIndex >= assetCount ||
+        assistantUpdatedAt != change.updatedAt ||
+        change.id != '$assistantId:$assetIndex:$chunkIndex') {
+      return null;
+    }
+    final metadata = payload['metadata'];
+    final data = payload['base64'];
+    if (metadata is! Map ||
+        data is! String ||
+        data.length > ((LocalSyncService._roleAssetChunkBytes + 2) ~/ 3) * 4) {
+      return null;
+    }
+    final declaredSize = LocalSyncService._asInt(metadata['size']);
+    if (declaredSize <= 0 ||
+        declaredSize > AssistantRoleCardAssetStore.maxAssetBytes ||
+        jsonEncode(metadata).length > 16 * 1024) {
+      return null;
+    }
+    try {
+      final bytes = base64Decode(data);
+      if (bytes.isEmpty ||
+          bytes.length > LocalSyncService._roleAssetChunkBytes) {
+        return null;
+      }
+    } catch (_) {
+      return null;
+    }
+    return _RoleAssetChunk(
+      change: change,
+      assistantId: assistantId,
+      assetIndex: assetIndex,
+      chunkIndex: chunkIndex,
+      totalChunks: totalChunks,
+      assetCount: assetCount,
+      assistantUpdatedAt: assistantUpdatedAt,
+      declaredSize: declaredSize,
+      metadata: Map<String, dynamic>.from(metadata),
+      base64: data,
+    );
   }
 }
 

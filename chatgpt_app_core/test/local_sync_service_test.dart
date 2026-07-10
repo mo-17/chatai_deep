@@ -1,10 +1,18 @@
+import 'dart:convert';
+import 'dart:io';
+import 'dart:typed_data';
+
+import 'package:chatgpt_app_core/chat/application/assistant_role_card_asset_store.dart';
+import 'package:chatgpt_app_core/chat/application/assistant_role_card_service.dart';
 import 'package:chatgpt_app_core/capability/product_capabilities.dart';
+import 'package:chatgpt_app_core/db/assistant_dao.dart';
 import 'package:chatgpt_app_core/db/conversation_dao.dart';
 import 'package:chatgpt_app_core/db/hi_db_manager.dart';
 import 'package:chatgpt_app_core/db/project_dao.dart';
 import 'package:chatgpt_app_core/db/story_room_dao.dart';
 import 'package:chatgpt_app_core/db/story_template_translation_task_dao.dart';
 import 'package:chatgpt_app_core/model/conversation_model.dart';
+import 'package:chatgpt_app_core/model/assistant_model.dart';
 import 'package:chatgpt_app_core/model/project_model.dart';
 import 'package:chatgpt_app_core/model/story_room_model.dart';
 import 'package:chatgpt_app_core/model/story_artifact_model.dart';
@@ -600,5 +608,191 @@ void main() {
       isEmpty,
     );
     await storage.db.close();
+  });
+
+  test('CHARX 资源按稳定块同步、完整聚合，并在空清单时清理托管文件', () async {
+    final source = await newDb();
+    final target = await newDb();
+    final sourceDir = await Directory.systemTemp.createTemp('sync-charx-src-');
+    final targetDir = await Directory.systemTemp.createTemp('sync-charx-dst-');
+    try {
+      final dao = await AssistantDao.create(source);
+      final assistant = AssistantModel(name: 'CHARX 同步角色');
+      final assistantId = (await dao.saveAssistant(assistant))!;
+      final bytes = Uint8List.fromList(
+        List<int>.generate(192 * 1024 + 7, (index) => index % 251),
+      );
+      final manifest = await AssistantRoleCardAssetStore.save(
+        assistantId: assistantId,
+        directoryResolver: () async => sourceDir,
+        resources: [
+          AssistantRoleCardResource(
+            type: 'background',
+            uri: 'embeded://assets/background.bin',
+            name: 'background',
+            ext: 'bin',
+            archivePath: 'assets/background.bin',
+            size: bytes.length,
+            bytes: bytes,
+          ),
+        ],
+      );
+      await source.db.update(
+        'tb_assistant',
+        {'roleCardAssets': manifest, 'updatedAt': 100},
+        where: 'id = ?',
+        whereArgs: [assistantId],
+      );
+
+      final sourceSync = LocalSyncService(
+        source,
+        roleCardAssetDirectoryResolver: () async => sourceDir,
+      );
+      final changes = await sourceSync.exportChanges(updatedAfter: 99);
+      final assistantChange = changes.singleWhere(
+        (change) => change.entity == 'assistant',
+      );
+      final chunks = changes
+          .where((change) =>
+              change.entity == LocalSyncService.assistantRoleAssetChunkEntity)
+          .toList();
+      expect(assistantChange.payload['roleCardAssets'], '[]');
+      expect(chunks, hasLength(2));
+      expect(chunks.map((change) => change.id), [
+        '$assistantId:0:0',
+        '$assistantId:0:1',
+      ]);
+      expect(chunks.first.payload['assistantUpdatedAt'], 100);
+
+      final targetSync = LocalSyncService(
+        target,
+        roleCardAssetDirectoryResolver: () async => targetDir,
+      );
+      final partial = await targetSync.applyRemoteChanges([
+        assistantChange,
+        chunks.first,
+      ]);
+      expect(partial.rejectedStale, isEmpty);
+      expect(partial.accepted, hasLength(2));
+      final beforeComplete = await target.db.query(
+        'tb_assistant',
+        where: 'id = ?',
+        whereArgs: [assistantId],
+      );
+      expect(beforeComplete.single['roleCardAssets'], '[]');
+
+      final complete = await targetSync.applyRemoteChanges([chunks.last]);
+      expect(complete.accepted.single.id, '$assistantId:0:1');
+      final synced = (await target.db.query(
+        'tb_assistant',
+        where: 'id = ?',
+        whereArgs: [assistantId],
+      ))
+          .single;
+      final restored = await AssistantRoleCardAssetStore.load(
+        synced['roleCardAssets'] as String,
+        directoryResolver: () async => targetDir,
+      );
+      expect(restored.single.bytes, bytes);
+
+      final emptyPayload = Map<String, dynamic>.from(assistantChange.payload)
+        ..['updatedAt'] = 200
+        ..['roleCardAssets'] = '[]';
+      final cleared = await targetSync.applyRemoteChanges([
+        SyncChange(
+          entity: 'assistant',
+          id: '$assistantId',
+          op: SyncOp.upsert,
+          updatedAt: 200,
+          payload: emptyPayload,
+        ),
+      ]);
+      expect(cleared.accepted.single.key, 'assistant:$assistantId');
+      expect(
+        Directory(
+          '${targetDir.path}/${AssistantRoleCardAssetStore.directoryName}/$assistantId',
+        ).existsSync(),
+        isFalse,
+      );
+    } finally {
+      await source.db.close();
+      await target.db.close();
+      await sourceDir.delete(recursive: true);
+      await targetDir.delete(recursive: true);
+    }
+  });
+
+  test('CHARX 完整暂存包写盘失败后会在下次同步重试', () async {
+    final storage = await newDb();
+    final dir = await Directory.systemTemp.createTemp('sync-charx-retry-');
+    var failWrite = true;
+    try {
+      final dao = await AssistantDao.create(storage);
+      final assistantId =
+          (await dao.saveAssistant(AssistantModel(name: '恢复角色')))!;
+      await storage.db.update(
+        'tb_assistant',
+        {'updatedAt': 100, 'roleCardAssets': '[]'},
+        where: 'id = ?',
+        whereArgs: [assistantId],
+      );
+      final sync = LocalSyncService(
+        storage,
+        roleCardAssetDirectoryResolver: () async {
+          if (failWrite) throw Exception('磁盘暂时不可用');
+          return dir;
+        },
+      );
+      final chunk = SyncChange(
+        entity: LocalSyncService.assistantRoleAssetChunkEntity,
+        id: '$assistantId:0:0',
+        op: SyncOp.upsert,
+        updatedAt: 100,
+        payload: {
+          'assistantId': assistantId,
+          'assetIndex': 0,
+          'chunkIndex': 0,
+          'totalChunks': 1,
+          'assetCount': 1,
+          'assistantUpdatedAt': 100,
+          'metadata': {
+            'type': 'audio',
+            'name': 'voice',
+            'ext': 'ogg',
+            'size': 3,
+          },
+          'base64': base64Encode([1, 2, 3]),
+        },
+      );
+
+      final staged = await sync.applyRemoteChanges([chunk]);
+      expect(staged.accepted.single.id, chunk.id);
+      expect(
+        (await storage.db.query(
+          'tb_assistant',
+          where: 'id = ?',
+          whereArgs: [assistantId],
+        ))
+            .single['roleCardAssets'],
+        '[]',
+      );
+
+      failWrite = false;
+      await sync.applyRemoteChanges(const []);
+      final row = (await storage.db.query(
+        'tb_assistant',
+        where: 'id = ?',
+        whereArgs: [assistantId],
+      ))
+          .single;
+      final restored = await AssistantRoleCardAssetStore.load(
+        row['roleCardAssets'] as String,
+        directoryResolver: () async => dir,
+      );
+      expect(restored.single.bytes, [1, 2, 3]);
+    } finally {
+      await storage.db.close();
+      if (await dir.exists()) await dir.delete(recursive: true);
+    }
   });
 }

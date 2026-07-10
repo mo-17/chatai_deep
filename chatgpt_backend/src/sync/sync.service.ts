@@ -14,6 +14,8 @@ export interface SyncConflict {
 
 @Injectable()
 export class SyncService {
+  private static readonly maxPullPayloadBytes = 4 * 1024 * 1024;
+
   constructor(
     @InjectRepository(SyncChangeEntity)
     private readonly repo: Repository<SyncChangeEntity>,
@@ -86,7 +88,9 @@ export class SyncService {
     }
 
     return {
-      accepted: accepted.map((row) => this.present(row)),
+      // 上传响应只需确认游标和时间戳。资源分块可能包含大量 base64，
+      // 不回显 payload，避免一次上传产生双倍响应流量和内存占用。
+      accepted: accepted.map((row) => this.present(row, false)),
       conflicts: conflicts.map((conflict) => ({
         entity: conflict.entity,
         entityId: conflict.entityId,
@@ -105,10 +109,27 @@ export class SyncService {
       order: { id: 'ASC' },
       take: safeLimit,
     });
+    const changes: ReturnType<SyncService['present']>[] = [];
+    let payloadBytes = 0;
+    for (const row of rows) {
+      const change = this.present(row);
+      const bytes = Buffer.byteLength(JSON.stringify(change), 'utf8');
+      if (
+        changes.length > 0 &&
+        payloadBytes + bytes > SyncService.maxPullPayloadBytes
+      ) {
+        break;
+      }
+      changes.push(change);
+      payloadBytes += bytes;
+    }
     return {
-      cursor: rows.reduce((max, row) => Math.max(max, row.id), safeCursor),
-      changes: rows.map((row) => this.present(row)),
-      hasMore: rows.length === safeLimit,
+      cursor: changes.reduce(
+        (max, change) => Math.max(max, change.id),
+        safeCursor,
+      ),
+      changes,
+      hasMore: changes.length < rows.length || rows.length === safeLimit,
     };
   }
 
@@ -130,6 +151,51 @@ export class SyncService {
     }
     if (!Number.isFinite(change.updatedAt) || change.updatedAt < 0) {
       throw new BadRequestException('updatedAt 必须是毫秒时间戳');
+    }
+    if (change.entity === 'assistant_role_asset_chunk') {
+      this.validateRoleAssetChunk(change);
+    }
+  }
+
+  private validateRoleAssetChunk(change: SyncChangeDto) {
+    const payload = change.payload ?? {};
+    const assistantId = Number(payload.assistantId);
+    const assetIndex = Number(payload.assetIndex);
+    const chunkIndex = Number(payload.chunkIndex);
+    const totalChunks = Number(payload.totalChunks);
+    const assetCount = Number(payload.assetCount);
+    const assistantUpdatedAt = Number(payload.assistantUpdatedAt);
+    const data = payload.base64;
+    const metadata = payload.metadata;
+    const validInteger = (value: number) =>
+      Number.isInteger(value) && Number.isSafeInteger(value);
+    const valid =
+      validInteger(assistantId) &&
+      assistantId > 0 &&
+      validInteger(assetIndex) &&
+      assetIndex >= 0 &&
+      assetIndex < 256 &&
+      validInteger(chunkIndex) &&
+      chunkIndex >= 0 &&
+      validInteger(totalChunks) &&
+      totalChunks > 0 &&
+      totalChunks <= 107 &&
+      chunkIndex < totalChunks &&
+      validInteger(assetCount) &&
+      assetCount > 0 &&
+      assetCount <= 256 &&
+      assistantUpdatedAt === change.updatedAt &&
+      change.entityId === `${assistantId}:${assetIndex}:${chunkIndex}` &&
+      typeof data === 'string' &&
+      data.length > 0 &&
+      data.length <= 262_144 &&
+      /^[A-Za-z0-9+/]*={0,2}$/.test(data) &&
+      metadata !== null &&
+      typeof metadata === 'object' &&
+      !Array.isArray(metadata) &&
+      JSON.stringify(metadata).length <= 16_384;
+    if (!valid) {
+      throw new BadRequestException('角色卡资源分块不合法');
     }
   }
 
@@ -159,14 +225,14 @@ export class SyncService {
     return JSON.stringify(value);
   }
 
-  private present(row: SyncChangeEntity) {
+  private present(row: SyncChangeEntity, includePayload = true) {
     return {
       id: row.id,
       entity: row.entity,
       entityId: row.entityId,
       op: row.op,
       updatedAt: Number(row.updatedAt),
-      payload: row.payload,
+      ...(includePayload ? { payload: row.payload } : {}),
       deviceId: row.deviceId,
       createdAt: row.createdAt,
     };

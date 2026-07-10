@@ -10,6 +10,7 @@ import {
 } from '@nestjs/common';
 import type { AuthenticatedRequest } from '../auth/jwt.guard';
 import { JwtGuard } from '../auth/jwt.guard';
+import { Throttle } from '@nestjs/throttler';
 import { PushSyncDto } from './dto/sync.dto';
 import { SyncService } from './sync.service';
 
@@ -20,6 +21,7 @@ export class SyncController {
 
   @Post('push')
   @HttpCode(200)
+  @Throttle({ default: { limit: 120, ttl: 60_000 } })
   async push(@Req() req: AuthenticatedRequest, @Body() body: PushSyncDto) {
     const data = await this.svc.push(
       req.user!.userId,
@@ -30,6 +32,7 @@ export class SyncController {
   }
 
   @Get('pull')
+  @Throttle({ default: { limit: 120, ttl: 60_000 } })
   async pull(
     @Req() req: AuthenticatedRequest,
     @Query('cursor') cursor?: string,

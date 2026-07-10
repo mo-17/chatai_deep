@@ -273,6 +273,83 @@ void main() {
     );
   });
 
+  test('pushLocalChanges 按请求体积自动分批并聚合结果', () async {
+    final requestSizes = <int>[];
+    var cursor = 20;
+    final client = CloudSyncClient(
+      localSync: LocalSyncService(await newDb()),
+      cursorStore: MemorySyncCursorStore(deviceId: 'phone-b'),
+      headersBuilder: () => const {},
+      maxPushBodyBytes: 360,
+      client: MockClient((request) async {
+        requestSizes.add(request.bodyBytes.length);
+        final body = jsonDecode(request.body) as Map<String, dynamic>;
+        final changes = (body['changes'] as List).cast<Map<String, dynamic>>();
+        cursor++;
+        return http.Response(
+          jsonEncode({
+            'code': 0,
+            'data': {
+              'cursor': cursor,
+              'accepted': [
+                for (final change in changes)
+                  {
+                    'entity': change['entity'],
+                    'entityId': change['entityId'],
+                    'op': change['op'],
+                    'updatedAt': change['updatedAt'],
+                  },
+              ],
+              'conflicts': [],
+            },
+          }),
+          200,
+        );
+      }),
+    );
+    final changes = [
+      for (var i = 0; i < 3; i++)
+        SyncChange(
+          entity: 'assistant_role_asset_chunk',
+          id: '1:0:$i',
+          op: SyncOp.upsert,
+          updatedAt: 100,
+          payload: {'data': 'x' * 100},
+        ),
+    ];
+
+    final result = await client.pushLocalChanges(changes);
+
+    expect(requestSizes.length, greaterThan(1));
+    expect(requestSizes.every((size) => size <= 360), isTrue);
+    expect(result.accepted.map((change) => change.id),
+        ['1:0:0', '1:0:1', '1:0:2']);
+    expect(result.cursor, cursor);
+  });
+
+  test('pushLocalChanges 拒绝无法单独装入请求的变更', () async {
+    final client = CloudSyncClient(
+      localSync: LocalSyncService(await newDb()),
+      cursorStore: MemorySyncCursorStore(),
+      headersBuilder: () => const {},
+      maxPushBodyBytes: 100,
+      client: MockClient((_) async => fail('不应发起请求')),
+    );
+
+    expect(
+      () => client.pushLocalChanges([
+        SyncChange(
+          entity: 'assistant_role_asset_chunk',
+          id: '1:0:0',
+          op: SyncOp.upsert,
+          updatedAt: 100,
+          payload: {'data': 'x' * 200},
+        ),
+      ]),
+      throwsA(isA<CloudSyncException>()),
+    );
+  });
+
   test('登录自动同步按上次同步时间节流', () {
     final now = DateTime(2026, 7, 1, 12).millisecondsSinceEpoch;
 

@@ -80,4 +80,21 @@ void main() {
 
     expect(resources.single.bytes, [4, 5, 6]);
   });
+
+  test('资源清单不读取非托管路径并阻断路径穿越', () async {
+    final secret = File('${tempDir.path}/secret.bin');
+    await secret.writeAsBytes([9, 9, 9]);
+    final resources = await AssistantRoleCardAssetStore.load(
+      '[{"type":"unknown","localPath":"${secret.path}"}]',
+      directoryResolver: () async => tempDir,
+    );
+
+    expect(resources.single.bytes, isNull);
+    expect(
+      AssistantRoleCardAssetStore.managedSuffix(
+        '/old/assistant_role_assets/7/../secret.bin',
+      ),
+      isNull,
+    );
+  });
 }

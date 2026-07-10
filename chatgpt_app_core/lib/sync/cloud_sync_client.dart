@@ -18,6 +18,10 @@ class CloudSyncClient {
   final bool _ownClient;
   final Duration timeout;
   final DateTime Function() nowProvider;
+  final int maxPushBodyBytes;
+
+  static const int defaultMaxPushBodyBytes = 4 * 1024 * 1024;
+  static const int maxPushChanges = 500;
 
   CloudSyncClient({
     required this.localSync,
@@ -25,6 +29,7 @@ class CloudSyncClient {
     this.headersBuilder = hiHeaders,
     http.Client? client,
     this.timeout = const Duration(seconds: 20),
+    this.maxPushBodyBytes = defaultMaxPushBodyBytes,
     DateTime Function()? nowProvider,
   })  : _client = client ?? http.Client(),
         _ownClient = client == null,
@@ -83,7 +88,9 @@ class CloudSyncClient {
     final changes = <SyncChange>[];
     var pullCursor = cursor;
     var resultCursor = cursor;
-    const maxPages = 20;
+    // CHARX 资源上限 100MB，服务端按约 4MB 响应分页。
+    // 留出普通行变更空间，同时保留防死循环上限。
+    const maxPages = 100;
 
     for (var page = 0; page < maxPages; page++) {
       final pageResult = await pullRemoteChanges(cursor: pullCursor);
@@ -126,6 +133,30 @@ class CloudSyncClient {
   }
 
   Future<PushSyncResult> pushLocalChanges(List<SyncChange> changes) async {
+    if (changes.isEmpty) {
+      return const PushSyncResult(
+        accepted: [],
+        conflictDetails: [],
+        cursor: 0,
+      );
+    }
+    final accepted = <SyncChange>[];
+    final conflicts = <SyncConflictDetail>[];
+    var cursor = 0;
+    for (final batch in _pushBatches(changes)) {
+      final result = await _pushBatch(batch);
+      accepted.addAll(result.accepted);
+      conflicts.addAll(result.conflictDetails);
+      if (result.cursor > cursor) cursor = result.cursor;
+    }
+    return PushSyncResult(
+      accepted: accepted,
+      conflictDetails: conflicts,
+      cursor: cursor,
+    );
+  }
+
+  Future<PushSyncResult> _pushBatch(List<SyncChange> changes) async {
     final uri = BackendConst.buildUri('uapi/sync/push');
     final resp = await _client
         .post(
@@ -151,6 +182,38 @@ class CloudSyncClient {
       cursor: _asInt(data['cursor']),
     );
   }
+
+  Iterable<List<SyncChange>> _pushBatches(List<SyncChange> changes) sync* {
+    var batch = <SyncChange>[];
+    final envelopeBytes = _encodedPushBody(const []).length;
+    var batchBytes = envelopeBytes;
+    for (final change in changes) {
+      final encodedChangeBytes =
+          utf8.encode(jsonEncode(_changeToJson(change))).length;
+      final changeBytes = encodedChangeBytes + (batch.isEmpty ? 0 : 1);
+      if (envelopeBytes + changeBytes > maxPushBodyBytes) {
+        throw CloudSyncException(
+          '单条同步变更超过 ${maxPushBodyBytes ~/ 1024}KB 限制',
+        );
+      }
+      if (batch.length >= maxPushChanges ||
+          batchBytes + changeBytes > maxPushBodyBytes) {
+        yield batch;
+        batch = <SyncChange>[];
+        batchBytes = envelopeBytes;
+      }
+      batch.add(change);
+      batchBytes += encodedChangeBytes + (batch.length == 1 ? 0 : 1);
+    }
+    if (batch.isNotEmpty) yield batch;
+  }
+
+  List<int> _encodedPushBody(List<SyncChange> changes) => utf8.encode(
+        jsonEncode({
+          'deviceId': cursorStore.deviceId,
+          'changes': changes.map(_changeToJson).toList(),
+        }),
+      );
 
   Map<String, dynamic> _decodeResponse(http.Response resp, String message) {
     final body = utf8.decode(resp.bodyBytes, allowMalformed: true);

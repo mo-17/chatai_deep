@@ -66,16 +66,18 @@ class AssistantRoleCardAssetStore {
       final localPath = json['localPath'] as String? ?? '';
       List<int>? bytes;
       if (localPath.isNotEmpty) {
-        var file = File(localPath);
-        if (!await file.exists()) {
-          final suffix = managedSuffix(localPath);
-          if (suffix != null) {
-            final base =
-                await (directoryResolver ?? getApplicationDocumentsDirectory)();
-            file = File('${base.path}/$directoryName/$suffix');
-          }
+        // 清单来自可导入的角色卡，不能读取其中指定的任意本机路径。
+        final suffix = managedSuffix(localPath);
+        if (suffix != null) {
+          // 无 resolver 时保留既有的纯 Dart 测试能力；路径仍必须带有
+          // 受校验的托管目录后缀，不能借由 ../ 访问其他位置。
+          final file = directoryResolver == null
+              ? File(localPath)
+              : File(
+                  '${(await directoryResolver()).path}/$directoryName/$suffix',
+                );
+          if (await file.exists()) bytes = await file.readAsBytes();
         }
-        if (await file.exists()) bytes = await file.readAsBytes();
       }
       final metadata = AssistantRoleCardResource.fromJson(json);
       resources.add(AssistantRoleCardResource(
@@ -95,10 +97,16 @@ class AssistantRoleCardAssetStore {
 
   static String? managedSuffix(String path) {
     const marker = '/$directoryName/';
-    final index = path.indexOf(marker);
+    final normalized = path.replaceAll('\\', '/');
+    final index = normalized.indexOf(marker);
     if (index < 0) return null;
-    final suffix = path.substring(index + marker.length).trim();
-    return suffix.isEmpty ? null : suffix;
+    final suffix = normalized.substring(index + marker.length).trim();
+    if (suffix.isEmpty) return null;
+    final segments = suffix.split('/');
+    if (segments.any((part) => part.isEmpty || part == '.' || part == '..')) {
+      return null;
+    }
+    return segments.join('/');
   }
 
   static Future<void> delete({

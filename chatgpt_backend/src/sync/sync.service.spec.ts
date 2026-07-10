@@ -69,6 +69,7 @@ describe('SyncService', () => {
     ]);
 
     expect(pushed.accepted).toHaveLength(1);
+    expect(pushed.accepted[0]).not.toHaveProperty('payload');
     expect(pushed.conflicts).toEqual([]);
     const pulled = await service.pull(7, 0, 20);
     expect(pulled.cursor).toBe(1);
@@ -242,5 +243,58 @@ describe('SyncService', () => {
     expect(capped.hasMore).toBe(true);
     expect(capped.changes).toHaveLength(500);
     expect(capped.cursor).toBe(500);
+  });
+
+  it('拒绝越界或身份不匹配的角色卡资源分块', async () => {
+    const repo = new FakeSyncRepo();
+    const service = new SyncService(repo as never);
+
+    await expect(
+      service.push(7, [
+        {
+          entity: 'assistant_role_asset_chunk',
+          entityId: '1:0:0',
+          op: 'upsert',
+          updatedAt: 1000,
+          payload: {
+            assistantId: 2,
+            assetIndex: 0,
+            chunkIndex: 0,
+            totalChunks: 1,
+            assetCount: 1,
+            assistantUpdatedAt: 1000,
+            metadata: { type: 'background' },
+            base64: 'AQID',
+          },
+        },
+      ]),
+    ).rejects.toThrow('角色卡资源分块不合法');
+  });
+
+  it('pull 按 JSON 体积分页，大资源块不会一次全部返回', async () => {
+    const repo = new FakeSyncRepo();
+    const service = new SyncService(repo as never);
+    const payload = 'x'.repeat(260_000);
+    for (let i = 0; i < 20; i += 1) {
+      await repo.save(
+        repo.create({
+          userId: 7,
+          entity: 'large_test',
+          entityId: `${i}`,
+          op: 'upsert',
+          updatedAt: `${1000 + i}`,
+          payload: { payload },
+          deviceId: null,
+        }),
+      );
+    }
+
+    const first = await service.pull(7, 0, 200);
+    expect(first.changes.length).toBeGreaterThan(0);
+    expect(first.changes.length).toBeLessThan(20);
+    expect(first.hasMore).toBe(true);
+
+    const second = await service.pull(7, first.cursor, 200);
+    expect(second.changes[0].id).toBe(first.cursor + 1);
   });
 });
