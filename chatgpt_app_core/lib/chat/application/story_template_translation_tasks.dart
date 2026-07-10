@@ -3,6 +3,7 @@ import 'dart:convert';
 
 import 'package:chatgpt_app_core/chat/application/assistant_role_card_service.dart';
 import 'package:chatgpt_app_core/chat/application/assistant_role_card_translation_service.dart';
+import 'package:chatgpt_app_core/chat/application/story_template_background_scheduler.dart';
 import 'package:chatgpt_app_core/chat/application/story_room_role_card_importer.dart';
 import 'package:chatgpt_app_core/chat/application/story_template_transfer.dart';
 import 'package:chatgpt_app_core/chat/application/tavern_room_import_preparer.dart';
@@ -70,6 +71,10 @@ class StoryTemplateTranslationCoordinator extends ChangeNotifier {
     await taskDao.saveTask(task);
     _tasks = [task, ..._tasks];
     notifyListeners();
+    final accountHash = _accountHash;
+    if (accountHash != null) {
+      unawaited(StoryTemplateBackgroundScheduler.schedule(accountHash));
+    }
     unawaited(_run(task, complete));
   }
 
@@ -91,6 +96,10 @@ class StoryTemplateTranslationCoordinator extends ChangeNotifier {
     await _requireTaskDao().saveTask(task);
     _sortTasks();
     notifyListeners();
+    final accountHash = _accountHash;
+    if (accountHash != null) {
+      unawaited(StoryTemplateBackgroundScheduler.schedule(accountHash));
+    }
     unawaited(_run(task, complete));
   }
 

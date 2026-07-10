@@ -2,6 +2,7 @@ import 'dart:async';
 
 import 'package:chatgpt_app_core/dao/ai_settings_dao.dart';
 import 'package:chatgpt_app_core/chat/application/story_template_translation_tasks.dart';
+import 'package:chatgpt_app_core/chat/application/story_template_background_scheduler.dart';
 import 'package:chatgpt_app_core/dao/chat/chat_service.dart';
 import 'package:chatgpt_app_core/dao/hi_api_cache.dart';
 import 'package:chatgpt_app_core/db/hi_db_manager.dart';
@@ -20,11 +21,14 @@ import 'package:login_sdk/login_sdk.dart';
 import 'package:login_sdk/pages/login_page.dart';
 import 'package:provider/provider.dart';
 
-Future<void> runChatGptApp() async {
+Future<void> runChatGptApp({
+  Future<void> Function()? platformInitializer,
+}) {
+  final initialized = Completer<void>();
   // 必须把 ensureInitialized 与 runApp 放进同一个 Zone，否则平台通道回调
   // （含文本输入）跨 Zone 投递会出错——桌面端表现为输入框打不进字（Zone mismatch）。
   runZonedGuarded(
-    () {
+    () async {
       WidgetsFlutterBinding.ensureInitialized();
 
       // 全局错误上报 hook（后续接入 Sentry / 自建上报时替换此处）
@@ -35,14 +39,27 @@ Future<void> runChatGptApp() async {
         // TODO: 接入错误上报服务
       };
 
-      runApp(const MyApp());
+      try {
+        await platformInitializer?.call();
+        runApp(const MyApp());
+        initialized.complete();
+      } catch (error, stackTrace) {
+        if (!initialized.isCompleted) {
+          initialized.completeError(error, stackTrace);
+        }
+        rethrow;
+      }
     },
     (Object error, StackTrace stack) {
       // ignore: avoid_print
       debugPrint('uncaught error: $error\n$stack');
+      if (!initialized.isCompleted) {
+        initialized.completeError(error, stack);
+      }
       // TODO: 接入错误上报服务
     },
   );
+  return initialized.future;
 }
 
 class MyApp extends StatefulWidget {
@@ -143,6 +160,12 @@ class _MyAppState extends State<MyApp> {
 
     if (!LoginDao.hooksRegistered) {
       LoginDao.hooksRegistered = true;
+      LoginDao.addLogoutHook(() {
+        final accountHash = LoginDao.getAccountHash();
+        if (accountHash != null) {
+          unawaited(StoryTemplateBackgroundScheduler.cancel(accountHash));
+        }
+      });
       LoginDao.addLogoutHook(() {
         HiDBManager.closeAll();
       });
