@@ -520,7 +520,12 @@ class BackupService {
     final storyMessages = _readRows(archive, _kStoryMessages);
     final storyArtifacts = _readRows(archive, _kStoryArtifacts);
     final storyArtifactRevisions = _readRows(archive, _kStoryArtifactRevisions);
-    _normalizeStoryMessageBranches(storyRooms, storyMessages, warnings);
+    _normalizeStoryMessageBranches(
+      storyRooms,
+      storyParticipants,
+      storyMessages,
+      warnings,
+    );
     int countOf(String key, String fileName) {
       final value = counts?[key];
       if (value is int) return value;
@@ -660,7 +665,12 @@ class BackupService {
     final storyMessages = _readRows(archive, _kStoryMessages);
     final storyArtifacts = _readRows(archive, _kStoryArtifacts);
     final storyArtifactRevisions = _readRows(archive, _kStoryArtifactRevisions);
-    _normalizeStoryMessageBranches(storyRooms, storyMessages, warnings);
+    _normalizeStoryMessageBranches(
+      storyRooms,
+      storyParticipants,
+      storyMessages,
+      warnings,
+    );
     if (mode == BackupImportMode.mergeAppend) {
       return _importMergeAppend(
         archive: archive,
@@ -1747,6 +1757,7 @@ class BackupService {
 
   static void _normalizeStoryMessageBranches(
     List<Map<String, dynamic>> rooms,
+    List<Map<String, dynamic>> participants,
     List<Map<String, dynamic>> messages,
     List<String> warnings,
   ) {
@@ -1754,6 +1765,28 @@ class BackupService {
       for (final room in rooms)
         if (_intValue(room['id']) != null) _intValue(room['id'])!: room,
     };
+    var repaired = 0;
+    final participantKeysByRoom = <int, Set<String>>{};
+    for (var index = 0; index < participants.length; index++) {
+      final participant = participants[index];
+      final roomId = _intValue(participant['roomId']);
+      if (roomId == null) continue;
+      final used = participantKeysByRoom.putIfAbsent(roomId, () => <String>{});
+      var key = '${participant['participantKey'] ?? ''}'.trim();
+      if (key.isEmpty || used.contains(key)) {
+        final suffix = _intValue(participant['id']) ?? index + 1;
+        final base = 'backup-participant-$roomId-$suffix';
+        key = base;
+        var attempt = 1;
+        while (used.contains(key)) {
+          key = '$base-${++attempt}';
+        }
+        repaired++;
+      }
+      participant['participantKey'] = key;
+      participant['stateSummary'] = '${participant['stateSummary'] ?? ''}';
+      used.add(key);
+    }
     final grouped = <int, List<Map<String, dynamic>>>{};
     for (final message in messages) {
       final roomId = _intValue(message['roomId']);
@@ -1761,7 +1794,6 @@ class BackupService {
       grouped.putIfAbsent(roomId, () => []).add(message);
     }
     final usedKeys = <String>{};
-    var repaired = 0;
     for (final entry in grouped.entries) {
       final roomId = entry.key;
       final rows = entry.value
@@ -1794,6 +1826,7 @@ class BackupService {
         if (original.isNotEmpty) keyMap.putIfAbsent(original, () => key);
         row['nodeKey'] = key;
         row['contextStateAfter'] = '${row['contextStateAfter'] ?? ''}';
+        row['roleStatesAfter'] = '${row['roleStatesAfter'] ?? '{}'}';
         usedKeys.add(key);
         roomKeys.add(key);
       }

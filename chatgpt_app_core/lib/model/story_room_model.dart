@@ -153,6 +153,8 @@ class StoryParticipantRole {
 class StoryParticipantModel {
   int? id;
   int roomId;
+  String participantKey;
+  String stateSummary;
   int? assistantId;
   String role;
   String name;
@@ -172,6 +174,8 @@ class StoryParticipantModel {
   StoryParticipantModel({
     this.id,
     required this.roomId,
+    String? participantKey,
+    this.stateSummary = '',
     this.assistantId,
     required this.role,
     required this.name,
@@ -187,13 +191,18 @@ class StoryParticipantModel {
     this.enabled = true,
     int? createdAt,
     int? updatedAt,
-  })  : createdAt = createdAt ?? DateTime.now().millisecondsSinceEpoch,
+  })  : participantKey = participantKey?.trim().isNotEmpty == true
+            ? participantKey!.trim()
+            : newParticipantKey(),
+        createdAt = createdAt ?? DateTime.now().millisecondsSinceEpoch,
         updatedAt = updatedAt ?? DateTime.now().millisecondsSinceEpoch;
 
   factory StoryParticipantModel.fromJson(Map<String, dynamic> json) =>
       StoryParticipantModel(
         id: json['id'] as int?,
         roomId: json['roomId'] as int? ?? 0,
+        participantKey: json['participantKey'] as String?,
+        stateSummary: json['stateSummary'] as String? ?? '',
         assistantId: json['assistantId'] as int?,
         role: json['role'] as String? ?? StoryParticipantRole.assistant,
         name: json['name'] as String? ?? '未命名角色',
@@ -214,6 +223,8 @@ class StoryParticipantModel {
   Map<String, dynamic> toJson() => {
         'id': id,
         'roomId': roomId,
+        'participantKey': participantKey,
+        'stateSummary': stateSummary,
         'assistantId': assistantId,
         'role': role,
         'name': name,
@@ -230,6 +241,43 @@ class StoryParticipantModel {
         'createdAt': createdAt,
         'updatedAt': updatedAt,
       };
+
+  static String newParticipantKey() {
+    final random = Random.secure();
+    final timestamp = DateTime.now().microsecondsSinceEpoch.toRadixString(36);
+    final entropy =
+        List.generate(3, (_) => random.nextInt(1 << 32).toRadixString(36))
+            .join();
+    return 'participant-$timestamp-$entropy';
+  }
+}
+
+class StoryRoleStateCodec {
+  const StoryRoleStateCodec._();
+
+  static Map<String, String> decode(Object? raw) {
+    if (raw is Map) return _normalize(raw);
+    if (raw is! String || raw.trim().isEmpty) return const {};
+    try {
+      final decoded = jsonDecode(raw);
+      return decoded is Map ? _normalize(decoded) : const {};
+    } catch (_) {
+      return const {};
+    }
+  }
+
+  static String encode(Map<String, String> states) =>
+      jsonEncode(_normalize(states));
+
+  static Map<String, String> _normalize(Map<dynamic, dynamic> states) {
+    final normalized = <String, String>{};
+    for (final entry in states.entries) {
+      final key = entry.key is String ? (entry.key as String).trim() : '';
+      final value = entry.value is String ? (entry.value as String).trim() : '';
+      if (key.isNotEmpty && value.isNotEmpty) normalized[key] = value;
+    }
+    return normalized;
+  }
 }
 
 class StoryMessageModel {
@@ -251,6 +299,7 @@ class StoryMessageModel {
   String? parentNodeKey;
   String? candidateGroupKey;
   String contextStateAfter;
+  String roleStatesAfter;
   int createdAt;
   int updatedAt;
 
@@ -273,6 +322,7 @@ class StoryMessageModel {
     this.parentNodeKey,
     this.candidateGroupKey,
     this.contextStateAfter = '',
+    this.roleStatesAfter = '',
     int? createdAt,
     int? updatedAt,
   })  : nodeKey =
@@ -303,6 +353,7 @@ class StoryMessageModel {
         parentNodeKey: json['parentNodeKey'] as String?,
         candidateGroupKey: json['candidateGroupKey'] as String?,
         contextStateAfter: json['contextStateAfter'] as String? ?? '',
+        roleStatesAfter: json['roleStatesAfter'] as String? ?? '',
         createdAt: json['createdAt'] as int?,
         updatedAt: json['updatedAt'] as int? ?? json['createdAt'] as int?,
       );
@@ -326,6 +377,7 @@ class StoryMessageModel {
         'parentNodeKey': parentNodeKey,
         'candidateGroupKey': candidateGroupKey,
         'contextStateAfter': contextStateAfter,
+        'roleStatesAfter': roleStatesAfter,
         'createdAt': createdAt,
         'updatedAt': updatedAt,
       };

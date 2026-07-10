@@ -458,6 +458,19 @@ void main() {
             'updatedAt': 2,
           }
         ],
+        'story_participants.json': [
+          {
+            'id': 9,
+            'roomId': 8,
+            'role': 'assistant',
+            'name': '旧角色',
+            'prompt': '',
+            'sortOrder': 0,
+            'enabled': 1,
+            'createdAt': 1,
+            'updatedAt': 2,
+          }
+        ],
         'story_messages.json': [
           {
             'id': 10,
@@ -482,7 +495,10 @@ void main() {
       await BackupService(dst).importArchive(bytes, accountHash: 'acc1');
       final dao = await StoryRoomDao.create(dst);
       final room = (await dao.getRooms()).single;
+      final participant = (await dao.getParticipants(room.id!)).single;
       final messages = await dao.getMessages(room.id!);
+      expect(participant.participantKey, 'backup-participant-8-9');
+      expect(participant.stateSummary, '');
       expect(messages, hasLength(2));
       expect(messages.first.parentNodeKey, isNull);
       expect(messages.last.parentNodeKey, messages.first.nodeKey);

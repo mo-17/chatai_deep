@@ -29,10 +29,13 @@ class StoryRoomDao implements ITable {
         ', prompt text, avatarType text, avatarValue text'
         ', voiceStyle text, modelProviderId text, modelId text'
         ', temperature real, maxOutputTokens integer'
+        ', participantKey text not null, stateSummary text'
         ', sortOrder integer, enabled integer, createdAt integer, updatedAt integer)');
     await _ensureParticipantColumns(storage);
     await storage.db.execute(
         'create index if not exists tb_story_participant_room_idx on tb_story_participant(roomId, sortOrder)');
+    await storage.db.execute(
+        'create unique index if not exists tb_story_participant_room_key_uq on tb_story_participant(roomId, participantKey)');
     await storage.db.execute(
         'create table if not exists tb_story_message (id integer primary key autoincrement'
         ', roomId integer not null, speakerId integer, speakerRole text'
@@ -40,7 +43,7 @@ class StoryRoomDao implements ITable {
         ', speakerVoiceStyle text, content text, imagePaths text, imageSources text'
         ', citationUrls text, filePaths text'
         ', attachmentContext text, nodeKey text not null, parentNodeKey text'
-        ', candidateGroupKey text, contextStateAfter text'
+        ', candidateGroupKey text, contextStateAfter text, roleStatesAfter text'
         ', createdAt integer, updatedAt integer)');
     final addedBranchColumns = await _ensureMessageColumns(storage);
     try {
@@ -109,6 +112,8 @@ class StoryRoomDao implements ITable {
       'modelId text',
       'temperature real',
       'maxOutputTokens integer',
+      'participantKey text',
+      'stateSummary text',
     ]) {
       try {
         await storage.db
@@ -117,6 +122,10 @@ class StoryRoomDao implements ITable {
         // 已存在列时忽略，保持旧库可升级。
       }
     }
+    await storage.db.execute(
+      "update tb_story_participant set participantKey = 'legacy-participant-' || roomId || '-' || id "
+      "where participantKey is null or trim(participantKey) = ''",
+    );
   }
 
   static Future<bool> _ensureMessageColumns(HiDBManager storage) async {
@@ -153,6 +162,7 @@ class StoryRoomDao implements ITable {
     for (final column in const [
       'candidateGroupKey text',
       'contextStateAfter text',
+      'roleStatesAfter text',
     ]) {
       try {
         await storage.db
@@ -236,7 +246,7 @@ class StoryRoomDao implements ITable {
       final now = DateTime.now().millisecondsSinceEpoch;
       final messageIds = await txn.query(
         messageTable,
-        columns: ['id'],
+        columns: ['nodeKey'],
         where: 'roomId = ?',
         whereArgs: [id],
       );
@@ -250,7 +260,7 @@ class StoryRoomDao implements ITable {
         await SyncTombstoneStore.record(
           txn,
           entity: 'story_message',
-          id: row['id']!,
+          id: row['nodeKey']!,
           updatedAt: now,
         );
       }
@@ -276,6 +286,9 @@ class StoryRoomDao implements ITable {
 
   Future<int> saveParticipant(StoryParticipantModel model) async {
     model.updatedAt = DateTime.now().millisecondsSinceEpoch;
+    if (model.participantKey.trim().isEmpty) {
+      model.participantKey = StoryParticipantModel.newParticipantKey();
+    }
     final data = model.toJson()..remove('id');
     if (model.id == null) {
       final id = await storage.db.insert(participantTable, data);
@@ -344,6 +357,28 @@ class StoryRoomDao implements ITable {
       }
       if (model.nodeKey.trim().isEmpty) {
         model.nodeKey = StoryMessageModel.newNodeKey();
+      }
+      if (model.roleStatesAfter.trim().isEmpty) {
+        final participants = await txn.query(
+          participantTable,
+          columns: ['participantKey', 'stateSummary'],
+          where: 'roomId = ?',
+          whereArgs: [model.roomId],
+        );
+        model.roleStatesAfter = StoryRoleStateCodec.encode({
+          for (final participant in participants)
+            if ((participant['participantKey'] as String? ?? '')
+                    .trim()
+                    .isNotEmpty &&
+                (participant['stateSummary'] as String? ?? '')
+                    .trim()
+                    .isNotEmpty)
+              (participant['participantKey'] as String).trim():
+                  (participant['stateSummary'] as String).trim(),
+        });
+      } else {
+        model.roleStatesAfter = StoryRoleStateCodec.encode(
+            StoryRoleStateCodec.decode(model.roleStatesAfter));
       }
       final data = model.toJson()..remove('id');
       final id = await txn.insert(messageTable, data);
@@ -419,20 +454,88 @@ class StoryRoomDao implements ITable {
     return storage.db.transaction((txn) async {
       final messages = await txn.query(
         messageTable,
-        columns: ['contextStateAfter'],
+        columns: ['contextStateAfter', 'roleStatesAfter'],
         where: 'roomId = ? and nodeKey = ?',
         whereArgs: [roomId, nodeKey],
         limit: 1,
       );
       if (messages.isEmpty) return false;
+      final now = DateTime.now().millisecondsSinceEpoch;
+      await _restoreParticipantStates(
+        txn,
+        roomId,
+        messages.first['roleStatesAfter'],
+        now,
+      );
       await txn.update(
         tableName,
         {
           'activeMessageKey': nodeKey,
           'worldBookState':
               messages.first['contextStateAfter'] as String? ?? '',
-          'updatedAt': DateTime.now().millisecondsSinceEpoch,
+          'updatedAt': now,
         },
+        where: 'id = ?',
+        whereArgs: [roomId],
+      );
+      return true;
+    });
+  }
+
+  Future<bool> updateParticipantState(
+    int roomId,
+    String participantKey,
+    String stateSummary,
+  ) {
+    final normalizedKey = participantKey.trim();
+    if (normalizedKey.isEmpty) return Future.value(false);
+    final normalizedState = stateSummary.trim();
+    return storage.db.transaction((txn) async {
+      final now = DateTime.now().millisecondsSinceEpoch;
+      final updated = await txn.update(
+        participantTable,
+        {'stateSummary': normalizedState, 'updatedAt': now},
+        where: 'roomId = ? and participantKey = ?',
+        whereArgs: [roomId, normalizedKey],
+      );
+      if (updated == 0) return false;
+      final rooms = await txn.query(
+        tableName,
+        columns: ['activeMessageKey'],
+        where: 'id = ?',
+        whereArgs: [roomId],
+        limit: 1,
+      );
+      final activeMessageKey =
+          rooms.isEmpty ? null : rooms.first['activeMessageKey'] as String?;
+      if (activeMessageKey == null || activeMessageKey.isEmpty) return true;
+      final messages = await txn.query(
+        messageTable,
+        columns: ['id', 'roleStatesAfter'],
+        where: 'roomId = ? and nodeKey = ?',
+        whereArgs: [roomId, activeMessageKey],
+        limit: 1,
+      );
+      if (messages.isEmpty) return true;
+      final states =
+          StoryRoleStateCodec.decode(messages.first['roleStatesAfter']);
+      if (normalizedState.isEmpty) {
+        states.remove(normalizedKey);
+      } else {
+        states[normalizedKey] = normalizedState;
+      }
+      await txn.update(
+        messageTable,
+        {
+          'roleStatesAfter': StoryRoleStateCodec.encode(states),
+          'updatedAt': now,
+        },
+        where: 'id = ?',
+        whereArgs: [messages.first['id']],
+      );
+      await txn.update(
+        tableName,
+        {'updatedAt': now},
         where: 'id = ?',
         whereArgs: [roomId],
       );
@@ -489,6 +592,8 @@ class StoryRoomDao implements ITable {
       );
       final nextWorldBookState =
           parent.isEmpty ? '' : parent.single.contextStateAfter;
+      final nextRoleStatesAfter =
+          parent.isEmpty ? '' : parent.single.roleStatesAfter;
       final now = DateTime.now().millisecondsSinceEpoch;
       for (final deletedNodeKey in deletedNodeKeys) {
         final message = messages.firstWhere(
@@ -503,6 +608,12 @@ class StoryRoomDao implements ITable {
         await txn
             .delete(messageTable, where: 'id = ?', whereArgs: [message.id]);
       }
+      await _restoreParticipantStates(
+        txn,
+        roomId,
+        nextRoleStatesAfter,
+        now,
+      );
       await txn.update(
         tableName,
         {
@@ -557,5 +668,32 @@ class StoryRoomDao implements ITable {
       updatedAt: DateTime.now().millisecondsSinceEpoch,
     );
     await storage.db.delete(messageTable, where: 'id = ?', whereArgs: [id]);
+  }
+
+  static Future<void> _restoreParticipantStates(
+    dynamic txn,
+    int roomId,
+    Object? rawStates,
+    int updatedAt,
+  ) async {
+    final states = StoryRoleStateCodec.decode(rawStates);
+    final participants = await txn.query(
+      participantTable,
+      columns: ['id', 'participantKey'],
+      where: 'roomId = ?',
+      whereArgs: [roomId],
+    );
+    for (final participant in participants) {
+      final participantKey = participant['participantKey'] as String? ?? '';
+      await txn.update(
+        participantTable,
+        {
+          'stateSummary': states[participantKey] ?? '',
+          'updatedAt': updatedAt,
+        },
+        where: 'id = ?',
+        whereArgs: [participant['id']],
+      );
+    }
   }
 }

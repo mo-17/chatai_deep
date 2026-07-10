@@ -133,6 +133,34 @@ void main() {
       expect(saved.maxOutputTokens, 1024);
     });
 
+    test('旧参与者表迁移稳定键和角色状态列', () async {
+      db = await databaseFactoryFfi.openDatabase(inMemoryDatabasePath);
+      await db.execute(
+        'create table tb_story_participant (id integer primary key autoincrement'
+        ', roomId integer not null, assistantId integer, role text, name text'
+        ', prompt text, avatarType text, avatarValue text, voiceStyle text'
+        ', sortOrder integer, enabled integer, createdAt integer, updatedAt integer)',
+      );
+      await db.insert('tb_story_participant', {
+        'roomId': 41,
+        'role': StoryParticipantRole.assistant,
+        'name': '旧角色',
+        'enabled': 1,
+      });
+
+      final dao = await StoryRoomDao.create(HiDBManager.test(db));
+      final participant = (await dao.getParticipants(41)).single;
+      expect(participant.participantKey, 'legacy-participant-41-1');
+      expect(participant.stateSummary, isEmpty);
+      await expectLater(
+        db.insert('tb_story_participant', {
+          'roomId': 41,
+          'participantKey': participant.participantKey,
+        }),
+        throwsA(isA<DatabaseException>()),
+      );
+    });
+
     test('重命名和删除房间会清理参与者与消息', () async {
       db = await databaseFactoryFfi.openDatabase(inMemoryDatabasePath);
       final dao = await StoryRoomDao.create(HiDBManager.test(db));
@@ -504,6 +532,183 @@ void main() {
             child.nodeKey,
             leaf.nodeKey,
           ]..sort());
+    });
+
+    test('保存消息会快照房间参与者状态，并在空状态时保存空对象', () async {
+      db = await databaseFactoryFfi.openDatabase(inMemoryDatabasePath);
+      final dao = await StoryRoomDao.create(HiDBManager.test(db));
+      final roomId = await dao.saveRoom(StoryRoomModel(title: '状态快照'));
+      final fuka = StoryParticipantModel(
+        roomId: roomId,
+        role: StoryParticipantRole.assistant,
+        name: '风香',
+        stateSummary: '站在书店门口',
+      );
+      final empty = StoryParticipantModel(
+        roomId: roomId,
+        role: StoryParticipantRole.assistant,
+        name: '空状态',
+      );
+      await dao.saveParticipant(fuka);
+      await dao.saveParticipant(empty);
+
+      final first = StoryMessageModel(
+        roomId: roomId,
+        speakerRole: 'user',
+        speakerName: '我',
+        content: '开场',
+      );
+      await dao.saveMessage(first);
+      expect(StoryRoleStateCodec.decode(first.roleStatesAfter), {
+        fuka.participantKey: '站在书店门口',
+      });
+
+      await dao.updateParticipantState(roomId, fuka.participantKey, '');
+      final second = StoryMessageModel(
+        roomId: roomId,
+        speakerRole: 'user',
+        speakerName: '我',
+        content: '无状态',
+      );
+      await dao.saveMessage(second);
+      expect(second.roleStatesAfter, '{}');
+    });
+
+    test('切换分支只恢复当前房间的角色长期状态', () async {
+      db = await databaseFactoryFfi.openDatabase(inMemoryDatabasePath);
+      final dao = await StoryRoomDao.create(HiDBManager.test(db));
+      final roomId = await dao.saveRoom(StoryRoomModel(title: '角色分支'));
+      final otherRoomId = await dao.saveRoom(StoryRoomModel(title: '隔离房间'));
+      final fuka = StoryParticipantModel(
+        roomId: roomId,
+        role: StoryParticipantRole.assistant,
+        name: '风香',
+        stateSummary: '根状态',
+      );
+      final chandra = StoryParticipantModel(
+        roomId: roomId,
+        role: StoryParticipantRole.assistant,
+        name: '钱德拉',
+        stateSummary: '根同伴状态',
+      );
+      final outsider = StoryParticipantModel(
+        roomId: otherRoomId,
+        role: StoryParticipantRole.assistant,
+        name: '外部角色',
+        stateSummary: '不应改变',
+      );
+      await dao.saveParticipant(fuka);
+      await dao.saveParticipant(chandra);
+      await dao.saveParticipant(outsider);
+      final root = StoryMessageModel(
+        roomId: roomId,
+        speakerRole: 'user',
+        speakerName: '我',
+        content: '根',
+      );
+      await dao.saveMessage(root);
+      final left = StoryMessageModel(
+        roomId: roomId,
+        parentNodeKey: root.nodeKey,
+        speakerRole: 'assistant',
+        speakerName: '左',
+        content: '左分支',
+        roleStatesAfter: StoryRoleStateCodec.encode({
+          fuka.participantKey: '左状态',
+          chandra.participantKey: '左同伴状态',
+        }),
+      );
+      await dao.saveMessage(left);
+      final right = StoryMessageModel(
+        roomId: roomId,
+        parentNodeKey: root.nodeKey,
+        speakerRole: 'assistant',
+        speakerName: '右',
+        content: '右分支',
+        roleStatesAfter: StoryRoleStateCodec.encode({
+          fuka.participantKey: '右状态',
+        }),
+      );
+      await dao.saveMessage(right);
+
+      await dao.activateMessage(roomId, left.nodeKey);
+      var participants = await dao.getParticipants(roomId);
+      expect(participants.map((item) => item.stateSummary), ['左状态', '左同伴状态']);
+      expect(
+          (await dao.getParticipants(otherRoomId)).single.stateSummary, '不应改变');
+
+      await dao.activateMessage(roomId, right.nodeKey);
+      participants = await dao.getParticipants(roomId);
+      expect(participants.map((item) => item.stateSummary), ['右状态', '']);
+      expect(
+          (await dao.getParticipants(otherRoomId)).single.stateSummary, '不应改变');
+    });
+
+    test('删除分支会回退角色状态，当前叶手动更新会同步快照', () async {
+      db = await databaseFactoryFfi.openDatabase(inMemoryDatabasePath);
+      final dao = await StoryRoomDao.create(HiDBManager.test(db));
+      final roomId = await dao.saveRoom(StoryRoomModel(title: '状态回退'));
+      final fuka = StoryParticipantModel(
+        roomId: roomId,
+        role: StoryParticipantRole.assistant,
+        name: '风香',
+        stateSummary: '根状态',
+      );
+      await dao.saveParticipant(fuka);
+      final root = StoryMessageModel(
+        roomId: roomId,
+        speakerRole: 'user',
+        speakerName: '我',
+        content: '根',
+      );
+      await dao.saveMessage(root);
+      final branch = StoryMessageModel(
+        roomId: roomId,
+        speakerRole: 'assistant',
+        speakerName: '风香',
+        content: '分支',
+        roleStatesAfter:
+            StoryRoleStateCodec.encode({fuka.participantKey: '分支状态'}),
+      );
+      await dao.saveMessage(branch);
+
+      expect(
+          await dao.updateParticipantState(roomId, fuka.participantKey, '手动状态'),
+          isTrue);
+      var current = (await dao.getMessages(roomId)).last;
+      expect(StoryRoleStateCodec.decode(current.roleStatesAfter), {
+        fuka.participantKey: '手动状态',
+      });
+      expect((await dao.getParticipants(roomId)).single.stateSummary, '手动状态');
+      expect(await dao.updateParticipantState(roomId, fuka.participantKey, ''),
+          isTrue);
+      current = (await dao.getMessages(roomId)).last;
+      expect(StoryRoleStateCodec.decode(current.roleStatesAfter), isEmpty);
+
+      await dao.activateMessage(roomId, branch.nodeKey);
+      await dao.deleteMessageSubtree(roomId, branch.nodeKey);
+      expect((await dao.getParticipants(roomId)).single.stateSummary, '根状态');
+      await dao.deleteMessageSubtree(roomId, root.nodeKey);
+      expect((await dao.getParticipants(roomId)).single.stateSummary, isEmpty);
+    });
+
+    test('角色状态 codec 会过滤空值并安全处理坏 JSON', () {
+      expect(StoryRoleStateCodec.decode('{bad json'), isEmpty);
+      expect(StoryRoleStateCodec.decode('[]'), isEmpty);
+      expect(StoryRoleStateCodec.decode('{"a":"ok","":"x","b":" "}'), {
+        'a': 'ok',
+      });
+      expect(
+        StoryRoleStateCodec.encode({' a ': ' ok ', '': 'x', 'b': ''}),
+        '{"a":"ok"}',
+      );
+      expect(
+          StoryMessageModel.fromJson({
+            'roomId': 1,
+            'speakerRole': 'user',
+            'speakerName': '我',
+          }).roleStatesAfter,
+          isEmpty);
     });
 
     test('坏链的活动路径会在环或缺父处安全停止', () async {
@@ -1306,6 +1511,7 @@ void main() {
         roomId: 1,
         role: StoryParticipantRole.author,
         name: '作者',
+        stateSummary: '正在追踪第一章尚未回收的伏笔。',
       );
       final fuka = StoryParticipantModel(
         id: 2,
@@ -1313,6 +1519,7 @@ void main() {
         role: StoryParticipantRole.assistant,
         name: 'Fuka',
         prompt: '害羞，避免主动与陌生人对视。',
+        stateSummary: '仍然紧张，双手攥着衣角；已经答应回答用户的问题。',
       );
       final system = StoryContextBuilder.systemPrompt(
         room: room,
@@ -1324,6 +1531,9 @@ void main() {
       expect(system, contains('【当前发言者】'));
       expect(system, contains('角色：Fuka'));
       expect(system, contains('害羞，避免主动与陌生人对视。'));
+      expect(system, contains('【当前分支角色长期状态】'));
+      expect(system, contains('- 作者：正在追踪第一章尚未回收的伏笔。'));
+      expect(system, contains('- Fuka：仍然紧张，双手攥着衣角；已经答应回答用户的问题。'));
 
       final history = StoryContextBuilder.history([
         StoryMessageModel(

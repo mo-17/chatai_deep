@@ -124,6 +124,14 @@ class StoryContextBuilder {
         ..writeln('【房间参与者】')
         ..writeln(roster);
     }
+    final roleStates = _roleStateSection(participants);
+    if (roleStates.isNotEmpty) {
+      buffer
+        ..writeln()
+        ..writeln('【当前分支角色长期状态】')
+        ..writeln('这些状态只属于当前故事分支；延续关系、情绪、身体状态和未完成动作。')
+        ..writeln(roleStates);
+    }
     buffer
       ..writeln()
       ..writeln('【当前发言者】')
@@ -199,6 +207,28 @@ class StoryContextBuilder {
       default:
         return '';
     }
+  }
+
+  static String _roleStateSection(
+    List<StoryParticipantModel> participants, {
+    int maxChars = 1800,
+  }) {
+    final buffer = StringBuffer();
+    for (final participant in participants) {
+      final state = participant.stateSummary.trim();
+      if (state.isEmpty) continue;
+      final line =
+          '- ${participant.name}：${state.replaceAll(RegExp(r'\s+'), ' ')}';
+      final remaining = maxChars - buffer.length;
+      if (remaining <= 0) break;
+      if (line.length <= remaining) {
+        buffer.writeln(line);
+      } else {
+        buffer.writeln(line.substring(0, remaining));
+        break;
+      }
+    }
+    return buffer.toString().trim();
   }
 
   static _TavernDepthPrompt? _tavernDepthPrompt(

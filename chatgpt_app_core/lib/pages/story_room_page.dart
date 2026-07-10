@@ -877,6 +877,13 @@ class _StoryRoomPageState extends State<StoryRoomPage> {
               subtitle: const Text('保留原消息，并从编辑版本建立新分支'),
               onTap: () => Navigator.pop(ctx, 'edit'),
             ),
+            if (message.speakerId != null)
+              ListTile(
+                leading: const Icon(Icons.psychology_outlined),
+                title: const Text('更新角色长期状态'),
+                subtitle: const Text('保存到当前故事分支，不调用 AI'),
+                onTap: () => Navigator.pop(ctx, 'role_state'),
+              ),
             if (canRegenerate)
               ListTile(
                 leading: const Icon(Icons.refresh_outlined),
@@ -914,6 +921,10 @@ class _StoryRoomPageState extends State<StoryRoomPage> {
         return;
       case 'edit':
         await _editMessage(message);
+        return;
+      case 'role_state':
+        final participant = _participantById(message.speakerId);
+        if (participant != null) await _editParticipantState(participant);
         return;
       case 'regenerate':
         await _regenerateMessage(message);
@@ -974,6 +985,7 @@ class _StoryRoomPageState extends State<StoryRoomPage> {
       parentNodeKey: message.parentNodeKey,
       candidateGroupKey: message.candidateGroupKey,
       contextStateAfter: message.contextStateAfter,
+      roleStatesAfter: message.roleStatesAfter,
     );
     await _dao?.saveMessage(edited);
     await _reloadMessages();
@@ -1153,6 +1165,18 @@ class _StoryRoomPageState extends State<StoryRoomPage> {
               title: const Text('编辑房间内角色'),
               onTap: () => Navigator.pop(ctx, 'edit'),
             ),
+            ListTile(
+              leading: const Icon(Icons.psychology_outlined),
+              title: const Text('角色长期状态'),
+              subtitle: Text(
+                participant.stateSummary.trim().isEmpty
+                    ? '当前分支尚未记录状态'
+                    : participant.stateSummary.trim(),
+                maxLines: 2,
+                overflow: TextOverflow.ellipsis,
+              ),
+              onTap: () => Navigator.pop(ctx, 'state'),
+            ),
             if (participant.assistantId != null)
               ListTile(
                 leading: const Icon(Icons.sync_outlined),
@@ -1210,6 +1234,9 @@ class _StoryRoomPageState extends State<StoryRoomPage> {
     switch (action) {
       case 'edit':
         await _editParticipant(participant);
+        return;
+      case 'state':
+        await _editParticipantState(participant);
         return;
       case 'sync':
         await _syncParticipantFromAssistant(participant);
@@ -1444,6 +1471,72 @@ class _StoryRoomPageState extends State<StoryRoomPage> {
       ..maxOutputTokens = saved.$7;
     await _dao?.saveParticipant(participant);
     await _load();
+  }
+
+  Future<void> _editParticipantState(
+    StoryParticipantModel participant,
+  ) async {
+    final controller = TextEditingController(text: participant.stateSummary);
+    final result = await showDialog<(bool, String)>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: Text('${participant.name} · 长期状态'),
+        content: SingleChildScrollView(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              const Text('记录关系、情绪、身体状态和未完成动作。状态只影响当前故事分支，不会调用 AI。'),
+              const SizedBox(height: 12),
+              TextField(
+                controller: controller,
+                autofocus: true,
+                minLines: 5,
+                maxLines: 12,
+                decoration: const InputDecoration(
+                  labelText: '当前分支角色状态',
+                  hintText: '例如：仍警惕用户；左臂受伤；答应在天亮前返回。',
+                  border: OutlineInputBorder(),
+                ),
+              ),
+            ],
+          ),
+        ),
+        actions: [
+          if (participant.stateSummary.trim().isNotEmpty)
+            TextButton(
+              onPressed: () => Navigator.pop(ctx, (true, '')),
+              child: const Text('清空状态'),
+            ),
+          TextButton(
+            onPressed: () => Navigator.pop(ctx),
+            child: const Text('取消'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(ctx, (false, controller.text)),
+            child: const Text('保存'),
+          ),
+        ],
+      ),
+    );
+    controller.dispose();
+    if (result == null) return;
+    final dao = _dao;
+    final roomId = widget.room.id;
+    if (dao == null || roomId == null) return;
+    final state = result.$1 ? '' : result.$2.trim();
+    final saved = await dao.updateParticipantState(
+      roomId,
+      participant.participantKey,
+      state,
+    );
+    if (!saved) {
+      if (mounted) HiDialog.showSnackBar(context, '角色状态保存失败');
+      return;
+    }
+    await _load();
+    if (!mounted) return;
+    HiDialog.showSnackBar(context, state.isEmpty ? '已清空角色状态' : '角色状态已保存到当前分支');
   }
 
   String _voiceStyleDescription(

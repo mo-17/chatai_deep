@@ -172,6 +172,8 @@ void main() {
     await storage.db.insert('tb_story_participant', {
       'id': 3,
       'roomId': 2,
+      'participantKey': 'participant-3',
+      'stateSummary': '',
       'assistantId': null,
       'role': 'assistant',
       'name': '角色',
@@ -196,6 +198,7 @@ void main() {
       'parentNodeKey': null,
       'candidateGroupKey': 'welcome-node',
       'contextStateAfter': '{"scene":"tavern"}',
+      'roleStatesAfter': '{}',
       'createdAt': 20,
       'updatedAt': 32,
     });
@@ -217,6 +220,12 @@ void main() {
           .singleWhere((change) => change.key == 'story_message:welcome-node')
           .updatedAt,
       32,
+    );
+    expect(
+      changes
+          .singleWhere((change) => change.key == 'story_participant:3')
+          .payload['participantKey'],
+      'participant-3',
     );
     await storage.db.close();
   });
@@ -298,13 +307,21 @@ void main() {
       whereArgs: ['remote-message'],
     );
     expect(participant.single['roomId'], 10);
+    expect(
+      participant.single['participantKey'],
+      'legacy-participant-10-20',
+    );
+    expect(participant.single['stateSummary'], '');
     expect(message.single['roomId'], 10);
     expect(message.single['speakerId'], 20);
     expect(message.single['id'], isNot(999));
+    expect(message.single['roleStatesAfter'], '{}');
 
     await storage.db.insert('tb_story_participant', {
       'id': 21,
       'roomId': 10,
+      'participantKey': 'participant-21',
+      'stateSummary': '',
       'assistantId': null,
       'role': 'narrator',
       'name': '待删除',

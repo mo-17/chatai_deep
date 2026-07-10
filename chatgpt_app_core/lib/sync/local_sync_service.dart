@@ -164,7 +164,7 @@ class LocalSyncService {
       Iterable<SyncChange> remoteChanges) async {
     await _ensureTables();
     final incoming =
-        remoteChanges.map(_normalizeStoryMessageChange).toList(growable: false);
+        remoteChanges.map(_normalizeStoryChange).toList(growable: false);
     final accepted = <SyncChange>[];
     final rejectedStale = <SyncChange>[];
     final conflicts = <String>[];
@@ -388,11 +388,28 @@ class LocalSyncService {
     return payload;
   }
 
-  static SyncChange _normalizeStoryMessageChange(SyncChange change) {
+  static SyncChange _normalizeStoryChange(SyncChange change) {
+    if (change.entity == 'story_participant' && change.op == SyncOp.upsert) {
+      final payload = Map<String, dynamic>.from(change.payload);
+      final roomId = _asInt(payload['roomId']);
+      final rawKey = '${payload['participantKey'] ?? ''}'.trim();
+      payload['participantKey'] = rawKey.isNotEmpty
+          ? rawKey
+          : 'legacy-participant-$roomId-${change.id}';
+      payload['stateSummary'] = '${payload['stateSummary'] ?? ''}';
+      return SyncChange(
+        entity: change.entity,
+        id: change.id,
+        op: change.op,
+        updatedAt: change.updatedAt,
+        payload: payload,
+      );
+    }
     if (change.entity != 'story_message' || change.op != SyncOp.upsert) {
       return change;
     }
     final payload = Map<String, dynamic>.from(change.payload);
+    payload['roleStatesAfter'] = '${payload['roleStatesAfter'] ?? '{}'}';
     final rawNodeKey = payload['nodeKey'];
     if (rawNodeKey is String && rawNodeKey.trim().isNotEmpty) {
       return SyncChange(
