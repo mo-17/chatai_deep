@@ -50,8 +50,14 @@ import 'package:url_launcher/url_launcher.dart';
 class StoryRoomPage extends StatefulWidget {
   final StoryRoomModel room;
   final ReadAloudService? readAloudService;
+  final bool skipInitialLoadForTesting;
 
-  const StoryRoomPage({super.key, required this.room, this.readAloudService});
+  const StoryRoomPage({
+    super.key,
+    required this.room,
+    this.readAloudService,
+    @visibleForTesting this.skipInitialLoadForTesting = false,
+  });
 
   @override
   State<StoryRoomPage> createState() => _StoryRoomPageState();
@@ -105,7 +111,11 @@ class _StoryRoomPageState extends State<StoryRoomPage> {
       service: widget.readAloudService,
     )..addListener(_onReadAloudChanged);
     _publicContextCtl.text = widget.room.publicContext;
-    _load();
+    if (widget.skipInitialLoadForTesting) {
+      _loading = false;
+    } else {
+      _load();
+    }
   }
 
   @override
