@@ -8,7 +8,7 @@ import 'package:sqflite_common_ffi/sqflite_ffi.dart';
 ///用于管理数据库的创建和销毁
 class HiDBManager {
   ///多实例
-  static final Map<String, HiDBManager> _storageMap = {};
+  static final Map<String, Future<HiDBManager>> _storageMap = {};
 
   ///数据库名称
   final String _dbName;
@@ -21,9 +21,19 @@ class HiDBManager {
     if (!dbName.endsWith(".db")) {
       dbName = '$dbName.db';
     }
-    var storage = _storageMap[dbName];
-    storage ??= await HiDBManager._(dbName: dbName)._init();
-    return storage;
+    final existing = _storageMap[dbName];
+    if (existing != null) return existing;
+    final storage = HiDBManager._(dbName: dbName);
+    final initializing = storage._init();
+    _storageMap[dbName] = initializing;
+    try {
+      return await initializing;
+    } catch (_) {
+      if (identical(_storageMap[dbName], initializing)) {
+        _storageMap.remove(dbName);
+      }
+      rethrow;
+    }
   }
 
   Database get db {
@@ -31,9 +41,7 @@ class HiDBManager {
   }
 
   ///多实例模式，一个数据库一个实例
-  HiDBManager._({required String dbName}) : _dbName = dbName {
-    _storageMap[_dbName] = this;
-  }
+  HiDBManager._({required String dbName}) : _dbName = dbName;
 
   ///仅供测试：用现成的 [Database]（如 sqflite_common_ffi 内存库）构造，
   ///不注册多实例缓存、不走平台初始化，便于各 Dao 走真实代码路径做单测。
@@ -96,12 +104,14 @@ class HiDBManager {
 
   ///关闭所有数据库连接（登出时调用）
   static Future<void> closeAll() async {
-    for (final mgr in _storageMap.values.toList()) {
+    final pending = _storageMap.values.toList();
+    _storageMap.clear();
+    for (final future in pending) {
       try {
+        final mgr = await future;
         await mgr._db.close();
       } catch (_) {}
     }
-    _storageMap.clear();
     debugPrint('HiDBManager: all dbs closed');
   }
 
