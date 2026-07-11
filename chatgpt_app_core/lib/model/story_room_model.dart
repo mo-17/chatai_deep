@@ -23,6 +23,7 @@ class StoryRoomModel {
   String? modelProviderId;
   String? modelId;
   double? temperature;
+  double? topP;
   int? maxOutputTokens;
   String? activeMessageKey;
 
@@ -51,6 +52,7 @@ class StoryRoomModel {
     this.modelProviderId,
     this.modelId,
     this.temperature,
+    this.topP,
     this.maxOutputTokens,
     this.activeMessageKey,
     this.tavernChatMetadataJson = '',
@@ -87,7 +89,8 @@ class StoryRoomModel {
         personaKey: json['personaKey'] as String?,
         modelProviderId: json['modelProviderId'] as String?,
         modelId: json['modelId'] as String?,
-        temperature: (json['temperature'] as num?)?.toDouble(),
+        temperature: _safeTemperatureValue(json['temperature']),
+        topP: _safeTopPValue(json['topP']),
         maxOutputTokens: (json['maxOutputTokens'] as num?)?.toInt(),
         activeMessageKey: json['activeMessageKey'] as String?,
         tavernChatMetadataJson: json['tavernChatMetadataJson'] as String? ?? '',
@@ -116,6 +119,7 @@ class StoryRoomModel {
         'modelProviderId': modelProviderId,
         'modelId': modelId,
         'temperature': temperature,
+        'topP': topP,
         'maxOutputTokens': maxOutputTokens,
         'activeMessageKey': activeMessageKey,
         'tavernChatMetadataJson': tavernChatMetadataJson,
@@ -148,6 +152,20 @@ class StoryRoomModel {
         return fallback;
     }
   }
+}
+
+double? _safeTopPValue(Object? value) {
+  final parsed = value is num ? value.toDouble() : double.tryParse('$value');
+  return parsed != null && parsed.isFinite && parsed >= 0 && parsed <= 1
+      ? parsed
+      : null;
+}
+
+double? _safeTemperatureValue(Object? value) {
+  final parsed = value is num ? value.toDouble() : double.tryParse('$value');
+  return parsed != null && parsed.isFinite && parsed >= 0 && parsed <= 2
+      ? parsed
+      : null;
 }
 
 class StorySpeakerStrategy {
@@ -270,6 +288,7 @@ class StoryParticipantModel {
   String? modelProviderId;
   String? modelId;
   double? temperature;
+  double? topP;
   int? maxOutputTokens;
   int sortOrder;
   bool enabled;
@@ -291,6 +310,7 @@ class StoryParticipantModel {
     this.modelProviderId,
     this.modelId,
     this.temperature,
+    this.topP,
     this.maxOutputTokens,
     this.sortOrder = 0,
     this.enabled = true,
@@ -317,7 +337,8 @@ class StoryParticipantModel {
         voiceStyle: json['voiceStyle'] as String?,
         modelProviderId: json['modelProviderId'] as String?,
         modelId: json['modelId'] as String?,
-        temperature: (json['temperature'] as num?)?.toDouble(),
+        temperature: _safeTemperatureValue(json['temperature']),
+        topP: _safeTopPValue(json['topP']),
         maxOutputTokens: (json['maxOutputTokens'] as num?)?.toInt(),
         sortOrder: json['sortOrder'] as int? ?? 0,
         enabled: (json['enabled'] as int? ?? 1) == 1,
@@ -340,6 +361,7 @@ class StoryParticipantModel {
         'modelProviderId': modelProviderId,
         'modelId': modelId,
         'temperature': temperature,
+        'topP': topP,
         'maxOutputTokens': maxOutputTokens,
         'sortOrder': sortOrder,
         'enabled': enabled ? 1 : 0,

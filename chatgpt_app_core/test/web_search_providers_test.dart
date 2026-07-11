@@ -21,7 +21,8 @@ void main() {
         ..searchMaxResults = 8
         ..searchContentLimit = 0
         ..maxOutputTokens = 4096
-        ..temperature = 0.7;
+        ..temperature = 0.7
+        ..topP = 0.85;
       final r = AISettings.fromJson(s.toJson());
       expect(r.webSearchProviderId, 'bocha');
       expect(r.exaApiKey, 'ek');
@@ -32,6 +33,7 @@ void main() {
       expect(r.searchContentLimit, 0);
       expect(r.maxOutputTokens, 4096);
       expect(r.temperature, 0.7);
+      expect(r.topP, 0.85);
     });
 
     test('缺省值：maxOutputTokens=0（不限制）、temperature=null、tavily、searchWithTime 开',
@@ -39,6 +41,7 @@ void main() {
       final s = AISettings.fromJson({});
       expect(s.maxOutputTokens, 0);
       expect(s.temperature, isNull);
+      expect(s.topP, isNull);
       expect(s.webSearchProviderId, 'tavily');
       expect(s.searchWithTime, isTrue);
       expect(s.searchMaxResults, 5);

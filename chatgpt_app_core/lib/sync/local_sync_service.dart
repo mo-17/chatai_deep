@@ -559,6 +559,7 @@ class LocalSyncService {
       );
       payload['temperature'] =
           StoryTavernPresetTransfer.safeTemperature(payload['temperature']);
+      payload['topP'] = StoryTavernPresetTransfer.safeTopP(payload['topP']);
       payload['maxOutputTokens'] =
           StoryTavernPresetTransfer.safeMaxTokens(payload['maxOutputTokens']);
       payload['personaKey'] = payload['personaKey']?.toString();
@@ -578,6 +579,7 @@ class LocalSyncService {
           ? rawKey
           : 'legacy-participant-$roomId-${change.id}';
       payload['stateSummary'] = '${payload['stateSummary'] ?? ''}';
+      payload['topP'] = StoryTavernPresetTransfer.safeTopP(payload['topP']);
       return SyncChange(
         entity: change.entity,
         id: change.id,

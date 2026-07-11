@@ -332,7 +332,7 @@ class BackupTableConflict {
 /// 因此可以用 sqflite_common_ffi 内存库做 round-trip 单测。
 class BackupService {
   /// 备份格式版本。导入时大于本值则拒绝（新版本备份导入旧 app）。
-  static const int formatVersion = 9;
+  static const int formatVersion = 10;
 
   static const _kManifest = 'manifest.json';
   static const _kConversations = 'conversations.json';
@@ -1858,6 +1858,7 @@ class BackupService {
           StoryTavernPresetTransfer.normalizeRoomBundle(rawPreset);
       room['temperature'] =
           StoryTavernPresetTransfer.safeTemperature(room['temperature']);
+      room['topP'] = StoryTavernPresetTransfer.safeTopP(room['topP']);
       room['maxOutputTokens'] =
           StoryTavernPresetTransfer.safeMaxTokens(room['maxOutputTokens']);
       if (rawPreset != null &&
@@ -1891,6 +1892,8 @@ class BackupService {
       }
       participant['participantKey'] = key;
       participant['stateSummary'] = '${participant['stateSummary'] ?? ''}';
+      participant['topP'] =
+          StoryTavernPresetTransfer.safeTopP(participant['topP']);
       used.add(key);
     }
     final grouped = <int, List<Map<String, dynamic>>>{};

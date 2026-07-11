@@ -10,6 +10,7 @@ void main() {
       const source = '''
 {
   "temperature": 1.25,
+  "top_p": 0.92,
   "max_tokens": 4096,
   "api_key": "do-not-keep",
   "custom_url": "https://example.invalid",
@@ -26,6 +27,7 @@ void main() {
       expect(preview.isAccepted, isTrue);
       expect(preview.kind, StoryTavernPresetKind.openAi);
       expect(preview.applyValues.temperature, 1.25);
+      expect(preview.applyValues.topP, 0.92);
       expect(preview.applyValues.maxTokens, 4096);
       expect(preview.openAiPromptData, {
         'prompts': [
@@ -89,6 +91,7 @@ void main() {
 
       expect(accepted.kind, StoryTavernPresetKind.textgenSampler);
       expect(accepted.applyValues.temperature, 0.7);
+      expect(accepted.applyValues.topP, 0.9);
       expect(accepted.applyValues.maxTokens, 2048);
       expect(rejectedValues.isAccepted, isTrue);
       expect(rejectedValues.applyValues.isEmpty, isTrue);

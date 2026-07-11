@@ -337,6 +337,9 @@ class AISettings {
   /// （更确定），故用 null 而非 0 作「未设置」哨兵。
   double? temperature;
 
+  /// 核采样阈值（top_p）。null = 不发送，用上游默认；有效范围 [0, 1]。
+  double? topP;
+
   /// MCP 直连 server 列表（方案 A）：客户端直连远程 Streamable HTTP 型 server，
   /// 其工具与内置工具一并装配进工具回路。
   List<McpServerConfig> mcpServers;
@@ -369,6 +372,7 @@ class AISettings {
     this.searchContentLimit = 2000,
     this.maxOutputTokens = 0,
     this.temperature,
+    this.topP,
     List<McpServerConfig>? mcpServers,
     this.mcpBackendEnabled = false,
     this.mcpBackendTrusted = false,
@@ -428,7 +432,8 @@ class AISettings {
       searchMaxResults: j['searchMaxResults'] as int? ?? 5,
       searchContentLimit: j['searchContentLimit'] as int? ?? 2000,
       maxOutputTokens: j['maxOutputTokens'] as int? ?? 0,
-      temperature: (j['temperature'] as num?)?.toDouble(),
+      temperature: _parseTemperature(j['temperature']),
+      topP: _parseTopP(j['topP']),
       mcpServers: (j['mcpServers'] as List?)
               ?.map((e) =>
                   McpServerConfig.fromJson((e as Map).cast<String, dynamic>()))
@@ -488,6 +493,7 @@ class AISettings {
         'searchContentLimit': searchContentLimit,
         'maxOutputTokens': maxOutputTokens,
         'temperature': temperature,
+        'topP': topP,
         'mcpServers': mcpServers.map((e) => e.toJson()).toList(),
         'mcpBackendEnabled': mcpBackendEnabled,
         'mcpBackendTrusted': mcpBackendTrusted,
@@ -591,5 +597,19 @@ class AISettings {
   static AIMode _parseMode(String? s) {
     if (s == 'backend') return AIMode.backend;
     return AIMode.local;
+  }
+
+  static double? _parseTopP(Object? value) {
+    final parsed = value is num ? value.toDouble() : double.tryParse('$value');
+    return parsed != null && parsed.isFinite && parsed >= 0 && parsed <= 1
+        ? parsed
+        : null;
+  }
+
+  static double? _parseTemperature(Object? value) {
+    final parsed = value is num ? value.toDouble() : double.tryParse('$value');
+    return parsed != null && parsed.isFinite && parsed >= 0 && parsed <= 2
+        ? parsed
+        : null;
   }
 }

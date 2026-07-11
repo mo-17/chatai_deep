@@ -260,6 +260,7 @@ void main() {
           'tavernPresetJson':
               '{"format":"chatai_deep_story_tavern_preset_bundle","formatVersion":1,"presets":{"context":{"story_string":"safe","api_key":"secret"}}}',
           'temperature': 9,
+          'topP': 2,
           'maxOutputTokens': {'bad': true},
           'createdAt': 90,
           'updatedAt': 100,
@@ -279,6 +280,7 @@ void main() {
           'prompt': '保持角色设定',
           'avatarType': 'emoji',
           'avatarValue': 'R',
+          'topP': 2,
           'sortOrder': 0,
           'enabled': 1,
           'createdAt': 100,
@@ -332,6 +334,7 @@ void main() {
     expect(room['tavernPresetJson'], contains('story_string'));
     expect(room['tavernPresetJson'], isNot(contains('secret')));
     expect(room['temperature'], isNull);
+    expect(room['topP'], isNull);
     expect(room['maxOutputTokens'], isNull);
     expect(participant.single['roomId'], 10);
     expect(
@@ -339,6 +342,7 @@ void main() {
       'legacy-participant-10-20',
     );
     expect(participant.single['stateSummary'], '');
+    expect(participant.single['topP'], isNull);
     expect(message.single['roomId'], 10);
     expect(message.single['speakerId'], 20);
     expect(message.single['id'], isNot(999));

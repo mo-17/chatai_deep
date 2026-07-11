@@ -25,7 +25,7 @@ class StoryRoomDao implements ITable {
         ', publicContext text, worldBookState text'
         ', promptConfigJson text, quickRepliesJson text, regexScriptsJson text, tavernPresetJson text, personaKey text'
         ', modelProviderId text, modelId text'
-        ', temperature real, maxOutputTokens integer'
+        ', temperature real, topP real, maxOutputTokens integer'
         ', activeMessageKey text'
         ', tavernChatMetadataJson text'
         ', createdAt integer, updatedAt integer)');
@@ -35,7 +35,7 @@ class StoryRoomDao implements ITable {
         ', roomId integer not null, assistantId integer, role text, name text'
         ', prompt text, avatarType text, avatarValue text'
         ', voiceStyle text, modelProviderId text, modelId text'
-        ', temperature real, maxOutputTokens integer'
+        ', temperature real, topP real, maxOutputTokens integer'
         ', participantKey text not null, stateSummary text'
         ', sortOrder integer, enabled integer, createdAt integer, updatedAt integer)');
     await _ensureParticipantColumns(storage);
@@ -112,6 +112,7 @@ class StoryRoomDao implements ITable {
       'modelProviderId text',
       'modelId text',
       'temperature real',
+      'topP real',
       'maxOutputTokens integer',
       'worldBookState text',
       'promptConfigJson text',
@@ -137,6 +138,7 @@ class StoryRoomDao implements ITable {
       'modelProviderId text',
       'modelId text',
       'temperature real',
+      'topP real',
       'maxOutputTokens integer',
       'participantKey text',
       'stateSummary text',

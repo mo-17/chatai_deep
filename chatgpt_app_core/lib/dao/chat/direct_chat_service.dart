@@ -22,11 +22,19 @@ class DirectChatService implements ChatService {
   /// 采样温度，null = 不发送（用上游默认）。0.0 是有效值，故用 null 作哨兵。
   final double? _temperature;
 
-  DirectChatService(this._cfg,
-      {String? providerCode, int maxOutputTokens = 0, double? temperature})
-      : _providerCode = providerCode,
+  /// 核采样阈值，null = 不发送（用上游默认）。0.0 是有效值。
+  final double? _topP;
+
+  DirectChatService(
+    this._cfg, {
+    String? providerCode,
+    int maxOutputTokens = 0,
+    double? temperature,
+    double? topP,
+  })  : _providerCode = providerCode,
         _maxOutputTokens = maxOutputTokens,
-        _temperature = temperature;
+        _temperature = temperature,
+        _topP = topP;
 
   int? get _maxTokensOrNull => _maxOutputTokens > 0 ? _maxOutputTokens : null;
 
@@ -77,6 +85,7 @@ class DirectChatService implements ChatService {
       messages: messages,
       maxTokens: _maxTokensOrNull,
       temperature: _temperature,
+      topP: _topP,
       timeout: timeout ?? const Duration(seconds: 15),
     );
     final choices = response.choices?.first;
@@ -101,6 +110,7 @@ class DirectChatService implements ChatService {
       messages: messages,
       maxTokens: _maxTokensOrNull,
       temperature: _temperature,
+      topP: _topP,
     );
     final choices = response.choices?.first;
     return ChatCompletionResult(
@@ -130,6 +140,7 @@ class DirectChatService implements ChatService {
       messages: messages,
       maxTokens: _maxTokensOrNull,
       temperature: _temperature,
+      topP: _topP,
     );
   }
 
@@ -156,6 +167,7 @@ class DirectChatService implements ChatService {
       messages: messages,
       maxTokens: _maxTokensOrNull,
       temperature: _temperature,
+      topP: _topP,
       tools: tools,
     )) {
       switch (chunk.kind) {

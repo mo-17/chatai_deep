@@ -660,6 +660,7 @@ class StoryRoomRoleCardImportService {
     String? regexScriptsJson,
     String? tavernPresetJson,
     double? temperature,
+    double? topP,
     int? maxOutputTokens,
   }) async {
     final plan = StoryRoomRoleCardImporter.buildPlan(
@@ -682,6 +683,7 @@ class StoryRoomRoleCardImportService {
     }
     plan.room
       ..temperature = temperature
+      ..topP = topP
       ..maxOutputTokens = maxOutputTokens;
     final roomId = await dao.saveRoom(plan.room);
     for (final participant in plan.participants) {
@@ -713,6 +715,7 @@ class StoryRoomRoleCardImportService {
     String? regexScriptsJson,
     String? tavernPresetJson,
     double? temperature,
+    double? topP,
     int? maxOutputTokens,
   }) async {
     final plan = StoryRoomRoleCardImporter.buildBatchPlan(
@@ -734,6 +737,7 @@ class StoryRoomRoleCardImportService {
     }
     plan.room
       ..temperature = temperature
+      ..topP = topP
       ..maxOutputTokens = maxOutputTokens;
     final roomId = await dao.saveRoom(plan.room);
     for (final participant in plan.participants) {
@@ -777,6 +781,7 @@ class StoryRoomRoleCardImportService {
         tavernPresetJson:
             data.tavernPresetJson.trim().isEmpty ? null : data.tavernPresetJson,
         temperature: data.temperature,
+        topP: data.topP,
         maxOutputTokens: data.maxOutputTokens,
       );
     }
@@ -793,13 +798,14 @@ class StoryRoomRoleCardImportService {
       tavernPresetJson:
           data.tavernPresetJson.trim().isEmpty ? null : data.tavernPresetJson,
       temperature: data.temperature,
+      topP: data.topP,
       maxOutputTokens: data.maxOutputTokens,
     );
   }
 }
 
 class StoryRoomTemplatePayload {
-  static const formatVersion = 4;
+  static const formatVersion = 5;
 
   final List<AssistantRoleCardImportResult> results;
   final String initialOpening;
@@ -808,6 +814,7 @@ class StoryRoomTemplatePayload {
   final String regexScriptsJson;
   final String tavernPresetJson;
   final double? temperature;
+  final double? topP;
   final int? maxOutputTokens;
 
   const StoryRoomTemplatePayload({
@@ -818,6 +825,7 @@ class StoryRoomTemplatePayload {
     this.regexScriptsJson = '',
     this.tavernPresetJson = '',
     this.temperature,
+    this.topP,
     this.maxOutputTokens,
   });
 
@@ -848,6 +856,7 @@ class StoryRoomTemplatePayload {
       ),
       temperature:
           StoryTavernPresetTransfer.safeTemperature(json['temperature']),
+      topP: StoryTavernPresetTransfer.safeTopP(json['topP']),
       maxOutputTokens:
           StoryTavernPresetTransfer.safeMaxTokens(json['maxOutputTokens']),
     );
@@ -874,6 +883,7 @@ class StoryRoomTemplatePayload {
         'regexScriptsJson': regexScriptsJson,
         'tavernPresetJson': tavernPresetJson,
         'temperature': temperature,
+        'topP': topP,
         'maxOutputTokens': maxOutputTokens,
         'results': results.map(_resultToJson).toList(),
       };

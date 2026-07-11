@@ -38,6 +38,7 @@ void main() {
         tavernPresetJson:
             '{"format":"chatai_deep_story_tavern_preset_bundle","formatVersion":1,"presets":{"context":{"story_string":"safe"}}}',
         temperature: 0.65,
+        topP: 0.88,
         maxOutputTokens: 2048,
       ).toTemplate(title: '午夜案件', sourceTitle: '来源', translated: true);
 
@@ -55,6 +56,7 @@ void main() {
       expect(payload.regexScriptsJson, '{"version":1,"rules":[]}');
       expect(payload.tavernPresetJson, contains('tavern_preset_bundle'));
       expect(payload.temperature, 0.65);
+      expect(payload.topP, 0.88);
       expect(payload.maxOutputTokens, 2048);
       expect(assistant.name, 'Alice');
       expect(assistant.description, '侦探');
@@ -99,11 +101,13 @@ void main() {
           },
         }),
         'temperature': 9,
+        'topP': 2,
         'maxOutputTokens': -1,
       });
 
       expect(payload.tavernPresetJson, isNot(contains('secret')));
       expect(payload.temperature, isNull);
+      expect(payload.topP, isNull);
       expect(payload.maxOutputTokens, isNull);
     });
 

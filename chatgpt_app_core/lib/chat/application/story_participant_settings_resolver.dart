@@ -26,6 +26,9 @@ class StoryParticipantSettingsResolver {
     if (participant.temperature != null) {
       next.temperature = participant.temperature!.clamp(0, 2).toDouble();
     }
+    if (participant.topP != null) {
+      next.topP = participant.topP!.clamp(0, 1).toDouble();
+    }
     if (participant.maxOutputTokens != null) {
       next.maxOutputTokens =
           participant.maxOutputTokens!.clamp(0, 200000).toInt();

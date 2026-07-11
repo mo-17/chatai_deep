@@ -55,6 +55,7 @@ void main() {
         modelProviderId: 'deepseek',
         modelId: 'deepseek-v4-pro',
         temperature: 0.7,
+        topP: 0.9,
         maxOutputTokens: 4096,
       );
       final roomId = await dao.saveRoom(room);
@@ -75,6 +76,7 @@ void main() {
         modelProviderId: 'openai',
         modelId: 'gpt-4o-mini',
         temperature: 0.45,
+        topP: 0.8,
         maxOutputTokens: 3072,
         sortOrder: 1,
       );
@@ -116,6 +118,7 @@ void main() {
       expect(savedRoom?.modelProviderId, 'deepseek');
       expect(savedRoom?.modelId, 'deepseek-v4-pro');
       expect(savedRoom?.temperature, 0.7);
+      expect(savedRoom?.topP, 0.9);
       expect(savedRoom?.maxOutputTokens, 4096);
       final messages = await dao.getMessages(roomId);
       expect(messages, hasLength(2));
@@ -126,6 +129,7 @@ void main() {
       expect(participants.last.modelProviderId, 'openai');
       expect(participants.last.modelId, 'gpt-4o-mini');
       expect(participants.last.temperature, 0.45);
+      expect(participants.last.topP, 0.8);
       expect(participants.last.maxOutputTokens, 3072);
     });
 
@@ -862,6 +866,7 @@ void main() {
         modelProviderId: 'openai',
         modelId: 'gpt-4o-mini',
         temperature: 0.35,
+        topP: 0.75,
         maxOutputTokens: 8192,
       );
 
@@ -870,6 +875,7 @@ void main() {
       expect(resolved.activeProviderId, 'openai');
       expect(resolved.effectiveModel, 'gpt-4o-mini');
       expect(resolved.temperature, 0.35);
+      expect(resolved.topP, 0.75);
       expect(resolved.maxOutputTokens, 8192);
       expect(global.activeProviderId, isNot('openai'));
     });
@@ -879,6 +885,7 @@ void main() {
         ..mode = AIMode.backend
         ..backendModel = 'global-model'
         ..temperature = 0.8
+        ..topP = 0.9
         ..maxOutputTokens = 2048;
       final room = StoryRoomModel(title: '创作房', modelId: 'room-model');
 
@@ -886,6 +893,7 @@ void main() {
 
       expect(resolved.backendModel, 'room-model');
       expect(resolved.temperature, 0.8);
+      expect(resolved.topP, 0.9);
       expect(resolved.maxOutputTokens, 2048);
       expect(global.backendModel, 'global-model');
     });
@@ -897,6 +905,7 @@ void main() {
         ..activeProviderId = 'deepseek'
         ..setActiveModel('deepseek-chat')
         ..temperature = 0.8
+        ..topP = 0.9
         ..maxOutputTokens = 2048;
       final participant = StoryParticipantModel(
         roomId: 1,
@@ -905,6 +914,7 @@ void main() {
         modelProviderId: 'openai',
         modelId: 'gpt-4o-mini',
         temperature: 0.25,
+        topP: 0.7,
         maxOutputTokens: 4096,
       );
 
@@ -914,10 +924,12 @@ void main() {
       expect(resolved.activeProviderId, 'openai');
       expect(resolved.effectiveModel, 'gpt-4o-mini');
       expect(resolved.temperature, 0.25);
+      expect(resolved.topP, 0.7);
       expect(resolved.maxOutputTokens, 4096);
       expect(roomSettings.activeProviderId, 'deepseek');
       expect(roomSettings.effectiveModel, 'deepseek-chat');
       expect(roomSettings.temperature, 0.8);
+      expect(roomSettings.topP, 0.9);
     });
   });
 

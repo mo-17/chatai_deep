@@ -88,7 +88,8 @@ abstract class ChatService {
     return DirectChatService(s.activeLocal,
         providerCode: providerCodeFor(s),
         maxOutputTokens: s.maxOutputTokens,
-        temperature: s.temperature);
+        temperature: s.temperature,
+        topP: s.topP);
   }
 
   /// providerCode 派生规则的唯一出处：本地模式用激活服务商的 code，

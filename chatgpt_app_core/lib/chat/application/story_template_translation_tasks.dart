@@ -338,6 +338,7 @@ class StoryTemplateTranslationTaskRunner {
               regexScriptsJson: source.regexScriptsJson,
               tavernPresetJson: source.tavernPresetJson,
               temperature: source.temperature,
+              topP: source.topP,
               maxOutputTokens: source.maxOutputTokens,
             ).toJson(),
           );
@@ -410,6 +411,7 @@ class StoryTemplateTranslationTaskRunner {
         regexScriptsJson: source.regexScriptsJson,
         tavernPresetJson: source.tavernPresetJson,
         temperature: source.temperature,
+        topP: source.topP,
         maxOutputTokens: source.maxOutputTokens,
       ).toTemplate(
         title: title,

@@ -222,6 +222,11 @@ class StoryTavernPresetTransfer {
     return parsed != null && parsed >= 0 && parsed <= 2 ? parsed : null;
   }
 
+  static double? safeTopP(Object? value) {
+    final parsed = _double(value);
+    return parsed != null && parsed >= 0 && parsed <= 1 ? parsed : null;
+  }
+
   static int? safeMaxTokens(Object? value) {
     final parsed = _int(value);
     return parsed != null && parsed >= 1 && parsed <= 32768 ? parsed : null;
@@ -295,11 +300,24 @@ class StoryTavernPresetTransfer {
       return const StoryTavernPresetApplyValues();
     }
     final temperature = _readTemperature(preset, warnings);
+    final topP = _readTopP(preset, warnings);
     final maxTokens = _readMaxTokens(preset, warnings);
     return StoryTavernPresetApplyValues(
       temperature: temperature,
+      topP: topP,
       maxTokens: maxTokens,
     );
+  }
+
+  static double? _readTopP(
+    Map<String, dynamic> preset,
+    List<String> warnings,
+  ) {
+    if (!preset.containsKey('top_p')) return null;
+    final value = _double(preset['top_p']);
+    if (value != null && value >= 0 && value <= 1) return value;
+    warnings.add('top_p 不在 0..1 范围内，未应用。');
+    return null;
   }
 
   static double? _readTemperature(

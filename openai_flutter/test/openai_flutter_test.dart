@@ -101,4 +101,46 @@ void main() {
     expect(choices?.message?.content, '这是一个本地 mock 笑话。');
     expect(response.usage?.totalTokens, 14);
   });
+
+  test('all completion request variants forward top_p and omit null', () async {
+    final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+    addTearDown(server.close);
+    final bodies = <Map<String, dynamic>>[];
+    server.listen((request) async {
+      final body = jsonDecode(await utf8.decoder.bind(request).join())
+          as Map<String, dynamic>;
+      bodies.add(body);
+      if (body['stream'] == true) {
+        request.response.headers.contentType =
+            ContentType('text', 'event-stream', charset: 'utf-8');
+        request.response.write(
+          'data: {"choices":[{"delta":{"content":"ok"}}]}\n\n'
+          'data: [DONE]\n\n',
+        );
+      } else {
+        request.response.headers.contentType = ContentType.json;
+        request.response.write(jsonEncode({
+          'choices': [
+            {
+              'message': {'content': 'ok'}
+            }
+          ],
+        }));
+      }
+      await request.response.close();
+    });
+
+    final completion = AICompletion(AIConfigBuilder(
+      apiKey: 'test-key',
+      chatUrl: 'http://${server.address.host}:${server.port}/stream',
+    ));
+
+    await completion.createChat(prompt: 'one', topP: 0);
+    await completion.createChatStream(prompt: 'two', topP: 0.4).toList();
+    await completion.createChatStreamEvents(prompt: 'three', topP: 1).toList();
+    await completion.createChat(prompt: 'four');
+
+    expect(bodies.map((body) => body['top_p']).take(3), [0, 0.4, 1]);
+    expect(bodies.last.containsKey('top_p'), isFalse);
+  });
 }

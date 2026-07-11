@@ -18,6 +18,7 @@ class StoryRoomSettingsResolver {
       if (model.isNotEmpty) next.setActiveModel(model);
     }
     if (room.temperature != null) next.temperature = room.temperature;
+    if (room.topP != null) next.topP = room.topP!.clamp(0, 1).toDouble();
     if (room.maxOutputTokens != null) {
       next.maxOutputTokens = room.maxOutputTokens!.clamp(0, 200000).toInt();
     }

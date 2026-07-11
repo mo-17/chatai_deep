@@ -17,6 +17,7 @@ class StoryTemplateTransfer {
     payload
       ..['tavernPresetJson'] = safePayload.tavernPresetJson
       ..['temperature'] = safePayload.temperature
+      ..['topP'] = safePayload.topP
       ..['maxOutputTokens'] = safePayload.maxOutputTokens;
     return const JsonEncoder.withIndent('  ').convert({
       'format': format,
@@ -85,6 +86,7 @@ class StoryTemplateTransfer {
     payloadMap
       ..['tavernPresetJson'] = payload.tavernPresetJson
       ..['temperature'] = payload.temperature
+      ..['topP'] = payload.topP
       ..['maxOutputTokens'] = payload.maxOutputTokens;
     return StoryTemplateModel(
       title: title,

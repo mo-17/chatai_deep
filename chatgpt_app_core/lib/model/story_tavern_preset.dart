@@ -42,14 +42,20 @@ extension StoryTavernPresetKindWireName on StoryTavernPresetKind {
 /// `null` 表示源预设没有提供有效值，调用方不应覆盖当前设置。
 class StoryTavernPresetApplyValues {
   final double? temperature;
+  final double? topP;
   final int? maxTokens;
 
-  const StoryTavernPresetApplyValues({this.temperature, this.maxTokens});
+  const StoryTavernPresetApplyValues({
+    this.temperature,
+    this.topP,
+    this.maxTokens,
+  });
 
-  bool get isEmpty => temperature == null && maxTokens == null;
+  bool get isEmpty => temperature == null && topP == null && maxTokens == null;
 
   Map<String, dynamic> toJson() => {
         'temperature': temperature,
+        'topP': topP,
         'maxTokens': maxTokens,
       };
 }

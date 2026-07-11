@@ -908,6 +908,7 @@ class _StoryRoomListPageState extends State<StoryRoomListPage> {
       regexScriptsJson: payload.regexScriptsJson,
       tavernPresetJson: payload.tavernPresetJson,
       temperature: payload.temperature,
+      topP: payload.topP,
       maxOutputTokens: payload.maxOutputTokens,
     )
         .toTemplate(
@@ -1220,6 +1221,7 @@ class _StoryTemplateTranslationCoordinator extends ChangeNotifier {
         regexScriptsJson: payload.regexScriptsJson,
         tavernPresetJson: payload.tavernPresetJson,
         temperature: payload.temperature,
+        topP: payload.topP,
         maxOutputTokens: payload.maxOutputTokens,
       ).toTemplate(
         title: title,
@@ -1836,6 +1838,7 @@ class _StoryTemplateEditorPageState extends State<_StoryTemplateEditorPage> {
   late String _promptConfigJson;
   late String _tavernPresetJson;
   double? _temperature;
+  double? _topP;
   int? _maxOutputTokens;
   bool _presetImportBusy = false;
   int _nextRoleKey = 0;
@@ -1852,6 +1855,7 @@ class _StoryTemplateEditorPageState extends State<_StoryTemplateEditorPage> {
     _promptConfigJson = widget.payload.promptConfigJson;
     _tavernPresetJson = widget.payload.tavernPresetJson;
     _temperature = widget.payload.temperature;
+    _topP = widget.payload.topP;
     _maxOutputTokens = widget.payload.maxOutputTokens;
   }
 
@@ -1902,12 +1906,15 @@ class _StoryTemplateEditorPageState extends State<_StoryTemplateEditorPage> {
                 ),
                 onPressed: _presetImportBusy ? null : _importTavernPreset,
               ),
-              if (_temperature != null || _maxOutputTokens != null)
+              if (_temperature != null ||
+                  _topP != null ||
+                  _maxOutputTokens != null)
                 Padding(
                   padding: const EdgeInsets.only(top: 6),
                   child: Text(
                     [
                       if (_temperature != null) 'Temperature $_temperature',
+                      if (_topP != null) 'Top P $_topP',
                       if (_maxOutputTokens != null)
                         '最大输出 $_maxOutputTokens Token',
                     ].join(' · '),
@@ -2090,6 +2097,7 @@ class _StoryTemplateEditorPageState extends State<_StoryTemplateEditorPage> {
       for (final preview in previews) {
         stored = StoryTavernPresetTransfer.mergeRoomBundle(stored, preview);
         _temperature = preview.applyValues.temperature ?? _temperature;
+        _topP = preview.applyValues.topP ?? _topP;
         _maxOutputTokens = preview.applyValues.maxTokens ?? _maxOutputTokens;
         if (applyPrompts && preview.openAiPromptData?.isNotEmpty == true) {
           _promptConfigJson = StoryPromptConfigCodec.encode(
@@ -2181,6 +2189,7 @@ class _StoryTemplateEditorPageState extends State<_StoryTemplateEditorPage> {
           regexScriptsJson: widget.payload.regexScriptsJson,
           tavernPresetJson: _tavernPresetJson,
           temperature: _temperature,
+          topP: _topP,
           maxOutputTokens: _maxOutputTokens,
         ).toJson(),
       ),

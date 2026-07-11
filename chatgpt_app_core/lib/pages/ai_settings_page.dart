@@ -383,6 +383,19 @@ class _AISettingsPageState extends State<AISettingsPage> {
               const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
           onTap: _editTemperature,
         ),
+        ListTile(
+          title: const Text('核采样 Top P'),
+          subtitle: Text(
+              s.topP == null
+                  ? '默认（不发送）'
+                  : 'top_p ${s.topP!.toStringAsFixed(2)}',
+              style: tt.bodySmall?.copyWith(color: cs.onSurfaceVariant)),
+          trailing:
+              Icon(Icons.edit_rounded, size: 18, color: cs.onSurfaceVariant),
+          contentPadding:
+              const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
+          onTap: _editTopP,
+        ),
         SwitchListTile(
           value: s.resetOnLogout,
           onChanged: (v) => _patch((x) => x.resetOnLogout = v),
@@ -500,6 +513,59 @@ class _AISettingsPageState extends State<AISettingsPage> {
     );
     if (ok == true) {
       _patch((s) => s.temperature = enabled ? value : null);
+    }
+  }
+
+  Future<void> _editTopP() async {
+    final current = _store.settings.topP;
+    var enabled = current != null;
+    var value = current ?? 1.0;
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (_) => StatefulBuilder(
+        builder: (ctx, setLocal) => AlertDialog(
+          title: const Text('核采样 Top P'),
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              SwitchListTile(
+                contentPadding: EdgeInsets.zero,
+                title: const Text('启用 Top P'),
+                subtitle: const Text('关闭则不发送 top_p，用模型默认'),
+                value: enabled,
+                onChanged: (next) => setLocal(() => enabled = next),
+              ),
+              Opacity(
+                opacity: enabled ? 1 : 0.4,
+                child: Slider(
+                  value: value,
+                  min: 0,
+                  max: 1,
+                  divisions: 20,
+                  label: value.toStringAsFixed(2),
+                  onChanged:
+                      enabled ? (next) => setLocal(() => value = next) : null,
+                ),
+              ),
+              Text('当前值：${value.toStringAsFixed(2)}'),
+            ],
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(ctx, false),
+              child: const Text('取消'),
+            ),
+            TextButton(
+              onPressed: () => Navigator.pop(ctx, true),
+              child: const Text('确定'),
+            ),
+          ],
+        ),
+      ),
+    );
+    if (ok == true) {
+      _patch((settings) => settings.topP = enabled ? value : null);
     }
   }
 

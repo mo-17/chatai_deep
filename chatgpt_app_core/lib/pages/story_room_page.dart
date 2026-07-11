@@ -243,6 +243,7 @@ class _StoryRoomPageState extends State<StoryRoomPage> {
       ..modelProviderId = room.modelProviderId
       ..modelId = room.modelId
       ..temperature = room.temperature
+      ..topP = room.topP
       ..maxOutputTokens = room.maxOutputTokens
       ..activeMessageKey = room.activeMessageKey
       ..tavernChatMetadataJson = room.tavernChatMetadataJson
@@ -1713,6 +1714,9 @@ class _StoryRoomPageState extends State<StoryRoomPage> {
     final temperatureController = TextEditingController(
       text: participant.temperature?.toString() ?? '',
     );
+    final topPController = TextEditingController(
+      text: participant.topP?.toString() ?? '',
+    );
     final maxTokensController = TextEditingController(
       text: participant.maxOutputTokens?.toString() ?? '',
     );
@@ -1722,6 +1726,7 @@ class _StoryRoomPageState extends State<StoryRoomPage> {
       promptController.dispose();
       modelController.dispose();
       temperatureController.dispose();
+      topPController.dispose();
       maxTokensController.dispose();
       return;
     }
@@ -1731,7 +1736,7 @@ class _StoryRoomPageState extends State<StoryRoomPage> {
         userVoiceModels.any((model) => model.voiceStyleId == voiceStyle);
     if (!hasVoiceStyle) voiceStyle = TtsVoiceStyle.system.id;
     final saved = await showDialog<
-        (String, String, String, String?, String?, double?, int?)>(
+        (String, String, String, String?, String?, double?, double?, int?)>(
       context: context,
       builder: (ctx) => StatefulBuilder(
         builder: (ctx, setDialogState) => AlertDialog(
@@ -1808,6 +1813,17 @@ class _StoryRoomPageState extends State<StoryRoomPage> {
                 ),
                 const SizedBox(height: 12),
                 TextField(
+                  controller: topPController,
+                  keyboardType:
+                      const TextInputType.numberWithOptions(decimal: true),
+                  decoration: const InputDecoration(
+                    labelText: '角色 Top P 覆盖',
+                    hintText: '留空跟随房间设置，范围 0-1',
+                    border: OutlineInputBorder(),
+                  ),
+                ),
+                const SizedBox(height: 12),
+                TextField(
                   controller: maxTokensController,
                   keyboardType: TextInputType.number,
                   decoration: const InputDecoration(
@@ -1860,20 +1876,28 @@ class _StoryRoomPageState extends State<StoryRoomPage> {
                 final name = nameController.text.trim();
                 if (name.isEmpty) return;
                 final temperatureText = temperatureController.text.trim();
+                final topPText = topPController.text.trim();
                 final maxTokensText = maxTokensController.text.trim();
                 final temperature = temperatureText.isEmpty
                     ? null
                     : double.tryParse(temperatureText);
+                final topP =
+                    topPText.isEmpty ? null : double.tryParse(topPText);
                 final maxTokens =
                     maxTokensText.isEmpty ? null : int.tryParse(maxTokensText);
                 if (temperatureText.isNotEmpty &&
                     (temperature == null ||
+                        !temperature.isFinite ||
                         temperature < 0 ||
                         temperature > 2)) {
                   return;
                 }
                 if (maxTokensText.isNotEmpty &&
                     (maxTokens == null || maxTokens < 0)) {
+                  return;
+                }
+                if (topPText.isNotEmpty &&
+                    (topP == null || !topP.isFinite || topP < 0 || topP > 1)) {
                   return;
                 }
                 Navigator.pop(ctx, (
@@ -1885,6 +1909,7 @@ class _StoryRoomPageState extends State<StoryRoomPage> {
                       ? null
                       : modelController.text.trim(),
                   temperature,
+                  topP,
                   maxTokens,
                 ));
               },
@@ -1898,6 +1923,7 @@ class _StoryRoomPageState extends State<StoryRoomPage> {
     promptController.dispose();
     modelController.dispose();
     temperatureController.dispose();
+    topPController.dispose();
     maxTokensController.dispose();
     if (saved == null) return;
     participant.name = saved.$1;
@@ -1907,7 +1933,8 @@ class _StoryRoomPageState extends State<StoryRoomPage> {
       ..modelProviderId = saved.$4
       ..modelId = saved.$5
       ..temperature = saved.$6
-      ..maxOutputTokens = saved.$7;
+      ..topP = saved.$7
+      ..maxOutputTokens = saved.$8;
     await _dao?.saveParticipant(participant);
     await _load();
   }
@@ -2140,10 +2167,13 @@ class _StoryRoomPageState extends State<StoryRoomPage> {
     final temperatureController = TextEditingController(
       text: widget.room.temperature?.toString() ?? '',
     );
+    final topPController = TextEditingController(
+      text: widget.room.topP?.toString() ?? '',
+    );
     final maxTokensController = TextEditingController(
       text: widget.room.maxOutputTokens?.toString() ?? '',
     );
-    final saved = await showDialog<(String?, String?, double?, int?)>(
+    final saved = await showDialog<(String?, String?, double?, double?, int?)>(
       context: context,
       builder: (ctx) => StatefulBuilder(
         builder: (ctx, setDialogState) => AlertDialog(
@@ -2203,6 +2233,17 @@ class _StoryRoomPageState extends State<StoryRoomPage> {
                 ),
                 const SizedBox(height: 12),
                 TextField(
+                  controller: topPController,
+                  keyboardType:
+                      const TextInputType.numberWithOptions(decimal: true),
+                  decoration: const InputDecoration(
+                    labelText: 'Top P',
+                    hintText: '留空跟随全局，范围 0-1',
+                    border: OutlineInputBorder(),
+                  ),
+                ),
+                const SizedBox(height: 12),
+                TextField(
                   controller: maxTokensController,
                   keyboardType: TextInputType.number,
                   decoration: const InputDecoration(
@@ -2222,20 +2263,28 @@ class _StoryRoomPageState extends State<StoryRoomPage> {
             FilledButton(
               onPressed: () {
                 final temperatureText = temperatureController.text.trim();
+                final topPText = topPController.text.trim();
                 final maxTokensText = maxTokensController.text.trim();
                 final temperature = temperatureText.isEmpty
                     ? null
                     : double.tryParse(temperatureText);
+                final topP =
+                    topPText.isEmpty ? null : double.tryParse(topPText);
                 final maxTokens =
                     maxTokensText.isEmpty ? null : int.tryParse(maxTokensText);
                 if (temperatureText.isNotEmpty &&
                     (temperature == null ||
+                        !temperature.isFinite ||
                         temperature < 0 ||
                         temperature > 2)) {
                   return;
                 }
                 if (maxTokensText.isNotEmpty &&
                     (maxTokens == null || maxTokens < 0)) {
+                  return;
+                }
+                if (topPText.isNotEmpty &&
+                    (topP == null || !topP.isFinite || topP < 0 || topP > 1)) {
                   return;
                 }
                 Navigator.pop(
@@ -2246,6 +2295,7 @@ class _StoryRoomPageState extends State<StoryRoomPage> {
                         ? null
                         : modelController.text.trim(),
                     temperature,
+                    topP,
                     maxTokens,
                   ),
                 );
@@ -2258,13 +2308,15 @@ class _StoryRoomPageState extends State<StoryRoomPage> {
     );
     modelController.dispose();
     temperatureController.dispose();
+    topPController.dispose();
     maxTokensController.dispose();
     if (saved == null) return;
     widget.room
       ..modelProviderId = saved.$1
       ..modelId = saved.$2
       ..temperature = saved.$3
-      ..maxOutputTokens = saved.$4;
+      ..topP = saved.$4
+      ..maxOutputTokens = saved.$5;
     await _dao?.saveRoom(widget.room);
     if (mounted) {
       setState(() {});
@@ -2380,6 +2432,7 @@ class _StoryRoomPageState extends State<StoryRoomPage> {
         if (values.temperature != null) {
           widget.room.temperature = values.temperature;
         }
+        if (values.topP != null) widget.room.topP = values.topP;
         if (values.maxTokens != null) {
           widget.room.maxOutputTokens = values.maxTokens;
         }
@@ -2428,6 +2481,8 @@ class _StoryRoomPageState extends State<StoryRoomPage> {
                   for (final preview in previews) ...[
                     if (preview.applyValues.temperature != null)
                       Text('Temperature：${preview.applyValues.temperature}'),
+                    if (preview.applyValues.topP != null)
+                      Text('Top P：${preview.applyValues.topP}'),
                     if (preview.applyValues.maxTokens != null)
                       Text('最大输出 Token：${preview.applyValues.maxTokens}'),
                   ],
