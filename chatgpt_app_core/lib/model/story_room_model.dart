@@ -12,6 +12,7 @@ class StoryRoomModel {
   String promptConfigJson;
   String quickRepliesJson;
   String regexScriptsJson;
+  String? personaKey;
   String? modelProviderId;
   String? modelId;
   double? temperature;
@@ -31,6 +32,7 @@ class StoryRoomModel {
     this.promptConfigJson = '',
     this.quickRepliesJson = '',
     this.regexScriptsJson = '',
+    this.personaKey,
     this.modelProviderId,
     this.modelId,
     this.temperature,
@@ -53,6 +55,7 @@ class StoryRoomModel {
         promptConfigJson: json['promptConfigJson'] as String? ?? '',
         quickRepliesJson: json['quickRepliesJson'] as String? ?? '',
         regexScriptsJson: json['regexScriptsJson'] as String? ?? '',
+        personaKey: json['personaKey'] as String?,
         modelProviderId: json['modelProviderId'] as String?,
         modelId: json['modelId'] as String?,
         temperature: (json['temperature'] as num?)?.toDouble(),
@@ -73,6 +76,7 @@ class StoryRoomModel {
         'promptConfigJson': promptConfigJson,
         'quickRepliesJson': quickRepliesJson,
         'regexScriptsJson': regexScriptsJson,
+        'personaKey': personaKey,
         'modelProviderId': modelProviderId,
         'modelId': modelId,
         'temperature': temperature,
@@ -81,6 +85,12 @@ class StoryRoomModel {
         'createdAt': createdAt,
         'updatedAt': updatedAt,
       };
+
+  /// 房间级设置较多，重命名等局部更新必须从完整快照复制，避免遗漏新增字段。
+  StoryRoomModel copyWith({String? title}) => StoryRoomModel.fromJson({
+        ...toJson(),
+        if (title != null) 'title': title,
+      });
 
   static int _safeMaxAutoReplies(Object? value) {
     final number = value is num ? value.toInt() : int.tryParse('$value');
@@ -301,6 +311,7 @@ class StoryMessageModel {
   String? speakerAvatarType;
   String? speakerAvatarValue;
   String? speakerVoiceStyle;
+  String? speakerPersonaKey;
   String content;
   List<String> imagePaths;
   List<String> imageSources;
@@ -324,6 +335,7 @@ class StoryMessageModel {
     this.speakerAvatarType,
     this.speakerAvatarValue,
     this.speakerVoiceStyle,
+    this.speakerPersonaKey,
     required this.content,
     this.imagePaths = const [],
     this.imageSources = const [],
@@ -355,6 +367,7 @@ class StoryMessageModel {
         speakerAvatarType: json['speakerAvatarType'] as String?,
         speakerAvatarValue: json['speakerAvatarValue'] as String?,
         speakerVoiceStyle: json['speakerVoiceStyle'] as String?,
+        speakerPersonaKey: json['speakerPersonaKey'] as String?,
         content: json['content'] as String? ?? '',
         imagePaths: _decodePaths(json['imagePaths']),
         imageSources: _decodePaths(json['imageSources']),
@@ -379,6 +392,7 @@ class StoryMessageModel {
         'speakerAvatarType': speakerAvatarType,
         'speakerAvatarValue': speakerAvatarValue,
         'speakerVoiceStyle': speakerVoiceStyle,
+        'speakerPersonaKey': speakerPersonaKey,
         'content': content,
         'imagePaths': jsonEncode(imagePaths),
         'imageSources': jsonEncode(imageSources),

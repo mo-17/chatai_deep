@@ -15,6 +15,7 @@ import 'package:chatgpt_app_core/db/knowledge_dao.dart';
 import 'package:chatgpt_app_core/db/message_dao.dart';
 import 'package:chatgpt_app_core/db/project_dao.dart';
 import 'package:chatgpt_app_core/db/story_artifact_dao.dart';
+import 'package:chatgpt_app_core/db/story_persona_dao.dart';
 import 'package:chatgpt_app_core/db/story_room_dao.dart';
 import 'package:chatgpt_app_core/db/story_template_dao.dart';
 import 'package:chatgpt_app_core/db/story_template_translation_task_dao.dart';
@@ -38,6 +39,7 @@ class BackupRestoreResult {
   final int projectKnowledge;
   final int storyTemplates;
   final int storyTemplateTranslationTasks;
+  final int storyPersonas;
   final int storyRooms;
   final int storyParticipants;
   final int storyMessages;
@@ -62,6 +64,7 @@ class BackupRestoreResult {
     this.projectKnowledge = 0,
     this.storyTemplates = 0,
     this.storyTemplateTranslationTasks = 0,
+    this.storyPersonas = 0,
     this.storyRooms = 0,
     this.storyParticipants = 0,
     this.storyMessages = 0,
@@ -106,6 +109,7 @@ class BackupPreview {
   final int projectKnowledge;
   final int storyTemplates;
   final int storyTemplateTranslationTasks;
+  final int storyPersonas;
   final int storyRooms;
   final int storyParticipants;
   final int storyMessages;
@@ -133,6 +137,7 @@ class BackupPreview {
     required this.projectKnowledge,
     this.storyTemplates = 0,
     this.storyTemplateTranslationTasks = 0,
+    this.storyPersonas = 0,
     this.storyRooms = 0,
     this.storyParticipants = 0,
     this.storyMessages = 0,
@@ -157,6 +162,7 @@ class BackupPreview {
       projectKnowledge +
       storyTemplates +
       storyTemplateTranslationTasks +
+      storyPersonas +
       storyRooms +
       storyParticipants +
       storyMessages +
@@ -227,6 +233,7 @@ class BackupPreview {
           'tb_project_kb',
           'tb_story_template',
           'tb_story_template_translation_task',
+          'tb_story_persona',
           'tb_story_room',
           'tb_story_participant',
           'tb_story_message',
@@ -324,7 +331,7 @@ class BackupTableConflict {
 /// 因此可以用 sqflite_common_ffi 内存库做 round-trip 单测。
 class BackupService {
   /// 备份格式版本。导入时大于本值则拒绝（新版本备份导入旧 app）。
-  static const int formatVersion = 7;
+  static const int formatVersion = 8;
 
   static const _kManifest = 'manifest.json';
   static const _kConversations = 'conversations.json';
@@ -339,6 +346,7 @@ class BackupService {
   static const _kStoryTemplates = 'story_templates.json';
   static const _kStoryTemplateTranslationTasks =
       'story_template_translation_tasks.json';
+  static const _kStoryPersonas = 'story_personas.json';
   static const _kStoryRooms = 'story_rooms.json';
   static const _kStoryParticipants = 'story_participants.json';
   static const _kStoryMessages = 'story_messages.json';
@@ -387,13 +395,22 @@ class BackupService {
     final storyTemplates = await storage.db.query('tb_story_template');
     final storyTemplateTranslationTasks =
         await storage.db.query('tb_story_template_translation_task');
+    final storyPersonas = await storage.db.query('tb_story_persona');
     final storyRooms = await storage.db.query('tb_story_room');
     final storyParticipants = await storage.db.query('tb_story_participant');
     final storyMessages = await storage.db.query('tb_story_message');
     final storyArtifacts = await storage.db.query('tb_story_artifact');
     final storyArtifactRevisions =
         await storage.db.query('tb_story_artifact_revision');
-    final avatarFiles = await _collectAvatarFiles(conversations);
+    final avatarFiles = await _collectAvatarFiles([
+      ...conversations,
+      ...storyPersonas,
+      for (final message in storyMessages)
+        <String, Object?>{
+          'avatarType': message['speakerAvatarType'],
+          'avatarValue': message['speakerAvatarValue'],
+        },
+    ]);
     final attachmentFiles = await _collectAttachmentFiles(messages);
     final generatedImageFiles = await _collectGeneratedImageFiles();
     final roleCardAssetFiles = await _collectRoleCardAssetFiles(assistants);
@@ -432,6 +449,7 @@ class BackupService {
         'projectKnowledge': projectKnowledge.length,
         'storyTemplates': storyTemplates.length,
         'storyTemplateTranslationTasks': storyTemplateTranslationTasks.length,
+        'storyPersonas': storyPersonas.length,
         'storyRooms': storyRooms.length,
         'storyParticipants': storyParticipants.length,
         'storyMessages': storyMessages.length,
@@ -457,6 +475,7 @@ class BackupService {
       ..addFile(_jsonFile(_kStoryTemplates, storyTemplates))
       ..addFile(_jsonFile(
           _kStoryTemplateTranslationTasks, storyTemplateTranslationTasks))
+      ..addFile(_jsonFile(_kStoryPersonas, storyPersonas))
       ..addFile(_jsonFile(_kStoryRooms, storyRooms))
       ..addFile(_jsonFile(_kStoryParticipants, storyParticipants))
       ..addFile(_jsonFile(_kStoryMessages, storyMessages))
@@ -515,6 +534,7 @@ class BackupService {
     final storyTemplates = _readRows(archive, _kStoryTemplates);
     final storyTemplateTranslationTasks =
         _readRows(archive, _kStoryTemplateTranslationTasks);
+    final storyPersonas = _readRows(archive, _kStoryPersonas);
     final storyRooms = _readRows(archive, _kStoryRooms);
     final storyParticipants = _readRows(archive, _kStoryParticipants);
     final storyMessages = _readRows(archive, _kStoryMessages);
@@ -550,6 +570,8 @@ class BackupService {
           return storyTemplates.length;
         case _kStoryTemplateTranslationTasks:
           return storyTemplateTranslationTasks.length;
+        case _kStoryPersonas:
+          return storyPersonas.length;
         case _kStoryRooms:
           return storyRooms.length;
         case _kStoryParticipants:
@@ -576,6 +598,7 @@ class BackupService {
       projectKnowledge: projectKnowledge,
       storyTemplates: storyTemplates,
       storyTemplateTranslationTasks: storyTemplateTranslationTasks,
+      storyPersonas: storyPersonas,
       storyRooms: storyRooms,
       storyParticipants: storyParticipants,
       storyMessages: storyMessages,
@@ -600,6 +623,7 @@ class BackupService {
         'storyTemplateTranslationTasks',
         _kStoryTemplateTranslationTasks,
       ),
+      storyPersonas: countOf('storyPersonas', _kStoryPersonas),
       storyRooms: countOf('storyRooms', _kStoryRooms),
       storyParticipants: countOf('storyParticipants', _kStoryParticipants),
       storyMessages: countOf('storyMessages', _kStoryMessages),
@@ -660,6 +684,7 @@ class BackupService {
     final storyTemplates = _readRows(archive, _kStoryTemplates);
     final storyTemplateTranslationTasks =
         _readRows(archive, _kStoryTemplateTranslationTasks);
+    final storyPersonas = _readRows(archive, _kStoryPersonas);
     final storyRooms = _readRows(archive, _kStoryRooms);
     final storyParticipants = _readRows(archive, _kStoryParticipants);
     final storyMessages = _readRows(archive, _kStoryMessages);
@@ -671,6 +696,8 @@ class BackupService {
       storyMessages,
       warnings,
     );
+    final normalizedStoryPersonas =
+        _dedupeStoryPersonas(storyPersonas, warnings);
     if (mode == BackupImportMode.mergeAppend) {
       return _importMergeAppend(
         archive: archive,
@@ -685,6 +712,7 @@ class BackupService {
         projectKnowledge: projectKnowledge,
         storyTemplates: storyTemplates,
         storyTemplateTranslationTasks: storyTemplateTranslationTasks,
+        storyPersonas: normalizedStoryPersonas,
         storyRooms: storyRooms,
         storyParticipants: storyParticipants,
         storyMessages: storyMessages,
@@ -718,6 +746,11 @@ class BackupService {
         warnings: warnings,
       );
     }
+    _repairStoryPersonaBindings(
+      normalizedStoryPersonas,
+      storyRooms,
+      warnings,
+    );
     await _restoreAttachmentAssets(archive, messages, warnings);
     final generatedImageAssets =
         await _restoreGeneratedImageAssets(archive, replaceExisting: true);
@@ -858,8 +891,14 @@ class BackupService {
     var insertedStoryMessages = 0;
     var insertedStoryArtifacts = 0;
     var insertedStoryArtifactRevisions = 0;
-    await _restoreAvatarAssets(archive, normalizedConversations, warnings,
-        accountHash: accountHash);
+    await _restoreAvatarAssets(
+      archive,
+      normalizedConversations,
+      warnings,
+      accountHash: accountHash,
+      storyPersonas: normalizedStoryPersonas,
+      storyMessages: normalizedStoryMessages,
+    );
 
     // 单事务覆盖式写入：任何一步失败整体回滚，不会留下半套数据。
     await storage.db.transaction((txn) async {
@@ -868,6 +907,7 @@ class BackupService {
       await txn.delete('tb_story_message');
       await txn.delete('tb_story_participant');
       await txn.delete('tb_story_room');
+      await txn.delete('tb_story_persona');
       final batch = txn.batch();
       batch.delete('tb_project');
       batch.delete('tb_conversation_list');
@@ -908,6 +948,9 @@ class BackupService {
       }
       for (final row in storyTemplateTranslationTasks) {
         batch.insert('tb_story_template_translation_task', row);
+      }
+      for (final row in normalizedStoryPersonas) {
+        batch.insert('tb_story_persona', _withoutId(row));
       }
       for (final row in storyRooms) {
         final oldId = _intValue(row['id']);
@@ -1005,6 +1048,7 @@ class BackupService {
       projectKnowledge: projectKnowledge.length,
       storyTemplates: storyTemplates.length,
       storyTemplateTranslationTasks: storyTemplateTranslationTasks.length,
+      storyPersonas: normalizedStoryPersonas.length,
       storyRooms: storyRooms.length,
       storyParticipants: insertedStoryParticipants,
       storyMessages: insertedStoryMessages,
@@ -1131,6 +1175,7 @@ class BackupService {
     required List<Map<String, dynamic>> projectKnowledge,
     required List<Map<String, dynamic>> storyTemplates,
     required List<Map<String, dynamic>> storyTemplateTranslationTasks,
+    required List<Map<String, dynamic>> storyPersonas,
     required List<Map<String, dynamic>> storyRooms,
     required List<Map<String, dynamic>> storyParticipants,
     required List<Map<String, dynamic>> storyMessages,
@@ -1148,8 +1193,14 @@ class BackupService {
         .map((c) =>
             _normalizeConversationRow(c, hasProjectIdColumn: hasProjectColumn))
         .toList();
-    await _restoreAvatarAssets(archive, normalizedConversations, warnings,
-        accountHash: accountHash);
+    await _restoreAvatarAssets(
+      archive,
+      normalizedConversations,
+      warnings,
+      accountHash: accountHash,
+      storyPersonas: storyPersonas,
+      storyMessages: storyMessages,
+    );
     final localStoryNodeKeys = {
       for (final row in await storage.db.query(
         'tb_story_message',
@@ -1199,8 +1250,41 @@ class BackupService {
     var insertedStoryArtifactRevisions = 0;
     var fixedTranslationTaskTemplateRefs = 0;
     var fixedTranslationTaskOutputTemplateRefs = 0;
+    var appliedStoryPersonas = 0;
 
     await storage.db.transaction((txn) async {
+      final localStoryPersonaRows = await txn.query('tb_story_persona');
+      final localStoryPersonas = {
+        for (final row in localStoryPersonaRows)
+          if ('${row['personaKey'] ?? ''}'.trim().isNotEmpty)
+            '${row['personaKey']}'.trim(): Map<String, Object?>.from(row),
+      };
+      _repairStoryPersonaBindings(
+        storyPersonas,
+        storyRooms,
+        warnings,
+        additionalPersonaKeys: localStoryPersonas.keys,
+      );
+      for (final row in storyPersonas) {
+        final personaKey = '${row['personaKey'] ?? ''}'.trim();
+        if (personaKey.isEmpty) continue;
+        final local = localStoryPersonas[personaKey];
+        if (local == null) {
+          await txn.insert('tb_story_persona', _withoutId(row));
+          appliedStoryPersonas++;
+          continue;
+        }
+        if ((_intValue(row['updatedAt']) ?? 0) >
+            (_intValue(local['updatedAt']) ?? 0)) {
+          await txn.update(
+            'tb_story_persona',
+            _withoutId(row),
+            where: 'personaKey = ?',
+            whereArgs: [personaKey],
+          );
+          appliedStoryPersonas++;
+        }
+      }
       final localStoryRoomIds = {
         for (final row in await txn.query('tb_story_room'))
           if (_intValue(row['id']) != null) _intValue(row['id'])!,
@@ -1540,6 +1624,7 @@ class BackupService {
         ', $insertedProjectKnowledge project kb refs'
         ', ${storyTemplates.length} story templates'
         ', ${storyTemplateTranslationTasks.length} story template translation tasks'
+        ', $appliedStoryPersonas story personas'
         ', ${storyRooms.length} story rooms'
         ', $insertedStoryParticipants story participants'
         ', $insertedStoryMessages story messages'
@@ -1558,6 +1643,7 @@ class BackupService {
       projectKnowledge: insertedProjectKnowledge,
       storyTemplates: storyTemplates.length,
       storyTemplateTranslationTasks: storyTemplateTranslationTasks.length,
+      storyPersonas: appliedStoryPersonas,
       storyRooms: storyRooms.length,
       storyParticipants: insertedStoryParticipants,
       storyMessages: insertedStoryMessages,
@@ -1715,6 +1801,7 @@ class BackupService {
     await FavoriteDao.create(storage);
     await ProjectDao.create(storage);
     await KnowledgeDao.create(storage);
+    await StoryPersonaDao.create(storage);
     await StoryRoomDao.create(storage);
     await StoryArtifactDao.create(storage);
     await StoryTemplateDao.create(storage);
@@ -1765,6 +1852,7 @@ class BackupService {
       room['promptConfigJson'] = '${room['promptConfigJson'] ?? ''}';
       room['quickRepliesJson'] = '${room['quickRepliesJson'] ?? ''}';
       room['regexScriptsJson'] = '${room['regexScriptsJson'] ?? ''}';
+      room['personaKey'] = room['personaKey']?.toString();
     }
     final roomById = <int, Map<String, dynamic>>{
       for (final room in rooms)
@@ -1869,8 +1957,70 @@ class BackupService {
         rows.last['contextStateAfter'] = '${room['worldBookState'] ?? ''}';
       }
     }
+    for (final message in messages) {
+      // 早期远端/备份没有 Persona 说话人键；显式补空值，保持旧档可恢复。
+      message['speakerPersonaKey'] = message['speakerPersonaKey']?.toString();
+    }
     if (repaired > 0) {
       warnings.add('$repaired 处旧故事分支关系已自动修复');
+    }
+  }
+
+  /// Persona 以 [personaKey] 为稳定身份，导入档里的重复项只保留较新的版本。
+  static List<Map<String, dynamic>> _dedupeStoryPersonas(
+    Iterable<Map<String, dynamic>> rows,
+    List<String> warnings,
+  ) {
+    final byKey = <String, Map<String, dynamic>>{};
+    var skipped = 0;
+    for (final raw in rows) {
+      final row = Map<String, dynamic>.from(raw);
+      final key = '${row['personaKey'] ?? ''}'.trim();
+      if (key.isEmpty) {
+        skipped++;
+        continue;
+      }
+      final previous = byKey[key];
+      if (previous == null ||
+          (_intValue(row['updatedAt']) ?? 0) >=
+              (_intValue(previous['updatedAt']) ?? 0)) {
+        byKey[key] = row;
+      }
+    }
+    final deduplicated = byKey.values.toList(growable: false);
+    final duplicates = rows.length - skipped - deduplicated.length;
+    if (skipped > 0) {
+      warnings.add('$skipped 个 Persona 缺少 personaKey，已跳过');
+    }
+    if (duplicates > 0) {
+      warnings.add('$duplicates 个重复 Persona 已按 updatedAt 保留较新版本');
+    }
+    return deduplicated;
+  }
+
+  static void _repairStoryPersonaBindings(
+    Iterable<Map<String, dynamic>> personas,
+    Iterable<Map<String, dynamic>> rooms,
+    List<String> warnings, {
+    Iterable<String> additionalPersonaKeys = const <String>[],
+  }) {
+    final validKeys = <String>{
+      for (final persona in personas)
+        if ('${persona['personaKey'] ?? ''}'.trim().isNotEmpty)
+          '${persona['personaKey']}'.trim(),
+      ...additionalPersonaKeys
+          .map((key) => key.trim())
+          .where((key) => key.isNotEmpty),
+    };
+    var repaired = 0;
+    for (final room in rooms) {
+      final key = '${room['personaKey'] ?? ''}'.trim();
+      if (key.isEmpty || validKeys.contains(key)) continue;
+      room['personaKey'] = null;
+      repaired++;
+    }
+    if (repaired > 0) {
+      warnings.add('$repaired 个酒馆房间引用的 Persona 不在备份中，已解除绑定');
     }
   }
 
@@ -1944,6 +2094,7 @@ class BackupService {
     required List<Map<String, dynamic>> projectKnowledge,
     required List<Map<String, dynamic>> storyTemplates,
     required List<Map<String, dynamic>> storyTemplateTranslationTasks,
+    required List<Map<String, dynamic>> storyPersonas,
     required List<Map<String, dynamic>> storyRooms,
     required List<Map<String, dynamic>> storyParticipants,
     required List<Map<String, dynamic>> storyMessages,
@@ -1966,6 +2117,7 @@ class BackupService {
         'id',
         storyTemplateTranslationTasks,
       ),
+      _ConflictSpec('tb_story_persona', 'personaKey', storyPersonas),
       _ConflictSpec('tb_story_room', 'id', storyRooms),
       _ConflictSpec('tb_story_participant', 'id', storyParticipants),
       _ConflictSpec('tb_story_message', 'id', storyMessages),
@@ -2276,9 +2428,9 @@ class BackupService {
   }
 
   static Future<Map<String, List<int>>> _collectAvatarFiles(
-      List<Map<String, Object?>> conversations) async {
+      Iterable<Map<String, Object?>> avatarOwners) async {
     final files = <String, List<int>>{};
-    for (final row in conversations) {
+    for (final row in avatarOwners) {
       if (row['avatarType'] != AvatarAssetService.imageType) continue;
       final path = row['avatarValue']?.toString();
       if (!AvatarAssetService.isManagedPath(path)) continue;
@@ -2319,46 +2471,70 @@ class BackupService {
     List<Map<String, dynamic>> conversations,
     List<String> warnings, {
     required String accountHash,
+    List<Map<String, dynamic>> storyPersonas = const [],
+    List<Map<String, dynamic>> storyMessages = const [],
   }) async {
     final avatarAssets = {
       for (final file in archive.files)
         if (file.isFile && file.name.startsWith(_kAvatarPrefix))
           _basename(file.name): file,
     };
-    if (avatarAssets.isEmpty) {
-      var dropped = 0;
-      for (final row in conversations) {
-        if (row['avatarType'] == AvatarAssetService.imageType &&
-            AvatarAssetService.isManagedPath(row['avatarValue']?.toString())) {
-          row['avatarType'] = null;
-          row['avatarValue'] = null;
+    final archiveHasNoAvatarAssets = avatarAssets.isEmpty;
+    var dropped = 0;
+    final restoredPaths = <String, String>{};
+    Future<void> restoreRows(
+      Iterable<Map<String, dynamic>> rows, {
+      required String typeField,
+      required String valueField,
+      required bool useEmojiFallback,
+    }) async {
+      for (final row in rows) {
+        if (row[typeField] != AvatarAssetService.imageType) continue;
+        final oldPath = row[valueField]?.toString() ?? '';
+        final asset = avatarAssets[_basename(oldPath)];
+        if (asset == null) {
+          row[typeField] = useEmojiFallback ? 'emoji' : null;
+          row[valueField] = useEmojiFallback ? '🙂' : null;
           dropped++;
+          continue;
         }
+        var restored = restoredPaths[oldPath];
+        if (restored == null) {
+          final dir =
+              await AvatarAssetService.avatarDir(accountHash: accountHash);
+          final target = File('${dir.path}/${_basename(asset.name)}');
+          await target.writeAsBytes(asset.content as List<int>, flush: true);
+          restored = target.path;
+          restoredPaths[oldPath] = restored;
+        }
+        row[valueField] = restored;
       }
-      if (dropped > 0) {
-        warnings.add('$dropped 个会话头像资源不在备份中，已恢复默认头像');
-      }
-      return;
     }
 
-    final dir = await AvatarAssetService.avatarDir(accountHash: accountHash);
-    var dropped = 0;
-    for (final row in conversations) {
-      if (row['avatarType'] != AvatarAssetService.imageType) continue;
-      final oldPath = row['avatarValue']?.toString();
-      final asset = avatarAssets[_basename(oldPath ?? '')];
-      if (asset == null) {
-        row['avatarType'] = null;
-        row['avatarValue'] = null;
-        dropped++;
-        continue;
-      }
-      final target = File('${dir.path}/${_basename(asset.name)}');
-      await target.writeAsBytes(asset.content as List<int>, flush: true);
-      row['avatarValue'] = target.path;
-    }
+    await restoreRows(
+      conversations,
+      typeField: 'avatarType',
+      valueField: 'avatarValue',
+      useEmojiFallback: false,
+    );
+    await restoreRows(
+      storyPersonas,
+      typeField: 'avatarType',
+      valueField: 'avatarValue',
+      useEmojiFallback: true,
+    );
+    // 消息保存的是当时的 Persona 头像快照；同一旧路径必须与 Persona
+    // 一并改写，否则历史消息会在新设备上丢失图片。
+    await restoreRows(
+      storyMessages,
+      typeField: 'speakerAvatarType',
+      valueField: 'speakerAvatarValue',
+      useEmojiFallback: true,
+    );
     if (dropped > 0) {
-      warnings.add('$dropped 个会话头像资源缺失，已恢复默认头像');
+      warnings.add(archiveHasNoAvatarAssets
+          ? '$dropped 个头像资源不在备份中，已恢复默认头像'
+          : '$dropped 个头像资源缺失，已恢复默认头像');
     }
   }
 

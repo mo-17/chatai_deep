@@ -18,6 +18,7 @@ import 'package:chatgpt_app_core/model/story_room_model.dart';
 import 'package:chatgpt_app_core/model/story_template_model.dart';
 import 'package:chatgpt_app_core/model/story_template_translation_task_model.dart';
 import 'package:chatgpt_app_core/pages/story_room_page.dart';
+import 'package:chatgpt_app_core/pages/story_persona_list_page.dart';
 import 'package:chatgpt_app_core/provider/ai_settings_provider.dart';
 import 'package:chatgpt_app_core/util/hi_dialog.dart';
 import 'package:chatgpt_app_core/widget/translation_task_log_dialog.dart';
@@ -102,6 +103,15 @@ class _StoryRoomListPageState extends State<StoryRoomListPage> {
       appBar: AppBar(
         title: const Text('创作 / 酒馆'),
         actions: [
+          IconButton(
+            key: const ValueKey('story_persona_library'),
+            icon: const Icon(Icons.badge_outlined),
+            tooltip: 'Persona 管理',
+            onPressed: () => Navigator.push<void>(
+              context,
+              MaterialPageRoute(builder: (_) => const StoryPersonaListPage()),
+            ),
+          ),
           if (_tabIndex == 1 && Platform.operatingSystem != 'ohos')
             IconButton(
               icon: const Icon(Icons.file_upload_outlined),
@@ -627,20 +637,7 @@ class _StoryRoomListPageState extends State<StoryRoomListPage> {
       builder: (_) => _RenameRoomDialog(initialTitle: room.title),
     );
     if (title == null || title.isEmpty || title == room.title) return;
-    final updated = StoryRoomModel(
-      id: roomId,
-      title: title,
-      mode: room.mode,
-      replyMode: room.replyMode,
-      maxAutoReplies: room.maxAutoReplies,
-      publicContext: room.publicContext,
-      modelProviderId: room.modelProviderId,
-      modelId: room.modelId,
-      temperature: room.temperature,
-      maxOutputTokens: room.maxOutputTokens,
-      createdAt: room.createdAt,
-      updatedAt: room.updatedAt,
-    );
+    final updated = room.copyWith(title: title);
     try {
       await dao.saveRoom(updated);
       if (!mounted) return;

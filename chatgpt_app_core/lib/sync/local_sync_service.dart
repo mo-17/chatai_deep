@@ -1,4 +1,5 @@
 import 'dart:convert';
+import 'dart:io';
 import 'dart:typed_data';
 
 import 'package:chatgpt_app_core/chat/application/assistant_role_card_asset_store.dart';
@@ -8,10 +9,12 @@ import 'package:chatgpt_app_core/db/assistant_dao.dart';
 import 'package:chatgpt_app_core/db/db_migration.dart';
 import 'package:chatgpt_app_core/db/hi_db_manager.dart';
 import 'package:chatgpt_app_core/db/story_artifact_dao.dart';
+import 'package:chatgpt_app_core/db/story_persona_dao.dart';
 import 'package:chatgpt_app_core/db/story_room_dao.dart';
 import 'package:chatgpt_app_core/db/story_template_dao.dart';
 import 'package:chatgpt_app_core/db/story_template_translation_task_dao.dart';
 import 'package:chatgpt_app_core/sync/sync_tombstone_store.dart';
+import 'package:chatgpt_app_core/util/avatar_asset_service.dart';
 import 'package:sqflite/sqflite.dart';
 
 /// 本地同步服务：把 SQLite 里的核心业务表转换成可上传的增量变更，
@@ -20,7 +23,9 @@ import 'package:sqflite/sqflite.dart';
 /// 网络层由 [CloudSyncClient] 负责；这里保持纯 SQLite 合并逻辑，便于离线测试。
 class LocalSyncService {
   static const assistantRoleAssetChunkEntity = 'assistant_role_asset_chunk';
+  static const maxPersonaAvatarBytes = 2 * 1024 * 1024;
   static const _roleAssetChunkBytes = 192 * 1024;
+  static const _personaAvatarFallback = '🙂';
   static const _roleAssetStageTable = 'tb_sync_assistant_role_asset_chunk';
   static const _storyMessageDeleteTrigger =
       'tb_sync_story_message_delete_to_node_key';
@@ -70,6 +75,12 @@ class LocalSyncService {
       entity: 'project_knowledge',
       table: 'tb_project_kb',
       idColumns: ['projectId', 'docId'],
+    ),
+    _SyncEntitySpec(
+      entity: 'story_persona',
+      table: 'tb_story_persona',
+      idColumns: ['personaKey'],
+      timestampColumn: 'updatedAt',
     ),
     _SyncEntitySpec(
       entity: 'story_room',
@@ -140,6 +151,8 @@ class LocalSyncService {
       for (final row in rows) {
         if (spec.entity == 'assistant') {
           changes.addAll(await _assistantChangesFromRow(row));
+        } else if (spec.entity == 'story_persona') {
+          changes.add(await _personaChangeFromRow(row));
         } else {
           changes.add(spec.changeFromRow(row));
         }
@@ -188,6 +201,10 @@ class LocalSyncService {
     await storage.db.transaction((txn) async {
       for (final remote in incoming) {
         if (remote.entity == assistantRoleAssetChunkEntity) continue;
+        if (remote.entity == 'story_persona' && remote.id.trim().isEmpty) {
+          rejectedStale.add(remote);
+          continue;
+        }
         final spec = _specFor(remote.entity);
         if (spec == null) {
           rejectedStale.add(remote);
@@ -219,6 +236,7 @@ class LocalSyncService {
               payload,
               spec.idColumns,
               ignoreRoleCardAssets: remote.entity == 'assistant',
+              ignorePersonaAvatar: remote.entity == 'story_persona',
               ignoredColumns:
                   remote.entity == 'story_message' ? const {'id'} : const {},
             )) {
@@ -279,6 +297,9 @@ class LocalSyncService {
       );
       await _deleteStagedAssets(id);
     }
+    // Persona 头像也是历史消息的身份快照资源。删除 Persona 只移除可选身份，
+    // 不删除头像文件，否则旧消息会在同步后丢失当时的发言者头像。
+    await _restorePersonaAvatars(accepted);
     for (final id in upsertedAssistantIds) {
       if (assistantIdsWithChunks.contains(id)) {
         await _deleteOtherStagedAssetVersions(
@@ -302,6 +323,111 @@ class LocalSyncService {
       rejectedStale: rejectedStale,
       conflicts: conflicts.toSet().toList()..sort(),
     );
+  }
+
+  Future<SyncChange> _personaChangeFromRow(
+    Map<String, Object?> row,
+  ) async {
+    final persona = _specs
+        .firstWhere((spec) => spec.entity == 'story_persona')
+        .changeFromRow(row);
+    final payload = Map<String, dynamic>.from(persona.payload)..remove('id');
+    if (payload['avatarType'] != AvatarAssetService.imageType) {
+      return SyncChange(
+        entity: persona.entity,
+        id: persona.id,
+        op: persona.op,
+        updatedAt: persona.updatedAt,
+        payload: payload,
+      );
+    }
+
+    // 图片路径是设备本地状态。即使读取失败，也绝不能把绝对路径带出设备。
+    payload['avatarType'] = 'emoji';
+    payload['avatarValue'] = _personaAvatarFallback;
+    final path = row['avatarValue']?.toString() ?? '';
+    try {
+      final file = File(path);
+      if (path.isEmpty || !await file.exists()) {
+        return SyncChange(
+          entity: persona.entity,
+          id: persona.id,
+          op: persona.op,
+          updatedAt: persona.updatedAt,
+          payload: payload,
+        );
+      }
+      final bytes = await file.readAsBytes();
+      if (bytes.isEmpty || bytes.length > maxPersonaAvatarBytes) {
+        return SyncChange(
+          entity: persona.entity,
+          id: persona.id,
+          op: persona.op,
+          updatedAt: persona.updatedAt,
+          payload: payload,
+        );
+      }
+      payload
+        ..['avatarType'] = AvatarAssetService.imageType
+        ..['avatarValue'] = ''
+        ..['avatarAsset'] = {
+          'base64': base64Encode(bytes),
+          'extension': _safeAvatarExtension(path),
+        };
+    } catch (_) {
+      // 保留文本 Persona，并回落 emoji；同步失败不会泄露路径或中断其它实体。
+    }
+    return SyncChange(
+      entity: persona.entity,
+      id: persona.id,
+      op: persona.op,
+      updatedAt: persona.updatedAt,
+      payload: payload,
+    );
+  }
+
+  Future<void> _restorePersonaAvatars(Iterable<SyncChange> changes) async {
+    for (final change in changes) {
+      if (change.entity != 'story_persona' || change.op != SyncOp.upsert) {
+        continue;
+      }
+      final asset = _PersonaAvatarAsset.tryParse(change);
+      if (asset == null) continue;
+      final current = await storage.db.query(
+        'tb_story_persona',
+        columns: const ['updatedAt'],
+        where: 'personaKey = ?',
+        whereArgs: [asset.personaKey],
+        limit: 1,
+      );
+      if (current.isEmpty ||
+          _asInt(current.single['updatedAt']) != change.updatedAt) {
+        continue;
+      }
+      String? path;
+      try {
+        path = await AvatarAssetService.savePersonaAvatarBytes(
+          bytes: asset.bytes,
+          personaKey: asset.personaKey,
+          extension: asset.extension,
+        );
+        final updated = await storage.db.update(
+          'tb_story_persona',
+          {
+            'avatarType': AvatarAssetService.imageType,
+            'avatarValue': path,
+          },
+          where: 'personaKey = ? and updatedAt = ?',
+          whereArgs: [asset.personaKey, change.updatedAt],
+        );
+        if (updated == 0) {
+          await AvatarAssetService.deletePersonaAvatar(path);
+        }
+      } catch (_) {
+        // 主记录已经是 emoji 兜底；图片失败不能影响 Persona 文本同步。
+        if (path != null) await AvatarAssetService.deletePersonaAvatar(path);
+      }
+    }
   }
 
   Future<List<SyncChange>> _assistantChangesFromRow(
@@ -388,6 +514,19 @@ class LocalSyncService {
       // id 是接收设备的自增主键，不能跨设备写入；nodeKey 才是同步 identity。
       payload.remove('id');
     }
+    if (remote.entity == 'story_persona' && remote.op == SyncOp.upsert) {
+      // id 是设备本地自增主键，personaKey 才是跨设备 identity。
+      payload
+        ..remove('id')
+        ..remove('avatarAsset');
+      // 图片字节由 _restorePersonaAvatars 写入本机 chat_avatar；主表先用
+      // emoji 兜底，以免远端路径或异常 base64 进入 SQLite。
+      if (payload['avatarType'] == AvatarAssetService.imageType ||
+          _looksLikeAbsolutePath(payload['avatarValue'])) {
+        payload['avatarType'] = 'emoji';
+        payload['avatarValue'] = _personaAvatarFallback;
+      }
+    }
     if (remote.entity == 'assistant' && remote.op == SyncOp.upsert) {
       // 远端 payload 不能携带可访问的本机绝对路径。
       payload['roleCardAssets'] = '[]';
@@ -396,11 +535,24 @@ class LocalSyncService {
   }
 
   static SyncChange _normalizeStoryChange(SyncChange change) {
+    if (change.entity == 'story_persona' && change.op == SyncOp.upsert) {
+      final payload = Map<String, dynamic>.from(change.payload);
+      final personaKey = '${payload['personaKey'] ?? change.id}'.trim();
+      if (personaKey.isNotEmpty) payload['personaKey'] = personaKey;
+      return SyncChange(
+        entity: change.entity,
+        id: personaKey,
+        op: change.op,
+        updatedAt: change.updatedAt,
+        payload: payload,
+      );
+    }
     if (change.entity == 'story_room' && change.op == SyncOp.upsert) {
       final payload = Map<String, dynamic>.from(change.payload);
       payload['promptConfigJson'] = '${payload['promptConfigJson'] ?? ''}';
       payload['quickRepliesJson'] = '${payload['quickRepliesJson'] ?? ''}';
       payload['regexScriptsJson'] = '${payload['regexScriptsJson'] ?? ''}';
+      payload['personaKey'] = payload['personaKey']?.toString();
       return SyncChange(
         entity: change.entity,
         id: change.id,
@@ -430,6 +582,7 @@ class LocalSyncService {
     }
     final payload = Map<String, dynamic>.from(change.payload);
     payload['roleStatesAfter'] = '${payload['roleStatesAfter'] ?? '{}'}';
+    payload['speakerPersonaKey'] = payload['speakerPersonaKey']?.toString();
     final rawNodeKey = payload['nodeKey'];
     if (rawNodeKey is String && rawNodeKey.trim().isNotEmpty) {
       return SyncChange(
@@ -782,6 +935,16 @@ class LocalSyncService {
     return int.tryParse('$value') ?? -1;
   }
 
+  static String _safeAvatarExtension(String path) {
+    final match = RegExp(r'\.([A-Za-z0-9]{1,8})$').firstMatch(path);
+    return match == null ? '.png' : '.${match.group(1)!.toLowerCase()}';
+  }
+
+  static bool _looksLikeAbsolutePath(Object? value) {
+    final path = value?.toString().trim() ?? '';
+    return path.startsWith('/') || RegExp(r'^[A-Za-z]:[\\/]').hasMatch(path);
+  }
+
   static _SyncEntitySpec? _specFor(String entity) {
     for (final spec in _specs) {
       if (spec.entity == entity) return spec;
@@ -792,6 +955,7 @@ class LocalSyncService {
   Future<void> _ensureTables() async {
     await DbMigration.run(storage.db);
     await AssistantDao.create(storage);
+    await StoryPersonaDao.create(storage);
     await StoryRoomDao.create(storage);
     await StoryArtifactDao.create(storage);
     await StoryTemplateDao.create(storage);
@@ -826,6 +990,7 @@ class LocalSyncService {
     Map<String, dynamic> incoming,
     List<String> idColumns, {
     bool ignoreRoleCardAssets = false,
+    bool ignorePersonaAvatar = false,
     Set<String> ignoredColumns = const {},
   }) {
     final normalizedCurrent = Map<String, Object?>.from(current);
@@ -834,6 +999,10 @@ class LocalSyncService {
     }
     if (ignoreRoleCardAssets) {
       normalizedCurrent['roleCardAssets'] = incoming['roleCardAssets'];
+    }
+    if (ignorePersonaAvatar) {
+      normalizedCurrent['avatarType'] = incoming['avatarType'];
+      normalizedCurrent['avatarValue'] = incoming['avatarValue'];
     }
     for (final key in ignoredColumns) {
       normalizedCurrent.remove(key);
@@ -852,6 +1021,51 @@ class LocalSyncService {
     }
     if (value is Iterable) return value.map(_sorted).toList();
     return value;
+  }
+}
+
+class _PersonaAvatarAsset {
+  final String personaKey;
+  final Uint8List bytes;
+  final String extension;
+
+  const _PersonaAvatarAsset({
+    required this.personaKey,
+    required this.bytes,
+    required this.extension,
+  });
+
+  static _PersonaAvatarAsset? tryParse(SyncChange change) {
+    final payload = change.payload;
+    final personaKey = '${payload['personaKey'] ?? ''}'.trim();
+    final asset = payload['avatarAsset'];
+    if (personaKey.isEmpty || change.id != personaKey || asset is! Map) {
+      return null;
+    }
+    final base64 = asset['base64'];
+    final extension = asset['extension'];
+    if (base64 is! String ||
+        base64.isEmpty ||
+        base64.length >
+            ((LocalSyncService.maxPersonaAvatarBytes + 2) ~/ 3) * 4 ||
+        extension is! String ||
+        !RegExp(r'^\.[A-Za-z0-9]{1,8}$').hasMatch(extension)) {
+      return null;
+    }
+    try {
+      final bytes = base64Decode(base64);
+      if (bytes.isEmpty ||
+          bytes.length > LocalSyncService.maxPersonaAvatarBytes) {
+        return null;
+      }
+      return _PersonaAvatarAsset(
+        personaKey: personaKey,
+        bytes: Uint8List.fromList(bytes),
+        extension: extension.toLowerCase(),
+      );
+    } catch (_) {
+      return null;
+    }
   }
 }
 
@@ -1000,6 +1214,7 @@ class _SyncEntitySpec {
   String get whereClause => idColumns.map((c) => '$c = ?').join(' and ');
 
   List<Object?> whereArgs(String id) {
+    if (idColumns.length == 1) return [id];
     final parts = id.split(':');
     return [
       for (var i = 0; i < idColumns.length; i++)

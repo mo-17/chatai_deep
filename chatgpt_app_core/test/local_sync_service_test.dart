@@ -9,6 +9,7 @@ import 'package:chatgpt_app_core/db/assistant_dao.dart';
 import 'package:chatgpt_app_core/db/conversation_dao.dart';
 import 'package:chatgpt_app_core/db/hi_db_manager.dart';
 import 'package:chatgpt_app_core/db/project_dao.dart';
+import 'package:chatgpt_app_core/db/story_persona_dao.dart';
 import 'package:chatgpt_app_core/db/story_room_dao.dart';
 import 'package:chatgpt_app_core/db/story_template_dao.dart';
 import 'package:chatgpt_app_core/db/story_template_translation_task_dao.dart';
@@ -18,14 +19,21 @@ import 'package:chatgpt_app_core/model/project_model.dart';
 import 'package:chatgpt_app_core/model/story_room_model.dart';
 import 'package:chatgpt_app_core/model/story_template_model.dart';
 import 'package:chatgpt_app_core/model/story_artifact_model.dart';
+import 'package:chatgpt_app_core/model/story_persona_model.dart';
 import 'package:chatgpt_app_core/model/story_template_translation_task_model.dart';
 import 'package:chatgpt_app_core/sync/local_sync_service.dart';
+import 'package:chatgpt_app_core/util/avatar_asset_service.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:flutter_hi_cache/flutter_hi_cache.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 import 'package:sqflite_common_ffi/sqflite_ffi.dart';
 
 void main() {
-  setUpAll(() {
+  TestWidgetsFlutterBinding.ensureInitialized();
+  setUpAll(() async {
     sqfliteFfiInit();
+    SharedPreferences.setMockInitialValues({});
+    await HiCache.preInit();
   });
 
   Future<HiDBManager> newDb() async => HiDBManager.test(
@@ -1124,5 +1132,154 @@ void main() {
       await storage.db.close();
       if (await dir.exists()) await dir.delete(recursive: true);
     }
+  });
+
+  test('Persona 同步以 personaKey 合并、隔离本地 id 和图片路径，并接受删除墓碑', () async {
+    final sourceDir =
+        await Directory.systemTemp.createTemp('sync-persona-source-');
+    final targetDir =
+        await Directory.systemTemp.createTemp('sync-persona-target-');
+    final source = HiDBManager.test(
+      await databaseFactoryFfi.openDatabase('${sourceDir.path}/source.db'),
+    );
+    final target = HiDBManager.test(
+      await databaseFactoryFfi.openDatabase('${targetDir.path}/target.db'),
+    );
+    addTearDown(() async {
+      AvatarAssetService.debugDocumentsDirectoryResolver = null;
+      await source.db.close();
+      await target.db.close();
+      if (await sourceDir.exists()) await sourceDir.delete(recursive: true);
+      if (await targetDir.exists()) await targetDir.delete(recursive: true);
+    });
+
+    AvatarAssetService.debugDocumentsDirectoryResolver = () async => sourceDir;
+    final sourceDao = await StoryPersonaDao.create(source);
+    final sourcePersona = StoryPersonaModel(
+      personaKey: 'persona:stable:key',
+      name: '源设备 Persona',
+      description: '文本永远保留',
+    );
+    await sourceDao.savePersona(sourcePersona);
+    final sourcePath = await AvatarAssetService.savePersonaAvatarBytes(
+      bytes: [9, 8, 7],
+      personaKey: sourcePersona.personaKey,
+    );
+    sourcePersona
+      ..avatarType = AvatarAssetService.imageType
+      ..avatarValue = sourcePath;
+    await sourceDao.savePersona(sourcePersona);
+    final sourceSync = LocalSyncService(source);
+    final change = (await sourceSync.exportChanges()).singleWhere(
+      (item) => item.entity == 'story_persona' && item.op == SyncOp.upsert,
+    );
+    expect(change.id, sourcePersona.personaKey);
+    expect(change.payload.containsKey('id'), isFalse);
+    expect(change.payload['avatarValue'], isNot(sourcePath));
+    expect(jsonEncode(change.payload), isNot(contains(sourceDir.path)));
+    expect(change.payload['avatarAsset'], isA<Map>());
+
+    AvatarAssetService.debugDocumentsDirectoryResolver = () async => targetDir;
+    final targetDao = await StoryPersonaDao.create(target);
+    await targetDao.savePersona(StoryPersonaModel(
+      personaKey: 'target-only-persona',
+      name: '占位，保证本地 id 不同',
+    ));
+    final targetSync = LocalSyncService(target);
+    final applied = await targetSync.applyRemoteChanges([change]);
+    expect(applied.accepted.map((item) => item.key),
+        ['story_persona:${change.id}']);
+    final targetPersona =
+        (await targetDao.getPersonaByKey(sourcePersona.personaKey))!;
+    expect(targetPersona.id, isNot(sourcePersona.id));
+    expect(targetPersona.description, sourcePersona.description);
+    expect(targetPersona.avatarType, AvatarAssetService.imageType);
+    expect(targetPersona.avatarValue, contains('/chat_avatar/test/'));
+    expect(targetPersona.avatarValue, isNot(contains(sourceDir.path)));
+    expect(await File(targetPersona.avatarValue).readAsBytes(), [9, 8, 7]);
+
+    await targetSync.applyRemoteChanges([
+      const SyncChange(
+        entity: 'story_persona',
+        id: 'persona-avatar-missing',
+        op: SyncOp.upsert,
+        updatedAt: 999,
+        payload: {
+          'id': 900,
+          'personaKey': 'persona-avatar-missing',
+          'name': '无图片也可同步',
+          'description': '文本 Persona 不能因为图片缺失而丢失',
+          'avatarType': 'image',
+          'avatarValue': '/private/remote-device/avatar.png',
+          'createdAt': 999,
+          'updatedAt': 999,
+        },
+      ),
+    ]);
+    final fallback =
+        (await targetDao.getPersonaByKey('persona-avatar-missing'))!;
+    expect(fallback.description, '文本 Persona 不能因为图片缺失而丢失');
+    expect(fallback.avatarType, 'emoji');
+    expect(fallback.avatarValue, '🙂');
+
+    await sourceDao.deletePersona(sourcePersona.id!);
+    final deletion = (await sourceSync.exportChanges()).singleWhere(
+      (item) => item.entity == 'story_persona' && item.op == SyncOp.delete,
+    );
+    expect(deletion.id, sourcePersona.personaKey);
+    await targetSync.applyRemoteChanges([deletion]);
+    expect(await targetDao.getPersonaByKey(sourcePersona.personaKey), isNull);
+    expect(
+      await File(targetPersona.avatarValue).exists(),
+      isTrue,
+      reason: '历史消息依然引用 Persona 头像快照，删除身份不应删除资源',
+    );
+  });
+
+  test('旧远端故事记录缺 Persona 键时以 null 兼容', () async {
+    final storage = await newDb();
+    addTearDown(storage.db.close);
+    final sync = LocalSyncService(storage);
+    final result = await sync.applyRemoteChanges([
+      const SyncChange(
+        entity: 'story_room',
+        id: '41',
+        op: SyncOp.upsert,
+        updatedAt: 100,
+        payload: {
+          'id': 41,
+          'title': '旧远端房间',
+          'mode': 'creation',
+          'replyMode': 'autoSingle',
+          'maxAutoReplies': 1,
+          'publicContext': '',
+          'createdAt': 1,
+          'updatedAt': 100,
+        },
+      ),
+      const SyncChange(
+        entity: 'story_message',
+        id: 'legacy-persona-message',
+        op: SyncOp.upsert,
+        updatedAt: 101,
+        payload: {
+          'id': 99,
+          'roomId': 41,
+          'speakerRole': 'user',
+          'speakerName': '旧用户',
+          'content': '没有 Persona 键',
+          'nodeKey': 'legacy-persona-message',
+          'createdAt': 101,
+          'updatedAt': 101,
+        },
+      ),
+    ]);
+    expect(result.accepted, hasLength(2));
+    expect(
+        (await storage.db.query('tb_story_room')).single['personaKey'], isNull);
+    expect(
+      (await storage.db.query('tb_story_message')).single['speakerPersonaKey'],
+      isNull,
+    );
   });
 }

@@ -19,7 +19,7 @@ class StoryRoomDao implements ITable {
         'create table if not exists tb_story_room (id integer primary key autoincrement'
         ', title text, mode text, replyMode text, maxAutoReplies integer'
         ', publicContext text, worldBookState text'
-        ', promptConfigJson text, quickRepliesJson text, regexScriptsJson text'
+        ', promptConfigJson text, quickRepliesJson text, regexScriptsJson text, personaKey text'
         ', modelProviderId text, modelId text'
         ', temperature real, maxOutputTokens integer'
         ', activeMessageKey text'
@@ -42,7 +42,7 @@ class StoryRoomDao implements ITable {
         'create table if not exists tb_story_message (id integer primary key autoincrement'
         ', roomId integer not null, speakerId integer, speakerRole text'
         ', speakerName text, speakerAvatarType text, speakerAvatarValue text'
-        ', speakerVoiceStyle text, content text, imagePaths text, imageSources text'
+        ', speakerVoiceStyle text, speakerPersonaKey text, content text, imagePaths text, imageSources text'
         ', citationUrls text, filePaths text'
         ', attachmentContext text, nodeKey text not null, parentNodeKey text'
         ', candidateGroupKey text, contextStateAfter text, roleStatesAfter text'
@@ -99,6 +99,7 @@ class StoryRoomDao implements ITable {
       'promptConfigJson text',
       'quickRepliesJson text',
       'regexScriptsJson text',
+      'personaKey text',
       'activeMessageKey text',
     ]) {
       try {
@@ -142,6 +143,7 @@ class StoryRoomDao implements ITable {
       'citationUrls text',
       'filePaths text',
       'attachmentContext text',
+      'speakerPersonaKey text',
     ]) {
       try {
         await storage.db

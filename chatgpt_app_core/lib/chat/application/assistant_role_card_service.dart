@@ -3125,9 +3125,10 @@ class AssistantRoleCardService {
     return value
         .replaceAll(
             RegExp(r'\{\{\s*char\s*\}\}', caseSensitive: false), charName)
-        .replaceAll(RegExp(r'\{\{\s*user\s*\}\}', caseSensitive: false), '用户')
+        .replaceAll(
+            RegExp(r'\{\{\s*user\s*\}\}', caseSensitive: false), '{{user}}')
         .replaceAll(RegExp(r'<BOT>', caseSensitive: false), charName)
-        .replaceAll(RegExp(r'<USER>', caseSensitive: false), '用户')
+        .replaceAll(RegExp(r'<USER>', caseSensitive: false), '{{user}}')
         .trim();
   }
 

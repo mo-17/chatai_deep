@@ -13,6 +13,7 @@ import 'package:chatgpt_app_core/db/story_template_dao.dart';
 import 'package:chatgpt_app_core/model/ai_settings.dart';
 import 'package:chatgpt_app_core/model/assistant_model.dart';
 import 'package:chatgpt_app_core/model/story_prompt_config.dart';
+import 'package:chatgpt_app_core/model/story_persona_model.dart';
 import 'package:chatgpt_app_core/model/story_quick_reply.dart';
 import 'package:chatgpt_app_core/model/story_regex_script.dart';
 import 'package:chatgpt_app_core/model/story_room_model.dart';
@@ -45,6 +46,7 @@ void main() {
         promptConfigJson: '{"version":1,"modules":[]}',
         quickRepliesJson: '{"roomId":0,"groups":[]}',
         regexScriptsJson: '{"version":1,"rules":[]}',
+        personaKey: 'persona-traveler',
         modelProviderId: 'deepseek',
         modelId: 'deepseek-v4-pro',
         temperature: 0.7,
@@ -78,6 +80,7 @@ void main() {
         roomId: roomId,
         speakerRole: 'user',
         speakerName: '我',
+        speakerPersonaKey: 'persona-traveler',
         content: '门铃响了。',
       ));
       await dao.saveMessage(StoryMessageModel(
@@ -100,12 +103,14 @@ void main() {
       expect(savedRoom?.promptConfigJson, '{"version":1,"modules":[]}');
       expect(savedRoom?.quickRepliesJson, '{"roomId":0,"groups":[]}');
       expect(savedRoom?.regexScriptsJson, '{"version":1,"rules":[]}');
+      expect(savedRoom?.personaKey, 'persona-traveler');
       expect(savedRoom?.modelProviderId, 'deepseek');
       expect(savedRoom?.modelId, 'deepseek-v4-pro');
       expect(savedRoom?.temperature, 0.7);
       expect(savedRoom?.maxOutputTokens, 4096);
       final messages = await dao.getMessages(roomId);
       expect(messages, hasLength(2));
+      expect(messages.first.speakerPersonaKey, 'persona-traveler');
       expect(messages.last.speakerId, role.id);
       expect(messages.last.speakerName, '风香');
       expect(messages.last.speakerAvatarValue, '📚');
@@ -195,6 +200,29 @@ void main() {
       expect(await dao.getRoom(roomId), isNull);
       expect(await dao.getParticipants(roomId), isEmpty);
       expect(await dao.getMessages(roomId), isEmpty);
+    });
+
+    test('房间 copyWith 重命名不会丢失运行配置和活动分支', () {
+      final room = StoryRoomModel(
+        id: 7,
+        title: '旧名字',
+        worldBookState: 'world-state',
+        promptConfigJson: 'prompt-config',
+        quickRepliesJson: 'quick-replies',
+        regexScriptsJson: 'regex-scripts',
+        personaKey: 'persona-key',
+        activeMessageKey: 'node-key',
+      );
+
+      final renamed = room.copyWith(title: '新名字');
+
+      expect(renamed.title, '新名字');
+      expect(renamed.worldBookState, 'world-state');
+      expect(renamed.promptConfigJson, 'prompt-config');
+      expect(renamed.quickRepliesJson, 'quick-replies');
+      expect(renamed.regexScriptsJson, 'regex-scripts');
+      expect(renamed.personaKey, 'persona-key');
+      expect(renamed.activeMessageKey, 'node-key');
     });
 
     test('禁用角色默认不参与生成但可由管理界面读取和重新启用', () async {
@@ -1421,6 +1449,69 @@ void main() {
   });
 
   group('StoryContextBuilder', () {
+    test('Persona 名称与简介进入上下文并解析 user 变量', () {
+      final room = StoryRoomModel(
+        title: '月下酒馆',
+        mode: StoryRoomMode.tavern,
+        publicContext: '{{user}} 刚从北境来到这里。',
+      );
+      final speaker = StoryParticipantModel(
+        roomId: 1,
+        role: StoryParticipantRole.assistant,
+        name: '艾琳',
+      );
+      final persona = StoryPersonaModel(
+        personaKey: 'traveler',
+        name: '旅人洛安',
+        description: '来自北境，左手有一道旧伤。',
+      );
+
+      final system = StoryContextBuilder.systemPrompt(
+        room: room,
+        participants: [speaker],
+        speaker: speaker,
+        persona: persona,
+      );
+
+      expect(system, contains('【当前用户 Persona】'));
+      expect(system, contains('名称：旅人洛安'));
+      expect(system, contains('来自北境，左手有一道旧伤。'));
+      expect(system, contains('旅人洛安 刚从北境来到这里。'));
+      expect(system, isNot(contains('{{user}}')));
+    });
+
+    test('Persona 简介可触发仅扫描用户身份的世界书条目', () {
+      final room = StoryRoomModel(
+        title: '北境旅店',
+        mode: StoryRoomMode.tavern,
+        publicContext: [
+          '【关键词记忆 / 世界书】',
+          '[persona] 旧伤 => 旅店老板认出了这道北境军团留下的伤疤。',
+        ].join('\n'),
+      );
+      final speaker = StoryParticipantModel(
+        roomId: 1,
+        role: StoryParticipantRole.assistant,
+        name: '老板',
+        prompt: '谨慎地识别来客。',
+      );
+      final persona = StoryPersonaModel(
+        personaKey: 'north-traveler',
+        name: '旅人洛安',
+        description: '来自北境，左手有一道旧伤。',
+      );
+
+      final system = StoryContextBuilder.systemPrompt(
+        room: room,
+        participants: [speaker],
+        speaker: speaker,
+        persona: persona,
+        latestInput: '你好。',
+      );
+
+      expect(system, contains('老板认出了这道北境军团留下的伤疤'));
+    });
+
     test('Prompt Manager 保留安全规则、角色顺序、历史开关和深度插入', () {
       final room = StoryRoomModel(
         title: '雨夜书店',

@@ -66,6 +66,44 @@ class AvatarAssetService {
     );
   }
 
+  /// Persona 头像沿用应用托管的 chat_avatar 目录，避免相册临时路径失效。
+  static Future<String> savePersonaAvatarBytes({
+    required List<int> bytes,
+    required String personaKey,
+    String extension = '.png',
+    String? accountHash,
+  }) async {
+    if (bytes.isEmpty) {
+      throw Exception('头像文件为空');
+    }
+    final dir = await avatarDir(accountHash: accountHash);
+    final safeKey = _safeSegment(personaKey);
+    final ext = extension.startsWith('.') ? extension : '.$extension';
+    final dest = File(
+        '${dir.path}/persona_${safeKey}_${DateTime.now().millisecondsSinceEpoch}$ext');
+    await dest.writeAsBytes(bytes, flush: true);
+    return dest.path;
+  }
+
+  /// Persona 头像沿用应用托管的 chat_avatar 目录，避免相册临时路径失效。
+  static Future<String> savePersonaAvatar({
+    required String sourcePath,
+    required String personaKey,
+    String? accountHash,
+  }) async {
+    final source = File(sourcePath);
+    if (!await source.exists()) {
+      throw Exception('头像文件不存在');
+    }
+    if (isManagedPath(sourcePath)) return sourcePath;
+    return savePersonaAvatarBytes(
+      bytes: await source.readAsBytes(),
+      personaKey: personaKey,
+      extension: _extension(sourcePath),
+      accountHash: accountHash,
+    );
+  }
+
   static Future<void> deleteConversationAvatar(String? path) async {
     if (!isManagedPath(path)) return;
     try {
@@ -79,6 +117,9 @@ class AvatarAssetService {
   }
 
   static Future<void> deleteAssistantAvatar(String? path) =>
+      deleteConversationAvatar(path);
+
+  static Future<void> deletePersonaAvatar(String? path) =>
       deleteConversationAvatar(path);
 
   static Future<String?> resolveManagedPath(String? path) async {

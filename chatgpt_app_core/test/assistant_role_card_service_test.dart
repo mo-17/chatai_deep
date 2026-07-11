@@ -966,10 +966,10 @@ void main() {
     expect(imported.prompt, contains('[系统提示]\n保持沉浸，不要跳出角色。'));
     expect(imported.prompt, contains('[角色设定]\n艾琳 是浮岛钟表师，习惯在雨夜修表。'));
     expect(imported.prompt, contains('[性格]\n克制、温柔、少解释。'));
-    expect(imported.prompt, contains('[场景]\n用户 和 艾琳 在旧书店重逢。'));
+    expect(imported.prompt, contains('[场景]\n{{user}} 和 艾琳 在旧书店重逢。'));
     expect(imported.prompt, contains('[后续指令]\n延续上一幕情绪。'));
     expect(imported.openingMessage, '你听见钟声了吗？');
-    expect(imported.exampleDialogs, contains('用户：你好'));
+    expect(imported.exampleDialogs, contains('{{user}}：你好'));
     expect(imported.exampleDialogs, contains('艾琳：夜色很安静。'));
     expect(imported.exampleDialogs, contains('[备选开场白]\n雨声盖住了脚步声。'));
     expect(imported.exampleDialogs, contains('钟塔今晚没有准点报时。'));
@@ -980,7 +980,7 @@ void main() {
     expect(imported.memoryBook, contains('城市由七座浮岛组成。'));
     expect(imported.memoryBook, contains('[off] 废稿 => 这条不应导入。'));
     expect(imported.prompt, isNot(contains('{{char}}')));
-    expect(imported.prompt, isNot(contains('{{user}}')));
+    expect(imported.prompt, contains('{{user}}'));
     expect(imported.exampleDialogs, isNot(contains('{{char}}')));
     expect(imported.memoryBook, isNot(contains('{{char}}')));
   });
@@ -1016,7 +1016,7 @@ void main() {
       },
     }));
 
-    expect(imported.description, '角色设定正文。\n中文备注给 多语角色 和 用户。\n标签：多语');
+    expect(imported.description, '角色设定正文。\n中文备注给 多语角色 和 {{user}}。\n标签：多语');
     expect(imported.prompt, contains('[角色设定]\n角色设定正文。'));
   });
 
@@ -1057,10 +1057,10 @@ void main() {
     expect(imported.prompt, contains('[系统提示]\n保持入戏。'));
     expect(imported.prompt, contains('[角色设定]\n中文设定给 多语正文。'));
     expect(imported.prompt, contains('[性格]\n克制。'));
-    expect(imported.prompt, contains('[场景]\n用户 和 多语正文 在旧书店。'));
+    expect(imported.prompt, contains('[场景]\n{{user}} 和 多语正文 在旧书店。'));
     expect(imported.prompt, contains('[后续指令]\n延续温柔语气。'));
     expect(imported.openingMessage, '你听见钟声了吗？');
-    expect(imported.exampleDialogs, '<START>\n用户：你好\n多语正文：夜色很安静。');
+    expect(imported.exampleDialogs, '<START>\n{{user}}：你好\n多语正文：夜色很安静。');
     expect(imported.description, '中文设定给 多语正文。');
   });
 
@@ -1084,7 +1084,7 @@ void main() {
     expect(
         AssistantRoleCardService.alternateGreetings(imported.exampleDialogs), [
       '雨声盖住了 开场角色 的脚步声。',
-      '开场角色 把伞递给 用户。',
+      '开场角色 把伞递给 {{user}}。',
     ]);
     expect(
         AssistantRoleCardService.exampleDialogPromptText(
@@ -1113,7 +1113,7 @@ void main() {
       AssistantRoleCardService.alternateGreetings(imported.exampleDialogs),
       [
         '雨声盖住了 多语开场 的脚步声。',
-        '多语开场 把伞递给 用户。',
+        '多语开场 把伞递给 {{user}}。',
       ],
     );
     expect(imported.exampleDialogs, isNot(contains('English greeting')));

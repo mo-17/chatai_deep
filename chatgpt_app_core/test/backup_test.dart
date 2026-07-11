@@ -16,6 +16,7 @@ import 'package:chatgpt_app_core/db/knowledge_dao.dart';
 import 'package:chatgpt_app_core/db/message_dao.dart';
 import 'package:chatgpt_app_core/db/project_dao.dart';
 import 'package:chatgpt_app_core/db/story_artifact_dao.dart';
+import 'package:chatgpt_app_core/db/story_persona_dao.dart';
 import 'package:chatgpt_app_core/db/story_room_dao.dart';
 import 'package:chatgpt_app_core/db/story_template_dao.dart';
 import 'package:chatgpt_app_core/db/story_template_translation_task_dao.dart';
@@ -25,6 +26,7 @@ import 'package:chatgpt_app_core/model/conversation_model.dart';
 import 'package:chatgpt_app_core/model/project_model.dart';
 import 'package:chatgpt_app_core/model/story_room_model.dart';
 import 'package:chatgpt_app_core/model/story_artifact_model.dart';
+import 'package:chatgpt_app_core/model/story_persona_model.dart';
 import 'package:chatgpt_app_core/model/story_template_model.dart';
 import 'package:chatgpt_app_core/model/story_template_translation_task_model.dart';
 import 'package:chatgpt_app_core/util/avatar_asset_service.dart';
@@ -1874,6 +1876,217 @@ void main() {
       final convs = await dst.db.query('tb_conversation_list');
       expect(convs.length, 2);
       await dst.db.close();
+    });
+
+    test('v8 覆盖恢复 Persona 头像并重写历史消息快照路径', () async {
+      final srcDir =
+          await Directory.systemTemp.createTemp('backup-persona-avatar-src-');
+      final dstDir =
+          await Directory.systemTemp.createTemp('backup-persona-avatar-dst-');
+      addTearDown(() async {
+        AvatarAssetService.debugDocumentsDirectoryResolver = null;
+        if (await srcDir.exists()) await srcDir.delete(recursive: true);
+        if (await dstDir.exists()) await dstDir.delete(recursive: true);
+      });
+
+      AvatarAssetService.debugDocumentsDirectoryResolver = () async => srcDir;
+      final src = await newDb();
+      final personaDao = await StoryPersonaDao.create(src);
+      final persona = StoryPersonaModel(
+        personaKey: 'persona-backup-avatar',
+        name: '备份人设',
+        description: '会被完整恢复',
+      );
+      await personaDao.savePersona(persona);
+      final sourcePath = await AvatarAssetService.savePersonaAvatarBytes(
+        bytes: [1, 2, 3, 4],
+        personaKey: persona.personaKey,
+        accountHash: 'acc-src',
+      );
+      persona
+        ..avatarType = AvatarAssetService.imageType
+        ..avatarValue = sourcePath;
+      await personaDao.savePersona(persona);
+      final roomDao = await StoryRoomDao.create(src);
+      final roomId = await roomDao.saveRoom(StoryRoomModel(
+        title: '绑定 Persona 的房间',
+        personaKey: persona.personaKey,
+      ));
+      await roomDao.saveMessage(StoryMessageModel(
+        roomId: roomId,
+        speakerRole: StoryParticipantRole.author,
+        speakerName: persona.name,
+        speakerPersonaKey: persona.personaKey,
+        speakerAvatarType: AvatarAssetService.imageType,
+        speakerAvatarValue: sourcePath,
+        content: '保留头像快照',
+      ));
+      final archiveBytes = await BackupService(src).exportArchive(
+        settings: AISettings.defaults(),
+        accountHash: 'acc-src',
+      );
+      final archive = ZipDecoder().decodeBytes(archiveBytes);
+      expect(archive.findFile('story_personas.json'), isNotNull);
+      expect(
+        (jsonDecode(utf8.decode(
+                archive.findFile('manifest.json')!.content as List<int>))
+            as Map)['counts']['storyPersonas'],
+        1,
+      );
+      await src.db.close();
+
+      AvatarAssetService.debugDocumentsDirectoryResolver = () async => dstDir;
+      final dst = await newDb();
+      final dstPersonaDao = await StoryPersonaDao.create(dst);
+      await dstPersonaDao.savePersona(StoryPersonaModel(
+        personaKey: persona.personaKey,
+        name: '本地旧版本',
+      ));
+      final preview = await BackupService(dst)
+          .previewArchive(archiveBytes, accountHash: 'acc-dst');
+      expect(preview.storyPersonas, 1);
+      expect(
+        preview.conflictSummary.tableConflicts
+            .firstWhere((item) => item.table == 'tb_story_persona')
+            .replacingRows,
+        1,
+      );
+
+      final result = await BackupService(dst).importArchive(
+        archiveBytes,
+        accountHash: 'acc-dst',
+      );
+      expect(result.storyPersonas, 1);
+      final restoredPersona = (await dst.db.query(
+        'tb_story_persona',
+        where: 'personaKey = ?',
+        whereArgs: [persona.personaKey],
+      ))
+          .single;
+      final restoredPath = restoredPersona['avatarValue'] as String;
+      expect(restoredPath, isNot(sourcePath));
+      expect(restoredPath, contains('/chat_avatar/acc-dst/'));
+      expect(await File(restoredPath).readAsBytes(), [1, 2, 3, 4]);
+      final restoredRoom = (await dst.db.query('tb_story_room')).single;
+      expect(restoredRoom['personaKey'], persona.personaKey);
+      final restoredMessage = (await dst.db.query('tb_story_message')).single;
+      expect(restoredMessage['speakerPersonaKey'], persona.personaKey);
+      expect(restoredMessage['speakerAvatarValue'], restoredPath);
+      await dst.db.close();
+    });
+
+    test('Persona 合并按 personaKey 去重，仅较新的版本覆盖且悬空房间解绑', () async {
+      final srcDir =
+          await Directory.systemTemp.createTemp('backup-persona-merge-src-');
+      final dstDir =
+          await Directory.systemTemp.createTemp('backup-persona-merge-dst-');
+      addTearDown(() async {
+        if (await srcDir.exists()) await srcDir.delete(recursive: true);
+        if (await dstDir.exists()) await dstDir.delete(recursive: true);
+      });
+      final src = HiDBManager.test(
+        await databaseFactoryFfi.openDatabase('${srcDir.path}/source.db'),
+      );
+      final sourceDao = await StoryPersonaDao.create(src);
+      final source = StoryPersonaModel(
+        personaKey: 'persona-merge',
+        name: '远端旧版',
+      );
+      await sourceDao.savePersona(source);
+      await src.db.update('tb_story_persona', {'updatedAt': 100},
+          where: 'personaKey = ?', whereArgs: [source.personaKey]);
+      var archiveBytes = await BackupService(src).exportArchive(
+        settings: AISettings.defaults(),
+        accountHash: 'acc1',
+      );
+
+      final dst = HiDBManager.test(
+        await databaseFactoryFfi.openDatabase('${dstDir.path}/target.db'),
+      );
+      final targetDao = await StoryPersonaDao.create(dst);
+      final target = StoryPersonaModel(
+        personaKey: source.personaKey,
+        name: '本地较新版',
+      );
+      await targetDao.savePersona(target);
+      await dst.db.update('tb_story_persona', {'updatedAt': 200},
+          where: 'personaKey = ?', whereArgs: [source.personaKey]);
+      final retained = await BackupService(dst).importArchive(
+        archiveBytes,
+        accountHash: 'acc1',
+        mode: BackupImportMode.mergeAppend,
+      );
+      expect(retained.storyPersonas, 0);
+      expect(
+        (await targetDao.getPersonaByKey(source.personaKey))!.name,
+        '本地较新版',
+      );
+
+      await src.db.update(
+        'tb_story_persona',
+        {'name': '远端较新版', 'updatedAt': 300},
+        where: 'personaKey = ?',
+        whereArgs: [source.personaKey],
+      );
+      archiveBytes = await BackupService(src).exportArchive(
+        settings: AISettings.defaults(),
+        accountHash: 'acc1',
+      );
+      final replaced = await BackupService(dst).importArchive(
+        archiveBytes,
+        accountHash: 'acc1',
+        mode: BackupImportMode.mergeAppend,
+      );
+      expect(replaced.storyPersonas, 1);
+      final merged = await targetDao.getPersonaByKey(source.personaKey);
+      expect(merged!.id, target.id);
+      expect(merged.name, '远端较新版');
+      expect(merged.personaKey, source.personaKey);
+
+      final danglingBytes = zipOf({
+        'manifest.json': {
+          'formatVersion': BackupService.formatVersion,
+          'accountHash': 'acc1',
+        },
+        'story_rooms.json': [
+          {
+            'id': 77,
+            'title': '悬空绑定',
+            'mode': 'creation',
+            'replyMode': 'autoSingle',
+            'maxAutoReplies': 1,
+            'publicContext': '',
+            'personaKey': 'missing-persona',
+            'createdAt': 1,
+            'updatedAt': 1,
+          },
+        ],
+        'story_messages.json': [
+          {
+            'id': 1,
+            'roomId': 77,
+            'speakerRole': 'user',
+            'speakerName': '旧远端',
+            'content': '没有 speakerPersonaKey 的旧消息',
+            'createdAt': 1,
+            'updatedAt': 1,
+          },
+        ],
+      });
+      final dangling = await newDb();
+      final danglingResult = await BackupService(dangling)
+          .importArchive(danglingBytes, accountHash: 'acc1');
+      expect(danglingResult.warnings.join('\n'), contains('Persona 不在备份中'));
+      expect((await dangling.db.query('tb_story_room')).single['personaKey'],
+          isNull);
+      expect(
+        (await dangling.db.query('tb_story_message'))
+            .single['speakerPersonaKey'],
+        isNull,
+      );
+      await src.db.close();
+      await dst.db.close();
+      await dangling.db.close();
     });
   });
 }

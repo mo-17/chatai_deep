@@ -19,15 +19,18 @@ import 'package:chatgpt_app_core/dao/chat/chat_service.dart';
 import 'package:chatgpt_app_core/db/assistant_dao.dart';
 import 'package:chatgpt_app_core/db/hi_db_manager.dart';
 import 'package:chatgpt_app_core/db/story_room_dao.dart';
+import 'package:chatgpt_app_core/db/story_persona_dao.dart';
 import 'package:chatgpt_app_core/db/usage_dao.dart';
 import 'package:chatgpt_app_core/model/ai_settings.dart';
 import 'package:chatgpt_app_core/model/assistant_model.dart';
 import 'package:chatgpt_app_core/model/story_quick_reply.dart';
 import 'package:chatgpt_app_core/model/story_regex_script.dart';
 import 'package:chatgpt_app_core/model/story_room_model.dart';
+import 'package:chatgpt_app_core/model/story_persona_model.dart';
 import 'package:chatgpt_app_core/provider/ai_settings_provider.dart';
 import 'package:chatgpt_app_core/pages/story_workbench_page.dart';
 import 'package:chatgpt_app_core/pages/story_prompt_manager_page.dart';
+import 'package:chatgpt_app_core/pages/story_persona_list_page.dart';
 import 'package:chatgpt_app_core/pages/story_quick_replies_page.dart';
 import 'package:chatgpt_app_core/pages/story_regex_scripts_page.dart';
 import 'package:chatgpt_app_core/util/avatar_asset_service.dart';
@@ -58,6 +61,7 @@ class _StoryRoomPageState extends State<StoryRoomPage> {
   List<StoryParticipantModel> _participants = const [];
   List<StoryMessageModel> _messages = const [];
   List<StoryMessageModel> _allMessages = const [];
+  StoryPersonaModel? _persona;
   int? _selectedParticipantId;
   int? _forcedNextParticipantId;
   bool _loading = true;
@@ -116,6 +120,7 @@ class _StoryRoomPageState extends State<StoryRoomPage> {
     final db = await HiDBManager.instance(dbName: HiDBManager.getAccountHash());
     final dao = await StoryRoomDao.create(db);
     final usageRecordService = UsageRecordService(await UsageDao.create(db));
+    final personaDao = await StoryPersonaDao.create(db);
     var participants = await dao.getParticipants(
       widget.room.id!,
       includeDisabled: true,
@@ -128,6 +133,10 @@ class _StoryRoomPageState extends State<StoryRoomPage> {
       );
     }
     final room = await dao.getRoom(widget.room.id!);
+    final personaKey = room?.personaKey ?? widget.room.personaKey;
+    final persona = personaKey?.trim().isNotEmpty == true
+        ? await personaDao.getPersonaByKey(personaKey!)
+        : null;
     final allMessages = await dao.getMessages(widget.room.id!);
     final messages = await dao.getActiveMessages(widget.room.id!);
     final displayContent = await _buildDisplayContent(
@@ -142,12 +151,14 @@ class _StoryRoomPageState extends State<StoryRoomPage> {
         widget.room.promptConfigJson = room.promptConfigJson;
         widget.room.quickRepliesJson = room.quickRepliesJson;
         widget.room.regexScriptsJson = room.regexScriptsJson;
+        widget.room.personaKey = room.personaKey;
       }
       _dao = dao;
       _usageRecordService = usageRecordService;
       _participants = participants;
       _messages = messages;
       _allMessages = allMessages;
+      _persona = persona;
       _displayContentByNodeKey = displayContent;
       final selectedStillEnabled = participants.any(
         (item) => item.id == _selectedParticipantId && item.enabled,
@@ -164,6 +175,11 @@ class _StoryRoomPageState extends State<StoryRoomPage> {
     final roomId = widget.room.id;
     if (dao == null || roomId == null) return;
     final room = await dao.getRoom(roomId);
+    final personaDao = await StoryPersonaDao.create(dao.storage);
+    final personaKey = room?.personaKey ?? widget.room.personaKey;
+    final persona = personaKey?.trim().isNotEmpty == true
+        ? await personaDao.getPersonaByKey(personaKey!)
+        : null;
     final allMessages = await dao.getMessages(roomId);
     final messages = await dao.getActiveMessages(roomId);
     final displayContent = await _buildDisplayContent(
@@ -178,10 +194,12 @@ class _StoryRoomPageState extends State<StoryRoomPage> {
         widget.room.promptConfigJson = room.promptConfigJson;
         widget.room.quickRepliesJson = room.quickRepliesJson;
         widget.room.regexScriptsJson = room.regexScriptsJson;
+        widget.room.personaKey = room.personaKey;
       }
       _allMessages = allMessages;
       _messages = messages;
       _displayContentByNodeKey = displayContent;
+      _persona = persona;
     });
   }
 
@@ -210,7 +228,10 @@ class _StoryRoomPageState extends State<StoryRoomPage> {
   }
 
   String _displayContent(StoryMessageModel message) =>
-      _displayContentByNodeKey[message.nodeKey] ?? message.content;
+      StoryPersonaVariables.resolve(
+        _displayContentByNodeKey[message.nodeKey] ?? message.content,
+        userName: _persona?.name ?? '我',
+      );
 
   Future<StoryRegexExecutionResult> _runRegex(
     StoryRegexStage stage,
@@ -291,6 +312,8 @@ class _StoryRoomPageState extends State<StoryRoomPage> {
               if (value == 'prompts') _openPromptManager();
               if (value == 'quick_replies') _openQuickReplies();
               if (value == 'regex_scripts') _openRegexScripts();
+              if (value == 'persona') _selectPersona();
+              if (value == 'persona_manage') _managePersonas();
               if (value == 'branches') _showStoryBranches();
               if (value == 'workbench') {
                 Navigator.push(
@@ -332,6 +355,22 @@ class _StoryRoomPageState extends State<StoryRoomPage> {
                 child: ListTile(
                   leading: Icon(Icons.tune_outlined),
                   title: Text('模型与生成参数'),
+                  contentPadding: EdgeInsets.zero,
+                ),
+              ),
+              const PopupMenuItem(
+                value: 'persona',
+                child: ListTile(
+                  leading: Icon(Icons.badge_outlined),
+                  title: Text('切换 Persona'),
+                  contentPadding: EdgeInsets.zero,
+                ),
+              ),
+              const PopupMenuItem(
+                value: 'persona_manage',
+                child: ListTile(
+                  leading: Icon(Icons.manage_accounts_outlined),
+                  title: Text('Persona 管理'),
                   contentPadding: EdgeInsets.zero,
                 ),
               ),
@@ -481,6 +520,12 @@ class _StoryRoomPageState extends State<StoryRoomPage> {
                               ),
                             ),
                           ),
+                          if (isUser &&
+                              (message.speakerAvatarValue?.trim().isNotEmpty ??
+                                  false)) ...[
+                            const SizedBox(width: 6),
+                            _avatarForMessage(message, radius: 12),
+                          ],
                         ],
                       ),
                       const SizedBox(height: 6),
@@ -741,6 +786,36 @@ class _StoryRoomPageState extends State<StoryRoomPage> {
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
+            InkWell(
+              key: const ValueKey('story_room_persona_selector'),
+              borderRadius: BorderRadius.circular(6),
+              onTap: _sending ? null : _selectPersona,
+              child: Padding(
+                padding: const EdgeInsets.symmetric(vertical: 4),
+                child: Row(
+                  children: [
+                    AssistantAvatar.raw(
+                      emoji: _persona?.avatarType == 'emoji'
+                          ? _persona!.avatarValue
+                          : '🙂',
+                      avatarType: _persona?.avatarType,
+                      avatarValue: _persona?.avatarValue,
+                      radius: 12,
+                    ),
+                    const SizedBox(width: 8),
+                    Expanded(
+                      child: Text(
+                        'Persona · ${_persona?.name ?? '我'}',
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                      ),
+                    ),
+                    const Icon(Icons.swap_horiz_outlined, size: 18),
+                  ],
+                ),
+              ),
+            ),
+            const SizedBox(height: 4),
             Row(
               children: [
                 Icon(
@@ -951,7 +1026,7 @@ class _StoryRoomPageState extends State<StoryRoomPage> {
     final current = _inputController.text;
     final resolved = reply.resolveContent(
       char: _selectedParticipant?.name ?? '',
-      user: '我',
+      user: _persona?.name ?? '我',
       room: widget.room.title,
       input: current,
     );
@@ -1273,6 +1348,7 @@ class _StoryRoomPageState extends State<StoryRoomPage> {
       speakerAvatarType: message.speakerAvatarType,
       speakerAvatarValue: message.speakerAvatarValue,
       speakerVoiceStyle: message.speakerVoiceStyle,
+      speakerPersonaKey: message.speakerPersonaKey,
       content: content,
       imagePaths: message.imagePaths,
       imageSources: message.imageSources,
@@ -2285,6 +2361,68 @@ class _StoryRoomPageState extends State<StoryRoomPage> {
     if (mounted) setState(() => _displayContentByNodeKey = displayContent);
   }
 
+  Future<void> _selectPersona() async {
+    final dao = _dao;
+    if (dao == null) return;
+    final action = await showModalBottomSheet<String>(
+      context: context,
+      showDragHandle: true,
+      builder: (ctx) => SafeArea(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            ListTile(
+              leading: const CircleAvatar(child: Text('我')),
+              title: const Text('使用默认身份“我”'),
+              onTap: () => Navigator.pop(ctx, 'default'),
+            ),
+            ListTile(
+              leading: const Icon(Icons.badge_outlined),
+              title: const Text('从 Persona 列表选择'),
+              onTap: () => Navigator.pop(ctx, 'select'),
+            ),
+          ],
+        ),
+      ),
+    );
+    if (!mounted || action == null) return;
+    if (action == 'default') {
+      widget.room.personaKey = null;
+      await dao.saveRoom(widget.room);
+      if (mounted) setState(() => _persona = null);
+      return;
+    }
+    final selected = await Navigator.push<StoryPersonaModel>(
+      context,
+      MaterialPageRoute(
+        builder: (_) => const StoryPersonaListPage(selectionMode: true),
+      ),
+    );
+    if (selected == null || !mounted) return;
+    widget.room.personaKey = selected.personaKey;
+    await dao.saveRoom(widget.room);
+    if (mounted) setState(() => _persona = selected);
+  }
+
+  Future<void> _managePersonas() async {
+    final dao = _dao;
+    if (dao == null) return;
+    await Navigator.push<void>(
+      context,
+      MaterialPageRoute(builder: (_) => const StoryPersonaListPage()),
+    );
+    if (!mounted) return;
+    final personaKey = widget.room.personaKey;
+    if (personaKey?.trim().isNotEmpty != true) return;
+    final personaDao = await StoryPersonaDao.create(dao.storage);
+    final persona = await personaDao.getPersonaByKey(personaKey!);
+    if (persona == null) {
+      widget.room.personaKey = null;
+      await dao.saveRoom(widget.room);
+    }
+    if (mounted) setState(() => _persona = persona);
+  }
+
   Future<void> _send() async {
     if (_sending) return;
     final dao = _dao;
@@ -2355,7 +2493,10 @@ class _StoryRoomPageState extends State<StoryRoomPage> {
     final userMessage = StoryMessageModel(
       roomId: widget.room.id!,
       speakerRole: 'user',
-      speakerName: '我',
+      speakerName: _persona?.name ?? '我',
+      speakerAvatarType: _persona?.avatarType,
+      speakerAvatarValue: _persona?.avatarValue,
+      speakerPersonaKey: _persona?.personaKey,
       content: input,
       imagePaths: attachmentBundle.imagePaths,
       filePaths: attachmentBundle.filePaths,
@@ -2572,6 +2713,7 @@ class _StoryRoomPageState extends State<StoryRoomPage> {
       room: widget.room,
       participants: _participants,
       speaker: speaker,
+      persona: _persona,
       latestInput: input,
       recentMessages: historyMessages,
     );
@@ -2580,6 +2722,7 @@ class _StoryRoomPageState extends State<StoryRoomPage> {
         historyMessages,
         room: widget.room,
         speaker: speaker,
+        persona: _persona,
       ),
     );
     final message = StoryMessageModel(

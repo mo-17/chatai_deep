@@ -5,6 +5,7 @@ import 'package:chatgpt_app_core/chat/application/story_room_role_card_importer.
 import 'package:chatgpt_app_core/chat/application/story_context_window.dart';
 import 'package:chatgpt_app_core/chat/application/story_room_attachments.dart';
 import 'package:chatgpt_app_core/model/story_prompt_config.dart';
+import 'package:chatgpt_app_core/model/story_persona_model.dart';
 import 'package:chatgpt_app_core/model/story_room_model.dart';
 import 'package:chatgpt_app_core/model/world_book.dart';
 
@@ -49,6 +50,7 @@ class StoryContextBuilder {
     required StoryRoomModel room,
     required List<StoryParticipantModel> participants,
     required StoryParticipantModel speaker,
+    StoryPersonaModel? persona,
     String latestInput = '',
     List<StoryMessageModel> recentMessages = const [],
   }) =>
@@ -56,6 +58,7 @@ class StoryContextBuilder {
         room: room,
         participants: participants,
         speaker: speaker,
+        persona: persona,
         latestInput: latestInput,
         recentMessages: recentMessages,
       ).prompt;
@@ -64,6 +67,7 @@ class StoryContextBuilder {
     required StoryRoomModel room,
     required List<StoryParticipantModel> participants,
     required StoryParticipantModel speaker,
+    StoryPersonaModel? persona,
     String latestInput = '',
     List<StoryMessageModel> recentMessages = const [],
   }) {
@@ -95,6 +99,15 @@ class StoryContextBuilder {
         ..writeln(isTavern ? '【公共上下文 / 场景设定】' : '【公共上下文 / 世界设定】')
         ..writeln(publicContext);
     }
+    if (persona != null) {
+      roomSection
+        ..writeln()
+        ..writeln('【当前用户 Persona】')
+        ..writeln('名称：${persona.name}');
+      if (persona.description.trim().isNotEmpty) {
+        roomSection.writeln(persona.description.trim());
+      }
+    }
     final continuitySummary = contextWindow.summary();
     final continuitySection =
         continuitySummary.isEmpty ? '' : '【长期剧情记忆】\n$continuitySummary';
@@ -121,6 +134,7 @@ class StoryContextBuilder {
             recursive: _worldBookRecursiveScanning(room),
             room: room,
             speaker: speaker,
+            persona: persona,
             messageCount: recentMessages.length + 1,
             previousState: previousWorldBookState,
           );
@@ -167,7 +181,7 @@ class StoryContextBuilder {
             '${AssistantRoleCardService.memoryHitCopyText(afterCharHits)}';
     final variables = StoryPromptVariables(
       character: speaker.name,
-      user: '我',
+      user: persona?.name ?? '我',
       room: room.title,
       input: latestInput,
     );
@@ -250,6 +264,7 @@ class StoryContextBuilder {
     List<StoryMessageModel> messages, {
     StoryRoomModel? room,
     StoryParticipantModel? speaker,
+    StoryPersonaModel? persona,
   }) {
     final result = <Map<String, dynamic>>[
       for (final message
@@ -258,7 +273,10 @@ class StoryContextBuilder {
           'role': message.isUser ? 'user' : 'assistant',
           'content': message.isUser
               ? StoryRoomAttachmentPolicy.historyContent(message)
-              : '${message.speakerName}：${message.content}',
+              : '${message.speakerName}：${StoryPersonaVariables.resolve(
+                  message.content,
+                  userName: persona?.name ?? '我',
+                )}',
         }
     ];
     if (room == null || room.mode != StoryRoomMode.tavern) return result;
@@ -461,6 +479,7 @@ class StoryContextBuilder {
     required bool recursive,
     required StoryRoomModel room,
     required StoryParticipantModel speaker,
+    StoryPersonaModel? persona,
     required int messageCount,
     required WorldBookRuntimeState previousState,
   }) {
@@ -476,6 +495,7 @@ class StoryContextBuilder {
       maxEntries: maxEntries,
       recentTexts: recentTexts,
       characterName: speaker.name,
+      personaDescription: persona?.description ?? '',
       characterDescription:
           _promptSection(speaker.prompt, '角色设定', fallback: speaker.prompt),
       characterPersonality: _promptSection(speaker.prompt, '性格'),
@@ -513,6 +533,7 @@ class StoryContextBuilder {
         maxEntries: maxEntries,
         recentTexts: recentTexts,
         characterName: speaker.name,
+        personaDescription: persona?.description ?? '',
         characterDescription:
             _promptSection(speaker.prompt, '角色设定', fallback: speaker.prompt),
         characterPersonality: _promptSection(speaker.prompt, '性格'),
