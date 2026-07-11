@@ -11,6 +11,7 @@ class StoryRoomModel {
   String worldBookState;
   String promptConfigJson;
   String quickRepliesJson;
+  String regexScriptsJson;
   String? modelProviderId;
   String? modelId;
   double? temperature;
@@ -29,6 +30,7 @@ class StoryRoomModel {
     this.worldBookState = '',
     this.promptConfigJson = '',
     this.quickRepliesJson = '',
+    this.regexScriptsJson = '',
     this.modelProviderId,
     this.modelId,
     this.temperature,
@@ -50,6 +52,7 @@ class StoryRoomModel {
         worldBookState: json['worldBookState'] as String? ?? '',
         promptConfigJson: json['promptConfigJson'] as String? ?? '',
         quickRepliesJson: json['quickRepliesJson'] as String? ?? '',
+        regexScriptsJson: json['regexScriptsJson'] as String? ?? '',
         modelProviderId: json['modelProviderId'] as String?,
         modelId: json['modelId'] as String?,
         temperature: (json['temperature'] as num?)?.toDouble(),
@@ -69,6 +72,7 @@ class StoryRoomModel {
         'worldBookState': worldBookState,
         'promptConfigJson': promptConfigJson,
         'quickRepliesJson': quickRepliesJson,
+        'regexScriptsJson': regexScriptsJson,
         'modelProviderId': modelProviderId,
         'modelId': modelId,
         'temperature': temperature,

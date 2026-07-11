@@ -201,7 +201,10 @@ void main() {
 
     final report = AssistantRoleCardService.extensionSafetyReport(assistant);
     expect(report.hasBlockedExtensions, isTrue);
-    expect(report.blockedExtensionLabels, contains('Regex Scripts'));
+    expect(
+      report.blockedExtensionLabels,
+      contains('Regex Scripts（受控文本替换）'),
+    );
     expect(report.blockedExtensionLabels, contains('Quick Replies 命令'));
     expect(report.blockedExtensionLabels, isNot(contains('Prompt Manager')));
     expect(report.warningText, contains('脚本和命令不会执行'));

@@ -14,6 +14,7 @@ import 'package:chatgpt_app_core/model/ai_settings.dart';
 import 'package:chatgpt_app_core/model/assistant_model.dart';
 import 'package:chatgpt_app_core/model/story_prompt_config.dart';
 import 'package:chatgpt_app_core/model/story_quick_reply.dart';
+import 'package:chatgpt_app_core/model/story_regex_script.dart';
 import 'package:chatgpt_app_core/model/story_room_model.dart';
 import 'package:chatgpt_app_core/model/story_template_model.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -43,6 +44,7 @@ void main() {
         worldBookState: '{"activations":[]}',
         promptConfigJson: '{"version":1,"modules":[]}',
         quickRepliesJson: '{"roomId":0,"groups":[]}',
+        regexScriptsJson: '{"version":1,"rules":[]}',
         modelProviderId: 'deepseek',
         modelId: 'deepseek-v4-pro',
         temperature: 0.7,
@@ -97,6 +99,7 @@ void main() {
       expect(savedRoom?.worldBookState, '{"activations":[]}');
       expect(savedRoom?.promptConfigJson, '{"version":1,"modules":[]}');
       expect(savedRoom?.quickRepliesJson, '{"roomId":0,"groups":[]}');
+      expect(savedRoom?.regexScriptsJson, '{"version":1,"rules":[]}');
       expect(savedRoom?.modelProviderId, 'deepseek');
       expect(savedRoom?.modelId, 'deepseek-v4-pro');
       expect(savedRoom?.temperature, 0.7);
@@ -1388,6 +1391,14 @@ void main() {
               },
             ],
           },
+          'regex_scripts': [
+            {
+              'scriptName': '去除旁白标签',
+              'findRegex': r'/\[旁白\](.*)/i',
+              'replaceString': r'$1',
+              'placement': [2],
+            },
+          ],
         },
       },
     }));
@@ -1400,10 +1411,13 @@ void main() {
     final quick = StoryQuickReplyCollectionModel.tryParse(
       plan.room.quickRepliesJson,
     );
+    final regex = StoryRegexScriptsCodec.decode(plan.room.regexScriptsJson);
 
     expect(prompts.modules.any((item) => item.key == 'tavern.weather'), isTrue);
     expect(quick.groups.single.label, '动作');
     expect(quick.groups.single.items.map((item) => item.key), ['look']);
+    expect(regex.rules.single.name, '去除旁白标签');
+    expect(regex.rules.single.caseSensitive, isFalse);
   });
 
   group('StoryContextBuilder', () {

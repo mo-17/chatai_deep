@@ -494,7 +494,7 @@ class AssistantRoleCardService {
   }
 
   /// 识别仍需要沙箱/插件宿主的 Tavern 扩展。Prompt Manager 与纯文本
-  /// Quick Replies 由受控解析器消费；第三方脚本、正则替换和快捷命令不执行。
+  /// Quick Replies 与声明式正则替换由受控解析器消费；第三方脚本和快捷命令不执行。
   static TavernExtensionSafetyReport extensionSafetyReport(
     AssistantModel assistant,
   ) {
@@ -540,8 +540,8 @@ class AssistantRoleCardService {
   static const Map<String, String> _tavernExecutableExtensionLabels = {
     'scripts': '脚本',
     'javascript': 'JavaScript',
-    'regex_scripts': 'Regex Scripts',
-    'regexscripts': 'Regex Scripts',
+    'regex_scripts': 'Regex Scripts（受控文本替换）',
+    'regexscripts': 'Regex Scripts（受控文本替换）',
     'quick_replies': 'Quick Replies 命令',
     'quickreplies': 'Quick Replies 命令',
   };
@@ -3262,7 +3262,7 @@ class TavernExtensionSafetyReport {
   bool get hasBlockedExtensions => blockedExtensionLabels.isNotEmpty;
 
   String get warningText => hasBlockedExtensions
-      ? '检测到 ${blockedExtensionLabels.join('、')}；仅安全声明式文本会启用，脚本和命令不会执行。'
+      ? '检测到 ${blockedExtensionLabels.join('、')}；声明式正则仅在隔离环境执行文本替换，脚本和命令不会执行。'
       : '';
 }
 

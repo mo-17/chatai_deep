@@ -324,7 +324,7 @@ class BackupTableConflict {
 /// 因此可以用 sqflite_common_ffi 内存库做 round-trip 单测。
 class BackupService {
   /// 备份格式版本。导入时大于本值则拒绝（新版本备份导入旧 app）。
-  static const int formatVersion = 6;
+  static const int formatVersion = 7;
 
   static const _kManifest = 'manifest.json';
   static const _kConversations = 'conversations.json';
@@ -1764,6 +1764,7 @@ class BackupService {
     for (final room in rooms) {
       room['promptConfigJson'] = '${room['promptConfigJson'] ?? ''}';
       room['quickRepliesJson'] = '${room['quickRepliesJson'] ?? ''}';
+      room['regexScriptsJson'] = '${room['regexScriptsJson'] ?? ''}';
     }
     final roomById = <int, Map<String, dynamic>>{
       for (final room in rooms)

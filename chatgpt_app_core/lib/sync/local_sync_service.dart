@@ -400,6 +400,7 @@ class LocalSyncService {
       final payload = Map<String, dynamic>.from(change.payload);
       payload['promptConfigJson'] = '${payload['promptConfigJson'] ?? ''}';
       payload['quickRepliesJson'] = '${payload['quickRepliesJson'] ?? ''}';
+      payload['regexScriptsJson'] = '${payload['regexScriptsJson'] ?? ''}';
       return SyncChange(
         entity: change.entity,
         id: change.id,

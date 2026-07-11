@@ -316,6 +316,7 @@ void main() {
         .single;
     expect(room['promptConfigJson'], '');
     expect(room['quickRepliesJson'], '');
+    expect(room['regexScriptsJson'], '');
     expect(participant.single['roomId'], 10);
     expect(
       participant.single['participantKey'],

@@ -19,7 +19,7 @@ class StoryRoomDao implements ITable {
         'create table if not exists tb_story_room (id integer primary key autoincrement'
         ', title text, mode text, replyMode text, maxAutoReplies integer'
         ', publicContext text, worldBookState text'
-        ', promptConfigJson text, quickRepliesJson text'
+        ', promptConfigJson text, quickRepliesJson text, regexScriptsJson text'
         ', modelProviderId text, modelId text'
         ', temperature real, maxOutputTokens integer'
         ', activeMessageKey text'
@@ -98,6 +98,7 @@ class StoryRoomDao implements ITable {
       'worldBookState text',
       'promptConfigJson text',
       'quickRepliesJson text',
+      'regexScriptsJson text',
       'activeMessageKey text',
     ]) {
       try {

@@ -5,6 +5,7 @@ import 'dart:io';
 import 'package:chatgpt_app_core/chat/application/story_room_attachments.dart';
 import 'package:chatgpt_app_core/chat/application/read_aloud_service.dart';
 import 'package:chatgpt_app_core/chat/application/story_context_builder.dart';
+import 'package:chatgpt_app_core/chat/application/story_regex_executor.dart';
 import 'package:chatgpt_app_core/chat/application/story_room_image_service.dart';
 import 'package:chatgpt_app_core/chat/application/story_room_read_aloud_controller.dart';
 import 'package:chatgpt_app_core/chat/application/story_room_settings_resolver.dart';
@@ -22,11 +23,13 @@ import 'package:chatgpt_app_core/db/usage_dao.dart';
 import 'package:chatgpt_app_core/model/ai_settings.dart';
 import 'package:chatgpt_app_core/model/assistant_model.dart';
 import 'package:chatgpt_app_core/model/story_quick_reply.dart';
+import 'package:chatgpt_app_core/model/story_regex_script.dart';
 import 'package:chatgpt_app_core/model/story_room_model.dart';
 import 'package:chatgpt_app_core/provider/ai_settings_provider.dart';
 import 'package:chatgpt_app_core/pages/story_workbench_page.dart';
 import 'package:chatgpt_app_core/pages/story_prompt_manager_page.dart';
 import 'package:chatgpt_app_core/pages/story_quick_replies_page.dart';
+import 'package:chatgpt_app_core/pages/story_regex_scripts_page.dart';
 import 'package:chatgpt_app_core/util/avatar_asset_service.dart';
 import 'package:chatgpt_app_core/util/hi_dialog.dart';
 import 'package:chatgpt_app_core/widget/assistant_avatar.dart';
@@ -67,6 +70,7 @@ class _StoryRoomPageState extends State<StoryRoomPage> {
   List<String> _pendingImages = [];
   List<String> _pendingFiles = [];
   String? _selectedQuickReplyGroupKey;
+  Map<String, String> _displayContentByNodeKey = const {};
   final Set<int> _streamingMessageCreatedAt = {};
   late final StoryRoomReadAloudController _readAloudController;
   final StoryRoomToolRunner _toolRunner = StoryRoomToolRunner();
@@ -126,6 +130,10 @@ class _StoryRoomPageState extends State<StoryRoomPage> {
     final room = await dao.getRoom(widget.room.id!);
     final allMessages = await dao.getMessages(widget.room.id!);
     final messages = await dao.getActiveMessages(widget.room.id!);
+    final displayContent = await _buildDisplayContent(
+      messages,
+      room?.regexScriptsJson ?? widget.room.regexScriptsJson,
+    );
     if (!mounted) return;
     setState(() {
       if (room != null) {
@@ -133,12 +141,14 @@ class _StoryRoomPageState extends State<StoryRoomPage> {
         widget.room.worldBookState = room.worldBookState;
         widget.room.promptConfigJson = room.promptConfigJson;
         widget.room.quickRepliesJson = room.quickRepliesJson;
+        widget.room.regexScriptsJson = room.regexScriptsJson;
       }
       _dao = dao;
       _usageRecordService = usageRecordService;
       _participants = participants;
       _messages = messages;
       _allMessages = allMessages;
+      _displayContentByNodeKey = displayContent;
       final selectedStillEnabled = participants.any(
         (item) => item.id == _selectedParticipantId && item.enabled,
       );
@@ -156,6 +166,10 @@ class _StoryRoomPageState extends State<StoryRoomPage> {
     final room = await dao.getRoom(roomId);
     final allMessages = await dao.getMessages(roomId);
     final messages = await dao.getActiveMessages(roomId);
+    final displayContent = await _buildDisplayContent(
+      messages,
+      room?.regexScriptsJson ?? widget.room.regexScriptsJson,
+    );
     if (!mounted) return;
     setState(() {
       if (room != null) {
@@ -163,10 +177,78 @@ class _StoryRoomPageState extends State<StoryRoomPage> {
         widget.room.worldBookState = room.worldBookState;
         widget.room.promptConfigJson = room.promptConfigJson;
         widget.room.quickRepliesJson = room.quickRepliesJson;
+        widget.room.regexScriptsJson = room.regexScriptsJson;
       }
       _allMessages = allMessages;
       _messages = messages;
+      _displayContentByNodeKey = displayContent;
     });
+  }
+
+  Future<Map<String, String>> _buildDisplayContent(
+    List<StoryMessageModel> messages,
+    String rawConfig,
+  ) async {
+    final scripts = StoryRegexScriptsCodec.decode(rawConfig);
+    if (!scripts.rules.any((rule) =>
+        rule.enabled && rule.stage == StoryRegexStage.assistantDisplay)) {
+      return const {};
+    }
+    final result = <String, String>{};
+    for (final message in messages) {
+      if (message.isUser || message.content.isEmpty) continue;
+      final execution = await StoryRegexExecutor.execute(
+        scripts: scripts,
+        stage: StoryRegexStage.assistantDisplay,
+        input: message.content,
+      );
+      if (execution.output != message.content) {
+        result[message.nodeKey] = execution.output;
+      }
+    }
+    return result;
+  }
+
+  String _displayContent(StoryMessageModel message) =>
+      _displayContentByNodeKey[message.nodeKey] ?? message.content;
+
+  Future<StoryRegexExecutionResult> _runRegex(
+    StoryRegexStage stage,
+    String input,
+  ) {
+    final scripts = StoryRegexScriptsCodec.decode(widget.room.regexScriptsJson);
+    if (!scripts.rules.any((rule) => rule.enabled && rule.stage == stage)) {
+      return Future.value(StoryRegexExecutionResult(
+        output: input,
+        rules: const [],
+        timedOut: false,
+        inputTruncated: false,
+        outputTruncated: false,
+      ));
+    }
+    return StoryRegexExecutor.execute(
+      scripts: scripts,
+      stage: stage,
+      input: input,
+    );
+  }
+
+  bool _hasEnabledRegexStage(StoryRegexStage stage) =>
+      StoryRegexScriptsCodec.decode(widget.room.regexScriptsJson)
+          .rules
+          .any((rule) => rule.enabled && rule.stage == stage);
+
+  void _reportRegexIssues(StoryRegexExecutionResult result) {
+    if (!mounted) return;
+    final failed = result.rules.where((item) =>
+        item.status == StoryRegexRuleStatus.failed ||
+        item.status == StoryRegexRuleStatus.timedOut);
+    if (failed.isEmpty && !result.inputTruncated && !result.outputTruncated) {
+      return;
+    }
+    final suffix =
+        result.timedOut ? '处理超时，已停止后续规则' : '${failed.length} 条规则未成功，消息已继续处理';
+    HiDialog.showSnackBar(context, 'Regex Scripts：$suffix');
   }
 
   static int? _firstEnabledParticipantId(
@@ -208,6 +290,7 @@ class _StoryRoomPageState extends State<StoryRoomPage> {
               if (value == 'model') _editRoomModelSettings();
               if (value == 'prompts') _openPromptManager();
               if (value == 'quick_replies') _openQuickReplies();
+              if (value == 'regex_scripts') _openRegexScripts();
               if (value == 'branches') _showStoryBranches();
               if (value == 'workbench') {
                 Navigator.push(
@@ -265,6 +348,14 @@ class _StoryRoomPageState extends State<StoryRoomPage> {
                 child: ListTile(
                   leading: Icon(Icons.bolt_outlined),
                   title: Text('快捷回复'),
+                  contentPadding: EdgeInsets.zero,
+                ),
+              ),
+              const PopupMenuItem(
+                value: 'regex_scripts',
+                child: ListTile(
+                  leading: Icon(Icons.find_replace_outlined),
+                  title: Text('Regex Scripts'),
                   contentPadding: EdgeInsets.zero,
                 ),
               ),
@@ -415,7 +506,7 @@ class _StoryRoomPageState extends State<StoryRoomPage> {
                               .withValues(alpha: 0.12),
                         ),
                       ] else
-                        Text(message.content),
+                        Text(_displayContent(message)),
                       if (message.imagePaths.isNotEmpty ||
                           message.filePaths.isNotEmpty ||
                           message.attachmentContext.trim().isNotEmpty)
@@ -1014,6 +1105,15 @@ class _StoryRoomPageState extends State<StoryRoomPage> {
               subtitle: const Text('保留原消息，并从编辑版本建立新分支'),
               onTap: () => Navigator.pop(ctx, 'edit'),
             ),
+            if (StoryRegexScriptsCodec.decode(widget.room.regexScriptsJson)
+                .rules
+                .isNotEmpty)
+              ListTile(
+                leading: const Icon(Icons.find_replace_outlined),
+                title: const Text('预览 Regex 处理'),
+                subtitle: const Text('只预览，不修改消息或上下文'),
+                onTap: () => Navigator.pop(ctx, 'regex_preview'),
+              ),
             if (message.speakerId != null)
               ListTile(
                 leading: const Icon(Icons.psychology_outlined),
@@ -1053,11 +1153,14 @@ class _StoryRoomPageState extends State<StoryRoomPage> {
     if (!mounted || action == null) return;
     switch (action) {
       case 'copy':
-        await Clipboard.setData(ClipboardData(text: message.content));
+        await Clipboard.setData(ClipboardData(text: _displayContent(message)));
         if (mounted) HiDialog.showSnackBar(context, '已复制');
         return;
       case 'edit':
         await _editMessage(message);
+        return;
+      case 'regex_preview':
+        await _previewMessageRegex(message);
         return;
       case 'role_state':
         final participant = _participantById(message.speakerId);
@@ -1073,6 +1176,63 @@ class _StoryRoomPageState extends State<StoryRoomPage> {
         await _deleteMessage(message);
         return;
     }
+  }
+
+  Future<void> _previewMessageRegex(StoryMessageModel message) async {
+    final firstStage = message.isUser
+        ? StoryRegexStage.userInput
+        : StoryRegexStage.assistantOutput;
+    final first = await _runRegex(firstStage, message.content);
+    final display = message.isUser
+        ? null
+        : await _runRegex(StoryRegexStage.assistantDisplay, first.output);
+    if (!mounted) return;
+    final finalOutput = display?.output ?? first.output;
+    final results = [...first.rules, ...?display?.rules];
+    final relevant = results.where(
+      (item) => item.status != StoryRegexRuleStatus.skipped,
+    );
+    await showDialog<void>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Regex 处理预览'),
+        content: SizedBox(
+          width: double.maxFinite,
+          child: SingleChildScrollView(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                const Text('原文', style: TextStyle(fontWeight: FontWeight.bold)),
+                const SizedBox(height: 4),
+                SelectableText(message.content),
+                const SizedBox(height: 16),
+                const Text('处理后',
+                    style: TextStyle(fontWeight: FontWeight.bold)),
+                const SizedBox(height: 4),
+                SelectableText(finalOutput),
+                const SizedBox(height: 16),
+                Text(
+                  relevant.isEmpty
+                      ? '没有规则命中此阶段'
+                      : relevant
+                          .map((item) =>
+                              '${item.key} · ${item.status.name} · ${item.elapsed.inMilliseconds}ms'
+                              '${item.error == null ? '' : ' · ${item.error}'}')
+                          .join('\n'),
+                  style: Theme.of(ctx).textTheme.bodySmall,
+                ),
+              ],
+            ),
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx),
+            child: const Text('关闭'),
+          ),
+        ],
+      ),
+    );
   }
 
   Future<void> _editMessage(StoryMessageModel message) async {
@@ -2103,11 +2263,42 @@ class _StoryRoomPageState extends State<StoryRoomPage> {
     if (mounted) setState(() {});
   }
 
+  Future<void> _openRegexScripts() async {
+    final dao = _dao;
+    if (dao == null) return;
+    await Navigator.push(
+      context,
+      MaterialPageRoute(
+        builder: (_) => StoryRegexScriptsPage(
+          room: widget.room,
+          onSave: (room) async {
+            await dao.saveRoom(room);
+          },
+        ),
+      ),
+    );
+    if (!mounted) return;
+    final displayContent = await _buildDisplayContent(
+      _messages,
+      widget.room.regexScriptsJson,
+    );
+    if (mounted) setState(() => _displayContentByNodeKey = displayContent);
+  }
+
   Future<void> _send() async {
+    if (_sending) return;
     final dao = _dao;
     final manualSpeaker = _selectedParticipant;
-    final input = _inputText.trim();
+    var input = _inputText.trim();
     if (dao == null || input.isEmpty) return;
+    if (_hasEnabledRegexStage(StoryRegexStage.userInput) &&
+        input.length > StoryRegexScriptLimits.maxTextLength) {
+      HiDialog.showSnackBar(
+        context,
+        '输入超过 ${StoryRegexScriptLimits.maxTextLength} 字，暂不能执行 Regex Scripts',
+      );
+      return;
+    }
     final manual = !_isTavern || widget.room.replyMode == StoryReplyMode.manual;
     if (manual && manualSpeaker == null) return;
     if (_isTavern &&
@@ -2127,9 +2318,27 @@ class _StoryRoomPageState extends State<StoryRoomPage> {
     final pendingFiles = List<String>.from(_pendingFiles);
     if (mounted) {
       setState(() {
-        // 先锁住发送，避免附件编码期间重复触发下一轮请求。
+        // 先锁住发送，避免正则与附件处理期间重复触发下一轮请求。
         _sending = true;
         _stopRequested = false;
+        _generationStatus = '正在处理输入规则...';
+      });
+    }
+    final inputRegex = await _runRegex(StoryRegexStage.userInput, input);
+    _reportRegexIssues(inputRegex);
+    input = inputRegex.output.trim();
+    if (input.isEmpty) {
+      if (mounted) {
+        setState(() {
+          _sending = false;
+          _generationStatus = '';
+        });
+        HiDialog.showSnackBar(context, '输入经 Regex Scripts 处理后为空，已取消发送');
+      }
+      return;
+    }
+    if (mounted) {
+      setState(() {
         _generationStatus = '准备附件...';
         _inputText = '';
         _pendingImages = [];
@@ -2488,8 +2697,8 @@ class _StoryRoomPageState extends State<StoryRoomPage> {
       }
     }
     message.citationUrls = citationUrls.toList(growable: false);
-    final text = buffer.toString().trim();
-    if (text.isEmpty && message.imagePaths.isEmpty) {
+    final providerText = buffer.toString().trim();
+    if (providerText.isEmpty && message.imagePaths.isEmpty) {
       if (mounted) {
         setState(() {
           _messages = _messages
@@ -2503,11 +2712,27 @@ class _StoryRoomPageState extends State<StoryRoomPage> {
       if (_stopRequested) return null;
       throw Exception('${speaker.name} 没有返回内容');
     }
+    final outputRegex = await _runRegex(
+      StoryRegexStage.assistantOutput,
+      providerText,
+    );
+    _reportRegexIssues(outputRegex);
+    final text = outputRegex.output.trim();
     message.content = text;
     final nextWorldBookState =
         jsonEncode(contextResult.worldBookState.toJson());
     message.contextStateAfter = nextWorldBookState;
     await dao.saveMessage(message);
+    final displayContent = await _buildDisplayContent(
+      [message],
+      widget.room.regexScriptsJson,
+    );
+    if (mounted && displayContent.isNotEmpty) {
+      setState(() => _displayContentByNodeKey = {
+            ..._displayContentByNodeKey,
+            ...displayContent,
+          });
+    }
     widget.room.activeMessageKey = message.nodeKey;
     if (widget.room.worldBookState != nextWorldBookState) {
       widget.room.worldBookState = nextWorldBookState;
@@ -2519,7 +2744,7 @@ class _StoryRoomPageState extends State<StoryRoomPage> {
         history,
         speakerPrompt,
       ),
-      completion: text,
+      completion: providerText,
       promptTokens: hasUsage ? promptTokens : null,
       cachedPromptTokens: hasUsage ? cachedPromptTokens : null,
       completionTokens: hasUsage ? completionTokens : null,
