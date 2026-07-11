@@ -727,6 +727,7 @@ void main() {
         'publicContext': '',
         'worldBookState': '{"chapter":2}',
         'activeMessageKey': 'shared-node',
+        'tavernChatMetadataJson': '{"chat_metadata":{"scenario":"lab"}}',
         'createdAt': 1,
         'updatedAt': 200,
       });
@@ -743,6 +744,8 @@ void main() {
         'parentNodeKey': 'parent-node',
         'candidateGroupKey': 'candidate-group',
         'contextStateAfter': '{"chapter":2}',
+        'tavernExtraJson': '{"model":"remote"}',
+        'tavernSwipeInfoJson': '[{"gen_started":1}]',
         'createdAt': 100,
         'updatedAt': 200,
       });
@@ -763,7 +766,11 @@ void main() {
         'updatedAt': 100,
       });
 
-      final change = (await sourceSync.exportChanges()).singleWhere(
+      final changes = await sourceSync.exportChanges();
+      final roomChange = changes.singleWhere(
+        (item) => item.entity == 'story_room',
+      );
+      final change = changes.singleWhere(
         (item) => item.entity == 'story_message',
       );
       expect(change.id, 'shared-node');
@@ -771,8 +778,12 @@ void main() {
       expect(change.payload['parentNodeKey'], 'parent-node');
       expect(change.payload['candidateGroupKey'], 'candidate-group');
       expect(change.payload['contextStateAfter'], '{"chapter":2}');
+      expect(change.payload['tavernExtraJson'], '{"model":"remote"}');
+      expect(change.payload['tavernSwipeInfoJson'], '[{"gen_started":1}]');
+      expect(roomChange.payload['tavernChatMetadataJson'],
+          '{"chat_metadata":{"scenario":"lab"}}');
 
-      await targetSync.applyRemoteChanges([change]);
+      await targetSync.applyRemoteChanges([roomChange, change]);
       final rows = await target.db.query(
         'tb_story_message',
         where: 'nodeKey = ?',
@@ -784,6 +795,16 @@ void main() {
       expect(rows.single['parentNodeKey'], 'parent-node');
       expect(rows.single['candidateGroupKey'], 'candidate-group');
       expect(rows.single['contextStateAfter'], '{"chapter":2}');
+      expect(rows.single['tavernExtraJson'], '{"model":"remote"}');
+      expect(rows.single['tavernSwipeInfoJson'], '[{"gen_started":1}]');
+      final targetRoom = (await target.db.query(
+        'tb_story_room',
+        where: 'id = ?',
+        whereArgs: [7],
+      ))
+          .single;
+      expect(targetRoom['tavernChatMetadataJson'],
+          '{"chat_metadata":{"scenario":"lab"}}');
 
       final sameTimestamp = await targetSync.applyRemoteChanges([change]);
       expect(sameTimestamp.conflicts, isEmpty);

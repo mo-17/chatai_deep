@@ -7,6 +7,7 @@ import 'package:chatgpt_app_core/chat/application/assistant_role_card_translatio
 import 'package:chatgpt_app_core/chat/application/story_room_role_card_importer.dart';
 import 'package:chatgpt_app_core/chat/application/story_template_transfer.dart';
 import 'package:chatgpt_app_core/chat/application/story_template_translation_tasks.dart';
+import 'package:chatgpt_app_core/chat/application/story_tavern_chat_transfer.dart';
 import 'package:chatgpt_app_core/chat/application/tavern_room_import_preparer.dart';
 import 'package:chatgpt_app_core/dao/chat/chat_service.dart';
 import 'package:chatgpt_app_core/db/hi_db_manager.dart';
@@ -46,6 +47,7 @@ class _StoryRoomListPageState extends State<StoryRoomListPage> {
   int _tabIndex = 0;
   final Set<int> _observedCompletedTemplateTaskIds = <int>{};
   bool _loading = true;
+  bool _chatTransferBusy = false;
 
   @override
   void initState() {
@@ -117,6 +119,18 @@ class _StoryRoomListPageState extends State<StoryRoomListPage> {
               icon: const Icon(Icons.file_upload_outlined),
               tooltip: '导入本 App 导出的酒馆模板',
               onPressed: _importTemplate,
+            ),
+          if (_tabIndex == 0 && Platform.operatingSystem != 'ohos')
+            IconButton(
+              key: const ValueKey('import_tavern_chat'),
+              icon: _chatTransferBusy
+                  ? const SizedBox.square(
+                      dimension: 20,
+                      child: CircularProgressIndicator(strokeWidth: 2),
+                    )
+                  : const Icon(Icons.upload_file_outlined),
+              tooltip: '导入 Tavern 聊天记录',
+              onPressed: _chatTransferBusy ? null : _importTavernChat,
             ),
         ],
       ),
@@ -213,12 +227,14 @@ class _StoryRoomListPageState extends State<StoryRoomListPage> {
               onSelected: (value) {
                 if (value == 'rename') {
                   _renameRoom(room);
+                } else if (value == 'export_chat') {
+                  _exportTavernChat(room);
                 } else if (value == 'delete') {
                   _deleteRoom(room);
                 }
               },
-              itemBuilder: (_) => const [
-                PopupMenuItem(
+              itemBuilder: (_) => [
+                const PopupMenuItem(
                   value: 'rename',
                   child: Row(
                     children: [
@@ -228,7 +244,18 @@ class _StoryRoomListPageState extends State<StoryRoomListPage> {
                     ],
                   ),
                 ),
-                PopupMenuItem(
+                if (room.mode == StoryRoomMode.tavern)
+                  const PopupMenuItem(
+                    value: 'export_chat',
+                    child: Row(
+                      children: [
+                        Icon(Icons.download_outlined),
+                        SizedBox(width: 8),
+                        Text('导出 Tavern JSONL'),
+                      ],
+                    ),
+                  ),
+                const PopupMenuItem(
                   value: 'delete',
                   child: Row(
                     children: [
@@ -611,6 +638,137 @@ class _StoryRoomListPageState extends State<StoryRoomListPage> {
     if (!mounted) return;
     await _openRoom(room);
     await _load();
+  }
+
+  Future<void> _importTavernChat() async {
+    if (_chatTransferBusy || Platform.operatingSystem == 'ohos') return;
+    final picked = await FilePicker.pickFiles(
+      dialogTitle: '选择 SillyTavern 聊天记录',
+      type: FileType.custom,
+      allowedExtensions: const ['jsonl', 'json'],
+      withData: true,
+    );
+    final file = picked?.files.firstOrNull;
+    if (file == null || !mounted) return;
+    if (file.size > StoryTavernChatTransfer.maxSourceBytes) {
+      HiDialog.showSnackBar(context, '文件超过 5MB 限制');
+      return;
+    }
+    setState(() => _chatTransferBusy = true);
+    try {
+      final bytes = file.bytes ??
+          (file.path == null ? null : await File(file.path!).readAsBytes());
+      if (bytes == null) throw const FormatException('无法读取文件内容');
+      final source = utf8.decode(bytes);
+      final preview = StoryTavernChatTransfer.previewJsonl(source);
+      if (!preview.isAccepted) {
+        throw FormatException(preview.error ?? '不是可支持的 Tavern 聊天记录');
+      }
+      if (!mounted) return;
+      final confirmed = await _confirmTavernChatImport(preview.plan!);
+      if (confirmed != true || !mounted) return;
+      final dao = _dao;
+      if (dao == null) throw StateError('房间数据库尚未就绪');
+      final existingTitles = (await dao.getRooms()).map((item) => item.title);
+      preview.plan!.room.title =
+          _uniqueName(preview.plan!.room.title, existingTitles);
+      final roomId =
+          await StoryTavernChatTransfer.persistPlan(dao, preview.plan!);
+      final imported = await dao.getRoom(roomId);
+      await _load();
+      if (!mounted || imported == null) return;
+      HiDialog.showSnackBar(context, '已导入「${imported.title}」');
+      await _openRoom(imported);
+      await _load();
+    } on FormatException catch (e) {
+      if (mounted) HiDialog.showSnackBar(context, e.message);
+    } catch (e) {
+      if (mounted) HiDialog.showSnackBar(context, '导入聊天记录失败：$e');
+    } finally {
+      if (mounted) setState(() => _chatTransferBusy = false);
+    }
+  }
+
+  Future<bool?> _confirmTavernChatImport(StoryTavernChatImportPlan plan) {
+    final groups = plan.messages
+        .map((item) => item.candidateGroupKey ?? item.nodeKey)
+        .toSet();
+    final candidates = plan.messages.length - groups.length;
+    return showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('导入 Tavern 聊天记录'),
+        content: ConstrainedBox(
+          constraints: const BoxConstraints(maxWidth: 420),
+          child: SingleChildScrollView(
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text('房间：${plan.room.title}'),
+                const SizedBox(height: 8),
+                Text('角色：${plan.participants.length}'),
+                Text('消息：${groups.length}'),
+                Text('候选回复：$candidates'),
+                Text('Persona：${plan.personaSnapshot?.name ?? '未识别'}'),
+                if (plan.warnings.isNotEmpty) ...[
+                  const SizedBox(height: 16),
+                  Text('导入提示', style: Theme.of(ctx).textTheme.titleSmall),
+                  const SizedBox(height: 6),
+                  for (final warning in plan.warnings.take(8))
+                    Padding(
+                      padding: const EdgeInsets.only(bottom: 4),
+                      child: Text('• $warning'),
+                    ),
+                  if (plan.warnings.length > 8)
+                    Text('还有 ${plan.warnings.length - 8} 条提示'),
+                ],
+              ],
+            ),
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, false),
+            child: const Text('取消'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(ctx, true),
+            child: const Text('导入为新房间'),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Future<void> _exportTavernChat(StoryRoomModel room) async {
+    final dao = _dao;
+    final roomId = room.id;
+    if (dao == null || roomId == null || _chatTransferBusy) return;
+    setState(() => _chatTransferBusy = true);
+    try {
+      final jsonl = await StoryTavernChatTransfer.exportJsonl(dao, roomId);
+      final bytes = utf8.encode(jsonl);
+      final safeTitle = room.title
+          .replaceAll(RegExp(r'[^\w\u4e00-\u9fff-]+'), '_')
+          .replaceAll(RegExp(r'_+'), '_');
+      final path = await FilePicker.saveFile(
+        dialogTitle: '导出 Tavern 聊天记录',
+        fileName: '${safeTitle.isEmpty ? '酒馆聊天' : safeTitle}.jsonl',
+        type: FileType.custom,
+        allowedExtensions: const ['jsonl'],
+        bytes: bytes,
+      );
+      if (path == null) return;
+      if (!Platform.isAndroid && !Platform.isIOS) {
+        await File(path).writeAsBytes(bytes, flush: true);
+      }
+      if (mounted) HiDialog.showSnackBar(context, '已导出 Tavern JSONL');
+    } catch (e) {
+      if (mounted) HiDialog.showSnackBar(context, '导出聊天记录失败：$e');
+    } finally {
+      if (mounted) setState(() => _chatTransferBusy = false);
+    }
   }
 
   Future<void> _seedDefaultParticipants(StoryRoomDao dao, int roomId) async {

@@ -18,6 +18,9 @@ class StoryRoomModel {
   double? temperature;
   int? maxOutputTokens;
   String? activeMessageKey;
+
+  /// Tavern JSONL 的首行快照（含 chat_metadata 和未知 header 字段）。
+  String tavernChatMetadataJson;
   int createdAt;
   int updatedAt;
 
@@ -38,6 +41,7 @@ class StoryRoomModel {
     this.temperature,
     this.maxOutputTokens,
     this.activeMessageKey,
+    this.tavernChatMetadataJson = '',
     int? createdAt,
     int? updatedAt,
   })  : replyMode = StoryReplyMode.normalize(replyMode),
@@ -61,6 +65,7 @@ class StoryRoomModel {
         temperature: (json['temperature'] as num?)?.toDouble(),
         maxOutputTokens: (json['maxOutputTokens'] as num?)?.toInt(),
         activeMessageKey: json['activeMessageKey'] as String?,
+        tavernChatMetadataJson: json['tavernChatMetadataJson'] as String? ?? '',
         createdAt: json['createdAt'] as int?,
         updatedAt: json['updatedAt'] as int?,
       );
@@ -82,6 +87,7 @@ class StoryRoomModel {
         'temperature': temperature,
         'maxOutputTokens': maxOutputTokens,
         'activeMessageKey': activeMessageKey,
+        'tavernChatMetadataJson': tavernChatMetadataJson,
         'createdAt': createdAt,
         'updatedAt': updatedAt,
       };
@@ -323,6 +329,12 @@ class StoryMessageModel {
   String? candidateGroupKey;
   String contextStateAfter;
   String roleStatesAfter;
+
+  /// Tavern 消息 extra 的受限 JSON 快照，用于 round-trip。
+  String tavernExtraJson;
+
+  /// Tavern 消息 swipe_info 的受限 JSON 快照，用于 round-trip。
+  String tavernSwipeInfoJson;
   int createdAt;
   int updatedAt;
 
@@ -347,6 +359,8 @@ class StoryMessageModel {
     this.candidateGroupKey,
     this.contextStateAfter = '',
     this.roleStatesAfter = '',
+    this.tavernExtraJson = '',
+    this.tavernSwipeInfoJson = '',
     int? createdAt,
     int? updatedAt,
   })  : nodeKey =
@@ -379,6 +393,8 @@ class StoryMessageModel {
         candidateGroupKey: json['candidateGroupKey'] as String?,
         contextStateAfter: json['contextStateAfter'] as String? ?? '',
         roleStatesAfter: json['roleStatesAfter'] as String? ?? '',
+        tavernExtraJson: json['tavernExtraJson'] as String? ?? '',
+        tavernSwipeInfoJson: json['tavernSwipeInfoJson'] as String? ?? '',
         createdAt: json['createdAt'] as int?,
         updatedAt: json['updatedAt'] as int? ?? json['createdAt'] as int?,
       );
@@ -404,6 +420,8 @@ class StoryMessageModel {
         'candidateGroupKey': candidateGroupKey,
         'contextStateAfter': contextStateAfter,
         'roleStatesAfter': roleStatesAfter,
+        'tavernExtraJson': tavernExtraJson,
+        'tavernSwipeInfoJson': tavernSwipeInfoJson,
         'createdAt': createdAt,
         'updatedAt': updatedAt,
       };

@@ -1,5 +1,6 @@
 import 'package:chatgpt_app_core/db/hi_db_manager.dart';
 import 'package:chatgpt_app_core/db/table_name.dart';
+import 'package:chatgpt_app_core/model/story_persona_model.dart';
 import 'package:chatgpt_app_core/model/story_room_model.dart';
 import 'package:chatgpt_app_core/sync/sync_tombstone_store.dart';
 
@@ -23,6 +24,7 @@ class StoryRoomDao implements ITable {
         ', modelProviderId text, modelId text'
         ', temperature real, maxOutputTokens integer'
         ', activeMessageKey text'
+        ', tavernChatMetadataJson text'
         ', createdAt integer, updatedAt integer)');
     await _ensureRoomColumns(storage);
     await storage.db.execute(
@@ -46,6 +48,7 @@ class StoryRoomDao implements ITable {
         ', citationUrls text, filePaths text'
         ', attachmentContext text, nodeKey text not null, parentNodeKey text'
         ', candidateGroupKey text, contextStateAfter text, roleStatesAfter text'
+        ', tavernExtraJson text, tavernSwipeInfoJson text'
         ', createdAt integer, updatedAt integer)');
     final addedBranchColumns = await _ensureMessageColumns(storage);
     try {
@@ -101,6 +104,7 @@ class StoryRoomDao implements ITable {
       'regexScriptsJson text',
       'personaKey text',
       'activeMessageKey text',
+      'tavernChatMetadataJson text',
     ]) {
       try {
         await storage.db
@@ -170,6 +174,8 @@ class StoryRoomDao implements ITable {
       'candidateGroupKey text',
       'contextStateAfter text',
       'roleStatesAfter text',
+      'tavernExtraJson text',
+      'tavernSwipeInfoJson text',
     ]) {
       try {
         await storage.db
@@ -231,6 +237,103 @@ class StoryRoomDao implements ITable {
     await storage.db
         .update(tableName, data, where: 'id = ?', whereArgs: [model.id]);
     return model.id!;
+  }
+
+  /// 将已验证的 Tavern 导入计划作为一组数据落库；任一写入失败都会回滚。
+  Future<int> saveTavernImport({
+    required StoryRoomModel room,
+    required List<StoryParticipantModel> participants,
+    required List<StoryMessageModel> messages,
+    StoryPersonaModel? persona,
+  }) {
+    final participantIds = <int>[];
+    final messageIds = <int>[];
+    int? insertedPersonaId;
+    final originalRoomId = room.id;
+    final originalPersonaId = persona?.id;
+    final originalParticipantState = [
+      for (final participant in participants)
+        (id: participant.id, roomId: participant.roomId),
+    ];
+    final originalMessageState = [
+      for (final message in messages)
+        (id: message.id, roomId: message.roomId, speakerId: message.speakerId),
+    ];
+    return storage.db.transaction((txn) async {
+      final now = DateTime.now().millisecondsSinceEpoch;
+      if (persona != null) {
+        persona.updatedAt = now;
+        final personaData = persona.toJson()..remove('id');
+        insertedPersonaId = await txn.insert('tb_story_persona', personaData);
+      }
+      room.mode = StoryRoomMode.tavern;
+      room.createdAt = room.createdAt == 0 ? now : room.createdAt;
+      room.updatedAt = now;
+      final roomData = room.toJson()..remove('id');
+      final roomId = await txn.insert(tableName, roomData);
+      room.id = roomId;
+
+      final participantIdsByName = <String, int>{};
+      for (final participant in participants) {
+        participant.roomId = roomId;
+        participant.updatedAt = now;
+        final data = participant.toJson()..remove('id');
+        final id = await txn.insert(participantTable, data);
+        participantIds.add(id);
+        participantIdsByName.putIfAbsent(participant.name, () => id);
+      }
+
+      for (final message in messages) {
+        message.roomId = roomId;
+        message.updatedAt = now;
+        if (!message.isUser && message.speakerId == null) {
+          message.speakerId = participantIdsByName[message.speakerName];
+        }
+        final data = message.toJson()..remove('id');
+        final id = await txn.insert(messageTable, data);
+        messageIds.add(id);
+      }
+
+      final activeMessageKey = room.activeMessageKey ??
+          (messages.isEmpty ? null : messages.last.nodeKey);
+      room.activeMessageKey = activeMessageKey;
+      await txn.update(
+        tableName,
+        {'activeMessageKey': activeMessageKey, 'updatedAt': now},
+        where: 'id = ?',
+        whereArgs: [roomId],
+      );
+      return roomId;
+    }).then((roomId) {
+      if (persona != null) persona.id = insertedPersonaId;
+      room.id = roomId;
+      for (var index = 0; index < participants.length; index++) {
+        participants[index]
+          ..id = participantIds[index]
+          ..roomId = roomId;
+      }
+      for (var index = 0; index < messages.length; index++) {
+        messages[index]
+          ..id = messageIds[index]
+          ..roomId = roomId;
+      }
+      return roomId;
+    }).catchError((Object error, StackTrace stackTrace) {
+      room.id = originalRoomId;
+      if (persona != null) persona.id = originalPersonaId;
+      for (var index = 0; index < participants.length; index++) {
+        participants[index]
+          ..id = originalParticipantState[index].id
+          ..roomId = originalParticipantState[index].roomId;
+      }
+      for (var index = 0; index < messages.length; index++) {
+        messages[index]
+          ..id = originalMessageState[index].id
+          ..roomId = originalMessageState[index].roomId
+          ..speakerId = originalMessageState[index].speakerId;
+      }
+      Error.throwWithStackTrace(error, stackTrace);
+    });
   }
 
   Future<List<StoryRoomModel>> getRooms() async {

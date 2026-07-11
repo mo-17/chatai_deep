@@ -146,6 +146,8 @@ void main() {
       promptConfigJson: '{"version":1,"modules":[]}',
       quickRepliesJson: '{"roomId":0,"groups":[]}',
       regexScriptsJson: '{"version":1,"rules":[]}',
+      tavernChatMetadataJson:
+          '{"chat_metadata":{"scenario":"rain"},"unknown":true}',
     );
     final roomId = await dao.saveRoom(room);
     final participant = StoryParticipantModel(
@@ -167,6 +169,8 @@ void main() {
       speakerAvatarType: participant.avatarType,
       speakerAvatarValue: participant.avatarValue,
       content: '她抬起头，看向门口。',
+      tavernExtraJson: '{"bias":1}',
+      tavernSwipeInfoJson: '[{"gen_started":100}]',
       createdAt: 777,
     );
     final messageId = await dao.saveMessage(message);
@@ -257,6 +261,10 @@ void main() {
       expect(restoredRoom['promptConfigJson'], '{"version":1,"modules":[]}');
       expect(restoredRoom['quickRepliesJson'], '{"roomId":0,"groups":[]}');
       expect(restoredRoom['regexScriptsJson'], '{"version":1,"rules":[]}');
+      expect(restoredRoom['tavernChatMetadataJson'],
+          '{"chat_metadata":{"scenario":"rain"},"unknown":true}');
+      expect(messages.single['tavernExtraJson'], '{"bias":1}');
+      expect(messages.single['tavernSwipeInfoJson'], '[{"gen_started":100}]');
       final restoredRoomId = messages.single['roomId'] as int;
       final artifacts = await dst.db.query('tb_story_artifact');
       expect(artifacts, hasLength(1));
