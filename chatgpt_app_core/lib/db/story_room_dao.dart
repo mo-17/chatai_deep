@@ -19,6 +19,9 @@ class StoryRoomDao implements ITable {
     await storage.db.execute(
         'create table if not exists tb_story_room (id integer primary key autoincrement'
         ', title text, mode text, replyMode text, maxAutoReplies integer'
+        ", speakerStrategy text default '${StorySpeakerStrategy.smart}'"
+        ', avoidRepeatSpeaker integer default 1'
+        ', maxAutoTotalTokens integer default ${StoryRoomSchedulingLimits.defaultMaxAutoTotalTokens}'
         ', publicContext text, worldBookState text'
         ', promptConfigJson text, quickRepliesJson text, regexScriptsJson text, personaKey text'
         ', modelProviderId text, modelId text'
@@ -92,6 +95,18 @@ class StoryRoomDao implements ITable {
           'alter table tb_story_room add column maxAutoReplies integer default 1');
     } catch (_) {
       // 已存在 maxAutoReplies 列时忽略，保持旧库可升级。
+    }
+    for (final column in const [
+      "speakerStrategy text default '${StorySpeakerStrategy.smart}'",
+      'avoidRepeatSpeaker integer default 1',
+      'maxAutoTotalTokens integer default ${StoryRoomSchedulingLimits.defaultMaxAutoTotalTokens}',
+    ]) {
+      try {
+        await storage.db
+            .execute('alter table tb_story_room add column $column');
+      } catch (_) {
+        // 已存在调度配置列时忽略，保持旧库可升级。
+      }
     }
     for (final column in const [
       'modelProviderId text',

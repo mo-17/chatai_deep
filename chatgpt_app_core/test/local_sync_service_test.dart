@@ -724,6 +724,9 @@ void main() {
         'mode': 'creation',
         'replyMode': 'autoSingle',
         'maxAutoReplies': 1,
+        'speakerStrategy': 'roundRobin',
+        'avoidRepeatSpeaker': 0,
+        'maxAutoTotalTokens': 8192,
         'publicContext': '',
         'worldBookState': '{"chapter":2}',
         'activeMessageKey': 'shared-node',
@@ -782,6 +785,9 @@ void main() {
       expect(change.payload['tavernSwipeInfoJson'], '[{"gen_started":1}]');
       expect(roomChange.payload['tavernChatMetadataJson'],
           '{"chat_metadata":{"scenario":"lab"}}');
+      expect(roomChange.payload['speakerStrategy'], 'roundRobin');
+      expect(roomChange.payload['avoidRepeatSpeaker'], 0);
+      expect(roomChange.payload['maxAutoTotalTokens'], 8192);
 
       await targetSync.applyRemoteChanges([roomChange, change]);
       final rows = await target.db.query(
@@ -805,6 +811,9 @@ void main() {
           .single;
       expect(targetRoom['tavernChatMetadataJson'],
           '{"chat_metadata":{"scenario":"lab"}}');
+      expect(targetRoom['speakerStrategy'], 'roundRobin');
+      expect(targetRoom['avoidRepeatSpeaker'], 0);
+      expect(targetRoom['maxAutoTotalTokens'], 8192);
 
       final sameTimestamp = await targetSync.applyRemoteChanges([change]);
       expect(sameTimestamp.conflicts, isEmpty);

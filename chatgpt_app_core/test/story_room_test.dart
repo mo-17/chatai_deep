@@ -42,6 +42,9 @@ void main() {
         publicContext: '【关键词记忆 / 世界书】\n钟声 => 门会自动打开。',
         replyMode: StoryReplyMode.autoMulti,
         maxAutoReplies: 3,
+        speakerStrategy: StorySpeakerStrategy.roundRobin,
+        avoidRepeatSpeaker: false,
+        maxAutoTotalTokens: 8192,
         worldBookState: '{"activations":[]}',
         promptConfigJson: '{"version":1,"modules":[]}',
         quickRepliesJson: '{"roomId":0,"groups":[]}',
@@ -99,6 +102,9 @@ void main() {
       expect(savedRoom?.mode, StoryRoomMode.tavern);
       expect(savedRoom?.replyMode, StoryReplyMode.autoMulti);
       expect(savedRoom?.maxAutoReplies, 3);
+      expect(savedRoom?.speakerStrategy, StorySpeakerStrategy.roundRobin);
+      expect(savedRoom?.avoidRepeatSpeaker, isFalse);
+      expect(savedRoom?.maxAutoTotalTokens, 8192);
       expect(savedRoom?.worldBookState, '{"activations":[]}');
       expect(savedRoom?.promptConfigJson, '{"version":1,"modules":[]}');
       expect(savedRoom?.quickRepliesJson, '{"roomId":0,"groups":[]}');
@@ -145,6 +151,64 @@ void main() {
       expect(saved.modelId, 'deepseek-chat');
       expect(saved.temperature, 0.2);
       expect(saved.maxOutputTokens, 1024);
+    });
+
+    test('房间调度配置会归一化，并兼容旧表补列', () async {
+      db = await databaseFactoryFfi.openDatabase(inMemoryDatabasePath);
+      await db.execute(
+        'create table tb_story_room (id integer primary key autoincrement'
+        ', title text, mode text, replyMode text, maxAutoReplies integer'
+        ', publicContext text, worldBookState text'
+        ', promptConfigJson text, quickRepliesJson text, regexScriptsJson text, personaKey text'
+        ', modelProviderId text, modelId text'
+        ', temperature real, maxOutputTokens integer'
+        ', activeMessageKey text, tavernChatMetadataJson text'
+        ', createdAt integer, updatedAt integer)',
+      );
+      final dao = await StoryRoomDao.create(HiDBManager.test(db));
+      final columns = await db.rawQuery('pragma table_info(tb_story_room)');
+      final names = columns.map((column) => column['name']).toSet();
+      expect(
+          names,
+          containsAll([
+            'speakerStrategy',
+            'avoidRepeatSpeaker',
+            'maxAutoTotalTokens',
+          ]));
+
+      final room = StoryRoomModel.fromJson({
+        'title': '旧调度房间',
+        'speakerStrategy': 'unexpected',
+        'avoidRepeatSpeaker': 0,
+        'maxAutoTotalTokens': 999999,
+      });
+      expect(room.speakerStrategy, StorySpeakerStrategy.smart);
+      expect(room.avoidRepeatSpeaker, isFalse);
+      expect(room.maxAutoTotalTokens, 32768);
+      expect(room.toJson()['speakerStrategy'], StorySpeakerStrategy.smart);
+      expect(room.toJson()['avoidRepeatSpeaker'], 0);
+      expect(room.toJson()['maxAutoTotalTokens'], 32768);
+      expect(
+        StoryRoomModel.fromJson({'title': '边界'}).maxAutoTotalTokens,
+        4096,
+      );
+      expect(
+        StoryRoomModel.fromJson({
+          'title': '边界',
+          'maxAutoTotalTokens': 1,
+        }).maxAutoTotalTokens,
+        256,
+      );
+
+      final roomId = await dao.saveRoom(room);
+      final saved = await dao.getRoom(roomId);
+      expect(saved?.speakerStrategy, StorySpeakerStrategy.smart);
+      expect(saved?.avoidRepeatSpeaker, isFalse);
+      expect(saved?.maxAutoTotalTokens, 32768);
+      final renamed = saved?.copyWith(title: '新名字');
+      expect(renamed?.speakerStrategy, StorySpeakerStrategy.smart);
+      expect(renamed?.avoidRepeatSpeaker, isFalse);
+      expect(renamed?.maxAutoTotalTokens, 32768);
     });
 
     test('旧参与者表迁移稳定键和角色状态列', () async {
@@ -2242,6 +2306,8 @@ void main() {
       expect(system, contains('发言调度器'));
       expect(system, contains('speakerId=2'));
       expect(system, contains('只输出 JSON'));
+      expect(system, contains('@角色名'));
+      expect(system, contains('smart'));
       expect(StorySpeakerScheduler.promptFor('你好'), contains('用户最新输入'));
     });
 
@@ -2328,6 +2394,142 @@ void main() {
       expect(system, contains('{"speakerIds":[数字]}'));
       expect(StorySpeakerScheduler.promptFor('你好', maxSpeakers: 3),
           contains('1-3 个最应该接话的角色'));
+    });
+
+    test('smart 调度优先点名，并识别全角 @ 和直接姓名', () {
+      final aili = StoryParticipantModel(
+        id: 2,
+        roomId: 1,
+        role: StoryParticipantRole.assistant,
+        name: '艾莉',
+      );
+      final ailisi = StoryParticipantModel(
+        id: 3,
+        roomId: 1,
+        role: StoryParticipantRole.assistant,
+        name: '艾莉丝',
+      );
+      final room = StoryRoomModel(title: '点名房间');
+
+      expect(
+        StorySpeakerScheduler.mentionedCandidates(
+          input: '＠艾莉丝，请回答。',
+          candidates: [aili, ailisi],
+        ).map((candidate) => candidate.id),
+        [3],
+      );
+      expect(
+        StorySpeakerScheduler.schedule(
+          room: room,
+          input: '艾莉丝，你怎么看？',
+          candidates: [aili, ailisi],
+          recentMessages: [
+            StoryMessageModel(
+              roomId: 1,
+              speakerId: 3,
+              speakerRole: StoryParticipantRole.assistant,
+              speakerName: '艾莉丝',
+              content: '上一句。',
+            ),
+          ],
+        ).single.id,
+        3,
+      );
+    });
+
+    test('smart 调度在未点名时避免重复，只有一人时允许连续', () {
+      final first = StoryParticipantModel(
+        id: 2,
+        roomId: 1,
+        role: StoryParticipantRole.assistant,
+        name: '甲',
+      );
+      final second = StoryParticipantModel(
+        id: 3,
+        roomId: 1,
+        role: StoryParticipantRole.assistant,
+        name: '乙',
+      );
+      final history = [
+        StoryMessageModel(
+          roomId: 1,
+          speakerRole: StoryParticipantRole.assistant,
+          speakerName: '甲',
+          content: '旧消息没有 speakerId。',
+        ),
+      ];
+
+      expect(
+        StorySpeakerScheduler.smartCandidates(
+          input: '继续。',
+          candidates: [first, second],
+          recentMessages: history,
+        ).single.id,
+        3,
+      );
+      expect(
+        StorySpeakerScheduler.smartCandidates(
+          input: '继续。',
+          candidates: [first],
+          recentMessages: history,
+        ).single.id,
+        2,
+      );
+    });
+
+    test('round robin 依序跳过禁用候选且不重复', () {
+      final first = StoryParticipantModel(
+        id: 2,
+        roomId: 1,
+        role: StoryParticipantRole.assistant,
+        name: '甲',
+        sortOrder: 10,
+      );
+      final previous = StoryParticipantModel(
+        id: 3,
+        roomId: 1,
+        role: StoryParticipantRole.assistant,
+        name: '乙',
+        sortOrder: 20,
+      );
+      final disabled = StoryParticipantModel(
+        id: 4,
+        roomId: 1,
+        role: StoryParticipantRole.assistant,
+        name: '禁用',
+        sortOrder: 30,
+        enabled: false,
+      );
+      final third = StoryParticipantModel(
+        id: 5,
+        roomId: 1,
+        role: StoryParticipantRole.assistant,
+        name: '丙',
+        sortOrder: 40,
+      );
+      final room = StoryRoomModel(
+        title: '轮换房间',
+        speakerStrategy: StorySpeakerStrategy.roundRobin,
+      );
+
+      expect(
+        StorySpeakerScheduler.schedule(
+          room: room,
+          input: '@甲 也请说说。',
+          candidates: [third, disabled, previous, first],
+          recentMessages: [
+            StoryMessageModel(
+              roomId: 1,
+              speakerId: 3,
+              speakerRole: StoryParticipantRole.assistant,
+              speakerName: '乙',
+              content: '上一句。',
+            ),
+          ],
+          maxCount: 3,
+        ).map((candidate) => candidate.id),
+        [5, 2, 3],
+      );
     });
   });
 }

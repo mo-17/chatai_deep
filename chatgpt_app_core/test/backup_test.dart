@@ -142,6 +142,9 @@ void main() {
       mode: StoryRoomMode.tavern,
       replyMode: StoryReplyMode.autoMulti,
       maxAutoReplies: 3,
+      speakerStrategy: StorySpeakerStrategy.roundRobin,
+      avoidRepeatSpeaker: false,
+      maxAutoTotalTokens: 8192,
       publicContext: '旧城区的雨夜酒馆',
       promptConfigJson: '{"version":1,"modules":[]}',
       quickRepliesJson: '{"roomId":0,"groups":[]}',
@@ -261,6 +264,9 @@ void main() {
       expect(restoredRoom['promptConfigJson'], '{"version":1,"modules":[]}');
       expect(restoredRoom['quickRepliesJson'], '{"roomId":0,"groups":[]}');
       expect(restoredRoom['regexScriptsJson'], '{"version":1,"rules":[]}');
+      expect(restoredRoom['speakerStrategy'], StorySpeakerStrategy.roundRobin);
+      expect(restoredRoom['avoidRepeatSpeaker'], 0);
+      expect(restoredRoom['maxAutoTotalTokens'], 8192);
       expect(restoredRoom['tavernChatMetadataJson'],
           '{"chat_metadata":{"scenario":"rain"},"unknown":true}');
       expect(messages.single['tavernExtraJson'], '{"bias":1}');

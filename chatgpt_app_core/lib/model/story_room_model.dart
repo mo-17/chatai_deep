@@ -7,6 +7,9 @@ class StoryRoomModel {
   String mode;
   String replyMode;
   int maxAutoReplies;
+  String speakerStrategy;
+  bool avoidRepeatSpeaker;
+  int maxAutoTotalTokens;
   String publicContext;
   String worldBookState;
   String promptConfigJson;
@@ -30,6 +33,10 @@ class StoryRoomModel {
     this.mode = StoryRoomMode.creation,
     String? replyMode,
     this.maxAutoReplies = 1,
+    String? speakerStrategy,
+    this.avoidRepeatSpeaker = true,
+    int maxAutoTotalTokens =
+        StoryRoomSchedulingLimits.defaultMaxAutoTotalTokens,
     this.publicContext = '',
     this.worldBookState = '',
     this.promptConfigJson = '',
@@ -45,6 +52,10 @@ class StoryRoomModel {
     int? createdAt,
     int? updatedAt,
   })  : replyMode = StoryReplyMode.normalize(replyMode),
+        speakerStrategy = StorySpeakerStrategy.normalize(speakerStrategy),
+        maxAutoTotalTokens =
+            StoryRoomSchedulingLimits.normalizeMaxAutoTotalTokens(
+                maxAutoTotalTokens),
         createdAt = createdAt ?? DateTime.now().millisecondsSinceEpoch,
         updatedAt = updatedAt ?? DateTime.now().millisecondsSinceEpoch;
 
@@ -54,6 +65,14 @@ class StoryRoomModel {
         mode: StoryRoomMode.normalize(json['mode'] as String?),
         replyMode: StoryReplyMode.normalize(json['replyMode'] as String?),
         maxAutoReplies: _safeMaxAutoReplies(json['maxAutoReplies']),
+        speakerStrategy:
+            StorySpeakerStrategy.normalize(json['speakerStrategy'] as String?),
+        avoidRepeatSpeaker:
+            _safeBool(json['avoidRepeatSpeaker'], fallback: true),
+        maxAutoTotalTokens:
+            StoryRoomSchedulingLimits.normalizeMaxAutoTotalTokens(
+          json['maxAutoTotalTokens'],
+        ),
         publicContext: json['publicContext'] as String? ?? '',
         worldBookState: json['worldBookState'] as String? ?? '',
         promptConfigJson: json['promptConfigJson'] as String? ?? '',
@@ -76,6 +95,11 @@ class StoryRoomModel {
         'mode': mode,
         'replyMode': replyMode,
         'maxAutoReplies': maxAutoReplies.clamp(1, 3),
+        'speakerStrategy': StorySpeakerStrategy.normalize(speakerStrategy),
+        'avoidRepeatSpeaker': avoidRepeatSpeaker ? 1 : 0,
+        'maxAutoTotalTokens':
+            StoryRoomSchedulingLimits.normalizeMaxAutoTotalTokens(
+                maxAutoTotalTokens),
         'publicContext': publicContext,
         'worldBookState': worldBookState,
         'promptConfigJson': promptConfigJson,
@@ -101,6 +125,52 @@ class StoryRoomModel {
   static int _safeMaxAutoReplies(Object? value) {
     final number = value is num ? value.toInt() : int.tryParse('$value');
     return (number ?? 1).clamp(1, 3);
+  }
+
+  static bool _safeBool(Object? value, {required bool fallback}) {
+    if (value is bool) return value;
+    if (value is num) return value != 0;
+    switch ('$value'.trim().toLowerCase()) {
+      case 'true':
+      case '1':
+        return true;
+      case 'false':
+      case '0':
+        return false;
+      default:
+        return fallback;
+    }
+  }
+}
+
+class StorySpeakerStrategy {
+  const StorySpeakerStrategy._();
+
+  static const smart = 'smart';
+  static const roundRobin = 'roundRobin';
+
+  static String normalize(String? strategy) {
+    switch (strategy) {
+      case roundRobin:
+        return roundRobin;
+      case smart:
+      default:
+        return smart;
+    }
+  }
+}
+
+class StoryRoomSchedulingLimits {
+  const StoryRoomSchedulingLimits._();
+
+  static const defaultMaxAutoTotalTokens = 4096;
+  static const minMaxAutoTotalTokens = 256;
+  static const maxMaxAutoTotalTokens = 32768;
+
+  static int normalizeMaxAutoTotalTokens(Object? value) {
+    final number = value is num ? value.toInt() : int.tryParse('$value');
+    return (number ?? defaultMaxAutoTotalTokens)
+        .clamp(minMaxAutoTotalTokens, maxMaxAutoTotalTokens);
   }
 }
 

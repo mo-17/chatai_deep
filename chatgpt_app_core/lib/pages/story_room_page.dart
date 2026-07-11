@@ -64,12 +64,14 @@ class _StoryRoomPageState extends State<StoryRoomPage> {
   StoryPersonaModel? _persona;
   int? _selectedParticipantId;
   int? _forcedNextParticipantId;
+  final Set<int> _skipNextParticipantIds = <int>{};
   bool _loading = true;
   bool _sending = false;
   bool _stopRequested = false;
   StreamSubscription<StreamEvent>? _activeReplySub;
   Completer<void>? _activeReplyDone;
   String _generationStatus = '';
+  int _lastGeneratedCompletionTokens = 0;
   String _inputText = '';
   List<String> _pendingImages = [];
   List<String> _pendingFiles = [];
@@ -1567,6 +1569,20 @@ class _StoryRoomPageState extends State<StoryRoomPage> {
                 subtitle: const Text('下一次发送优先由该角色开口'),
                 onTap: () => Navigator.pop(ctx, 'force_next'),
               ),
+            if (_isTavern &&
+                participant.enabled &&
+                participant.role == StoryParticipantRole.assistant &&
+                widget.room.replyMode != StoryReplyMode.manual)
+              ListTile(
+                leading: const Icon(Icons.skip_next_outlined),
+                title: Text(
+                  _skipNextParticipantIds.contains(participant.id)
+                      ? '取消下一轮跳过'
+                      : '下一轮跳过该角色',
+                ),
+                subtitle: const Text('只影响下一次发送，不会暂停角色'),
+                onTap: () => Navigator.pop(ctx, 'skip_next'),
+              ),
             ListTile(
               leading: Icon(
                 participant.enabled
@@ -1617,9 +1633,28 @@ class _StoryRoomPageState extends State<StoryRoomPage> {
       case 'force_next':
         setState(() {
           _forcedNextParticipantId = participant.id;
+          _skipNextParticipantIds.remove(participant.id);
           _selectedParticipantId = participant.id;
         });
         HiDialog.showSnackBar(context, '下一位将由「${participant.name}」发言');
+        return;
+      case 'skip_next':
+        final participantId = participant.id;
+        if (participantId == null) return;
+        setState(() {
+          if (!_skipNextParticipantIds.remove(participantId)) {
+            _skipNextParticipantIds.add(participantId);
+            if (_forcedNextParticipantId == participantId) {
+              _forcedNextParticipantId = null;
+            }
+          }
+        });
+        HiDialog.showSnackBar(
+          context,
+          _skipNextParticipantIds.contains(participantId)
+              ? '下一轮将跳过「${participant.name}」'
+              : '已取消跳过「${participant.name}」',
+        );
         return;
       case 'toggle':
         participant.enabled = !participant.enabled;
@@ -2209,12 +2244,35 @@ class _StoryRoomPageState extends State<StoryRoomPage> {
   Future<void> _editTavernReplyMode() async {
     var mode = StoryReplyMode.normalize(widget.room.replyMode);
     var maxReplies = widget.room.maxAutoReplies.clamp(1, 3).toInt();
-    final saved = await showModalBottomSheet<(String, int)>(
+    var strategy = StorySpeakerStrategy.normalize(widget.room.speakerStrategy);
+    var avoidRepeat = widget.room.avoidRepeatSpeaker;
+    var maxTotalTokens = StoryRoomSchedulingLimits.normalizeMaxAutoTotalTokens(
+      widget.room.maxAutoTotalTokens,
+    );
+    final tokenOptions = <int>{
+      512,
+      1024,
+      2048,
+      4096,
+      8192,
+      16384,
+      32768,
+      maxTotalTokens,
+    }.toList()
+      ..sort();
+    final saved = await showModalBottomSheet<
+        ({
+          String mode,
+          int maxReplies,
+          String strategy,
+          bool avoidRepeat,
+          int maxTotalTokens,
+        })>(
       context: context,
       showDragHandle: true,
       builder: (ctx) => StatefulBuilder(
         builder: (ctx, setSheetState) => SafeArea(
-          child: Padding(
+          child: SingleChildScrollView(
             padding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
             child: Column(
               mainAxisSize: MainAxisSize.min,
@@ -2264,9 +2322,64 @@ class _StoryRoomPageState extends State<StoryRoomPage> {
                         setSheetState(() => maxReplies = v.round()),
                   ),
                 ],
+                if (mode != StoryReplyMode.manual) ...[
+                  const SizedBox(height: 12),
+                  Text('角色选择策略', style: Theme.of(ctx).textTheme.titleSmall),
+                  const SizedBox(height: 8),
+                  SegmentedButton<String>(
+                    segments: const [
+                      ButtonSegment(
+                        value: StorySpeakerStrategy.smart,
+                        icon: Icon(Icons.auto_awesome_outlined),
+                        label: Text('智能'),
+                      ),
+                      ButtonSegment(
+                        value: StorySpeakerStrategy.roundRobin,
+                        icon: Icon(Icons.sync_outlined),
+                        label: Text('按顺序'),
+                      ),
+                    ],
+                    selected: {strategy},
+                    onSelectionChanged: (values) =>
+                        setSheetState(() => strategy = values.first),
+                  ),
+                  SwitchListTile(
+                    contentPadding: EdgeInsets.zero,
+                    title: const Text('避免连续同角色'),
+                    subtitle: const Text('被点名或只剩一个角色时仍允许连续发言'),
+                    value: avoidRepeat,
+                    onChanged: (value) =>
+                        setSheetState(() => avoidRepeat = value),
+                  ),
+                  DropdownButtonFormField<int>(
+                    initialValue: maxTotalTokens,
+                    decoration: const InputDecoration(
+                      labelText: '本轮总输出 Token 上限',
+                      border: OutlineInputBorder(),
+                    ),
+                    items: [
+                      for (final value in tokenOptions)
+                        DropdownMenuItem(
+                          value: value,
+                          child: Text('$value tokens'),
+                        ),
+                    ],
+                    onChanged: (value) {
+                      if (value != null) {
+                        setSheetState(() => maxTotalTokens = value);
+                      }
+                    },
+                  ),
+                ],
                 const SizedBox(height: 8),
                 FilledButton(
-                  onPressed: () => Navigator.pop(ctx, (mode, maxReplies)),
+                  onPressed: () => Navigator.pop(ctx, (
+                    mode: mode,
+                    maxReplies: maxReplies,
+                    strategy: strategy,
+                    avoidRepeat: avoidRepeat,
+                    maxTotalTokens: maxTotalTokens,
+                  )),
                   child: const Text('保存'),
                 ),
               ],
@@ -2276,9 +2389,17 @@ class _StoryRoomPageState extends State<StoryRoomPage> {
       ),
     );
     if (saved == null) return;
-    widget.room.replyMode = saved.$1;
-    widget.room.maxAutoReplies =
-        saved.$1 == StoryReplyMode.autoMulti ? saved.$2.clamp(2, 3) : 1;
+    widget.room.replyMode = saved.mode;
+    widget.room.maxAutoReplies = saved.mode == StoryReplyMode.autoMulti
+        ? saved.maxReplies.clamp(2, 3)
+        : 1;
+    widget.room
+      ..speakerStrategy = StorySpeakerStrategy.normalize(saved.strategy)
+      ..avoidRepeatSpeaker = saved.avoidRepeat
+      ..maxAutoTotalTokens =
+          StoryRoomSchedulingLimits.normalizeMaxAutoTotalTokens(
+        saved.maxTotalTokens,
+      );
     await _dao?.saveRoom(widget.room);
     if (!mounted) return;
     setState(() {});
@@ -2526,8 +2647,18 @@ class _StoryRoomPageState extends State<StoryRoomPage> {
       if (speakers.isEmpty) throw Exception('没有可用角色');
       var workingHistory = List<StoryMessageModel>.from(previousMessages);
       final replies = <StoryMessageModel>[];
+      var usedCompletionTokens = 0;
+      var stoppedByTokenBudget = false;
+      final enforceTokenBudget = _isTavern && !manual;
       for (final speaker in speakers) {
         if (_stopRequested) break;
+        final remainingTokens = enforceTokenBudget
+            ? widget.room.maxAutoTotalTokens - usedCompletionTokens
+            : null;
+        if (remainingTokens != null && remainingTokens <= 0) {
+          stoppedByTokenBudget = true;
+          break;
+        }
         final reply = await _streamSpeakerReply(
           dao: dao,
           settings: settings,
@@ -2535,10 +2666,15 @@ class _StoryRoomPageState extends State<StoryRoomPage> {
           speaker: speaker,
           historyMessages: workingHistory,
           attachmentBundle: attachmentBundle,
+          completionTokenLimit: remainingTokens,
         );
         if (reply == null) break;
         replies.add(reply);
+        usedCompletionTokens += _lastGeneratedCompletionTokens;
         workingHistory = [...workingHistory, userMessage, ...replies];
+      }
+      if (stoppedByTokenBudget && mounted) {
+        HiDialog.showSnackBar(context, '已达本轮自动发言 Token 上限');
       }
     } catch (e) {
       if (mounted) HiDialog.showSnackBar(context, '生成失败：$e');
@@ -2604,6 +2740,20 @@ class _StoryRoomPageState extends State<StoryRoomPage> {
     required List<StoryMessageModel> previousMessages,
   }) async {
     final candidates = StorySpeakerScheduler.tavernCandidates(_participants);
+    final skippedIds = Set<int>.from(_skipNextParticipantIds);
+    if (skippedIds.isNotEmpty) {
+      _skipNextParticipantIds.clear();
+      candidates.removeWhere((candidate) => skippedIds.contains(candidate.id));
+      if (candidates.isEmpty) {
+        candidates.addAll(
+          StorySpeakerScheduler.tavernCandidates(_participants),
+        );
+        if (mounted) {
+          HiDialog.showSnackBar(context, '不能跳过全部角色，已取消本轮跳过');
+        }
+      }
+      if (mounted) setState(() {});
+    }
     StoryParticipantModel? forced;
     final forcedId = _forcedNextParticipantId;
     if (forcedId != null) {
@@ -2622,28 +2772,51 @@ class _StoryRoomPageState extends State<StoryRoomPage> {
         candidates.removeWhere((candidate) => candidate.id == forced!.id);
       }
     }
-    final fallback = StorySpeakerScheduler.fallbackSpeaker(
+    final remainingSlots = widget.room.replyMode == StoryReplyMode.autoMulti
+        ? widget.room.maxAutoReplies - (forced == null ? 0 : 1)
+        : 1;
+    if (remainingSlots <= 0) return [if (forced != null) forced];
+    final maxSpeakers = remainingSlots.clamp(1, 3);
+    final locallyScheduled = StorySpeakerScheduler.schedule(
+      room: widget.room,
+      input: input,
       candidates: candidates,
+      recentMessages: previousMessages,
+      maxCount: maxSpeakers,
+    );
+    final mentioned = StorySpeakerScheduler.mentionedCandidates(
+      input: input,
+      candidates: candidates,
+    );
+    if (widget.room.speakerStrategy == StorySpeakerStrategy.roundRobin ||
+        mentioned.isNotEmpty ||
+        candidates.length <= 1) {
+      return [if (forced != null) forced, ...locallyScheduled];
+    }
+    final fallback = StorySpeakerScheduler.fallbackSpeaker(
+      candidates: locallyScheduled,
       selectedParticipantId: _selectedParticipantId,
     );
-    if (candidates.length <= 1) {
-      return [if (forced != null) forced, if (fallback != null) fallback];
-    }
-    final maxSpeakers = widget.room.replyMode == StoryReplyMode.autoMulti
-        ? (widget.room.maxAutoReplies - (forced == null ? 0 : 1)).clamp(1, 3)
-        : 1;
+    final schedulerCandidates = StorySpeakerScheduler.smartCandidates(
+      input: input,
+      candidates: candidates,
+      recentMessages: previousMessages,
+      avoidRepeatSpeaker: widget.room.avoidRepeatSpeaker,
+      maxCount: candidates.length,
+    );
     try {
-      final allowedIds = {for (final item in candidates) item.id!};
+      final allowedIds = {for (final item in schedulerCandidates) item.id!};
       final prompt = StorySpeakerScheduler.promptFor(
         input,
         maxSpeakers: maxSpeakers,
+        room: widget.room,
       );
       final history = [
         {
           'role': 'system',
           'content': StorySpeakerScheduler.systemPrompt(
             room: widget.room,
-            candidates: candidates,
+            candidates: schedulerCandidates,
             recentMessages: previousMessages,
             maxSpeakers: maxSpeakers,
           ),
@@ -2677,7 +2850,7 @@ class _StoryRoomPageState extends State<StoryRoomPage> {
       }
       final speakers = <StoryParticipantModel>[];
       for (final id in ids) {
-        for (final item in candidates) {
+        for (final item in schedulerCandidates) {
           if (item.id == id) speakers.add(item);
         }
       }
@@ -2706,9 +2879,17 @@ class _StoryRoomPageState extends State<StoryRoomPage> {
     required List<StoryMessageModel> historyMessages,
     StoryRoomAttachmentBundle? attachmentBundle,
     String? candidateGroupKey,
+    int? completionTokenLimit,
   }) async {
     final speakerSettings =
         StoryParticipantSettingsResolver.apply(settings, speaker);
+    if (completionTokenLimit != null && completionTokenLimit > 0) {
+      final configured = speakerSettings.maxOutputTokens;
+      if (configured <= 0 || configured > completionTokenLimit) {
+        speakerSettings.maxOutputTokens = completionTokenLimit;
+      }
+    }
+    _lastGeneratedCompletionTokens = 0;
     final contextResult = StoryContextBuilder.buildSystemPrompt(
       room: widget.room,
       participants: _participants,
@@ -2894,6 +3075,9 @@ class _StoryRoomPageState extends State<StoryRoomPage> {
       estimated: !hasUsage,
       createdAt: message.createdAt,
     );
+    _lastGeneratedCompletionTokens = hasUsage && completionTokens > 0
+        ? completionTokens
+        : providerText.runes.length.clamp(1, 200000).toInt();
     return message;
   }
 
