@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
+import 'package:chatgpt_app_core/chat/application/creative_file_transfer_gateway.dart';
 import 'package:chatgpt_app_core/chat/application/story_room_attachments.dart';
 import 'package:chatgpt_app_core/chat/application/read_aloud_service.dart';
 import 'package:chatgpt_app_core/chat/application/story_context_builder.dart';
@@ -43,7 +44,6 @@ import 'package:chatgpt_app_core/widget/assistant_picker.dart';
 import 'package:chatgpt_app_core/widget/message_input_widget.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
-import 'package:file_picker/file_picker.dart';
 import 'package:provider/provider.dart';
 import 'package:url_launcher/url_launcher.dart';
 
@@ -2403,21 +2403,13 @@ class _StoryRoomPageState extends State<StoryRoomPage> {
     }
     setState(() => _presetTransferBusy = true);
     try {
-      final picked = await FilePicker.pickFiles(
+      final source = await CreativeFileTransferGateway(
+        maxBytes: StoryTavernPresetTransfer.maxRoomBundleBytes,
+      ).pickUtf8Text(
         dialogTitle: '选择 Tavern 预设',
-        type: FileType.custom,
         allowedExtensions: const ['json'],
-        withData: true,
       );
-      final file = picked?.files.firstOrNull;
-      if (file == null || !mounted) return;
-      if (file.size > StoryTavernPresetTransfer.maxRoomBundleBytes) {
-        throw const FormatException('预设文件超过多预设包大小限制');
-      }
-      final bytes = file.bytes ??
-          (file.path == null ? null : await File(file.path!).readAsBytes());
-      if (bytes == null) throw const FormatException('无法读取预设文件');
-      final source = utf8.decode(bytes);
+      if (source == null || !mounted) return;
       final previews = StoryTavernPresetTransfer.previewImportFile(source);
       if (previews.isEmpty) {
         final rejected = StoryTavernPresetTransfer.previewJson(source);
@@ -2460,6 +2452,8 @@ class _StoryRoomPageState extends State<StoryRoomPage> {
       setState(() {});
       HiDialog.showSnackBar(context, 'Tavern 预设已安全导入');
     } on FormatException catch (e) {
+      if (mounted) HiDialog.showSnackBar(context, e.message);
+    } on CreativeFileTransferException catch (e) {
       if (mounted) HiDialog.showSnackBar(context, e.message);
     } catch (e) {
       if (mounted) HiDialog.showSnackBar(context, '导入预设失败：$e');
@@ -2544,21 +2538,17 @@ class _StoryRoomPageState extends State<StoryRoomPage> {
       final content = StoryTavernPresetTransfer.exportRoomBundleJson(
         widget.room.tavernPresetJson,
       );
-      final bytes = utf8.encode(content);
+      final bytes = Uint8List.fromList(utf8.encode(content));
       final safeTitle = widget.room.title
           .replaceAll(RegExp(r'[^\w\u4e00-\u9fff-]+'), '_')
           .replaceAll(RegExp(r'_+'), '_');
-      final path = await FilePicker.saveFile(
+      final result = await CreativeFileTransferGateway().saveBytes(
+        bytes,
         dialogTitle: '导出 Tavern 预设包',
         fileName: '${safeTitle.isEmpty ? '酒馆房间' : safeTitle}_presets.json',
-        type: FileType.custom,
         allowedExtensions: const ['json'],
-        bytes: bytes,
       );
-      if (path == null) return;
-      if (!Platform.isAndroid && !Platform.isIOS) {
-        await File(path).writeAsBytes(bytes, flush: true);
-      }
+      if (!result.saved) return;
       if (mounted) HiDialog.showSnackBar(context, 'Tavern 预设包已导出');
     } catch (e) {
       if (mounted) HiDialog.showSnackBar(context, '导出预设失败：$e');

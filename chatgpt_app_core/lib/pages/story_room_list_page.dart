@@ -1,9 +1,11 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
+import 'dart:typed_data';
 
 import 'package:chatgpt_app_core/chat/application/assistant_role_card_service.dart';
 import 'package:chatgpt_app_core/chat/application/assistant_role_card_translation_service.dart';
+import 'package:chatgpt_app_core/chat/application/creative_file_transfer_gateway.dart';
 import 'package:chatgpt_app_core/chat/application/story_room_role_card_importer.dart';
 import 'package:chatgpt_app_core/chat/application/story_template_transfer.dart';
 import 'package:chatgpt_app_core/chat/application/story_template_translation_tasks.dart';
@@ -26,11 +28,8 @@ import 'package:chatgpt_app_core/pages/story_persona_list_page.dart';
 import 'package:chatgpt_app_core/provider/ai_settings_provider.dart';
 import 'package:chatgpt_app_core/util/hi_dialog.dart';
 import 'package:chatgpt_app_core/widget/translation_task_log_dialog.dart';
-import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
-import 'package:path_provider/path_provider.dart';
 import 'package:provider/provider.dart';
-import 'package:share_plus/share_plus.dart';
 
 final _storyTemplateTranslationCoordinator =
     StoryTemplateTranslationCoordinator.instance;
@@ -247,7 +246,8 @@ class _StoryRoomListPageState extends State<StoryRoomListPage> {
                     ],
                   ),
                 ),
-                if (room.mode == StoryRoomMode.tavern)
+                if (room.mode == StoryRoomMode.tavern &&
+                    Platform.operatingSystem != 'ohos')
                   const PopupMenuItem(
                     value: 'export_chat',
                     child: Row(
@@ -363,16 +363,17 @@ class _StoryRoomListPageState extends State<StoryRoomListPage> {
                     ],
                   ),
                 ),
-                const PopupMenuItem(
-                  value: 'export',
-                  child: Row(
-                    children: [
-                      Icon(Icons.ios_share_outlined),
-                      SizedBox(width: 8),
-                      Text('导出模板'),
-                    ],
+                if (Platform.operatingSystem != 'ohos')
+                  const PopupMenuItem(
+                    value: 'export',
+                    child: Row(
+                      children: [
+                        Icon(Icons.ios_share_outlined),
+                        SizedBox(width: 8),
+                        Text('导出模板'),
+                      ],
+                    ),
                   ),
-                ),
                 if (canTranslateCopy)
                   const PopupMenuItem(
                     value: 'translate_copy',
@@ -505,23 +506,13 @@ class _StoryRoomListPageState extends State<StoryRoomListPage> {
       return;
     }
     try {
-      final picked = await FilePicker.pickFiles(
+      final content = await CreativeFileTransferGateway(
+        maxBytes: StoryTavernChatTransfer.maxSourceBytes,
+      ).pickUtf8Text(
         dialogTitle: '选择本 App 导出的酒馆模板',
-        type: FileType.custom,
         allowedExtensions: const ['json'],
-        withData: true,
       );
-      final file = picked?.files.single;
-      if (file == null) return;
-      final bytes = file.bytes;
-      final content = bytes != null
-          ? utf8.decode(bytes)
-          : file.path != null
-              ? await File(file.path!).readAsString()
-              : null;
-      if (content == null) {
-        throw const FormatException('无法读取选中的模板文件');
-      }
+      if (content == null) return;
       final imported = StoryTemplateTransfer.importJson(content);
       final originalTitle = imported.title;
       imported.title = StoryTemplateTransfer.uniqueTitle(
@@ -539,8 +530,11 @@ class _StoryRoomListPageState extends State<StoryRoomListPage> {
       );
     } catch (error) {
       if (!mounted) return;
-      final message =
-          error is FormatException ? error.message : '导入模板失败：$error';
+      final message = error is FormatException
+          ? error.message
+          : error is CreativeFileTransferException
+              ? error.message
+              : '导入模板失败：$error';
       HiDialog.showSnackBar(context, message);
     }
   }
@@ -645,24 +639,15 @@ class _StoryRoomListPageState extends State<StoryRoomListPage> {
 
   Future<void> _importTavernChat() async {
     if (_chatTransferBusy || Platform.operatingSystem == 'ohos') return;
-    final picked = await FilePicker.pickFiles(
-      dialogTitle: '选择 SillyTavern 聊天记录',
-      type: FileType.custom,
-      allowedExtensions: const ['jsonl', 'json'],
-      withData: true,
-    );
-    final file = picked?.files.firstOrNull;
-    if (file == null || !mounted) return;
-    if (file.size > StoryTavernChatTransfer.maxSourceBytes) {
-      HiDialog.showSnackBar(context, '文件超过 5MB 限制');
-      return;
-    }
     setState(() => _chatTransferBusy = true);
     try {
-      final bytes = file.bytes ??
-          (file.path == null ? null : await File(file.path!).readAsBytes());
-      if (bytes == null) throw const FormatException('无法读取文件内容');
-      final source = utf8.decode(bytes);
+      final source = await CreativeFileTransferGateway(
+        maxBytes: StoryTavernChatTransfer.maxSourceBytes,
+      ).pickUtf8Text(
+        dialogTitle: '选择 SillyTavern 聊天记录',
+        allowedExtensions: const ['jsonl', 'json'],
+      );
+      if (source == null || !mounted) return;
       final preview = StoryTavernChatTransfer.previewJsonl(source);
       if (!preview.isAccepted) {
         throw FormatException(preview.error ?? '不是可支持的 Tavern 聊天记录');
@@ -684,6 +669,8 @@ class _StoryRoomListPageState extends State<StoryRoomListPage> {
       await _openRoom(imported);
       await _load();
     } on FormatException catch (e) {
+      if (mounted) HiDialog.showSnackBar(context, e.message);
+    } on CreativeFileTransferException catch (e) {
       if (mounted) HiDialog.showSnackBar(context, e.message);
     } catch (e) {
       if (mounted) HiDialog.showSnackBar(context, '导入聊天记录失败：$e');
@@ -745,27 +732,27 @@ class _StoryRoomListPageState extends State<StoryRoomListPage> {
   }
 
   Future<void> _exportTavernChat(StoryRoomModel room) async {
+    if (Platform.operatingSystem == 'ohos') {
+      HiDialog.showSnackBar(context, '鸿蒙版本暂不支持聊天记录文件保存');
+      return;
+    }
     final dao = _dao;
     final roomId = room.id;
     if (dao == null || roomId == null || _chatTransferBusy) return;
     setState(() => _chatTransferBusy = true);
     try {
       final jsonl = await StoryTavernChatTransfer.exportJsonl(dao, roomId);
-      final bytes = utf8.encode(jsonl);
+      final bytes = Uint8List.fromList(utf8.encode(jsonl));
       final safeTitle = room.title
           .replaceAll(RegExp(r'[^\w\u4e00-\u9fff-]+'), '_')
           .replaceAll(RegExp(r'_+'), '_');
-      final path = await FilePicker.saveFile(
+      final result = await CreativeFileTransferGateway().saveBytes(
+        bytes,
         dialogTitle: '导出 Tavern 聊天记录',
         fileName: '${safeTitle.isEmpty ? '酒馆聊天' : safeTitle}.jsonl',
-        type: FileType.custom,
         allowedExtensions: const ['jsonl'],
-        bytes: bytes,
       );
-      if (path == null) return;
-      if (!Platform.isAndroid && !Platform.isIOS) {
-        await File(path).writeAsBytes(bytes, flush: true);
-      }
+      if (!result.saved) return;
       if (mounted) HiDialog.showSnackBar(context, '已导出 Tavern JSONL');
     } catch (e) {
       if (mounted) HiDialog.showSnackBar(context, '导出聊天记录失败：$e');
@@ -928,14 +915,20 @@ class _StoryRoomListPageState extends State<StoryRoomListPage> {
   }
 
   Future<void> _exportTemplate(StoryTemplateModel template) async {
+    if (Platform.operatingSystem == 'ohos') {
+      HiDialog.showSnackBar(context, '鸿蒙版本暂不支持模板文件保存');
+      return;
+    }
     try {
       final body = StoryTemplateTransfer.exportJson(template);
-      final dir = await getTemporaryDirectory();
-      final file = File('${dir.path}/${_templateExportFilename(template)}');
-      await file.writeAsString(body);
-      await SharePlus.instance.share(ShareParams(
-        files: [XFile(file.path)],
-      ));
+      final result = await CreativeFileTransferGateway().saveBytes(
+        Uint8List.fromList(utf8.encode(body)),
+        dialogTitle: '导出酒馆模板',
+        fileName: _templateExportFilename(template),
+        allowedExtensions: const ['json'],
+      );
+      if (!result.saved || !mounted) return;
+      HiDialog.showSnackBar(context, '酒馆模板已导出');
     } catch (e) {
       if (!mounted) return;
       HiDialog.showSnackBar(context, '导出模板失败：$e');
@@ -2032,23 +2025,15 @@ class _StoryTemplateEditorPageState extends State<_StoryTemplateEditorPage> {
     }
     setState(() => _presetImportBusy = true);
     try {
-      final picked = await FilePicker.pickFiles(
+      final source = await CreativeFileTransferGateway(
+        maxBytes: StoryTavernPresetTransfer.maxRoomBundleBytes,
+      ).pickUtf8Text(
         dialogTitle: '选择 Tavern 预设',
-        type: FileType.custom,
         allowedExtensions: const ['json'],
-        withData: true,
       );
-      final file = picked?.files.firstOrNull;
-      if (file == null || !mounted) return;
-      if (file.size > StoryTavernPresetTransfer.maxRoomBundleBytes) {
-        throw const FormatException('预设文件超过多预设包大小限制');
-      }
-      final bytes = file.bytes ??
-          (file.path == null ? null : await File(file.path!).readAsBytes());
-      if (bytes == null) throw const FormatException('无法读取预设文件');
-      if (!mounted) return;
+      if (source == null || !mounted) return;
       final previews = StoryTavernPresetTransfer.previewImportFile(
-        utf8.decode(bytes),
+        source,
       );
       if (previews.isEmpty) throw const FormatException('无法识别 Tavern 预设');
       final hasPrompts = previews.any(
@@ -2109,6 +2094,8 @@ class _StoryTemplateEditorPageState extends State<_StoryTemplateEditorPage> {
       }
       setState(() => _tavernPresetJson = stored);
     } on FormatException catch (e) {
+      if (mounted) HiDialog.showSnackBar(context, e.message);
+    } on CreativeFileTransferException catch (e) {
       if (mounted) HiDialog.showSnackBar(context, e.message);
     } catch (e) {
       if (mounted) HiDialog.showSnackBar(context, '导入预设失败：$e');
