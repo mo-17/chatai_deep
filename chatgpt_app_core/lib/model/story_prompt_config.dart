@@ -397,7 +397,15 @@ class StoryPromptConfigCodec {
 
   static List<dynamic> _firstOrder(List<Object?> candidates) {
     for (final value in candidates) {
-      if (value is List) return value;
+      if (value is List) {
+        final nested = <dynamic>[];
+        for (final item in value) {
+          if (item is Map && item['order'] is List) {
+            nested.addAll(item['order'] as List);
+          }
+        }
+        return nested.isNotEmpty ? nested : value;
+      }
       if (value is Map && value.isNotEmpty) {
         final entries = value.entries.toList()
           ..sort((a, b) => _intValue(a.value).compareTo(_intValue(b.value)));

@@ -49,6 +49,8 @@ void main() {
         promptConfigJson: '{"version":1,"modules":[]}',
         quickRepliesJson: '{"roomId":0,"groups":[]}',
         regexScriptsJson: '{"version":1,"rules":[]}',
+        tavernPresetJson:
+            '{"format":"chatai_deep_story_tavern_preset_bundle","formatVersion":1,"presets":{}}',
         personaKey: 'persona-traveler',
         modelProviderId: 'deepseek',
         modelId: 'deepseek-v4-pro',
@@ -109,6 +111,7 @@ void main() {
       expect(savedRoom?.promptConfigJson, '{"version":1,"modules":[]}');
       expect(savedRoom?.quickRepliesJson, '{"roomId":0,"groups":[]}');
       expect(savedRoom?.regexScriptsJson, '{"version":1,"rules":[]}');
+      expect(savedRoom?.tavernPresetJson, contains('tavern_preset_bundle'));
       expect(savedRoom?.personaKey, 'persona-traveler');
       expect(savedRoom?.modelProviderId, 'deepseek');
       expect(savedRoom?.modelId, 'deepseek-v4-pro');

@@ -8,6 +8,7 @@ import 'package:chatgpt_app_core/chat/application/story_room_role_card_importer.
 import 'package:chatgpt_app_core/chat/application/story_template_transfer.dart';
 import 'package:chatgpt_app_core/chat/application/story_template_translation_tasks.dart';
 import 'package:chatgpt_app_core/chat/application/story_tavern_chat_transfer.dart';
+import 'package:chatgpt_app_core/chat/application/story_tavern_preset_transfer.dart';
 import 'package:chatgpt_app_core/chat/application/tavern_room_import_preparer.dart';
 import 'package:chatgpt_app_core/dao/chat/chat_service.dart';
 import 'package:chatgpt_app_core/db/hi_db_manager.dart';
@@ -16,6 +17,8 @@ import 'package:chatgpt_app_core/db/story_template_dao.dart';
 import 'package:chatgpt_app_core/model/ai_settings.dart';
 import 'package:chatgpt_app_core/model/assistant_model.dart';
 import 'package:chatgpt_app_core/model/story_room_model.dart';
+import 'package:chatgpt_app_core/model/story_prompt_config.dart';
+import 'package:chatgpt_app_core/model/story_tavern_preset.dart';
 import 'package:chatgpt_app_core/model/story_template_model.dart';
 import 'package:chatgpt_app_core/model/story_template_translation_task_model.dart';
 import 'package:chatgpt_app_core/pages/story_room_page.dart';
@@ -903,6 +906,9 @@ class _StoryRoomListPageState extends State<StoryRoomListPage> {
       promptConfigJson: payload.promptConfigJson,
       quickRepliesJson: payload.quickRepliesJson,
       regexScriptsJson: payload.regexScriptsJson,
+      tavernPresetJson: payload.tavernPresetJson,
+      temperature: payload.temperature,
+      maxOutputTokens: payload.maxOutputTokens,
     )
         .toTemplate(
           title: template.title,
@@ -1212,6 +1218,9 @@ class _StoryTemplateTranslationCoordinator extends ChangeNotifier {
         promptConfigJson: payload.promptConfigJson,
         quickRepliesJson: payload.quickRepliesJson,
         regexScriptsJson: payload.regexScriptsJson,
+        tavernPresetJson: payload.tavernPresetJson,
+        temperature: payload.temperature,
+        maxOutputTokens: payload.maxOutputTokens,
       ).toTemplate(
         title: title,
         sourceTitle: template.sourceTitle.trim().isEmpty
@@ -1824,6 +1833,11 @@ class _StoryTemplateEditorPageState extends State<_StoryTemplateEditorPage> {
   late final TextEditingController _openingController;
   late List<AssistantRoleCardImportResult> _roles;
   late List<int> _roleKeys;
+  late String _promptConfigJson;
+  late String _tavernPresetJson;
+  double? _temperature;
+  int? _maxOutputTokens;
+  bool _presetImportBusy = false;
   int _nextRoleKey = 0;
 
   @override
@@ -1835,6 +1849,10 @@ class _StoryTemplateEditorPageState extends State<_StoryTemplateEditorPage> {
     );
     _roles = widget.payload.results.map(_copyRole).toList(growable: true);
     _roleKeys = List<int>.generate(_roles.length, (_) => _nextRoleKey++);
+    _promptConfigJson = widget.payload.promptConfigJson;
+    _tavernPresetJson = widget.payload.tavernPresetJson;
+    _temperature = widget.payload.temperature;
+    _maxOutputTokens = widget.payload.maxOutputTokens;
   }
 
   @override
@@ -1872,6 +1890,31 @@ class _StoryTemplateEditorPageState extends State<_StoryTemplateEditorPage> {
                   border: OutlineInputBorder(),
                 ),
               ),
+              const SizedBox(height: 12),
+              OutlinedButton.icon(
+                icon: const Icon(Icons.settings_input_component_outlined),
+                label: Text(
+                  StoryTavernPresetTransfer.previewsFromRoomBundle(
+                    _tavernPresetJson,
+                  ).isEmpty
+                      ? '导入 Tavern 预设'
+                      : '追加或替换 Tavern 预设',
+                ),
+                onPressed: _presetImportBusy ? null : _importTavernPreset,
+              ),
+              if (_temperature != null || _maxOutputTokens != null)
+                Padding(
+                  padding: const EdgeInsets.only(top: 6),
+                  child: Text(
+                    [
+                      if (_temperature != null) 'Temperature $_temperature',
+                      if (_maxOutputTokens != null)
+                        '最大输出 $_maxOutputTokens Token',
+                    ].join(' · '),
+                    style: Theme.of(context).textTheme.bodySmall,
+                    textAlign: TextAlign.center,
+                  ),
+                ),
               const SizedBox(height: 12),
               TextField(
                 controller: _openingController,
@@ -1974,6 +2017,111 @@ class _StoryTemplateEditorPageState extends State<_StoryTemplateEditorPage> {
     });
   }
 
+  Future<void> _importTavernPreset() async {
+    if (_presetImportBusy) return;
+    if (Platform.operatingSystem == 'ohos') {
+      HiDialog.showSnackBar(context, '鸿蒙版本暂不支持预设文件选择');
+      return;
+    }
+    setState(() => _presetImportBusy = true);
+    try {
+      final picked = await FilePicker.pickFiles(
+        dialogTitle: '选择 Tavern 预设',
+        type: FileType.custom,
+        allowedExtensions: const ['json'],
+        withData: true,
+      );
+      final file = picked?.files.firstOrNull;
+      if (file == null || !mounted) return;
+      if (file.size > StoryTavernPresetTransfer.maxRoomBundleBytes) {
+        throw const FormatException('预设文件超过多预设包大小限制');
+      }
+      final bytes = file.bytes ??
+          (file.path == null ? null : await File(file.path!).readAsBytes());
+      if (bytes == null) throw const FormatException('无法读取预设文件');
+      if (!mounted) return;
+      final previews = StoryTavernPresetTransfer.previewImportFile(
+        utf8.decode(bytes),
+      );
+      if (previews.isEmpty) throw const FormatException('无法识别 Tavern 预设');
+      final hasPrompts = previews.any(
+        (item) => item.openAiPromptData?.isNotEmpty == true,
+      );
+      var applyPrompts = hasPrompts;
+      final confirmed = await showDialog<bool>(
+        context: context,
+        builder: (ctx) => StatefulBuilder(
+          builder: (ctx, setDialogState) => AlertDialog(
+            title: const Text('导入模板预设'),
+            content: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  '识别：${previews.map((item) => _templatePresetKindLabel(item.kind!)).join('、')}',
+                ),
+                if (hasPrompts)
+                  CheckboxListTile(
+                    contentPadding: EdgeInsets.zero,
+                    value: applyPrompts,
+                    title: const Text('导入 Prompt Manager 编排'),
+                    onChanged: (value) => setDialogState(
+                      () => applyPrompts = value ?? false,
+                    ),
+                  ),
+                const Text('脚本、凭据、代理和路由字段不会保存或执行。'),
+              ],
+            ),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.pop(ctx, false),
+                child: const Text('取消'),
+              ),
+              FilledButton(
+                onPressed: () => Navigator.pop(ctx, true),
+                child: const Text('导入'),
+              ),
+            ],
+          ),
+        ),
+      );
+      if (confirmed != true || !mounted) return;
+      var stored = _tavernPresetJson;
+      for (final preview in previews) {
+        stored = StoryTavernPresetTransfer.mergeRoomBundle(stored, preview);
+        _temperature = preview.applyValues.temperature ?? _temperature;
+        _maxOutputTokens = preview.applyValues.maxTokens ?? _maxOutputTokens;
+        if (applyPrompts && preview.openAiPromptData?.isNotEmpty == true) {
+          _promptConfigJson = StoryPromptConfigCodec.encode(
+            StoryPromptConfigCodec.fromTavernExtensions(
+              preview.openAiPromptData!,
+            ),
+          );
+        }
+      }
+      setState(() => _tavernPresetJson = stored);
+    } on FormatException catch (e) {
+      if (mounted) HiDialog.showSnackBar(context, e.message);
+    } catch (e) {
+      if (mounted) HiDialog.showSnackBar(context, '导入预设失败：$e');
+    } finally {
+      if (mounted) setState(() => _presetImportBusy = false);
+    }
+  }
+
+  String _templatePresetKindLabel(StoryTavernPresetKind kind) {
+    switch (kind) {
+      case StoryTavernPresetKind.context:
+        return 'Context';
+      case StoryTavernPresetKind.instruct:
+        return 'Instruct';
+      case StoryTavernPresetKind.textgenSampler:
+        return 'Sampler';
+      case StoryTavernPresetKind.openAi:
+        return 'OpenAI Preset';
+    }
+  }
+
   Future<void> _editRole(int index) async {
     final result = await Navigator.push<AssistantRoleCardImportResult>(
       context,
@@ -2028,9 +2176,12 @@ class _StoryTemplateEditorPageState extends State<_StoryTemplateEditorPage> {
         StoryRoomTemplatePayload(
           results: _roles,
           initialOpening: _openingController.text.trim(),
-          promptConfigJson: widget.payload.promptConfigJson,
+          promptConfigJson: _promptConfigJson,
           quickRepliesJson: widget.payload.quickRepliesJson,
           regexScriptsJson: widget.payload.regexScriptsJson,
+          tavernPresetJson: _tavernPresetJson,
+          temperature: _temperature,
+          maxOutputTokens: _maxOutputTokens,
         ).toJson(),
       ),
       createdAt: widget.template.createdAt,

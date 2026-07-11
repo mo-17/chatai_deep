@@ -15,6 +15,10 @@ class StoryRoomModel {
   String promptConfigJson;
   String quickRepliesJson;
   String regexScriptsJson;
+
+  /// 经安全清洗后的 Tavern Context/Instruct/Sampler/OpenAI 预设包。
+  /// 仅用于预览、受控参数映射和往返导出，不直接执行第三方模板。
+  String tavernPresetJson;
   String? personaKey;
   String? modelProviderId;
   String? modelId;
@@ -42,6 +46,7 @@ class StoryRoomModel {
     this.promptConfigJson = '',
     this.quickRepliesJson = '',
     this.regexScriptsJson = '',
+    this.tavernPresetJson = '',
     this.personaKey,
     this.modelProviderId,
     this.modelId,
@@ -78,6 +83,7 @@ class StoryRoomModel {
         promptConfigJson: json['promptConfigJson'] as String? ?? '',
         quickRepliesJson: json['quickRepliesJson'] as String? ?? '',
         regexScriptsJson: json['regexScriptsJson'] as String? ?? '',
+        tavernPresetJson: json['tavernPresetJson'] as String? ?? '',
         personaKey: json['personaKey'] as String?,
         modelProviderId: json['modelProviderId'] as String?,
         modelId: json['modelId'] as String?,
@@ -105,6 +111,7 @@ class StoryRoomModel {
         'promptConfigJson': promptConfigJson,
         'quickRepliesJson': quickRepliesJson,
         'regexScriptsJson': regexScriptsJson,
+        'tavernPresetJson': tavernPresetJson,
         'personaKey': personaKey,
         'modelProviderId': modelProviderId,
         'modelId': modelId,

@@ -149,6 +149,8 @@ void main() {
       promptConfigJson: '{"version":1,"modules":[]}',
       quickRepliesJson: '{"roomId":0,"groups":[]}',
       regexScriptsJson: '{"version":1,"rules":[]}',
+      tavernPresetJson:
+          '{"format":"chatai_deep_story_tavern_preset_bundle","formatVersion":1,"presets":{"context":{"story_string":"safe","api_key":"secret"}}}',
       tavernChatMetadataJson:
           '{"chat_metadata":{"scenario":"rain"},"unknown":true}',
     );
@@ -264,6 +266,8 @@ void main() {
       expect(restoredRoom['promptConfigJson'], '{"version":1,"modules":[]}');
       expect(restoredRoom['quickRepliesJson'], '{"roomId":0,"groups":[]}');
       expect(restoredRoom['regexScriptsJson'], '{"version":1,"rules":[]}');
+      expect(restoredRoom['tavernPresetJson'], contains('story_string'));
+      expect(restoredRoom['tavernPresetJson'], isNot(contains('secret')));
       expect(restoredRoom['speakerStrategy'], StorySpeakerStrategy.roundRobin);
       expect(restoredRoom['avoidRepeatSpeaker'], 0);
       expect(restoredRoom['maxAutoTotalTokens'], 8192);

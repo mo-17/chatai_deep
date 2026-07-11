@@ -23,7 +23,7 @@ class StoryRoomDao implements ITable {
         ', avoidRepeatSpeaker integer default 1'
         ', maxAutoTotalTokens integer default ${StoryRoomSchedulingLimits.defaultMaxAutoTotalTokens}'
         ', publicContext text, worldBookState text'
-        ', promptConfigJson text, quickRepliesJson text, regexScriptsJson text, personaKey text'
+        ', promptConfigJson text, quickRepliesJson text, regexScriptsJson text, tavernPresetJson text, personaKey text'
         ', modelProviderId text, modelId text'
         ', temperature real, maxOutputTokens integer'
         ', activeMessageKey text'
@@ -117,6 +117,7 @@ class StoryRoomDao implements ITable {
       'promptConfigJson text',
       'quickRepliesJson text',
       'regexScriptsJson text',
+      'tavernPresetJson text',
       'personaKey text',
       'activeMessageKey text',
       'tavernChatMetadataJson text',

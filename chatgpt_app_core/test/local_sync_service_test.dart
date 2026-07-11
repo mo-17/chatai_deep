@@ -257,6 +257,10 @@ void main() {
           'replyMode': 'autoMulti',
           'maxAutoReplies': 2,
           'publicContext': '远端场景',
+          'tavernPresetJson':
+              '{"format":"chatai_deep_story_tavern_preset_bundle","formatVersion":1,"presets":{"context":{"story_string":"safe","api_key":"secret"}}}',
+          'temperature': 9,
+          'maxOutputTokens': {'bad': true},
           'createdAt': 90,
           'updatedAt': 100,
         },
@@ -325,6 +329,10 @@ void main() {
     expect(room['promptConfigJson'], '');
     expect(room['quickRepliesJson'], '');
     expect(room['regexScriptsJson'], '');
+    expect(room['tavernPresetJson'], contains('story_string'));
+    expect(room['tavernPresetJson'], isNot(contains('secret')));
+    expect(room['temperature'], isNull);
+    expect(room['maxOutputTokens'], isNull);
     expect(participant.single['roomId'], 10);
     expect(
       participant.single['participantKey'],

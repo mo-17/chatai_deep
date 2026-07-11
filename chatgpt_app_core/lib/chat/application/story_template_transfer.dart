@@ -13,6 +13,11 @@ class StoryTemplateTransfer {
 
   static String exportJson(StoryTemplateModel template) {
     final payload = _decodePayload(template.payload);
+    final safePayload = StoryRoomTemplatePayload.fromJson(payload);
+    payload
+      ..['tavernPresetJson'] = safePayload.tavernPresetJson
+      ..['temperature'] = safePayload.temperature
+      ..['maxOutputTokens'] = safePayload.maxOutputTokens;
     return const JsonEncoder.withIndent('  ').convert({
       'format': format,
       'formatVersion': formatVersion,
@@ -77,6 +82,10 @@ class StoryTemplateTransfer {
     if (title.isEmpty) {
       throw const FormatException('模板文件缺少名称');
     }
+    payloadMap
+      ..['tavernPresetJson'] = payload.tavernPresetJson
+      ..['temperature'] = payload.temperature
+      ..['maxOutputTokens'] = payload.maxOutputTokens;
     return StoryTemplateModel(
       title: title,
       sourceTitle: data['sourceTitle'] as String? ?? '',

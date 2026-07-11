@@ -5,6 +5,7 @@ import 'dart:io';
 import 'package:archive/archive.dart';
 import 'package:chatgpt_app_core/capability/generated_image_save_service.dart';
 import 'package:chatgpt_app_core/chat/application/assistant_role_card_asset_store.dart';
+import 'package:chatgpt_app_core/chat/application/story_tavern_preset_transfer.dart';
 import 'package:chatgpt_app_core/chat/domain/message_block.dart';
 import 'package:chatgpt_app_core/db/assistant_dao.dart';
 import 'package:chatgpt_app_core/db/conversation_dao.dart';
@@ -331,7 +332,7 @@ class BackupTableConflict {
 /// 因此可以用 sqflite_common_ffi 内存库做 round-trip 单测。
 class BackupService {
   /// 备份格式版本。导入时大于本值则拒绝（新版本备份导入旧 app）。
-  static const int formatVersion = 8;
+  static const int formatVersion = 9;
 
   static const _kManifest = 'manifest.json';
   static const _kConversations = 'conversations.json';
@@ -1852,6 +1853,18 @@ class BackupService {
       room['promptConfigJson'] = '${room['promptConfigJson'] ?? ''}';
       room['quickRepliesJson'] = '${room['quickRepliesJson'] ?? ''}';
       room['regexScriptsJson'] = '${room['regexScriptsJson'] ?? ''}';
+      final rawPreset = room['tavernPresetJson'];
+      room['tavernPresetJson'] =
+          StoryTavernPresetTransfer.normalizeRoomBundle(rawPreset);
+      room['temperature'] =
+          StoryTavernPresetTransfer.safeTemperature(room['temperature']);
+      room['maxOutputTokens'] =
+          StoryTavernPresetTransfer.safeMaxTokens(room['maxOutputTokens']);
+      if (rawPreset != null &&
+          '$rawPreset'.trim().isNotEmpty &&
+          room['tavernPresetJson'] == '') {
+        warnings.add('酒馆房间包含无效 Tavern 预设，已安全移除。');
+      }
       room['personaKey'] = room['personaKey']?.toString();
     }
     final roomById = <int, Map<String, dynamic>>{

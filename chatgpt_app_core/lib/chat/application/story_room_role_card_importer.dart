@@ -9,6 +9,7 @@ import 'package:chatgpt_app_core/model/story_room_model.dart';
 import 'package:chatgpt_app_core/model/story_template_model.dart';
 
 import 'assistant_role_card_service.dart';
+import 'story_tavern_preset_transfer.dart';
 
 class StoryRoomRoleCardImportPlan {
   final StoryRoomModel room;
@@ -657,6 +658,9 @@ class StoryRoomRoleCardImportService {
     String? promptConfigJson,
     String? quickRepliesJson,
     String? regexScriptsJson,
+    String? tavernPresetJson,
+    double? temperature,
+    int? maxOutputTokens,
   }) async {
     final plan = StoryRoomRoleCardImporter.buildPlan(
       assistant,
@@ -673,6 +677,12 @@ class StoryRoomRoleCardImportService {
     if (regexScriptsJson != null) {
       plan.room.regexScriptsJson = regexScriptsJson;
     }
+    if (tavernPresetJson != null) {
+      plan.room.tavernPresetJson = tavernPresetJson;
+    }
+    plan.room
+      ..temperature = temperature
+      ..maxOutputTokens = maxOutputTokens;
     final roomId = await dao.saveRoom(plan.room);
     for (final participant in plan.participants) {
       participant.roomId = roomId;
@@ -701,6 +711,9 @@ class StoryRoomRoleCardImportService {
     String? promptConfigJson,
     String? quickRepliesJson,
     String? regexScriptsJson,
+    String? tavernPresetJson,
+    double? temperature,
+    int? maxOutputTokens,
   }) async {
     final plan = StoryRoomRoleCardImporter.buildBatchPlan(
       results,
@@ -716,6 +729,12 @@ class StoryRoomRoleCardImportService {
     if (regexScriptsJson != null) {
       plan.room.regexScriptsJson = regexScriptsJson;
     }
+    if (tavernPresetJson != null) {
+      plan.room.tavernPresetJson = tavernPresetJson;
+    }
+    plan.room
+      ..temperature = temperature
+      ..maxOutputTokens = maxOutputTokens;
     final roomId = await dao.saveRoom(plan.room);
     for (final participant in plan.participants) {
       participant.roomId = roomId;
@@ -755,6 +774,10 @@ class StoryRoomRoleCardImportService {
             data.quickRepliesJson.trim().isEmpty ? null : data.quickRepliesJson,
         regexScriptsJson:
             data.regexScriptsJson.trim().isEmpty ? null : data.regexScriptsJson,
+        tavernPresetJson:
+            data.tavernPresetJson.trim().isEmpty ? null : data.tavernPresetJson,
+        temperature: data.temperature,
+        maxOutputTokens: data.maxOutputTokens,
       );
     }
     return importBatchAsTavernRoom(
@@ -767,18 +790,25 @@ class StoryRoomRoleCardImportService {
           data.quickRepliesJson.trim().isEmpty ? null : data.quickRepliesJson,
       regexScriptsJson:
           data.regexScriptsJson.trim().isEmpty ? null : data.regexScriptsJson,
+      tavernPresetJson:
+          data.tavernPresetJson.trim().isEmpty ? null : data.tavernPresetJson,
+      temperature: data.temperature,
+      maxOutputTokens: data.maxOutputTokens,
     );
   }
 }
 
 class StoryRoomTemplatePayload {
-  static const formatVersion = 3;
+  static const formatVersion = 4;
 
   final List<AssistantRoleCardImportResult> results;
   final String initialOpening;
   final String promptConfigJson;
   final String quickRepliesJson;
   final String regexScriptsJson;
+  final String tavernPresetJson;
+  final double? temperature;
+  final int? maxOutputTokens;
 
   const StoryRoomTemplatePayload({
     required this.results,
@@ -786,6 +816,9 @@ class StoryRoomTemplatePayload {
     this.promptConfigJson = '',
     this.quickRepliesJson = '',
     this.regexScriptsJson = '',
+    this.tavernPresetJson = '',
+    this.temperature,
+    this.maxOutputTokens,
   });
 
   factory StoryRoomTemplatePayload.fromTemplate(StoryTemplateModel template) {
@@ -810,6 +843,13 @@ class StoryRoomTemplatePayload {
       promptConfigJson: json['promptConfigJson'] as String? ?? '',
       quickRepliesJson: json['quickRepliesJson'] as String? ?? '',
       regexScriptsJson: json['regexScriptsJson'] as String? ?? '',
+      tavernPresetJson: StoryTavernPresetTransfer.normalizeRoomBundle(
+        json['tavernPresetJson'],
+      ),
+      temperature:
+          StoryTavernPresetTransfer.safeTemperature(json['temperature']),
+      maxOutputTokens:
+          StoryTavernPresetTransfer.safeMaxTokens(json['maxOutputTokens']),
     );
   }
 
@@ -832,6 +872,9 @@ class StoryRoomTemplatePayload {
         'promptConfigJson': promptConfigJson,
         'quickRepliesJson': quickRepliesJson,
         'regexScriptsJson': regexScriptsJson,
+        'tavernPresetJson': tavernPresetJson,
+        'temperature': temperature,
+        'maxOutputTokens': maxOutputTokens,
         'results': results.map(_resultToJson).toList(),
       };
 

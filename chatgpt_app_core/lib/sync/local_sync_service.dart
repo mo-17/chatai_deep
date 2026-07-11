@@ -4,6 +4,7 @@ import 'dart:typed_data';
 
 import 'package:chatgpt_app_core/chat/application/assistant_role_card_asset_store.dart';
 import 'package:chatgpt_app_core/chat/application/assistant_role_card_service.dart';
+import 'package:chatgpt_app_core/chat/application/story_tavern_preset_transfer.dart';
 import 'package:chatgpt_app_core/capability/product_capabilities.dart';
 import 'package:chatgpt_app_core/db/assistant_dao.dart';
 import 'package:chatgpt_app_core/db/db_migration.dart';
@@ -552,6 +553,14 @@ class LocalSyncService {
       payload['promptConfigJson'] = '${payload['promptConfigJson'] ?? ''}';
       payload['quickRepliesJson'] = '${payload['quickRepliesJson'] ?? ''}';
       payload['regexScriptsJson'] = '${payload['regexScriptsJson'] ?? ''}';
+      payload['tavernPresetJson'] =
+          StoryTavernPresetTransfer.normalizeRoomBundle(
+        payload['tavernPresetJson'],
+      );
+      payload['temperature'] =
+          StoryTavernPresetTransfer.safeTemperature(payload['temperature']);
+      payload['maxOutputTokens'] =
+          StoryTavernPresetTransfer.safeMaxTokens(payload['maxOutputTokens']);
       payload['personaKey'] = payload['personaKey']?.toString();
       return SyncChange(
         entity: change.entity,

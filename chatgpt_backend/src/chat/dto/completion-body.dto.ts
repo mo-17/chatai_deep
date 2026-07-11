@@ -1,4 +1,12 @@
-import { IsString, IsArray, IsInt, IsOptional, Min } from 'class-validator';
+import {
+  IsString,
+  IsArray,
+  IsInt,
+  IsNumber,
+  IsOptional,
+  Min,
+  Max,
+} from 'class-validator';
 
 export class CompletionBodyDto {
   @IsString()
@@ -11,6 +19,12 @@ export class CompletionBodyDto {
   @IsInt()
   @Min(1)
   max_tokens?: number;
+
+  @IsOptional()
+  @IsNumber()
+  @Min(0)
+  @Max(2)
+  temperature?: number;
 
   // 工具调用（OpenAI function declarations）。ValidationPipe 开了 whitelist，
   // 不声明会被剥掉；SSE 中继本就原样透传 tool_calls 增量，无需其它改动。

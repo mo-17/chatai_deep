@@ -336,6 +336,9 @@ class StoryTemplateTranslationTaskRunner {
               promptConfigJson: source.promptConfigJson,
               quickRepliesJson: source.quickRepliesJson,
               regexScriptsJson: source.regexScriptsJson,
+              tavernPresetJson: source.tavernPresetJson,
+              temperature: source.temperature,
+              maxOutputTokens: source.maxOutputTokens,
             ).toJson(),
           );
         _checkpoint();
@@ -405,6 +408,9 @@ class StoryTemplateTranslationTaskRunner {
         promptConfigJson: source.promptConfigJson,
         quickRepliesJson: source.quickRepliesJson,
         regexScriptsJson: source.regexScriptsJson,
+        tavernPresetJson: source.tavernPresetJson,
+        temperature: source.temperature,
+        maxOutputTokens: source.maxOutputTokens,
       ).toTemplate(
         title: title,
         sourceTitle: task.sourceTitle,

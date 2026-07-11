@@ -35,6 +35,10 @@ void main() {
         promptConfigJson: '{"version":1,"modules":[]}',
         quickRepliesJson: '{"roomId":0,"groups":[]}',
         regexScriptsJson: '{"version":1,"rules":[]}',
+        tavernPresetJson:
+            '{"format":"chatai_deep_story_tavern_preset_bundle","formatVersion":1,"presets":{"context":{"story_string":"safe"}}}',
+        temperature: 0.65,
+        maxOutputTokens: 2048,
       ).toTemplate(title: '午夜案件', sourceTitle: '来源', translated: true);
 
       final restored = StoryTemplateTransfer.importJson(
@@ -49,6 +53,9 @@ void main() {
       expect(payload.promptConfigJson, '{"version":1,"modules":[]}');
       expect(payload.quickRepliesJson, '{"roomId":0,"groups":[]}');
       expect(payload.regexScriptsJson, '{"version":1,"rules":[]}');
+      expect(payload.tavernPresetJson, contains('tavern_preset_bundle'));
+      expect(payload.temperature, 0.65);
+      expect(payload.maxOutputTokens, 2048);
       expect(assistant.name, 'Alice');
       expect(assistant.description, '侦探');
       expect(assistant.prompt, '保持冷静');
@@ -71,6 +78,33 @@ void main() {
         })),
         throwsFormatException,
       );
+    });
+
+    test('模板 payload 会重新清洗预设并拒绝越界采样值', () {
+      final payload = StoryRoomTemplatePayload.fromJson({
+        'results': [
+          {
+            'assistant': AssistantModel(name: 'Alice').toJson(),
+          },
+        ],
+        'tavernPresetJson': jsonEncode({
+          'format': 'chatai_deep_story_tavern_preset_bundle',
+          'formatVersion': 1,
+          'presets': {
+            'openai': {
+              'prompts': [],
+              'prompt_order': [],
+              'api_key': 'secret',
+            },
+          },
+        }),
+        'temperature': 9,
+        'maxOutputTokens': -1,
+      });
+
+      expect(payload.tavernPresetJson, isNot(contains('secret')));
+      expect(payload.temperature, isNull);
+      expect(payload.maxOutputTokens, isNull);
     });
 
     test('重名模板追加稳定序号', () {

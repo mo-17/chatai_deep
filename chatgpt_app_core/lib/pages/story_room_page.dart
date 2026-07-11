@@ -12,6 +12,7 @@ import 'package:chatgpt_app_core/chat/application/story_room_settings_resolver.d
 import 'package:chatgpt_app_core/chat/application/story_room_tool_runner.dart';
 import 'package:chatgpt_app_core/chat/application/story_participant_settings_resolver.dart';
 import 'package:chatgpt_app_core/chat/application/story_speaker_scheduler.dart';
+import 'package:chatgpt_app_core/chat/application/story_tavern_preset_transfer.dart';
 import 'package:chatgpt_app_core/chat/application/usage_record_service.dart';
 import 'package:chatgpt_app_core/chat/application/user_sherpa_onnx_tts_models.dart';
 import 'package:chatgpt_app_core/chat/domain/stream_event.dart';
@@ -26,6 +27,8 @@ import 'package:chatgpt_app_core/model/assistant_model.dart';
 import 'package:chatgpt_app_core/model/story_quick_reply.dart';
 import 'package:chatgpt_app_core/model/story_regex_script.dart';
 import 'package:chatgpt_app_core/model/story_room_model.dart';
+import 'package:chatgpt_app_core/model/story_prompt_config.dart';
+import 'package:chatgpt_app_core/model/story_tavern_preset.dart';
 import 'package:chatgpt_app_core/model/story_persona_model.dart';
 import 'package:chatgpt_app_core/provider/ai_settings_provider.dart';
 import 'package:chatgpt_app_core/pages/story_workbench_page.dart';
@@ -40,6 +43,7 @@ import 'package:chatgpt_app_core/widget/assistant_picker.dart';
 import 'package:chatgpt_app_core/widget/message_input_widget.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:file_picker/file_picker.dart';
 import 'package:provider/provider.dart';
 import 'package:url_launcher/url_launcher.dart';
 
@@ -68,6 +72,7 @@ class _StoryRoomPageState extends State<StoryRoomPage> {
   bool _loading = true;
   bool _sending = false;
   bool _stopRequested = false;
+  bool _presetTransferBusy = false;
   StreamSubscription<StreamEvent>? _activeReplySub;
   Completer<void>? _activeReplyDone;
   String _generationStatus = '';
@@ -148,12 +153,7 @@ class _StoryRoomPageState extends State<StoryRoomPage> {
     if (!mounted) return;
     setState(() {
       if (room != null) {
-        widget.room.activeMessageKey = room.activeMessageKey;
-        widget.room.worldBookState = room.worldBookState;
-        widget.room.promptConfigJson = room.promptConfigJson;
-        widget.room.quickRepliesJson = room.quickRepliesJson;
-        widget.room.regexScriptsJson = room.regexScriptsJson;
-        widget.room.personaKey = room.personaKey;
+        _applyRoomSnapshot(room);
       }
       _dao = dao;
       _usageRecordService = usageRecordService;
@@ -191,12 +191,7 @@ class _StoryRoomPageState extends State<StoryRoomPage> {
     if (!mounted) return;
     setState(() {
       if (room != null) {
-        widget.room.activeMessageKey = room.activeMessageKey;
-        widget.room.worldBookState = room.worldBookState;
-        widget.room.promptConfigJson = room.promptConfigJson;
-        widget.room.quickRepliesJson = room.quickRepliesJson;
-        widget.room.regexScriptsJson = room.regexScriptsJson;
-        widget.room.personaKey = room.personaKey;
+        _applyRoomSnapshot(room);
       }
       _allMessages = allMessages;
       _messages = messages;
@@ -227,6 +222,32 @@ class _StoryRoomPageState extends State<StoryRoomPage> {
       }
     }
     return result;
+  }
+
+  void _applyRoomSnapshot(StoryRoomModel room) {
+    widget.room
+      ..title = room.title
+      ..mode = room.mode
+      ..replyMode = room.replyMode
+      ..maxAutoReplies = room.maxAutoReplies
+      ..speakerStrategy = room.speakerStrategy
+      ..avoidRepeatSpeaker = room.avoidRepeatSpeaker
+      ..maxAutoTotalTokens = room.maxAutoTotalTokens
+      ..publicContext = room.publicContext
+      ..worldBookState = room.worldBookState
+      ..promptConfigJson = room.promptConfigJson
+      ..quickRepliesJson = room.quickRepliesJson
+      ..regexScriptsJson = room.regexScriptsJson
+      ..tavernPresetJson = room.tavernPresetJson
+      ..personaKey = room.personaKey
+      ..modelProviderId = room.modelProviderId
+      ..modelId = room.modelId
+      ..temperature = room.temperature
+      ..maxOutputTokens = room.maxOutputTokens
+      ..activeMessageKey = room.activeMessageKey
+      ..tavernChatMetadataJson = room.tavernChatMetadataJson
+      ..createdAt = room.createdAt
+      ..updatedAt = room.updatedAt;
   }
 
   String _displayContent(StoryMessageModel message) =>
@@ -314,6 +335,7 @@ class _StoryRoomPageState extends State<StoryRoomPage> {
               if (value == 'prompts') _openPromptManager();
               if (value == 'quick_replies') _openQuickReplies();
               if (value == 'regex_scripts') _openRegexScripts();
+              if (value == 'tavern_presets') _manageTavernPresets();
               if (value == 'persona') _selectPersona();
               if (value == 'persona_manage') _managePersonas();
               if (value == 'branches') _showStoryBranches();
@@ -400,6 +422,15 @@ class _StoryRoomPageState extends State<StoryRoomPage> {
                   contentPadding: EdgeInsets.zero,
                 ),
               ),
+              if (_isTavern)
+                const PopupMenuItem(
+                  value: 'tavern_presets',
+                  child: ListTile(
+                    leading: Icon(Icons.settings_input_component_outlined),
+                    title: Text('Tavern 预设'),
+                    contentPadding: EdgeInsets.zero,
+                  ),
+                ),
               if (_allMessages.isNotEmpty)
                 const PopupMenuItem(
                   value: 'branches',
@@ -2238,6 +2269,249 @@ class _StoryRoomPageState extends State<StoryRoomPage> {
     if (mounted) {
       setState(() {});
       HiDialog.showSnackBar(context, '房间模型设置已保存');
+    }
+  }
+
+  Future<void> _manageTavernPresets() async {
+    final presets = StoryTavernPresetTransfer.previewsFromRoomBundle(
+      widget.room.tavernPresetJson,
+    );
+    final action = await showModalBottomSheet<String>(
+      context: context,
+      showDragHandle: true,
+      builder: (ctx) => SafeArea(
+        child: Padding(
+          padding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              Text('Tavern 预设', style: Theme.of(ctx).textTheme.titleLarge),
+              const SizedBox(height: 8),
+              Text(
+                presets.isEmpty
+                    ? '尚未导入预设'
+                    : presets
+                        .map((item) => _presetKindLabel(item.kind!))
+                        .join(' · '),
+              ),
+              const SizedBox(height: 8),
+              ListTile(
+                leading: const Icon(Icons.file_upload_outlined),
+                title: const Text('导入预设 JSON'),
+                subtitle:
+                    const Text('支持 Context、Instruct、Sampler 与 OpenAI Preset'),
+                onTap: () => Navigator.pop(ctx, 'import'),
+              ),
+              if (presets.isNotEmpty)
+                ListTile(
+                  leading: const Icon(Icons.save_alt_outlined),
+                  title: const Text('导出安全预设包'),
+                  subtitle: const Text('敏感字段和可执行内容已移除'),
+                  onTap: () => Navigator.pop(ctx, 'export'),
+                ),
+              if (presets.isNotEmpty)
+                ListTile(
+                  leading: const Icon(Icons.delete_outline),
+                  title: const Text('移除房间预设'),
+                  onTap: () => Navigator.pop(ctx, 'clear'),
+                ),
+            ],
+          ),
+        ),
+      ),
+    );
+    if (action == 'import') await _importTavernPreset();
+    if (action == 'export') await _exportTavernPresets();
+    if (action == 'clear') {
+      widget.room.tavernPresetJson = '';
+      await _dao?.saveRoom(widget.room);
+      if (mounted) {
+        setState(() {});
+        HiDialog.showSnackBar(context, '已移除房间预设；已应用的生成参数保持不变');
+      }
+    }
+  }
+
+  Future<void> _importTavernPreset() async {
+    if (_presetTransferBusy) return;
+    if (Platform.operatingSystem == 'ohos') {
+      HiDialog.showSnackBar(context, '鸿蒙版本暂不支持预设文件选择');
+      return;
+    }
+    setState(() => _presetTransferBusy = true);
+    try {
+      final picked = await FilePicker.pickFiles(
+        dialogTitle: '选择 Tavern 预设',
+        type: FileType.custom,
+        allowedExtensions: const ['json'],
+        withData: true,
+      );
+      final file = picked?.files.firstOrNull;
+      if (file == null || !mounted) return;
+      if (file.size > StoryTavernPresetTransfer.maxRoomBundleBytes) {
+        throw const FormatException('预设文件超过多预设包大小限制');
+      }
+      final bytes = file.bytes ??
+          (file.path == null ? null : await File(file.path!).readAsBytes());
+      if (bytes == null) throw const FormatException('无法读取预设文件');
+      final source = utf8.decode(bytes);
+      final previews = StoryTavernPresetTransfer.previewImportFile(source);
+      if (previews.isEmpty) {
+        final rejected = StoryTavernPresetTransfer.previewJson(source);
+        throw FormatException(rejected.error ?? '无法识别 Tavern 预设');
+      }
+      if (!mounted) return;
+      final hasPromptData = previews.any(
+        (item) => item.openAiPromptData?.isNotEmpty == true,
+      );
+      final decision = await _confirmTavernPresetImport(
+        previews,
+        canApplyPromptManager: hasPromptData,
+      );
+      if (decision == null || !mounted) return;
+      final freshRoom = await _dao?.getRoom(widget.room.id!);
+      if (!mounted) return;
+      if (freshRoom != null) _applyRoomSnapshot(freshRoom);
+      var stored = widget.room.tavernPresetJson;
+      for (final preview in previews) {
+        stored = StoryTavernPresetTransfer.mergeRoomBundle(stored, preview);
+        final values = preview.applyValues;
+        if (values.temperature != null) {
+          widget.room.temperature = values.temperature;
+        }
+        if (values.maxTokens != null) {
+          widget.room.maxOutputTokens = values.maxTokens;
+        }
+        if (decision && preview.openAiPromptData?.isNotEmpty == true) {
+          widget.room.promptConfigJson = StoryPromptConfigCodec.encode(
+            StoryPromptConfigCodec.fromTavernExtensions(
+              preview.openAiPromptData!,
+            ),
+          );
+        }
+      }
+      widget.room.tavernPresetJson = stored;
+      await _dao?.saveRoom(widget.room);
+      if (!mounted) return;
+      setState(() {});
+      HiDialog.showSnackBar(context, 'Tavern 预设已安全导入');
+    } on FormatException catch (e) {
+      if (mounted) HiDialog.showSnackBar(context, e.message);
+    } catch (e) {
+      if (mounted) HiDialog.showSnackBar(context, '导入预设失败：$e');
+    } finally {
+      if (mounted) setState(() => _presetTransferBusy = false);
+    }
+  }
+
+  Future<bool?> _confirmTavernPresetImport(
+    List<StoryTavernPresetPreview> previews, {
+    required bool canApplyPromptManager,
+  }) {
+    var applyPromptManager = canApplyPromptManager;
+    return showDialog<bool>(
+      context: context,
+      builder: (ctx) => StatefulBuilder(
+        builder: (ctx, setDialogState) => AlertDialog(
+          title: const Text('导入 Tavern 预设'),
+          content: ConstrainedBox(
+            constraints: const BoxConstraints(maxWidth: 440),
+            child: SingleChildScrollView(
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                      '识别：${previews.map((item) => _presetKindLabel(item.kind!)).join('、')}'),
+                  const SizedBox(height: 10),
+                  for (final preview in previews) ...[
+                    if (preview.applyValues.temperature != null)
+                      Text('Temperature：${preview.applyValues.temperature}'),
+                    if (preview.applyValues.maxTokens != null)
+                      Text('最大输出 Token：${preview.applyValues.maxTokens}'),
+                  ],
+                  if (canApplyPromptManager)
+                    CheckboxListTile(
+                      contentPadding: EdgeInsets.zero,
+                      value: applyPromptManager,
+                      title: const Text('导入 Prompt Manager 编排'),
+                      subtitle: const Text('仅导入声明式提示词，不执行脚本或宏'),
+                      onChanged: (value) => setDialogState(
+                        () => applyPromptManager = value ?? false,
+                      ),
+                    ),
+                  const SizedBox(height: 8),
+                  const Text('Context / Instruct 仅保存用于兼容导出，不参与请求执行。'),
+                  for (final warning
+                      in previews.expand((item) => item.warnings).take(8))
+                    Padding(
+                      padding: const EdgeInsets.only(top: 4),
+                      child: Text('• $warning'),
+                    ),
+                ],
+              ),
+            ),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(ctx),
+              child: const Text('取消'),
+            ),
+            FilledButton(
+              onPressed: () => Navigator.pop(ctx, applyPromptManager),
+              child: const Text('确认导入'),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Future<void> _exportTavernPresets() async {
+    if (_presetTransferBusy) return;
+    if (Platform.operatingSystem == 'ohos') {
+      HiDialog.showSnackBar(context, '鸿蒙版本暂不支持预设文件保存');
+      return;
+    }
+    setState(() => _presetTransferBusy = true);
+    try {
+      final content = StoryTavernPresetTransfer.exportRoomBundleJson(
+        widget.room.tavernPresetJson,
+      );
+      final bytes = utf8.encode(content);
+      final safeTitle = widget.room.title
+          .replaceAll(RegExp(r'[^\w\u4e00-\u9fff-]+'), '_')
+          .replaceAll(RegExp(r'_+'), '_');
+      final path = await FilePicker.saveFile(
+        dialogTitle: '导出 Tavern 预设包',
+        fileName: '${safeTitle.isEmpty ? '酒馆房间' : safeTitle}_presets.json',
+        type: FileType.custom,
+        allowedExtensions: const ['json'],
+        bytes: bytes,
+      );
+      if (path == null) return;
+      if (!Platform.isAndroid && !Platform.isIOS) {
+        await File(path).writeAsBytes(bytes, flush: true);
+      }
+      if (mounted) HiDialog.showSnackBar(context, 'Tavern 预设包已导出');
+    } catch (e) {
+      if (mounted) HiDialog.showSnackBar(context, '导出预设失败：$e');
+    } finally {
+      if (mounted) setState(() => _presetTransferBusy = false);
+    }
+  }
+
+  String _presetKindLabel(StoryTavernPresetKind kind) {
+    switch (kind) {
+      case StoryTavernPresetKind.context:
+        return 'Context';
+      case StoryTavernPresetKind.instruct:
+        return 'Instruct';
+      case StoryTavernPresetKind.textgenSampler:
+        return 'Sampler';
+      case StoryTavernPresetKind.openAi:
+        return 'OpenAI Preset';
     }
   }
 

@@ -100,6 +100,38 @@ void main() {
       expect(custom.depth, 2);
       expect(custom.sortOrder, lessThan(rules.sortOrder));
     });
+
+    test('解析 OpenAI Preset 的 character_id 包装 prompt_order', () {
+      final config = StoryPromptConfigCodec.fromTavernExtensions({
+        'prompts': [
+          {'identifier': 'main', 'content': '角色规则'},
+          {'identifier': 'scene-note', 'content': '场景补充'},
+        ],
+        'prompt_order': [
+          {
+            'character_id': 100000,
+            'order': [
+              {'identifier': 'main', 'enabled': true},
+              {'identifier': 'scene-note', 'enabled': false},
+            ],
+          },
+        ],
+      });
+
+      expect(
+        config.modules
+            .singleWhere(
+                (item) => item.builtInSlot == StoryPromptBuiltInSlot.rules)
+            .content,
+        '角色规则',
+      );
+      expect(
+        config.modules
+            .singleWhere((item) => item.key == 'tavern.scene-note')
+            .enabled,
+        isFalse,
+      );
+    });
   });
 
   group('StoryPromptComposer', () {
