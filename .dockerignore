@@ -1,0 +1,11 @@
+.git
+.codegraph
+.dart_tool
+**/.dart_tool
+**/build
+**/node_modules
+**/.next
+**/.env
+**/coverage
+uploads
+**/uploads

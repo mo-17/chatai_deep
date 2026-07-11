@@ -37,7 +37,9 @@ async function bootstrap() {
   app.use(json({ limit: '5mb' }));
 
   // 静态文件服务 — 头像等上传资源
-  const uploadsDir = join(process.cwd(), 'uploads');
+  const uploadsDir = process.env.UPLOADS_DIR
+    ? join(process.env.UPLOADS_DIR)
+    : join(process.cwd(), 'uploads');
   if (!existsSync(uploadsDir)) mkdirSync(uploadsDir, { recursive: true });
   app.useStaticAssets(uploadsDir, { prefix: '/uploads/' });
 

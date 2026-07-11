@@ -71,11 +71,21 @@ import {
           AuthSettings,
           EmailTemplate,
         ],
-        synchronize: cfg.get<string>('NODE_ENV') !== 'production',
+        synchronize:
+          cfg.get<string>('DB_SYNCHRONIZE') === 'true' ||
+          cfg.get<string>('NODE_ENV') !== 'production',
         logging:
           cfg.get<string>('DB_LOGGING') === 'true'
             ? ['error', 'warn']
             : ['error'],
+        ssl:
+          cfg.get<string>('DB_SSL') === 'true'
+            ? {
+                rejectUnauthorized:
+                  cfg.get<string>('DB_SSL_REJECT_UNAUTHORIZED', 'true') !==
+                  'false',
+              }
+            : false,
         extra: { max: parseInt(cfg.get<string>('DB_POOL_MAX', '10'), 10) },
       }),
     }),

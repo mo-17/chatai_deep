@@ -7,6 +7,10 @@
     "backend:build": "pnpm --filter chatgpt_backend run build",
     "backend:lint": "pnpm --filter chatgpt_backend run lint",
     "backend:test": "pnpm --filter chatgpt_backend run test",
+    "backend:cloudflare:dev": "wrangler dev --config cloudflare/backend/wrangler.jsonc",
+    "backend:cloudflare:deploy": "wrangler deploy --config cloudflare/backend/wrangler.jsonc",
+    "backend:cloudflare:check": "tsc --noEmit -p cloudflare/backend/tsconfig.json",
+    "backend:cloudflare:types": "wrangler types --config cloudflare/backend/wrangler.jsonc cloudflare/backend/worker-configuration.d.ts",
     "admin:dev": "pnpm --filter chatgpt_admin run dev",
     "admin:build": "pnpm --filter chatgpt_admin run build",
     "admin:lint": "pnpm --filter chatgpt_admin run lint",
@@ -16,9 +20,11 @@
     "prepare": "husky"
   },
   "devDependencies": {
+    "@cloudflare/containers": "^0.3.7",
     "@commitlint/cli": "^21.0.0",
     "@commitlint/config-conventional": "^21.0.0",
     "husky": "^9.1.7",
-    "lint-staged": "^17.0.3"
+    "lint-staged": "^17.0.3",
+    "wrangler": "^4.50.0"
   }
 }

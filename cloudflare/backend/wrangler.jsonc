@@ -1,0 +1,41 @@
+{
+  "$schema": "../../node_modules/wrangler/config-schema.json",
+  "name": "chatai-deep-backend",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-07-11",
+  "compatibility_flags": ["nodejs_compat"],
+  "vars": {
+    "NODE_ENV": "production",
+    "DB_PORT": "5432",
+    "DB_LOGGING": "false",
+    "DB_POOL_MAX": "10",
+    "DB_SSL": "true",
+    "DB_SSL_REJECT_UNAUTHORIZED": "true",
+    "DB_SYNCHRONIZE": "false",
+    "BCRYPT_ROUNDS": "10",
+    "R2_BUCKET_NAME": "chatai-deep-uploads",
+    "R2_ACCOUNT_ID": "REPLACE_WITH_CLOUDFLARE_ACCOUNT_ID"
+  },
+  "containers": [
+    {
+      "class_name": "BackendContainer",
+      "image": "../../Dockerfile.cloudflare-backend",
+      "max_instances": 1,
+      "instance_type": "basic"
+    }
+  ],
+  "durable_objects": {
+    "bindings": [
+      {
+        "name": "BACKEND",
+        "class_name": "BackendContainer"
+      }
+    ]
+  },
+  "migrations": [
+    {
+      "tag": "v1",
+      "new_sqlite_classes": ["BackendContainer"]
+    }
+  ]
+}
