@@ -30,3 +30,14 @@ Constraints: Opaque background; one mascot only; no text; no letters; no waterma
 Avoid: human face, hair, clothing, limbs, gender cues, animal ears, conventional robot body, weapon, red hostile eyes, skull, glass material, tiny circuitry, photorealism, 3D toy rendering.
 Targeted correction only: Uniformly scale down the entire mascot assembly so every star-core and wing tip stays inside a 10% inset on all four sides; keep every other visual requirement unchanged.
 ```
+
+## App icon corner correction
+
+```text
+Use case: precise-object-edit
+Asset type: 1024x1024 opaque mobile app icon raster master
+Input images: Image 1 is the edit target.
+Primary request: Change only the four near-white exterior corner regions outside the existing rounded-square midnight-violet field. Extend those four corner regions with approved midnight violet #120D24 so the full square canvas has a continuous dark branded background and no white corners.
+Constraints: Change only those four near-white corner regions. Keep the mascot, four-point star core, geometric light wings, dark visor, eyes, halo, rounded-square boundary, composition, scale, placement, central 80% safe area, lighting, linework, and every other color unchanged. Do not crop, scale, rotate, move, redraw, or restyle the subject. Keep the full canvas opaque. Add no new elements, text, letters, watermark, badge, glow, texture, or transparency.
+Output intent: A non-destructive precise edit candidate whose only visible difference from Image 1 is that all four formerly near-white outer corners are #120D24 midnight violet.
+```
