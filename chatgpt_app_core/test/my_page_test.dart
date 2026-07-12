@@ -60,18 +60,13 @@ void main() {
     expect(find.text('梦幻二次元'), findsOneWidget);
   });
 
-  testWidgets('anime 的 12 个二级页入口统一使用 classic 平台转场', (tester) async {
+  testWidgets('anime 的 12 个二级页入口统一使用轻量路由转场', (tester) async {
     tester.view.physicalSize = const Size(390, 700);
     tester.view.devicePixelRatio = 1;
     addTearDown(tester.view.resetPhysicalSize);
     addTearDown(tester.view.resetDevicePixelRatio);
 
     final provider = ThemeProvider()..setVisualStyle(AppVisualStyle.anime);
-    final classicTransitions =
-        AppThemeFactory.classic(Colors.pink).pageTransitionsTheme;
-    final classicAndroidBuilder =
-        classicTransitions.builders[TargetPlatform.android]!;
-    expect(provider.getTheme().pageTransitionsTheme, classicTransitions);
     final observer = _RecordingNavigatorObserver();
     await tester.pumpWidget(
       ChangeNotifierProvider.value(
@@ -125,12 +120,12 @@ void main() {
       final materialRoute = route as MaterialPageRoute<void>;
       expect(
         materialRoute.transitionDuration,
-        classicAndroidBuilder.transitionDuration,
+        AppAnimePageTransitionsBuilder.enterDuration,
         reason: title,
       );
       expect(
         materialRoute.reverseTransitionDuration,
-        classicAndroidBuilder.reverseTransitionDuration,
+        AppAnimePageTransitionsBuilder.exitDuration,
         reason: title,
       );
 
