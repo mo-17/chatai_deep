@@ -41,7 +41,7 @@ void main() {
     );
   });
 
-  testWidgets('anime 转场只使用轻微位移、淡入和独立重绘层', (tester) async {
+  testWidgets('anime 新页面保持不透明，只使用轻微位移和独立重绘层', (tester) async {
     await _pumpTransition(tester, progress: 0.5);
 
     final probe = find.byKey(const ValueKey('transition_probe'));
@@ -50,18 +50,21 @@ void main() {
       matching: find.byKey(const ValueKey('anime_page_transition')),
     );
     expect(transition, findsOneWidget);
-    final fade = tester.widget<FadeTransition>(transition);
-    final slide = tester.widget<SlideTransition>(
-      find.descendant(of: transition, matching: find.byType(SlideTransition)),
+    final slide = tester.widget<SlideTransition>(transition);
+    final outgoingFade = tester.widget<FadeTransition>(
+      find.descendant(
+        of: transition,
+        matching: find.byKey(const ValueKey('anime_page_outgoing_fade')),
+      ),
     );
     final curvedProgress = Curves.easeOutCubic.transform(0.5);
-    expect(
-      fade.opacity.value,
-      closeTo(0.96 + 0.04 * curvedProgress, 0.000000001),
-    );
+    expect(outgoingFade.opacity.value, 1);
     expect(
       slide.position.value.dx,
-      closeTo(0.035 * (1 - curvedProgress), 0.000000001),
+      closeTo(
+        AppAnimePageTransitionsBuilder.beginOffsetX * (1 - curvedProgress),
+        0.000000001,
+      ),
     );
     expect(slide.position.value.dy, 0);
     expect(
@@ -76,6 +79,112 @@ void main() {
       findsNothing,
     );
     expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('anime 在转场开头快速隐藏旧页面，避免透明页面叠绘残影', (tester) async {
+    const secondaryProgress =
+        AppAnimePageTransitionsBuilder.outgoingFadeFraction / 2;
+    await _pumpTransition(
+      tester,
+      progress: 1,
+      secondaryProgress: secondaryProgress,
+    );
+
+    final probe = find.byKey(const ValueKey('transition_probe'));
+    final outgoingFade = tester.widget<FadeTransition>(
+      find.descendant(
+        of: probe,
+        matching: find.byKey(const ValueKey('anime_page_outgoing_fade')),
+      ),
+    );
+    final outgoingProgress = const Interval(
+      0,
+      AppAnimePageTransitionsBuilder.outgoingFadeFraction,
+      curve: Curves.easeOutCubic,
+    ).transform(secondaryProgress);
+
+    expect(
+      outgoingFade.opacity.value,
+      closeTo(1 - outgoingProgress, 0.000000001),
+    );
+    expect(outgoingFade.opacity.value, lessThan(0.15));
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('实际 Navigator push 时旧页面先淡出，新页面保持完整不透明', (tester) async {
+    await tester.pumpWidget(
+      MaterialApp(
+        theme: AppThemeFactory.anime().copyWith(
+          platform: TargetPlatform.android,
+        ),
+        home: Scaffold(
+          body: Builder(
+            builder: (context) => TextButton(
+              onPressed: () => Navigator.of(context).push<void>(
+                MaterialPageRoute<void>(
+                  builder: (_) => const Scaffold(body: Text('目标页')),
+                ),
+              ),
+              child: const Text('打开'),
+            ),
+          ),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.text('打开'));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 40));
+
+    final opacities = tester
+        .widgetList<FadeTransition>(
+          find.byKey(const ValueKey('anime_page_outgoing_fade')),
+        )
+        .map((fade) => fade.opacity.value)
+        .toList();
+    expect(opacities, hasLength(2));
+    expect(opacities.any((opacity) => opacity <= 0.001), isTrue);
+    expect(opacities.any((opacity) => opacity == 1), isTrue);
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('anime 返回开头快速恢复底页，避免空白闪烁', (tester) async {
+    final secondaryController = AnimationController(
+      vsync: tester,
+      duration: AppAnimePageTransitionsBuilder.exitDuration,
+    );
+    try {
+      secondaryController.reverse(from: 0.91);
+
+      await _pumpTransition(
+        tester,
+        progress: 1,
+        secondaryAnimation: secondaryController,
+      );
+
+      final probe = find.byKey(const ValueKey('transition_probe'));
+      final outgoingFade = tester.widget<FadeTransition>(
+        find.descendant(
+          of: probe,
+          matching: find.byKey(const ValueKey('anime_page_outgoing_fade')),
+        ),
+      );
+      final reverseProgress = const Interval(
+        1 - AppAnimePageTransitionsBuilder.outgoingFadeFraction,
+        1,
+        curve: Curves.easeInCubic,
+      ).transform(0.91);
+
+      expect(
+        outgoingFade.opacity.value,
+        closeTo(1 - reverseProgress, 0.000000001),
+      );
+      expect(outgoingFade.opacity.value, greaterThan(0.85));
+      expect(tester.takeException(), isNull);
+    } finally {
+      secondaryController.dispose();
+    }
   });
 
   testWidgets('系统减少动态效果时直接显示目标页', (tester) async {
@@ -107,6 +216,8 @@ void main() {
 Future<void> _pumpTransition(
   WidgetTester tester, {
   required double progress,
+  double secondaryProgress = 0,
+  Animation<double>? secondaryAnimation,
   bool disableAnimations = false,
 }) {
   const transitionBuilder = AppAnimePageTransitionsBuilder();
@@ -124,7 +235,8 @@ Future<void> _pumpTransition(
               ),
               context,
               AlwaysStoppedAnimation<double>(progress),
-              const AlwaysStoppedAnimation<double>(0),
+              secondaryAnimation ??
+                  AlwaysStoppedAnimation<double>(secondaryProgress),
               const SizedBox(
                 key: ValueKey('transition_destination'),
               ),

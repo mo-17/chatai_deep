@@ -187,14 +187,17 @@ class AppStatusPalette {
 /// 二次元模式的轻量页面转场。
 ///
 /// Flutter 在 Android/桌面默认使用整页 Zoom + snapshot。对于透明 Scaffold、
-/// 渐变背景和卡片较多的页面，这类缩放容易在首帧形成明显的合成抖动。这里仅让
-/// 新页面沿阅读方向移动约 3.5% 宽度，并做极浅淡入；子树放进独立重绘边界，
-/// 让路由动画本身只更新 transform/opacity，避免转场额外触发内容重绘。
+/// 渐变背景和卡片较多的页面，这类缩放容易在首帧形成明显的合成抖动。新页面
+/// 始终保持不透明，只沿阅读方向移动约 2% 宽度；旧页面则在开头快速淡出，避免
+/// 两个透明 Scaffold 的内容长时间叠绘形成残影。子树放进独立重绘边界，让路由
+/// 动画本身只更新 transform/opacity，避免转场额外触发内容重绘。
 class AppAnimePageTransitionsBuilder extends PageTransitionsBuilder {
   const AppAnimePageTransitionsBuilder();
 
-  static const enterDuration = Duration(milliseconds: 220);
-  static const exitDuration = Duration(milliseconds: 160);
+  static const enterDuration = Duration(milliseconds: 200);
+  static const exitDuration = Duration(milliseconds: 150);
+  static const beginOffsetX = 0.02;
+  static const outgoingFadeFraction = 0.18;
 
   @override
   Duration get transitionDuration => enterDuration;
@@ -218,17 +221,30 @@ class AppAnimePageTransitionsBuilder extends PageTransitionsBuilder {
       reverseCurve: Curves.easeInCubic,
     );
     final position = Tween<Offset>(
-      begin: const Offset(0.035, 0),
+      begin: const Offset(beginOffsetX, 0),
       end: Offset.zero,
     ).animate(curvedAnimation);
-    final opacity = Tween<double>(begin: 0.96, end: 1).animate(curvedAnimation);
+    final outgoingProgress = CurvedAnimation(
+      parent: secondaryAnimation,
+      curve: const Interval(
+        0,
+        outgoingFadeFraction,
+        curve: Curves.easeOutCubic,
+      ),
+      reverseCurve: const Interval(
+        1 - outgoingFadeFraction,
+        1,
+        curve: Curves.easeInCubic,
+      ),
+    );
 
-    return FadeTransition(
+    return SlideTransition(
       key: const ValueKey('anime_page_transition'),
-      opacity: opacity,
-      child: SlideTransition(
-        position: position,
-        textDirection: Directionality.of(context),
+      position: position,
+      textDirection: Directionality.of(context),
+      child: FadeTransition(
+        key: const ValueKey('anime_page_outgoing_fade'),
+        opacity: ReverseAnimation(outgoingProgress),
         child: RepaintBoundary(child: child),
       ),
     );
