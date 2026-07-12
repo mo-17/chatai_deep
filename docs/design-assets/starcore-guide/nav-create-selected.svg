@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24">
+  <title>创作 选中态</title>
+  <path d="M5 18.5c4.8-.9 8.4-4.7 10.2-10.7L20 5.3l-.8 5.2C16.4 16.2 12 19.4 5 20z" fill="#120D24" stroke="#22D3EE" stroke-width="1.8" stroke-linejoin="round"/>
+  <path d="M7 17.5l3 2M15.4 8l3 2" fill="none" stroke="#EC4899" stroke-width="1.8" stroke-linecap="round"/>
+  <path d="M6.3 5.1l.6 1.4 1.4.6-1.4.6-.6 1.4-.6-1.4-1.4-.6 1.4-.6z" fill="#22D3EE"/>
+</svg>
