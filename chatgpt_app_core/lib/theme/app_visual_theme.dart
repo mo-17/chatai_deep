@@ -187,17 +187,17 @@ class AppStatusPalette {
 /// 二次元模式的轻量页面转场。
 ///
 /// Flutter 在 Android/桌面默认使用整页 Zoom + snapshot。对于透明 Scaffold、
-/// 渐变背景和卡片较多的页面，这类缩放容易在首帧形成明显的合成抖动。新页面
-/// 始终保持不透明，只沿阅读方向移动约 2% 宽度；旧页面则在开头快速淡出，避免
-/// 两个透明 Scaffold 的内容长时间叠绘形成残影。子树放进独立重绘边界，让路由
-/// 动画本身只更新 transform/opacity，避免转场额外触发内容重绘。
+/// 渐变背景和卡片较多的页面，交叉淡化仍会让两个页面在同一帧参与绘制。这里
+/// 根据 primary/secondary animation 的状态做互斥 paint：进入时只绘制新页面，
+/// 返回时只绘制底页。可见页面只做极轻的位移，既保留方向感，也彻底避开双页
+/// 叠绘；全局 [AppVisualBackdrop] 仍由 Navigator 外层持续提供。
 class AppAnimePageTransitionsBuilder extends PageTransitionsBuilder {
   const AppAnimePageTransitionsBuilder();
 
   static const enterDuration = Duration(milliseconds: 200);
   static const exitDuration = Duration(milliseconds: 150);
   static const beginOffsetX = 0.02;
-  static const outgoingFadeFraction = 0.18;
+  static const returnOffsetX = -0.01;
 
   @override
   Duration get transitionDuration => enterDuration;
@@ -213,39 +213,98 @@ class AppAnimePageTransitionsBuilder extends PageTransitionsBuilder {
     Animation<double> secondaryAnimation,
     Widget child,
   ) {
-    if (MediaQuery.disableAnimationsOf(context)) return child;
+    // _ModalScope 已在 route transition 与 cached page 外各提供 RepaintBoundary。
+    // 这里不再叠加第三层，避免额外 layer 和缓存内存。
+    Widget page = child;
+    if (!MediaQuery.disableAnimationsOf(context)) {
+      final enterPosition = Tween<Offset>(
+        begin: const Offset(beginOffsetX, 0),
+        end: Offset.zero,
+      ).chain(CurveTween(curve: Curves.easeOutCubic)).animate(animation);
+      final returnPosition = Tween<Offset>(
+        begin: Offset.zero,
+        end: const Offset(returnOffsetX, 0),
+      ).chain(CurveTween(curve: Curves.easeInCubic)).animate(
+            secondaryAnimation,
+          );
+      page = SlideTransition(
+        key: const ValueKey('anime_page_transition'),
+        position: enterPosition,
+        textDirection: Directionality.of(context),
+        child: SlideTransition(
+          key: const ValueKey('anime_page_return_transition'),
+          position: returnPosition,
+          textDirection: Directionality.of(context),
+          child: page,
+        ),
+      );
+    }
 
-    final curvedAnimation = CurvedAnimation(
-      parent: animation,
-      curve: Curves.easeOutCubic,
-      reverseCurve: Curves.easeInCubic,
+    return _AnimeRoutePaintGate(
+      primaryAnimation: animation,
+      secondaryAnimation: secondaryAnimation,
+      child: page,
     );
-    final position = Tween<Offset>(
-      begin: const Offset(beginOffsetX, 0),
-      end: Offset.zero,
-    ).animate(curvedAnimation);
-    final outgoingProgress = CurvedAnimation(
-      parent: secondaryAnimation,
-      curve: const Interval(
-        0,
-        outgoingFadeFraction,
-        curve: Curves.easeOutCubic,
-      ),
-      reverseCurve: const Interval(
-        1 - outgoingFadeFraction,
-        1,
-        curve: Curves.easeInCubic,
-      ),
-    );
+  }
+}
 
-    return SlideTransition(
-      key: const ValueKey('anime_page_transition'),
-      position: position,
-      textDirection: Directionality.of(context),
-      child: FadeTransition(
-        key: const ValueKey('anime_page_outgoing_fade'),
-        opacity: ReverseAnimation(outgoingProgress),
-        child: RepaintBoundary(child: child),
+/// 让透明路由在切换时互斥绘制，同时保留其 Element/State 与布局状态。
+///
+/// [Opacity] 只取 0/1；Flutter 在 0 时完全跳过 child paint，在 1 时走无离屏
+/// buffer 的快速路径。隐藏页同时禁用 ticker、焦点和点击，避免不可见子树继续
+/// 消耗帧预算或接收交互。
+class _AnimeRoutePaintGate extends StatusTransitionWidget {
+  final Animation<double> secondaryAnimation;
+  final Widget child;
+
+  const _AnimeRoutePaintGate({
+    required Animation<double> primaryAnimation,
+    required this.secondaryAnimation,
+    required this.child,
+  }) : super(animation: primaryAnimation);
+
+  @override
+  Widget build(BuildContext context) {
+    final primaryStatus = animation.status;
+    final ownsForeground = primaryStatus == AnimationStatus.forward ||
+        primaryStatus == AnimationStatus.completed;
+    return _AnimeRouteSecondaryPaintGate(
+      animation: secondaryAnimation,
+      ownsForeground: ownsForeground,
+      child: child,
+    );
+  }
+}
+
+class _AnimeRouteSecondaryPaintGate extends StatusTransitionWidget {
+  final bool ownsForeground;
+  final Widget child;
+
+  const _AnimeRouteSecondaryPaintGate({
+    required super.animation,
+    required this.ownsForeground,
+    required this.child,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final secondaryStatus = animation.status;
+    final isUncovered = secondaryStatus == AnimationStatus.dismissed ||
+        secondaryStatus == AnimationStatus.reverse;
+    final isVisible = ownsForeground && isUncovered;
+    return TickerMode(
+      key: const ValueKey('anime_page_ticker_gate'),
+      enabled: isVisible,
+      child: ExcludeFocus(
+        excluding: !isVisible,
+        child: IgnorePointer(
+          ignoring: !isVisible,
+          child: Opacity(
+            key: const ValueKey('anime_page_paint_gate'),
+            opacity: isVisible ? 1 : 0,
+            child: child,
+          ),
+        ),
       ),
     );
   }
