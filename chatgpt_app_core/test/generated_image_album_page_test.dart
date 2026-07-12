@@ -25,6 +25,11 @@ void main() {
   });
 
   testWidgets('生成图片相册展示已保存图片信息', (tester) async {
+    tester.view.physicalSize = const Size(960, 1920);
+    tester.view.devicePixelRatio = 3;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+
     await tester.pumpWidget(MaterialApp(
       home: GeneratedImageAlbumPage(
         loader: () async => [
@@ -43,6 +48,11 @@ void main() {
     expect(find.textContaining('1.5KB'), findsOneWidget);
     expect(find.textContaining('2026-07-02 09:30'), findsOneWidget);
     expect(find.byType(Image), findsOneWidget);
+    // 320dp 窄屏下实际格子宽 143dp，3x 设备只解码到 429px，
+    // 避免高分辨率生成图在页面转场期间全尺寸解码。
+    final resized =
+        tester.widget<Image>(find.byType(Image)).image as ResizeImage;
+    expect(resized.width, 429);
   });
 
   testWidgets('生成图片相册可确认删除并刷新列表', (tester) async {

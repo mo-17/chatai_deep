@@ -6,6 +6,7 @@ import 'package:chatgpt_app_core/chat/domain/model_capabilities.dart';
 import 'package:chatgpt_app_core/model/ai_provider.dart';
 import 'package:chatgpt_app_core/model/ai_settings.dart';
 import 'package:chatgpt_app_core/provider/ai_settings_provider.dart';
+import 'package:chatgpt_app_core/theme/app_visual_theme.dart';
 import 'package:chatgpt_app_core/widget/ai_provider/api_key_field.dart';
 import 'package:chatgpt_app_core/widget/ai_provider/capability_chip.dart';
 import 'package:chatgpt_app_core/widget/ai_provider/provider_avatar.dart';
@@ -311,6 +312,7 @@ class _AiProviderDetailPageState extends State<AiProviderDetailPage> {
     }
     final cs = Theme.of(context).colorScheme;
     final tt = Theme.of(context).textTheme;
+    final visual = AppVisualTheme.of(context);
     final isActive = _store.settings.activeProviderId == p.id;
 
     return Scaffold(
@@ -367,15 +369,26 @@ class _AiProviderDetailPageState extends State<AiProviderDetailPage> {
               padding: const EdgeInsets.fromLTRB(16, 8, 16, 0),
               child: InkWell(
                 onTap: _openApiKeyUrl,
-                child: Row(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    Icon(Icons.open_in_new_rounded,
-                        size: 14, color: cs.primary),
-                    const SizedBox(width: 4),
-                    Text('去申请 API Key',
-                        style: tt.labelMedium?.copyWith(color: cs.primary)),
-                  ],
+                borderRadius: visual.isAnime ? BorderRadius.circular(14) : null,
+                child: ConstrainedBox(
+                  constraints: BoxConstraints(
+                    minHeight: visual.isAnime ? 44 : 0,
+                  ),
+                  child: Padding(
+                    padding: visual.isAnime
+                        ? const EdgeInsets.symmetric(horizontal: 8)
+                        : EdgeInsets.zero,
+                    child: Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Icon(Icons.open_in_new_rounded,
+                            size: 14, color: cs.primary),
+                        const SizedBox(width: 4),
+                        Text('去申请 API Key',
+                            style: tt.labelMedium?.copyWith(color: cs.primary)),
+                      ],
+                    ),
+                  ),
                 ),
               ),
             ),
@@ -397,10 +410,12 @@ class _AiProviderDetailPageState extends State<AiProviderDetailPage> {
                 helperText: _defaultHost.isNotEmpty
                     ? 'ⓘ 留空用默认地址；自动补全 /chat/completions'
                     : 'ⓘ 需填写完整 API 地址（裸主机会自动补全 /v1/chat/completions）',
-                border: OutlineInputBorder(
-                  borderRadius: BorderRadius.circular(8),
-                  borderSide: BorderSide.none,
-                ),
+                border: visual.isAnime
+                    ? null
+                    : OutlineInputBorder(
+                        borderRadius: BorderRadius.circular(8),
+                        borderSide: BorderSide.none,
+                      ),
                 suffixIcon: _defaultHost.isEmpty
                     ? null
                     : IconButton(
@@ -458,6 +473,7 @@ class _AiProviderDetailPageState extends State<AiProviderDetailPage> {
 
   Widget _buildHeader(
       AiProvider p, ColorScheme cs, TextTheme tt, bool isActive) {
+    final visual = AppVisualTheme.of(context);
     return Padding(
       padding: const EdgeInsets.symmetric(horizontal: 16),
       child: Row(
@@ -479,12 +495,14 @@ class _AiProviderDetailPageState extends State<AiProviderDetailPage> {
                 else if (p.enabled)
                   TextButton(
                     onPressed: _setActive,
-                    style: TextButton.styleFrom(
-                      padding: const EdgeInsets.symmetric(
-                          horizontal: 12, vertical: 0),
-                      minimumSize: const Size(0, 32),
-                      tapTargetSize: MaterialTapTargetSize.shrinkWrap,
-                    ),
+                    style: visual.isAnime
+                        ? null
+                        : TextButton.styleFrom(
+                            padding: const EdgeInsets.symmetric(
+                                horizontal: 12, vertical: 0),
+                            minimumSize: const Size(0, 32),
+                            tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                          ),
                     child: const Text('设为当前服务商'),
                   )
                 else
@@ -499,15 +517,24 @@ class _AiProviderDetailPageState extends State<AiProviderDetailPage> {
   }
 
   Widget _statusPill(String text, Color bg, Color fg, TextTheme tt) {
+    final visual = AppVisualTheme.of(context);
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
-      decoration:
-          BoxDecoration(color: bg, borderRadius: BorderRadius.circular(8)),
+      decoration: visual.isAnime
+          ? ShapeDecoration(
+              color: bg,
+              shape: StadiumBorder(
+                side: BorderSide(
+                    color: Theme.of(context).colorScheme.outlineVariant),
+              ),
+            )
+          : BoxDecoration(color: bg, borderRadius: BorderRadius.circular(8)),
       child: Text(text, style: tt.labelMedium?.copyWith(color: fg)),
     );
   }
 
   Widget _buildTestButton(ColorScheme cs, TextTheme tt) {
+    final visual = AppVisualTheme.of(context);
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
@@ -522,11 +549,13 @@ class _AiProviderDetailPageState extends State<AiProviderDetailPage> {
                 : const Icon(Icons.network_check_rounded),
             label: Text(_testState == _TestState.running ? '检测中...' : '测试连接'),
             onPressed: _testState == _TestState.running ? null : _runTest,
-            style: OutlinedButton.styleFrom(
-              minimumSize: const Size(double.infinity, 48),
-              shape: RoundedRectangleBorder(
-                  borderRadius: BorderRadius.circular(8)),
-            ),
+            style: visual.isAnime
+                ? null
+                : OutlinedButton.styleFrom(
+                    minimumSize: const Size(double.infinity, 48),
+                    shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(8)),
+                  ),
           ),
         ),
         AnimatedSwitcher(
@@ -536,8 +565,14 @@ class _AiProviderDetailPageState extends State<AiProviderDetailPage> {
                 key: const ValueKey('ok'),
                 padding: const EdgeInsets.only(top: 8),
                 child: Row(children: [
-                  const Icon(Icons.check_circle_rounded,
-                      color: Colors.green, size: 18),
+                  Icon(
+                    Icons.check_circle_rounded,
+                    color: visual.isAnime
+                        ? AppStatusPalette.of(context, AppStatusKind.success)
+                            .foreground
+                        : Colors.green,
+                    size: 18,
+                  ),
                   const SizedBox(width: 4),
                   Text('连接成功', style: tt.bodySmall),
                 ]),
@@ -565,6 +600,7 @@ class _AiProviderDetailPageState extends State<AiProviderDetailPage> {
 
   Widget _buildModelTile(
       AiProvider p, AiModel m, ColorScheme cs, TextTheme tt) {
+    final visual = AppVisualTheme.of(context);
     final selected = p.selectedModelId == m.id ||
         (p.selectedModelId.isEmpty && p.models.first.id == m.id);
     final persistedState = switch (m.lastTestStatus) {
@@ -628,7 +664,8 @@ class _AiProviderDetailPageState extends State<AiProviderDetailPage> {
                     padding: const EdgeInsets.only(top: 3),
                     child: Text('上次测试：$testTime',
                         style: tt.bodySmall?.copyWith(
-                            color: cs.onSurfaceVariant, fontSize: 11)),
+                            color: cs.onSurfaceVariant,
+                            fontSize: visual.isAnime ? null : 11)),
                   ),
               ],
             ),

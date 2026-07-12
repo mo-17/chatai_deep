@@ -3,6 +3,8 @@ import 'package:chatgpt_app_core/db/usage_dao.dart';
 import 'package:chatgpt_app_core/model/ai_settings.dart';
 import 'package:chatgpt_app_core/model/usage_record.dart';
 import 'package:chatgpt_app_core/provider/ai_settings_provider.dart';
+import 'package:chatgpt_app_core/theme/app_visual_theme.dart';
+import 'package:chatgpt_app_core/widget/app_visual_widgets.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:provider/provider.dart';
@@ -164,11 +166,28 @@ class _UsageStatsPageState extends State<UsageStatsPage> {
               return const Center(child: CircularProgressIndicator());
             }
             if (snapshot.hasError) {
-              return Center(child: Text('用量统计加载失败：${snapshot.error}'));
+              return AppVisualEmptyState(
+                animeKey: const ValueKey('usage_stats_error_state'),
+                icon: Icons.cloud_off_outlined,
+                title: '用量统计加载失败',
+                message: '${snapshot.error}',
+                action: FilledButton.icon(
+                  onPressed: () => setState(_reload),
+                  icon: const Icon(Icons.refresh),
+                  label: const Text('重试'),
+                ),
+                classic: Center(child: Text('用量统计加载失败：${snapshot.error}')),
+              );
             }
             final data = snapshot.data ?? const UsageStatsSnapshot();
             if (data.isEmpty) {
-              return const Center(child: Text('还没有用量记录'));
+              return const AppVisualEmptyState(
+                animeKey: ValueKey('usage_stats_empty_state'),
+                icon: Icons.query_stats_rounded,
+                title: '还没有用量记录',
+                message: '完成一次 AI 对话后，这里会展示 Token、成本与服务商分布。',
+                classic: Center(child: Text('还没有用量记录')),
+              );
             }
             return Column(
               children: [
@@ -293,10 +312,9 @@ class _Summary extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return Container(
-      width: double.infinity,
+    final visual = AppVisualTheme.of(context);
+    final content = Padding(
       padding: const EdgeInsets.all(16),
-      color: Theme.of(context).colorScheme.surfaceContainerHighest,
       child: Row(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
@@ -305,15 +323,17 @@ class _Summary extends StatelessWidget {
               spacing: 16,
               runSpacing: 8,
               children: [
-                _metric('总 Token', snapshot.totalTokens.toString()),
+                _metric(context, '总 Token', snapshot.totalTokens.toString()),
                 _metric(
+                    context,
                     '缓存输入',
                     snapshot.byModel
                         .fold<int>(
                             0, (sum, item) => sum + item.cachedPromptTokens)
                         .toString()),
-                _metric('估算成本', snapshot.totalCost.toStringAsFixed(4)),
-                _metric('数据来源', snapshot.hasEstimated ? '含估算' : '真实 usage'),
+                _metric(context, '估算成本', snapshot.totalCost.toStringAsFixed(4)),
+                _metric(context, '数据来源',
+                    snapshot.hasEstimated ? '含估算' : '真实 usage'),
               ],
             ),
           ),
@@ -324,6 +344,18 @@ class _Summary extends StatelessWidget {
           ),
         ],
       ),
+    );
+    if (visual.isAnime) {
+      return AppVisualSurface(
+        margin: const EdgeInsets.fromLTRB(12, 12, 12, 8),
+        padding: EdgeInsets.zero,
+        child: content,
+      );
+    }
+    return Container(
+      width: double.infinity,
+      color: Theme.of(context).colorScheme.surfaceContainerHighest,
+      child: content,
     );
   }
 
@@ -338,16 +370,28 @@ class _Summary extends StatelessWidget {
     }
   }
 
-  Widget _metric(String label, String value) {
+  Widget _metric(BuildContext context, String label, String value) {
+    final visual = AppVisualTheme.of(context);
+    final theme = Theme.of(context);
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       mainAxisSize: MainAxisSize.min,
       children: [
-        Text(label,
-            style: const TextStyle(fontSize: 12, color: Colors.black54)),
+        Text(
+          label,
+          style: visual.isAnime
+              ? theme.textTheme.labelMedium?.copyWith(
+                  color: theme.colorScheme.onSurfaceVariant,
+                )
+              : const TextStyle(fontSize: 12, color: Colors.black54),
+        ),
         const SizedBox(height: 2),
-        Text(value,
-            style: const TextStyle(fontSize: 18, fontWeight: FontWeight.w700)),
+        Text(
+          value,
+          style: visual.isAnime
+              ? theme.textTheme.titleLarge
+              : const TextStyle(fontSize: 18, fontWeight: FontWeight.w700),
+        ),
       ],
     );
   }
@@ -361,30 +405,59 @@ class _AggregateList extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    if (items.isEmpty) return Center(child: Text(emptyText));
+    if (items.isEmpty) {
+      return AppVisualEmptyState(
+        animeKey: ValueKey('usage_aggregate_empty_$emptyText'),
+        icon: Icons.insert_chart_outlined_rounded,
+        title: emptyText,
+        classic: Center(child: Text(emptyText)),
+      );
+    }
+    final visual = AppVisualTheme.of(context);
+    if (visual.isAnime) {
+      return ListView.builder(
+        padding: const EdgeInsets.fromLTRB(12, 4, 12, 24),
+        itemCount: items.length,
+        itemBuilder: (context, index) => AppVisualSurface(
+          margin: const EdgeInsets.only(bottom: 8),
+          padding: EdgeInsets.zero,
+          child: _tile(context, items[index]),
+        ),
+      );
+    }
     return ListView.separated(
       itemCount: items.length,
       separatorBuilder: (_, __) => const Divider(height: 1),
       itemBuilder: (context, index) {
-        final item = items[index];
-        return ListTile(
-          title: Text(item.key),
-          subtitle: Text(
-            '调用 ${item.calls} 次 · 输入 ${item.promptTokens} · 缓存 ${item.cachedPromptTokens} · 未缓存 ${item.uncachedPromptTokens} · 输出 ${item.completionTokens}',
-          ),
-          trailing: Column(
-            mainAxisAlignment: MainAxisAlignment.center,
-            crossAxisAlignment: CrossAxisAlignment.end,
-            children: [
-              Text('${item.totalTokens} token',
-                  style: const TextStyle(fontWeight: FontWeight.w600)),
-              if (item.estimated)
-                const Text('含估算',
-                    style: TextStyle(fontSize: 12, color: Colors.orange)),
-            ],
-          ),
-        );
+        return _tile(context, items[index]);
       },
+    );
+  }
+
+  Widget _tile(BuildContext context, UsageAggregate item) {
+    final visual = AppVisualTheme.of(context);
+    return ListTile(
+      title: Text(item.key),
+      subtitle: Text(
+        '调用 ${item.calls} 次 · 输入 ${item.promptTokens} · 缓存 ${item.cachedPromptTokens} · 未缓存 ${item.uncachedPromptTokens} · 输出 ${item.completionTokens}',
+      ),
+      trailing: Column(
+        mainAxisAlignment: MainAxisAlignment.center,
+        crossAxisAlignment: CrossAxisAlignment.end,
+        children: [
+          Text('${item.totalTokens} token',
+              style: const TextStyle(fontWeight: FontWeight.w600)),
+          if (item.estimated)
+            if (visual.isAnime)
+              const AppStatusBadge(
+                label: '含估算',
+                kind: AppStatusKind.warning,
+              )
+            else
+              const Text('含估算',
+                  style: TextStyle(fontSize: 12, color: Colors.orange)),
+        ],
+      ),
     );
   }
 }
@@ -498,6 +571,7 @@ class _UsageCostSettingsDialogState extends State<_UsageCostSettingsDialog> {
 
   Widget _builtinRatesSection(BuildContext context) {
     final theme = Theme.of(context);
+    final visual = AppVisualTheme.of(context);
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
@@ -505,7 +579,7 @@ class _UsageCostSettingsDialogState extends State<_UsageCostSettingsDialog> {
           children: [
             const Text('内置价格'),
             const SizedBox(width: 8),
-            _sourceChip('内置'),
+            _sourceChip(context, '内置'),
           ],
         ),
         const SizedBox(height: 8),
@@ -521,7 +595,11 @@ class _UsageCostSettingsDialogState extends State<_UsageCostSettingsDialog> {
         if (UsageCostConfig.builtinTimeRules.isNotEmpty) ...[
           Text(
             '分时价格',
-            style: theme.textTheme.bodySmall?.copyWith(color: Colors.black54),
+            style: theme.textTheme.bodySmall?.copyWith(
+              color: visual.isAnime
+                  ? theme.colorScheme.onSurfaceVariant
+                  : Colors.black54,
+            ),
           ),
           const SizedBox(height: 8),
           for (final rule in UsageCostConfig.builtinTimeRules) ...[
@@ -546,12 +624,14 @@ class _UsageCostSettingsDialogState extends State<_UsageCostSettingsDialog> {
     required UsageCostRate rate,
   }) {
     final theme = Theme.of(context);
+    final visual = AppVisualTheme.of(context);
     return Container(
       width: double.infinity,
       padding: const EdgeInsets.all(12),
       decoration: BoxDecoration(
+        color: visual.isAnime ? theme.colorScheme.surfaceContainerLow : null,
         border: Border.all(color: theme.dividerColor),
-        borderRadius: BorderRadius.circular(8),
+        borderRadius: BorderRadius.circular(visual.isAnime ? 14 : 8),
       ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
@@ -565,13 +645,17 @@ class _UsageCostSettingsDialogState extends State<_UsageCostSettingsDialog> {
                       ?.copyWith(fontWeight: FontWeight.w600),
                 ),
               ),
-              _sourceChip('内置'),
+              _sourceChip(context, '内置'),
             ],
           ),
           const SizedBox(height: 4),
           Text(
             subtitle,
-            style: theme.textTheme.bodySmall?.copyWith(color: Colors.black54),
+            style: theme.textTheme.bodySmall?.copyWith(
+              color: visual.isAnime
+                  ? theme.colorScheme.onSurfaceVariant
+                  : Colors.black54,
+            ),
           ),
           const SizedBox(height: 8),
           Text(
@@ -583,7 +667,11 @@ class _UsageCostSettingsDialogState extends State<_UsageCostSettingsDialog> {
     );
   }
 
-  Widget _sourceChip(String label) {
+  Widget _sourceChip(BuildContext context, String label) {
+    final visual = AppVisualTheme.of(context);
+    if (visual.isAnime) {
+      return AppStatusBadge(label: label, kind: AppStatusKind.info);
+    }
     return DecoratedBox(
       decoration: BoxDecoration(
         color: const Color(0xFFE8F5E9),
@@ -604,41 +692,47 @@ class _UsageCostSettingsDialogState extends State<_UsageCostSettingsDialog> {
     TextEditingController inputCtl,
     TextEditingController outputCtl,
   ) {
+    final fields = <Widget>[
+      _rateField(cachedInputCtl, '缓存输入 / 1M'),
+      _rateField(inputCtl, '输入 / 1M'),
+      _rateField(outputCtl, '输出 / 1M'),
+    ];
+    if (AppVisualTheme.of(context).isAnime) {
+      return LayoutBuilder(
+        builder: (context, constraints) {
+          final fieldWidth = constraints.maxWidth < 360
+              ? constraints.maxWidth
+              : (constraints.maxWidth - 8) / 2;
+          return Wrap(
+            spacing: 8,
+            runSpacing: 8,
+            children: [
+              for (final field in fields)
+                SizedBox(width: fieldWidth, child: field),
+            ],
+          );
+        },
+      );
+    }
     return Row(
       children: [
-        Expanded(
-          child: TextField(
-            controller: cachedInputCtl,
-            keyboardType: const TextInputType.numberWithOptions(decimal: true),
-            decoration: const InputDecoration(
-              labelText: '缓存输入 / 1M',
-              border: OutlineInputBorder(),
-            ),
-          ),
-        ),
+        Expanded(child: fields[0]),
         const SizedBox(width: 8),
-        Expanded(
-          child: TextField(
-            controller: inputCtl,
-            keyboardType: const TextInputType.numberWithOptions(decimal: true),
-            decoration: const InputDecoration(
-              labelText: '输入 / 1M',
-              border: OutlineInputBorder(),
-            ),
-          ),
-        ),
+        Expanded(child: fields[1]),
         const SizedBox(width: 8),
-        Expanded(
-          child: TextField(
-            controller: outputCtl,
-            keyboardType: const TextInputType.numberWithOptions(decimal: true),
-            decoration: const InputDecoration(
-              labelText: '输出 / 1M',
-              border: OutlineInputBorder(),
-            ),
-          ),
-        ),
+        Expanded(child: fields[2]),
       ],
+    );
+  }
+
+  Widget _rateField(TextEditingController controller, String label) {
+    return TextField(
+      controller: controller,
+      keyboardType: const TextInputType.numberWithOptions(decimal: true),
+      decoration: InputDecoration(
+        labelText: label,
+        border: const OutlineInputBorder(),
+      ),
     );
   }
 

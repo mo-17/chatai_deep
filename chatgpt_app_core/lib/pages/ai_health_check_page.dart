@@ -5,6 +5,8 @@ import 'package:chatgpt_app_core/chat/domain/stream_event.dart';
 import 'package:chatgpt_app_core/model/ai_provider.dart';
 import 'package:chatgpt_app_core/model/ai_settings.dart';
 import 'package:chatgpt_app_core/provider/ai_settings_provider.dart';
+import 'package:chatgpt_app_core/theme/app_visual_theme.dart';
+import 'package:chatgpt_app_core/widget/app_visual_widgets.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:provider/provider.dart';
@@ -31,6 +33,7 @@ class _AiHealthCheckPageState extends State<AiHealthCheckPage> {
   Widget build(BuildContext context) {
     final store = context.watch<AISettingsProvider>();
     final providers = store.settings.enabledProviders;
+    final isAnime = AppVisualTheme.of(context).isAnime;
     return Scaffold(
       appBar: AppBar(
         title: const Text('服务商健康检查'),
@@ -40,29 +43,102 @@ class _AiHealthCheckPageState extends State<AiHealthCheckPage> {
             onPressed: () => _copyDiagnostics(store.settings),
             icon: const Icon(Icons.copy_all_outlined),
           ),
-          TextButton(
-            onPressed: _testingAll
-                ? () => setState(() => _cancelRequested = true)
-                : () => _testAll(store, providers),
-            child: Text(_testingAll ? '停止' : '全部测试'),
-          ),
+          if (isAnime)
+            IconButton(
+              tooltip: _testingAll ? '停止全部测试' : '测试全部模型',
+              onPressed: _testingAll
+                  ? () => setState(() => _cancelRequested = true)
+                  : () => _testAll(store, providers),
+              icon: Icon(_testingAll
+                  ? Icons.stop_circle_outlined
+                  : Icons.play_circle_outline_rounded),
+            )
+          else
+            TextButton(
+              onPressed: _testingAll
+                  ? () => setState(() => _cancelRequested = true)
+                  : () => _testAll(store, providers),
+              child: Text(_testingAll ? '停止' : '全部测试'),
+            ),
         ],
       ),
       body: providers.isEmpty
-          ? const Center(child: Text('暂无已启用的服务商'))
-          : ListView(
+          ? const AppVisualEmptyState(
+              animeKey: ValueKey('health_check_empty_state'),
+              icon: Icons.health_and_safety_outlined,
+              title: '暂无已启用的服务商',
+              message: '先在 AI 服务设置中启用服务商，再回来批量检查模型。',
+              classic: Center(child: Text('暂无已启用的服务商')),
+            )
+          : isAnime
+              ? ListView.separated(
+                  padding: const EdgeInsets.fromLTRB(12, 12, 12, 24),
+                  itemCount: providers.length,
+                  separatorBuilder: (_, __) => const SizedBox(height: 12),
+                  itemBuilder: (_, index) =>
+                      _providerSurface(store, providers[index]),
+                )
+              : ListView(
+                  children: [
+                    for (final provider in providers) ...[
+                      Padding(
+                        padding: const EdgeInsets.fromLTRB(16, 18, 16, 6),
+                        child: Text(provider.name,
+                            style: Theme.of(context).textTheme.titleSmall),
+                      ),
+                      for (final model in provider.models)
+                        _modelTile(store, provider, model),
+                    ],
+                  ],
+                ),
+    );
+  }
+
+  Widget _providerSurface(AISettingsProvider store, AiProvider provider) {
+    final scheme = Theme.of(context).colorScheme;
+    return AppVisualSurface(
+      animeKey: ValueKey('health_provider_${provider.id}'),
+      padding: EdgeInsets.zero,
+      clip: true,
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Padding(
+            padding: const EdgeInsets.fromLTRB(16, 14, 16, 10),
+            child: Row(
               children: [
-                for (final provider in providers) ...[
-                  Padding(
-                    padding: const EdgeInsets.fromLTRB(16, 18, 16, 6),
-                    child: Text(provider.name,
-                        style: Theme.of(context).textTheme.titleSmall),
+                Container(
+                  width: 40,
+                  height: 40,
+                  alignment: Alignment.center,
+                  decoration: BoxDecoration(
+                    color: scheme.primaryContainer,
+                    borderRadius: BorderRadius.circular(14),
                   ),
-                  for (final model in provider.models)
-                    _modelTile(store, provider, model),
-                ],
+                  child: Icon(Icons.dns_outlined,
+                      color: scheme.onPrimaryContainer),
+                ),
+                const SizedBox(width: 12),
+                Expanded(
+                  child: Text(provider.name,
+                      style: Theme.of(context).textTheme.titleMedium),
+                ),
+                Text(
+                  '${provider.models.length} 个模型',
+                  style: Theme.of(context).textTheme.labelMedium?.copyWith(
+                        color: scheme.onSurfaceVariant,
+                      ),
+                ),
               ],
             ),
+          ),
+          const Divider(),
+          for (var index = 0; index < provider.models.length; index++) ...[
+            _modelTile(store, provider, provider.models[index]),
+            if (index != provider.models.length - 1) const Divider(indent: 68),
+          ],
+        ],
+      ),
     );
   }
 
@@ -87,14 +163,43 @@ class _AiHealthCheckPageState extends State<AiHealthCheckPage> {
       _HealthState.failure => cs.error,
       _ => cs.onSurfaceVariant,
     };
+    final isAnime = AppVisualTheme.of(context).isAnime;
+    final statusKind = switch (state) {
+      _HealthState.success => AppStatusKind.success,
+      _HealthState.failure => AppStatusKind.error,
+      _HealthState.running => AppStatusKind.info,
+      _ => AppStatusKind.neutral,
+    };
+    final statusPalette = AppStatusPalette.of(context, statusKind);
     return ListTile(
-      dense: true,
+      dense: isAnime ? false : true,
+      leading: isAnime
+          ? CircleAvatar(
+              backgroundColor: statusPalette.container,
+              foregroundColor: statusPalette.foreground,
+              child: Icon(switch (state) {
+                _HealthState.success => Icons.check_rounded,
+                _HealthState.failure => Icons.error_outline_rounded,
+                _HealthState.running => Icons.sync_rounded,
+                _ => Icons.pending_outlined,
+              }),
+            )
+          : null,
       title: Text(model.name),
       subtitle: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           if (model.id != model.name) Text(model.id),
-          Text(status, style: TextStyle(color: color)),
+          if (isAnime)
+            Padding(
+              padding: const EdgeInsets.only(top: 6),
+              child: Align(
+                alignment: Alignment.centerLeft,
+                child: AppStatusBadge(label: status, kind: statusKind),
+              ),
+            )
+          else
+            Text(status, style: TextStyle(color: color)),
           if (error != null)
             Text(error,
                 maxLines: 2,

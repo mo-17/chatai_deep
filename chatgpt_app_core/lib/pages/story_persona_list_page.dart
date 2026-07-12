@@ -4,6 +4,7 @@ import 'package:chatgpt_app_core/model/story_persona_model.dart';
 import 'package:chatgpt_app_core/pages/story_persona_edit_page.dart';
 import 'package:chatgpt_app_core/util/hi_dialog.dart';
 import 'package:chatgpt_app_core/widget/assistant_avatar.dart';
+import 'package:chatgpt_app_core/widget/story_visual_widgets.dart';
 import 'package:flutter/material.dart';
 
 /// 账号级 Persona 列表，也可作为选择 Persona 的页面使用。
@@ -112,6 +113,13 @@ class _StoryPersonaListPageState extends State<StoryPersonaListPage> {
           ),
           FilledButton(
             onPressed: () => Navigator.pop(dialogContext, true),
+            style: storyUsesAnimeStyle(dialogContext)
+                ? FilledButton.styleFrom(
+                    backgroundColor: Theme.of(dialogContext).colorScheme.error,
+                    foregroundColor:
+                        Theme.of(dialogContext).colorScheme.onError,
+                  )
+                : null,
             child: const Text('删除'),
           ),
         ],
@@ -172,7 +180,7 @@ class _StoryPersonaListPageState extends State<StoryPersonaListPage> {
       return const Center(child: CircularProgressIndicator());
     }
     if (_loadError != null) {
-      return Center(
+      final classic = Center(
         child: Padding(
           padding: const EdgeInsets.all(24),
           child: Column(
@@ -190,85 +198,113 @@ class _StoryPersonaListPageState extends State<StoryPersonaListPage> {
           ),
         ),
       );
+      return StoryAdaptiveEmptyState(
+        classicChild: classic,
+        icon: Icons.cloud_off_outlined,
+        title: 'Persona 加载失败',
+        subtitle: '请检查本地数据后重试。',
+        action: OutlinedButton.icon(
+          key: const ValueKey('story_persona_retry_anime'),
+          onPressed: _load,
+          icon: const Icon(Icons.refresh),
+          label: const Text('重试'),
+        ),
+      );
     }
     if (_personas.isEmpty) {
-      return Center(
-        child: Padding(
-          padding: const EdgeInsets.all(24),
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              const Icon(Icons.person_outline, size: 44),
-              const SizedBox(height: 12),
-              const Text('还没有 Persona'),
-              const SizedBox(height: 16),
-              FilledButton.icon(
-                key: const ValueKey('story_persona_empty_add_button'),
-                onPressed: () => _openEditor(),
-                icon: const Icon(Icons.add),
-                label: const Text('新建 Persona'),
-              ),
-            ],
+      return StoryAdaptiveEmptyState(
+        classicChild: Center(
+          child: Padding(
+            padding: const EdgeInsets.all(24),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                const Icon(Icons.person_outline, size: 44),
+                const SizedBox(height: 12),
+                const Text('还没有 Persona'),
+                const SizedBox(height: 16),
+                FilledButton.icon(
+                  key: const ValueKey('story_persona_empty_add_button'),
+                  onPressed: () => _openEditor(),
+                  icon: const Icon(Icons.add),
+                  label: const Text('新建 Persona'),
+                ),
+              ],
+            ),
           ),
+        ),
+        icon: Icons.person_outline,
+        title: '还没有 Persona',
+        subtitle: '创建你的故事身份，让每次进入房间都保持一致的名字和语气。',
+        action: FilledButton.icon(
+          key: const ValueKey('story_persona_empty_add_button'),
+          onPressed: () => _openEditor(),
+          icon: const Icon(Icons.add),
+          label: const Text('新建 Persona'),
         ),
       );
     }
     return ListView.separated(
       padding: const EdgeInsets.fromLTRB(12, 8, 12, 96),
       itemCount: _personas.length,
-      separatorBuilder: (_, __) => const Divider(height: 1),
+      separatorBuilder: (_, __) => storyUsesAnimeStyle(context)
+          ? const SizedBox.shrink()
+          : const Divider(height: 1),
       itemBuilder: (context, index) => _buildPersonaTile(_personas[index]),
     );
   }
 
   Widget _buildPersonaTile(StoryPersonaModel persona) {
     final emoji = persona.avatarType == 'image' ? '🙂' : persona.avatarValue;
-    return ListTile(
+    return StoryAdaptiveListItem(
       key: ValueKey('story_persona_item_${persona.personaKey}'),
-      contentPadding: const EdgeInsets.symmetric(horizontal: 4, vertical: 4),
-      leading: AssistantAvatar.raw(
-        emoji: emoji,
-        avatarType: persona.avatarType,
-        avatarValue: persona.avatarValue,
-        radius: 24,
-      ),
-      title: Text(
-        persona.name,
-        maxLines: 1,
-        overflow: TextOverflow.ellipsis,
-      ),
-      subtitle: persona.description.trim().isEmpty
-          ? null
-          : Text(
-              persona.description,
-              maxLines: 2,
-              overflow: TextOverflow.ellipsis,
-            ),
-      trailing: Row(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          if (!widget.selectionMode)
+      animeMargin: const EdgeInsets.symmetric(vertical: 5),
+      child: ListTile(
+        contentPadding: const EdgeInsets.symmetric(horizontal: 4, vertical: 4),
+        leading: AssistantAvatar.raw(
+          emoji: emoji,
+          avatarType: persona.avatarType,
+          avatarValue: persona.avatarValue,
+          radius: 24,
+        ),
+        title: Text(
+          persona.name,
+          maxLines: 1,
+          overflow: TextOverflow.ellipsis,
+        ),
+        subtitle: persona.description.trim().isEmpty
+            ? null
+            : Text(
+                persona.description,
+                maxLines: 2,
+                overflow: TextOverflow.ellipsis,
+              ),
+        trailing: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            if (!widget.selectionMode)
+              IconButton(
+                key: ValueKey('story_persona_edit_${persona.personaKey}'),
+                tooltip: '编辑 Persona',
+                onPressed: () => _openEditor(persona),
+                icon: const Icon(Icons.edit_outlined),
+              ),
             IconButton(
-              key: ValueKey('story_persona_edit_${persona.personaKey}'),
-              tooltip: '编辑 Persona',
-              onPressed: () => _openEditor(persona),
-              icon: const Icon(Icons.edit_outlined),
+              key: ValueKey('story_persona_delete_${persona.personaKey}'),
+              tooltip: '删除 Persona',
+              onPressed: () => _deletePersona(persona),
+              icon: const Icon(Icons.delete_outline),
             ),
-          IconButton(
-            key: ValueKey('story_persona_delete_${persona.personaKey}'),
-            tooltip: '删除 Persona',
-            onPressed: () => _deletePersona(persona),
-            icon: const Icon(Icons.delete_outline),
-          ),
-        ],
+          ],
+        ),
+        onTap: () {
+          if (widget.selectionMode) {
+            Navigator.of(context).pop(persona);
+          } else {
+            _openEditor(persona);
+          }
+        },
       ),
-      onTap: () {
-        if (widget.selectionMode) {
-          Navigator.of(context).pop(persona);
-        } else {
-          _openEditor(persona);
-        }
-      },
     );
   }
 }

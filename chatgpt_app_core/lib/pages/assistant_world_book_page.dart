@@ -3,7 +3,9 @@ import 'package:chatgpt_app_core/db/assistant_dao.dart';
 import 'package:chatgpt_app_core/db/hi_db_manager.dart';
 import 'package:chatgpt_app_core/model/assistant_model.dart';
 import 'package:chatgpt_app_core/model/world_book.dart';
+import 'package:chatgpt_app_core/theme/app_visual_theme.dart';
 import 'package:chatgpt_app_core/util/hi_dialog.dart';
+import 'package:chatgpt_app_core/widget/app_visual_widgets.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
@@ -86,13 +88,20 @@ class _AssistantWorldBookPageState extends State<AssistantWorldBookPage> {
     );
   }
 
-  Widget get _emptyView => Center(
-        child: Padding(
-          padding: const EdgeInsets.all(24),
-          child: Text(
-            '还没有世界书设定。点右下角新增；关键词为空时会作为常驻设定。',
-            textAlign: TextAlign.center,
-            style: TextStyle(color: Colors.grey[600]),
+  Widget get _emptyView => AppVisualEmptyState(
+        icon: Icons.auto_stories_outlined,
+        title: '还没有世界书设定',
+        message: '点右下角新增；关键词为空时会作为常驻设定。',
+        classic: Center(
+          child: Padding(
+            padding: const EdgeInsets.all(24),
+            child: Text(
+              '还没有世界书设定。点右下角新增；关键词为空时会作为常驻设定。',
+              textAlign: TextAlign.center,
+              style: TextStyle(
+                color: Theme.of(context).colorScheme.onSurfaceVariant,
+              ),
+            ),
           ),
         ),
       );
@@ -113,14 +122,15 @@ class _AssistantWorldBookPageState extends State<AssistantWorldBookPage> {
     final disabledCount = _entries.where((entry) => !entry.enabled).length;
     final alwaysOnCount = _entries.where((entry) => entry.alwaysOn).length;
     final keywordCount = _entries.length - alwaysOnCount;
-    return Padding(
+    final colorScheme = Theme.of(context).colorScheme;
+    final content = Padding(
       padding: const EdgeInsets.fromLTRB(16, 12, 16, 8),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           Text(
             '共 ${_entries.length} 条 · 常驻 $alwaysOnCount · 关键词 $keywordCount · 禁用 $disabledCount',
-            style: const TextStyle(fontSize: 13, color: Colors.black54),
+            style: TextStyle(fontSize: 13, color: colorScheme.onSurfaceVariant),
           ),
           const SizedBox(height: 10),
           TextField(
@@ -160,6 +170,11 @@ class _AssistantWorldBookPageState extends State<AssistantWorldBookPage> {
         ],
       ),
     );
+    return AppVisualSurface(
+      padding: EdgeInsets.zero,
+      margin: const EdgeInsets.fromLTRB(12, 12, 12, 6),
+      child: content,
+    );
   }
 
   Widget get _probePreview {
@@ -168,12 +183,19 @@ class _AssistantWorldBookPageState extends State<AssistantWorldBookPage> {
       _probeCtl.text,
     );
     final hasHits = hits.isNotEmpty;
+    final palette = AppStatusPalette.of(
+      context,
+      hasHits ? AppStatusKind.info : AppStatusKind.neutral,
+    );
     return Padding(
       padding: const EdgeInsets.only(top: 8),
       child: DecoratedBox(
         decoration: BoxDecoration(
-          color: hasHits ? Colors.blueGrey.withAlpha(18) : Colors.grey[100],
+          color: palette.container,
           borderRadius: BorderRadius.circular(8),
+          border: Border.all(
+            color: palette.foreground.withValues(alpha: 0.18),
+          ),
         ),
         child: Padding(
           padding: const EdgeInsets.all(10),
@@ -190,7 +212,7 @@ class _AssistantWorldBookPageState extends State<AssistantWorldBookPage> {
                       style: TextStyle(
                         fontSize: 12,
                         fontWeight: FontWeight.w600,
-                        color: hasHits ? Colors.blueGrey[700] : Colors.black54,
+                        color: palette.onContainer,
                       ),
                     ),
                   ),
@@ -198,7 +220,6 @@ class _AssistantWorldBookPageState extends State<AssistantWorldBookPage> {
                     IconButton(
                       tooltip: '复制命中世界书',
                       icon: const Icon(Icons.copy_outlined, size: 18),
-                      visualDensity: VisualDensity.compact,
                       onPressed: () => _copyProbeHits(hits),
                     ),
                 ],
@@ -212,16 +233,19 @@ class _AssistantWorldBookPageState extends State<AssistantWorldBookPage> {
                       AssistantRoleCardService.memoryHitPreviewLine(hit),
                       maxLines: 2,
                       overflow: TextOverflow.ellipsis,
-                      style: const TextStyle(
+                      style: TextStyle(
                         fontSize: 12,
-                        color: Colors.black54,
+                        color: palette.onContainer,
                       ),
                     ),
                   ),
                 if (hits.length > 4)
                   Text(
                     '还有 ${hits.length - 4} 条未展示',
-                    style: const TextStyle(fontSize: 12, color: Colors.black38),
+                    style: TextStyle(
+                      fontSize: 12,
+                      color: palette.onContainer.withValues(alpha: 0.72),
+                    ),
                   ),
               ],
             ],
@@ -237,7 +261,9 @@ class _AssistantWorldBookPageState extends State<AssistantWorldBookPage> {
           child: Text(
             '没有匹配的世界书设定',
             textAlign: TextAlign.center,
-            style: TextStyle(color: Colors.grey[600]),
+            style: TextStyle(
+              color: Theme.of(context).colorScheme.onSurfaceVariant,
+            ),
           ),
         ),
       );
@@ -253,12 +279,16 @@ class _AssistantWorldBookPageState extends State<AssistantWorldBookPage> {
   }
 
   Widget _listView(List<_WorldBookEntry> entries) => ListView.separated(
-        padding: const EdgeInsets.symmetric(vertical: 8),
+        padding: AppVisualTheme.of(context).isAnime
+            ? const EdgeInsets.fromLTRB(12, 6, 12, 20)
+            : const EdgeInsets.symmetric(vertical: 8),
         itemCount: entries.length,
-        separatorBuilder: (_, __) => const Divider(height: 1),
+        separatorBuilder: (_, __) => AppVisualTheme.of(context).isAnime
+            ? const SizedBox(height: 8)
+            : const Divider(height: 1),
         itemBuilder: (context, index) {
           final entry = entries[index];
-          return ListTile(
+          final tile = ListTile(
             leading: Icon(
               entry.enabled
                   ? (entry.alwaysOn
@@ -288,6 +318,10 @@ class _AssistantWorldBookPageState extends State<AssistantWorldBookPage> {
                 ],
               ),
             ),
+          );
+          return AppVisualSurface(
+            padding: EdgeInsets.zero,
+            child: tile,
           );
         },
       );
@@ -907,14 +941,34 @@ class _WorldBookEditDialogState extends State<_WorldBookEditDialog> {
             onChanged: (value) =>
                 setState(() => _useGroupScoring = value ?? false),
           ),
-          Row(
-            children: [
-              Expanded(child: _turnField(_delayCtl, '延迟')),
-              const SizedBox(width: 8),
-              Expanded(child: _turnField(_stickyCtl, '粘滞')),
-              const SizedBox(width: 8),
-              Expanded(child: _turnField(_cooldownCtl, '冷却')),
-            ],
+          LayoutBuilder(
+            builder: (context, constraints) {
+              final stacked = constraints.maxWidth < 360 ||
+                  MediaQuery.textScalerOf(context).scale(14) > 18;
+              final fields = [
+                _turnField(_delayCtl, '延迟'),
+                _turnField(_stickyCtl, '粘滞'),
+                _turnField(_cooldownCtl, '冷却'),
+              ];
+              if (stacked) {
+                return Column(
+                  children: [
+                    for (var index = 0; index < fields.length; index++) ...[
+                      fields[index],
+                      if (index < fields.length - 1) const SizedBox(height: 8),
+                    ],
+                  ],
+                );
+              }
+              return Row(
+                children: [
+                  for (var index = 0; index < fields.length; index++) ...[
+                    Expanded(child: fields[index]),
+                    if (index < fields.length - 1) const SizedBox(width: 8),
+                  ],
+                ],
+              );
+            },
           ),
           const SizedBox(height: 12),
           TextField(
@@ -978,7 +1032,6 @@ class _WorldBookEditDialogState extends State<_WorldBookEditDialog> {
     ValueChanged<bool> update,
   ) =>
       CheckboxListTile(
-        dense: true,
         contentPadding: EdgeInsets.zero,
         value: value,
         title: Text(title),

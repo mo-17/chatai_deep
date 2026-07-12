@@ -1,6 +1,9 @@
 import 'dart:io';
+import 'dart:math' as math;
 
 import 'package:chatgpt_app_core/capability/generated_image_save_service.dart';
+import 'package:chatgpt_app_core/theme/app_visual_theme.dart';
+import 'package:chatgpt_app_core/widget/app_visual_widgets.dart';
 import 'package:flutter/material.dart';
 
 typedef GeneratedImageAlbumLoader = Future<List<GeneratedImageAlbumItem>>
@@ -51,10 +54,16 @@ class _GeneratedImageAlbumBodyState extends State<_GeneratedImageAlbumBody> {
     _future = widget.loader();
   }
 
-  void _reload() {
+  Future<void> _reload() async {
+    final next = widget.loader();
     setState(() {
-      _future = widget.loader();
+      _future = next;
     });
+    try {
+      await next;
+    } catch (_) {
+      // FutureBuilder 会展示具体错误；刷新手势只需等待其结束。
+    }
   }
 
   @override
@@ -74,20 +83,42 @@ class _GeneratedImageAlbumBodyState extends State<_GeneratedImageAlbumBody> {
           return _EmptyState(onRefresh: _reload);
         }
         return RefreshIndicator(
-          onRefresh: () async => _reload(),
-          child: GridView.builder(
-            padding: const EdgeInsets.all(12),
-            gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
-              crossAxisCount: 2,
-              crossAxisSpacing: 10,
-              mainAxisSpacing: 10,
-              childAspectRatio: 0.78,
-            ),
-            itemCount: items.length,
-            itemBuilder: (context, index) => _ImageTile(
-              items[index],
-              onDelete: () => _delete(items[index]),
-            ),
+          onRefresh: _reload,
+          child: LayoutBuilder(
+            builder: (context, constraints) {
+              final textScale = MediaQuery.textScalerOf(context).scale(1);
+              const horizontalPadding = 24.0;
+              const maxTileExtent = 260.0;
+              const crossAxisSpacing = 10.0;
+              final crossAxisExtent =
+                  math.max(1.0, constraints.maxWidth - horizontalPadding);
+              final crossAxisCount = math.max(
+                1,
+                (crossAxisExtent / (maxTileExtent + crossAxisSpacing)).ceil(),
+              );
+              final tileExtent =
+                  (crossAxisExtent - crossAxisSpacing * (crossAxisCount - 1)) /
+                      crossAxisCount;
+              final imageCacheWidth = math.max(
+                1,
+                (tileExtent * MediaQuery.devicePixelRatioOf(context)).ceil(),
+              );
+              return GridView.builder(
+                padding: const EdgeInsets.all(12),
+                gridDelegate: SliverGridDelegateWithMaxCrossAxisExtent(
+                  maxCrossAxisExtent: maxTileExtent,
+                  crossAxisSpacing: crossAxisSpacing,
+                  mainAxisSpacing: 10,
+                  childAspectRatio: textScale > 1.3 ? 0.66 : 0.78,
+                ),
+                itemCount: items.length,
+                itemBuilder: (context, index) => _ImageTile(
+                  items[index],
+                  cacheWidth: imageCacheWidth,
+                  onDelete: () => _delete(items[index]),
+                ),
+              );
+            },
           ),
         );
       },
@@ -107,6 +138,11 @@ class _GeneratedImageAlbumBodyState extends State<_GeneratedImageAlbumBody> {
           ),
           TextButton(
             onPressed: () => Navigator.pop(ctx, true),
+            style: AppVisualTheme.of(ctx).isAnime
+                ? TextButton.styleFrom(
+                    foregroundColor: Theme.of(ctx).colorScheme.error,
+                  )
+                : null,
             child: const Text('删除'),
           ),
         ],
@@ -131,9 +167,14 @@ class _GeneratedImageAlbumBodyState extends State<_GeneratedImageAlbumBody> {
 
 class _ImageTile extends StatelessWidget {
   final GeneratedImageAlbumItem item;
+  final int cacheWidth;
   final VoidCallback onDelete;
 
-  const _ImageTile(this.item, {required this.onDelete});
+  const _ImageTile(
+    this.item, {
+    required this.cacheWidth,
+    required this.onDelete,
+  });
 
   @override
   Widget build(BuildContext context) {
@@ -147,11 +188,35 @@ class _ImageTile extends StatelessWidget {
             child: Container(
               width: double.infinity,
               color: cs.surfaceContainerHighest,
-              child: Image.file(
-                File(item.path),
-                fit: BoxFit.cover,
-                errorBuilder: (_, __, ___) =>
-                    const Center(child: Icon(Icons.broken_image_outlined)),
+              child: Semantics(
+                image: true,
+                label: '生成图片 ${item.filename}',
+                child: Image.file(
+                  File(item.path),
+                  fit: BoxFit.cover,
+                  cacheWidth: cacheWidth,
+                  errorBuilder: (_, __, ___) => Center(
+                    child: Padding(
+                      padding: const EdgeInsets.all(12),
+                      child: Column(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          Icon(Icons.broken_image_outlined,
+                              color: cs.onSurfaceVariant),
+                          const SizedBox(height: 6),
+                          Text(
+                            '图片无法读取',
+                            textAlign: TextAlign.center,
+                            style: Theme.of(context)
+                                .textTheme
+                                .bodySmall
+                                ?.copyWith(color: cs.onSurfaceVariant),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ),
+                ),
               ),
             ),
           ),
@@ -214,13 +279,18 @@ class _EmptyState extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return Center(
+    final classic = Center(
       child: Column(
         mainAxisSize: MainAxisSize.min,
         children: [
           const Icon(Icons.photo_library_outlined, size: 44),
           const SizedBox(height: 12),
-          Text('还没有保存的生成图片', style: TextStyle(color: Colors.grey[600])),
+          Text(
+            '还没有保存的生成图片',
+            style: TextStyle(
+              color: Theme.of(context).colorScheme.onSurfaceVariant,
+            ),
+          ),
           const SizedBox(height: 12),
           TextButton.icon(
             onPressed: onRefresh,
@@ -229,6 +299,17 @@ class _EmptyState extends StatelessWidget {
           ),
         ],
       ),
+    );
+    return AppVisualEmptyState(
+      icon: Icons.photo_library_outlined,
+      title: '还没有保存的生成图片',
+      message: '在会话中保存模型生成的图片后，它们会出现在这里。',
+      action: TextButton.icon(
+        onPressed: onRefresh,
+        icon: const Icon(Icons.refresh),
+        label: const Text('刷新'),
+      ),
+      classic: classic,
     );
   }
 }
@@ -241,20 +322,30 @@ class _ErrorState extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return Center(
-      child: Padding(
-        padding: const EdgeInsets.all(24),
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Text(message, textAlign: TextAlign.center),
-            const SizedBox(height: 12),
-            FilledButton.icon(
-              onPressed: onRetry,
-              icon: const Icon(Icons.refresh),
-              label: const Text('重试'),
-            ),
-          ],
+    return AppVisualEmptyState(
+      icon: Icons.broken_image_outlined,
+      title: '相册加载失败',
+      message: message,
+      action: FilledButton.icon(
+        onPressed: onRetry,
+        icon: const Icon(Icons.refresh),
+        label: const Text('重试'),
+      ),
+      classic: Center(
+        child: Padding(
+          padding: const EdgeInsets.all(24),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Text(message, textAlign: TextAlign.center),
+              const SizedBox(height: 12),
+              FilledButton.icon(
+                onPressed: onRetry,
+                icon: const Icon(Icons.refresh),
+                label: const Text('重试'),
+              ),
+            ],
+          ),
         ),
       ),
     );

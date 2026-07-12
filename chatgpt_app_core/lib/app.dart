@@ -11,6 +11,7 @@ import 'package:chatgpt_app_core/pages/bottom_navigator.dart';
 import 'package:chatgpt_app_core/provider/ai_settings_provider.dart';
 import 'package:chatgpt_app_core/provider/hi_provider.dart';
 import 'package:chatgpt_app_core/provider/theme_provider.dart';
+import 'package:chatgpt_app_core/theme/app_visual_theme.dart';
 import 'package:chatgpt_app_core/sync/cloud_sync_client.dart';
 import 'package:chatgpt_app_core/util/model_catalog.dart';
 import 'package:flutter/material.dart';
@@ -70,7 +71,7 @@ class MyApp extends StatefulWidget {
 }
 
 class _MyAppState extends State<MyApp> {
-  late final Future<void> _initFuture;
+  late Future<void> _initFuture;
 
   @override
   void initState() {
@@ -134,6 +135,14 @@ class _MyAppState extends State<MyApp> {
             return MaterialApp(
               home: widget,
               theme: themeProvider.getTheme(),
+              builder: (context, child) => AppVisualBackdrop(
+                child: child ?? const SizedBox.shrink(),
+              ),
+              // 经典主题沿用旧 Material 配置，二次元主题使用 Material 3；
+              // 两套 TextStyle 无法被 Flutter 安全插值，因此根主题直接切换，
+              // 页面内的选中态和内容仍各自保留 180–220ms 动效。
+              themeAnimationDuration: Duration.zero,
+              debugShowCheckedModeBanner: false,
               title: 'ChatGPT',
             );
           }),

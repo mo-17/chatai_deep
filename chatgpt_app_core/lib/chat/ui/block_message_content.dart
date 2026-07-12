@@ -6,6 +6,7 @@ import 'package:chatgpt_app_core/capability/product_capabilities.dart';
 import 'package:chatgpt_app_core/chat/application/chat_block_store.dart';
 import 'package:chatgpt_app_core/chat/domain/message_block.dart';
 import 'package:chatgpt_app_core/chat/ui/thinking_block_view.dart';
+import 'package:chatgpt_app_core/theme/app_visual_theme.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:provider/provider.dart';
@@ -21,7 +22,7 @@ import 'package:url_launcher/url_launcher.dart';
 /// 其它块（如已完成的思考块）不动 —— 满足阶段一验收。
 class BlockMessageContent extends StatelessWidget {
   final String messageKey;
-  final Color textColor;
+  final Color? textColor;
   final double fontSize;
 
   /// 是否在正文下方显示「字数」（仅 assistant 回复用）。流式中随正文增长实时更新。
@@ -33,7 +34,7 @@ class BlockMessageContent extends StatelessWidget {
   const BlockMessageContent({
     super.key,
     required this.messageKey,
-    this.textColor = Colors.black,
+    this.textColor,
     this.fontSize = 16,
     this.showCharCount = false,
     this.footerTrailing,
@@ -41,6 +42,8 @@ class BlockMessageContent extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final resolvedTextColor =
+        textColor ?? Theme.of(context).colorScheme.onSurface;
     return Selector<ChatBlockStore, List<String>>(
       selector: (_, store) => store.blockIdsFor(messageKey),
       builder: (_, blockIds, __) {
@@ -52,7 +55,7 @@ class BlockMessageContent extends StatelessWidget {
               _BlockView(
                 blockId: id,
                 messageKey: messageKey,
-                textColor: textColor,
+                textColor: resolvedTextColor,
                 fontSize: fontSize,
               ),
             if (showCharCount || footerTrailing != null)
@@ -234,11 +237,14 @@ class _MainText extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     if (content.isEmpty) return const SizedBox.shrink();
+    final visual = AppVisualTheme.of(context);
+    final scheme = Theme.of(context).colorScheme;
+    final linkColor = visual.isAnime ? scheme.primary : const Color(0xFF3B5BDB);
     final linkStyle = TextStyle(
-      color: const Color(0xFF3B5BDB),
+      color: linkColor,
       fontSize: fontSize,
       decoration: TextDecoration.underline,
-      decorationColor: const Color(0xFF3B5BDB),
+      decorationColor: linkColor,
     );
     final normalStyle = TextStyle(fontSize: fontSize, color: color);
     return Selector<ChatBlockStore, List<WebSearchResult>>(
@@ -266,10 +272,21 @@ class _MainText extends StatelessWidget {
           }
           spans.add(
             WidgetSpan(
-              child: GestureDetector(
-                behavior: HitTestBehavior.translucent,
+              alignment: PlaceholderAlignment.middle,
+              child: Semantics(
+                link: true,
+                linkUrl: Uri.tryParse(segment.url!),
+                label: '打开来源 ${segment.text}',
                 onTap: () => _open(segment.url!),
-                child: Text(segment.text, style: linkStyle),
+                excludeSemantics: true,
+                child: SizedBox.square(
+                  dimension: 44,
+                  child: GestureDetector(
+                    behavior: HitTestBehavior.opaque,
+                    onTap: () => _open(segment.url!),
+                    child: Center(child: Text(segment.text, style: linkStyle)),
+                  ),
+                ),
               ),
             ),
           );
@@ -353,52 +370,75 @@ class _RoleContextState extends State<_RoleContext> {
   Widget build(BuildContext context) {
     final content = widget.block.content.trim();
     if (content.isEmpty) return const SizedBox.shrink();
+    final visual = AppVisualTheme.of(context);
+    final scheme = Theme.of(context).colorScheme;
+    final foreground =
+        visual.isAnime ? scheme.primary : Colors.deepPurple[700]!;
+    final background = visual.isAnime
+        ? scheme.primaryContainer.withValues(alpha: 0.72)
+        : Colors.deepPurple.withValues(alpha: 0.08);
+    final borderColor = visual.isAnime
+        ? scheme.primary.withValues(alpha: 0.22)
+        : Colors.deepPurple.withValues(alpha: 0.16);
     return Container(
       margin: const EdgeInsets.only(top: 6),
-      padding: const EdgeInsets.all(8),
+      padding: EdgeInsets.all(visual.isAnime ? 10 : 8),
       decoration: BoxDecoration(
-        color: Colors.deepPurple.withValues(alpha: 0.08),
-        borderRadius: BorderRadius.circular(6),
-        border: Border.all(color: Colors.deepPurple.withValues(alpha: 0.16)),
+        color: background,
+        borderRadius: BorderRadius.circular(visual.isAnime ? 16 : 6),
+        border: Border.all(color: borderColor),
       ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         mainAxisSize: MainAxisSize.min,
         children: [
-          GestureDetector(
-            behavior: HitTestBehavior.opaque,
-            onTap: () => setState(() => _expanded = !_expanded),
-            child: Row(
-              children: [
-                Icon(Icons.fact_check_outlined,
-                    size: 15, color: Colors.deepPurple[700]),
-                const SizedBox(width: 5),
-                Expanded(
-                  child: Text(
-                    '本轮完整上下文',
-                    style: TextStyle(
-                      fontSize: 12,
-                      fontWeight: FontWeight.w600,
-                      color: Colors.deepPurple[700],
+          Semantics(
+            button: true,
+            expanded: _expanded,
+            child: InkWell(
+              borderRadius: BorderRadius.circular(visual.isAnime ? 12 : 6),
+              onTap: () => setState(() => _expanded = !_expanded),
+              child: ConstrainedBox(
+                constraints: BoxConstraints(
+                  minHeight: visual.isAnime ? 44 : 28,
+                ),
+                child: Row(
+                  children: [
+                    Icon(Icons.fact_check_outlined,
+                        size: 16, color: foreground),
+                    const SizedBox(width: 5),
+                    Expanded(
+                      child: Text(
+                        '本轮完整上下文',
+                        style: TextStyle(
+                          fontSize: 12,
+                          fontWeight: FontWeight.w600,
+                          color: foreground,
+                        ),
+                      ),
                     ),
-                  ),
+                    Icon(
+                      _expanded ? Icons.expand_less : Icons.expand_more,
+                      size: 16,
+                      color: foreground,
+                    ),
+                    IconButton(
+                      tooltip: '复制本轮上下文',
+                      visualDensity: visual.isAnime
+                          ? VisualDensity.standard
+                          : VisualDensity.compact,
+                      constraints: BoxConstraints.tightFor(
+                        width: visual.isAnime ? 44 : 28,
+                        height: visual.isAnime ? 44 : 28,
+                      ),
+                      padding: EdgeInsets.zero,
+                      icon: const Icon(Icons.copy_outlined, size: 15),
+                      color: foreground,
+                      onPressed: () => _copy(context, content),
+                    ),
+                  ],
                 ),
-                Icon(
-                  _expanded ? Icons.expand_less : Icons.expand_more,
-                  size: 16,
-                  color: Colors.deepPurple[700],
-                ),
-                IconButton(
-                  tooltip: '复制本轮上下文',
-                  visualDensity: VisualDensity.compact,
-                  constraints:
-                      const BoxConstraints.tightFor(width: 28, height: 28),
-                  padding: EdgeInsets.zero,
-                  icon: const Icon(Icons.copy_outlined, size: 15),
-                  color: Colors.deepPurple[700],
-                  onPressed: () => _copy(context, content),
-                ),
-              ],
+              ),
             ),
           ),
           if (_expanded) ...[
@@ -408,16 +448,21 @@ class _RoleContextState extends State<_RoleContext> {
               constraints: const BoxConstraints(maxHeight: 220),
               padding: const EdgeInsets.all(6),
               decoration: BoxDecoration(
-                color: Colors.white.withValues(alpha: 0.88),
-                borderRadius: BorderRadius.circular(4),
+                color: visual.isAnime
+                    ? scheme.surface.withValues(alpha: 0.90)
+                    : Colors.white.withValues(alpha: 0.88),
+                borderRadius: BorderRadius.circular(visual.isAnime ? 12 : 4),
+                border: visual.isAnime
+                    ? Border.all(color: scheme.outlineVariant)
+                    : null,
               ),
               child: SingleChildScrollView(
                 child: SelectableText(
                   content,
-                  style: const TextStyle(
+                  style: TextStyle(
                     fontSize: 11,
                     height: 1.35,
-                    color: Colors.black87,
+                    color: visual.isAnime ? scheme.onSurface : Colors.black87,
                   ),
                 ),
               ),
@@ -455,42 +500,59 @@ class _RoleContinuationState extends State<_RoleContinuation> {
   Widget build(BuildContext context) {
     final content = widget.block.content.trim();
     if (content.isEmpty) return const SizedBox.shrink();
-    final color = Colors.indigo[700]!;
+    final visual = AppVisualTheme.of(context);
+    final scheme = Theme.of(context).colorScheme;
+    final color = visual.isAnime ? scheme.secondary : Colors.indigo[700]!;
     return Container(
       margin: const EdgeInsets.only(top: 6),
-      padding: const EdgeInsets.all(8),
+      padding: EdgeInsets.all(visual.isAnime ? 10 : 8),
       decoration: BoxDecoration(
-        color: Colors.indigo.withValues(alpha: 0.07),
-        borderRadius: BorderRadius.circular(6),
-        border: Border.all(color: Colors.indigo.withValues(alpha: 0.14)),
+        color: visual.isAnime
+            ? scheme.secondaryContainer.withValues(alpha: 0.72)
+            : Colors.indigo.withValues(alpha: 0.07),
+        borderRadius: BorderRadius.circular(visual.isAnime ? 16 : 6),
+        border: Border.all(
+          color: visual.isAnime
+              ? scheme.secondary.withValues(alpha: 0.20)
+              : Colors.indigo.withValues(alpha: 0.14),
+        ),
       ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         mainAxisSize: MainAxisSize.min,
         children: [
-          GestureDetector(
-            behavior: HitTestBehavior.opaque,
-            onTap: () => setState(() => _expanded = !_expanded),
-            child: Row(
-              children: [
-                Icon(Icons.psychology_alt_outlined, size: 15, color: color),
-                const SizedBox(width: 5),
-                Expanded(
-                  child: Text(
-                    '已保留角色状态 · 下轮将承接',
-                    style: TextStyle(
-                      fontSize: 12,
-                      fontWeight: FontWeight.w600,
+          Semantics(
+            button: true,
+            expanded: _expanded,
+            child: InkWell(
+              borderRadius: BorderRadius.circular(visual.isAnime ? 12 : 6),
+              onTap: () => setState(() => _expanded = !_expanded),
+              child: ConstrainedBox(
+                constraints: BoxConstraints(
+                  minHeight: visual.isAnime ? 44 : 28,
+                ),
+                child: Row(
+                  children: [
+                    Icon(Icons.psychology_alt_outlined, size: 16, color: color),
+                    const SizedBox(width: 5),
+                    Expanded(
+                      child: Text(
+                        '已保留角色状态 · 下轮将承接',
+                        style: TextStyle(
+                          fontSize: 12,
+                          fontWeight: FontWeight.w600,
+                          color: color,
+                        ),
+                      ),
+                    ),
+                    Icon(
+                      _expanded ? Icons.expand_less : Icons.expand_more,
+                      size: 16,
                       color: color,
                     ),
-                  ),
+                  ],
                 ),
-                Icon(
-                  _expanded ? Icons.expand_less : Icons.expand_more,
-                  size: 16,
-                  color: color,
-                ),
-              ],
+              ),
             ),
           ),
           if (_expanded) ...[
@@ -530,25 +592,40 @@ class _Error extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final visual = AppVisualTheme.of(context);
+    final scheme = Theme.of(context).colorScheme;
+    final foreground =
+        visual.isAnime ? scheme.onErrorContainer : const Color(0xFFD32F2F);
+    final background =
+        visual.isAnime ? scheme.errorContainer : const Color(0xFFFDECEC);
+    final message = block.message.isEmpty ? '请求失败' : block.message;
     return Container(
       margin: const EdgeInsets.only(top: 4),
-      padding: const EdgeInsets.all(8),
+      padding: EdgeInsets.all(visual.isAnime ? 12 : 8),
       decoration: BoxDecoration(
-        color: const Color(0xFFFDECEC),
-        borderRadius: BorderRadius.circular(6),
+        color: background,
+        borderRadius: BorderRadius.circular(visual.isAnime ? 14 : 6),
+        border: visual.isAnime
+            ? Border.all(color: scheme.error.withValues(alpha: 0.24))
+            : null,
       ),
-      child: Row(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          const Icon(Icons.error_outline, size: 16, color: Color(0xFFD32F2F)),
-          const SizedBox(width: 6),
-          Flexible(
-            child: Text(
-              block.message.isEmpty ? '请求失败' : block.message,
-              style: const TextStyle(fontSize: 14, color: Color(0xFFD32F2F)),
+      child: Semantics(
+        liveRegion: true,
+        label: '错误：$message',
+        excludeSemantics: true,
+        child: Row(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Icon(Icons.error_outline, size: 18, color: foreground),
+            const SizedBox(width: 8),
+            Flexible(
+              child: Text(
+                message,
+                style: TextStyle(fontSize: 14, color: foreground),
+              ),
             ),
-          ),
-        ],
+          ],
+        ),
       ),
     );
   }
@@ -591,44 +668,127 @@ class _Image extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final img = _buildImage();
-    if (img == null) return const SizedBox.shrink();
-    return Padding(
-      padding: const EdgeInsets.symmetric(vertical: 4),
-      child: Stack(
-        alignment: Alignment.topRight,
-        children: [
-          ClipRRect(borderRadius: BorderRadius.circular(6), child: img),
-          Padding(
-            padding: const EdgeInsets.all(6),
-            child: _ImageSaveButton(source: block.url ?? block.filePath ?? ''),
+    final visual = AppVisualTheme.of(context);
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        final width = visual.isAnime ? constraints.constrainWidth(280) : 200.0;
+        final img = _buildImage(context, width);
+        if (img == null) return const SizedBox.shrink();
+        final label = block.prompt?.trim().isNotEmpty == true
+            ? '生成图片：${block.prompt!.trim()}'
+            : '会话图片';
+        return Padding(
+          padding: const EdgeInsets.symmetric(vertical: 4),
+          child: Semantics(
+            container: true,
+            explicitChildNodes: true,
+            image: true,
+            label: label,
+            child: Stack(
+              alignment: Alignment.topRight,
+              children: [
+                ClipRRect(
+                  borderRadius: BorderRadius.circular(
+                      visual.isAnime ? visual.cardRadius : 6),
+                  child: img,
+                ),
+                Padding(
+                  padding: const EdgeInsets.all(6),
+                  child: _ImageSaveButton(
+                      source: block.url ?? block.filePath ?? ''),
+                ),
+              ],
+            ),
           ),
-        ],
-      ),
+        );
+      },
     );
   }
 
-  Widget? _buildImage() {
-    const w = 200.0;
+  Widget? _buildImage(BuildContext context, double width) {
     final url = block.url;
     final path = block.filePath;
     if (url != null && url.startsWith('data:')) {
       final parts = url.split(',');
-      if (parts.length < 2) return null;
-      return Image.memory(base64Decode(parts[1]), width: w, fit: BoxFit.cover);
+      if (parts.length < 2) return _imageError(context, width);
+      try {
+        return Image.memory(
+          base64Decode(parts[1]),
+          width: width,
+          fit: BoxFit.cover,
+          errorBuilder: (_, __, ___) => _imageError(context, width),
+        );
+      } on FormatException {
+        return _imageError(context, width);
+      }
     }
     if (url != null &&
         (url.startsWith('http://') || url.startsWith('https://'))) {
       return Image.network(
-          width: w,
-          fit: BoxFit.cover,
-          url,
-          errorBuilder: (_, __, ___) => const SizedBox.shrink());
+        url,
+        width: width,
+        fit: BoxFit.cover,
+        loadingBuilder: (context, child, progress) =>
+            progress == null ? child : _imageLoading(context, width, progress),
+        errorBuilder: (_, __, ___) => _imageError(context, width),
+      );
     }
     if (path != null && File(path).existsSync()) {
-      return Image.file(File(path), width: w, fit: BoxFit.cover);
+      return Image.file(
+        File(path),
+        width: width,
+        fit: BoxFit.cover,
+        errorBuilder: (_, __, ___) => _imageError(context, width),
+      );
+    }
+    if ((url?.isNotEmpty ?? false) || (path?.isNotEmpty ?? false)) {
+      return _imageError(context, width);
     }
     return null;
+  }
+
+  Widget _imageLoading(
+    BuildContext context,
+    double width,
+    ImageChunkEvent progress,
+  ) {
+    final expected = progress.expectedTotalBytes;
+    return Container(
+      width: width,
+      height: 120,
+      alignment: Alignment.center,
+      color: Theme.of(context).colorScheme.surfaceContainerHighest,
+      child: CircularProgressIndicator(
+        value: expected == null || expected <= 0
+            ? null
+            : progress.cumulativeBytesLoaded / expected,
+      ),
+    );
+  }
+
+  Widget _imageError(BuildContext context, double width) {
+    final colorScheme = Theme.of(context).colorScheme;
+    return Container(
+      width: width,
+      height: 120,
+      alignment: Alignment.center,
+      color: colorScheme.surfaceContainerHighest,
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Icon(Icons.broken_image_outlined,
+              color: colorScheme.onSurfaceVariant),
+          const SizedBox(height: 6),
+          Text(
+            '图片无法加载',
+            style: Theme.of(context)
+                .textTheme
+                .bodySmall
+                ?.copyWith(color: colorScheme.onSurfaceVariant),
+          ),
+        ],
+      ),
+    );
   }
 }
 
@@ -648,22 +808,28 @@ class _ImageSaveButtonState extends State<_ImageSaveButton> {
   Widget build(BuildContext context) {
     final plan = ImageGenerationPolicy.planSave(source: widget.source);
     if (plan == null) return const SizedBox.shrink();
+    final colorScheme = Theme.of(context).colorScheme;
+    final background = colorScheme.inverseSurface.withValues(alpha: 0.82);
+    final foreground = colorScheme.onInverseSurface;
     return DecoratedBox(
       decoration: BoxDecoration(
-        color: Colors.black54,
-        borderRadius: BorderRadius.circular(18),
+        color: background,
+        borderRadius: BorderRadius.circular(22),
       ),
       child: IconButton(
         tooltip: '保存图片',
         iconSize: 18,
-        color: Colors.white,
-        visualDensity: VisualDensity.compact,
+        color: foreground,
+        constraints: const BoxConstraints(minWidth: 44, minHeight: 44),
         onPressed: _saving ? null : () => _save(context, plan),
         icon: _saving
-            ? const SizedBox(
+            ? SizedBox(
                 width: 18,
                 height: 18,
-                child: CircularProgressIndicator(strokeWidth: 2),
+                child: CircularProgressIndicator(
+                  strokeWidth: 2,
+                  color: foreground,
+                ),
               )
             : const Icon(Icons.download),
       ),
@@ -724,48 +890,80 @@ class _ToolState extends State<_Tool> {
     final args = block.arguments;
     final hasDetail =
         (args != null && args.isNotEmpty) || block.content != null;
+    final visual = AppVisualTheme.of(context);
+    final colorScheme = Theme.of(context).colorScheme;
+    final accent =
+        visual.isAnime ? colorScheme.primary : const Color(0xFF3B5BDB);
+    final surface = visual.isAnime
+        ? colorScheme.primaryContainer.withValues(alpha: 0.62)
+        : const Color(0xFFF0F4FF);
     return Container(
       margin: const EdgeInsets.symmetric(vertical: 4),
       padding: const EdgeInsets.all(8),
       decoration: BoxDecoration(
-        color: const Color(0xFFF0F4FF),
-        borderRadius: BorderRadius.circular(6),
+        color: surface,
+        borderRadius:
+            BorderRadius.circular(visual.isAnime ? visual.cardRadius : 6),
+        border: visual.isAnime
+            ? Border.all(color: colorScheme.outlineVariant)
+            : null,
       ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         mainAxisSize: MainAxisSize.min,
         children: [
-          GestureDetector(
-            behavior: HitTestBehavior.opaque,
+          Semantics(
+            button: hasDetail,
+            enabled: hasDetail,
+            expanded: hasDetail ? _expanded : null,
+            label: block.toolName ?? block.toolId,
             onTap:
                 hasDetail ? () => setState(() => _expanded = !_expanded) : null,
-            child: Row(
-              children: [
-                if (_running)
-                  const SizedBox(
-                    width: 14,
-                    height: 14,
-                    child: CircularProgressIndicator(strokeWidth: 2),
-                  )
-                else
-                  const Icon(Icons.build_outlined,
-                      size: 16, color: Color(0xFF3B5BDB)),
-                const SizedBox(width: 6),
-                Flexible(
-                  child: Text(
-                    _running
-                        ? '正在调用 ${block.toolName ?? block.toolId}…'
-                        : (block.toolName ?? block.toolId),
-                    style:
-                        const TextStyle(fontSize: 13, color: Color(0xFF3B5BDB)),
+            excludeSemantics: true,
+            child: Material(
+              type: MaterialType.transparency,
+              child: InkWell(
+                borderRadius: BorderRadius.circular(
+                    visual.isAnime ? visual.cardRadius : 6),
+                onTap: hasDetail
+                    ? () => setState(() => _expanded = !_expanded)
+                    : null,
+                child: ConstrainedBox(
+                  constraints: const BoxConstraints(minHeight: 44),
+                  child: Row(
+                    children: [
+                      if (_running)
+                        SizedBox(
+                          width: 16,
+                          height: 16,
+                          child: CircularProgressIndicator(
+                            strokeWidth: 2,
+                            color: accent,
+                          ),
+                        )
+                      else
+                        Icon(Icons.build_outlined, size: 18, color: accent),
+                      const SizedBox(width: 8),
+                      Flexible(
+                        child: Text(
+                          _running
+                              ? '正在调用 ${block.toolName ?? block.toolId}…'
+                              : (block.toolName ?? block.toolId),
+                          style: TextStyle(fontSize: 13, color: accent),
+                        ),
+                      ),
+                      if (hasDetail) ...[
+                        const SizedBox(width: 4),
+                        Icon(
+                          _expanded ? Icons.expand_less : Icons.expand_more,
+                          size: 18,
+                          color: accent,
+                        ),
+                      ],
+                    ],
                   ),
                 ),
-                if (hasDetail) ...[
-                  const SizedBox(width: 4),
-                  Icon(_expanded ? Icons.expand_less : Icons.expand_more,
-                      size: 16, color: const Color(0xFF3B5BDB)),
-                ],
-              ],
+              ),
             ),
           ),
           if (_expanded && hasDetail) ...[
@@ -778,32 +976,37 @@ class _ToolState extends State<_Tool> {
   }
 
   Widget _detail(String label, String text) {
+    final visual = AppVisualTheme.of(context);
+    final colorScheme = Theme.of(context).colorScheme;
     return Padding(
       padding: const EdgeInsets.only(top: 6),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           Text(label,
-              style: const TextStyle(
+              style: TextStyle(
                   fontSize: 11,
                   fontWeight: FontWeight.bold,
-                  color: Colors.black54)),
+                  color: colorScheme.onSurfaceVariant)),
           const SizedBox(height: 2),
           Container(
             width: double.infinity,
             padding: const EdgeInsets.all(6),
             constraints: const BoxConstraints(maxHeight: 160),
             decoration: BoxDecoration(
-              color: Colors.white,
-              borderRadius: BorderRadius.circular(4),
+              color: colorScheme.surface,
+              borderRadius: BorderRadius.circular(visual.isAnime ? 12 : 4),
+              border: visual.isAnime
+                  ? Border.all(color: colorScheme.outlineVariant)
+                  : null,
             ),
             child: SingleChildScrollView(
-              child: Text(
+              child: SelectableText(
                 text,
-                style: const TextStyle(
+                style: TextStyle(
                     fontFamily: 'monospace',
                     fontSize: 11,
-                    color: Colors.black87),
+                    color: colorScheme.onSurface),
               ),
             ),
           ),
@@ -832,43 +1035,72 @@ class _Citation extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     if (block.webResults.isEmpty) return const SizedBox.shrink();
+    final visual = AppVisualTheme.of(context);
+    final scheme = Theme.of(context).colorScheme;
+    final muted = visual.isAnime ? scheme.onSurfaceVariant : Colors.black54;
+    final linkColor = visual.isAnime ? scheme.primary : const Color(0xFF3B5BDB);
     return Container(
       margin: const EdgeInsets.only(top: 6),
-      padding: const EdgeInsets.all(8),
+      padding: EdgeInsets.all(visual.isAnime ? 10 : 8),
       decoration: BoxDecoration(
-        color: const Color(0xFFF5F5F5),
-        borderRadius: BorderRadius.circular(6),
+        color: visual.isAnime
+            ? scheme.surfaceContainerLow.withValues(alpha: 0.88)
+            : const Color(0xFFF5F5F5),
+        borderRadius: BorderRadius.circular(visual.isAnime ? 16 : 6),
+        border:
+            visual.isAnime ? Border.all(color: scheme.outlineVariant) : null,
       ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          const Row(
+          Row(
             children: [
-              Icon(Icons.travel_explore, size: 14, color: Colors.black54),
-              SizedBox(width: 4),
+              Icon(Icons.travel_explore, size: 16, color: muted),
+              const SizedBox(width: 4),
               Text('来源',
                   style: TextStyle(
-                      fontSize: 12,
-                      fontWeight: FontWeight.bold,
-                      color: Colors.black54)),
+                      fontSize: 12, fontWeight: FontWeight.bold, color: muted)),
             ],
           ),
           const SizedBox(height: 4),
           for (var i = 0; i < block.webResults.length; i++)
             Padding(
               padding: const EdgeInsets.only(top: 2),
-              child: GestureDetector(
-                onTap: () => _open(block.webResults[i].url),
-                child: Text(
-                  '[${i + 1}] ${block.webResults[i].title.isEmpty ? block.webResults[i].url : block.webResults[i].title}',
-                  style: const TextStyle(
-                    fontSize: 12,
-                    color: Color(0xFF3B5BDB),
-                    decoration: TextDecoration.underline,
-                    decorationColor: Color(0xFF3B5BDB),
-                  ),
-                ),
-              ),
+              child: visual.isAnime
+                  ? Semantics(
+                      link: true,
+                      child: InkWell(
+                        borderRadius: BorderRadius.circular(10),
+                        onTap: () => _open(block.webResults[i].url),
+                        child: ConstrainedBox(
+                          constraints: const BoxConstraints(minHeight: 44),
+                          child: Align(
+                            alignment: Alignment.centerLeft,
+                            child: Text(
+                              '[${i + 1}] ${block.webResults[i].title.isEmpty ? block.webResults[i].url : block.webResults[i].title}',
+                              style: TextStyle(
+                                fontSize: 12,
+                                color: linkColor,
+                                decoration: TextDecoration.underline,
+                                decorationColor: linkColor,
+                              ),
+                            ),
+                          ),
+                        ),
+                      ),
+                    )
+                  : GestureDetector(
+                      onTap: () => _open(block.webResults[i].url),
+                      child: Text(
+                        '[${i + 1}] ${block.webResults[i].title.isEmpty ? block.webResults[i].url : block.webResults[i].title}',
+                        style: TextStyle(
+                          fontSize: 12,
+                          color: linkColor,
+                          decoration: TextDecoration.underline,
+                          decorationColor: linkColor,
+                        ),
+                      ),
+                    ),
             ),
         ],
       ),
@@ -883,21 +1115,28 @@ class _File extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final visual = AppVisualTheme.of(context);
+    final scheme = Theme.of(context).colorScheme;
+    final iconColor = visual.isAnime ? scheme.onSurfaceVariant : Colors.black54;
+    final textColor = visual.isAnime ? scheme.onSurface : Colors.black87;
     return Container(
       margin: const EdgeInsets.symmetric(vertical: 4),
-      padding: const EdgeInsets.all(8),
+      padding: EdgeInsets.all(visual.isAnime ? 10 : 8),
       decoration: BoxDecoration(
-        color: const Color(0xFFF5F5F5),
-        borderRadius: BorderRadius.circular(6),
+        color: visual.isAnime
+            ? scheme.surfaceContainerLow.withValues(alpha: 0.88)
+            : const Color(0xFFF5F5F5),
+        borderRadius: BorderRadius.circular(visual.isAnime ? 16 : 6),
+        border:
+            visual.isAnime ? Border.all(color: scheme.outlineVariant) : null,
       ),
       child: Row(
         children: [
-          const Icon(Icons.insert_drive_file_outlined,
-              size: 16, color: Colors.black54),
+          Icon(Icons.insert_drive_file_outlined, size: 16, color: iconColor),
           const SizedBox(width: 6),
           Flexible(
             child: Text(block.file.name,
-                style: const TextStyle(fontSize: 13, color: Colors.black87)),
+                style: TextStyle(fontSize: 13, color: textColor)),
           ),
         ],
       ),

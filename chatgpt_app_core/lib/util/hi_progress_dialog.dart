@@ -1,5 +1,6 @@
 import 'dart:async';
 
+import 'package:chatgpt_app_core/theme/app_visual_theme.dart';
 import 'package:flutter/material.dart';
 import 'package:login_sdk/util/padding_extension.dart';
 import 'package:openai_flutter/utils/ai_logger.dart';
@@ -45,16 +46,19 @@ class HiProgressDialog {
     showDialog(
         context: context,
         builder: (BuildContext context) {
-          return WillPopScope(
+          final anime = AppVisualTheme.of(context).isAnime;
+          return PopScope(
+              canPop: cancellable,
               child: Dialog(
-                shape: const RoundedRectangleBorder(
-                    borderRadius: BorderRadius.all(Radius.circular(2))),
+                shape: anime
+                    ? Theme.of(context).dialogTheme.shape
+                    : const RoundedRectangleBorder(
+                        borderRadius: BorderRadius.all(Radius.circular(2))),
                 child: Padding(
-                  padding: const EdgeInsets.all(10),
+                  padding: EdgeInsets.all(anime ? 20 : 10),
                   child: _dialogBody,
                 ),
-              ),
-              onWillPop: () async => cancellable);
+              ));
         });
     AILogger.log('Dialog shown');
     _isShowing = true;

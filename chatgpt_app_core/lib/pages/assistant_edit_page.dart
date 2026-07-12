@@ -10,6 +10,7 @@ import 'package:chatgpt_app_core/model/ai_settings.dart';
 import 'package:chatgpt_app_core/model/assistant_model.dart';
 import 'package:chatgpt_app_core/model/world_book.dart';
 import 'package:chatgpt_app_core/provider/ai_settings_provider.dart';
+import 'package:chatgpt_app_core/theme/app_visual_theme.dart';
 import 'package:chatgpt_app_core/util/avatar_asset_service.dart';
 import 'package:chatgpt_app_core/util/hi_dialog.dart';
 import 'package:chatgpt_app_core/util/model_catalog.dart';
@@ -297,26 +298,44 @@ class _AssistantEditPageState extends State<AssistantEditPage> {
       ),
       bottomNavigationBar: SafeArea(
         top: false,
-        child: Container(
-          padding: const EdgeInsets.fromLTRB(16, 10, 16, 12),
-          decoration: BoxDecoration(
-            color: Theme.of(context).scaffoldBackgroundColor,
-            border: Border(top: BorderSide(color: Colors.grey.shade200)),
-          ),
-          child: FilledButton.icon(
-            onPressed: _saving ? null : _save,
-            icon: _saving
-                ? const SizedBox(
-                    width: 18,
-                    height: 18,
-                    child: CircularProgressIndicator(strokeWidth: 2),
-                  )
-                : const Icon(Icons.check),
-            label: Text(_isNew ? '创建助手' : '保存修改'),
-            style: FilledButton.styleFrom(
-              minimumSize: const Size.fromHeight(48),
-            ),
-          ),
+        child: Builder(
+          builder: (context) {
+            final visual = AppVisualTheme.of(context);
+            final colorScheme = Theme.of(context).colorScheme;
+            return Container(
+              padding: const EdgeInsets.fromLTRB(16, 10, 16, 12),
+              decoration: BoxDecoration(
+                color: visual.isAnime
+                    ? visual.elevatedSurface.withValues(alpha: 0.96)
+                    : Theme.of(context).scaffoldBackgroundColor,
+                border:
+                    Border(top: BorderSide(color: colorScheme.outlineVariant)),
+                boxShadow: visual.isAnime
+                    ? [
+                        BoxShadow(
+                          color: visual.glowPrimary,
+                          blurRadius: 18,
+                          offset: const Offset(0, -4),
+                        ),
+                      ]
+                    : null,
+              ),
+              child: FilledButton.icon(
+                onPressed: _saving ? null : _save,
+                icon: _saving
+                    ? const SizedBox(
+                        width: 18,
+                        height: 18,
+                        child: CircularProgressIndicator(strokeWidth: 2),
+                      )
+                    : const Icon(Icons.check),
+                label: Text(_isNew ? '创建助手' : '保存修改'),
+                style: FilledButton.styleFrom(
+                  minimumSize: const Size.fromHeight(48),
+                ),
+              ),
+            );
+          },
         ),
       ),
     );
@@ -380,11 +399,21 @@ class _AssistantEditPageState extends State<AssistantEditPage> {
     required String subtitle,
     required Widget child,
   }) {
+    final visual = AppVisualTheme.of(context);
+    final colorScheme = Theme.of(context).colorScheme;
     return DecoratedBox(
       decoration: BoxDecoration(
-        color: Theme.of(context).colorScheme.surface,
-        borderRadius: BorderRadius.circular(12),
-        border: Border.all(color: Colors.grey.shade200),
+        color: visual.isAnime
+            ? visual.elevatedSurface.withValues(alpha: 0.94)
+            : colorScheme.surface,
+        borderRadius:
+            BorderRadius.circular(visual.isAnime ? visual.cardRadius : 12),
+        border: Border.all(color: colorScheme.outlineVariant),
+        boxShadow: visual.isAnime
+            ? [
+                BoxShadow(color: visual.glowPrimary, blurRadius: 16),
+              ]
+            : null,
       ),
       child: Padding(
         padding: const EdgeInsets.all(14),
@@ -407,11 +436,21 @@ class _AssistantEditPageState extends State<AssistantEditPage> {
     required List<Widget> children,
     bool initiallyExpanded = false,
   }) {
+    final visual = AppVisualTheme.of(context);
+    final colorScheme = Theme.of(context).colorScheme;
     return DecoratedBox(
       decoration: BoxDecoration(
-        color: Theme.of(context).colorScheme.surface,
-        borderRadius: BorderRadius.circular(12),
-        border: Border.all(color: Colors.grey.shade200),
+        color: visual.isAnime
+            ? visual.elevatedSurface.withValues(alpha: 0.94)
+            : colorScheme.surface,
+        borderRadius:
+            BorderRadius.circular(visual.isAnime ? visual.cardRadius : 12),
+        border: Border.all(color: colorScheme.outlineVariant),
+        boxShadow: visual.isAnime
+            ? [
+                BoxShadow(color: visual.glowSecondary, blurRadius: 16),
+              ]
+            : null,
       ),
       child: Theme(
         data: Theme.of(context).copyWith(dividerColor: Colors.transparent),
@@ -435,6 +474,7 @@ class _AssistantEditPageState extends State<AssistantEditPage> {
     required String title,
     required String subtitle,
   }) {
+    final colorScheme = Theme.of(context).colorScheme;
     return Row(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
@@ -447,7 +487,7 @@ class _AssistantEditPageState extends State<AssistantEditPage> {
                 Theme.of(context).colorScheme.primary.withValues(alpha: 0.10),
             borderRadius: BorderRadius.circular(10),
           ),
-          child: Icon(icon, size: 20, color: Theme.of(context).primaryColor),
+          child: Icon(icon, size: 20, color: colorScheme.primary),
         ),
         const SizedBox(width: 10),
         Expanded(
@@ -460,7 +500,10 @@ class _AssistantEditPageState extends State<AssistantEditPage> {
               const SizedBox(height: 2),
               Text(
                 subtitle,
-                style: const TextStyle(fontSize: 12, color: Colors.black54),
+                style: TextStyle(
+                  fontSize: 12,
+                  color: colorScheme.onSurfaceVariant,
+                ),
               ),
             ],
           ),
@@ -537,12 +580,12 @@ class _AssistantEditPageState extends State<AssistantEditPage> {
                         child: InkWell(
                           customBorder: const CircleBorder(),
                           onTap: _pickAvatarImage,
-                          child: const SizedBox(
+                          child: SizedBox(
                             width: 44,
                             height: 44,
                             child: Icon(
                               Icons.photo_camera_outlined,
-                              color: Colors.white,
+                              color: colorScheme.onPrimary,
                               size: 20,
                             ),
                           ),
@@ -744,13 +787,15 @@ class _AssistantEditPageState extends State<AssistantEditPage> {
   /// 依赖搜索 key 的工具在未配置时置灰并提示；只有支持工具的模型 + 流式才会真正生效。
   Widget _buildToolsSection() {
     final settings = context.watch<AISettingsProvider>().settings;
+    final colorScheme = Theme.of(context).colorScheme;
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
-        const Padding(
-          padding: EdgeInsets.only(top: 4, bottom: 4),
+        Padding(
+          padding: const EdgeInsets.only(top: 4, bottom: 4),
           child: Text('可用工具（绑定后该助手始终向模型暴露）',
-              style: TextStyle(fontSize: 12, color: Colors.grey)),
+              style:
+                  TextStyle(fontSize: 12, color: colorScheme.onSurfaceVariant)),
         ),
         for (final d in ToolRegistry.catalog)
           _buildToolTile(d, ToolRegistry.isAvailable(settings, d.id)),
@@ -763,40 +808,47 @@ class _AssistantEditPageState extends State<AssistantEditPage> {
   /// 未勾选的 MCP 工具不会暴露给该助手（与内置工具一致）。
   Widget _buildMcpToolsSection(AISettings settings) {
     _mcpSpecs ??= McpToolSource.listSpecs(settings);
+    final colorScheme = Theme.of(context).colorScheme;
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
-        const Padding(
-          padding: EdgeInsets.only(top: 12, bottom: 4),
+        Padding(
+          padding: const EdgeInsets.only(top: 12, bottom: 4),
           child: Text('MCP 工具（来自已配置的 MCP 服务）',
-              style: TextStyle(fontSize: 12, color: Colors.grey)),
+              style:
+                  TextStyle(fontSize: 12, color: colorScheme.onSurfaceVariant)),
         ),
         FutureBuilder<List<McpToolBindSpec>>(
           future: _mcpSpecs,
           builder: (context, snap) {
             if (snap.connectionState == ConnectionState.waiting) {
-              return const Padding(
-                padding: EdgeInsets.symmetric(vertical: 8),
+              return Padding(
+                padding: const EdgeInsets.symmetric(vertical: 8),
                 child: Row(children: [
-                  SizedBox(
+                  const SizedBox(
                       width: 16,
                       height: 16,
                       child: CircularProgressIndicator(strokeWidth: 2)),
-                  SizedBox(width: 8),
+                  const SizedBox(width: 8),
                   Text('正在发现 MCP 工具…',
-                      style: TextStyle(fontSize: 12, color: Colors.grey)),
+                      style: TextStyle(
+                          fontSize: 12, color: colorScheme.onSurfaceVariant)),
                 ]),
               );
             }
             if (snap.hasError) {
               return Text('MCP 工具发现失败：${snap.error}',
-                  style:
-                      const TextStyle(fontSize: 12, color: Colors.redAccent));
+                  style: TextStyle(
+                    fontSize: 12,
+                    color: AppStatusPalette.of(context, AppStatusKind.error)
+                        .foreground,
+                  ));
             }
             final specs = snap.data ?? const [];
             if (specs.isEmpty) {
-              return const Text('未发现可用的 MCP 工具',
-                  style: TextStyle(fontSize: 12, color: Colors.grey));
+              return Text('未发现可用的 MCP 工具',
+                  style: TextStyle(
+                      fontSize: 12, color: colorScheme.onSurfaceVariant));
             }
             return Column(
               crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -810,14 +862,14 @@ class _AssistantEditPageState extends State<AssistantEditPage> {
 
   Widget _buildMcpToolTile(McpToolBindSpec spec) {
     final selected = _toolIds.contains(spec.name);
+    final info = AppStatusPalette.of(context, AppStatusKind.info);
     return CheckboxListTile(
       contentPadding: EdgeInsets.zero,
-      dense: true,
       controlAffinity: ListTileControlAffinity.leading,
       value: selected,
       title: Row(
         children: [
-          const Icon(Icons.extension, size: 14, color: Colors.blueGrey),
+          Icon(Icons.extension, size: 16, color: info.foreground),
           const SizedBox(width: 6),
           Expanded(
             child: Text(spec.name,
@@ -840,18 +892,18 @@ class _AssistantEditPageState extends State<AssistantEditPage> {
 
   Widget _buildToolTile(ToolDescriptor d, bool available) {
     final selected = _toolIds.contains(d.id);
+    final warning = AppStatusPalette.of(context, AppStatusKind.warning);
     return CheckboxListTile(
       contentPadding: EdgeInsets.zero,
-      dense: true,
       controlAffinity: ListTileControlAffinity.leading,
       value: selected,
       title: Row(
         children: [
           Text(d.label),
           if (d.sideEffect)
-            const Padding(
-              padding: EdgeInsets.only(left: 6),
-              child: Icon(Icons.edit_note, size: 16, color: Colors.orange),
+            Padding(
+              padding: const EdgeInsets.only(left: 6),
+              child: Icon(Icons.edit_note, size: 16, color: warning.foreground),
             ),
         ],
       ),

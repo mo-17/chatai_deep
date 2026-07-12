@@ -43,6 +43,7 @@ import 'package:chatgpt_app_core/model/favorite_model.dart';
 import 'package:chatgpt_app_core/model/assistant_memory_model.dart';
 import 'package:chatgpt_app_core/pages/assistant_profile_page.dart';
 import 'package:chatgpt_app_core/provider/ai_settings_provider.dart';
+import 'package:chatgpt_app_core/theme/app_visual_theme.dart';
 import 'package:chatgpt_app_core/util/app_events.dart';
 import 'package:chatgpt_app_core/util/avatar_asset_service.dart';
 import 'package:chatgpt_app_core/util/hi_dialog.dart';
@@ -299,21 +300,38 @@ class _ConversationPageState extends State<ConversationPage> {
   /// 块上记录的 modelId（覆盖后实际生效的模型）。
   String get _effectiveModelId => _effective(_currentSettings).effectiveModel;
 
-  get _chatList => Expanded(
-        child: Stack(
-          children: [
-            Padding(
-              padding: const EdgeInsets.only(left: 10, right: 10),
-              child: ChatList(
-                chatController: chatController,
-                onBubbleLongPress: _onBubbleLongPress,
-              ),
+  Widget get _chatList {
+    final visualTheme = AppVisualTheme.of(context);
+    final colorScheme = Theme.of(context).colorScheme;
+    return Expanded(
+      child: Stack(
+        children: [
+          Padding(
+            padding: const EdgeInsets.only(left: 10, right: 10),
+            child: ChatList(
+              chatController: chatController,
+              onBubbleLongPress: _onBubbleLongPress,
+              receiverBackgroundColor: visualTheme.isAnime
+                  ? colorScheme.primaryContainer.withValues(alpha: 0.78)
+                  : null,
+              senderBackgroundColor: visualTheme.isAnime
+                  ? colorScheme.secondaryContainer.withValues(alpha: 0.82)
+                  : null,
+              receiverAvatarBackgroundColor:
+                  visualTheme.isAnime ? colorScheme.primary : null,
+              senderAvatarBackgroundColor:
+                  visualTheme.isAnime ? colorScheme.secondary : null,
+              textColor: visualTheme.isAnime ? colorScheme.onSurface : null,
+              bubbleRadius:
+                  visualTheme.isAnime ? const Radius.circular(18) : null,
             ),
-            // 置顶/置底悬浮按钮：叠在对话区右下角，不占输入框空间。
-            Positioned(right: 12, bottom: 12, child: _scrollJumpButtons()),
-          ],
-        ),
-      );
+          ),
+          // 置顶/置底悬浮按钮：叠在对话区右下角，不占输入框空间。
+          Positioned(right: 12, bottom: 12, child: _scrollJumpButtons()),
+        ],
+      ),
+    );
+  }
 
   /// 右下角的「回到顶部 / 回到底部」按钮组：按可见性按需出现，都隐藏时为空盒。
   Widget _scrollJumpButtons() {
@@ -353,7 +371,7 @@ class _ConversationPageState extends State<ConversationPage> {
         child: Tooltip(
           message: tooltip,
           child: Padding(
-            padding: const EdgeInsets.all(9),
+            padding: const EdgeInsets.all(11),
             child: Icon(icon, size: 22, color: cs.onSurfaceVariant),
           ),
         ),
@@ -626,27 +644,36 @@ class _ConversationPageState extends State<ConversationPage> {
   Widget get _appBarTitle {
     final assistant = _assistant;
     final subtitle = _roleSubtitle;
-    final titleText = Column(
-      mainAxisSize: MainAxisSize.min,
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        Text(
-          _title,
-          maxLines: 1,
-          overflow: TextOverflow.ellipsis,
-          style: const TextStyle(fontSize: 17),
-        ),
-        if (subtitle.isNotEmpty) ...[
-          const SizedBox(height: 1),
-          Text(
-            subtitle,
+    final visualTheme = AppVisualTheme.of(context);
+    final theme = Theme.of(context);
+    final titleText = visualTheme.isAnime
+        ? Text(
+            subtitle.isEmpty ? _title : '$_title · $subtitle',
             maxLines: 1,
             overflow: TextOverflow.ellipsis,
-            style: const TextStyle(fontSize: 11, color: Colors.black54),
-          ),
-        ],
-      ],
-    );
+            style: theme.textTheme.titleMedium,
+          )
+        : Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                _title,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: const TextStyle(fontSize: 17),
+              ),
+              if (subtitle.isNotEmpty) ...[
+                const SizedBox(height: 1),
+                Text(
+                  subtitle,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: const TextStyle(fontSize: 11, color: Colors.black54),
+                ),
+              ],
+            ],
+          );
     if (assistant == null) return titleText;
     return Row(
       mainAxisSize: MainAxisSize.min,
@@ -873,13 +900,23 @@ class _ConversationPageState extends State<ConversationPage> {
   Widget? _roleStatePanel(int createdAt) {
     final lines = _roleStateByMessageAt[createdAt];
     if (lines == null || lines.isEmpty) return null;
+    final visual = AppVisualTheme.of(context);
+    final scheme = Theme.of(context).colorScheme;
+    final foreground = visual.isAnime ? scheme.secondary : Colors.teal[700]!;
+    final background = visual.isAnime
+        ? scheme.secondaryContainer.withValues(alpha: 0.72)
+        : Colors.teal.withValues(alpha: 0.08);
+    final borderColor = visual.isAnime
+        ? scheme.secondary.withValues(alpha: 0.22)
+        : Colors.teal.withValues(alpha: 0.18);
+    final bodyColor = visual.isAnime ? scheme.onSurfaceVariant : Colors.black54;
     return Container(
       margin: const EdgeInsets.only(top: 8),
-      padding: const EdgeInsets.all(8),
+      padding: EdgeInsets.all(visual.isAnime ? 10 : 8),
       decoration: BoxDecoration(
-        color: Colors.teal.withValues(alpha: 0.08),
-        borderRadius: BorderRadius.circular(8),
-        border: Border.all(color: Colors.teal.withValues(alpha: 0.18)),
+        color: background,
+        borderRadius: BorderRadius.circular(visual.isAnime ? 16 : 8),
+        border: Border.all(color: borderColor),
       ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
@@ -887,8 +924,7 @@ class _ConversationPageState extends State<ConversationPage> {
         children: [
           Row(
             children: [
-              Icon(Icons.theater_comedy_outlined,
-                  size: 14, color: Colors.teal[700]),
+              Icon(Icons.theater_comedy_outlined, size: 16, color: foreground),
               const SizedBox(width: 4),
               Expanded(
                 child: Text(
@@ -896,20 +932,22 @@ class _ConversationPageState extends State<ConversationPage> {
                   style: TextStyle(
                     fontSize: 12,
                     fontWeight: FontWeight.w600,
-                    color: Colors.teal[700],
+                    color: foreground,
                   ),
                 ),
               ),
               IconButton(
                 tooltip: '复制会话状态摘要',
-                visualDensity: VisualDensity.compact,
-                constraints: const BoxConstraints.tightFor(
-                  width: 28,
-                  height: 28,
+                visualDensity: visual.isAnime
+                    ? VisualDensity.standard
+                    : VisualDensity.compact,
+                constraints: BoxConstraints.tightFor(
+                  width: visual.isAnime ? 44 : 28,
+                  height: visual.isAnime ? 44 : 28,
                 ),
                 padding: EdgeInsets.zero,
                 icon: const Icon(Icons.copy_outlined, size: 15),
-                color: Colors.teal[700],
+                color: foreground,
                 onPressed: () => _copyRoleStateSummary(lines),
               ),
             ],
@@ -922,7 +960,7 @@ class _ConversationPageState extends State<ConversationPage> {
                 line,
                 maxLines: 2,
                 overflow: TextOverflow.ellipsis,
-                style: const TextStyle(fontSize: 11, color: Colors.black54),
+                style: TextStyle(fontSize: 11, color: bodyColor),
               ),
             ),
         ],
@@ -949,13 +987,25 @@ class _ConversationPageState extends State<ConversationPage> {
     final budget = _roleMemoryBudgetFor(createdAt);
     final expanded = _expandedMemoryHits.contains(createdAt);
     final visibleHits = expanded ? hits : hits.take(3).toList();
+    final visual = AppVisualTheme.of(context);
+    final scheme = Theme.of(context).colorScheme;
+    final foreground = visual.isAnime ? scheme.tertiary : Colors.blueGrey[700]!;
+    final secondaryForeground =
+        visual.isAnime ? scheme.onSurfaceVariant : Colors.blueGrey[600]!;
+    final background = visual.isAnime
+        ? scheme.tertiaryContainer.withValues(alpha: 0.72)
+        : Colors.blueGrey.withValues(alpha: 0.08);
+    final borderColor = visual.isAnime
+        ? scheme.tertiary.withValues(alpha: 0.22)
+        : Colors.blueGrey.withValues(alpha: 0.16);
+    final bodyColor = visual.isAnime ? scheme.onSurfaceVariant : Colors.black54;
     return Container(
       margin: const EdgeInsets.only(top: 8),
-      padding: const EdgeInsets.all(8),
+      padding: EdgeInsets.all(visual.isAnime ? 10 : 8),
       decoration: BoxDecoration(
-        color: Colors.blueGrey.withValues(alpha: 0.08),
-        borderRadius: BorderRadius.circular(8),
-        border: Border.all(color: Colors.blueGrey.withValues(alpha: 0.16)),
+        color: background,
+        borderRadius: BorderRadius.circular(visual.isAnime ? 16 : 8),
+        border: Border.all(color: borderColor),
       ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
@@ -963,8 +1013,7 @@ class _ConversationPageState extends State<ConversationPage> {
         children: [
           Row(
             children: [
-              Icon(Icons.auto_stories_outlined,
-                  size: 14, color: Colors.blueGrey[700]),
+              Icon(Icons.auto_stories_outlined, size: 16, color: foreground),
               const SizedBox(width: 4),
               Expanded(
                 child: Text(
@@ -972,20 +1021,22 @@ class _ConversationPageState extends State<ConversationPage> {
                   style: TextStyle(
                     fontSize: 12,
                     fontWeight: FontWeight.w600,
-                    color: Colors.blueGrey[700],
+                    color: foreground,
                   ),
                 ),
               ),
               IconButton(
                 tooltip: '复制命中摘要',
-                visualDensity: VisualDensity.compact,
-                constraints: const BoxConstraints.tightFor(
-                  width: 28,
-                  height: 28,
+                visualDensity: visual.isAnime
+                    ? VisualDensity.standard
+                    : VisualDensity.compact,
+                constraints: BoxConstraints.tightFor(
+                  width: visual.isAnime ? 44 : 28,
+                  height: visual.isAnime ? 44 : 28,
                 ),
                 padding: EdgeInsets.zero,
                 icon: const Icon(Icons.copy_outlined, size: 15),
-                color: Colors.blueGrey[700],
+                color: foreground,
                 onPressed: () => _copyMemoryHitSummary(hits),
               ),
             ],
@@ -996,7 +1047,7 @@ class _ConversationPageState extends State<ConversationPage> {
               padding: const EdgeInsets.only(bottom: 2),
               child: Text(
                 '世界书预算：${budget!.compactSummary}',
-                style: TextStyle(fontSize: 11, color: Colors.blueGrey[600]),
+                style: TextStyle(fontSize: 11, color: secondaryForeground),
               ),
             ),
           for (final hit in visibleHits)
@@ -1006,7 +1057,7 @@ class _ConversationPageState extends State<ConversationPage> {
                 AssistantRoleCardService.memoryHitPreviewLine(hit),
                 maxLines: 2,
                 overflow: TextOverflow.ellipsis,
-                style: const TextStyle(fontSize: 11, color: Colors.black54),
+                style: TextStyle(fontSize: 11, color: bodyColor),
               ),
             ),
           if (hits.length > 3)
@@ -1022,12 +1073,17 @@ class _ConversationPageState extends State<ConversationPage> {
                     }
                   });
                 },
-                style: TextButton.styleFrom(
-                  visualDensity: VisualDensity.compact,
-                  padding: EdgeInsets.zero,
-                  minimumSize: const Size(0, 28),
-                  tapTargetSize: MaterialTapTargetSize.shrinkWrap,
-                ),
+                style: visual.isAnime
+                    ? TextButton.styleFrom(
+                        minimumSize: const Size(44, 44),
+                        padding: const EdgeInsets.symmetric(horizontal: 8),
+                      )
+                    : TextButton.styleFrom(
+                        visualDensity: VisualDensity.compact,
+                        padding: EdgeInsets.zero,
+                        minimumSize: const Size(0, 28),
+                        tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                      ),
                 icon: Icon(
                   expanded
                       ? Icons.keyboard_arrow_up
@@ -1057,18 +1113,27 @@ class _ConversationPageState extends State<ConversationPage> {
   Widget? _roleContextPanel(int createdAt) {
     final snapshot = _roleContextByMessageAt[createdAt]?.trim();
     if (snapshot == null || snapshot.isEmpty) return null;
+    final visual = AppVisualTheme.of(context);
+    final scheme = Theme.of(context).colorScheme;
+    final foreground =
+        visual.isAnime ? scheme.primary : Colors.deepPurple[700]!;
+    final background = visual.isAnime
+        ? scheme.primaryContainer.withValues(alpha: 0.72)
+        : Colors.deepPurple.withValues(alpha: 0.08);
+    final borderColor = visual.isAnime
+        ? scheme.primary.withValues(alpha: 0.22)
+        : Colors.deepPurple.withValues(alpha: 0.16);
     return Container(
       margin: const EdgeInsets.only(top: 8),
-      padding: const EdgeInsets.all(8),
+      padding: EdgeInsets.all(visual.isAnime ? 10 : 8),
       decoration: BoxDecoration(
-        color: Colors.deepPurple.withValues(alpha: 0.08),
-        borderRadius: BorderRadius.circular(8),
-        border: Border.all(color: Colors.deepPurple.withValues(alpha: 0.16)),
+        color: background,
+        borderRadius: BorderRadius.circular(visual.isAnime ? 16 : 8),
+        border: Border.all(color: borderColor),
       ),
       child: Row(
         children: [
-          Icon(Icons.fact_check_outlined,
-              size: 14, color: Colors.deepPurple[700]),
+          Icon(Icons.fact_check_outlined, size: 16, color: foreground),
           const SizedBox(width: 4),
           Expanded(
             child: Text(
@@ -1076,30 +1141,36 @@ class _ConversationPageState extends State<ConversationPage> {
               style: TextStyle(
                 fontSize: 12,
                 fontWeight: FontWeight.w600,
-                color: Colors.deepPurple[700],
+                color: foreground,
               ),
             ),
           ),
           TextButton(
             onPressed: () => _showRoleContextSnapshot(snapshot),
-            style: TextButton.styleFrom(
-              visualDensity: VisualDensity.compact,
-              padding: const EdgeInsets.symmetric(horizontal: 6),
-              minimumSize: const Size(0, 28),
-              tapTargetSize: MaterialTapTargetSize.shrinkWrap,
-            ),
+            style: visual.isAnime
+                ? TextButton.styleFrom(
+                    minimumSize: const Size(44, 44),
+                    padding: const EdgeInsets.symmetric(horizontal: 8),
+                  )
+                : TextButton.styleFrom(
+                    visualDensity: VisualDensity.compact,
+                    padding: const EdgeInsets.symmetric(horizontal: 6),
+                    minimumSize: const Size(0, 28),
+                    tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                  ),
             child: const Text('查看', style: TextStyle(fontSize: 11)),
           ),
           IconButton(
             tooltip: '复制本轮上下文',
-            visualDensity: VisualDensity.compact,
-            constraints: const BoxConstraints.tightFor(
-              width: 28,
-              height: 28,
+            visualDensity:
+                visual.isAnime ? VisualDensity.standard : VisualDensity.compact,
+            constraints: BoxConstraints.tightFor(
+              width: visual.isAnime ? 44 : 28,
+              height: visual.isAnime ? 44 : 28,
             ),
             padding: EdgeInsets.zero,
             icon: const Icon(Icons.copy_outlined, size: 15),
-            color: Colors.deepPurple[700],
+            color: foreground,
             onPressed: () => _copyRoleContextSnapshot(snapshot),
           ),
         ],
@@ -1187,13 +1258,24 @@ class _ConversationPageState extends State<ConversationPage> {
             _assistantMemories, suggestion)) {
       return null;
     }
+    final visual = AppVisualTheme.of(context);
+    final scheme = Theme.of(context).colorScheme;
+    final warning = AppStatusPalette.of(context, AppStatusKind.warning);
+    final foreground = visual.isAnime ? warning.foreground : Colors.amber[900]!;
+    final background = visual.isAnime
+        ? warning.container
+        : Colors.amber.withValues(alpha: 0.12);
+    final borderColor = visual.isAnime
+        ? warning.foreground.withValues(alpha: 0.20)
+        : Colors.amber.withValues(alpha: 0.24);
+    final bodyColor = visual.isAnime ? scheme.onSurfaceVariant : Colors.black54;
     return Container(
       margin: const EdgeInsets.only(top: 8),
-      padding: const EdgeInsets.all(8),
+      padding: EdgeInsets.all(visual.isAnime ? 10 : 8),
       decoration: BoxDecoration(
-        color: Colors.amber.withValues(alpha: 0.12),
-        borderRadius: BorderRadius.circular(8),
-        border: Border.all(color: Colors.amber.withValues(alpha: 0.24)),
+        color: background,
+        borderRadius: BorderRadius.circular(visual.isAnime ? 16 : 8),
+        border: Border.all(color: borderColor),
       ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
@@ -1202,14 +1284,14 @@ class _ConversationPageState extends State<ConversationPage> {
           Row(
             mainAxisSize: MainAxisSize.min,
             children: [
-              Icon(Icons.lightbulb_outline, size: 14, color: Colors.amber[900]),
+              Icon(Icons.lightbulb_outline, size: 16, color: foreground),
               const SizedBox(width: 4),
               Text(
                 '建议记住',
                 style: TextStyle(
                   fontSize: 12,
                   fontWeight: FontWeight.w600,
-                  color: Colors.amber[900],
+                  color: foreground,
                 ),
               ),
             ],
@@ -1219,7 +1301,7 @@ class _ConversationPageState extends State<ConversationPage> {
             suggestion,
             maxLines: 2,
             overflow: TextOverflow.ellipsis,
-            style: const TextStyle(fontSize: 11, color: Colors.black54),
+            style: TextStyle(fontSize: 11, color: bodyColor),
           ),
           const SizedBox(height: 4),
           Row(
@@ -1228,20 +1310,30 @@ class _ConversationPageState extends State<ConversationPage> {
               TextButton(
                 onPressed: () =>
                     _confirmMemorySuggestion(createdAt, suggestion),
-                style: TextButton.styleFrom(
-                  visualDensity: VisualDensity.compact,
-                  padding: const EdgeInsets.symmetric(horizontal: 8),
-                ),
+                style: visual.isAnime
+                    ? TextButton.styleFrom(
+                        minimumSize: const Size(44, 44),
+                        padding: const EdgeInsets.symmetric(horizontal: 10),
+                      )
+                    : TextButton.styleFrom(
+                        visualDensity: VisualDensity.compact,
+                        padding: const EdgeInsets.symmetric(horizontal: 8),
+                      ),
                 child: const Text('记住'),
               ),
               TextButton(
                 onPressed: () {
                   setState(() => _dismissedMemorySuggestions.add(createdAt));
                 },
-                style: TextButton.styleFrom(
-                  visualDensity: VisualDensity.compact,
-                  padding: const EdgeInsets.symmetric(horizontal: 8),
-                ),
+                style: visual.isAnime
+                    ? TextButton.styleFrom(
+                        minimumSize: const Size(44, 44),
+                        padding: const EdgeInsets.symmetric(horizontal: 10),
+                      )
+                    : TextButton.styleFrom(
+                        visualDensity: VisualDensity.compact,
+                        padding: const EdgeInsets.symmetric(horizontal: 8),
+                      ),
                 child: const Text('忽略'),
               ),
             ],
@@ -1322,7 +1414,7 @@ class _ConversationPageState extends State<ConversationPage> {
               borderRadius: BorderRadius.circular(999),
               onTap: onTap,
               child: ConstrainedBox(
-                constraints: const BoxConstraints(minWidth: 44, minHeight: 40),
+                constraints: const BoxConstraints(minWidth: 44, minHeight: 44),
                 child: Padding(
                   padding: const EdgeInsets.symmetric(horizontal: 10),
                   child: Row(
@@ -3697,6 +3789,8 @@ class _RoleContextPreviewSheetState extends State<_RoleContextPreviewSheet> {
   @override
   Widget build(BuildContext context) {
     final bottom = MediaQuery.of(context).viewInsets.bottom;
+    final visual = AppVisualTheme.of(context);
+    final scheme = Theme.of(context).colorScheme;
     final scanText = ConversationRoleContextPreview.scanText(
       userInput: _inputCtl.text,
       recentMessages: widget.recentMessages,
@@ -3747,25 +3841,40 @@ class _RoleContextPreviewSheetState extends State<_RoleContextPreviewSheet> {
               controller: _inputCtl,
               minLines: 1,
               maxLines: 3,
-              decoration: const InputDecoration(
+              decoration: InputDecoration(
                 labelText: '模拟下一条用户消息',
-                border: OutlineInputBorder(),
+                border: visual.isAnime ? null : const OutlineInputBorder(),
               ),
             ),
             const SizedBox(height: 12),
             Text(
               summary,
-              style: const TextStyle(fontSize: 13, color: Colors.black54),
+              style: TextStyle(
+                fontSize: 13,
+                color:
+                    visual.isAnime ? scheme.onSurfaceVariant : Colors.black54,
+              ),
             ),
             const SizedBox(height: 8),
             ConstrainedBox(
               constraints: BoxConstraints(
                 maxHeight: MediaQuery.of(context).size.height * 0.58,
               ),
-              child: SingleChildScrollView(
-                child: SelectableText(
-                  preview.trim().isEmpty ? '暂无可注入上下文' : preview,
-                  style: const TextStyle(fontSize: 13, height: 1.35),
+              child: Container(
+                width: double.infinity,
+                padding: EdgeInsets.all(visual.isAnime ? 12 : 0),
+                decoration: visual.isAnime
+                    ? BoxDecoration(
+                        color: scheme.surfaceContainerLow,
+                        borderRadius: BorderRadius.circular(16),
+                        border: Border.all(color: scheme.outlineVariant),
+                      )
+                    : null,
+                child: SingleChildScrollView(
+                  child: SelectableText(
+                    preview.trim().isEmpty ? '暂无可注入上下文' : preview,
+                    style: const TextStyle(fontSize: 13, height: 1.35),
+                  ),
                 ),
               ),
             ),

@@ -1,3 +1,4 @@
+import 'package:chatgpt_app_core/theme/app_visual_theme.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
@@ -88,12 +89,13 @@ class _TimelineLogTile extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
-    final color = _colorFor(entry.status, theme);
+    final color = _colorFor(entry.status, context);
+    final isAnime = AppVisualTheme.of(context).isAnime;
     return Container(
       padding: const EdgeInsets.all(10),
       decoration: BoxDecoration(
         color: color.withValues(alpha: 0.08),
-        borderRadius: BorderRadius.circular(10),
+        borderRadius: BorderRadius.circular(isAnime ? 18 : 10),
         border: Border.all(color: color.withValues(alpha: 0.18)),
       ),
       child: Column(
@@ -152,13 +154,17 @@ class _TimelineLogTile extends StatelessWidget {
     return Icons.sync;
   }
 
-  static Color _colorFor(String status, ThemeData theme) {
+  static Color _colorFor(String status, BuildContext context) {
     if (status.contains('失败') || status.contains('超时')) {
-      return theme.colorScheme.error;
+      return AppStatusPalette.of(context, AppStatusKind.error).foreground;
     }
-    if (status.contains('完成')) return Colors.green.shade700;
-    if (status.contains('排队')) return theme.colorScheme.outline;
-    return theme.colorScheme.primary;
+    if (status.contains('完成')) {
+      return AppStatusPalette.of(context, AppStatusKind.success).foreground;
+    }
+    if (status.contains('排队')) {
+      return AppStatusPalette.of(context, AppStatusKind.neutral).foreground;
+    }
+    return AppStatusPalette.of(context, AppStatusKind.info).foreground;
   }
 }
 
@@ -170,11 +176,12 @@ class _RawLogBlock extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
+    final isAnime = AppVisualTheme.of(context).isAnime;
     return Container(
       padding: const EdgeInsets.all(10),
       decoration: BoxDecoration(
         color: theme.colorScheme.surfaceContainerHighest.withValues(alpha: 0.5),
-        borderRadius: BorderRadius.circular(10),
+        borderRadius: BorderRadius.circular(isAnime ? 18 : 10),
       ),
       child: SelectableText(
         entry.raw,
@@ -195,11 +202,12 @@ class _LogChip extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final isAnime = AppVisualTheme.of(context).isAnime;
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 3),
       decoration: BoxDecoration(
         color: color,
-        borderRadius: BorderRadius.circular(6),
+        borderRadius: BorderRadius.circular(isAnime ? 12 : 6),
       ),
       child: Text(
         label,

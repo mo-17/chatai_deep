@@ -6,6 +6,8 @@ import 'package:chatgpt_app_core/data/builtin_mcp_servers.dart';
 import 'package:chatgpt_app_core/model/ai_settings.dart';
 import 'package:chatgpt_app_core/pages/mcp_market_page.dart';
 import 'package:chatgpt_app_core/provider/ai_settings_provider.dart';
+import 'package:chatgpt_app_core/theme/app_visual_theme.dart';
+import 'package:chatgpt_app_core/widget/app_visual_widgets.dart';
 import 'package:chatgpt_app_core/widget/ai_provider/section_card.dart';
 import 'package:flutter/material.dart';
 import 'package:login_sdk/dao/login_dao.dart';
@@ -47,28 +49,54 @@ class _McpSettingsPageState extends State<McpSettingsPage> {
           const SectionLabel('后端 MCP Host（方案 B）'),
           _buildBackendCard(s),
           const SizedBox(height: 16),
-          Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 16),
-            child: Row(
-              children: [
-                const SectionLabel('直连 MCP server（方案 A）',
-                    padding: EdgeInsets.only(bottom: 8)),
-                const Spacer(),
-                TextButton.icon(
-                  icon: const Icon(Icons.storefront_outlined, size: 18),
-                  label: const Text('商店'),
-                  onPressed: _openMarket,
-                ),
-                TextButton.icon(
-                  icon: const Icon(Icons.add_rounded, size: 18),
-                  label: const Text('添加'),
-                  onPressed: () => _editServer(),
-                ),
-              ],
-            ),
-          ),
+          _buildDirectHeader(),
           _buildDirectList(s),
           const SizedBox(height: 32),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildDirectHeader() {
+    final market = TextButton.icon(
+      icon: const Icon(Icons.storefront_outlined, size: 18),
+      label: const Text('商店'),
+      onPressed: _openMarket,
+    );
+    final add = TextButton.icon(
+      icon: const Icon(Icons.add_rounded, size: 18),
+      label: const Text('添加'),
+      onPressed: () => _editServer(),
+    );
+    if (AppVisualTheme.of(context).isAnime) {
+      return Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 16),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const SectionLabel(
+              '直连 MCP server（方案 A）',
+              padding: EdgeInsets.only(bottom: 4),
+            ),
+            Align(
+              alignment: Alignment.centerRight,
+              child: Wrap(spacing: 8, runSpacing: 8, children: [market, add]),
+            ),
+          ],
+        ),
+      );
+    }
+    return Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 16),
+      child: Row(
+        children: [
+          const SectionLabel(
+            '直连 MCP server（方案 A）',
+            padding: EdgeInsets.only(bottom: 8),
+          ),
+          const Spacer(),
+          market,
+          add,
         ],
       ),
     );
@@ -373,6 +401,7 @@ class _ServerEditDialogState extends State<_ServerEditDialog> {
 
   @override
   Widget build(BuildContext context) {
+    final visual = AppVisualTheme.of(context);
     return AlertDialog(
       title: Text(widget.existing == null ? '添加 MCP server' : '编辑 MCP server'),
       content: SingleChildScrollView(
@@ -380,19 +409,38 @@ class _ServerEditDialogState extends State<_ServerEditDialog> {
           mainAxisSize: MainAxisSize.min,
           children: [
             if ((widget.prefill?.authHint ?? '').isNotEmpty) ...[
-              Container(
-                width: double.infinity,
-                padding: const EdgeInsets.all(8),
-                decoration: BoxDecoration(
-                  color: Theme.of(context)
-                      .colorScheme
-                      .primaryContainer
-                      .withValues(alpha: 0.4),
-                  borderRadius: BorderRadius.circular(8),
+              if (visual.isAnime)
+                AppVisualSurface(
+                  padding: const EdgeInsets.all(12),
+                  child: Row(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Icon(
+                        Icons.lightbulb_outline_rounded,
+                        color: AppStatusPalette.of(
+                          context,
+                          AppStatusKind.warning,
+                        ).foreground,
+                      ),
+                      const SizedBox(width: 8),
+                      Expanded(child: Text(widget.prefill!.authHint)),
+                    ],
+                  ),
+                )
+              else
+                Container(
+                  width: double.infinity,
+                  padding: const EdgeInsets.all(8),
+                  decoration: BoxDecoration(
+                    color: Theme.of(context)
+                        .colorScheme
+                        .primaryContainer
+                        .withValues(alpha: 0.4),
+                    borderRadius: BorderRadius.circular(8),
+                  ),
+                  child: Text('💡 ${widget.prefill!.authHint}',
+                      style: const TextStyle(fontSize: 12)),
                 ),
-                child: Text('💡 ${widget.prefill!.authHint}',
-                    style: const TextStyle(fontSize: 12)),
-              ),
               const SizedBox(height: 12),
             ],
             TextField(

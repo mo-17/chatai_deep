@@ -1,5 +1,6 @@
 import 'package:chatgpt_app_core/model/story_prompt_config.dart';
 import 'package:chatgpt_app_core/model/story_room_model.dart';
+import 'package:chatgpt_app_core/widget/story_visual_widgets.dart';
 import 'package:flutter/material.dart';
 
 typedef StoryPromptManagerSaver = Future<void> Function(StoryRoomModel room);
@@ -60,21 +61,25 @@ class _StoryPromptManagerPageState extends State<StoryPromptManagerPage> {
       ),
       body: Column(
         children: [
-          Padding(
-            padding: const EdgeInsets.fromLTRB(16, 12, 16, 8),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(
-                  '固定 $fixedCount · 自定义 $customCount · 已启用 $enabledCount',
-                  style: Theme.of(context).textTheme.titleSmall,
-                ),
-                const SizedBox(height: 4),
-                Text(
-                  '预览摘要：系统 $systemCount 条 · 对话内 $historyCount 条',
-                  style: Theme.of(context).textTheme.bodySmall,
-                ),
-              ],
+          StoryAdaptiveSurface(
+            animeKey: const ValueKey('anime_story_prompt_summary'),
+            animeMargin: const EdgeInsets.fromLTRB(12, 10, 12, 6),
+            child: Padding(
+              padding: const EdgeInsets.fromLTRB(16, 12, 16, 8),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    '固定 $fixedCount · 自定义 $customCount · 已启用 $enabledCount',
+                    style: Theme.of(context).textTheme.titleSmall,
+                  ),
+                  const SizedBox(height: 4),
+                  Text(
+                    '预览摘要：系统 $systemCount 条 · 对话内 $historyCount 条',
+                    style: Theme.of(context).textTheme.bodySmall,
+                  ),
+                ],
+              ),
             ),
           ),
           const Divider(height: 1),
@@ -103,85 +108,88 @@ class _StoryPromptManagerPageState extends State<StoryPromptManagerPage> {
     final builtIn = _isBuiltIn(module);
     final locked = module.key == _lockedKey;
     final preview = _modulePreview(module);
-    return Column(
+    return StoryAdaptiveListItem(
       key: ValueKey(module.key),
-      children: [
-        ListTile(
-          leading: Icon(
-            builtIn ? Icons.extension_outlined : Icons.notes_outlined,
-          ),
-          title: Text(
-            _moduleTitle(module),
-            maxLines: 1,
-            overflow: TextOverflow.ellipsis,
-          ),
-          subtitle: Text(
-            '${builtIn ? '固定' : '自定义'} · ${_roleLabel(module.role)} · '
-            '${_placementLabel(module)}\n$preview',
-            maxLines: 2,
-            overflow: TextOverflow.ellipsis,
-          ),
-          isThreeLine: true,
-          onTap: builtIn ? null : () => _editCustomModule(module),
-          trailing: SizedBox(
-            width: builtIn ? 92 : 132,
-            child: Row(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                Expanded(
-                  child: Switch(
-                    key: ValueKey('prompt-toggle-${module.key}'),
-                    value: locked ? true : module.enabled,
-                    onChanged: locked
-                        ? null
-                        : (value) => _setEnabled(module.key, value),
-                  ),
-                ),
-                if (!builtIn)
-                  PopupMenuButton<_ModuleAction>(
-                    tooltip: '模块操作',
-                    onSelected: (action) {
-                      if (action == _ModuleAction.edit) {
-                        _editCustomModule(module);
-                      } else {
-                        _deleteCustomModule(module);
-                      }
-                    },
-                    itemBuilder: (context) => const [
-                      PopupMenuItem(
-                        value: _ModuleAction.edit,
-                        child: ListTile(
-                          leading: Icon(Icons.edit_outlined),
-                          title: Text('编辑'),
-                          contentPadding: EdgeInsets.zero,
-                        ),
-                      ),
-                      PopupMenuItem(
-                        value: _ModuleAction.delete,
-                        child: ListTile(
-                          leading: Icon(Icons.delete_outline),
-                          title: Text('删除'),
-                          contentPadding: EdgeInsets.zero,
-                        ),
-                      ),
-                    ],
-                  ),
-                Tooltip(
-                  message: '拖动重排',
-                  child: ReorderableDragStartListener(
-                    index: index,
-                    child: const Padding(
-                      padding: EdgeInsets.symmetric(horizontal: 4),
-                      child: Icon(Icons.drag_handle),
+      animeMargin: const EdgeInsets.symmetric(horizontal: 12, vertical: 5),
+      child: Column(
+        children: [
+          ListTile(
+            leading: Icon(
+              builtIn ? Icons.extension_outlined : Icons.notes_outlined,
+            ),
+            title: Text(
+              _moduleTitle(module),
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+            ),
+            subtitle: Text(
+              '${builtIn ? '固定' : '自定义'} · ${_roleLabel(module.role)} · '
+              '${_placementLabel(module)}\n$preview',
+              maxLines: 2,
+              overflow: TextOverflow.ellipsis,
+            ),
+            isThreeLine: true,
+            onTap: builtIn ? null : () => _editCustomModule(module),
+            trailing: SizedBox(
+              width: builtIn ? 92 : 132,
+              child: Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Expanded(
+                    child: Switch(
+                      key: ValueKey('prompt-toggle-${module.key}'),
+                      value: locked ? true : module.enabled,
+                      onChanged: locked
+                          ? null
+                          : (value) => _setEnabled(module.key, value),
                     ),
                   ),
-                ),
-              ],
+                  if (!builtIn)
+                    PopupMenuButton<_ModuleAction>(
+                      tooltip: '模块操作',
+                      onSelected: (action) {
+                        if (action == _ModuleAction.edit) {
+                          _editCustomModule(module);
+                        } else {
+                          _deleteCustomModule(module);
+                        }
+                      },
+                      itemBuilder: (context) => const [
+                        PopupMenuItem(
+                          value: _ModuleAction.edit,
+                          child: ListTile(
+                            leading: Icon(Icons.edit_outlined),
+                            title: Text('编辑'),
+                            contentPadding: EdgeInsets.zero,
+                          ),
+                        ),
+                        PopupMenuItem(
+                          value: _ModuleAction.delete,
+                          child: ListTile(
+                            leading: Icon(Icons.delete_outline),
+                            title: Text('删除'),
+                            contentPadding: EdgeInsets.zero,
+                          ),
+                        ),
+                      ],
+                    ),
+                  Tooltip(
+                    message: '拖动重排',
+                    child: ReorderableDragStartListener(
+                      index: index,
+                      child: const Padding(
+                        padding: EdgeInsets.symmetric(horizontal: 4),
+                        child: Icon(Icons.drag_handle),
+                      ),
+                    ),
+                  ),
+                ],
+              ),
             ),
           ),
-        ),
-        const Divider(height: 1),
-      ],
+          if (!storyUsesAnimeStyle(context)) const Divider(height: 1),
+        ],
+      ),
     );
   }
 
@@ -237,6 +245,11 @@ class _StoryPromptManagerPageState extends State<StoryPromptManagerPage> {
           ),
           TextButton(
             onPressed: () => Navigator.pop(context, true),
+            style: storyUsesAnimeStyle(context)
+                ? TextButton.styleFrom(
+                    foregroundColor: Theme.of(context).colorScheme.error,
+                  )
+                : null,
             child: const Text('删除'),
           ),
         ],
@@ -438,10 +451,10 @@ class _PromptModuleEditorState extends State<_PromptModuleEditor> {
                 minLines: 5,
                 maxLines: 10,
                 maxLength: StoryPromptLimits.maxContentLength,
-                decoration: const InputDecoration(
+                decoration: InputDecoration(
                   labelText: '模块内容',
                   alignLabelWithHint: true,
-                  border: OutlineInputBorder(),
+                  border: storyInputBorder(context),
                 ),
                 onChanged: (_) {
                   if (_error != null) setState(() => _error = null);
@@ -484,10 +497,10 @@ class _PromptModuleEditorState extends State<_PromptModuleEditor> {
                   key: const ValueKey('prompt-module-depth'),
                   controller: _depthCtl,
                   keyboardType: TextInputType.number,
-                  decoration: const InputDecoration(
+                  decoration: InputDecoration(
                     labelText: '历史深度',
                     helperText: '0 表示紧邻最新消息',
-                    border: OutlineInputBorder(),
+                    border: storyInputBorder(context),
                   ),
                 ),
               ],

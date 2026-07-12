@@ -1,6 +1,7 @@
 import 'package:chatgpt_app_core/chat/application/story_regex_executor.dart';
 import 'package:chatgpt_app_core/model/story_regex_script.dart';
 import 'package:chatgpt_app_core/model/story_room_model.dart';
+import 'package:chatgpt_app_core/widget/story_visual_widgets.dart';
 import 'package:flutter/material.dart';
 
 typedef StoryRegexScriptsSave = Future<void> Function(StoryRoomModel room);
@@ -102,86 +103,96 @@ class _StoryRegexScriptsPageState extends State<StoryRegexScriptsPage> {
   Widget _buildPreview(BuildContext context) {
     final result = _previewResult;
     final textTheme = Theme.of(context).textTheme;
-    return DecoratedBox(
-      decoration: BoxDecoration(
-        color: Theme.of(context).colorScheme.surfaceContainerHighest,
-        borderRadius: BorderRadius.circular(8),
-      ),
-      child: Padding(
-        padding: const EdgeInsets.all(12),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Text('内置预览', style: textTheme.titleMedium),
-            const SizedBox(height: 8),
-            DropdownButtonFormField<StoryRegexStage>(
-              key: const ValueKey('story_regex_preview_stage'),
-              initialValue: _previewStage,
-              isExpanded: true,
-              decoration: const InputDecoration(
-                labelText: '执行阶段',
-                border: OutlineInputBorder(),
-              ),
-              items: [
-                for (final stage in StoryRegexStage.values)
-                  DropdownMenuItem(
-                    value: stage,
-                    child: Text(_stageLabel(stage)),
-                  ),
-              ],
-              onChanged: _previewing
-                  ? null
-                  : (value) {
-                      if (value != null) setState(() => _previewStage = value);
-                    },
-            ),
-            const SizedBox(height: 10),
-            TextField(
-              key: const ValueKey('story_regex_preview_input'),
-              controller: _previewController,
-              minLines: 3,
-              maxLines: 6,
-              maxLength: StoryRegexScriptLimits.maxTextLength,
-              decoration: const InputDecoration(
-                labelText: '样本文本',
-                alignLabelWithHint: true,
-                border: OutlineInputBorder(),
-              ),
-            ),
-            Align(
-              alignment: Alignment.centerRight,
-              child: FilledButton.icon(
-                key: const ValueKey('story_regex_preview_run'),
-                onPressed: _previewing ? null : _runPreview,
-                icon: _previewing
-                    ? const SizedBox(
-                        width: 16,
-                        height: 16,
-                        child: CircularProgressIndicator(strokeWidth: 2),
-                      )
-                    : const Icon(Icons.play_arrow),
-                label: const Text('运行预览'),
-              ),
-            ),
-            if (result != null) ...[
-              const Divider(height: 24),
-              Text('处理后文本', style: textTheme.labelLarge),
-              const SizedBox(height: 6),
-              _previewText(result.output),
+    return StoryAdaptiveSurface(
+      animeKey: const ValueKey('anime_story_regex_preview'),
+      child: DecoratedBox(
+        decoration: BoxDecoration(
+          color: storyUsesAnimeStyle(context)
+              ? Colors.transparent
+              : Theme.of(context).colorScheme.surfaceContainerHighest,
+          borderRadius: BorderRadius.circular(
+            storyUsesAnimeStyle(context) ? 20 : 8,
+          ),
+        ),
+        child: Padding(
+          padding: const EdgeInsets.all(12),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text('内置预览', style: textTheme.titleMedium),
               const SizedBox(height: 8),
-              _previewSummary(result),
-              if (result.inputTruncated || result.outputTruncated) ...[
-                const SizedBox(height: 4),
-                Text(
-                  '文本已按 ${StoryRegexScriptLimits.maxTextLength} 字符上限截断。',
-                  style: TextStyle(color: Theme.of(context).colorScheme.error),
+              DropdownButtonFormField<StoryRegexStage>(
+                key: const ValueKey('story_regex_preview_stage'),
+                initialValue: _previewStage,
+                isExpanded: true,
+                decoration: InputDecoration(
+                  labelText: '执行阶段',
+                  border: storyInputBorder(context),
                 ),
+                items: [
+                  for (final stage in StoryRegexStage.values)
+                    DropdownMenuItem(
+                      value: stage,
+                      child: Text(_stageLabel(stage)),
+                    ),
+                ],
+                onChanged: _previewing
+                    ? null
+                    : (value) {
+                        if (value != null) {
+                          setState(() => _previewStage = value);
+                        }
+                      },
+              ),
+              const SizedBox(height: 10),
+              TextField(
+                key: const ValueKey('story_regex_preview_input'),
+                controller: _previewController,
+                minLines: 3,
+                maxLines: 6,
+                maxLength: StoryRegexScriptLimits.maxTextLength,
+                decoration: InputDecoration(
+                  labelText: '样本文本',
+                  alignLabelWithHint: true,
+                  border: storyInputBorder(context),
+                ),
+              ),
+              Align(
+                alignment: Alignment.centerRight,
+                child: FilledButton.icon(
+                  key: const ValueKey('story_regex_preview_run'),
+                  onPressed: _previewing ? null : _runPreview,
+                  icon: _previewing
+                      ? const SizedBox(
+                          width: 16,
+                          height: 16,
+                          child: CircularProgressIndicator(strokeWidth: 2),
+                        )
+                      : const Icon(Icons.play_arrow),
+                  label: const Text('运行预览'),
+                ),
+              ),
+              if (result != null) ...[
+                const Divider(height: 24),
+                Text('处理后文本', style: textTheme.labelLarge),
+                const SizedBox(height: 6),
+                _previewText(result.output),
+                const SizedBox(height: 8),
+                _previewSummary(result),
+                if (result.inputTruncated || result.outputTruncated) ...[
+                  const SizedBox(height: 4),
+                  Text(
+                    '文本已按 ${StoryRegexScriptLimits.maxTextLength} 字符上限截断。',
+                    style:
+                        TextStyle(color: Theme.of(context).colorScheme.error),
+                  ),
+                ],
+                const SizedBox(height: 8),
+                for (final ruleResult in result.rules)
+                  _previewRuleResult(ruleResult),
               ],
-              const SizedBox(height: 8),
-              for (final ruleResult in result.rules)
-                _previewRuleResult(ruleResult),
             ],
-          ],
+          ),
         ),
       ),
     );
@@ -195,7 +206,9 @@ class _StoryRegexScriptsPageState extends State<StoryRegexScriptsPage> {
       decoration: BoxDecoration(
         color: Theme.of(context).colorScheme.surface,
         border: Border.all(color: Theme.of(context).dividerColor),
-        borderRadius: BorderRadius.circular(6),
+        borderRadius: BorderRadius.circular(
+          storyUsesAnimeStyle(context) ? 14 : 6,
+        ),
       ),
       child: SingleChildScrollView(
         child: SelectableText(value.isEmpty ? '（空）' : value),
@@ -252,26 +265,29 @@ class _StoryRegexScriptsPageState extends State<StoryRegexScriptsPage> {
 
   Widget _buildStage(BuildContext context, StoryRegexStage stage) {
     final rules = _rulesForStage(stage);
-    return ExpansionTile(
-      key: PageStorageKey<String>('story_regex_stage_${stage.value}'),
-      initiallyExpanded: true,
-      tilePadding: const EdgeInsets.symmetric(horizontal: 4),
-      childrenPadding: const EdgeInsets.only(left: 4, right: 4, bottom: 8),
-      title: Text(_stageLabel(stage)),
-      subtitle: Text(
-          '${rules.length} 条 · ${rules.where((r) => r.enabled).length} 条启用'),
-      children: [
-        if (rules.isEmpty)
-          const Align(
-            alignment: Alignment.centerLeft,
-            child: Padding(
-              padding: EdgeInsets.fromLTRB(8, 4, 8, 12),
-              child: Text('这个阶段还没有规则'),
+    return StoryAdaptiveListItem(
+      animeMargin: const EdgeInsets.symmetric(vertical: 5),
+      child: ExpansionTile(
+        key: PageStorageKey<String>('story_regex_stage_${stage.value}'),
+        initiallyExpanded: true,
+        tilePadding: const EdgeInsets.symmetric(horizontal: 4),
+        childrenPadding: const EdgeInsets.only(left: 4, right: 4, bottom: 8),
+        title: Text(_stageLabel(stage)),
+        subtitle: Text(
+            '${rules.length} 条 · ${rules.where((r) => r.enabled).length} 条启用'),
+        children: [
+          if (rules.isEmpty)
+            const Align(
+              alignment: Alignment.centerLeft,
+              child: Padding(
+                padding: EdgeInsets.fromLTRB(8, 4, 8, 12),
+                child: Text('这个阶段还没有规则'),
+              ),
             ),
-          ),
-        for (var index = 0; index < rules.length; index++)
-          _buildRule(context, rules[index], index, rules.length),
-      ],
+          for (var index = 0; index < rules.length; index++)
+            _buildRule(context, rules[index], index, rules.length),
+        ],
+      ),
     );
   }
 
@@ -360,7 +376,10 @@ class _StoryRegexScriptsPageState extends State<StoryRegexScriptsPage> {
       onPressed: onPressed,
       icon: Icon(icon, size: 20),
       visualDensity: VisualDensity.compact,
-      constraints: const BoxConstraints(minWidth: 36, minHeight: 36),
+      constraints: const BoxConstraints(
+        minWidth: kStoryMinTouchTarget,
+        minHeight: kStoryMinTouchTarget,
+      ),
       padding: EdgeInsets.zero,
     );
   }
@@ -414,6 +433,12 @@ class _StoryRegexScriptsPageState extends State<StoryRegexScriptsPage> {
           ),
           FilledButton(
             onPressed: () => Navigator.pop(context, true),
+            style: storyUsesAnimeStyle(context)
+                ? FilledButton.styleFrom(
+                    backgroundColor: Theme.of(context).colorScheme.error,
+                    foregroundColor: Theme.of(context).colorScheme.onError,
+                  )
+                : null,
             child: const Text('删除'),
           ),
         ],
@@ -644,9 +669,9 @@ class _StoryRegexScriptEditorState extends State<_StoryRegexScriptEditor> {
                 controller: _nameController,
                 maxLength: StoryRegexScriptLimits.maxNameLength,
                 textInputAction: TextInputAction.next,
-                decoration: const InputDecoration(
+                decoration: InputDecoration(
                   labelText: '名称',
-                  border: OutlineInputBorder(),
+                  border: storyInputBorder(context),
                 ),
               ),
               const SizedBox(height: 12),
@@ -656,10 +681,10 @@ class _StoryRegexScriptEditorState extends State<_StoryRegexScriptEditor> {
                 maxLength: StoryRegexScriptLimits.maxPatternLength,
                 minLines: 2,
                 maxLines: 5,
-                decoration: const InputDecoration(
+                decoration: InputDecoration(
                   labelText: 'find 正则',
                   alignLabelWithHint: true,
-                  border: OutlineInputBorder(),
+                  border: storyInputBorder(context),
                 ),
               ),
               const SizedBox(height: 12),
@@ -669,10 +694,10 @@ class _StoryRegexScriptEditorState extends State<_StoryRegexScriptEditor> {
                 maxLength: StoryRegexScriptLimits.maxReplacementLength,
                 minLines: 2,
                 maxLines: 5,
-                decoration: const InputDecoration(
+                decoration: InputDecoration(
                   labelText: 'replace 替换文本',
                   alignLabelWithHint: true,
-                  border: OutlineInputBorder(),
+                  border: storyInputBorder(context),
                 ),
               ),
               const SizedBox(height: 12),
@@ -680,9 +705,9 @@ class _StoryRegexScriptEditorState extends State<_StoryRegexScriptEditor> {
                 key: const ValueKey('story_regex_script_stage'),
                 initialValue: _stage,
                 isExpanded: true,
-                decoration: const InputDecoration(
+                decoration: InputDecoration(
                   labelText: '执行阶段',
-                  border: OutlineInputBorder(),
+                  border: storyInputBorder(context),
                 ),
                 items: [
                   for (final stage in StoryRegexStage.values)
@@ -704,11 +729,11 @@ class _StoryRegexScriptEditorState extends State<_StoryRegexScriptEditor> {
                     StoryRegexScriptLimits.maxTrimStringLength,
                 minLines: 2,
                 maxLines: 5,
-                decoration: const InputDecoration(
+                decoration: InputDecoration(
                   labelText: 'trimStrings（每行一项）',
                   helperText: '从处理结果两端反复移除这些字符串',
                   alignLabelWithHint: true,
-                  border: OutlineInputBorder(),
+                  border: storyInputBorder(context),
                 ),
               ),
               SwitchListTile.adaptive(

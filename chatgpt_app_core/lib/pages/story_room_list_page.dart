@@ -28,6 +28,7 @@ import 'package:chatgpt_app_core/pages/story_persona_list_page.dart';
 import 'package:chatgpt_app_core/provider/ai_settings_provider.dart';
 import 'package:chatgpt_app_core/util/hi_dialog.dart';
 import 'package:chatgpt_app_core/widget/translation_task_log_dialog.dart';
+import 'package:chatgpt_app_core/widget/story_visual_widgets.dart';
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
@@ -200,77 +201,92 @@ class _StoryRoomListPageState extends State<StoryRoomListPage> {
 
   Widget _buildRoomList() {
     if (_rooms.isEmpty) {
-      return const Center(child: Text('暂无创作房间'));
+      return const StoryAdaptiveEmptyState(
+        classicChild: Center(child: Text('暂无创作房间')),
+        icon: Icons.theater_comedy_outlined,
+        title: '还没有创作舞台',
+        subtitle: '新建一个房间，让角色和故事从这里开始。',
+      );
     }
     return RefreshIndicator(
       onRefresh: _load,
       child: ListView.separated(
+        padding: storyUsesAnimeStyle(context)
+            ? const EdgeInsets.fromLTRB(0, 4, 0, 96)
+            : EdgeInsets.zero,
         itemCount: _rooms.length,
-        separatorBuilder: (_, __) => const Divider(height: 1),
+        separatorBuilder: (_, __) => storyUsesAnimeStyle(context)
+            ? const SizedBox.shrink()
+            : const Divider(height: 1),
         itemBuilder: (_, index) {
           final room = _rooms[index];
-          return ListTile(
-            leading: CircleAvatar(
-              child: Icon(room.mode == StoryRoomMode.tavern
-                  ? Icons.forum_outlined
-                  : Icons.theater_comedy_outlined),
-            ),
-            title:
-                Text(room.title, maxLines: 1, overflow: TextOverflow.ellipsis),
-            subtitle: Text(
-              room.publicContext.isEmpty
-                  ? StoryRoomMode.labelOf(room.mode)
-                  : '${StoryRoomMode.labelOf(room.mode)} · ${room.publicContext}',
-              maxLines: 1,
-              overflow: TextOverflow.ellipsis,
-            ),
-            trailing: PopupMenuButton<String>(
-              tooltip: '房间操作',
-              onSelected: (value) {
-                if (value == 'rename') {
-                  _renameRoom(room);
-                } else if (value == 'export_chat') {
-                  _exportTavernChat(room);
-                } else if (value == 'delete') {
-                  _deleteRoom(room);
-                }
-              },
-              itemBuilder: (_) => [
-                const PopupMenuItem(
-                  value: 'rename',
-                  child: Row(
-                    children: [
-                      Icon(Icons.drive_file_rename_outline),
-                      SizedBox(width: 8),
-                      Text('重命名'),
-                    ],
-                  ),
-                ),
-                if (room.mode == StoryRoomMode.tavern &&
-                    Platform.operatingSystem != 'ohos')
+          return StoryAdaptiveListItem(
+            child: ListTile(
+              leading: CircleAvatar(
+                child: Icon(room.mode == StoryRoomMode.tavern
+                    ? Icons.forum_outlined
+                    : Icons.theater_comedy_outlined),
+              ),
+              title: Text(
+                room.title,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+              ),
+              subtitle: Text(
+                room.publicContext.isEmpty
+                    ? StoryRoomMode.labelOf(room.mode)
+                    : '${StoryRoomMode.labelOf(room.mode)} · ${room.publicContext}',
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+              ),
+              trailing: PopupMenuButton<String>(
+                tooltip: '房间操作',
+                onSelected: (value) {
+                  if (value == 'rename') {
+                    _renameRoom(room);
+                  } else if (value == 'export_chat') {
+                    _exportTavernChat(room);
+                  } else if (value == 'delete') {
+                    _deleteRoom(room);
+                  }
+                },
+                itemBuilder: (_) => [
                   const PopupMenuItem(
-                    value: 'export_chat',
+                    value: 'rename',
                     child: Row(
                       children: [
-                        Icon(Icons.download_outlined),
+                        Icon(Icons.drive_file_rename_outline),
                         SizedBox(width: 8),
-                        Text('导出 Tavern JSONL'),
+                        Text('重命名'),
                       ],
                     ),
                   ),
-                const PopupMenuItem(
-                  value: 'delete',
-                  child: Row(
-                    children: [
-                      Icon(Icons.delete_outline),
-                      SizedBox(width: 8),
-                      Text('删除'),
-                    ],
+                  if (room.mode == StoryRoomMode.tavern &&
+                      Platform.operatingSystem != 'ohos')
+                    const PopupMenuItem(
+                      value: 'export_chat',
+                      child: Row(
+                        children: [
+                          Icon(Icons.download_outlined),
+                          SizedBox(width: 8),
+                          Text('导出 Tavern JSONL'),
+                        ],
+                      ),
+                    ),
+                  const PopupMenuItem(
+                    value: 'delete',
+                    child: Row(
+                      children: [
+                        Icon(Icons.delete_outline),
+                        SizedBox(width: 8),
+                        Text('删除'),
+                      ],
+                    ),
                   ),
-                ),
-              ],
+                ],
+              ),
+              onTap: () => _openRoom(room),
             ),
-            onTap: () => _openRoom(room),
           );
         },
       ),
@@ -279,125 +295,137 @@ class _StoryRoomListPageState extends State<StoryRoomListPage> {
 
   Widget _buildTemplateList() {
     if (_templates.isEmpty) {
-      return const Center(child: Text('暂无酒馆模板'));
+      return const StoryAdaptiveEmptyState(
+        classicChild: Center(child: Text('暂无酒馆模板')),
+        icon: Icons.inventory_2_outlined,
+        title: '模板库还是空的',
+        subtitle: '创建或导入角色模板，下一次开场会更快。',
+      );
     }
     return RefreshIndicator(
       onRefresh: _load,
       child: ListView.separated(
+        padding: storyUsesAnimeStyle(context)
+            ? const EdgeInsets.fromLTRB(0, 4, 0, 96)
+            : EdgeInsets.zero,
         itemCount: _templates.length,
-        separatorBuilder: (_, __) => const Divider(height: 1),
+        separatorBuilder: (_, __) => storyUsesAnimeStyle(context)
+            ? const SizedBox.shrink()
+            : const Divider(height: 1),
         itemBuilder: (_, index) {
           final template = _templates[index];
           final canTranslateCopy = _isMultiRoleTemplate(template);
-          return ListTile(
-            leading: const CircleAvatar(
-              child: Icon(Icons.inventory_2_outlined),
-            ),
-            title: Text(
-              template.title,
-              maxLines: 1,
-              overflow: TextOverflow.ellipsis,
-            ),
-            subtitle: Text(
-              _templateSubtitle(template),
-              maxLines: 1,
-              overflow: TextOverflow.ellipsis,
-            ),
-            trailing: PopupMenuButton<String>(
-              tooltip: '模板操作',
-              onSelected: (value) {
-                if (value == 'create') {
-                  _createRoomFromTemplate(template);
-                } else if (value == 'edit') {
-                  _editTemplate(template);
-                } else if (value == 'rename') {
-                  _renameTemplate(template);
-                } else if (value == 'opening') {
-                  _editTemplateOpening(template);
-                } else if (value == 'export') {
-                  _exportTemplate(template);
-                } else if (value == 'translate_copy') {
-                  _translateTemplateAsSimplifiedCopy(template);
-                } else if (value == 'delete') {
-                  _deleteTemplate(template);
-                }
-              },
-              itemBuilder: (_) => [
-                const PopupMenuItem(
-                  value: 'create',
-                  child: Row(
-                    children: [
-                      Icon(Icons.add_circle_outline),
-                      SizedBox(width: 8),
-                      Text('开新房间'),
-                    ],
-                  ),
-                ),
-                const PopupMenuItem(
-                  value: 'edit',
-                  child: Row(
-                    children: [
-                      Icon(Icons.tune_outlined),
-                      SizedBox(width: 8),
-                      Text('完整编辑'),
-                    ],
-                  ),
-                ),
-                const PopupMenuItem(
-                  value: 'rename',
-                  child: Row(
-                    children: [
-                      Icon(Icons.drive_file_rename_outline),
-                      SizedBox(width: 8),
-                      Text('重命名'),
-                    ],
-                  ),
-                ),
-                const PopupMenuItem(
-                  value: 'opening',
-                  child: Row(
-                    children: [
-                      Icon(Icons.edit_note_outlined),
-                      SizedBox(width: 8),
-                      Text('编辑开场'),
-                    ],
-                  ),
-                ),
-                if (Platform.operatingSystem != 'ohos')
+          return StoryAdaptiveListItem(
+            child: ListTile(
+              leading: const CircleAvatar(
+                child: Icon(Icons.inventory_2_outlined),
+              ),
+              title: Text(
+                template.title,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+              ),
+              subtitle: Text(
+                _templateSubtitle(template),
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+              ),
+              trailing: PopupMenuButton<String>(
+                tooltip: '模板操作',
+                onSelected: (value) {
+                  if (value == 'create') {
+                    _createRoomFromTemplate(template);
+                  } else if (value == 'edit') {
+                    _editTemplate(template);
+                  } else if (value == 'rename') {
+                    _renameTemplate(template);
+                  } else if (value == 'opening') {
+                    _editTemplateOpening(template);
+                  } else if (value == 'export') {
+                    _exportTemplate(template);
+                  } else if (value == 'translate_copy') {
+                    _translateTemplateAsSimplifiedCopy(template);
+                  } else if (value == 'delete') {
+                    _deleteTemplate(template);
+                  }
+                },
+                itemBuilder: (_) => [
                   const PopupMenuItem(
-                    value: 'export',
+                    value: 'create',
                     child: Row(
                       children: [
-                        Icon(Icons.ios_share_outlined),
+                        Icon(Icons.add_circle_outline),
                         SizedBox(width: 8),
-                        Text('导出模板'),
+                        Text('开新房间'),
                       ],
                     ),
                   ),
-                if (canTranslateCopy)
                   const PopupMenuItem(
-                    value: 'translate_copy',
+                    value: 'edit',
                     child: Row(
                       children: [
-                        Icon(Icons.translate_outlined),
+                        Icon(Icons.tune_outlined),
                         SizedBox(width: 8),
-                        Text('生成中文副本'),
+                        Text('完整编辑'),
                       ],
                     ),
                   ),
-                const PopupMenuItem(
-                  value: 'delete',
-                  child: Row(
-                    children: [
-                      Icon(Icons.delete_outline),
-                      SizedBox(width: 8),
-                      Text('删除模板'),
-                    ],
+                  const PopupMenuItem(
+                    value: 'rename',
+                    child: Row(
+                      children: [
+                        Icon(Icons.drive_file_rename_outline),
+                        SizedBox(width: 8),
+                        Text('重命名'),
+                      ],
+                    ),
                   ),
-                ),
-              ],
+                  const PopupMenuItem(
+                    value: 'opening',
+                    child: Row(
+                      children: [
+                        Icon(Icons.edit_note_outlined),
+                        SizedBox(width: 8),
+                        Text('编辑开场'),
+                      ],
+                    ),
+                  ),
+                  if (Platform.operatingSystem != 'ohos')
+                    const PopupMenuItem(
+                      value: 'export',
+                      child: Row(
+                        children: [
+                          Icon(Icons.ios_share_outlined),
+                          SizedBox(width: 8),
+                          Text('导出模板'),
+                        ],
+                      ),
+                    ),
+                  if (canTranslateCopy)
+                    const PopupMenuItem(
+                      value: 'translate_copy',
+                      child: Row(
+                        children: [
+                          Icon(Icons.translate_outlined),
+                          SizedBox(width: 8),
+                          Text('生成中文副本'),
+                        ],
+                      ),
+                    ),
+                  const PopupMenuItem(
+                    value: 'delete',
+                    child: Row(
+                      children: [
+                        Icon(Icons.delete_outline),
+                        SizedBox(width: 8),
+                        Text('删除模板'),
+                      ],
+                    ),
+                  ),
+                ],
+              ),
+              onTap: () => _editTemplate(template),
             ),
-            onTap: () => _editTemplate(template),
           );
         },
       ),
@@ -1415,109 +1443,6 @@ class _StoryTemplateTranslationCoordinator extends ChangeNotifier {
   }
 }
 
-// ignore: unused_element
-class _LegacyStoryTemplateTranslationJobTile extends StatelessWidget {
-  final _StoryTemplateTranslationJob job;
-  final VoidCallback onShowLog;
-  final VoidCallback onDismiss;
-
-  const _LegacyStoryTemplateTranslationJobTile({
-    required this.job,
-    required this.onShowLog,
-    required this.onDismiss,
-  });
-
-  @override
-  Widget build(BuildContext context) {
-    final failed = job.failed;
-    final completed = job.completed;
-    final color = failed
-        ? Colors.red[700]
-        : completed
-            ? Colors.green[700]
-            : Colors.blueGrey[700];
-    return ListTile(
-      dense: true,
-      leading: CircleAvatar(
-        backgroundColor: failed
-            ? Colors.red[50]
-            : completed
-                ? Colors.green[50]
-                : Colors.blueGrey[50],
-        child: Icon(
-          failed
-              ? Icons.error_outline
-              : completed
-                  ? Icons.check
-                  : Icons.translate_outlined,
-          color: color,
-        ),
-      ),
-      title: Text(
-        job.displayName,
-        maxLines: 1,
-        overflow: TextOverflow.ellipsis,
-      ),
-      subtitle: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Text(
-            [
-              job.stage,
-              if (job.detail.trim().isNotEmpty) job.detail.trim(),
-            ].join(' · '),
-            maxLines: 1,
-            overflow: TextOverflow.ellipsis,
-            style: TextStyle(color: color),
-          ),
-          const SizedBox(height: 4),
-          LinearProgressIndicator(
-            value: failed ? 1 : job.progress.clamp(0, 1).toDouble(),
-            minHeight: 3,
-            backgroundColor: Colors.black12,
-            color: failed ? Colors.red[300] : Colors.blueGrey[400],
-          ),
-          if (failed && job.error.trim().isNotEmpty) ...[
-            const SizedBox(height: 4),
-            Text(
-              job.error,
-              maxLines: 2,
-              overflow: TextOverflow.ellipsis,
-              style: const TextStyle(fontSize: 12, color: Colors.black54),
-            ),
-          ],
-        ],
-      ),
-      trailing: PopupMenuButton<String>(
-        tooltip: '任务操作',
-        onSelected: (value) {
-          if (value == 'log') onShowLog();
-          if (value == 'dismiss') onDismiss();
-        },
-        itemBuilder: (context) => [
-          const PopupMenuItem(
-            value: 'log',
-            child: ListTile(
-              contentPadding: EdgeInsets.zero,
-              leading: Icon(Icons.article_outlined),
-              title: Text('查看日志'),
-            ),
-          ),
-          if (failed || completed)
-            const PopupMenuItem(
-              value: 'dismiss',
-              child: ListTile(
-                contentPadding: EdgeInsets.zero,
-                leading: Icon(Icons.close),
-                title: Text('移除记录'),
-              ),
-            ),
-        ],
-      ),
-    );
-  }
-}
-
 class _StoryTemplateTranslationJobTile extends StatelessWidget {
   final StoryTemplateTranslationTaskModel job;
   final VoidCallback onShowLog;
@@ -1540,123 +1465,128 @@ class _StoryTemplateTranslationJobTile extends StatelessWidget {
         job.status == StoryTemplateTranslationTaskStatus.completed;
     final cancelled =
         job.status == StoryTemplateTranslationTaskStatus.cancelled;
-    final color = failed
-        ? Colors.red[700]
-        : completed
-            ? Colors.green[700]
-            : cancelled
-                ? Colors.grey[700]
-                : Colors.blueGrey[700];
-    return ListTile(
-      dense: true,
-      leading: CircleAvatar(
-        backgroundColor: failed
-            ? Colors.red[50]
-            : completed
-                ? Colors.green[50]
-                : Colors.blueGrey[50],
-        child: Icon(
-          failed
-              ? Icons.error_outline
-              : completed
-                  ? Icons.check
-                  : cancelled
-                      ? Icons.cancel_outlined
-                      : Icons.translate_outlined,
-          color: color,
+    final palette = storyStatusPalette(
+      context,
+      failed
+          ? StoryStatusKind.failure
+          : completed
+              ? StoryStatusKind.success
+              : cancelled
+                  ? StoryStatusKind.neutral
+                  : StoryStatusKind.running,
+    );
+    return StoryAdaptiveListItem(
+      animeMargin: const EdgeInsets.fromLTRB(12, 4, 12, 4),
+      child: ListTile(
+        dense: true,
+        leading: CircleAvatar(
+          backgroundColor: palette.container,
+          child: Icon(
+            failed
+                ? Icons.error_outline
+                : completed
+                    ? Icons.check
+                    : cancelled
+                        ? Icons.cancel_outlined
+                        : Icons.translate_outlined,
+            color: palette.foreground,
+          ),
         ),
-      ),
-      title: Text(
-        job.outputTitle.trim().isEmpty ? job.sourceTitle : job.outputTitle,
-        maxLines: 1,
-        overflow: TextOverflow.ellipsis,
-      ),
-      subtitle: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Text(
-            [
-              StoryTemplateTranslationTaskStatus.labelOf(job.status),
-              job.stage,
-              if (job.detail.trim().isNotEmpty) job.detail.trim(),
-            ].where((item) => item.trim().isNotEmpty).join(' · '),
-            maxLines: 1,
-            overflow: TextOverflow.ellipsis,
-            style: TextStyle(color: color),
-          ),
-          const SizedBox(height: 4),
-          LinearProgressIndicator(
-            value: job.progress.clamp(0, 1).toDouble(),
-            minHeight: 3,
-            backgroundColor: Colors.black12,
-            color: color,
-          ),
-          if (job.fieldLabel.trim().isNotEmpty)
+        title: Text(
+          job.outputTitle.trim().isEmpty ? job.sourceTitle : job.outputTitle,
+          maxLines: 1,
+          overflow: TextOverflow.ellipsis,
+        ),
+        subtitle: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
             Text(
               [
-                if (job.roleName.trim().isNotEmpty) job.roleName.trim(),
-                job.fieldLabel.trim(),
-                if (job.fieldTotal > 1) '${job.fieldIndex}/${job.fieldTotal}',
-              ].join(' · '),
+                StoryTemplateTranslationTaskStatus.labelOf(job.status),
+                job.stage,
+                if (job.detail.trim().isNotEmpty) job.detail.trim(),
+              ].where((item) => item.trim().isNotEmpty).join(' · '),
               maxLines: 1,
               overflow: TextOverflow.ellipsis,
-              style: const TextStyle(fontSize: 12, color: Colors.black54),
+              style: TextStyle(color: palette.onContainer),
             ),
-        ],
-      ),
-      trailing: PopupMenuButton<String>(
-        tooltip: '任务操作',
-        onSelected: (value) {
-          if (value == 'log') onShowLog();
-          if (value == 'retry') onRetry?.call();
-          if (value == 'cancel') onCancel?.call();
-          if (value == 'dismiss') onDismiss?.call();
-        },
-        itemBuilder: (_) => [
-          const PopupMenuItem(
-            value: 'log',
-            child: Row(
-              children: [
-                Icon(Icons.article_outlined),
-                SizedBox(width: 8),
-                Text('查看日志'),
-              ],
+            const SizedBox(height: 4),
+            LinearProgressIndicator(
+              value: job.progress.clamp(0, 1).toDouble(),
+              minHeight: 3,
+              backgroundColor: palette.container,
+              color: palette.foreground,
             ),
-          ),
-          if (onRetry != null)
+            if (job.fieldLabel.trim().isNotEmpty)
+              Text(
+                [
+                  if (job.roleName.trim().isNotEmpty) job.roleName.trim(),
+                  job.fieldLabel.trim(),
+                  if (job.fieldTotal > 1) '${job.fieldIndex}/${job.fieldTotal}',
+                ].join(' · '),
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: TextStyle(
+                  fontSize: 12,
+                  color: Theme.of(context).colorScheme.onSurfaceVariant,
+                ),
+              ),
+          ],
+        ),
+        trailing: PopupMenuButton<String>(
+          tooltip: '任务操作',
+          onSelected: (value) {
+            if (value == 'log') onShowLog();
+            if (value == 'retry') onRetry?.call();
+            if (value == 'cancel') onCancel?.call();
+            if (value == 'dismiss') onDismiss?.call();
+          },
+          itemBuilder: (_) => [
             const PopupMenuItem(
-              value: 'retry',
+              value: 'log',
               child: Row(
                 children: [
-                  Icon(Icons.refresh),
+                  Icon(Icons.article_outlined),
                   SizedBox(width: 8),
-                  Text('重试'),
+                  Text('查看日志'),
                 ],
               ),
             ),
-          if (onCancel != null)
-            const PopupMenuItem(
-              value: 'cancel',
-              child: Row(
-                children: [
-                  Icon(Icons.stop_circle_outlined),
-                  SizedBox(width: 8),
-                  Text('取消'),
-                ],
+            if (onRetry != null)
+              const PopupMenuItem(
+                value: 'retry',
+                child: Row(
+                  children: [
+                    Icon(Icons.refresh),
+                    SizedBox(width: 8),
+                    Text('重试'),
+                  ],
+                ),
               ),
-            ),
-          if (onDismiss != null)
-            const PopupMenuItem(
-              value: 'dismiss',
-              child: Row(
-                children: [
-                  Icon(Icons.close),
-                  SizedBox(width: 8),
-                  Text('移除记录'),
-                ],
+            if (onCancel != null)
+              const PopupMenuItem(
+                value: 'cancel',
+                child: Row(
+                  children: [
+                    Icon(Icons.stop_circle_outlined),
+                    SizedBox(width: 8),
+                    Text('取消'),
+                  ],
+                ),
               ),
-            ),
-        ],
+            if (onDismiss != null)
+              const PopupMenuItem(
+                value: 'dismiss',
+                child: Row(
+                  children: [
+                    Icon(Icons.close),
+                    SizedBox(width: 8),
+                    Text('移除记录'),
+                  ],
+                ),
+              ),
+          ],
+        ),
       ),
     );
   }
@@ -1694,9 +1624,9 @@ class _RenameRoomDialogState extends State<_RenameRoomDialog> {
         controller: _controller,
         autofocus: true,
         textInputAction: TextInputAction.done,
-        decoration: const InputDecoration(
+        decoration: InputDecoration(
           labelText: '房间名称',
-          border: OutlineInputBorder(),
+          border: storyInputBorder(context),
         ),
         onSubmitted: _submit,
       ),
@@ -1781,10 +1711,10 @@ class _TemplateOpeningDialogState extends State<_TemplateOpeningDialog> {
                 minLines: 6,
                 maxLines: 12,
                 textInputAction: TextInputAction.newline,
-                decoration: const InputDecoration(
+                decoration: InputDecoration(
                   labelText: '开场内容',
                   alignLabelWithHint: true,
-                  border: OutlineInputBorder(),
+                  border: storyInputBorder(context),
                 ),
               ),
             ],
@@ -1872,129 +1802,136 @@ class _StoryTemplateEditorPageState extends State<_StoryTemplateEditorPage> {
           ),
         ],
       ),
-      body: ReorderableListView.builder(
-        padding: const EdgeInsets.fromLTRB(16, 16, 16, 32),
-        header: Padding(
-          padding: const EdgeInsets.only(bottom: 12),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.stretch,
-            children: [
-              TextField(
-                controller: _titleController,
-                textInputAction: TextInputAction.next,
-                decoration: const InputDecoration(
-                  labelText: '模板名称',
-                  border: OutlineInputBorder(),
-                ),
-              ),
-              const SizedBox(height: 12),
-              OutlinedButton.icon(
-                icon: const Icon(Icons.settings_input_component_outlined),
-                label: Text(
-                  StoryTavernPresetTransfer.previewsFromRoomBundle(
-                    _tavernPresetJson,
-                  ).isEmpty
-                      ? '导入 Tavern 预设'
-                      : '追加或替换 Tavern 预设',
-                ),
-                onPressed: _presetImportBusy ? null : _importTavernPreset,
-              ),
-              if (_temperature != null ||
-                  _topP != null ||
-                  _maxOutputTokens != null)
-                Padding(
-                  padding: const EdgeInsets.only(top: 6),
-                  child: Text(
-                    [
-                      if (_temperature != null) 'Temperature $_temperature',
-                      if (_topP != null) 'Top P $_topP',
-                      if (_maxOutputTokens != null)
-                        '最大输出 $_maxOutputTokens Token',
-                    ].join(' · '),
-                    style: Theme.of(context).textTheme.bodySmall,
-                    textAlign: TextAlign.center,
-                  ),
-                ),
-              const SizedBox(height: 12),
-              TextField(
-                controller: _openingController,
-                minLines: 3,
-                maxLines: 7,
-                textInputAction: TextInputAction.newline,
-                decoration: const InputDecoration(
-                  labelText: '房间开场（优先显示）',
-                  alignLabelWithHint: true,
-                  border: OutlineInputBorder(),
-                ),
-              ),
-              const SizedBox(height: 16),
-              Text('角色（${_roles.length}）',
-                  style: Theme.of(context).textTheme.titleMedium),
-              const SizedBox(height: 4),
-            ],
-          ),
-        ),
-        footer: Padding(
-          padding: const EdgeInsets.only(top: 12),
-          child: OutlinedButton.icon(
-            icon: const Icon(Icons.person_add_alt_1_outlined),
-            label: const Text('添加角色'),
-            onPressed: _addRole,
-          ),
-        ),
-        itemCount: _roles.length,
-        onReorder: _reorder,
-        itemBuilder: (context, index) {
-          final role = _roles[index];
-          final assistant = role.assistant;
-          final subtitle = <String>[
-            if (assistant.description.trim().isNotEmpty)
-              assistant.description.trim(),
-            if (assistant.openingMessage.trim().isNotEmpty) '有角色开场',
-            if (assistant.memoryBook.trim().isNotEmpty) '有世界书',
-          ].join(' · ');
-          return ListTile(
-            key: ValueKey(_roleKeys[index]),
-            contentPadding: const EdgeInsets.symmetric(horizontal: 4),
-            leading: CircleAvatar(
-              child: Text(
-                '${index + 1}',
-                style: const TextStyle(fontSize: 14),
-              ),
-            ),
-            title: Text(
-              assistant.name.trim().isEmpty ? '未命名角色' : assistant.name,
-              maxLines: 1,
-              overflow: TextOverflow.ellipsis,
-            ),
-            subtitle: subtitle.isEmpty
-                ? const Text('点击编辑角色资料')
-                : Text(
-                    subtitle,
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
-                  ),
-            onTap: () => _editRole(index),
-            trailing: Row(
-              mainAxisSize: MainAxisSize.min,
+      body: StoryAdaptiveSurface(
+        animeKey: const ValueKey('anime_story_template_editor_surface'),
+        animeMargin: const EdgeInsets.all(12),
+        child: ReorderableListView.builder(
+          padding: const EdgeInsets.fromLTRB(16, 16, 16, 32),
+          header: Padding(
+            padding: const EdgeInsets.only(bottom: 12),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
               children: [
-                IconButton(
-                  icon: const Icon(Icons.delete_outline),
-                  tooltip: _roles.length == 1 ? '模板至少保留一个角色' : '删除角色',
-                  onPressed:
-                      _roles.length == 1 ? null : () => _deleteRole(index),
-                ),
-                ReorderableDragStartListener(
-                  index: index,
-                  child: const Padding(
-                    padding: EdgeInsets.all(8),
-                    child: Icon(Icons.drag_handle),
+                TextField(
+                  controller: _titleController,
+                  textInputAction: TextInputAction.next,
+                  decoration: InputDecoration(
+                    labelText: '模板名称',
+                    border: storyInputBorder(context),
                   ),
                 ),
+                const SizedBox(height: 12),
+                OutlinedButton.icon(
+                  icon: const Icon(Icons.settings_input_component_outlined),
+                  label: Text(
+                    StoryTavernPresetTransfer.previewsFromRoomBundle(
+                      _tavernPresetJson,
+                    ).isEmpty
+                        ? '导入 Tavern 预设'
+                        : '追加或替换 Tavern 预设',
+                  ),
+                  onPressed: _presetImportBusy ? null : _importTavernPreset,
+                ),
+                if (_temperature != null ||
+                    _topP != null ||
+                    _maxOutputTokens != null)
+                  Padding(
+                    padding: const EdgeInsets.only(top: 6),
+                    child: Text(
+                      [
+                        if (_temperature != null) 'Temperature $_temperature',
+                        if (_topP != null) 'Top P $_topP',
+                        if (_maxOutputTokens != null)
+                          '最大输出 $_maxOutputTokens Token',
+                      ].join(' · '),
+                      style: Theme.of(context).textTheme.bodySmall,
+                      textAlign: TextAlign.center,
+                    ),
+                  ),
+                const SizedBox(height: 12),
+                TextField(
+                  controller: _openingController,
+                  minLines: 3,
+                  maxLines: 7,
+                  textInputAction: TextInputAction.newline,
+                  decoration: InputDecoration(
+                    labelText: '房间开场（优先显示）',
+                    alignLabelWithHint: true,
+                    border: storyInputBorder(context),
+                  ),
+                ),
+                const SizedBox(height: 16),
+                Text('角色（${_roles.length}）',
+                    style: Theme.of(context).textTheme.titleMedium),
+                const SizedBox(height: 4),
               ],
             ),
-          );
-        },
+          ),
+          footer: Padding(
+            padding: const EdgeInsets.only(top: 12),
+            child: OutlinedButton.icon(
+              icon: const Icon(Icons.person_add_alt_1_outlined),
+              label: const Text('添加角色'),
+              onPressed: _addRole,
+            ),
+          ),
+          itemCount: _roles.length,
+          onReorder: _reorder,
+          itemBuilder: (context, index) {
+            final role = _roles[index];
+            final assistant = role.assistant;
+            final subtitle = <String>[
+              if (assistant.description.trim().isNotEmpty)
+                assistant.description.trim(),
+              if (assistant.openingMessage.trim().isNotEmpty) '有角色开场',
+              if (assistant.memoryBook.trim().isNotEmpty) '有世界书',
+            ].join(' · ');
+            return StoryAdaptiveListItem(
+              key: ValueKey(_roleKeys[index]),
+              animeMargin: const EdgeInsets.symmetric(vertical: 5),
+              child: ListTile(
+                contentPadding: const EdgeInsets.symmetric(horizontal: 4),
+                leading: CircleAvatar(
+                  child: Text(
+                    '${index + 1}',
+                    style: const TextStyle(fontSize: 14),
+                  ),
+                ),
+                title: Text(
+                  assistant.name.trim().isEmpty ? '未命名角色' : assistant.name,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                ),
+                subtitle: subtitle.isEmpty
+                    ? const Text('点击编辑角色资料')
+                    : Text(
+                        subtitle,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                      ),
+                onTap: () => _editRole(index),
+                trailing: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    IconButton(
+                      icon: const Icon(Icons.delete_outline),
+                      tooltip: _roles.length == 1 ? '模板至少保留一个角色' : '删除角色',
+                      onPressed:
+                          _roles.length == 1 ? null : () => _deleteRole(index),
+                    ),
+                    ReorderableDragStartListener(
+                      index: index,
+                      child: const Padding(
+                        padding: EdgeInsets.all(8),
+                        child: Icon(Icons.drag_handle),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            );
+          },
+        ),
       ),
     );
   }
@@ -2258,17 +2195,21 @@ class _StoryTemplateRoleEditorPageState
           ),
         ],
       ),
-      body: ListView(
-        padding: const EdgeInsets.fromLTRB(16, 16, 16, 32),
-        children: [
-          _field(_nameController, '角色名称', maxLines: 1),
-          _field(_descriptionController, '简介', minLines: 2, maxLines: 5),
-          _field(_avatarController, '头像引用（本地路径或 URL）', maxLines: 1),
-          _field(_promptController, '人设（系统提示）', minLines: 5, maxLines: 12),
-          _field(_openingController, '角色开场', minLines: 3, maxLines: 8),
-          _field(_examplesController, '示例对话', minLines: 4, maxLines: 12),
-          _field(_worldBookController, '世界书', minLines: 5, maxLines: 14),
-        ],
+      body: StoryAdaptiveSurface(
+        animeKey: const ValueKey('anime_story_template_role_editor_surface'),
+        animeMargin: const EdgeInsets.all(12),
+        child: ListView(
+          padding: const EdgeInsets.fromLTRB(16, 16, 16, 32),
+          children: [
+            _field(_nameController, '角色名称', maxLines: 1),
+            _field(_descriptionController, '简介', minLines: 2, maxLines: 5),
+            _field(_avatarController, '头像引用（本地路径或 URL）', maxLines: 1),
+            _field(_promptController, '人设（系统提示）', minLines: 5, maxLines: 12),
+            _field(_openingController, '角色开场', minLines: 3, maxLines: 8),
+            _field(_examplesController, '示例对话', minLines: 4, maxLines: 12),
+            _field(_worldBookController, '世界书', minLines: 5, maxLines: 14),
+          ],
+        ),
       ),
     );
   }
@@ -2290,7 +2231,7 @@ class _StoryTemplateRoleEditorPageState
           decoration: InputDecoration(
             labelText: label,
             alignLabelWithHint: minLines > 1,
-            border: const OutlineInputBorder(),
+            border: storyInputBorder(context),
           ),
         ),
       );

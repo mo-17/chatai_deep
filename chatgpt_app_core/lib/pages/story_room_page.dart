@@ -42,6 +42,7 @@ import 'package:chatgpt_app_core/util/hi_dialog.dart';
 import 'package:chatgpt_app_core/widget/assistant_avatar.dart';
 import 'package:chatgpt_app_core/widget/assistant_picker.dart';
 import 'package:chatgpt_app_core/widget/message_input_widget.dart';
+import 'package:chatgpt_app_core/widget/story_visual_widgets.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:provider/provider.dart';
@@ -332,6 +333,8 @@ class _StoryRoomPageState extends State<StoryRoomPage> {
 
   @override
   Widget build(BuildContext context) {
+    final compactForKeyboard = storyUsesAnimeStyle(context) &&
+        MediaQuery.viewInsetsOf(context).bottom > 0;
     return Scaffold(
       appBar: AppBar(
         title: Text(widget.room.title),
@@ -468,8 +471,10 @@ class _StoryRoomPageState extends State<StoryRoomPage> {
           ? const Center(child: CircularProgressIndicator())
           : Column(
               children: [
-                _participantStrip,
-                const Divider(height: 1),
+                if (!compactForKeyboard) ...[
+                  _participantStrip,
+                  const Divider(height: 1),
+                ],
                 Expanded(child: _messageList),
                 const Divider(height: 1),
                 _composer,
@@ -479,48 +484,56 @@ class _StoryRoomPageState extends State<StoryRoomPage> {
   }
 
   Widget get _participantStrip {
-    return SizedBox(
-      height: 74,
-      child: ListView.separated(
-        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-        scrollDirection: Axis.horizontal,
-        itemCount: _participants.length,
-        separatorBuilder: (_, __) => const SizedBox(width: 8),
-        itemBuilder: (_, index) {
-          final item = _participants[index];
-          final selected = item.id == _selectedParticipant?.id;
-          return Opacity(
-            opacity: item.enabled ? 1 : 0.48,
-            child: GestureDetector(
-              onLongPress: _sending ? null : () => _manageParticipant(item),
-              child: ChoiceChip(
-                avatar: _avatarForParticipant(item, radius: 13),
-                selected: selected,
-                label: Text(
-                  item.enabled ? item.name : '${item.name}（已暂停）',
-                  overflow: TextOverflow.ellipsis,
+    return StoryAdaptiveSurface(
+      animeKey: const ValueKey('anime_story_participant_strip'),
+      animeMargin: const EdgeInsets.fromLTRB(12, 8, 12, 4),
+      child: SizedBox(
+        height: 74,
+        child: ListView.separated(
+          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+          scrollDirection: Axis.horizontal,
+          itemCount: _participants.length,
+          separatorBuilder: (_, __) => const SizedBox(width: 8),
+          itemBuilder: (_, index) {
+            final item = _participants[index];
+            final selected = item.id == _selectedParticipant?.id;
+            return Opacity(
+              opacity: item.enabled ? 1 : 0.48,
+              child: GestureDetector(
+                onLongPress: _sending ? null : () => _manageParticipant(item),
+                child: ChoiceChip(
+                  avatar: _avatarForParticipant(item, radius: 13),
+                  selected: selected,
+                  label: Text(
+                    item.enabled ? item.name : '${item.name}（已暂停）',
+                    overflow: TextOverflow.ellipsis,
+                  ),
+                  onSelected: _sending
+                      ? null
+                      : (_) {
+                          if (!item.enabled) {
+                            _manageParticipant(item);
+                            return;
+                          }
+                          setState(() => _selectedParticipantId = item.id);
+                        },
                 ),
-                onSelected: _sending
-                    ? null
-                    : (_) {
-                        if (!item.enabled) {
-                          _manageParticipant(item);
-                          return;
-                        }
-                        setState(() => _selectedParticipantId = item.id);
-                      },
               ),
-            ),
-          );
-        },
+            );
+          },
+        ),
       ),
     );
   }
 
   Widget get _messageList {
     if (_messages.isEmpty) {
-      return Center(
-        child: Text(_isTavern ? '添加角色卡后开始酒馆对话' : '添加角色后，选择发言者开始创作'),
+      final message = _isTavern ? '添加角色卡后开始酒馆对话' : '添加角色后，选择发言者开始创作';
+      return StoryAdaptiveEmptyState(
+        classicChild: Center(child: Text(message)),
+        icon: _isTavern ? Icons.forum_outlined : Icons.theater_comedy_outlined,
+        title: _isTavern ? '酒馆还没有开场' : '创作舞台等待角色',
+        subtitle: message,
       );
     }
     return ListView.builder(
@@ -537,8 +550,8 @@ class _StoryRoomPageState extends State<StoryRoomPage> {
             ),
             child: GestureDetector(
               onLongPress: _sending ? null : () => _showMessageActions(message),
-              child: Card(
-                margin: const EdgeInsets.symmetric(vertical: 5),
+              child: StoryMessageBubble(
+                isUser: isUser,
                 child: Padding(
                   padding: const EdgeInsets.all(10),
                   child: Column(
@@ -558,9 +571,13 @@ class _StoryRoomPageState extends State<StoryRoomPage> {
                               message.speakerName,
                               maxLines: 1,
                               overflow: TextOverflow.ellipsis,
-                              style: const TextStyle(
+                              style: TextStyle(
                                 fontSize: 12,
-                                color: Colors.black54,
+                                color: storyUsesAnimeStyle(context)
+                                    ? Theme.of(context)
+                                        .colorScheme
+                                        .onSurfaceVariant
+                                    : Colors.black54,
                               ),
                             ),
                           ),
@@ -631,6 +648,10 @@ class _StoryRoomPageState extends State<StoryRoomPage> {
           IconButton(
             tooltip: '上一个候选',
             visualDensity: VisualDensity.compact,
+            constraints: const BoxConstraints.tightFor(
+              width: kStoryMinTouchTarget,
+              height: kStoryMinTouchTarget,
+            ),
             icon: const Icon(Icons.chevron_left, size: 20),
             onPressed: _sending || selected <= 0
                 ? null
@@ -638,11 +659,20 @@ class _StoryRoomPageState extends State<StoryRoomPage> {
           ),
           Text(
             '${selected + 1}/${variants.length}',
-            style: const TextStyle(fontSize: 12, color: Colors.black54),
+            style: TextStyle(
+              fontSize: 12,
+              color: storyUsesAnimeStyle(context)
+                  ? Theme.of(context).colorScheme.onSurfaceVariant
+                  : Colors.black54,
+            ),
           ),
           IconButton(
             tooltip: '下一个候选',
             visualDensity: VisualDensity.compact,
+            constraints: const BoxConstraints.tightFor(
+              width: kStoryMinTouchTarget,
+              height: kStoryMinTouchTarget,
+            ),
             icon: const Icon(Icons.chevron_right, size: 20),
             onPressed: _sending || selected >= variants.length - 1
                 ? null
@@ -793,6 +823,10 @@ class _StoryRoomPageState extends State<StoryRoomPage> {
       alignment: Alignment.centerLeft,
       child: IconButton(
         visualDensity: VisualDensity.compact,
+        constraints: const BoxConstraints.tightFor(
+          width: kStoryMinTouchTarget,
+          height: kStoryMinTouchTarget,
+        ),
         tooltip: active ? '停止朗读' : '朗读',
         onPressed: contentAvailable ? () => _toggleReadAloud(message) : null,
         icon: icon == null
@@ -823,150 +857,187 @@ class _StoryRoomPageState extends State<StoryRoomPage> {
     final settings = context.watch<AISettingsProvider>().settings;
     final capabilities =
         ChatService.capabilitiesFor(_effectiveSettings(settings));
+    final compactForKeyboard = storyUsesAnimeStyle(context) &&
+        MediaQuery.viewInsetsOf(context).bottom > 0;
+    final availableWithKeyboard = MediaQuery.sizeOf(context).height -
+        MediaQuery.viewInsetsOf(context).bottom;
+    final compactInputMaxHeight =
+        (availableWithKeyboard * 0.55).clamp(96.0, 180.0).toDouble();
+    final input = MessageInputWidget(
+      _isTavern ? '输入对话或场景动作' : '输入剧情、台词或创作指令',
+      controller: _inputController,
+      enable: !_sending,
+      isStreaming: _sending,
+      onChanged: (value) => _inputText = value,
+      onSend: () => unawaited(_send()),
+      onStop: _stopGeneration,
+      showWebSearch: settings.webSearchConfigured,
+      webSearchEnabled: settings.webSearchEnabled,
+      onToggleWebSearch: () => unawaited(_toggleWebSearch()),
+      pendingImages: _pendingImages,
+      imagesEnabled: capabilities.image,
+      imagesDisabledReason: '当前模型不支持图片，请切换多模态模型',
+      onImagesPicked: (paths) => setState(() => _pendingImages =
+          StoryRoomAttachmentPolicy.normalizePaths(paths,
+              limit: StoryRoomAttachmentPolicy.maxImages)),
+      onRemoveImage: (index) => setState(() {
+        _pendingImages = List<String>.from(_pendingImages)..removeAt(index);
+      }),
+      pendingFiles: _pendingFiles,
+      onFilesPicked: (paths) => setState(() => _pendingFiles =
+          StoryRoomAttachmentPolicy.normalizePaths(paths,
+              limit: StoryRoomAttachmentPolicy.maxFiles)),
+      onRemoveFile: (index) => setState(() {
+        _pendingFiles = List<String>.from(_pendingFiles)..removeAt(index);
+      }),
+    );
     return SafeArea(
       top: false,
       child: Padding(
         padding: const EdgeInsets.fromLTRB(10, 8, 10, 10),
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            InkWell(
-              key: const ValueKey('story_room_persona_selector'),
-              borderRadius: BorderRadius.circular(6),
-              onTap: _sending ? null : _selectPersona,
-              child: Padding(
-                padding: const EdgeInsets.symmetric(vertical: 4),
-                child: Row(
+        child: StoryAdaptiveSurface(
+          animeKey: const ValueKey('anime_story_composer_controls'),
+          animePadding: const EdgeInsets.all(10),
+          emphasized: true,
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              if (!compactForKeyboard) ...[
+                ConstrainedBox(
+                  constraints:
+                      const BoxConstraints(minHeight: kStoryMinTouchTarget),
+                  child: InkWell(
+                    key: const ValueKey('story_room_persona_selector'),
+                    borderRadius: BorderRadius.circular(
+                      storyUsesAnimeStyle(context) ? 16 : 6,
+                    ),
+                    onTap: _sending ? null : _selectPersona,
+                    child: Padding(
+                      padding: const EdgeInsets.symmetric(vertical: 4),
+                      child: Row(
+                        children: [
+                          AssistantAvatar.raw(
+                            emoji: _persona?.avatarType == 'emoji'
+                                ? _persona!.avatarValue
+                                : '🙂',
+                            avatarType: _persona?.avatarType,
+                            avatarValue: _persona?.avatarValue,
+                            radius: 12,
+                          ),
+                          const SizedBox(width: 8),
+                          Expanded(
+                            child: Text(
+                              'Persona · ${_persona?.name ?? '我'}',
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                            ),
+                          ),
+                          const Icon(Icons.swap_horiz_outlined, size: 18),
+                        ],
+                      ),
+                    ),
+                  ),
+                ),
+                const SizedBox(height: 4),
+                Row(
                   children: [
-                    AssistantAvatar.raw(
-                      emoji: _persona?.avatarType == 'emoji'
-                          ? _persona!.avatarValue
-                          : '🙂',
-                      avatarType: _persona?.avatarType,
-                      avatarValue: _persona?.avatarValue,
-                      radius: 12,
+                    Icon(
+                        _isTavern
+                            ? Icons.auto_awesome_outlined
+                            : Icons.record_voice_over_outlined,
+                        size: 18),
+                    const SizedBox(width: 8),
+                    Expanded(
+                      child: manual
+                          ? DropdownButtonHideUnderline(
+                              child: DropdownButton<int>(
+                                value: selected?.id,
+                                isExpanded: true,
+                                items: [
+                                  for (final item in _participants
+                                      .where((item) => item.enabled))
+                                    DropdownMenuItem(
+                                      value: item.id,
+                                      child: Text(
+                                        '${StoryParticipantRole.labelOf(item.role)} · ${item.name}',
+                                        overflow: TextOverflow.ellipsis,
+                                      ),
+                                    ),
+                                ],
+                                onChanged: _sending
+                                    ? null
+                                    : (id) => setState(
+                                        () => _selectedParticipantId = id),
+                              ),
+                            )
+                          : Text(
+                              selected == null
+                                  ? '自动接话：请先添加角色卡'
+                                  : _forcedNextParticipantId == null
+                                      ? '${StoryReplyMode.labelOf(widget.room.replyMode)} · 备用角色：${selected.name}'
+                                      : '${StoryReplyMode.labelOf(widget.room.replyMode)} · 下一位：${_forcedNextParticipantName()}',
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                              style: TextStyle(
+                                color: storyUsesAnimeStyle(context)
+                                    ? Theme.of(context)
+                                        .colorScheme
+                                        .onSurfaceVariant
+                                    : Colors.grey.shade700,
+                              ),
+                            ),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 8),
+              ],
+              if (!compactForKeyboard &&
+                  _sending &&
+                  _generationStatus.isNotEmpty) ...[
+                Row(
+                  children: [
+                    SizedBox(
+                      width: 14,
+                      height: 14,
+                      child: CircularProgressIndicator(
+                        strokeWidth: 2,
+                        color: Theme.of(context).colorScheme.primary,
+                      ),
                     ),
                     const SizedBox(width: 8),
                     Expanded(
                       child: Text(
-                        'Persona · ${_persona?.name ?? '我'}',
+                        _generationStatus,
                         maxLines: 1,
                         overflow: TextOverflow.ellipsis,
+                        style: TextStyle(
+                          fontSize: 12,
+                          color: Theme.of(context).colorScheme.primary,
+                        ),
                       ),
                     ),
-                    const Icon(Icons.swap_horiz_outlined, size: 18),
                   ],
                 ),
-              ),
-            ),
-            const SizedBox(height: 4),
-            Row(
-              children: [
-                Icon(
-                    _isTavern
-                        ? Icons.auto_awesome_outlined
-                        : Icons.record_voice_over_outlined,
-                    size: 18),
-                const SizedBox(width: 8),
-                Expanded(
-                  child: manual
-                      ? DropdownButtonHideUnderline(
-                          child: DropdownButton<int>(
-                            value: selected?.id,
-                            isExpanded: true,
-                            items: [
-                              for (final item in _participants
-                                  .where((item) => item.enabled))
-                                DropdownMenuItem(
-                                  value: item.id,
-                                  child: Text(
-                                    '${StoryParticipantRole.labelOf(item.role)} · ${item.name}',
-                                    overflow: TextOverflow.ellipsis,
-                                  ),
-                                ),
-                            ],
-                            onChanged: _sending
-                                ? null
-                                : (id) =>
-                                    setState(() => _selectedParticipantId = id),
-                          ),
-                        )
-                      : Text(
-                          selected == null
-                              ? '自动接话：请先添加角色卡'
-                              : _forcedNextParticipantId == null
-                                  ? '${StoryReplyMode.labelOf(widget.room.replyMode)} · 备用角色：${selected.name}'
-                                  : '${StoryReplyMode.labelOf(widget.room.replyMode)} · 下一位：${_forcedNextParticipantName()}',
-                          maxLines: 1,
-                          overflow: TextOverflow.ellipsis,
-                          style: TextStyle(color: Colors.grey.shade700),
-                        ),
-                ),
+                const SizedBox(height: 8),
               ],
-            ),
-            const SizedBox(height: 8),
-            if (_sending && _generationStatus.isNotEmpty) ...[
-              Row(
-                children: [
-                  SizedBox(
-                    width: 14,
-                    height: 14,
-                    child: CircularProgressIndicator(
-                      strokeWidth: 2,
-                      color: Theme.of(context).colorScheme.primary,
-                    ),
+              if (!compactForKeyboard && _quickReplyGroups.isNotEmpty) ...[
+                _quickReplyBar,
+                const SizedBox(height: 6),
+              ],
+              if (compactForKeyboard)
+                ConstrainedBox(
+                  constraints: BoxConstraints(
+                    maxHeight: compactInputMaxHeight,
                   ),
-                  const SizedBox(width: 8),
-                  Expanded(
-                    child: Text(
-                      _generationStatus,
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
-                      style: TextStyle(
-                        fontSize: 12,
-                        color: Theme.of(context).colorScheme.primary,
-                      ),
-                    ),
+                  child: SingleChildScrollView(
+                    key: const ValueKey('anime_story_compact_composer'),
+                    child: input,
                   ),
-                ],
-              ),
-              const SizedBox(height: 8),
+                )
+              else
+                input,
             ],
-            if (_quickReplyGroups.isNotEmpty) ...[
-              _quickReplyBar,
-              const SizedBox(height: 6),
-            ],
-            MessageInputWidget(
-              _isTavern ? '输入对话或场景动作' : '输入剧情、台词或创作指令',
-              controller: _inputController,
-              enable: !_sending,
-              isStreaming: _sending,
-              onChanged: (value) => _inputText = value,
-              onSend: () => unawaited(_send()),
-              onStop: _stopGeneration,
-              showWebSearch: settings.webSearchConfigured,
-              webSearchEnabled: settings.webSearchEnabled,
-              onToggleWebSearch: () => unawaited(_toggleWebSearch()),
-              pendingImages: _pendingImages,
-              imagesEnabled: capabilities.image,
-              imagesDisabledReason: '当前模型不支持图片，请切换多模态模型',
-              onImagesPicked: (paths) => setState(() => _pendingImages =
-                  StoryRoomAttachmentPolicy.normalizePaths(paths,
-                      limit: StoryRoomAttachmentPolicy.maxImages)),
-              onRemoveImage: (index) => setState(() {
-                _pendingImages = List<String>.from(_pendingImages)
-                  ..removeAt(index);
-              }),
-              pendingFiles: _pendingFiles,
-              onFilesPicked: (paths) => setState(() => _pendingFiles =
-                  StoryRoomAttachmentPolicy.normalizePaths(paths,
-                      limit: StoryRoomAttachmentPolicy.maxFiles)),
-              onRemoveFile: (index) => setState(() {
-                _pendingFiles = List<String>.from(_pendingFiles)
-                  ..removeAt(index);
-              }),
-            ),
-          ],
+          ),
         ),
       ),
     );
@@ -1002,7 +1073,7 @@ class _StoryRoomPageState extends State<StoryRoomPage> {
     final selected = _selectedQuickReplyGroup ?? groups.first;
     final replies = selected.sortedItems(enabledOnly: true);
     return SizedBox(
-      height: 38,
+      height: kStoryMinTouchTarget,
       child: Row(
         children: [
           if (groups.length > 1)
@@ -1031,11 +1102,19 @@ class _StoryRoomPageState extends State<StoryRoomPage> {
               ),
             )
           else
-            Padding(
-              padding: const EdgeInsets.only(right: 6),
-              child: Text(
-                selected.label.isEmpty ? '快捷回复' : selected.label,
-                style: Theme.of(context).textTheme.labelMedium,
+            Tooltip(
+              message: selected.label.isEmpty ? '快捷回复' : selected.label,
+              child: ConstrainedBox(
+                constraints: const BoxConstraints(maxWidth: 96),
+                child: Padding(
+                  padding: const EdgeInsets.only(right: 6),
+                  child: Text(
+                    selected.label.isEmpty ? '快捷回复' : selected.label,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: Theme.of(context).textTheme.labelMedium,
+                  ),
+                ),
               ),
             ),
           Expanded(
@@ -1108,7 +1187,9 @@ class _StoryRoomPageState extends State<StoryRoomPage> {
         children: [
           for (final path in message.imagePaths)
             ClipRRect(
-              borderRadius: BorderRadius.circular(6),
+              borderRadius: BorderRadius.circular(
+                storyUsesAnimeStyle(context) ? 14 : 6,
+              ),
               child: Image.file(
                 File(path),
                 width: 54,
@@ -1117,7 +1198,9 @@ class _StoryRoomPageState extends State<StoryRoomPage> {
                 errorBuilder: (_, __, ___) => Container(
                   width: 54,
                   height: 54,
-                  color: Colors.black12,
+                  color: storyUsesAnimeStyle(context)
+                      ? Theme.of(context).colorScheme.surfaceContainerHighest
+                      : Colors.black12,
                   alignment: Alignment.center,
                   child:
                       const Icon(Icons.image_not_supported_outlined, size: 20),
@@ -1143,7 +1226,9 @@ class _StoryRoomPageState extends State<StoryRoomPage> {
       padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 5),
       decoration: BoxDecoration(
         color: Theme.of(context).colorScheme.surfaceContainerHighest,
-        borderRadius: BorderRadius.circular(6),
+        borderRadius: BorderRadius.circular(
+          storyUsesAnimeStyle(context) ? 14 : 6,
+        ),
       ),
       child: Row(
         mainAxisSize: MainAxisSize.min,
@@ -1365,7 +1450,7 @@ class _StoryRoomPageState extends State<StoryRoomPage> {
           autofocus: true,
           minLines: 5,
           maxLines: 14,
-          decoration: const InputDecoration(border: OutlineInputBorder()),
+          decoration: InputDecoration(border: storyInputBorder(ctx)),
         ),
         actions: [
           TextButton(
@@ -1757,9 +1842,9 @@ class _StoryRoomPageState extends State<StoryRoomPage> {
               children: [
                 TextField(
                   controller: nameController,
-                  decoration: const InputDecoration(
+                  decoration: InputDecoration(
                     labelText: '显示名称',
-                    border: OutlineInputBorder(),
+                    border: storyInputBorder(ctx),
                   ),
                 ),
                 const SizedBox(height: 12),
@@ -1767,9 +1852,9 @@ class _StoryRoomPageState extends State<StoryRoomPage> {
                   controller: promptController,
                   minLines: 5,
                   maxLines: 10,
-                  decoration: const InputDecoration(
+                  decoration: InputDecoration(
                     labelText: '房间内人设 / 职责',
-                    border: OutlineInputBorder(),
+                    border: storyInputBorder(ctx),
                   ),
                 ),
                 if (global.mode == AIMode.local) ...[
@@ -1779,9 +1864,9 @@ class _StoryRoomPageState extends State<StoryRoomPage> {
                             .any((provider) => provider.id == providerId)
                         ? providerId
                         : '',
-                    decoration: const InputDecoration(
+                    decoration: InputDecoration(
                       labelText: '角色服务商覆盖',
-                      border: OutlineInputBorder(),
+                      border: storyInputBorder(ctx),
                     ),
                     items: [
                       const DropdownMenuItem(
@@ -1804,10 +1889,10 @@ class _StoryRoomPageState extends State<StoryRoomPage> {
                 const SizedBox(height: 12),
                 TextField(
                   controller: modelController,
-                  decoration: const InputDecoration(
+                  decoration: InputDecoration(
                     labelText: '角色模型覆盖',
                     hintText: '留空跟随房间设置',
-                    border: OutlineInputBorder(),
+                    border: storyInputBorder(ctx),
                   ),
                 ),
                 const SizedBox(height: 12),
@@ -1815,10 +1900,10 @@ class _StoryRoomPageState extends State<StoryRoomPage> {
                   controller: temperatureController,
                   keyboardType:
                       const TextInputType.numberWithOptions(decimal: true),
-                  decoration: const InputDecoration(
+                  decoration: InputDecoration(
                     labelText: '角色 Temperature 覆盖',
                     hintText: '留空跟随房间设置，范围 0-2',
-                    border: OutlineInputBorder(),
+                    border: storyInputBorder(ctx),
                   ),
                 ),
                 const SizedBox(height: 12),
@@ -1826,28 +1911,28 @@ class _StoryRoomPageState extends State<StoryRoomPage> {
                   controller: topPController,
                   keyboardType:
                       const TextInputType.numberWithOptions(decimal: true),
-                  decoration: const InputDecoration(
+                  decoration: InputDecoration(
                     labelText: '角色 Top P 覆盖',
                     hintText: '留空跟随房间设置，范围 0-1',
-                    border: OutlineInputBorder(),
+                    border: storyInputBorder(ctx),
                   ),
                 ),
                 const SizedBox(height: 12),
                 TextField(
                   controller: maxTokensController,
                   keyboardType: TextInputType.number,
-                  decoration: const InputDecoration(
+                  decoration: InputDecoration(
                     labelText: '角色最大输出 Token 覆盖',
                     hintText: '留空跟随房间设置，0 表示不限制',
-                    border: OutlineInputBorder(),
+                    border: storyInputBorder(ctx),
                   ),
                 ),
                 const SizedBox(height: 12),
                 DropdownButtonFormField<String>(
                   initialValue: voiceStyle,
-                  decoration: const InputDecoration(
+                  decoration: InputDecoration(
                     labelText: '朗读音色风格',
-                    border: OutlineInputBorder(),
+                    border: storyInputBorder(ctx),
                   ),
                   items: [
                     for (final style in TtsVoiceStyle.all)
@@ -1969,10 +2054,10 @@ class _StoryRoomPageState extends State<StoryRoomPage> {
                 autofocus: true,
                 minLines: 5,
                 maxLines: 12,
-                decoration: const InputDecoration(
+                decoration: InputDecoration(
                   labelText: '当前分支角色状态',
                   hintText: '例如：仍警惕用户；左臂受伤；答应在天亮前返回。',
-                  border: OutlineInputBorder(),
+                  border: storyInputBorder(ctx),
                 ),
               ),
             ],
@@ -2141,9 +2226,9 @@ class _StoryRoomPageState extends State<StoryRoomPage> {
           controller: _publicContextCtl,
           minLines: 6,
           maxLines: 12,
-          decoration: const InputDecoration(
+          decoration: InputDecoration(
             hintText: '世界观、当前章节、场景、时间线、写作风格等',
-            border: OutlineInputBorder(),
+            border: storyInputBorder(ctx),
           ),
         ),
         actions: [
@@ -2195,9 +2280,9 @@ class _StoryRoomPageState extends State<StoryRoomPage> {
                 if (global.mode == AIMode.local)
                   DropdownButtonFormField<String>(
                     initialValue: providerId,
-                    decoration: const InputDecoration(
+                    decoration: InputDecoration(
                       labelText: '服务商',
-                      border: OutlineInputBorder(),
+                      border: storyInputBorder(ctx),
                     ),
                     items: [
                       const DropdownMenuItem(
@@ -2227,7 +2312,7 @@ class _StoryRoomPageState extends State<StoryRoomPage> {
                   decoration: InputDecoration(
                     labelText: '模型 ID',
                     hintText: '留空跟随全局：${global.effectiveModel}',
-                    border: const OutlineInputBorder(),
+                    border: storyInputBorder(ctx),
                   ),
                 ),
                 const SizedBox(height: 12),
@@ -2235,10 +2320,10 @@ class _StoryRoomPageState extends State<StoryRoomPage> {
                   controller: temperatureController,
                   keyboardType:
                       const TextInputType.numberWithOptions(decimal: true),
-                  decoration: const InputDecoration(
+                  decoration: InputDecoration(
                     labelText: 'Temperature',
                     hintText: '留空跟随全局，范围 0-2',
-                    border: OutlineInputBorder(),
+                    border: storyInputBorder(ctx),
                   ),
                 ),
                 const SizedBox(height: 12),
@@ -2246,20 +2331,20 @@ class _StoryRoomPageState extends State<StoryRoomPage> {
                   controller: topPController,
                   keyboardType:
                       const TextInputType.numberWithOptions(decimal: true),
-                  decoration: const InputDecoration(
+                  decoration: InputDecoration(
                     labelText: 'Top P',
                     hintText: '留空跟随全局，范围 0-1',
-                    border: OutlineInputBorder(),
+                    border: storyInputBorder(ctx),
                   ),
                 ),
                 const SizedBox(height: 12),
                 TextField(
                   controller: maxTokensController,
                   keyboardType: TextInputType.number,
-                  decoration: const InputDecoration(
+                  decoration: InputDecoration(
                     labelText: '最大输出 Token',
                     hintText: '留空跟随全局，0 表示不限制',
-                    border: OutlineInputBorder(),
+                    border: storyInputBorder(ctx),
                   ),
                 ),
               ],
@@ -2682,9 +2767,9 @@ class _StoryRoomPageState extends State<StoryRoomPage> {
                   ),
                   DropdownButtonFormField<int>(
                     initialValue: maxTotalTokens,
-                    decoration: const InputDecoration(
+                    decoration: InputDecoration(
                       labelText: '本轮总输出 Token 上限',
-                      border: OutlineInputBorder(),
+                      border: storyInputBorder(ctx),
                     ),
                     items: [
                       for (final value in tokenOptions)

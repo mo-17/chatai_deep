@@ -438,6 +438,75 @@ class _MessageInputWidgetState extends State<MessageInputWidget> {
         ),
       );
 
+  Widget _animeToolButton({
+    required IconData icon,
+    required String tooltip,
+    required VoidCallback? onPressed,
+    bool active = false,
+    bool danger = false,
+    bool muted = false,
+  }) {
+    final colorScheme = Theme.of(context).colorScheme;
+    final background = danger
+        ? colorScheme.errorContainer
+        : active
+            ? colorScheme.secondaryContainer
+            : colorScheme.surfaceContainerHighest;
+    final foreground = danger
+        ? colorScheme.error
+        : active
+            ? colorScheme.secondary
+            : colorScheme.onSurfaceVariant;
+    return SizedBox.square(
+      dimension: 44,
+      child: IconButton(
+        tooltip: tooltip,
+        onPressed: onPressed,
+        style: IconButton.styleFrom(
+          minimumSize: const Size.square(44),
+          maximumSize: const Size.square(44),
+          padding: EdgeInsets.zero,
+          backgroundColor: background,
+          foregroundColor:
+              muted ? foreground.withValues(alpha: 0.45) : foreground,
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(14),
+          ),
+        ),
+        icon: Icon(icon, size: 22),
+      ),
+    );
+  }
+
+  Widget _animeSendButton(Color color) {
+    final colorScheme = Theme.of(context).colorScheme;
+    return Padding(
+      padding: const EdgeInsets.only(left: 6),
+      child: SizedBox.square(
+        dimension: 48,
+        child: IconButton.filled(
+          key: const ValueKey('anime_message_send'),
+          tooltip: widget.isStreaming ? '停止生成' : '发送消息',
+          style: IconButton.styleFrom(
+            minimumSize: const Size.square(48),
+            maximumSize: const Size.square(48),
+            backgroundColor: widget.isStreaming ? colorScheme.error : color,
+            foregroundColor: Colors.white,
+            disabledBackgroundColor: color.withValues(alpha: 0.45),
+            disabledForegroundColor: Colors.white70,
+          ),
+          onPressed: widget.isStreaming
+              ? widget.onStop
+              : (widget.enable ? _onSend : null),
+          icon: Icon(
+            widget.isStreaming ? Icons.stop_rounded : Icons.send_rounded,
+            size: 21,
+          ),
+        ),
+      ),
+    );
+  }
+
   get _sendBtn => (color) => Container(
         margin: const EdgeInsets.only(left: 10),
         width: 65,
@@ -457,98 +526,185 @@ class _MessageInputWidgetState extends State<MessageInputWidget> {
         ),
       );
 
-  Widget _buildThumbnailBar() {
+  Widget _buildThumbnailBar({bool isAnime = false}) {
     if (!_hasPendingImages) return const SizedBox.shrink();
     return Container(
-      height: 56,
+      height: isAnime ? 60 : 56,
       padding: const EdgeInsets.only(bottom: 4),
       child: ListView.builder(
         scrollDirection: Axis.horizontal,
         itemCount: widget.pendingImages.length,
         itemBuilder: (_, i) => Padding(
           padding: const EdgeInsets.only(right: 6),
-          child: Stack(
-            children: [
-              ClipRRect(
-                borderRadius: BorderRadius.circular(6),
-                child: Image.file(
-                  File(widget.pendingImages[i]),
-                  width: 48,
-                  height: 48,
-                  fit: BoxFit.cover,
-                ),
-              ),
-              Positioned(
-                top: -4,
-                right: -4,
-                child: GestureDetector(
-                  onTap: () => widget.onRemoveImage?.call(i),
-                  child: Container(
-                    decoration: const BoxDecoration(
-                      color: Colors.black54,
-                      shape: BoxShape.circle,
-                    ),
-                    child:
-                        const Icon(Icons.close, size: 16, color: Colors.white),
+          child: isAnime
+              ? SizedBox(
+                  width: 56,
+                  height: 56,
+                  child: Stack(
+                    children: [
+                      Positioned(
+                        left: 0,
+                        bottom: 0,
+                        child: ClipRRect(
+                          borderRadius: BorderRadius.circular(12),
+                          child: Image.file(
+                            File(widget.pendingImages[i]),
+                            width: 48,
+                            height: 48,
+                            fit: BoxFit.cover,
+                          ),
+                        ),
+                      ),
+                      Positioned(
+                        top: 0,
+                        right: 0,
+                        child: SizedBox.square(
+                          dimension: 44,
+                          child: IconButton(
+                            tooltip: '移除图片',
+                            onPressed: () => widget.onRemoveImage?.call(i),
+                            padding: EdgeInsets.zero,
+                            icon: Container(
+                              width: 22,
+                              height: 22,
+                              decoration: const BoxDecoration(
+                                color: Colors.black54,
+                                shape: BoxShape.circle,
+                              ),
+                              child: const Icon(
+                                Icons.close,
+                                size: 15,
+                                color: Colors.white,
+                              ),
+                            ),
+                          ),
+                        ),
+                      ),
+                    ],
                   ),
+                )
+              : Stack(
+                  children: [
+                    ClipRRect(
+                      borderRadius: BorderRadius.circular(6),
+                      child: Image.file(
+                        File(widget.pendingImages[i]),
+                        width: 48,
+                        height: 48,
+                        fit: BoxFit.cover,
+                      ),
+                    ),
+                    Positioned(
+                      top: -4,
+                      right: -4,
+                      child: GestureDetector(
+                        onTap: () => widget.onRemoveImage?.call(i),
+                        child: Container(
+                          decoration: const BoxDecoration(
+                            color: Colors.black54,
+                            shape: BoxShape.circle,
+                          ),
+                          child: const Icon(
+                            Icons.close,
+                            size: 16,
+                            color: Colors.white,
+                          ),
+                        ),
+                      ),
+                    ),
+                  ],
                 ),
-              ),
-            ],
-          ),
         ),
       ),
     );
   }
 
   /// 待发送文件条（图标 + 文件名 + 删除）。
-  Widget _buildFileBar() {
+  Widget _buildFileBar({bool isAnime = false}) {
     if (!_hasPendingFiles) return const SizedBox.shrink();
-    return Padding(
-      padding: const EdgeInsets.only(bottom: 4),
-      child: Wrap(
-        spacing: 6,
-        runSpacing: 4,
-        children: [
-          for (var i = 0; i < widget.pendingFiles.length; i++)
-            Container(
-              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-              decoration: BoxDecoration(
-                color: Colors.white,
-                borderRadius: BorderRadius.circular(6),
+    final colorScheme = Theme.of(context).colorScheme;
+    final chips = [
+      for (var i = 0; i < widget.pendingFiles.length; i++)
+        Container(
+          padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+          decoration: BoxDecoration(
+            color: isAnime ? colorScheme.surfaceContainerHighest : Colors.white,
+            borderRadius: BorderRadius.circular(isAnime ? 12 : 6),
+            border:
+                isAnime ? Border.all(color: colorScheme.outlineVariant) : null,
+          ),
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Icon(
+                Icons.insert_drive_file_outlined,
+                size: 16,
+                color: isAnime ? colorScheme.primary : Colors.black54,
               ),
-              child: Row(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  const Icon(Icons.insert_drive_file_outlined,
-                      size: 16, color: Colors.black54),
-                  const SizedBox(width: 4),
-                  ConstrainedBox(
-                    constraints: const BoxConstraints(maxWidth: 160),
-                    child: Text(
-                      widget.pendingFiles[i].split(Platform.pathSeparator).last,
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
-                      style:
-                          const TextStyle(fontSize: 12, color: Colors.black87),
+              const SizedBox(width: 4),
+              ConstrainedBox(
+                constraints: const BoxConstraints(maxWidth: 160),
+                child: Text(
+                  widget.pendingFiles[i].split(Platform.pathSeparator).last,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: TextStyle(
+                    fontSize: 12,
+                    color: isAnime ? colorScheme.onSurface : Colors.black87,
+                  ),
+                ),
+              ),
+              const SizedBox(width: 4),
+              if (isAnime)
+                SizedBox.square(
+                  dimension: 44,
+                  child: IconButton(
+                    tooltip: '移除文件',
+                    onPressed: () => widget.onRemoveFile?.call(i),
+                    padding: EdgeInsets.zero,
+                    icon: Icon(
+                      Icons.close,
+                      size: 18,
+                      color: colorScheme.onSurfaceVariant,
                     ),
                   ),
-                  const SizedBox(width: 4),
-                  GestureDetector(
-                    onTap: () => widget.onRemoveFile?.call(i),
-                    child: const Icon(Icons.close,
-                        size: 14, color: Colors.black54),
+                )
+              else
+                GestureDetector(
+                  onTap: () => widget.onRemoveFile?.call(i),
+                  child: const Icon(
+                    Icons.close,
+                    size: 14,
+                    color: Colors.black54,
                   ),
+                ),
+            ],
+          ),
+        ),
+    ];
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 4),
+      child: isAnime
+          ? SingleChildScrollView(
+              key: const ValueKey('anime_pending_files_scroll'),
+              scrollDirection: Axis.horizontal,
+              child: Row(
+                children: [
+                  for (var i = 0; i < chips.length; i++) ...[
+                    if (i > 0) const SizedBox(width: 6),
+                    chips[i],
+                  ],
                 ],
               ),
-            ),
-        ],
-      ),
+            )
+          : Wrap(spacing: 6, runSpacing: 4, children: chips),
     );
   }
 
-  Widget _buildModelBar(Color color) {
+  Widget _buildModelBar(Color color, {bool isAnime = false}) {
     final label = widget.modelLabel;
     if (label == null || label.isEmpty) return const SizedBox.shrink();
+    final colorScheme = Theme.of(context).colorScheme;
     return Padding(
       padding: const EdgeInsets.only(bottom: 5),
       child: Align(
@@ -557,11 +713,21 @@ class _MessageInputWidgetState extends State<MessageInputWidget> {
           borderRadius: BorderRadius.circular(14),
           onTap: widget.onModelTap,
           child: Container(
-            padding: const EdgeInsets.symmetric(horizontal: 9, vertical: 4),
+            constraints: BoxConstraints(minHeight: isAnime ? 44 : 0),
+            padding: EdgeInsets.symmetric(
+              horizontal: isAnime ? 12 : 9,
+              vertical: isAnime ? 8 : 4,
+            ),
             decoration: BoxDecoration(
-              color: Colors.white.withValues(alpha: 0.88),
-              borderRadius: BorderRadius.circular(14),
-              border: Border.all(color: color.withValues(alpha: 0.25)),
+              color: isAnime
+                  ? colorScheme.primaryContainer.withValues(alpha: 0.70)
+                  : Colors.white.withValues(alpha: 0.88),
+              borderRadius: BorderRadius.circular(isAnime ? 16 : 14),
+              border: Border.all(
+                color: isAnime
+                    ? colorScheme.outlineVariant
+                    : color.withValues(alpha: 0.25),
+              ),
             ),
             child: Row(
               mainAxisSize: MainAxisSize.min,
@@ -574,7 +740,12 @@ class _MessageInputWidgetState extends State<MessageInputWidget> {
                     label,
                     maxLines: 1,
                     overflow: TextOverflow.ellipsis,
-                    style: const TextStyle(fontSize: 12, color: Colors.black87),
+                    style: TextStyle(
+                      fontSize: 12,
+                      color: isAnime
+                          ? colorScheme.onPrimaryContainer
+                          : Colors.black87,
+                    ),
                   ),
                 ),
               ],
@@ -612,37 +783,158 @@ class _MessageInputWidgetState extends State<MessageInputWidget> {
         ),
       );
 
+  List<Widget> _animeTools() => [
+        if (widget.showWebSearch)
+          _animeToolButton(
+            icon: Icons.travel_explore_rounded,
+            tooltip: widget.webSearchEnabled ? '关闭联网搜索' : '开启联网搜索',
+            onPressed: widget.onToggleWebSearch,
+            active: widget.webSearchEnabled,
+          ),
+        if (_showPhotoBtn)
+          _animeToolButton(
+            icon: Icons.add_photo_alternate_rounded,
+            tooltip:
+                widget.imagesEnabled ? '添加图片' : widget.imagesDisabledReason,
+            onPressed: _onPhotoTap,
+            muted: !widget.imagesEnabled,
+          ),
+        if (_showFileBtn)
+          _animeToolButton(
+            icon: Icons.attach_file_rounded,
+            tooltip: '添加文件',
+            onPressed: _onFileTap,
+          ),
+        if (widget.speechInputEnabled)
+          _animeToolButton(
+            icon: _isListening ? Icons.mic_rounded : Icons.mic_none_rounded,
+            tooltip: _isListening ? '停止语音输入' : '语音输入',
+            onPressed: _onMicTap,
+            active: _isListening,
+            danger: _isListening,
+          ),
+      ];
+
+  List<Widget> _withToolSpacing(List<Widget> tools) => [
+        for (var index = 0; index < tools.length; index++) ...[
+          if (index > 0) const SizedBox(width: 6),
+          tools[index],
+        ],
+      ];
+
+  Widget _buildAnimeComposer(Color color) {
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        final tools = _animeTools();
+        final inputRow = Row(
+          children: [
+            _animeInput,
+            if (_showSend || widget.isStreaming) _animeSendButton(color),
+          ],
+        );
+        if (constraints.maxWidth < 420 && tools.isNotEmpty) {
+          return Column(
+            key: const ValueKey('anime_message_compact_layout'),
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              SingleChildScrollView(
+                key: const ValueKey('anime_message_tools_scroll'),
+                scrollDirection: Axis.horizontal,
+                child: Row(children: _withToolSpacing(tools)),
+              ),
+              const SizedBox(height: 8),
+              inputRow,
+            ],
+          );
+        }
+        return Row(
+          children: [
+            ..._withToolSpacing(tools),
+            if (tools.isNotEmpty) const SizedBox(width: 6),
+            _animeInput,
+            if (_showSend || widget.isStreaming) _animeSendButton(color),
+          ],
+        );
+      },
+    );
+  }
+
+  Widget get _animeInput => Expanded(
+        child: TextField(
+          key: const ValueKey('anime_message_input'),
+          focusNode: _focusNode,
+          onChanged: _onChanged,
+          controller: _controller,
+          onSubmitted: (_) => _onSend(),
+          style: Theme.of(context).textTheme.bodyLarge,
+          decoration: InputDecoration(
+            hintText: widget.hint,
+            isDense: true,
+            constraints: const BoxConstraints(minHeight: 48),
+            contentPadding:
+                const EdgeInsets.symmetric(horizontal: 14, vertical: 11),
+          ),
+        ),
+      );
+
   @override
   Widget build(BuildContext context) {
     final themeProvider = context.watch<ThemeProvider>();
-    final color = themeProvider.themeColor;
+    final isAnime = themeProvider.isAnime;
+    final colorScheme = Theme.of(context).colorScheme;
+    final color = isAnime ? colorScheme.primary : themeProvider.themeColor;
     var bottom = MediaQuery.of(context).padding.bottom;
     if (bottom == 0.0) {
       //适配iOS刘海屏以外的设备
       bottom = 20;
     }
     return Container(
-      padding: EdgeInsets.only(left: 20, right: 20, top: 5, bottom: bottom),
-      decoration: BoxDecoration(color: Colors.grey.withValues(alpha: 0.2)),
+      key: ValueKey(
+          isAnime ? 'anime_message_composer' : 'classic_message_composer'),
+      padding: EdgeInsets.only(
+        left: isAnime ? 12 : 20,
+        right: isAnime ? 12 : 20,
+        top: isAnime ? 8 : 5,
+        bottom: bottom,
+      ),
+      decoration: isAnime
+          ? BoxDecoration(
+              color: colorScheme.surface,
+              border: Border(
+                top: BorderSide(color: colorScheme.outlineVariant),
+              ),
+              boxShadow: [
+                BoxShadow(
+                  color: colorScheme.primary.withValues(alpha: 0.08),
+                  blurRadius: 16,
+                  offset: const Offset(0, -4),
+                ),
+              ],
+            )
+          : BoxDecoration(color: Colors.grey.withValues(alpha: 0.2)),
       child: Column(
         mainAxisSize: MainAxisSize.min,
         children: [
-          _buildModelBar(color),
-          _buildThumbnailBar(),
-          _buildFileBar(),
-          SizedBox(
-            height: 45,
-            child: Row(
-              children: [
-                if (widget.showWebSearch) _webSearchBtn(color),
-                if (_showPhotoBtn) _photoBtn,
-                if (_showFileBtn) _fileBtn,
-                if (widget.speechInputEnabled) _micBtn,
-                _input,
-                if (_showSend || widget.isStreaming) _sendBtn(color),
-              ],
+          _buildModelBar(color, isAnime: isAnime),
+          _buildThumbnailBar(isAnime: isAnime),
+          _buildFileBar(isAnime: isAnime),
+          if (isAnime)
+            _buildAnimeComposer(color)
+          else
+            SizedBox(
+              height: 45,
+              child: Row(
+                children: [
+                  if (widget.showWebSearch) _webSearchBtn(color),
+                  if (_showPhotoBtn) _photoBtn,
+                  if (_showFileBtn) _fileBtn,
+                  if (widget.speechInputEnabled) _micBtn,
+                  _input,
+                  if (_showSend || widget.isStreaming) _sendBtn(color),
+                ],
+              ),
             ),
-          ),
         ],
       ),
     );

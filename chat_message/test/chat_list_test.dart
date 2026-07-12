@@ -1,6 +1,7 @@
 import 'package:chat_message/core/chat_controller.dart';
 import 'package:chat_message/models/message_model.dart';
 import 'package:chat_message/widget/chat_list.dart';
+import 'package:bubble/bubble.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 
@@ -43,8 +44,7 @@ void main() {
     expect(tester.takeException(), isNull);
   });
 
-  testWidgets('新建空会话发首条消息后不红屏，且消息可见（不滚到空白）',
-      (tester) async {
+  testWidgets('新建空会话发首条消息后不红屏，且消息可见（不滚到空白）', (tester) async {
     final c = _controller([]);
     await tester.pumpWidget(_host(c));
     await tester.pump();
@@ -52,11 +52,11 @@ void main() {
     c.loadMoreData([]);
     await tester.pump();
     // 复刻发送：先加用户气泡，再加 AI 气泡（各自触发 scrollToLastMessage）。
-    c.addMessage(
-        MessageModel(ownerType: OwnerType.sender, content: '第一条', createdAt: 2000));
+    c.addMessage(MessageModel(
+        ownerType: OwnerType.sender, content: '第一条', createdAt: 2000));
     await tester.pump();
-    c.addMessage(
-        MessageModel(ownerType: OwnerType.receiver, content: '回复', createdAt: 2001));
+    c.addMessage(MessageModel(
+        ownerType: OwnerType.receiver, content: '回复', createdAt: 2001));
     await tester.pump();
     // 跑过滚动动画到稳态（对应真机滚完后的状态）。注意：不能用 pumpAndSettle —
     // 它会多跑若干帧把空白掩盖掉；这里固定步进到动画结束的那一帧。
@@ -70,5 +70,56 @@ void main() {
     final visible =
         c.itemPositionsListener.itemPositions.value.map((p) => p.index);
     expect(visible, contains(0));
+  });
+
+  testWidgets('自定义风格参数会传递到双方气泡与头像', (tester) async {
+    const receiverBubble = Color(0xFFEDE9FE);
+    const senderBubble = Color(0xFFFCE7F3);
+    const receiverAvatar = Color(0xFF6D28D9);
+    const senderAvatar = Color(0xFFBE185D);
+    final controller = _controller([
+      MessageModel(
+        ownerType: OwnerType.sender,
+        ownerName: 'U',
+        content: '你好',
+        createdAt: 1000,
+      ),
+      MessageModel(
+        ownerType: OwnerType.receiver,
+        ownerName: 'A',
+        content: '在的',
+        createdAt: 1001,
+      ),
+    ]);
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: ChatList(
+            chatController: controller,
+            receiverBackgroundColor: receiverBubble,
+            senderBackgroundColor: senderBubble,
+            receiverAvatarBackgroundColor: receiverAvatar,
+            senderAvatarBackgroundColor: senderAvatar,
+            textColor: const Color(0xFF1E1B2E),
+            bubbleRadius: const Radius.circular(18),
+          ),
+        ),
+      ),
+    );
+    await tester.pump();
+
+    final bubbleColors =
+        tester.widgetList<Bubble>(find.byType(Bubble)).map((b) => b.color);
+    final avatarColors = tester
+        .widgetList<CircleAvatar>(find.byType(CircleAvatar))
+        .map((avatar) => avatar.backgroundColor);
+    final radii = tester
+        .widgetList<Bubble>(find.byType(Bubble))
+        .map((bubble) => bubble.bubbleClipper.radius);
+    expect(bubbleColors, containsAll([receiverBubble, senderBubble]));
+    expect(avatarColors, containsAll([receiverAvatar, senderAvatar]));
+    expect(radii, everyElement(const Radius.circular(18)));
+    expect(tester.takeException(), isNull);
   });
 }

@@ -19,8 +19,6 @@ class BottomNavigator extends StatefulWidget {
 
 class _BottomNavigatorState extends State<BottomNavigator> {
   final PageController _controller = PageController(initialPage: 0);
-  final defaultColor = Colors.grey;
-  var _activeColor = Colors.blue;
   int _currentIndex = 0;
 
   @override
@@ -84,8 +82,6 @@ class _BottomNavigatorState extends State<BottomNavigator> {
   Widget build(BuildContext context) {
     //更新导航器的context，供退出登录时使用
     NavigatorUtil.updateContext(context);
-    final themeProvider = context.watch<ThemeProvider>();
-    _activeColor = themeProvider.themeColor;
     return Scaffold(
       body: PageView(
         controller: _controller,
@@ -102,29 +98,97 @@ class _BottomNavigatorState extends State<BottomNavigator> {
           MyPage()
         ],
       ),
-      bottomNavigationBar: BottomNavigationBar(
+      bottomNavigationBar: AppBottomNavigationBar(
         currentIndex: _currentIndex,
-        onTap: (index) {
-          _controller.jumpToPage(index);
-          setState(() {
-            _currentIndex = index;
-          });
-        },
-        type: BottomNavigationBarType.fixed,
-        items: [
-          _bottomItem('聊天', Icons.chat, 0),
-          _bottomItem('精彩', Icons.local_fire_department, 1),
-          _bottomItem('创作', Icons.theater_comedy_outlined, 2),
-          _bottomItem('我的', Icons.account_circle, 3),
-        ],
+        onSelected: _selectPage,
       ),
     );
   }
 
-  _bottomItem(String title, IconData icon, int index) {
+  void _selectPage(int index) {
+    _controller.jumpToPage(index);
+    setState(() {
+      _currentIndex = index;
+    });
+  }
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+}
+
+/// 可独立测试的底部导航外观；页面与账号初始化仍由 [BottomNavigator] 管理。
+class AppBottomNavigationBar extends StatelessWidget {
+  final int currentIndex;
+  final ValueChanged<int> onSelected;
+
+  const AppBottomNavigationBar({
+    super.key,
+    required this.currentIndex,
+    required this.onSelected,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final themeProvider = context.watch<ThemeProvider>();
+    if (themeProvider.isAnime) {
+      return NavigationBar(
+        key: const ValueKey('anime_bottom_navigation'),
+        selectedIndex: currentIndex,
+        labelBehavior: NavigationDestinationLabelBehavior.alwaysShow,
+        onDestinationSelected: onSelected,
+        destinations: const [
+          NavigationDestination(
+            icon: Icon(Icons.chat_bubble_outline_rounded),
+            selectedIcon: Icon(Icons.chat_bubble_rounded),
+            label: '聊天',
+          ),
+          NavigationDestination(
+            icon: Icon(Icons.local_fire_department_outlined),
+            selectedIcon: Icon(Icons.local_fire_department_rounded),
+            label: '精彩',
+          ),
+          NavigationDestination(
+            icon: Icon(Icons.theater_comedy_outlined),
+            selectedIcon: Icon(Icons.theater_comedy_rounded),
+            label: '创作',
+          ),
+          NavigationDestination(
+            icon: Icon(Icons.account_circle_outlined),
+            selectedIcon: Icon(Icons.account_circle_rounded),
+            label: '我的',
+          ),
+        ],
+      );
+    }
+
+    return BottomNavigationBar(
+      key: const ValueKey('classic_bottom_navigation'),
+      currentIndex: currentIndex,
+      onTap: onSelected,
+      type: BottomNavigationBarType.fixed,
+      items: [
+        _classicItem('聊天', Icons.chat, themeProvider.themeColor),
+        _classicItem(
+            '精彩', Icons.local_fire_department, themeProvider.themeColor),
+        _classicItem(
+            '创作', Icons.theater_comedy_outlined, themeProvider.themeColor),
+        _classicItem('我的', Icons.account_circle, themeProvider.themeColor),
+      ],
+    );
+  }
+
+  BottomNavigationBarItem _classicItem(
+    String title,
+    IconData icon,
+    Color activeColor,
+  ) {
     return BottomNavigationBarItem(
-        icon: Icon(icon, color: defaultColor),
-        activeIcon: Icon(icon, color: _activeColor),
-        label: title);
+      icon: Icon(icon, color: Colors.grey),
+      activeIcon: Icon(icon, color: activeColor),
+      label: title,
+    );
   }
 }

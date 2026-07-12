@@ -3,6 +3,7 @@ import 'package:chatgpt_app_core/pages/ai_provider_detail_page.dart';
 import 'package:chatgpt_app_core/provider/ai_settings_provider.dart';
 import 'package:chatgpt_app_core/widget/ai_provider/provider_avatar.dart';
 import 'package:chatgpt_app_core/widget/ai_provider/section_card.dart';
+import 'package:chatgpt_app_core/widget/app_visual_widgets.dart';
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
@@ -102,7 +103,7 @@ class _AiProviderListPageState extends State<AiProviderListPage> {
   }
 
   Widget _buildEmpty(ColorScheme cs) {
-    return Center(
+    final classic = Center(
       child: Column(
         mainAxisSize: MainAxisSize.min,
         children: [
@@ -116,6 +117,13 @@ class _AiProviderListPageState extends State<AiProviderListPage> {
                   )),
         ],
       ),
+    );
+    return AppVisualEmptyState(
+      animeKey: const ValueKey('provider_list_empty_state'),
+      icon: Icons.hub_outlined,
+      title: '未找到服务商',
+      message: '可以调整搜索词，或点击右上角添加自定义服务商。',
+      classic: classic,
     );
   }
 
@@ -223,8 +231,8 @@ class _CurrentBadge extends StatelessWidget {
         borderRadius: BorderRadius.circular(8),
       ),
       child: Text('当前',
-          style: tt.labelSmall
-              ?.copyWith(color: cs.onPrimaryContainer, height: 1)),
+          style:
+              tt.labelSmall?.copyWith(color: cs.onPrimaryContainer, height: 1)),
     );
   }
 }

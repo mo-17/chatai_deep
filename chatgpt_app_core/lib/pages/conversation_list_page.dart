@@ -17,6 +17,8 @@ import 'package:chatgpt_app_core/model/conversation_model.dart';
 import 'package:chatgpt_app_core/model/project_model.dart';
 import 'package:chatgpt_app_core/pages/conversation_page.dart';
 import 'package:chatgpt_app_core/provider/ai_settings_provider.dart';
+import 'package:chatgpt_app_core/theme/app_visual_theme.dart';
+import 'package:chatgpt_app_core/widget/app_visual_widgets.dart';
 import 'package:chatgpt_app_core/widget/assistant_picker.dart';
 import 'package:chatgpt_app_core/util/app_events.dart';
 import 'package:chatgpt_app_core/util/avatar_asset_service.dart';
@@ -82,10 +84,16 @@ class _ConversationListPageState extends State<ConversationListPage>
                 children: [
                   SizedBox(
                     height: MediaQuery.sizeOf(context).height * 0.45,
-                    child: Center(
-                      child: Text(
-                        _emptyText,
-                        style: TextStyle(color: Colors.grey[600]),
+                    child: AppVisualEmptyState(
+                      animeKey: const ValueKey('conversation_list_empty_state'),
+                      icon: Icons.forum_outlined,
+                      title: _emptyText,
+                      message: '选一个助手或新建空白会话，开始你的下一段对话。',
+                      classic: Center(
+                        child: Text(
+                          _emptyText,
+                          style: TextStyle(color: Colors.grey[600]),
+                        ),
                       ),
                     ),
                   ),
@@ -172,36 +180,47 @@ class _ConversationListPageState extends State<ConversationListPage>
     );
   }
 
-  Widget get _projectBar => Container(
-        height: 52,
-        alignment: Alignment.centerLeft,
-        padding: const EdgeInsets.symmetric(horizontal: 10),
-        child: ListView(
-          scrollDirection: Axis.horizontal,
-          children: [
-            _filterChip(
-              label: '全部',
-              selected: _selectedProjectId == null && !_uncategorizedOnly,
-              onSelected: () => _selectProject(null, uncategorized: false),
-            ),
-            _filterChip(
-              label: '未分类',
-              selected: _uncategorizedOnly,
-              onSelected: () => _selectProject(null, uncategorized: true),
-            ),
-            for (final project in projectList)
-              _filterChip(
-                label:
-                    '${project.icon.isEmpty ? '📁' : project.icon} ${project.name} ${project.conversationCount}',
-                selected:
-                    _selectedProjectId == project.id && !_uncategorizedOnly,
-                color: Color(project.color),
-                onSelected: () => _selectProject(project.id),
-                onLongPress: () => _showProjectActions(project),
+  Widget get _projectBar {
+    final visual = AppVisualTheme.of(context);
+    final scheme = Theme.of(context).colorScheme;
+    return Container(
+      height: 52,
+      alignment: Alignment.centerLeft,
+      padding: const EdgeInsets.symmetric(horizontal: 10),
+      decoration: visual.isAnime
+          ? BoxDecoration(
+              color: scheme.surface.withValues(alpha: 0.78),
+              border: Border(
+                bottom: BorderSide(color: scheme.outlineVariant),
               ),
-          ],
-        ),
-      );
+            )
+          : null,
+      child: ListView(
+        scrollDirection: Axis.horizontal,
+        children: [
+          _filterChip(
+            label: '全部',
+            selected: _selectedProjectId == null && !_uncategorizedOnly,
+            onSelected: () => _selectProject(null, uncategorized: false),
+          ),
+          _filterChip(
+            label: '未分类',
+            selected: _uncategorizedOnly,
+            onSelected: () => _selectProject(null, uncategorized: true),
+          ),
+          for (final project in projectList)
+            _filterChip(
+              label:
+                  '${project.icon.isEmpty ? '📁' : project.icon} ${project.name} ${project.conversationCount}',
+              selected: _selectedProjectId == project.id && !_uncategorizedOnly,
+              color: Color(project.color),
+              onSelected: () => _selectProject(project.id),
+              onLongPress: () => _showProjectActions(project),
+            ),
+        ],
+      ),
+    );
+  }
 
   Widget _filterChip({
     required String label,
@@ -595,70 +614,88 @@ class _ConversationListPageState extends State<ConversationListPage>
     return showDialog<({String name, String icon, int color})>(
       context: context,
       builder: (ctx) => StatefulBuilder(
-        builder: (ctx, setDialogState) => AlertDialog(
-          title: Text(title),
-          content: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              TextField(
-                controller: nameController,
-                autofocus: true,
-                decoration: const InputDecoration(hintText: '项目名称'),
-                maxLength: 24,
-              ),
-              TextField(
-                controller: iconController,
-                decoration: const InputDecoration(
-                  labelText: '图标',
-                  hintText: '📁',
+        builder: (ctx, setDialogState) {
+          final isAnime = AppVisualTheme.of(ctx).isAnime;
+          return AlertDialog(
+            title: Text(title),
+            content: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                TextField(
+                  controller: nameController,
+                  autofocus: true,
+                  decoration: const InputDecoration(hintText: '项目名称'),
+                  maxLength: 24,
                 ),
-                maxLength: 2,
-              ),
-              const SizedBox(height: 8),
-              Align(
-                alignment: Alignment.centerLeft,
-                child: Wrap(
-                  spacing: 10,
-                  children: [
-                    for (final color in _projectColors)
-                      InkWell(
-                        borderRadius: BorderRadius.circular(16),
-                        onTap: () =>
-                            setDialogState(() => selectedColor = color),
-                        child: CircleAvatar(
-                          radius: 15,
-                          backgroundColor: Color(color),
-                          child: selectedColor == color
-                              ? const Icon(Icons.check,
-                                  color: Colors.white, size: 18)
-                              : null,
+                TextField(
+                  controller: iconController,
+                  decoration: const InputDecoration(
+                    labelText: '图标',
+                    hintText: '📁',
+                  ),
+                  maxLength: 2,
+                ),
+                const SizedBox(height: 8),
+                Align(
+                  alignment: Alignment.centerLeft,
+                  child: Wrap(
+                    spacing: 10,
+                    runSpacing: isAnime ? 8 : 0,
+                    children: [
+                      for (var index = 0;
+                          index < _projectColors.length;
+                          index++)
+                        Semantics(
+                          button: true,
+                          selected: selectedColor == _projectColors[index],
+                          label: '项目颜色 ${index + 1}',
+                          child: SizedBox.square(
+                            dimension: isAnime ? 44 : 30,
+                            child: InkWell(
+                              borderRadius:
+                                  BorderRadius.circular(isAnime ? 22 : 16),
+                              onTap: () => setDialogState(
+                                () => selectedColor = _projectColors[index],
+                              ),
+                              child: Center(
+                                child: CircleAvatar(
+                                  radius: 15,
+                                  backgroundColor: Color(_projectColors[index]),
+                                  child: selectedColor == _projectColors[index]
+                                      ? const Icon(Icons.check,
+                                          color: Colors.white, size: 18)
+                                      : null,
+                                ),
+                              ),
+                            ),
+                          ),
                         ),
-                      ),
-                  ],
+                    ],
+                  ),
                 ),
-              ),
+              ],
+            ),
+            actions: [
+              TextButton(
+                  onPressed: () => Navigator.pop(ctx), child: const Text('取消')),
+              FilledButton(
+                  onPressed: () {
+                    final name = nameController.text.trim();
+                    final icon = iconController.text.trim();
+                    if (name.isEmpty) {
+                      Navigator.pop(ctx);
+                      return;
+                    }
+                    Navigator.pop(ctx, (
+                      name: name,
+                      icon: icon.isEmpty ? '📁' : icon,
+                      color: selectedColor
+                    ));
+                  },
+                  child: const Text('保存')),
             ],
-          ),
-          actions: [
-            TextButton(
-                onPressed: () => Navigator.pop(ctx), child: const Text('取消')),
-            FilledButton(
-                onPressed: () {
-                  final name = nameController.text.trim();
-                  final icon = iconController.text.trim();
-                  if (name.isEmpty) {
-                    Navigator.pop(ctx);
-                    return;
-                  }
-                  Navigator.pop(ctx, (
-                    name: name,
-                    icon: icon.isEmpty ? '📁' : icon,
-                    color: selectedColor
-                  ));
-                },
-                child: const Text('保存')),
-          ],
-        ),
+          );
+        },
       ),
     );
   }
@@ -1441,6 +1478,8 @@ class _ConversationSearchPageState extends State<ConversationSearchPage> {
 
   @override
   Widget build(BuildContext context) {
+    final isAnime = AppVisualTheme.of(context).isAnime;
+    final scheme = Theme.of(context).colorScheme;
     return Scaffold(
       appBar: AppBar(
         titleSpacing: 0,
@@ -1507,26 +1546,52 @@ class _ConversationSearchPageState extends State<ConversationSearchPage> {
               child: CircularProgressIndicator(),
             )
           : _errorText != null
-              ? Center(
-                  key: const ValueKey('conversation_search_error'),
-                  child: Padding(
-                    padding: const EdgeInsets.all(24),
-                    child: Text(
-                      _errorText!,
-                      textAlign: TextAlign.center,
-                      style:
-                          TextStyle(color: Theme.of(context).colorScheme.error),
-                    ),
-                  ),
-                )
+              ? isAnime
+                  ? AppVisualEmptyState(
+                      key: const ValueKey('conversation_search_error'),
+                      animeKey:
+                          const ValueKey('conversation_search_error_anime'),
+                      icon: Icons.cloud_off_rounded,
+                      title: '搜索失败',
+                      message: _errorText,
+                      action: FilledButton.icon(
+                        onPressed: () => _search(_controller.text),
+                        icon: const Icon(Icons.refresh_rounded),
+                        label: const Text('重试'),
+                      ),
+                    )
+                  : Center(
+                      key: const ValueKey('conversation_search_error'),
+                      child: Padding(
+                        padding: const EdgeInsets.all(24),
+                        child: Text(
+                          _errorText!,
+                          textAlign: TextAlign.center,
+                          style: TextStyle(color: scheme.error),
+                        ),
+                      ),
+                    )
               : _results.isEmpty && _favoriteResults.isEmpty
-                  ? Center(
+                  ? AppVisualEmptyState(
                       key: const ValueKey('conversation_search_empty'),
-                      child: Text(
-                        _controller.text.trim().isEmpty
-                            ? '输入关键词搜索'
-                            : '没有找到相关内容',
-                        style: TextStyle(color: Colors.grey[600]),
+                      animeKey:
+                          const ValueKey('conversation_search_empty_anime'),
+                      icon: _controller.text.trim().isEmpty
+                          ? Icons.manage_search_rounded
+                          : Icons.search_off_rounded,
+                      title: _controller.text.trim().isEmpty
+                          ? '输入关键词搜索'
+                          : '没有找到相关内容',
+                      message: _controller.text.trim().isEmpty
+                          ? '可以搜索标题、历史消息和收藏内容。'
+                          : '换个关键词，或调整右上角的筛选条件。',
+                      classic: Center(
+                        child: Text(
+                          _controller.text.trim().isEmpty
+                              ? '输入关键词搜索'
+                              : '没有找到相关内容',
+                          style: TextStyle(color: Colors.grey[600]),
+                        ),
                       ),
                     )
                   : ListView(
@@ -1551,7 +1616,11 @@ class _ConversationSearchPageState extends State<ConversationSearchPage> {
                                   style: Theme.of(context)
                                       .textTheme
                                       .bodySmall
-                                      ?.copyWith(color: Colors.grey[600]),
+                                      ?.copyWith(
+                                        color: isAnime
+                                            ? scheme.onSurfaceVariant
+                                            : Colors.grey[600],
+                                      ),
                                 ),
                               ],
                             ),
@@ -1566,7 +1635,11 @@ class _ConversationSearchPageState extends State<ConversationSearchPage> {
                               style: Theme.of(context)
                                   .textTheme
                                   .labelMedium
-                                  ?.copyWith(color: Colors.grey[700]),
+                                  ?.copyWith(
+                                    color: isAnime
+                                        ? scheme.onSurfaceVariant
+                                        : Colors.grey[700],
+                                  ),
                             ),
                           ),
                           for (final item in group.items) ...[
@@ -1692,6 +1765,7 @@ class _ConversationHitSubtitle extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final visual = AppVisualTheme.of(context);
     final extraHits = item.messageHits.skip(1).toList(growable: false);
     final text = item.sourceLabel.isEmpty
         ? item.snippet
@@ -1712,12 +1786,15 @@ class _ConversationHitSubtitle extends StatelessWidget {
                 key: ValueKey(
                   'conversation_search_hit_${item.conversation.cid}_${hit.createdAt}',
                 ),
-                borderRadius: BorderRadius.circular(6),
+                borderRadius: BorderRadius.circular(visual.isAnime ? 12 : 6),
                 onTap: hit.createdAt == null || onSelectHit == null
                     ? null
                     : () => onSelectHit!(hit.createdAt!),
                 child: Padding(
-                  padding: const EdgeInsets.symmetric(vertical: 2),
+                  padding: EdgeInsets.symmetric(
+                    vertical: visual.isAnime ? 10 : 2,
+                    horizontal: visual.isAnime ? 4 : 0,
+                  ),
                   child: Row(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
@@ -1745,12 +1822,17 @@ class _ConversationHitSubtitle extends StatelessWidget {
           child: TextButton.icon(
             key:
                 ValueKey('conversation_search_expand_${item.conversation.cid}'),
-            style: TextButton.styleFrom(
-              visualDensity: VisualDensity.compact,
-              padding: EdgeInsets.zero,
-              minimumSize: const Size(0, 32),
-              tapTargetSize: MaterialTapTargetSize.shrinkWrap,
-            ),
+            style: visual.isAnime
+                ? TextButton.styleFrom(
+                    minimumSize: const Size(44, 44),
+                    padding: const EdgeInsets.symmetric(horizontal: 8),
+                  )
+                : TextButton.styleFrom(
+                    visualDensity: VisualDensity.compact,
+                    padding: EdgeInsets.zero,
+                    minimumSize: const Size(0, 32),
+                    tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                  ),
             onPressed: onToggle,
             icon: Icon(expanded ? Icons.expand_less : Icons.expand_more),
             label: Text(expanded ? '收起命中片段' : '展开 ${extraHits.length} 处命中'),

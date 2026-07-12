@@ -1,10 +1,13 @@
 import 'dart:io';
 
 import 'package:chatgpt_app_core/model/assistant_model.dart';
+import 'package:chatgpt_app_core/theme/app_visual_theme.dart';
 import 'package:chatgpt_app_core/util/avatar_asset_service.dart';
 import 'package:flutter/material.dart';
 
 class AssistantAvatar extends StatelessWidget {
+  static final Map<String, Future<String?>> _managedPathFutures = {};
+
   final AssistantModel? assistant;
   final String emoji;
   final String? avatarType;
@@ -32,41 +35,90 @@ class AssistantAvatar extends StatelessWidget {
     final type = avatarType ?? assistant?.avatarType;
     final value = (avatarValue ?? assistant?.avatarValue)?.trim() ?? '';
     if (type == AvatarAssetService.imageType && value.isNotEmpty) {
-      final file = File(value);
-      if (file.existsSync()) {
-        return _imageAvatar(file);
-      }
       if (AvatarAssetService.isManagedPath(value)) {
         return FutureBuilder<String?>(
-          future: AvatarAssetService.resolveManagedPath(value),
+          future: _managedPathFutures.putIfAbsent(
+            value,
+            () => AvatarAssetService.resolveManagedPath(value),
+          ),
           builder: (context, snapshot) {
-            final resolved = snapshot.data;
-            if (resolved != null) {
-              final relocated = File(resolved);
-              if (relocated.existsSync()) return _imageAvatar(relocated);
-            }
-            return _emojiAvatar;
+            final resolved = snapshot.data?.trim() ?? '';
+            return resolved.isEmpty
+                ? _emojiAvatar(context)
+                : _imageAvatar(context, File(resolved));
           },
         );
       }
+      return _imageAvatar(context, File(value));
     }
-    return _emojiAvatar;
+    return _emojiAvatar(context);
   }
 
-  Widget _imageAvatar(File file) {
-    return CircleAvatar(
-      radius: radius,
-      backgroundImage: FileImage(file),
+  Widget _imageAvatar(BuildContext context, File file) {
+    final decodeSize =
+        (radius * 2 * MediaQuery.devicePixelRatioOf(context)).round();
+    return _animeFrame(
+      context,
+      ClipOval(
+        child: SizedBox.square(
+          dimension: radius * 2,
+          child: Image.file(
+            file,
+            fit: BoxFit.cover,
+            cacheWidth: decodeSize,
+            cacheHeight: decodeSize,
+            gaplessPlayback: true,
+            errorBuilder: (_, __, ___) => _emojiCircle(context),
+          ),
+        ),
+      ),
     );
   }
 
-  Widget get _emojiAvatar {
+  Widget _emojiAvatar(BuildContext context) =>
+      _animeFrame(context, _emojiCircle(context));
+
+  Widget _emojiCircle(BuildContext context) {
+    final visual = AppVisualTheme.of(context);
+    final colorScheme = Theme.of(context).colorScheme;
     final fallback = emoji.isNotEmpty ? emoji : (assistant?.emoji ?? '🤖');
     return CircleAvatar(
       radius: radius,
+      backgroundColor: visual.isAnime ? colorScheme.secondaryContainer : null,
       child: Text(
         fallback.trim().isEmpty ? '🤖' : fallback.trim(),
-        style: TextStyle(fontSize: radius),
+        style: TextStyle(
+          fontSize: radius,
+          color: visual.isAnime ? colorScheme.onSecondaryContainer : null,
+        ),
+      ),
+    );
+  }
+
+  Widget _animeFrame(BuildContext context, Widget avatar) {
+    final visual = AppVisualTheme.of(context);
+    if (!visual.isAnime) return avatar;
+    final colorScheme = Theme.of(context).colorScheme;
+    return DecoratedBox(
+      key: const ValueKey('anime_assistant_avatar'),
+      decoration: BoxDecoration(
+        shape: BoxShape.circle,
+        gradient: LinearGradient(
+          colors: [colorScheme.primary, colorScheme.secondary],
+          begin: Alignment.topLeft,
+          end: Alignment.bottomRight,
+        ),
+        boxShadow: [
+          BoxShadow(
+            color: visual.glowPrimary,
+            blurRadius: 12,
+            spreadRadius: 1,
+          ),
+        ],
+      ),
+      child: Padding(
+        padding: const EdgeInsets.all(2),
+        child: avatar,
       ),
     );
   }

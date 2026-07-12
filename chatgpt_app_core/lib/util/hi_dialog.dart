@@ -1,3 +1,4 @@
+import 'package:chatgpt_app_core/theme/app_visual_theme.dart';
 import 'package:flutter/material.dart';
 
 class HiDialog {
@@ -8,10 +9,10 @@ class HiDialog {
       {required List<PopupMenuEntry<T>> items,
       double offsetX = 0,
       offsetY = 0}) {
-    var x = MediaQuery.of(context).size.width / 2 + offsetX;
+    final x = MediaQuery.of(context).size.width / 2 + offsetX;
     final RenderBox renderBox = context.findRenderObject() as RenderBox;
-    Offset offset = renderBox.localToGlobal(Offset.zero);
-    var y = offset.dy + renderBox.size.height + offsetY;
+    final offset = renderBox.localToGlobal(Offset.zero);
+    final y = offset.dy + renderBox.size.height + offsetY;
     //计算弹框展示的位置
     final RelativeRect position = RelativeRect.fromLTRB(x, y, x, 0);
     return showMenu(context: context, position: position, items: items);
@@ -27,9 +28,10 @@ class HiDialog {
   ///设置代理弹框，返回true代表确认，false代表取消
   static Future<List> showProxySettingDialog(BuildContext context,
       {String? proxyText, GestureTapCallback? onTap}) async {
-    var isSave = await showDialog<bool>(
+    final isSave = await showDialog<bool>(
         context: context,
         builder: (_) {
+          final anime = AppVisualTheme.of(context).isAnime;
           return AlertDialog(
             title: Row(
               children: [
@@ -37,26 +39,35 @@ class HiDialog {
                   '设置代理',
                   style: TextStyle(fontSize: 16),
                 ),
-                InkWell(
-                  onTap: onTap,
-                  child: const Padding(
-                    padding: EdgeInsetsDirectional.all(5),
-                    child: Icon(Icons.question_mark_rounded,
-                        color: Colors.grey, size: 18),
-                  ),
-                )
+                if (anime)
+                  IconButton(
+                    tooltip: '代理设置帮助',
+                    onPressed: onTap,
+                    icon: const Icon(Icons.help_outline_rounded),
+                  )
+                else
+                  InkWell(
+                    onTap: onTap,
+                    child: const Padding(
+                      padding: EdgeInsetsDirectional.all(5),
+                      child: Icon(Icons.question_mark_rounded,
+                          color: Colors.grey, size: 18),
+                    ),
+                  )
               ],
             ),
-            titlePadding: const EdgeInsets.all(10),
-            titleTextStyle:
-                const TextStyle(color: Colors.black87, fontSize: 20),
+            titlePadding: anime ? null : const EdgeInsets.all(10),
+            titleTextStyle: anime
+                ? null
+                : const TextStyle(color: Colors.black87, fontSize: 20),
             content: TextField(
               controller: TextEditingController(text: proxyText),
               onChanged: (text) => proxyText = text,
             ),
-            contentPadding: const EdgeInsets.all(10),
-            contentTextStyle:
-                const TextStyle(fontSize: 15, color: Colors.black54),
+            contentPadding: anime ? null : const EdgeInsets.all(10),
+            contentTextStyle: anime
+                ? null
+                : const TextStyle(fontSize: 15, color: Colors.black54),
             actions: [
               TextButton(
                   onPressed: () {
@@ -88,15 +99,18 @@ class HiDialog {
     return showDialog<bool>(
         context: context,
         builder: (BuildContext context) {
+          final anime = AppVisualTheme.of(context).isAnime;
           return AlertDialog(
             title: Text(title),
-            titlePadding: const EdgeInsets.all(10),
-            titleTextStyle:
-                const TextStyle(color: Colors.black87, fontSize: 16),
+            titlePadding: anime ? null : const EdgeInsets.all(10),
+            titleTextStyle: anime
+                ? null
+                : const TextStyle(color: Colors.black87, fontSize: 16),
             content: Text(content),
-            contentPadding: const EdgeInsets.all(10),
-            contentTextStyle:
-                const TextStyle(color: Colors.black54, fontSize: 14),
+            contentPadding: anime ? null : const EdgeInsets.all(10),
+            contentTextStyle: anime
+                ? null
+                : const TextStyle(color: Colors.black54, fontSize: 14),
             actions: [
               TextButton(
                   onPressed: () {

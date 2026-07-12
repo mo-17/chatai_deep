@@ -1,7 +1,9 @@
 import 'dart:io';
 
 import 'package:chatgpt_app_core/chat/application/user_sherpa_onnx_tts_models.dart';
+import 'package:chatgpt_app_core/theme/app_visual_theme.dart';
 import 'package:chatgpt_app_core/util/hi_dialog.dart';
+import 'package:chatgpt_app_core/widget/app_visual_widgets.dart';
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 
@@ -34,25 +36,7 @@ class _TtsModelManagerPageState extends State<TtsModelManagerPage> {
           : ListView(
               padding: const EdgeInsets.fromLTRB(16, 12, 16, 24),
               children: [
-                Row(
-                  children: [
-                    Expanded(
-                      child: OutlinedButton.icon(
-                        icon: const Icon(Icons.folder_open_outlined),
-                        label: const Text('导入目录'),
-                        onPressed: importDisabled ? null : _importDirectory,
-                      ),
-                    ),
-                    const SizedBox(width: 12),
-                    Expanded(
-                      child: FilledButton.icon(
-                        icon: const Icon(Icons.archive_outlined),
-                        label: const Text('导入 ZIP'),
-                        onPressed: importDisabled ? null : _importZip,
-                      ),
-                    ),
-                  ],
-                ),
+                _importActions(importDisabled),
                 if (Platform.operatingSystem == 'ohos')
                   Padding(
                     padding: const EdgeInsets.only(top: 10),
@@ -68,6 +52,43 @@ class _TtsModelManagerPageState extends State<TtsModelManagerPage> {
                   for (final model in _models) _modelTile(model),
               ],
             ),
+    );
+  }
+
+  Widget _importActions(bool importDisabled) {
+    final directory = OutlinedButton.icon(
+      icon: const Icon(Icons.folder_open_outlined),
+      label: const Text('导入目录'),
+      onPressed: importDisabled ? null : _importDirectory,
+    );
+    final archive = FilledButton.icon(
+      icon: const Icon(Icons.archive_outlined),
+      label: const Text('导入 ZIP'),
+      onPressed: importDisabled ? null : _importZip,
+    );
+    if (AppVisualTheme.of(context).isAnime) {
+      return LayoutBuilder(
+        builder: (context, constraints) {
+          final width = constraints.maxWidth < 420
+              ? constraints.maxWidth
+              : (constraints.maxWidth - 12) / 2;
+          return Wrap(
+            spacing: 12,
+            runSpacing: 12,
+            children: [
+              SizedBox(width: width, child: directory),
+              SizedBox(width: width, child: archive),
+            ],
+          );
+        },
+      );
+    }
+    return Row(
+      children: [
+        Expanded(child: directory),
+        const SizedBox(width: 12),
+        Expanded(child: archive),
+      ],
     );
   }
 
@@ -147,7 +168,7 @@ class _EmptyModelHint extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return Center(
+    final classic = Center(
       child: Padding(
         padding: const EdgeInsets.only(top: 80),
         child: Text(
@@ -156,6 +177,13 @@ class _EmptyModelHint extends StatelessWidget {
           style: TextStyle(color: Colors.grey[600]),
         ),
       ),
+    );
+    return AppVisualEmptyState(
+      animeKey: const ValueKey('tts_empty_state'),
+      icon: Icons.graphic_eq_rounded,
+      title: '还没有离线语音模型',
+      message: '请选择包含 manifest.json 的 sherpa-onnx Matcha 模型目录，或直接导入 ZIP。',
+      classic: classic,
     );
   }
 }

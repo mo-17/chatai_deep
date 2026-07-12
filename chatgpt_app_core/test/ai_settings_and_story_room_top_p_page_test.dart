@@ -1,9 +1,12 @@
+import 'dart:convert';
+
 import 'package:chatgpt_app_core/chat/application/read_aloud_service.dart';
 import 'package:chatgpt_app_core/model/story_room_model.dart';
 import 'package:chatgpt_app_core/pages/ai_settings_page.dart';
 import 'package:chatgpt_app_core/pages/story_room_page.dart';
 import 'package:chatgpt_app_core/provider/ai_settings_provider.dart';
 import 'package:chatgpt_app_core/provider/theme_provider.dart';
+import 'package:chatgpt_app_core/theme/app_visual_theme.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_hi_cache/flutter_hi_cache.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -112,5 +115,112 @@ void main() {
 
     await tester.pumpWidget(const SizedBox.shrink());
     await tester.pump();
+  });
+
+  testWidgets('anime StoryRoom 键盘弹出时折叠次要控件并限制 composer 高度', (tester) async {
+    tester.view.physicalSize = const Size(320, 568);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+    final room = StoryRoomModel(
+      id: 2,
+      title: '小屏键盘测试',
+      mode: StoryRoomMode.tavern,
+    );
+    final settings = AISettingsProvider();
+    final theme = ThemeProvider()..setVisualStyle(AppVisualStyle.anime);
+
+    await tester.pumpWidget(
+      MultiProvider(
+        providers: [
+          ChangeNotifierProvider<AISettingsProvider>.value(value: settings),
+          ChangeNotifierProvider<ThemeProvider>.value(value: theme),
+        ],
+        child: MaterialApp(
+          theme: theme.getTheme(),
+          home: MediaQuery(
+            data: const MediaQueryData(
+              size: Size(320, 568),
+              viewInsets: EdgeInsets.only(bottom: 280),
+              textScaler: TextScaler.linear(1.4),
+            ),
+            child: StoryRoomPage(
+              room: room,
+              readAloudService: const NoopReadAloudService(),
+              skipInitialLoadForTesting: true,
+            ),
+          ),
+        ),
+      ),
+    );
+    await tester.pump();
+
+    expect(
+      find.byKey(const ValueKey('anime_story_compact_composer')),
+      findsOneWidget,
+    );
+    expect(
+      find.byKey(const ValueKey('anime_story_participant_strip')),
+      findsNothing,
+    );
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('anime StoryRoom 单分组长名在 320px 下截断且不挤压快捷回复', (tester) async {
+    tester.view.physicalSize = const Size(320, 568);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+    const longLabel = '这是一个非常长的快捷回复分组名称用于验证窄屏布局';
+    final room = StoryRoomModel(
+      id: 3,
+      title: '窄屏快捷回复',
+      mode: StoryRoomMode.tavern,
+      quickRepliesJson: jsonEncode({
+        'groups': [
+          {
+            'key': 'long_group',
+            'label': longLabel,
+            'enabled': true,
+            'items': [
+              {
+                'key': 'reply',
+                'label': '继续故事',
+                'content': '请继续',
+                'enabled': true,
+              },
+            ],
+          },
+        ],
+      }),
+    );
+    final settings = AISettingsProvider();
+    final theme = ThemeProvider()..setVisualStyle(AppVisualStyle.anime);
+
+    await tester.pumpWidget(
+      MultiProvider(
+        providers: [
+          ChangeNotifierProvider<AISettingsProvider>.value(value: settings),
+          ChangeNotifierProvider<ThemeProvider>.value(value: theme),
+        ],
+        child: MaterialApp(
+          theme: theme.getTheme(),
+          home: StoryRoomPage(
+            room: room,
+            readAloudService: const NoopReadAloudService(),
+            skipInitialLoadForTesting: true,
+          ),
+        ),
+      ),
+    );
+    await tester.pump();
+
+    final groupLabel = find.byWidgetPredicate(
+      (widget) => widget is Text && widget.data == longLabel,
+    );
+    expect(groupLabel, findsOneWidget);
+    expect(tester.getSize(groupLabel).width, lessThanOrEqualTo(96));
+    expect(find.text('继续故事'), findsOneWidget);
+    expect(tester.takeException(), isNull);
   });
 }

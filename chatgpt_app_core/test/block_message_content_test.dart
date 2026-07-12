@@ -1,6 +1,7 @@
 import 'package:chatgpt_app_core/chat/domain/message_block.dart';
 import 'package:chatgpt_app_core/chat/ui/block_message_content.dart';
 import 'package:chatgpt_app_core/chat/application/chat_block_store.dart';
+import 'package:chatgpt_app_core/theme/app_visual_theme.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:provider/provider.dart';
@@ -66,6 +67,102 @@ void main() {
   });
 
   group('图片块 UI 回归', () {
+    testWidgets('anime 正文引用具备 link 语义和 44dp 命中区', (tester) async {
+      final store = ChatBlockStore();
+      const messageKey = 'msg_citation_anime';
+      store.seedMessage(
+        messageKey,
+        const [
+          MainTextBlock(
+            id: 'b_text_citation',
+            messageId: messageKey,
+            createdAt: 1,
+            status: MessageBlockStatus.success,
+            content: '参考[1]。',
+          ),
+          CitationBlock(
+            id: 'b_citation',
+            messageId: messageKey,
+            createdAt: 2,
+            status: MessageBlockStatus.success,
+            webResults: [
+              WebSearchResult(
+                title: '来源',
+                url: 'https://example.com',
+                content: '摘要',
+              ),
+            ],
+          ),
+        ],
+      );
+      store.commitSeed();
+
+      await tester.pumpWidget(
+        MaterialApp(
+          theme: AppThemeFactory.anime(),
+          home: Scaffold(
+            body: ChangeNotifierProvider.value(
+              value: store,
+              child: const BlockMessageContent(messageKey: messageKey),
+            ),
+          ),
+        ),
+      );
+      await tester.pump();
+
+      final link = find.byWidgetPredicate(
+        (widget) =>
+            widget is Semantics &&
+            widget.properties.link == true &&
+            widget.properties.label == '打开来源 [1]',
+      );
+      expect(link, findsOneWidget);
+      expect(tester.getSize(link), const Size(44, 44));
+      final semantics = tester.widget<Semantics>(link);
+      expect(semantics.properties.onTap, isNotNull);
+      expect(tester.takeException(), isNull);
+    });
+
+    testWidgets('工具块排除子语义时保留展开动作', (tester) async {
+      final store = ChatBlockStore();
+      const messageKey = 'msg_tool_semantics';
+      store.seedMessage(
+        messageKey,
+        const [
+          ToolBlock(
+            id: 'b_tool',
+            messageId: messageKey,
+            createdAt: 1,
+            status: MessageBlockStatus.success,
+            toolId: 'web_search',
+            toolName: '联网搜索',
+            arguments: {'query': '测试'},
+          ),
+        ],
+      );
+      store.commitSeed();
+
+      await tester.pumpWidget(
+        MaterialApp(
+          theme: AppThemeFactory.anime(),
+          home: Scaffold(
+            body: ChangeNotifierProvider.value(
+              value: store,
+              child: const BlockMessageContent(messageKey: messageKey),
+            ),
+          ),
+        ),
+      );
+      await tester.pump();
+
+      final tool = find.byWidgetPredicate(
+        (widget) => widget is Semantics && widget.properties.label == '联网搜索',
+      );
+      expect(tool, findsOneWidget);
+      expect(tester.widget<Semantics>(tool).properties.onTap, isNotNull);
+      expect(tester.getSize(tool).height, greaterThanOrEqualTo(44));
+    });
+
     testWidgets('字数和底部操作合并为消息 footer', (tester) async {
       final store = ChatBlockStore();
       const messageKey = 'msg_footer_1';
@@ -248,6 +345,52 @@ void main() {
       await tester.pumpAndSettle();
 
       expect(find.textContaining('攥住笔记本'), findsOneWidget);
+    });
+
+    testWidgets('anime 角色上下文操作至少 44dp 且大字体不溢出', (tester) async {
+      tester.view.physicalSize = const Size(320, 480);
+      tester.view.devicePixelRatio = 1;
+      addTearDown(tester.view.resetPhysicalSize);
+      addTearDown(tester.view.resetDevicePixelRatio);
+      final store = ChatBlockStore();
+      const messageKey = 'msg_role_context_anime';
+      store.seedMessage(
+        messageKey,
+        const [
+          RoleContextBlock(
+            id: 'b_role_context_anime',
+            messageId: messageKey,
+            createdAt: 1,
+            status: MessageBlockStatus.success,
+            content: '[当前命中的角色记忆]\n- 钟声代表潮汐',
+          ),
+        ],
+      );
+      store.commitSeed();
+
+      await tester.pumpWidget(
+        MaterialApp(
+          theme: AppThemeFactory.anime(),
+          home: MediaQuery(
+            data: const MediaQueryData(
+              size: Size(320, 480),
+              textScaler: TextScaler.linear(1.6),
+            ),
+            child: Scaffold(
+              body: ChangeNotifierProvider.value(
+                value: store,
+                child: const BlockMessageContent(messageKey: messageKey),
+              ),
+            ),
+          ),
+        ),
+      );
+      await tester.pump();
+
+      final copy = find.byTooltip('复制本轮上下文');
+      expect(tester.getSize(copy).width, greaterThanOrEqualTo(44));
+      expect(tester.getSize(copy).height, greaterThanOrEqualTo(44));
+      expect(tester.takeException(), isNull);
     });
   });
 }

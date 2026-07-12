@@ -1,4 +1,6 @@
 import 'package:chatgpt_app_core/sync/cloud_sync_client.dart';
+import 'package:chatgpt_app_core/theme/app_visual_theme.dart';
+import 'package:chatgpt_app_core/widget/app_visual_widgets.dart';
 import 'package:flutter/material.dart';
 import 'package:login_sdk/dao/login_dao.dart';
 
@@ -131,6 +133,64 @@ class _StatusPanel extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final visual = AppVisualTheme.of(context);
+    if (!visual.isAnime) return _classicStatus();
+
+    final kind = switch ((
+      guest,
+      error != null,
+      syncing,
+      result != null,
+    )) {
+      (true, _, _, _) => AppStatusKind.neutral,
+      (_, true, _, _) => AppStatusKind.error,
+      (_, _, true, _) => AppStatusKind.info,
+      (_, _, _, true) => AppStatusKind.success,
+      _ => AppStatusKind.info,
+    };
+    final icon = switch (kind) {
+      AppStatusKind.neutral => Icons.person_off_outlined,
+      AppStatusKind.error => Icons.cloud_off_outlined,
+      AppStatusKind.success => Icons.cloud_done_outlined,
+      _ when syncing => Icons.sync_rounded,
+      _ => Icons.cloud_sync_outlined,
+    };
+    final palette = AppStatusPalette.of(context, kind);
+
+    return AppVisualSurface(
+      animeKey: const ValueKey('cloud_sync_status_surface'),
+      child: Padding(
+        padding: EdgeInsets.zero,
+        child: Row(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            SizedBox(
+              width: 44,
+              height: 44,
+              child: DecoratedBox(
+                decoration: BoxDecoration(
+                  color: palette.container,
+                  borderRadius: BorderRadius.circular(14),
+                ),
+                child: Icon(icon, color: palette.foreground),
+              ),
+            ),
+            const SizedBox(width: 12),
+            Expanded(
+              child: Text(
+                _statusText(),
+                style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                      color: Theme.of(context).colorScheme.onSurface,
+                    ),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _classicStatus() {
     if (guest) {
       return const Text('游客模式暂不支持云同步，请登录后使用。');
     }
@@ -140,17 +200,24 @@ class _StatusPanel extends StatelessWidget {
     if (syncing) {
       return const Text('正在同步当前账号的数据...');
     }
+    return Text(_statusText());
+  }
+
+  String _statusText() {
+    if (guest) return '游客模式暂不支持云同步，请登录后使用。';
+    if (error != null) return '同步失败：$error';
+    if (syncing) return '正在同步当前账号的数据...';
     final r = result;
     if (r == null) {
-      return Text('可将会话、助手、知识库等本地数据同步到当前账号云端。\n'
-          '${_lastSyncText(lastSyncAt)}');
+      return '可将会话、助手、知识库等本地数据同步到当前账号云端。\n'
+          '${_lastSyncText(lastSyncAt)}';
     }
     final conflict = r.hasConflict ? '，冲突 ${_conflictCount(r)} 条' : '';
     final conflictDetail = _conflictDetailText(r);
-    return Text('同步完成（${r.auto ? '自动' : '手动'}）：拉取 ${r.pulled} 条，'
+    return '同步完成（${r.auto ? '自动' : '手动'}）：拉取 ${r.pulled} 条，'
         '上传 ${r.pushed} 条，陈旧 ${r.stale} 条$conflict，'
         '云端游标 ${r.cursor}。\n'
-        '${_lastSyncText(lastSyncAt)}$conflictDetail');
+        '${_lastSyncText(lastSyncAt)}$conflictDetail';
   }
 
   static int _conflictCount(CloudSyncResult result) {

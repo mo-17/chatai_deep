@@ -5,6 +5,7 @@ import 'package:chatgpt_app_core/model/ai_settings.dart';
 import 'package:chatgpt_app_core/pages/ai_health_check_page.dart';
 import 'package:chatgpt_app_core/pages/ai_provider_list_page.dart';
 import 'package:chatgpt_app_core/provider/ai_settings_provider.dart';
+import 'package:chatgpt_app_core/theme/app_visual_theme.dart';
 import 'package:chatgpt_app_core/util/hi_dialog.dart';
 import 'package:chatgpt_app_core/util/model_catalog.dart';
 import 'package:chatgpt_app_core/widget/ai_provider/provider_avatar.dart';
@@ -322,13 +323,17 @@ class _AISettingsPageState extends State<AISettingsPage> {
     final ctl = TextEditingController(text: _store.settings.backendModel);
     final ok = await showDialog<bool>(
       context: context,
-      builder: (_) => AlertDialog(
+      builder: (dialogContext) => AlertDialog(
         title: const Text('自定义模型'),
         content: TextField(
           controller: ctl,
           autofocus: true,
-          decoration: const InputDecoration(
-              hintText: '输入模型 id', border: OutlineInputBorder()),
+          decoration: InputDecoration(
+            hintText: '输入模型 id',
+            border: AppVisualTheme.of(dialogContext).isAnime
+                ? null
+                : const OutlineInputBorder(),
+          ),
         ),
         actions: [
           TextButton(
@@ -416,17 +421,19 @@ class _AISettingsPageState extends State<AISettingsPage> {
             : '');
     final ok = await showDialog<bool>(
       context: context,
-      builder: (_) => AlertDialog(
+      builder: (dialogContext) => AlertDialog(
         title: const Text('最大输出长度'),
         content: TextField(
           controller: ctl,
           autofocus: true,
           keyboardType: TextInputType.number,
-          decoration: const InputDecoration(
+          decoration: InputDecoration(
             labelText: 'max_tokens',
             hintText: '留空不限制（推荐）',
             helperText: 'ⓘ 设太小会截断回复；推理模型的思考也计入',
-            border: OutlineInputBorder(),
+            border: AppVisualTheme.of(dialogContext).isAnime
+                ? null
+                : const OutlineInputBorder(),
           ),
         ),
         actions: [
@@ -578,6 +585,7 @@ class _AISettingsPageState extends State<AISettingsPage> {
 
   Widget _buildWebSearchCard(AISettings s) {
     final cs = Theme.of(context).colorScheme;
+    final isAnime = AppVisualTheme.of(context).isAnime;
     final active = _searchProviders.firstWhere(
         (p) => p.$1 == s.webSearchProviderId,
         orElse: () => _searchProviders.first);
@@ -589,15 +597,15 @@ class _AISettingsPageState extends State<AISettingsPage> {
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
               InputDecorator(
-                decoration: const InputDecoration(
+                decoration: InputDecoration(
                   labelText: '搜索服务商',
-                  border: OutlineInputBorder(),
-                  isDense: true,
+                  border: isAnime ? null : const OutlineInputBorder(),
+                  isDense: isAnime ? false : true,
                 ),
                 child: DropdownButtonHideUnderline(
                   child: DropdownButton<String>(
                     value: active.$1,
-                    isDense: true,
+                    isDense: isAnime ? false : true,
                     isExpanded: true,
                     items: [
                       for (final p in _searchProviders)
@@ -621,7 +629,7 @@ class _AISettingsPageState extends State<AISettingsPage> {
                 decoration: InputDecoration(
                   labelText: '${active.$2} API Key',
                   helperText: 'ⓘ ${active.$3}；配置后会话页出现联网开关',
-                  border: const OutlineInputBorder(),
+                  border: isAnime ? null : const OutlineInputBorder(),
                   filled: true,
                   fillColor: cs.surfaceContainerHighest,
                   suffixIcon: IconButton(
@@ -634,34 +642,44 @@ class _AISettingsPageState extends State<AISettingsPage> {
                 ),
               ),
               const SizedBox(height: 12),
-              Row(
-                children: [
-                  Expanded(
-                    child: TextField(
-                      controller: _searchCountCtl,
-                      keyboardType: TextInputType.number,
-                      onChanged: (_) => _scheduleSearchSave(),
-                      decoration: const InputDecoration(
-                        labelText: '结果个数',
-                        hintText: '5',
-                        border: OutlineInputBorder(),
+              LayoutBuilder(
+                builder: (context, constraints) {
+                  final fieldWidth = constraints.maxWidth < 420
+                      ? constraints.maxWidth
+                      : (constraints.maxWidth - 12) / 2;
+                  return Wrap(
+                    spacing: 12,
+                    runSpacing: 12,
+                    children: [
+                      SizedBox(
+                        width: fieldWidth,
+                        child: TextField(
+                          controller: _searchCountCtl,
+                          keyboardType: TextInputType.number,
+                          onChanged: (_) => _scheduleSearchSave(),
+                          decoration: InputDecoration(
+                            labelText: '结果个数',
+                            hintText: '5',
+                            border: isAnime ? null : const OutlineInputBorder(),
+                          ),
+                        ),
                       ),
-                    ),
-                  ),
-                  const SizedBox(width: 12),
-                  Expanded(
-                    child: TextField(
-                      controller: _searchLimitCtl,
-                      keyboardType: TextInputType.number,
-                      onChanged: (_) => _scheduleSearchSave(),
-                      decoration: const InputDecoration(
-                        labelText: '内容长度限制',
-                        hintText: '留空不限',
-                        border: OutlineInputBorder(),
+                      SizedBox(
+                        width: fieldWidth,
+                        child: TextField(
+                          controller: _searchLimitCtl,
+                          keyboardType: TextInputType.number,
+                          onChanged: (_) => _scheduleSearchSave(),
+                          decoration: InputDecoration(
+                            labelText: '内容长度限制',
+                            hintText: '留空不限',
+                            border: isAnime ? null : const OutlineInputBorder(),
+                          ),
+                        ),
                       ),
-                    ),
-                  ),
-                ],
+                    ],
+                  );
+                },
               ),
               const SizedBox(height: 4),
               SwitchListTile(

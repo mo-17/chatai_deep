@@ -1,6 +1,8 @@
 import 'package:chatgpt_app_core/db/hi_db_manager.dart';
 import 'package:chatgpt_app_core/db/tool_audit_dao.dart';
 import 'package:chatgpt_app_core/model/tool_audit_record.dart';
+import 'package:chatgpt_app_core/theme/app_visual_theme.dart';
+import 'package:chatgpt_app_core/widget/app_visual_widgets.dart';
 import 'package:flutter/material.dart';
 
 typedef ToolAuditLoader = Future<List<ToolAuditRecord>> Function();
@@ -31,17 +33,41 @@ class ToolAuditPage extends StatelessWidget {
             return const Center(child: CircularProgressIndicator());
           }
           if (snapshot.hasError) {
-            return Center(child: Text('工具审计加载失败：${snapshot.error}'));
+            return AppVisualEmptyState(
+              animeKey: const ValueKey('tool_audit_error_state'),
+              icon: Icons.cloud_off_outlined,
+              title: '工具审计加载失败',
+              message: '${snapshot.error}',
+              classic: Center(child: Text('工具审计加载失败：${snapshot.error}')),
+            );
           }
           final records = snapshot.data ?? const <ToolAuditRecord>[];
           if (records.isEmpty) {
-            return const Center(child: Text('还没有工具调用记录'));
+            return const AppVisualEmptyState(
+              animeKey: ValueKey('tool_audit_empty_state'),
+              icon: Icons.fact_check_outlined,
+              title: '还没有工具调用记录',
+              message: '调用外部工具后，这里会展示来源、权限与执行结果。',
+              classic: Center(child: Text('还没有工具调用记录')),
+            );
           }
+          final anime = AppVisualTheme.of(context).isAnime;
           return ListView.separated(
-            padding: const EdgeInsets.symmetric(vertical: 8),
+            padding: anime
+                ? const EdgeInsets.fromLTRB(12, 12, 12, 24)
+                : const EdgeInsets.symmetric(vertical: 8),
             itemCount: records.length,
-            separatorBuilder: (_, __) => const Divider(height: 1),
-            itemBuilder: (context, index) => _AuditTile(record: records[index]),
+            separatorBuilder: (_, __) =>
+                anime ? const SizedBox(height: 8) : const Divider(height: 1),
+            itemBuilder: (context, index) {
+              final tile = _AuditTile(record: records[index]);
+              if (!anime) return tile;
+              return AppVisualSurface(
+                padding: EdgeInsets.zero,
+                clip: true,
+                child: tile,
+              );
+            },
           );
         },
       ),
@@ -56,11 +82,19 @@ class _AuditTile extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final color = record.success
-        ? Colors.green
+    final anime = AppVisualTheme.of(context).isAnime;
+    final kind = record.success
+        ? AppStatusKind.success
         : record.approved
-            ? Colors.orange
-            : Colors.red;
+            ? AppStatusKind.warning
+            : AppStatusKind.error;
+    final color = anime
+        ? AppStatusPalette.of(context, kind).foreground
+        : record.success
+            ? Colors.green
+            : record.approved
+                ? Colors.orange
+                : Colors.red;
     return ExpansionTile(
       leading: Icon(record.success ? Icons.check_circle : Icons.error_outline,
           color: color),

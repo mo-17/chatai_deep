@@ -2,8 +2,10 @@ import 'package:chatgpt_app_core/backup/backup_service.dart';
 import 'package:chatgpt_app_core/db/favorite_dao.dart';
 import 'package:chatgpt_app_core/db/hi_db_manager.dart';
 import 'package:chatgpt_app_core/model/favorite_model.dart';
+import 'package:chatgpt_app_core/theme/app_visual_theme.dart';
 import 'package:chatgpt_app_core/util/hi_dialog.dart';
 import 'package:chatgpt_app_core/util/hi_utils.dart';
+import 'package:chatgpt_app_core/widget/app_visual_widgets.dart';
 import 'package:flutter/material.dart';
 import 'package:login_sdk/util/navigator_util.dart';
 
@@ -13,23 +15,57 @@ import 'meessage_detail_page.dart';
 
 ///收藏的消息页面
 class WonderfulPage extends StatefulWidget {
-  const WonderfulPage({Key? key}) : super(key: key);
+  const WonderfulPage({super.key});
 
   @override
   State<WonderfulPage> createState() => _WonderfulPageState();
 }
 
 class _WonderfulPageState extends State<WonderfulPage> {
-  late FavoriteDao favoriteDao;
+  FavoriteDao? favoriteDao;
   List<FavoriteModel> favoriteList = [];
+  bool _loading = true;
+  Object? _loadError;
 
-  get _listView => ListView.builder(
+  Widget get _listView {
+    final isAnime = AppVisualTheme.of(context).isAnime;
+    if (_loading) {
+      return isAnime
+          ? const Center(child: CircularProgressIndicator())
+          : const SizedBox.shrink();
+    }
+    if (_loadError != null && isAnime) {
+      return AppVisualEmptyState(
+        animeKey: const ValueKey('wonderful_error_state'),
+        icon: Icons.cloud_off_rounded,
+        title: '收藏暂时没加载出来',
+        message: '请检查本地数据后重试',
+        action: FilledButton.icon(
+          onPressed: _retryLoad,
+          icon: const Icon(Icons.refresh_rounded),
+          label: const Text('重新加载'),
+        ),
+      );
+    }
+    if (favoriteList.isEmpty) {
+      if (!isAnime) return const SizedBox.shrink();
+      return const AppVisualEmptyState(
+        animeKey: ValueKey('wonderful_empty_state'),
+        icon: Icons.auto_awesome_rounded,
+        title: '还没有精彩收藏',
+        message: '长按喜欢的回复并收藏，它就会出现在这里。',
+      );
+    }
+    return ListView.builder(
+      padding: isAnime ? const EdgeInsets.symmetric(vertical: 8) : null,
       itemCount: favoriteList.length,
       itemBuilder: (BuildContext context, int index) => FavoriteWidget(
-            model: favoriteList[index],
-            onLongPress: _onLongPress,
-            onTap: _jumpToDetail,
-          ));
+        model: favoriteList[index],
+        onLongPress: _onLongPress,
+        onTap: _jumpToDetail,
+      ),
+    );
+  }
 
   @override
   void initState() {
@@ -55,18 +91,56 @@ class _WonderfulPageState extends State<WonderfulPage> {
     );
   }
 
-  void _doInit() async {
-    var dbManager =
-        await HiDBManager.instance(dbName: HiDBManager.getAccountHash());
-    favoriteDao = await FavoriteDao.create(dbManager);
-    _loadData();
+  Future<void> _doInit() async {
+    if (mounted) {
+      setState(() {
+        _loading = true;
+        _loadError = null;
+      });
+    }
+    try {
+      final dbManager =
+          await HiDBManager.instance(dbName: HiDBManager.getAccountHash());
+      final dao = await FavoriteDao.create(dbManager);
+      if (!mounted) return;
+      favoriteDao = dao;
+      await _loadData();
+    } catch (error) {
+      if (!mounted) return;
+      setState(() {
+        _loading = false;
+        _loadError = error;
+      });
+    }
   }
 
-  void _loadData() async {
-    var list = await favoriteDao.getFavoriteList();
-    setState(() {
-      favoriteList = list;
-    });
+  Future<void> _retryLoad() {
+    return favoriteDao == null ? _doInit() : _loadData();
+  }
+
+  Future<void> _loadData() async {
+    final dao = favoriteDao;
+    if (dao == null) return;
+    if (mounted) {
+      setState(() {
+        _loading = true;
+        _loadError = null;
+      });
+    }
+    try {
+      final list = await dao.getFavoriteList();
+      if (!mounted) return;
+      setState(() {
+        favoriteList = list;
+        _loading = false;
+      });
+    } catch (error) {
+      if (!mounted) return;
+      setState(() {
+        _loading = false;
+        _loadError = error;
+      });
+    }
   }
 
   void _onLongPress(FavoriteModel model, BuildContext ancestor) {
@@ -87,7 +161,9 @@ class _WonderfulPageState extends State<WonderfulPage> {
   }
 
   _onDelete(FavoriteModel model) async {
-    var result = await favoriteDao.removeFavorite(model);
+    final dao = favoriteDao;
+    if (dao == null) return;
+    final result = await dao.removeFavorite(model);
     var showText = '';
     if (result != null && result > 0) {
       showText = '删除成功';

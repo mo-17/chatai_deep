@@ -3,6 +3,7 @@ import 'package:chatgpt_app_core/db/hi_db_manager.dart';
 import 'package:chatgpt_app_core/model/assistant_model.dart';
 import 'package:chatgpt_app_core/pages/assistant_list_page.dart';
 import 'package:chatgpt_app_core/widget/assistant_avatar.dart';
+import 'package:chatgpt_app_core/widget/app_visual_widgets.dart';
 import 'package:flutter/material.dart';
 
 /// 助手选择结果。区分「取消」（showAssistantPicker 返回 null）与
@@ -39,16 +40,29 @@ Future<AssistantPickResult?> showAssistantPicker(BuildContext context,
           bool selected = false,
           required VoidCallback onTap,
         }) =>
-            ListTile(
-              leading: leading,
-              title: Text(title, maxLines: 1, overflow: TextOverflow.ellipsis),
-              subtitle: subtitle != null && subtitle.isNotEmpty
-                  ? Text(subtitle, maxLines: 1, overflow: TextOverflow.ellipsis)
-                  : null,
-              trailing: selected
-                  ? Icon(Icons.check, color: Theme.of(ctx).primaryColor)
-                  : null,
-              onTap: onTap,
+            AppVisualSurface(
+              padding: EdgeInsets.zero,
+              margin: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
+              clip: true,
+              child: ListTile(
+                leading: leading,
+                title:
+                    Text(title, maxLines: 1, overflow: TextOverflow.ellipsis),
+                subtitle: subtitle != null && subtitle.isNotEmpty
+                    ? Text(
+                        subtitle,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                      )
+                    : null,
+                trailing: selected
+                    ? Icon(
+                        Icons.check,
+                        color: Theme.of(ctx).colorScheme.primary,
+                      )
+                    : null,
+                onTap: onTap,
+              ),
             );
 
         return SafeArea(
@@ -84,18 +98,23 @@ Future<AssistantPickResult?> showAssistantPicker(BuildContext context,
                 ),
               ),
               const Divider(height: 1),
-              ListTile(
-                leading: const Icon(Icons.settings_outlined),
-                title: const Text('管理助手'),
-                onTap: () async {
-                  await Navigator.push(
-                      ctx,
-                      MaterialPageRoute(
-                          builder: (_) => const AssistantListPage()));
-                  // 返回后刷新选项（可能新建/删除了助手）。
-                  assistants = await dao.getAssistants();
-                  if (ctx.mounted) setSheetState(() {});
-                },
+              AppVisualSurface(
+                padding: EdgeInsets.zero,
+                margin: const EdgeInsets.fromLTRB(12, 4, 12, 8),
+                clip: true,
+                child: ListTile(
+                  leading: const Icon(Icons.settings_outlined),
+                  title: const Text('管理助手'),
+                  onTap: () async {
+                    await Navigator.push(
+                        ctx,
+                        MaterialPageRoute(
+                            builder: (_) => const AssistantListPage()));
+                    // 返回后刷新选项（可能新建/删除了助手）。
+                    assistants = await dao.getAssistants();
+                    if (ctx.mounted) setSheetState(() {});
+                  },
+                ),
               ),
             ],
           ),

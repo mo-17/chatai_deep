@@ -2,7 +2,9 @@ import 'package:chatgpt_app_core/db/assistant_memory_dao.dart';
 import 'package:chatgpt_app_core/db/hi_db_manager.dart';
 import 'package:chatgpt_app_core/model/assistant_memory_model.dart';
 import 'package:chatgpt_app_core/model/assistant_model.dart';
+import 'package:chatgpt_app_core/theme/app_visual_theme.dart';
 import 'package:chatgpt_app_core/util/hi_dialog.dart';
+import 'package:chatgpt_app_core/widget/app_visual_widgets.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
@@ -20,6 +22,8 @@ class _AssistantMemoryPageState extends State<AssistantMemoryPage> {
   IAssistantMemory? _dao;
   List<AssistantMemoryModel> _memories = const [];
   late final TextEditingController _searchCtl;
+  bool _loading = true;
+  Object? _loadError;
 
   @override
   void initState() {
@@ -37,15 +41,26 @@ class _AssistantMemoryPageState extends State<AssistantMemoryPage> {
   }
 
   Future<void> _doInit() async {
-    if (widget.dao != null) {
-      _dao = widget.dao;
-      await _loadData();
-      return;
+    if (mounted) {
+      setState(() {
+        _loading = true;
+        _loadError = null;
+      });
     }
-    final dbManager =
-        await HiDBManager.instance(dbName: HiDBManager.getAccountHash());
-    _dao = await AssistantMemoryDao.create(dbManager);
-    await _loadData();
+    try {
+      if (widget.dao != null) {
+        _dao = widget.dao;
+      } else {
+        final dbManager =
+            await HiDBManager.instance(dbName: HiDBManager.getAccountHash());
+        _dao = await AssistantMemoryDao.create(dbManager);
+      }
+      await _loadData();
+    } catch (error) {
+      if (mounted) setState(() => _loadError = error);
+    } finally {
+      if (mounted) setState(() => _loading = false);
+    }
   }
 
   Future<void> _loadData() async {
@@ -65,18 +80,44 @@ class _AssistantMemoryPageState extends State<AssistantMemoryPage> {
         : '${widget.assistant.name} · 长期记忆';
     return Scaffold(
       appBar: AppBar(title: Text(title), centerTitle: true),
-      body: _memories.isEmpty ? _emptyView : _contentView,
+      body: _body,
       floatingActionButton: widget.assistant.id == null
           ? null
           : FloatingActionButton(
-              onPressed: () => _editMemory(null),
+              onPressed:
+                  _loading || _dao == null ? null : () => _editMemory(null),
               tooltip: '新增记忆',
               child: const Icon(Icons.add),
             ),
     );
   }
 
-  Widget get _emptyView => Center(
+  Widget get _body {
+    if (_loading) return const Center(child: CircularProgressIndicator());
+    if (_loadError != null) {
+      return AppVisualEmptyState(
+        icon: Icons.cloud_off_outlined,
+        title: '长期记忆加载失败',
+        message: _loadError.toString(),
+        action: FilledButton.icon(
+          onPressed: _doInit,
+          icon: const Icon(Icons.refresh),
+          label: const Text('重试'),
+        ),
+      );
+    }
+    return _memories.isEmpty ? _emptyView : _contentView;
+  }
+
+  Widget get _emptyView {
+    final message = widget.assistant.id == null
+        ? '请先保存助手，再添加长期记忆'
+        : '点右下角新增，或在会话中长按消息选择「记住」。';
+    return AppVisualEmptyState(
+      icon: Icons.psychology_alt_outlined,
+      title: widget.assistant.id == null ? '还不能添加记忆' : '还没有长期记忆',
+      message: message,
+      classic: Center(
         child: Padding(
           padding: const EdgeInsets.all(24),
           child: Text(
@@ -84,10 +125,14 @@ class _AssistantMemoryPageState extends State<AssistantMemoryPage> {
                 ? '请先保存助手，再添加长期记忆'
                 : '还没有长期记忆。点右下角新增，或在会话中长按消息选择「记住」。',
             textAlign: TextAlign.center,
-            style: TextStyle(color: Colors.grey[600]),
+            style: TextStyle(
+              color: Theme.of(context).colorScheme.onSurfaceVariant,
+            ),
           ),
         ),
-      );
+      ),
+    );
+  }
 
   Widget get _contentView {
     final filtered = _filteredMemories;
@@ -107,14 +152,15 @@ class _AssistantMemoryPageState extends State<AssistantMemoryPage> {
     final suggestionCount =
         _memories.where((memory) => memory.source == 'suggestion').length;
     final conversationCount = _memories.length - manualCount - suggestionCount;
-    return Padding(
+    final colorScheme = Theme.of(context).colorScheme;
+    final content = Padding(
       padding: const EdgeInsets.fromLTRB(16, 12, 16, 8),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           Text(
             '共 ${_memories.length} 条 · 手动 $manualCount · 自动建议 $suggestionCount · 对话 $conversationCount',
-            style: const TextStyle(fontSize: 13, color: Colors.black54),
+            style: TextStyle(fontSize: 13, color: colorScheme.onSurfaceVariant),
           ),
           const SizedBox(height: 10),
           TextField(
@@ -136,6 +182,11 @@ class _AssistantMemoryPageState extends State<AssistantMemoryPage> {
         ],
       ),
     );
+    return AppVisualSurface(
+      padding: EdgeInsets.zero,
+      margin: const EdgeInsets.fromLTRB(12, 12, 12, 6),
+      child: content,
+    );
   }
 
   Widget get _noSearchResultView => Center(
@@ -144,7 +195,9 @@ class _AssistantMemoryPageState extends State<AssistantMemoryPage> {
           child: Text(
             '没有匹配的长期记忆',
             textAlign: TextAlign.center,
-            style: TextStyle(color: Colors.grey[600]),
+            style: TextStyle(
+              color: Theme.of(context).colorScheme.onSurfaceVariant,
+            ),
           ),
         ),
       );
@@ -159,12 +212,16 @@ class _AssistantMemoryPageState extends State<AssistantMemoryPage> {
   }
 
   Widget _listView(List<AssistantMemoryModel> memories) => ListView.separated(
-        padding: const EdgeInsets.symmetric(vertical: 8),
+        padding: AppVisualTheme.of(context).isAnime
+            ? const EdgeInsets.fromLTRB(12, 6, 12, 20)
+            : const EdgeInsets.symmetric(vertical: 8),
         itemCount: memories.length,
-        separatorBuilder: (_, __) => const Divider(height: 1),
+        separatorBuilder: (_, __) => AppVisualTheme.of(context).isAnime
+            ? const SizedBox(height: 8)
+            : const Divider(height: 1),
         itemBuilder: (context, index) {
           final memory = memories[index];
-          return ListTile(
+          final tile = ListTile(
             title: Text(memory.content,
                 maxLines: 3, overflow: TextOverflow.ellipsis),
             subtitle: Text(_subtitle(memory)),
@@ -187,6 +244,10 @@ class _AssistantMemoryPageState extends State<AssistantMemoryPage> {
                 ],
               ),
             ),
+          );
+          return AppVisualSurface(
+            padding: EdgeInsets.zero,
+            child: tile,
           );
         },
       );

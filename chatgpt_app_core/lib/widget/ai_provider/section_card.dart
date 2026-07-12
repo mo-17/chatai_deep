@@ -1,3 +1,5 @@
+import 'package:chatgpt_app_core/theme/app_visual_theme.dart';
+import 'package:chatgpt_app_core/widget/app_visual_widgets.dart';
 import 'package:flutter/material.dart';
 
 /// 分组小标题（labelMedium + primary 色 + 字距），统一三屏的 section header。
@@ -41,12 +43,22 @@ class SectionCard extends StatelessWidget {
   Widget build(BuildContext context) {
     final cs = Theme.of(context).colorScheme;
     final isDark = Theme.of(context).brightness == Brightness.dark;
+    final visual = AppVisualTheme.of(context);
     final rows = <Widget>[];
     for (var i = 0; i < children.length; i++) {
       if (i > 0) {
         rows.add(Divider(height: 1, indent: 16, color: cs.outlineVariant));
       }
       rows.add(children[i]);
+    }
+    final content = Column(mainAxisSize: MainAxisSize.min, children: rows);
+    if (visual.isAnime) {
+      return AppVisualSurface(
+        margin: margin,
+        padding: EdgeInsets.zero,
+        clip: true,
+        child: content,
+      );
     }
     return Card(
       elevation: 0,
@@ -59,7 +71,7 @@ class SectionCard extends StatelessWidget {
             : BorderSide.none,
       ),
       clipBehavior: Clip.antiAlias,
-      child: Column(mainAxisSize: MainAxisSize.min, children: rows),
+      child: content,
     );
   }
 }

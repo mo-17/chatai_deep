@@ -10,6 +10,8 @@ import 'package:chatgpt_app_core/model/conversation_model.dart';
 import 'package:chatgpt_app_core/pages/assistant_edit_page.dart';
 import 'package:chatgpt_app_core/pages/assistant_memory_page.dart';
 import 'package:chatgpt_app_core/pages/assistant_world_book_page.dart';
+import 'package:chatgpt_app_core/theme/app_visual_theme.dart';
+import 'package:chatgpt_app_core/widget/app_visual_widgets.dart';
 import 'package:chatgpt_app_core/widget/assistant_avatar.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -111,32 +113,40 @@ class _AssistantProfilePageState extends State<AssistantProfilePage> {
       body: ListView(
         padding: const EdgeInsets.all(16),
         children: [
-          Row(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              _avatar(assistant),
-              const SizedBox(width: 12),
-              Expanded(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text(
-                      assistant.name,
-                      style: Theme.of(context).textTheme.titleLarge,
-                    ),
-                    if (assistant.description.trim().isNotEmpty) ...[
-                      const SizedBox(height: 4),
+          AppVisualSurface(
+            margin: AppVisualTheme.of(context).isAnime
+                ? const EdgeInsets.only(bottom: 20)
+                : EdgeInsets.zero,
+            child: Row(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                _avatar(assistant),
+                const SizedBox(width: 12),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
                       Text(
-                        assistant.description.trim(),
-                        style: TextStyle(color: Colors.grey[700]),
+                        assistant.name,
+                        style: Theme.of(context).textTheme.titleLarge,
                       ),
+                      if (assistant.description.trim().isNotEmpty) ...[
+                        const SizedBox(height: 4),
+                        Text(
+                          assistant.description.trim(),
+                          style: TextStyle(
+                            color:
+                                Theme.of(context).colorScheme.onSurfaceVariant,
+                          ),
+                        ),
+                      ],
                     ],
-                  ],
+                  ),
                 ),
-              ),
-            ],
+              ],
+            ),
           ),
-          const SizedBox(height: 20),
+          if (!AppVisualTheme.of(context).isAnime) const SizedBox(height: 20),
           if (widget.onStartConversation != null) ...[
             SizedBox(
               width: double.infinity,
@@ -155,7 +165,7 @@ class _AssistantProfilePageState extends State<AssistantProfilePage> {
               title: '当前会话状态',
               subtitle: _roleStateSummary(),
               onTap: widget.onSaveRoleState == null
-                  ? () {}
+                  ? null
                   : () => _editRoleState(context),
             ),
             if (_hasRoleState())
@@ -285,7 +295,10 @@ class _AssistantProfilePageState extends State<AssistantProfilePage> {
               if (summary.memoryEntries.length > 3)
                 Text(
                   '还有 ${summary.memoryEntries.length - 3} 条可在世界书中查看',
-                  style: const TextStyle(fontSize: 12, color: Colors.black45),
+                  style: TextStyle(
+                    fontSize: 12,
+                    color: Theme.of(context).colorScheme.onSurfaceVariant,
+                  ),
                 ),
             ]),
           _navTile(
@@ -322,18 +335,24 @@ class _AssistantProfilePageState extends State<AssistantProfilePage> {
   }
 
   Widget _section(BuildContext context, String title, List<Widget> children) {
-    return Padding(
-      padding: const EdgeInsets.only(bottom: 16),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Text(title,
-              style:
-                  const TextStyle(fontSize: 14, fontWeight: FontWeight.w600)),
-          const SizedBox(height: 8),
-          ...children,
-        ],
-      ),
+    final content = Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text(title,
+            style: const TextStyle(fontSize: 14, fontWeight: FontWeight.w600)),
+        const SizedBox(height: 8),
+        ...children,
+      ],
+    );
+    if (!AppVisualTheme.of(context).isAnime) {
+      return Padding(
+        padding: const EdgeInsets.only(bottom: 16),
+        child: content,
+      );
+    }
+    return AppVisualSurface(
+      margin: const EdgeInsets.only(bottom: 16),
+      child: content,
     );
   }
 
@@ -390,24 +409,48 @@ class _AssistantProfilePageState extends State<AssistantProfilePage> {
   }
 
   Widget _kv(String label, String value) {
+    final colorScheme = Theme.of(context).colorScheme;
     return Padding(
       padding: const EdgeInsets.only(bottom: 6),
-      child: Row(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          SizedBox(
-            width: 78,
-            child: Text(label,
-                style: const TextStyle(fontSize: 13, color: Colors.black54)),
-          ),
-          Expanded(child: Text(value, style: const TextStyle(fontSize: 13))),
-        ],
+      child: LayoutBuilder(
+        builder: (context, constraints) {
+          final stacked = constraints.maxWidth < 300 ||
+              MediaQuery.textScalerOf(context).scale(13) > 18;
+          final labelWidget = Text(
+            label,
+            style: TextStyle(
+              fontSize: 13,
+              color: colorScheme.onSurfaceVariant,
+            ),
+          );
+          final valueWidget = Text(value, style: const TextStyle(fontSize: 13));
+          if (stacked) {
+            return Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                labelWidget,
+                const SizedBox(height: 2),
+                valueWidget,
+              ],
+            );
+          }
+          return Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              SizedBox(width: 78, child: labelWidget),
+              Expanded(child: valueWidget),
+            ],
+          );
+        },
       ),
     );
   }
 
   Widget _memoryEntryPreview(AssistantMemoryEntryPreview entry) {
-    final color = entry.enabled ? Colors.black87 : Colors.black38;
+    final colorScheme = Theme.of(context).colorScheme;
+    final color = entry.enabled
+        ? colorScheme.onSurface
+        : colorScheme.onSurfaceVariant.withValues(alpha: 0.68);
     return Padding(
       padding: const EdgeInsets.only(bottom: 8),
       child: Text(
@@ -425,6 +468,7 @@ class _AssistantProfilePageState extends State<AssistantProfilePage> {
   }
 
   Widget _longTermMemoryPreview(AssistantMemoryModel memory) {
+    final colorScheme = Theme.of(context).colorScheme;
     return Padding(
       padding: const EdgeInsets.only(bottom: 8),
       child: Column(
@@ -432,9 +476,9 @@ class _AssistantProfilePageState extends State<AssistantProfilePage> {
         children: [
           Text(
             _memorySourceLabel(memory),
-            style: const TextStyle(
+            style: TextStyle(
               fontSize: 12,
-              color: Colors.black45,
+              color: colorScheme.onSurfaceVariant,
               fontWeight: FontWeight.w600,
             ),
           ),
@@ -452,14 +496,15 @@ class _AssistantProfilePageState extends State<AssistantProfilePage> {
 
   Widget _alternateGreetingPreview(List<String> greetings) {
     final visible = greetings.take(3).toList(growable: false);
+    final colorScheme = Theme.of(context).colorScheme;
     return Padding(
       padding: const EdgeInsets.only(top: 4, bottom: 8),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          const Text(
+          Text(
             '备选开场内容',
-            style: TextStyle(fontSize: 12, color: Colors.black45),
+            style: TextStyle(fontSize: 12, color: colorScheme.onSurfaceVariant),
           ),
           const SizedBox(height: 4),
           for (final greeting in visible)
@@ -475,7 +520,10 @@ class _AssistantProfilePageState extends State<AssistantProfilePage> {
           if (greetings.length > visible.length)
             Text(
               '还有 ${greetings.length - visible.length} 条未展示',
-              style: const TextStyle(fontSize: 12, color: Colors.black38),
+              style: TextStyle(
+                fontSize: 12,
+                color: colorScheme.onSurfaceVariant,
+              ),
             ),
         ],
       ),
@@ -494,14 +542,17 @@ class _AssistantProfilePageState extends State<AssistantProfilePage> {
   Widget _textPreview(String label, String value, {required int maxLines}) {
     final text = value.trim();
     if (text.isEmpty) return const SizedBox.shrink();
+    final colorScheme = Theme.of(context).colorScheme;
+    final stacked = AppVisualTheme.of(context).isAnime ||
+        MediaQuery.textScalerOf(context).scale(13) > 18;
     return Padding(
-      padding: const EdgeInsets.only(left: 78, bottom: 10),
+      padding: EdgeInsets.only(left: stacked ? 0 : 78, bottom: 10),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           Text(
             label,
-            style: const TextStyle(fontSize: 12, color: Colors.black45),
+            style: TextStyle(fontSize: 12, color: colorScheme.onSurfaceVariant),
           ),
           const SizedBox(height: 3),
           Text(
@@ -520,18 +571,29 @@ class _AssistantProfilePageState extends State<AssistantProfilePage> {
     required IconData icon,
     required String title,
     required String subtitle,
-    required VoidCallback onTap,
+    required VoidCallback? onTap,
   }) {
-    return Padding(
-      padding: const EdgeInsets.only(bottom: 8),
-      child: ListTile(
-        contentPadding: EdgeInsets.zero,
-        leading: Icon(icon),
-        title: Text(title),
-        subtitle: Text(subtitle),
-        trailing: const Icon(Icons.chevron_right),
-        onTap: onTap,
-      ),
+    final visual = AppVisualTheme.of(context);
+    final tile = ListTile(
+      contentPadding: visual.isAnime
+          ? const EdgeInsets.symmetric(horizontal: 16, vertical: 2)
+          : EdgeInsets.zero,
+      leading: Icon(icon),
+      title: Text(title),
+      subtitle: Text(subtitle),
+      trailing: const Icon(Icons.chevron_right),
+      onTap: onTap,
+    );
+    if (!visual.isAnime) {
+      return Padding(
+        padding: const EdgeInsets.only(bottom: 8),
+        child: tile,
+      );
+    }
+    return AppVisualSurface(
+      padding: EdgeInsets.zero,
+      margin: const EdgeInsets.only(bottom: 8),
+      child: tile,
     );
   }
 
@@ -1167,7 +1229,10 @@ class _ContextPreviewSheetState extends State<_ContextPreviewSheet> {
             const SizedBox(height: 12),
             Text(
               matchSummary,
-              style: const TextStyle(fontSize: 13, color: Colors.black54),
+              style: TextStyle(
+                fontSize: 13,
+                color: Theme.of(context).colorScheme.onSurfaceVariant,
+              ),
             ),
             const SizedBox(height: 8),
             ConstrainedBox(

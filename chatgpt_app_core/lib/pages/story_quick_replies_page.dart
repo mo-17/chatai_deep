@@ -2,6 +2,7 @@ import 'dart:convert';
 
 import 'package:chatgpt_app_core/model/story_quick_reply.dart';
 import 'package:chatgpt_app_core/model/story_room_model.dart';
+import 'package:chatgpt_app_core/widget/story_visual_widgets.dart';
 import 'package:flutter/material.dart';
 
 typedef StoryQuickRepliesSave = Future<void> Function(StoryRoomModel room);
@@ -67,7 +68,9 @@ class _StoryQuickRepliesPageState extends State<StoryQuickRepliesPage> {
           : ListView.separated(
               padding: const EdgeInsets.fromLTRB(12, 8, 12, 96),
               itemCount: groups.length,
-              separatorBuilder: (_, __) => const Divider(height: 1),
+              separatorBuilder: (_, __) => storyUsesAnimeStyle(context)
+                  ? const SizedBox.shrink()
+                  : const Divider(height: 1),
               itemBuilder: (context, index) =>
                   _buildGroup(context, groups[index], index, groups.length),
             ),
@@ -81,30 +84,41 @@ class _StoryQuickRepliesPageState extends State<StoryQuickRepliesPage> {
   }
 
   Widget _buildEmptyState() {
-    return Center(
-      child: Padding(
-        padding: const EdgeInsets.all(32),
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            const Icon(Icons.forum_outlined, size: 48),
-            const SizedBox(height: 12),
-            const Text('还没有快捷回复分组'),
-            const SizedBox(height: 6),
-            Text(
-              '把常用的故事回应收进房间里，需要时一键发送。',
-              textAlign: TextAlign.center,
-              style: Theme.of(context).textTheme.bodyMedium,
-            ),
-            const SizedBox(height: 18),
-            FilledButton.icon(
-              key: const ValueKey('story_quick_replies_empty_add'),
-              onPressed: _addGroup,
-              icon: const Icon(Icons.add),
-              label: const Text('新增分组'),
-            ),
-          ],
+    return StoryAdaptiveEmptyState(
+      classicChild: Center(
+        child: Padding(
+          padding: const EdgeInsets.all(32),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              const Icon(Icons.forum_outlined, size: 48),
+              const SizedBox(height: 12),
+              const Text('还没有快捷回复分组'),
+              const SizedBox(height: 6),
+              Text(
+                '把常用的故事回应收进房间里，需要时一键发送。',
+                textAlign: TextAlign.center,
+                style: Theme.of(context).textTheme.bodyMedium,
+              ),
+              const SizedBox(height: 18),
+              FilledButton.icon(
+                key: const ValueKey('story_quick_replies_empty_add'),
+                onPressed: _addGroup,
+                icon: const Icon(Icons.add),
+                label: const Text('新增分组'),
+              ),
+            ],
+          ),
         ),
+      ),
+      icon: Icons.forum_outlined,
+      title: '还没有快捷回复分组',
+      subtitle: '把常用的故事回应收进房间里，需要时一键发送。',
+      action: FilledButton.icon(
+        key: const ValueKey('story_quick_replies_empty_add'),
+        onPressed: _addGroup,
+        icon: const Icon(Icons.add),
+        label: const Text('新增分组'),
       ),
     );
   }
@@ -116,49 +130,52 @@ class _StoryQuickRepliesPageState extends State<StoryQuickRepliesPage> {
     int groupCount,
   ) {
     final items = group.sortedItems();
-    return ExpansionTile(
-      key: PageStorageKey<String>('story_quick_reply_group_${group.key}'),
-      initiallyExpanded: true,
-      tilePadding: const EdgeInsets.symmetric(horizontal: 4),
-      childrenPadding: const EdgeInsets.only(left: 8, right: 8, bottom: 8),
-      title: Text(
-        group.label.isEmpty ? group.key : group.label,
-        maxLines: 1,
-        overflow: TextOverflow.ellipsis,
-      ),
-      subtitle: Text(
-        '${items.length} 条 · ${group.enabled ? '已启用' : '已停用'}',
-        maxLines: 1,
-        overflow: TextOverflow.ellipsis,
-      ),
-      trailing: _buildGroupActions(group, index, groupCount),
-      children: [
-        if (items.isEmpty)
-          const Align(
+    return StoryAdaptiveListItem(
+      animeMargin: const EdgeInsets.symmetric(vertical: 5),
+      child: ExpansionTile(
+        key: PageStorageKey<String>('story_quick_reply_group_${group.key}'),
+        initiallyExpanded: true,
+        tilePadding: const EdgeInsets.symmetric(horizontal: 4),
+        childrenPadding: const EdgeInsets.only(left: 8, right: 8, bottom: 8),
+        title: Text(
+          group.label.isEmpty ? group.key : group.label,
+          maxLines: 1,
+          overflow: TextOverflow.ellipsis,
+        ),
+        subtitle: Text(
+          '${items.length} 条 · ${group.enabled ? '已启用' : '已停用'}',
+          maxLines: 1,
+          overflow: TextOverflow.ellipsis,
+        ),
+        trailing: _buildGroupActions(group, index, groupCount),
+        children: [
+          if (items.isEmpty)
+            const Align(
+              alignment: Alignment.centerLeft,
+              child: Padding(
+                padding: EdgeInsets.fromLTRB(8, 4, 8, 12),
+                child: Text('这个分组还没有条目'),
+              ),
+            ),
+          for (var itemIndex = 0; itemIndex < items.length; itemIndex++)
+            _buildItem(
+              context,
+              group,
+              items[itemIndex],
+              itemIndex,
+              items.length,
+            ),
+          Align(
             alignment: Alignment.centerLeft,
-            child: Padding(
-              padding: EdgeInsets.fromLTRB(8, 4, 8, 12),
-              child: Text('这个分组还没有条目'),
+            child: TextButton.icon(
+              key: ValueKey('story_quick_replies_add_item_${group.key}'),
+              onPressed: () => _addItem(group),
+              icon: const Icon(Icons.add, size: 18),
+              label: const Text('新增条目'),
             ),
           ),
-        for (var itemIndex = 0; itemIndex < items.length; itemIndex++)
-          _buildItem(
-            context,
-            group,
-            items[itemIndex],
-            itemIndex,
-            items.length,
-          ),
-        Align(
-          alignment: Alignment.centerLeft,
-          child: TextButton.icon(
-            key: ValueKey('story_quick_replies_add_item_${group.key}'),
-            onPressed: () => _addItem(group),
-            icon: const Icon(Icons.add, size: 18),
-            label: const Text('新增条目'),
-          ),
-        ),
-      ],
+        ],
+      ),
     );
   }
 
@@ -263,65 +280,115 @@ class _StoryQuickRepliesPageState extends State<StoryQuickRepliesPage> {
               ),
             ),
           const SizedBox(height: 4),
-          Row(
-            children: [
-              Text(
-                '立即发送',
-                style: Theme.of(context).textTheme.labelSmall,
-              ),
-              Switch(
-                key: ValueKey(
-                  'story_quick_replies_item_immediate_${item.key}',
-                ),
-                value: item.sendImmediately,
-                onChanged: (value) =>
-                    setState(() => item.sendImmediately = value),
-              ),
-              const Spacer(),
-              _compactIconButton(
-                key: ValueKey('story_quick_replies_item_up_${item.key}'),
-                tooltip: '条目上移',
-                icon: Icons.keyboard_arrow_up,
-                onPressed: index == 0 ? null : () => _moveItem(group, item, -1),
-              ),
-              _compactIconButton(
-                key: ValueKey('story_quick_replies_item_down_${item.key}'),
-                tooltip: '条目下移',
-                icon: Icons.keyboard_arrow_down,
-                onPressed: index == itemCount - 1
-                    ? null
-                    : () => _moveItem(group, item, 1),
-              ),
-              _compactIconButton(
-                key: ValueKey('story_quick_replies_item_edit_${item.key}'),
-                tooltip: '编辑条目',
-                icon: Icons.edit_outlined,
-                onPressed: () => _editItem(group, item),
-              ),
-              PopupMenuButton<String>(
-                key: ValueKey('story_quick_replies_item_menu_${item.key}'),
-                tooltip: '条目操作',
-                onSelected: (value) {
-                  if (value == 'delete') _deleteItem(group, item);
-                },
-                itemBuilder: (_) => const [
-                  PopupMenuItem(
-                    value: 'delete',
-                    child: ListTile(
-                      contentPadding: EdgeInsets.zero,
-                      leading: Icon(Icons.delete_outline),
-                      title: Text('删除条目'),
+          if (storyUsesAnimeStyle(context))
+            Wrap(
+              alignment: WrapAlignment.end,
+              crossAxisAlignment: WrapCrossAlignment.center,
+              runSpacing: 4,
+              children: [
+                Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Text('立即发送', style: Theme.of(context).textTheme.labelSmall),
+                    Switch(
+                      key: ValueKey(
+                        'story_quick_replies_item_immediate_${item.key}',
+                      ),
+                      value: item.sendImmediately,
+                      onChanged: (value) =>
+                          setState(() => item.sendImmediately = value),
                     ),
+                  ],
+                ),
+                _itemMoveUpButton(group, item, index),
+                _itemMoveDownButton(group, item, index, itemCount),
+                _itemEditButton(group, item),
+                _itemMenu(group, item),
+              ],
+            )
+          else
+            Row(
+              children: [
+                Text('立即发送', style: Theme.of(context).textTheme.labelSmall),
+                Switch(
+                  key: ValueKey(
+                    'story_quick_replies_item_immediate_${item.key}',
                   ),
-                ],
-              ),
-            ],
-          ),
+                  value: item.sendImmediately,
+                  onChanged: (value) =>
+                      setState(() => item.sendImmediately = value),
+                ),
+                const Spacer(),
+                _itemMoveUpButton(group, item, index),
+                _itemMoveDownButton(group, item, index, itemCount),
+                _itemEditButton(group, item),
+                _itemMenu(group, item),
+              ],
+            ),
           if (index < itemCount - 1) const Divider(height: 16),
         ],
       ),
     );
   }
+
+  Widget _itemMoveUpButton(
+    StoryQuickReplyGroupModel group,
+    StoryQuickReplyModel item,
+    int index,
+  ) =>
+      _compactIconButton(
+        key: ValueKey('story_quick_replies_item_up_${item.key}'),
+        tooltip: '条目上移',
+        icon: Icons.keyboard_arrow_up,
+        onPressed: index == 0 ? null : () => _moveItem(group, item, -1),
+      );
+
+  Widget _itemMoveDownButton(
+    StoryQuickReplyGroupModel group,
+    StoryQuickReplyModel item,
+    int index,
+    int itemCount,
+  ) =>
+      _compactIconButton(
+        key: ValueKey('story_quick_replies_item_down_${item.key}'),
+        tooltip: '条目下移',
+        icon: Icons.keyboard_arrow_down,
+        onPressed:
+            index == itemCount - 1 ? null : () => _moveItem(group, item, 1),
+      );
+
+  Widget _itemEditButton(
+    StoryQuickReplyGroupModel group,
+    StoryQuickReplyModel item,
+  ) =>
+      _compactIconButton(
+        key: ValueKey('story_quick_replies_item_edit_${item.key}'),
+        tooltip: '编辑条目',
+        icon: Icons.edit_outlined,
+        onPressed: () => _editItem(group, item),
+      );
+
+  Widget _itemMenu(
+    StoryQuickReplyGroupModel group,
+    StoryQuickReplyModel item,
+  ) =>
+      PopupMenuButton<String>(
+        key: ValueKey('story_quick_replies_item_menu_${item.key}'),
+        tooltip: '条目操作',
+        onSelected: (value) {
+          if (value == 'delete') _deleteItem(group, item);
+        },
+        itemBuilder: (_) => const [
+          PopupMenuItem(
+            value: 'delete',
+            child: ListTile(
+              contentPadding: EdgeInsets.zero,
+              leading: Icon(Icons.delete_outline),
+              title: Text('删除条目'),
+            ),
+          ),
+        ],
+      );
 
   Widget _compactIconButton({
     required Key key,
@@ -329,13 +396,20 @@ class _StoryQuickRepliesPageState extends State<StoryQuickRepliesPage> {
     required IconData icon,
     required VoidCallback? onPressed,
   }) {
+    final dimension =
+        storyUsesAnimeStyle(context) ? kStoryMinTouchTarget : 36.0;
     return IconButton(
       key: key,
       tooltip: tooltip,
       onPressed: onPressed,
       icon: Icon(icon, size: 20),
-      visualDensity: VisualDensity.compact,
-      constraints: const BoxConstraints(minWidth: 36, minHeight: 36),
+      visualDensity: storyUsesAnimeStyle(context)
+          ? VisualDensity.standard
+          : VisualDensity.compact,
+      constraints: BoxConstraints(
+        minWidth: dimension,
+        minHeight: dimension,
+      ),
       padding: EdgeInsets.zero,
     );
   }
@@ -506,6 +580,12 @@ class _StoryQuickRepliesPageState extends State<StoryQuickRepliesPage> {
               ),
               FilledButton(
                 onPressed: () => Navigator.pop(context, true),
+                style: storyUsesAnimeStyle(context)
+                    ? FilledButton.styleFrom(
+                        backgroundColor: Theme.of(context).colorScheme.error,
+                        foregroundColor: Theme.of(context).colorScheme.onError,
+                      )
+                    : null,
                 child: const Text('删除'),
               ),
             ],

@@ -6,7 +6,9 @@ import 'package:chatgpt_app_core/chat/application/ocr_service.dart';
 import 'package:chatgpt_app_core/db/hi_db_manager.dart';
 import 'package:chatgpt_app_core/db/knowledge_dao.dart';
 import 'package:chatgpt_app_core/model/knowledge_model.dart';
+import 'package:chatgpt_app_core/theme/app_visual_theme.dart';
 import 'package:chatgpt_app_core/util/hi_dialog.dart';
+import 'package:chatgpt_app_core/widget/app_visual_widgets.dart';
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 
@@ -22,6 +24,8 @@ class KnowledgeBasePage extends StatefulWidget {
 class _KnowledgeBasePageState extends State<KnowledgeBasePage> {
   KnowledgeDao? _dao;
   List<KnowledgeDoc> _docs = [];
+  bool _loading = true;
+  Object? _loadError;
 
   @override
   void initState() {
@@ -36,10 +40,21 @@ class _KnowledgeBasePageState extends State<KnowledgeBasePage> {
   }
 
   void _doInit() async {
-    final dbManager =
-        await HiDBManager.instance(dbName: HiDBManager.getAccountHash());
-    _dao = await KnowledgeDao.create(dbManager);
-    await _loadData();
+    setState(() {
+      _loading = true;
+      _loadError = null;
+    });
+    try {
+      final dbManager =
+          await HiDBManager.instance(dbName: HiDBManager.getAccountHash());
+      _dao = await KnowledgeDao.create(dbManager);
+      if (!mounted) return;
+      await _loadData();
+    } catch (error) {
+      if (mounted) setState(() => _loadError = error);
+    } finally {
+      if (mounted) setState(() => _loading = false);
+    }
   }
 
   Future<void> _loadData() async {
@@ -57,46 +72,73 @@ class _KnowledgeBasePageState extends State<KnowledgeBasePage> {
           IconButton(
             icon: const Icon(Icons.manage_search_outlined),
             tooltip: '重建检索索引',
-            onPressed: _rebuildVectorIndex,
+            onPressed: _loading || _dao == null ? null : _rebuildVectorIndex,
           ),
           // file_picker 暂无鸿蒙实现，OHOS 隐藏文件导入入口（粘贴文本仍可用）。
           if (Platform.operatingSystem != 'ohos')
             IconButton(
               icon: const Icon(Icons.upload_file_outlined),
               tooltip: '导入文件（PDF / 文本 / 图片，扫描件与图片走 OCR）',
-              onPressed: _importFile,
+              onPressed: _loading || _dao == null ? null : _importFile,
             ),
         ],
       ),
-      body: _docs.isEmpty ? _emptyView : _listView,
+      body: _body,
       floatingActionButton: FloatingActionButton(
-        onPressed: _addDocument,
+        onPressed: _loading || _dao == null ? null : _addDocument,
         tooltip: '粘贴文本导入',
         child: const Icon(Icons.add),
       ),
     );
   }
 
-  Widget get _emptyView => Center(
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            const Text('📚', style: TextStyle(fontSize: 48)),
-            const SizedBox(height: 12),
-            Text(
-                '还没有文档。右下角粘贴文本、或右上角导入 PDF/文本文件，\n'
-                '再给助手绑定「知识库检索」工具即可问答。',
-                style: TextStyle(color: Colors.grey[600]),
-                textAlign: TextAlign.center),
-          ],
+  Widget get _body {
+    if (_loading) return const Center(child: CircularProgressIndicator());
+    if (_loadError != null) {
+      return AppVisualEmptyState(
+        icon: Icons.cloud_off_outlined,
+        title: '知识库加载失败',
+        message: _loadError.toString(),
+        action: FilledButton.icon(
+          onPressed: _doInit,
+          icon: const Icon(Icons.refresh),
+          label: const Text('重试'),
+        ),
+      );
+    }
+    return _docs.isEmpty ? _emptyView : _listView;
+  }
+
+  Widget get _emptyView => AppVisualEmptyState(
+        icon: Icons.local_library_outlined,
+        title: '还没有知识库文档',
+        message: '粘贴文本或导入 PDF / 文本 / 图片，再给助手绑定「知识库检索」工具即可问答。',
+        classic: Center(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              const Text('📚', style: TextStyle(fontSize: 48)),
+              const SizedBox(height: 12),
+              Text(
+                  '还没有文档。右下角粘贴文本、或右上角导入 PDF/文本文件，\n'
+                  '再给助手绑定「知识库检索」工具即可问答。',
+                  style: TextStyle(
+                    color: Theme.of(context).colorScheme.onSurfaceVariant,
+                  ),
+                  textAlign: TextAlign.center),
+            ],
+          ),
         ),
       );
 
   Widget get _listView => ListView.builder(
+        padding: AppVisualTheme.of(context).isAnime
+            ? const EdgeInsets.fromLTRB(12, 12, 12, 20)
+            : EdgeInsets.zero,
         itemCount: _docs.length,
         itemBuilder: (context, index) {
           final d = _docs[index];
-          return ListTile(
+          final tile = ListTile(
             leading:
                 const CircleAvatar(child: Icon(Icons.description_outlined)),
             title: Text(d.title, maxLines: 1, overflow: TextOverflow.ellipsis),
@@ -106,6 +148,13 @@ class _KnowledgeBasePageState extends State<KnowledgeBasePage> {
               tooltip: '删除',
               onPressed: () => _delete(d),
             ),
+          );
+          return AppVisualSurface(
+            padding: EdgeInsets.zero,
+            margin: AppVisualTheme.of(context).isAnime
+                ? const EdgeInsets.only(bottom: 8)
+                : EdgeInsets.zero,
+            child: tile,
           );
         },
       );
@@ -202,58 +251,73 @@ class _KnowledgeBasePageState extends State<KnowledgeBasePage> {
   void _addDocument() async {
     final titleCtl = TextEditingController();
     final contentCtl = TextEditingController();
+    String? contentError;
     final ok = await showDialog<bool>(
       context: context,
-      builder: (ctx) => AlertDialog(
-        title: const Text('导入文档'),
-        content: SingleChildScrollView(
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              TextField(
-                controller: titleCtl,
-                decoration: const InputDecoration(
-                  labelText: '标题',
-                  hintText: '如：产品手册 / 退款政策',
+      builder: (ctx) => StatefulBuilder(
+        builder: (ctx, setDialogState) => AlertDialog(
+          title: const Text('导入文档'),
+          content: SingleChildScrollView(
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                TextField(
+                  controller: titleCtl,
+                  decoration: const InputDecoration(
+                    labelText: '标题',
+                    hintText: '如：产品手册 / 退款政策',
+                  ),
                 ),
-              ),
-              const SizedBox(height: 12),
-              TextField(
-                controller: contentCtl,
-                minLines: 5,
-                maxLines: 12,
-                decoration: const InputDecoration(
-                  labelText: '内容（粘贴文本）',
-                  border: OutlineInputBorder(),
-                  alignLabelWithHint: true,
+                const SizedBox(height: 12),
+                TextField(
+                  controller: contentCtl,
+                  minLines: 5,
+                  maxLines: 12,
+                  decoration: InputDecoration(
+                    labelText: '内容（粘贴文本）',
+                    border: const OutlineInputBorder(),
+                    alignLabelWithHint: true,
+                    errorText: contentError,
+                  ),
+                  onChanged: (_) {
+                    if (contentError != null) {
+                      setDialogState(() => contentError = null);
+                    }
+                  },
                 ),
-              ),
-            ],
+              ],
+            ),
           ),
+          actions: [
+            TextButton(
+                onPressed: () => Navigator.pop(ctx, false),
+                child: const Text('取消')),
+            FilledButton(
+              onPressed: () {
+                if (contentCtl.text.trim().isEmpty) {
+                  setDialogState(() => contentError = '内容不能为空');
+                  return;
+                }
+                Navigator.pop(ctx, true);
+              },
+              child: const Text('导入'),
+            ),
+          ],
         ),
-        actions: [
-          TextButton(
-              onPressed: () => Navigator.pop(ctx, false),
-              child: const Text('取消')),
-          FilledButton(
-              onPressed: () => Navigator.pop(ctx, true),
-              child: const Text('导入')),
-        ],
       ),
     );
-    if (ok != true) return;
+    final title = titleCtl.text;
     final text = contentCtl.text.trim();
-    if (text.isEmpty) {
-      if (mounted) HiDialog.showSnackBar(context, '内容不能为空');
-      return;
-    }
-    final docId = await _dao!.addDocument(titleCtl.text, text);
+    titleCtl.dispose();
+    contentCtl.dispose();
+    if (ok != true) return;
+    final docId = await _dao!.addDocument(title, text);
     if (!mounted) return;
     HiDialog.showSnackBar(
         context,
         docId == null
             ? '导入失败'
-            : '已导入「${titleCtl.text.trim().isEmpty ? '未命名文档' : titleCtl.text.trim()}」');
+            : '已导入「${title.trim().isEmpty ? '未命名文档' : title.trim()}」');
     await _loadData();
   }
 

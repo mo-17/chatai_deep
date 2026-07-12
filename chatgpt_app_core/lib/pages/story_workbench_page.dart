@@ -16,6 +16,7 @@ import 'package:chatgpt_app_core/model/story_artifact_model.dart';
 import 'package:chatgpt_app_core/model/story_room_model.dart';
 import 'package:chatgpt_app_core/provider/ai_settings_provider.dart';
 import 'package:chatgpt_app_core/util/hi_dialog.dart';
+import 'package:chatgpt_app_core/widget/story_visual_widgets.dart';
 import 'package:flutter/material.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:provider/provider.dart';
@@ -111,90 +112,105 @@ class _StoryWorkbenchPageState extends State<StoryWorkbenchPage> {
   Widget get _workflowBar {
     final running = _runningWorkflow;
     final colorScheme = Theme.of(context).colorScheme;
-    return Padding(
-      padding: const EdgeInsets.fromLTRB(12, 10, 12, 8),
-      child: running == null
-          ? Wrap(
-              spacing: 8,
-              runSpacing: 8,
-              children: [
-                OutlinedButton.icon(
-                  onPressed: () =>
-                      _runWorkflow(StoryAiWorkflowKind.directorReview),
-                  icon: const Icon(Icons.movie_filter_outlined),
-                  label: const Text('剧情导演审阅'),
-                ),
-                OutlinedButton.icon(
-                  onPressed: () =>
-                      _runWorkflow(StoryAiWorkflowKind.worldBookConsistency),
-                  icon: const Icon(Icons.fact_check_outlined),
-                  label: const Text('世界书一致性检查'),
-                ),
-              ],
-            )
-          : Row(
-              children: [
-                Expanded(
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Text(
-                        _workflowStatus.isEmpty
-                            ? '${StoryAiWorkflowService.titleFor(running)}中...'
-                            : _workflowStatus,
-                        maxLines: 1,
-                        overflow: TextOverflow.ellipsis,
-                        style: Theme.of(context).textTheme.bodySmall,
-                      ),
-                      const SizedBox(height: 6),
-                      LinearProgressIndicator(color: colorScheme.primary),
-                    ],
+    return StoryAdaptiveSurface(
+      animeKey: const ValueKey('anime_story_workflow_bar'),
+      animeMargin: const EdgeInsets.fromLTRB(12, 10, 12, 8),
+      animePadding: const EdgeInsets.all(12),
+      child: Padding(
+        padding: storyUsesAnimeStyle(context)
+            ? EdgeInsets.zero
+            : const EdgeInsets.fromLTRB(12, 10, 12, 8),
+        child: running == null
+            ? Wrap(
+                spacing: 8,
+                runSpacing: 8,
+                children: [
+                  OutlinedButton.icon(
+                    onPressed: () =>
+                        _runWorkflow(StoryAiWorkflowKind.directorReview),
+                    icon: const Icon(Icons.movie_filter_outlined),
+                    label: const Text('剧情导演审阅'),
                   ),
-                ),
-                IconButton(
-                  tooltip: '停止生成',
-                  onPressed: _stopWorkflow,
-                  icon: const Icon(Icons.stop_circle_outlined),
-                ),
-              ],
-            ),
+                  OutlinedButton.icon(
+                    onPressed: () =>
+                        _runWorkflow(StoryAiWorkflowKind.worldBookConsistency),
+                    icon: const Icon(Icons.fact_check_outlined),
+                    label: const Text('世界书一致性检查'),
+                  ),
+                ],
+              )
+            : Row(
+                children: [
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          _workflowStatus.isEmpty
+                              ? '${StoryAiWorkflowService.titleFor(running)}中...'
+                              : _workflowStatus,
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: Theme.of(context).textTheme.bodySmall,
+                        ),
+                        const SizedBox(height: 6),
+                        LinearProgressIndicator(color: colorScheme.primary),
+                      ],
+                    ),
+                  ),
+                  IconButton(
+                    tooltip: '停止生成',
+                    onPressed: _stopWorkflow,
+                    icon: const Icon(Icons.stop_circle_outlined),
+                  ),
+                ],
+              ),
+      ),
     );
   }
 
   Widget get _typeFilter {
-    return SizedBox(
-      height: 58,
-      child: ListView(
-        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-        scrollDirection: Axis.horizontal,
-        children: [
-          ChoiceChip(
-            label: const Text('全部'),
-            selected: _filterType == null,
-            onSelected: (_) => _setFilter(null),
-          ),
-          const SizedBox(width: 8),
-          for (final type in StoryArtifactType.values) ...[
+    return StoryAdaptiveSurface(
+      animeKey: const ValueKey('anime_story_artifact_filters'),
+      animeMargin: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
+      child: SizedBox(
+        height: 58,
+        child: ListView(
+          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+          scrollDirection: Axis.horizontal,
+          children: [
             ChoiceChip(
-              label: Text(StoryArtifactType.labelOf(type)),
-              selected: _filterType == type,
-              onSelected: (_) => _setFilter(type),
+              label: const Text('全部'),
+              selected: _filterType == null,
+              onSelected: (_) => _setFilter(null),
             ),
             const SizedBox(width: 8),
+            for (final type in StoryArtifactType.values) ...[
+              ChoiceChip(
+                label: Text(StoryArtifactType.labelOf(type)),
+                selected: _filterType == type,
+                onSelected: (_) => _setFilter(type),
+              ),
+              const SizedBox(width: 8),
+            ],
           ],
-        ],
+        ),
       ),
     );
   }
 
   Widget get _artifactList {
     if (_artifacts.isEmpty) {
-      return Center(
-        child: Text(
-          _filterType == null
-              ? '暂无创作资料'
-              : '暂无${StoryArtifactType.labelOf(_filterType!)}',
+      final message = _filterType == null
+          ? '暂无创作资料'
+          : '暂无${StoryArtifactType.labelOf(_filterType!)}';
+      return StoryAdaptiveEmptyState(
+        classicChild: Center(
+          child: Text(message),
         ),
+        icon: Icons.dashboard_customize_outlined,
+        title: '创作资料等待整理',
+        subtitle: message,
       );
     }
     return RefreshIndicator(
@@ -202,39 +218,44 @@ class _StoryWorkbenchPageState extends State<StoryWorkbenchPage> {
       child: ListView.separated(
         padding: const EdgeInsets.fromLTRB(12, 12, 12, 88),
         itemCount: _artifacts.length,
-        separatorBuilder: (_, __) => const Divider(height: 1),
+        separatorBuilder: (_, __) => storyUsesAnimeStyle(context)
+            ? const SizedBox.shrink()
+            : const Divider(height: 1),
         itemBuilder: (_, index) {
           final artifact = _artifacts[index];
-          return ListTile(
-            leading: CircleAvatar(child: Icon(_iconFor(artifact.type))),
-            title: Text(
-              artifact.title,
-              maxLines: 1,
-              overflow: TextOverflow.ellipsis,
-            ),
-            subtitle: Text(
-              [
-                StoryArtifactType.labelOf(artifact.type),
-                if (artifact.status.trim().isNotEmpty) artifact.status.trim(),
-                if (artifact.content.trim().isNotEmpty)
-                  artifact.content.trim().replaceAll('\n', ' '),
-              ].join(' · '),
-              maxLines: 2,
-              overflow: TextOverflow.ellipsis,
-            ),
-            onTap: () => _editArtifact(artifact),
-            trailing: PopupMenuButton<String>(
-              tooltip: '资料操作',
-              onSelected: (value) {
-                if (value == 'edit') _editArtifact(artifact);
-                if (value == 'history') _showHistory(artifact);
-                if (value == 'delete') _deleteArtifact(artifact);
-              },
-              itemBuilder: (_) => const [
-                PopupMenuItem(value: 'edit', child: Text('编辑')),
-                PopupMenuItem(value: 'history', child: Text('版本历史')),
-                PopupMenuItem(value: 'delete', child: Text('删除')),
-              ],
+          return StoryAdaptiveListItem(
+            animeMargin: const EdgeInsets.symmetric(vertical: 5),
+            child: ListTile(
+              leading: CircleAvatar(child: Icon(_iconFor(artifact.type))),
+              title: Text(
+                artifact.title,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+              ),
+              subtitle: Text(
+                [
+                  StoryArtifactType.labelOf(artifact.type),
+                  if (artifact.status.trim().isNotEmpty) artifact.status.trim(),
+                  if (artifact.content.trim().isNotEmpty)
+                    artifact.content.trim().replaceAll('\n', ' '),
+                ].join(' · '),
+                maxLines: 2,
+                overflow: TextOverflow.ellipsis,
+              ),
+              onTap: () => _editArtifact(artifact),
+              trailing: PopupMenuButton<String>(
+                tooltip: '资料操作',
+                onSelected: (value) {
+                  if (value == 'edit') _editArtifact(artifact);
+                  if (value == 'history') _showHistory(artifact);
+                  if (value == 'delete') _deleteArtifact(artifact);
+                },
+                itemBuilder: (_) => const [
+                  PopupMenuItem(value: 'edit', child: Text('编辑')),
+                  PopupMenuItem(value: 'history', child: Text('版本历史')),
+                  PopupMenuItem(value: 'delete', child: Text('删除')),
+                ],
+              ),
             ),
           );
         },
@@ -350,6 +371,12 @@ class _StoryWorkbenchPageState extends State<StoryWorkbenchPage> {
           ),
           FilledButton(
             onPressed: () => Navigator.pop(ctx, true),
+            style: storyUsesAnimeStyle(ctx)
+                ? FilledButton.styleFrom(
+                    backgroundColor: Theme.of(ctx).colorScheme.error,
+                    foregroundColor: Theme.of(ctx).colorScheme.onError,
+                  )
+                : null,
             child: const Text('删除'),
           ),
         ],
@@ -636,8 +663,8 @@ class _StoryWorkflowResultDialogState
   Widget build(BuildContext context) {
     return AlertDialog(
       title: Text(widget.stopped ? '预览已生成内容' : '预览审阅结果'),
-      content: SizedBox(
-        width: 560,
+      content: ConstrainedBox(
+        constraints: const BoxConstraints(maxWidth: 560),
         child: ConstrainedBox(
           constraints: BoxConstraints(
             maxHeight: MediaQuery.sizeOf(context).height * 0.62,
@@ -647,9 +674,9 @@ class _StoryWorkflowResultDialogState
             children: [
               TextField(
                 controller: _titleController,
-                decoration: const InputDecoration(
+                decoration: InputDecoration(
                   labelText: '资料标题',
-                  border: OutlineInputBorder(),
+                  border: storyInputBorder(context),
                 ),
               ),
               const SizedBox(height: 12),
@@ -660,9 +687,9 @@ class _StoryWorkflowResultDialogState
                   minLines: null,
                   maxLines: null,
                   textAlignVertical: TextAlignVertical.top,
-                  decoration: const InputDecoration(
+                  decoration: InputDecoration(
                     labelText: '审阅内容',
-                    border: OutlineInputBorder(),
+                    border: storyInputBorder(context),
                     alignLabelWithHint: true,
                   ),
                 ),
@@ -754,17 +781,17 @@ class _StoryArtifactEditorDialogState
   Widget build(BuildContext context) {
     return AlertDialog(
       title: Text(widget.artifact == null ? '新增创作资料' : '编辑创作资料'),
-      content: SizedBox(
-        width: 520,
+      content: ConstrainedBox(
+        constraints: const BoxConstraints(maxWidth: 520),
         child: SingleChildScrollView(
           child: Column(
             mainAxisSize: MainAxisSize.min,
             children: [
               DropdownButtonFormField<String>(
                 initialValue: _type,
-                decoration: const InputDecoration(
+                decoration: InputDecoration(
                   labelText: '类型',
-                  border: OutlineInputBorder(),
+                  border: storyInputBorder(context),
                 ),
                 items: [
                   for (final type in StoryArtifactType.values)
@@ -779,18 +806,18 @@ class _StoryArtifactEditorDialogState
               TextField(
                 controller: _titleController,
                 autofocus: true,
-                decoration: const InputDecoration(
+                decoration: InputDecoration(
                   labelText: '标题',
-                  border: OutlineInputBorder(),
+                  border: storyInputBorder(context),
                 ),
               ),
               const SizedBox(height: 12),
               TextField(
                 controller: _statusController,
-                decoration: const InputDecoration(
+                decoration: InputDecoration(
                   labelText: '状态',
                   hintText: '例如：草稿、进行中、已回收',
-                  border: OutlineInputBorder(),
+                  border: storyInputBorder(context),
                 ),
               ),
               const SizedBox(height: 12),
@@ -798,9 +825,9 @@ class _StoryArtifactEditorDialogState
                 controller: _contentController,
                 minLines: 8,
                 maxLines: 16,
-                decoration: const InputDecoration(
+                decoration: InputDecoration(
                   labelText: '内容',
-                  border: OutlineInputBorder(),
+                  border: storyInputBorder(context),
                   alignLabelWithHint: true,
                 ),
               ),

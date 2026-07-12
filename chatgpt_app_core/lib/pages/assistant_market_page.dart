@@ -1,6 +1,9 @@
 import 'package:chatgpt_app_core/data/builtin_assistants.dart';
 import 'package:chatgpt_app_core/pages/assistant_edit_page.dart';
+import 'package:chatgpt_app_core/theme/app_visual_theme.dart';
 import 'package:chatgpt_app_core/util/hi_dialog.dart';
+import 'package:chatgpt_app_core/widget/app_visual_widgets.dart';
+import 'package:chatgpt_app_core/widget/assistant_avatar.dart';
 import 'package:flutter/material.dart';
 
 ///助手市场（遗留项 9）：浏览内置助手模板，点一个即「添加到我的助手」。
@@ -38,6 +41,8 @@ class _AssistantMarketPageState extends State<AssistantMarketPage> {
   Widget build(BuildContext context) {
     final grouped = _filteredGroups();
     final categories = grouped.keys.toList();
+    final visual = AppVisualTheme.of(context);
+    final colorScheme = Theme.of(context).colorScheme;
 
     return Scaffold(
       appBar: AppBar(title: const Text('助手市场'), centerTitle: true),
@@ -58,15 +63,24 @@ class _AssistantMarketPageState extends State<AssistantMarketPage> {
           ),
           Expanded(
             child: categories.isEmpty
-                ? Center(
-                    key: const ValueKey('assistant_market_empty'),
-                    child: Text(
-                      '未找到匹配的助手',
-                      style: TextStyle(color: Colors.grey[600]),
+                ? AppVisualEmptyState(
+                    animeKey: const ValueKey('assistant_market_empty'),
+                    icon: Icons.auto_awesome_outlined,
+                    title: '未找到匹配的助手',
+                    message: '换一个关键词试试，或清空搜索查看全部模板。',
+                    classic: Center(
+                      key: const ValueKey('assistant_market_empty'),
+                      child: Text(
+                        '未找到匹配的助手',
+                        style: TextStyle(color: colorScheme.onSurfaceVariant),
+                      ),
                     ),
                   )
                 : ListView.builder(
                     // 每个分类一个 section（header + 其下助手），最后留点底部留白。
+                    padding: visual.isAnime
+                        ? const EdgeInsets.only(bottom: 20)
+                        : EdgeInsets.zero,
                     itemCount: categories.length,
                     itemBuilder: (context, i) {
                       final category = categories[i];
@@ -75,13 +89,13 @@ class _AssistantMarketPageState extends State<AssistantMarketPage> {
                         crossAxisAlignment: CrossAxisAlignment.start,
                         children: [
                           Padding(
-                            padding: const EdgeInsets.fromLTRB(16, 16, 16, 4),
+                            padding: const EdgeInsets.fromLTRB(16, 16, 16, 6),
                             child: Text(
                               category,
                               style: TextStyle(
                                 fontSize: 13,
-                                fontWeight: FontWeight.w600,
-                                color: Theme.of(context).colorScheme.primary,
+                                fontWeight: FontWeight.w700,
+                                color: colorScheme.primary,
                               ),
                             ),
                           ),
@@ -96,18 +110,30 @@ class _AssistantMarketPageState extends State<AssistantMarketPage> {
     );
   }
 
-  Widget _tile(BuiltinAssistant a) => ListTile(
-        leading: CircleAvatar(child: Text(a.emoji)),
-        title: Text(a.name, maxLines: 1, overflow: TextOverflow.ellipsis),
-        subtitle: Text(
-          a.description.isEmpty ? a.prompt : a.description,
-          maxLines: 2,
-          overflow: TextOverflow.ellipsis,
-          style: const TextStyle(fontSize: 12),
-        ),
-        trailing: const Icon(Icons.add_circle_outline),
-        onTap: () => _add(a),
-      );
+  Widget _tile(BuiltinAssistant a) {
+    final visual = AppVisualTheme.of(context);
+    final tile = ListTile(
+      leading: visual.isAnime
+          ? AssistantAvatar.raw(emoji: a.emoji)
+          : CircleAvatar(child: Text(a.emoji)),
+      title: Text(a.name, maxLines: 1, overflow: TextOverflow.ellipsis),
+      subtitle: Text(
+        a.description.isEmpty ? a.prompt : a.description,
+        maxLines: 2,
+        overflow: TextOverflow.ellipsis,
+        style: Theme.of(context).textTheme.bodySmall,
+      ),
+      trailing: const Icon(Icons.add_circle_outline),
+      onTap: () => _add(a),
+    );
+    if (!visual.isAnime) return tile;
+    return AppVisualSurface(
+      padding: EdgeInsets.zero,
+      margin: const EdgeInsets.symmetric(horizontal: 12, vertical: 3),
+      animeKey: ValueKey('assistant_market_card_${a.name}'),
+      child: tile,
+    );
+  }
 
   void _add(BuiltinAssistant a) async {
     // 预填编辑页：模板转成新的 AssistantModel（id 为 null），用户可改后保存。

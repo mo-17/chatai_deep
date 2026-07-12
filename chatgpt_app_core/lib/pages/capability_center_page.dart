@@ -7,6 +7,8 @@ import 'package:chatgpt_app_core/db/hi_db_manager.dart';
 import 'package:chatgpt_app_core/model/assistant_memory_model.dart';
 import 'package:chatgpt_app_core/model/assistant_model.dart';
 import 'package:chatgpt_app_core/pages/assistant_profile_page.dart';
+import 'package:chatgpt_app_core/theme/app_visual_theme.dart';
+import 'package:chatgpt_app_core/widget/app_visual_widgets.dart';
 import 'package:flutter/material.dart';
 
 /// 能力中心：把已落地的客户端能力合同展示给用户。
@@ -139,13 +141,20 @@ class _CapabilityCenterPageState extends State<CapabilityCenterPage> {
     );
   }
 
-  Widget _sectionTitle(String text) => Padding(
-        padding: const EdgeInsets.only(bottom: 8, top: 4),
-        child: Text(
-          text,
-          style: const TextStyle(fontSize: 18, fontWeight: FontWeight.w700),
-        ),
-      );
+  Widget _sectionTitle(String text) {
+    final visual = AppVisualTheme.of(context);
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 8, top: 4),
+      child: Text(
+        text,
+        style: visual.isAnime
+            ? Theme.of(context).textTheme.titleLarge?.copyWith(
+                  color: Theme.of(context).colorScheme.primary,
+                )
+            : const TextStyle(fontSize: 18, fontWeight: FontWeight.w700),
+      ),
+    );
+  }
 
   Future<void> _startTemplate(WorkflowTemplate template) {
     return (widget.onStartTemplate ?? WorkflowTemplateLauncher.start)(
@@ -441,6 +450,18 @@ class _WorkflowTemplateCard extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final visual = AppVisualTheme.of(context);
+    final theme = Theme.of(context);
+    final secondaryStyle = visual.isAnime
+        ? theme.textTheme.bodyMedium?.copyWith(
+            color: theme.colorScheme.onSurfaceVariant,
+          )
+        : const TextStyle(color: Colors.black54);
+    final promptStyle = visual.isAnime
+        ? theme.textTheme.bodyMedium?.copyWith(
+            color: theme.colorScheme.onSurface,
+          )
+        : const TextStyle(color: Colors.black87);
     final isRoleScene = template.category.trim() == '角色场景';
     final assistantName = _trimOrNull(template.assistantName);
     final projectName = _trimOrNull(template.projectName);
@@ -458,7 +479,9 @@ class _WorkflowTemplateCard extends StatelessWidget {
       margin: const EdgeInsets.only(bottom: 8),
       child: InkWell(
         onTap: onStart,
-        borderRadius: BorderRadius.circular(4),
+        borderRadius: BorderRadius.circular(
+          visual.isAnime ? visual.cardRadius : 4,
+        ),
         child: Padding(
           padding: const EdgeInsets.all(12),
           child: Column(
@@ -554,19 +577,18 @@ class _WorkflowTemplateCard extends StatelessWidget {
               if (assistantName != null) ...[
                 const SizedBox(height: 4),
                 Text('${isRoleScene ? '角色' : '助手'}：$assistantName',
-                    style: const TextStyle(color: Colors.black54)),
+                    style: secondaryStyle),
               ],
               if (projectName != null) ...[
                 const SizedBox(height: 4),
-                Text('项目：$projectName',
-                    style: const TextStyle(color: Colors.black54)),
+                Text('项目：$projectName', style: secondaryStyle),
               ],
               if (toolLabel != null) ...[
                 const SizedBox(height: 4),
                 Text('工具：$toolLabel',
                     maxLines: 1,
                     overflow: TextOverflow.ellipsis,
-                    style: const TextStyle(color: Colors.black54)),
+                    style: secondaryStyle),
               ],
               const SizedBox(height: 8),
               Wrap(
@@ -585,7 +607,7 @@ class _WorkflowTemplateCard extends StatelessWidget {
                     '${isRoleScene ? '开场提示' : '首条提示'}：${template.firstUserPrompt}',
                     maxLines: 3,
                     overflow: TextOverflow.ellipsis,
-                    style: const TextStyle(color: Colors.black87)),
+                    style: promptStyle),
               ],
               if (onOpenRole != null) ...[
                 const SizedBox(height: 8),
@@ -636,12 +658,21 @@ class _CapabilityTile extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return ListTile(
+    final tile = ListTile(
       contentPadding: EdgeInsets.zero,
       leading: Icon(icon, color: Theme.of(context).colorScheme.primary),
       title: Text(title),
       subtitle: Text('$status\n$detail'),
       isThreeLine: true,
+    );
+    if (!AppVisualTheme.of(context).isAnime) return tile;
+    return AppVisualSurface(
+      margin: const EdgeInsets.only(bottom: 8),
+      padding: EdgeInsets.zero,
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 12),
+        child: tile,
+      ),
     );
   }
 }
@@ -654,7 +685,7 @@ class _ScenarioTile extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final evidence = ReliabilityBacklog.evidenceFor(scenario.id);
-    return ExpansionTile(
+    final tile = ExpansionTile(
       tilePadding: EdgeInsets.zero,
       title: Text(scenario.title),
       subtitle:
@@ -688,6 +719,16 @@ class _ScenarioTile extends StatelessWidget {
           ),
         ],
       ],
+    );
+    if (!AppVisualTheme.of(context).isAnime) return tile;
+    return AppVisualSurface(
+      margin: const EdgeInsets.only(bottom: 8),
+      padding: EdgeInsets.zero,
+      clip: true,
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 12),
+        child: tile,
+      ),
     );
   }
 }

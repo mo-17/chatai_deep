@@ -12,14 +12,26 @@ class ChatList extends StatefulWidget {
   final EdgeInsets? padding;
   final OnBubbleClick? onBubbleTap;
   final OnBubbleClick? onBubbleLongPress;
+  final Color? receiverBackgroundColor;
+  final Color? senderBackgroundColor;
+  final Color? receiverAvatarBackgroundColor;
+  final Color? senderAvatarBackgroundColor;
+  final Color? textColor;
+  final Radius? bubbleRadius;
 
-  const ChatList(
-      {Key? key,
-      required this.chatController,
-      this.padding,
-      this.onBubbleTap,
-      this.onBubbleLongPress})
-      : super(key: key);
+  const ChatList({
+    super.key,
+    required this.chatController,
+    this.padding,
+    this.onBubbleTap,
+    this.onBubbleLongPress,
+    this.receiverBackgroundColor,
+    this.senderBackgroundColor,
+    this.receiverAvatarBackgroundColor,
+    this.senderAvatarBackgroundColor,
+    this.textColor,
+    this.bubbleRadius,
+  });
 
   @override
   State<ChatList> createState() => _ChatListState();
@@ -69,6 +81,14 @@ class _ChatListState extends State<ChatList> {
                     contentBuilder: messageContentBuilder,
                     onBubbleTap: widget.onBubbleTap,
                     onBubbleLongPress: widget.onBubbleLongPress,
+                    receiverBackgroundColor: widget.receiverBackgroundColor,
+                    senderBackgroundColor: widget.senderBackgroundColor,
+                    receiverAvatarBackgroundColor:
+                        widget.receiverAvatarBackgroundColor,
+                    senderAvatarBackgroundColor:
+                        widget.senderAvatarBackgroundColor,
+                    textColor: widget.textColor,
+                    bubbleRadius: widget.bubbleRadius,
                   );
                 })
             : const Center(

@@ -10,8 +10,7 @@ class HeaderWidget extends StatelessWidget {
   final String? avatar;
   final String? imoocId;
 
-  const HeaderWidget({Key? key, this.name, this.avatar, this.imoocId})
-      : super(key: key);
+  const HeaderWidget({super.key, this.name, this.avatar, this.imoocId});
 
   static const _placeholder = Icon(Icons.person, size: 60);
 
@@ -30,12 +29,11 @@ class HeaderWidget extends StatelessWidget {
     return ClipRRect(
         borderRadius: BorderRadius.circular(6),
         child: Image.network(avatar!.trim(),
-            height: 60,
-            width: 60,
-            errorBuilder: (_, __, ___) => _placeholder));
+            height: 60, width: 60, errorBuilder: (_, __, ___) => _placeholder));
   }
 
-  get _rightLayout => Expanded(
+  Widget _rightLayout(BuildContext context, {required bool isAnime}) =>
+      Expanded(
           child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
@@ -49,33 +47,84 @@ class HeaderWidget extends StatelessWidget {
             'imooc id：$imoocId',
             maxLines: 1,
             overflow: TextOverflow.ellipsis,
-            style: const TextStyle(fontSize: 13, color: Colors.grey),
+            style: TextStyle(
+              fontSize: 13,
+              color: isAnime
+                  ? Theme.of(context).colorScheme.onSurfaceVariant
+                  : Colors.grey,
+            ),
           )
         ],
       ));
 
   @override
   Widget build(BuildContext context) {
-    var themeProvider = context.watch<ThemeProvider>();
-    var color = themeProvider.themeColor;
-    return Padding(
-      padding: const EdgeInsets.only(top: 60),
-      child: Row(
+    final themeProvider = context.watch<ThemeProvider>();
+    final color = themeProvider.isAnime
+        ? Theme.of(context).colorScheme.primary
+        : themeProvider.themeColor;
+    final content = Row(
+      children: [
+        20.paddingWidth,
+        _avatar,
+        15.paddingWidth,
+        _rightLayout(context, isAnime: themeProvider.isAnime),
+        _logoutBtn(context, color),
+        12.paddingWidth,
+      ],
+    );
+
+    if (!themeProvider.isAnime) {
+      return Padding(
+        padding: const EdgeInsets.only(top: 60),
+        child: content,
+      );
+    }
+
+    final colorScheme = Theme.of(context).colorScheme;
+    return Container(
+      margin: const EdgeInsets.fromLTRB(16, 20, 16, 8),
+      padding: const EdgeInsets.symmetric(vertical: 20),
+      decoration: BoxDecoration(
+        gradient: LinearGradient(
+          colors: [
+            colorScheme.primaryContainer,
+            colorScheme.secondaryContainer,
+          ],
+          begin: Alignment.topLeft,
+          end: Alignment.bottomRight,
+        ),
+        borderRadius: BorderRadius.circular(24),
+        border: Border.all(color: colorScheme.outlineVariant),
+        boxShadow: [
+          BoxShadow(
+            color: colorScheme.primary.withValues(alpha: 0.10),
+            blurRadius: 18,
+            offset: const Offset(0, 8),
+          ),
+        ],
+      ),
+      child: Stack(
         children: [
-          20.paddingWidth,
-          _avatar,
-          15.paddingWidth,
-          _rightLayout,
-          _logoutBtn(context, color),
-          20.paddingWidth,
+          Positioned(
+            right: 16,
+            top: -4,
+            child: Icon(
+              Icons.auto_awesome_rounded,
+              size: 28,
+              color: colorScheme.secondary.withValues(alpha: 0.22),
+            ),
+          ),
+          content,
         ],
       ),
     );
   }
 
-  _logoutBtn(BuildContext context, MaterialColor color) {
-    return GestureDetector(
-      onTap: () async {
+  Widget _logoutBtn(BuildContext context, Color color) {
+    return IconButton(
+      tooltip: '退出登录',
+      onPressed: () async {
         final ok = await showDialog<bool>(
           context: context,
           builder: (ctx) => AlertDialog(
@@ -97,10 +146,7 @@ class HeaderWidget extends StatelessWidget {
           LoginDao.logOut();
         }
       },
-      child: Icon(
-        Icons.logout,
-        color: color,
-      ),
+      icon: Icon(Icons.logout, color: color),
     );
   }
 }

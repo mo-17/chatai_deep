@@ -1,3 +1,4 @@
+import 'package:chatgpt_app_core/theme/app_visual_theme.dart';
 import 'package:flutter/material.dart';
 
 /// 只读能力标签：图标 + 文案，色从 secondaryContainer 派生。
@@ -19,12 +20,21 @@ class CapabilityChip extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final cs = Theme.of(context).colorScheme;
+    final visual = AppVisualTheme.of(context);
+    final background = color ?? cs.secondaryContainer;
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
-      decoration: BoxDecoration(
-        color: color ?? cs.secondaryContainer,
-        borderRadius: BorderRadius.circular(8),
-      ),
+      decoration: visual.isAnime
+          ? ShapeDecoration(
+              color: background,
+              shape: StadiumBorder(
+                side: BorderSide(color: cs.outlineVariant),
+              ),
+            )
+          : BoxDecoration(
+              color: background,
+              borderRadius: BorderRadius.circular(8),
+            ),
       child: Row(
         mainAxisSize: MainAxisSize.min,
         children: [

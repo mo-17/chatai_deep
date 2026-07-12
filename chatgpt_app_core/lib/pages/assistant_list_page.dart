@@ -30,9 +30,11 @@ import 'package:chatgpt_app_core/pages/conversation_page.dart';
 import 'package:chatgpt_app_core/pages/story_room_page.dart';
 import 'package:chatgpt_app_core/provider/ai_settings_provider.dart';
 import 'package:chatgpt_app_core/skill/skill_import_service.dart';
+import 'package:chatgpt_app_core/theme/app_visual_theme.dart';
 import 'package:chatgpt_app_core/util/app_events.dart';
 import 'package:chatgpt_app_core/util/avatar_asset_service.dart';
 import 'package:chatgpt_app_core/util/hi_dialog.dart';
+import 'package:chatgpt_app_core/widget/app_visual_widgets.dart';
 import 'package:chatgpt_app_core/widget/assistant_avatar.dart';
 import 'package:chatgpt_app_core/widget/translation_task_log_dialog.dart';
 import 'package:file_picker/file_picker.dart';
@@ -45,6 +47,12 @@ import 'package:provider/provider.dart';
 import 'package:share_plus/share_plus.dart';
 
 final _roleCardImportCoordinator = _RoleCardImportCoordinator();
+
+Color _mutedTextColor(BuildContext context) =>
+    Theme.of(context).colorScheme.onSurfaceVariant;
+
+Color _statusColor(BuildContext context, AppStatusKind kind) =>
+    AppStatusPalette.of(context, kind).foreground;
 
 Future<StoryTemplateModel> _saveTavernRoomTemplate(
   HiDBManager dbManager,
@@ -80,6 +88,8 @@ class _AssistantListPageState extends State<AssistantListPage> {
   AssistantDao? _dao;
   List<AssistantModel> _assistants = [];
   int _lastImportCompletedTick = 0;
+  bool _loading = true;
+  Object? _loadError;
 
   @override
   void initState() {
@@ -101,10 +111,21 @@ class _AssistantListPageState extends State<AssistantListPage> {
   }
 
   void _doInit() async {
-    final dbManager =
-        await HiDBManager.instance(dbName: HiDBManager.getAccountHash());
-    _dao = await AssistantDao.create(dbManager);
-    await _loadData();
+    setState(() {
+      _loading = true;
+      _loadError = null;
+    });
+    try {
+      final dbManager =
+          await HiDBManager.instance(dbName: HiDBManager.getAccountHash());
+      _dao = await AssistantDao.create(dbManager);
+      if (!mounted) return;
+      await _loadData();
+    } catch (error) {
+      if (mounted) setState(() => _loadError = error);
+    } finally {
+      if (mounted) setState(() => _loading = false);
+    }
   }
 
   Future<void> _loadData() async {
@@ -134,46 +155,75 @@ class _AssistantListPageState extends State<AssistantListPage> {
             IconButton(
               icon: const Icon(Icons.file_upload_outlined),
               tooltip: '导入角色卡（.json/.png/.zip）',
-              onPressed: _importRoleCardFile,
+              onPressed: _loading ? null : _importRoleCardFile,
             ),
           if (Platform.operatingSystem != 'ohos')
             IconButton(
               icon: const Icon(Icons.archive_outlined),
               tooltip: '导入技能（.zip，含 SKILL.md）',
-              onPressed: _importSkillZip,
+              onPressed: _loading ? null : _importSkillZip,
             ),
           IconButton(
             icon: const Icon(Icons.storefront_outlined),
             tooltip: '助手市场',
-            onPressed: _openMarket,
+            onPressed: _loading ? null : _openMarket,
           ),
         ],
       ),
-      body: _assistants.isEmpty && _roleCardImportCoordinator.jobs.isEmpty
-          ? _emptyView
-          : _listView,
+      body: _body,
       floatingActionButton: FloatingActionButton(
-        onPressed: () => _edit(null),
+        onPressed: _loading ? null : () => _edit(null),
         tooltip: '新建助手',
         child: const Icon(Icons.add),
       ),
     );
   }
 
-  Widget get _emptyView => Center(
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            const Text('🤖', style: TextStyle(fontSize: 48)),
-            const SizedBox(height: 12),
-            Text('还没有助手，点右下角新建，或从右上角「助手市场」挑一个',
-                style: TextStyle(color: Colors.grey[600]),
-                textAlign: TextAlign.center),
-          ],
+  Widget get _body {
+    if (_loading && _roleCardImportCoordinator.jobs.isEmpty) {
+      return const Center(child: CircularProgressIndicator());
+    }
+    if (_loadError != null && _roleCardImportCoordinator.jobs.isEmpty) {
+      return AppVisualEmptyState(
+        icon: Icons.cloud_off_outlined,
+        title: '助手列表加载失败',
+        message: _loadError.toString(),
+        action: FilledButton.icon(
+          onPressed: _doInit,
+          icon: const Icon(Icons.refresh),
+          label: const Text('重试'),
+        ),
+      );
+    }
+    return _assistants.isEmpty && _roleCardImportCoordinator.jobs.isEmpty
+        ? _emptyView
+        : _listView;
+  }
+
+  Widget get _emptyView => AppVisualEmptyState(
+        icon: Icons.smart_toy_outlined,
+        title: '还没有助手',
+        message: '点右下角新建，或从右上角「助手市场」挑一个。',
+        classic: Center(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              const Text('🤖', style: TextStyle(fontSize: 48)),
+              const SizedBox(height: 12),
+              Text('还没有助手，点右下角新建，或从右上角「助手市场」挑一个',
+                  style: TextStyle(
+                    color: Theme.of(context).colorScheme.onSurfaceVariant,
+                  ),
+                  textAlign: TextAlign.center),
+            ],
+          ),
         ),
       );
 
   Widget get _listView => ListView.builder(
+        padding: AppVisualTheme.of(context).isAnime
+            ? const EdgeInsets.fromLTRB(12, 12, 12, 24)
+            : EdgeInsets.zero,
         itemCount: _roleCardImportCoordinator.jobs.length + _assistants.length,
         itemBuilder: (context, index) {
           final importJobs = _roleCardImportCoordinator.jobs;
@@ -189,7 +239,7 @@ class _AssistantListPageState extends State<AssistantListPage> {
           }
           final assistantIndex = index - importJobs.length;
           final a = _assistants[assistantIndex];
-          return ListTile(
+          final tile = ListTile(
             leading: _assistantAvatar(a),
             title: Text(a.name, maxLines: 1, overflow: TextOverflow.ellipsis),
             subtitle: Text(
@@ -350,6 +400,13 @@ class _AssistantListPageState extends State<AssistantListPage> {
             ),
             onTap: () => _edit(a),
           );
+          return AppVisualSurface(
+            padding: EdgeInsets.zero,
+            margin: AppVisualTheme.of(context).isAnime
+                ? const EdgeInsets.only(bottom: 8)
+                : EdgeInsets.zero,
+            child: tile,
+          );
         },
       );
 
@@ -426,8 +483,10 @@ class _AssistantListPageState extends State<AssistantListPage> {
                     padding: const EdgeInsets.only(bottom: 8),
                     child: Text(
                       '$conflictCount 张与现有助手重名，重名处理策略会应用到这些角色卡。',
-                      style:
-                          TextStyle(color: Colors.blueGrey[700], fontSize: 12),
+                      style: TextStyle(
+                        color: _statusColor(context, AppStatusKind.info),
+                        fontSize: 12,
+                      ),
                     ),
                   ),
                 for (final plan in plans.take(8))
@@ -440,7 +499,8 @@ class _AssistantListPageState extends State<AssistantListPage> {
                     padding: const EdgeInsets.only(top: 6),
                     child: Text(
                       '还有 ${plans.length - 8} 张会一并导入',
-                      style: TextStyle(color: Colors.grey[600], fontSize: 12),
+                      style: TextStyle(
+                          color: _mutedTextColor(context), fontSize: 12),
                     ),
                   ),
                 if (hasConflicts) ...[
@@ -450,14 +510,15 @@ class _AssistantListPageState extends State<AssistantListPage> {
                     style: TextStyle(
                       fontWeight: FontWeight.w600,
                       fontSize: 13,
-                      color: Colors.blueGrey[700],
+                      color: _statusColor(context, AppStatusKind.info),
                     ),
                   ),
-                  const Padding(
-                    padding: EdgeInsets.only(top: 4, bottom: 2),
+                  Padding(
+                    padding: const EdgeInsets.only(top: 4, bottom: 2),
                     child: Text(
                       '覆盖时默认保留本地工具、模型和语音设置；下方安全选项勾选后才使用外部卡配置。',
-                      style: TextStyle(fontSize: 12, color: Colors.black54),
+                      style: TextStyle(
+                          fontSize: 12, color: _mutedTextColor(context)),
                     ),
                   ),
                   RadioGroup<_RoleCardImportConflictMode>(
@@ -470,21 +531,18 @@ class _AssistantListPageState extends State<AssistantListPage> {
                       children: [
                         RadioListTile<_RoleCardImportConflictMode>(
                           contentPadding: EdgeInsets.zero,
-                          dense: true,
                           value: _RoleCardImportConflictMode.rename,
                           title: Text('另存为新角色'),
                           subtitle: Text('自动追加编号，不影响已有助手'),
                         ),
                         RadioListTile<_RoleCardImportConflictMode>(
                           contentPadding: EdgeInsets.zero,
-                          dense: true,
                           value: _RoleCardImportConflictMode.overwrite,
                           title: Text('覆盖同名角色'),
                           subtitle: Text('更新已有助手内容，保留原助手名称和会话绑定'),
                         ),
                         RadioListTile<_RoleCardImportConflictMode>(
                           contentPadding: EdgeInsets.zero,
-                          dense: true,
                           value: _RoleCardImportConflictMode.mergeMemoryBook,
                           title: Text('覆盖并合并世界书'),
                           subtitle: Text('更新角色内容，但旧世界书未重复条目会保留'),
@@ -502,7 +560,9 @@ class _AssistantListPageState extends State<AssistantListPage> {
                         Text(
                           '${skipped.length} 个文件无法作为角色卡导入',
                           style: TextStyle(
-                              color: Colors.orange[800], fontSize: 12),
+                              color:
+                                  _statusColor(context, AppStatusKind.warning),
+                              fontSize: 12),
                         ),
                         const SizedBox(height: 4),
                         for (final item in skipped.take(3))
@@ -510,14 +570,14 @@ class _AssistantListPageState extends State<AssistantListPage> {
                             '${item.name}：${item.reason}',
                             maxLines: 2,
                             overflow: TextOverflow.ellipsis,
-                            style: const TextStyle(
-                                color: Colors.black54, fontSize: 12),
+                            style: TextStyle(
+                                color: _mutedTextColor(context), fontSize: 12),
                           ),
                         if (skipped.length > 3)
                           Text(
                             '还有 ${skipped.length - 3} 个文件未展示',
-                            style: const TextStyle(
-                                color: Colors.black45, fontSize: 12),
+                            style: TextStyle(
+                                color: _mutedTextColor(context), fontSize: 12),
                           ),
                       ],
                     ),
@@ -528,12 +588,11 @@ class _AssistantListPageState extends State<AssistantListPage> {
                   style: TextStyle(
                     fontWeight: FontWeight.w600,
                     fontSize: 13,
-                    color: Colors.blueGrey[700],
+                    color: _statusColor(context, AppStatusKind.info),
                   ),
                 ),
                 CheckboxListTile(
                   contentPadding: EdgeInsets.zero,
-                  dense: true,
                   value: translateToSimplifiedChinese,
                   onChanged: (v) => setDialogState(
                     () => translateToSimplifiedChinese = v ?? false,
@@ -548,12 +607,11 @@ class _AssistantListPageState extends State<AssistantListPage> {
                     style: TextStyle(
                       fontWeight: FontWeight.w600,
                       fontSize: 13,
-                      color: Colors.orange[800],
+                      color: _statusColor(context, AppStatusKind.warning),
                     ),
                   ),
                   CheckboxListTile(
                     contentPadding: EdgeInsets.zero,
-                    dense: true,
                     value: keepTools,
                     onChanged: (v) =>
                         setDialogState(() => keepTools = v ?? false),
@@ -561,7 +619,6 @@ class _AssistantListPageState extends State<AssistantListPage> {
                   ),
                   CheckboxListTile(
                     contentPadding: EdgeInsets.zero,
-                    dense: true,
                     value: keepModelOverride,
                     onChanged: (v) =>
                         setDialogState(() => keepModelOverride = v ?? false),
@@ -569,7 +626,6 @@ class _AssistantListPageState extends State<AssistantListPage> {
                   ),
                   CheckboxListTile(
                     contentPadding: EdgeInsets.zero,
-                    dense: true,
                     value: keepDefaultVoice,
                     onChanged: (v) =>
                         setDialogState(() => keepDefaultVoice = v ?? false),
@@ -787,17 +843,19 @@ class _AssistantListPageState extends State<AssistantListPage> {
                     if (openingCount > 0) '开场 $openingCount 条',
                     if (skipped.isNotEmpty) '跳过 ${skipped.length} 个文件',
                   ].join(' · '),
-                  style: TextStyle(color: Colors.blueGrey[700], fontSize: 12),
+                  style: TextStyle(
+                    color: _statusColor(ctx, AppStatusKind.info),
+                    fontSize: 12,
+                  ),
                 ),
                 const SizedBox(height: 12),
-                const Text(
+                Text(
                   '合并成酒馆房间会把每张卡作为房间角色，并把各卡世界书汇总为共享上下文；普通助手导入则保持现有批量导入和重名处理流程。',
-                  style: TextStyle(fontSize: 12, color: Colors.black54),
+                  style: TextStyle(fontSize: 12, color: _mutedTextColor(ctx)),
                 ),
                 const SizedBox(height: 12),
                 CheckboxListTile(
                   contentPadding: EdgeInsets.zero,
-                  dense: true,
                   value: translateToSimplifiedChinese,
                   onChanged: (v) => setDialogState(
                     () => translateToSimplifiedChinese = v ?? false,
@@ -868,17 +926,19 @@ class _AssistantListPageState extends State<AssistantListPage> {
                     if (summary.alternateGreetingCount > 0)
                       '备选开场 ${summary.alternateGreetingCount} 条',
                   ].join(' · '),
-                  style: TextStyle(color: Colors.blueGrey[700], fontSize: 12),
+                  style: TextStyle(
+                    color: _statusColor(ctx, AppStatusKind.info),
+                    fontSize: 12,
+                  ),
                 ),
                 const SizedBox(height: 12),
-                const Text(
+                Text(
                   '创建酒馆房间会把主卡内容作为公共上下文，把可识别的世界书角色加入房间参与者；也可以继续按普通助手导入。',
-                  style: TextStyle(fontSize: 12, color: Colors.black54),
+                  style: TextStyle(fontSize: 12, color: _mutedTextColor(ctx)),
                 ),
                 const SizedBox(height: 12),
                 CheckboxListTile(
                   contentPadding: EdgeInsets.zero,
-                  dense: true,
                   value: translateToSimplifiedChinese,
                   onChanged: (v) => setDialogState(
                     () => translateToSimplifiedChinese = v ?? false,
@@ -1502,7 +1562,8 @@ class _AssistantListPageState extends State<AssistantListPage> {
             children: [
               if (pkg.description.isNotEmpty) ...[
                 Text(pkg.description,
-                    style: TextStyle(color: Colors.grey[700], fontSize: 13)),
+                    style:
+                        TextStyle(color: _mutedTextColor(ctx), fontSize: 13)),
                 const SizedBox(height: 12),
               ],
               Text('将新建助手：${pkg.name}'),
@@ -1517,7 +1578,10 @@ class _AssistantListPageState extends State<AssistantListPage> {
                   '脚本：${pkg.scripts.length} 个 → 绑定「运行脚本」工具，'
                   '运行前在沙箱执行并需你确认（仅 Android/iOS 等支持，鸿蒙不可执行）\n'
                   '· ${pkg.scripts.map((s) => s.name).join('\n· ')}',
-                  style: TextStyle(color: Colors.orange[800], fontSize: 13),
+                  style: TextStyle(
+                    color: _statusColor(ctx, AppStatusKind.warning),
+                    fontSize: 13,
+                  ),
                 ),
             ],
           ),
@@ -1672,7 +1736,7 @@ class _TavernTranslationProgressDialog extends StatelessWidget {
                   if (value.detail.trim().isNotEmpty) value.detail.trim(),
                   '${value.current}/${value.total}',
                 ].join(' · '),
-                style: const TextStyle(fontSize: 12, color: Colors.black54),
+                style: TextStyle(fontSize: 12, color: _mutedTextColor(context)),
               ),
               const SizedBox(height: 12),
               LinearProgressIndicator(value: ratio),
@@ -2234,11 +2298,13 @@ class _RoleCardImportJobTile extends StatelessWidget {
   Widget build(BuildContext context) {
     final failed = job.failed;
     final completed = job.completed;
-    final color = failed
-        ? Colors.red[700]
+    final statusKind = failed
+        ? AppStatusKind.error
         : completed
-            ? Colors.green[700]
-            : Colors.blueGrey[700];
+            ? AppStatusKind.success
+            : AppStatusKind.info;
+    final palette = AppStatusPalette.of(context, statusKind);
+    final colorScheme = Theme.of(context).colorScheme;
     final progress = job.progress.clamp(0, 1).toDouble();
     final detailLine = [
       job.stage,
@@ -2249,20 +2315,16 @@ class _RoleCardImportJobTile extends StatelessWidget {
       if (job.translate) 'AI 翻译',
       if (job.tavernRoom) '酒馆房间',
     ];
-    return ListTile(
+    final tile = ListTile(
       leading: CircleAvatar(
-        backgroundColor: failed
-            ? Colors.red[50]
-            : completed
-                ? Colors.green[50]
-                : Colors.blueGrey[50],
+        backgroundColor: palette.container,
         child: Icon(
           failed
               ? Icons.error_outline
               : completed
                   ? (job.tavernRoom ? Icons.meeting_room_outlined : Icons.check)
                   : Icons.sync,
-          color: color,
+          color: palette.foreground,
         ),
       ),
       title: Text(
@@ -2280,7 +2342,7 @@ class _RoleCardImportJobTile extends StatelessWidget {
                   detailLine,
                   maxLines: 1,
                   overflow: TextOverflow.ellipsis,
-                  style: TextStyle(color: color),
+                  style: TextStyle(color: palette.foreground),
                 ),
               ),
               if (!failed && !completed) ...[
@@ -2288,7 +2350,7 @@ class _RoleCardImportJobTile extends StatelessWidget {
                 Text(
                   '${(progress * 100).round()}%',
                   style: TextStyle(
-                    color: color,
+                    color: palette.foreground,
                     fontSize: 12,
                     fontFeatures: const [FontFeature.tabularFigures()],
                   ),
@@ -2300,8 +2362,8 @@ class _RoleCardImportJobTile extends StatelessWidget {
           LinearProgressIndicator(
             value: failed ? 1 : progress,
             minHeight: 3,
-            backgroundColor: Colors.black12,
-            color: failed ? Colors.red[300] : Colors.blueGrey[400],
+            backgroundColor: colorScheme.surfaceContainerHighest,
+            color: palette.foreground,
           ),
           if (metaItems.isNotEmpty) ...[
             const SizedBox(height: 6),
@@ -2319,7 +2381,8 @@ class _RoleCardImportJobTile extends StatelessWidget {
               job.error,
               maxLines: 2,
               overflow: TextOverflow.ellipsis,
-              style: const TextStyle(fontSize: 12, color: Colors.black54),
+              style:
+                  TextStyle(fontSize: 12, color: colorScheme.onSurfaceVariant),
             ),
           ],
         ],
@@ -2350,6 +2413,11 @@ class _RoleCardImportJobTile extends StatelessWidget {
             ),
         ],
       ),
+    );
+    return AppVisualSurface(
+      padding: EdgeInsets.zero,
+      margin: const EdgeInsets.only(bottom: 8),
+      child: tile,
     );
   }
 }
@@ -2474,6 +2542,9 @@ class _RoleCardPreviewDialogState extends State<_RoleCardPreviewDialog> {
     final exampleSnippets = AssistantRoleCardService.examplePreviewSnippets(
       assistant.exampleDialogs,
     );
+    final muted = _mutedTextColor(context);
+    final info = AppStatusPalette.of(context, AppStatusKind.info);
+    final warning = AppStatusPalette.of(context, AppStatusKind.warning);
     return AlertDialog(
       title: Text('${assistant.emoji} $visibleName'),
       content: SingleChildScrollView(
@@ -2501,14 +2572,14 @@ class _RoleCardPreviewDialogState extends State<_RoleCardPreviewDialog> {
                 style: TextStyle(
                   fontWeight: FontWeight.w600,
                   fontSize: 13,
-                  color: Colors.blueGrey[700],
+                  color: info.foreground,
                 ),
               ),
-              const Padding(
-                padding: EdgeInsets.only(top: 4, bottom: 2),
+              Padding(
+                padding: const EdgeInsets.only(top: 4, bottom: 2),
                 child: Text(
                   '覆盖时默认保留本地工具、模型和语音设置；下方安全选项勾选后才使用外部卡配置。',
-                  style: TextStyle(fontSize: 12, color: Colors.black54),
+                  style: TextStyle(fontSize: 12, color: muted),
                 ),
               ),
               RadioGroup<_RoleCardImportConflictMode>(
@@ -2521,7 +2592,6 @@ class _RoleCardPreviewDialogState extends State<_RoleCardPreviewDialog> {
                   children: [
                     RadioListTile<_RoleCardImportConflictMode>(
                       contentPadding: EdgeInsets.zero,
-                      dense: true,
                       value: _RoleCardImportConflictMode.rename,
                       title: const Text('另存为新角色'),
                       subtitle:
@@ -2529,7 +2599,6 @@ class _RoleCardPreviewDialogState extends State<_RoleCardPreviewDialog> {
                     ),
                     RadioListTile<_RoleCardImportConflictMode>(
                       contentPadding: EdgeInsets.zero,
-                      dense: true,
                       value: _RoleCardImportConflictMode.overwrite,
                       title: const Text('覆盖同名角色'),
                       subtitle: Text(
@@ -2538,7 +2607,6 @@ class _RoleCardPreviewDialogState extends State<_RoleCardPreviewDialog> {
                     ),
                     RadioListTile<_RoleCardImportConflictMode>(
                       contentPadding: EdgeInsets.zero,
-                      dense: true,
                       value: _RoleCardImportConflictMode.mergeMemoryBook,
                       title: const Text('覆盖并合并世界书'),
                       subtitle: Text(widget.mergePreview?.compactSummary ??
@@ -2554,7 +2622,7 @@ class _RoleCardPreviewDialogState extends State<_RoleCardPreviewDialog> {
             if (assistant.description.trim().isNotEmpty) ...[
               Text(
                 assistant.description.trim(),
-                style: TextStyle(color: Colors.grey[700], fontSize: 13),
+                style: TextStyle(color: muted, fontSize: 13),
               ),
               const SizedBox(height: 12),
             ],
@@ -2578,7 +2646,7 @@ class _RoleCardPreviewDialogState extends State<_RoleCardPreviewDialog> {
                     snippet,
                     maxLines: 3,
                     overflow: TextOverflow.ellipsis,
-                    style: const TextStyle(fontSize: 12, color: Colors.black54),
+                    style: TextStyle(fontSize: 12, color: muted),
                   ),
                 ),
             ],
@@ -2609,12 +2677,15 @@ class _RoleCardPreviewDialogState extends State<_RoleCardPreviewDialog> {
                 width: double.infinity,
                 padding: const EdgeInsets.all(10),
                 decoration: BoxDecoration(
-                  color: Colors.orange.withValues(alpha: 0.1),
+                  color: warning.container,
                   borderRadius: BorderRadius.circular(6),
+                  border: Border.all(
+                    color: warning.foreground.withValues(alpha: 0.18),
+                  ),
                 ),
                 child: Text(
                   extensionSafety.warningText,
-                  style: TextStyle(fontSize: 12, color: Colors.orange[900]),
+                  style: TextStyle(fontSize: 12, color: warning.onContainer),
                 ),
               ),
             ],
@@ -2625,12 +2696,11 @@ class _RoleCardPreviewDialogState extends State<_RoleCardPreviewDialog> {
                 style: TextStyle(
                   fontWeight: FontWeight.w600,
                   fontSize: 13,
-                  color: Colors.blueGrey[700],
+                  color: info.foreground,
                 ),
               ),
               CheckboxListTile(
                 contentPadding: EdgeInsets.zero,
-                dense: true,
                 value: _translateToSimplifiedChinese,
                 onChanged: (v) => setState(
                   () => _translateToSimplifiedChinese = v ?? false,
@@ -2650,14 +2720,13 @@ class _RoleCardPreviewDialogState extends State<_RoleCardPreviewDialog> {
                 style: TextStyle(
                   fontWeight: FontWeight.w600,
                   fontSize: 13,
-                  color: Colors.orange[800],
+                  color: warning.foreground,
                 ),
               ),
               const SizedBox(height: 4),
               if (summary.toolCount > 0 || !assistant.useTools)
                 CheckboxListTile(
                   contentPadding: EdgeInsets.zero,
-                  dense: true,
                   value: _keepTools,
                   onChanged: (v) => setState(() => _keepTools = v ?? false),
                   title: const Text('使用外部卡工具绑定 / 工具开关'),
@@ -2666,7 +2735,6 @@ class _RoleCardPreviewDialogState extends State<_RoleCardPreviewDialog> {
               if (summary.hasModelOverride)
                 CheckboxListTile(
                   contentPadding: EdgeInsets.zero,
-                  dense: true,
                   value: _keepModelOverride,
                   onChanged: (v) =>
                       setState(() => _keepModelOverride = v ?? false),
@@ -2676,7 +2744,6 @@ class _RoleCardPreviewDialogState extends State<_RoleCardPreviewDialog> {
               if (summary.hasDefaultVoice)
                 CheckboxListTile(
                   contentPadding: EdgeInsets.zero,
-                  dense: true,
                   value: _keepDefaultVoice,
                   onChanged: (v) =>
                       setState(() => _keepDefaultVoice = v ?? false),
@@ -2694,12 +2761,12 @@ class _RoleCardPreviewDialogState extends State<_RoleCardPreviewDialog> {
                   padding: const EdgeInsets.only(bottom: 6),
                   child: Text(
                     '${entry.label}：${entry.content}',
-                    style: const TextStyle(fontSize: 12, color: Colors.black54),
+                    style: TextStyle(fontSize: 12, color: muted),
                   ),
                 ),
               if (summary.memoryEntries.length > 5)
                 Text('还有 ${summary.memoryEntries.length - 5} 条未展示',
-                    style: const TextStyle(fontSize: 12, color: Colors.grey)),
+                    style: TextStyle(fontSize: 12, color: muted)),
             ],
           ],
         ),
@@ -2764,7 +2831,6 @@ class _RoleCardBatchPreviewTile extends StatelessWidget {
     ].join(' · ');
     return ListTile(
       contentPadding: EdgeInsets.zero,
-      dense: true,
       leading: AssistantAvatar(assistant: assistant),
       title: Text(targetName, maxLines: 1, overflow: TextOverflow.ellipsis),
       subtitle: Text(detail, maxLines: 1, overflow: TextOverflow.ellipsis),
@@ -2789,6 +2855,7 @@ class _RoleCardMergeMemoryPreview extends StatelessWidget {
     final data = preview;
     if (data == null) return const SizedBox.shrink();
     final appended = data.appendedPreviewLines();
+    final muted = _mutedTextColor(context);
     return Padding(
       padding: const EdgeInsets.only(left: 16, right: 16, bottom: 8),
       child: Column(
@@ -2796,25 +2863,28 @@ class _RoleCardMergeMemoryPreview extends StatelessWidget {
         children: [
           Text(
             data.compactSummary,
-            style: const TextStyle(fontSize: 12, color: Colors.black54),
+            style: TextStyle(fontSize: 12, color: muted),
           ),
           if (appended.isNotEmpty) ...[
             const SizedBox(height: 4),
-            const Text(
+            Text(
               '将追加：',
-              style: TextStyle(fontSize: 12, color: Colors.black54),
+              style: TextStyle(fontSize: 12, color: muted),
             ),
             for (final line in appended)
               Text(
                 '- $line',
                 maxLines: 2,
                 overflow: TextOverflow.ellipsis,
-                style: const TextStyle(fontSize: 12, color: Colors.black45),
+                style: TextStyle(fontSize: 12, color: muted),
               ),
             if (data.appendedCount > appended.length)
               Text(
                 '还有 ${data.appendedCount - appended.length} 条未展示',
-                style: const TextStyle(fontSize: 12, color: Colors.black38),
+                style: TextStyle(
+                  fontSize: 12,
+                  color: muted.withValues(alpha: 0.72),
+                ),
               ),
           ],
         ],

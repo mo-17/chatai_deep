@@ -4,6 +4,7 @@ import 'dart:io';
 import 'package:chatgpt_app_core/dao/apk_update_dao.dart';
 import 'package:chatgpt_app_core/model/apk_model.dart';
 import 'package:chatgpt_app_core/pages/ai_settings_page.dart';
+import 'package:chatgpt_app_core/pages/appearance_settings_page.dart';
 import 'package:chatgpt_app_core/pages/assistant_list_page.dart';
 import 'package:chatgpt_app_core/pages/backup_restore_page.dart';
 import 'package:chatgpt_app_core/pages/capability_center_page.dart';
@@ -26,8 +27,6 @@ import 'package:open_filex/open_filex.dart';
 import 'package:openai_flutter/utils/ai_logger.dart';
 import 'package:provider/provider.dart';
 
-import '../widget/theme_widget.dart';
-
 ///我的页面
 class MyPage extends StatefulWidget {
   const MyPage({super.key});
@@ -43,24 +42,12 @@ class _MyPageState extends State<MyPage> {
   static const titleStyle =
       TextStyle(fontSize: 18, fontWeight: FontWeight.w600);
 
-  get _buildTitle => Container(
-        padding: const EdgeInsets.only(bottom: 10),
-        child: Row(
-          crossAxisAlignment: CrossAxisAlignment.end,
-          children: [
-            15.paddingWidth,
-            const Text('设置主题', style: titleStyle),
-            10.paddingWidth,
-            Text('请选择你喜欢的主题',
-                style: TextStyle(fontSize: 13, color: Colors.grey[600]))
-          ],
-        ),
-      );
-
   @override
   Widget build(BuildContext context) {
     final themeProvider = context.watch<ThemeProvider>();
-    final color = themeProvider.themeColor;
+    final color = themeProvider.isAnime
+        ? Theme.of(context).colorScheme.primary
+        : themeProvider.themeColor;
     return Scaffold(
       body: SafeArea(
         child: ListView(
@@ -80,6 +67,14 @@ class _MyPageState extends State<MyPage> {
                   title: '登录 / 注册',
                   icon: Icons.login,
                   onTap: () => LoginDao.logOut()),
+            ..._itemWidget(
+                color: color,
+                title: '外观与主题',
+                icon: Icons.palette_outlined,
+                onTap: () => Navigator.push(
+                    context,
+                    MaterialPageRoute(
+                        builder: (_) => const AppearanceSettingsPage()))),
             ..._itemWidget(
                 color: color,
                 title: 'AI 服务设置',
@@ -165,8 +160,6 @@ class _MyPageState extends State<MyPage> {
                 title: '检测更新',
                 icon: Icons.update,
                 onTap: _checkUpdate),
-            _buildTitle,
-            ThemeWidget(onThemeChange: _onThemeChange)
           ],
         ),
       ),
@@ -186,39 +179,83 @@ class _MyPageState extends State<MyPage> {
     }
   }
 
-  void _onThemeChange(String value) {
-    context.read<ThemeProvider>().setTheme(colorName: value);
-  }
-
   _itemWidget(
-          {required Color color,
-          required String title,
-          required IconData icon,
-          GestureTapCallback? onTap}) =>
-      [
-        10.paddingHeight,
-        Container(
-          alignment: Alignment.centerLeft,
-          padding: const EdgeInsets.only(left: 15, bottom: 10, right: 20),
-          child: InkWell(
-            onTap: onTap,
-            child: Row(
-              mainAxisAlignment: MainAxisAlignment.spaceBetween,
-              children: [
-                Text(
-                  title,
-                  style: titleStyle,
+      {required Color color,
+      required String title,
+      required IconData icon,
+      GestureTapCallback? onTap}) {
+    if (context.read<ThemeProvider>().isAnime) {
+      final colorScheme = Theme.of(context).colorScheme;
+      return [
+        Padding(
+          padding: const EdgeInsets.fromLTRB(12, 4, 12, 4),
+          child: Material(
+            color: colorScheme.surface,
+            shape: RoundedRectangleBorder(
+              borderRadius: BorderRadius.circular(18),
+              side: BorderSide(color: colorScheme.outlineVariant),
+            ),
+            clipBehavior: Clip.antiAlias,
+            child: InkWell(
+              onTap: onTap,
+              child: ConstrainedBox(
+                constraints: const BoxConstraints(minHeight: 60),
+                child: Padding(
+                  padding: const EdgeInsets.symmetric(horizontal: 14),
+                  child: Row(
+                    children: [
+                      Container(
+                        width: 38,
+                        height: 38,
+                        decoration: BoxDecoration(
+                          color: colorScheme.primaryContainer,
+                          borderRadius: BorderRadius.circular(12),
+                        ),
+                        child: Icon(icon, size: 21, color: colorScheme.primary),
+                      ),
+                      const SizedBox(width: 14),
+                      Expanded(
+                        child: Text(
+                          title,
+                          style: Theme.of(context).textTheme.titleMedium,
+                        ),
+                      ),
+                      Icon(Icons.chevron_right_rounded,
+                          color: colorScheme.onSurfaceVariant),
+                    ],
+                  ),
                 ),
-                Icon(icon, color: color)
-              ],
+              ),
             ),
           ),
         ),
-        const Padding(
-          padding: EdgeInsets.only(left: 15, right: 15),
-          child: Divider(),
-        )
       ];
+    }
+    return [
+      10.paddingHeight,
+      Container(
+        alignment: Alignment.centerLeft,
+        padding: const EdgeInsets.only(left: 15, bottom: 10, right: 20),
+        child: InkWell(
+          onTap: onTap,
+          child: Row(
+            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+            children: [
+              Text(
+                title,
+                style: titleStyle,
+              ),
+              Icon(icon, color: color)
+            ],
+          ),
+        ),
+      ),
+      const Padding(
+        padding: EdgeInsets.only(left: 15, right: 15),
+        child: Divider(),
+      )
+    ];
+  }
 
   void _checkUpdate() async {
     // ohos: 鸿蒙不支持 APK 安装，统一引导到应用市场

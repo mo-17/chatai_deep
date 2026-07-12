@@ -3,7 +3,9 @@ import 'dart:io';
 import 'package:chatgpt_app_core/backup/backup_service.dart';
 import 'package:chatgpt_app_core/db/hi_db_manager.dart';
 import 'package:chatgpt_app_core/provider/ai_settings_provider.dart';
+import 'package:chatgpt_app_core/theme/app_visual_theme.dart';
 import 'package:chatgpt_app_core/util/hi_dialog.dart';
+import 'package:chatgpt_app_core/widget/app_visual_widgets.dart';
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 import 'package:openai_flutter/utils/ai_logger.dart';
@@ -33,6 +35,8 @@ class _BackupImportPreviewDialogState extends State<BackupImportPreviewDialog> {
 
   @override
   Widget build(BuildContext context) {
+    final visual = AppVisualTheme.of(context);
+    final theme = Theme.of(context);
     final warning = widget.preview.warnings.isEmpty
         ? ''
         : '\n\n${widget.preview.warnings.join('\n')}';
@@ -77,7 +81,15 @@ class _BackupImportPreviewDialogState extends State<BackupImportPreviewDialog> {
               onChanged: (value) => setState(() => _mode = value ?? _mode),
             ),
             const SizedBox(height: 8),
-            Text(_modeWarning(_mode)),
+            Text(
+              _modeWarning(_mode),
+              style: visual.isAnime
+                  ? theme.textTheme.bodyMedium?.copyWith(
+                      color: theme.colorScheme.error,
+                      fontWeight: FontWeight.w600,
+                    )
+                  : null,
+            ),
             const SizedBox(height: 8),
             Text(_impactText(widget.preview, _mode)),
           ],
@@ -88,6 +100,9 @@ class _BackupImportPreviewDialogState extends State<BackupImportPreviewDialog> {
             onPressed: () => Navigator.pop(context), child: const Text('取消')),
         TextButton(
           onPressed: () => Navigator.pop(context, _mode),
+          style: visual.isAnime && _mode != BackupImportMode.mergeAppend
+              ? TextButton.styleFrom(foregroundColor: theme.colorScheme.error)
+              : null,
           child: Text(_confirmText(_mode)),
         ),
       ],
@@ -193,24 +208,53 @@ class _BackupRestorePageState extends State<BackupRestorePage> {
 
   @override
   Widget build(BuildContext context) {
+    final visual = AppVisualTheme.of(context);
+    final theme = Theme.of(context);
+    final description = Text(
+      '备份内容：会话、聊天记录（含思考/工具等块数据）、助手、收藏、AI 设置。'
+      '按当前登录账号导出/导入。',
+      style: visual.isAnime
+          ? theme.textTheme.bodyMedium?.copyWith(
+              color: theme.colorScheme.onSurfaceVariant,
+            )
+          : const TextStyle(color: Colors.grey),
+    );
+    final apiKeyTile = SwitchListTile(
+      contentPadding: visual.isAnime
+          ? const EdgeInsets.symmetric(horizontal: 16, vertical: 4)
+          : EdgeInsets.zero,
+      title: const Text('备份包含 API Key'),
+      subtitle: const Text('默认不包含，防止备份文件外流时泄露密钥'),
+      value: _includeApiKeys,
+      onChanged: (v) => setState(() => _includeApiKeys = v),
+    );
     return Scaffold(
       appBar: AppBar(title: const Text('备份与恢复'), centerTitle: true),
       body: ListView(
         padding: const EdgeInsets.all(16),
         children: [
-          const Text(
-            '备份内容：会话、聊天记录（含思考/工具等块数据）、助手、收藏、AI 设置。'
-            '按当前登录账号导出/导入。',
-            style: TextStyle(color: Colors.grey),
-          ),
+          if (visual.isAnime)
+            AppVisualSurface(
+              animeKey: const ValueKey('backup_intro_surface'),
+              child: Row(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Icon(Icons.shield_outlined, color: theme.colorScheme.primary),
+                  const SizedBox(width: 12),
+                  Expanded(child: description),
+                ],
+              ),
+            )
+          else
+            description,
           const SizedBox(height: 16),
-          SwitchListTile(
-            contentPadding: EdgeInsets.zero,
-            title: const Text('备份包含 API Key'),
-            subtitle: const Text('默认不包含，防止备份文件外流时泄露密钥'),
-            value: _includeApiKeys,
-            onChanged: (v) => setState(() => _includeApiKeys = v),
-          ),
+          if (visual.isAnime)
+            AppVisualSurface(
+              padding: EdgeInsets.zero,
+              child: apiKeyTile,
+            )
+          else
+            apiKeyTile,
           const SizedBox(height: 8),
           FilledButton.icon(
             onPressed: _busy ? null : _export,

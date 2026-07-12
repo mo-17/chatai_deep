@@ -33,6 +33,11 @@ class DefaultMessageWidget extends StatelessWidget {
 
   /// Background color of the message
   final Color? backgroundColor;
+  final Color? receiverBackgroundColor;
+  final Color? senderBackgroundColor;
+  final Color? receiverAvatarBackgroundColor;
+  final Color? senderAvatarBackgroundColor;
+  final Radius? bubbleRadius;
   final MessageWidgetBuilder? messageWidget;
 
   /// 只替换气泡内部内容（块化渲染）；返回 null 时回退默认渲染。
@@ -40,19 +45,24 @@ class DefaultMessageWidget extends StatelessWidget {
   final OnBubbleClick? onBubbleTap;
   final OnBubbleClick? onBubbleLongPress;
 
-  const DefaultMessageWidget(
-      {required GlobalKey key,
-      required this.message,
-      this.fontFamily,
-      this.fontSize = 16.0,
-      this.textColor,
-      this.backgroundColor,
-      this.avatarSize = 40,
-      this.messageWidget,
-      this.contentBuilder,
-      this.onBubbleTap,
-      this.onBubbleLongPress})
-      : super(key: key);
+  const DefaultMessageWidget({
+    required GlobalKey key,
+    required this.message,
+    this.fontFamily,
+    this.fontSize = 16.0,
+    this.textColor,
+    this.backgroundColor,
+    this.receiverBackgroundColor,
+    this.senderBackgroundColor,
+    this.receiverAvatarBackgroundColor,
+    this.senderAvatarBackgroundColor,
+    this.bubbleRadius,
+    this.avatarSize = 40,
+    this.messageWidget,
+    this.contentBuilder,
+    this.onBubbleTap,
+    this.onBubbleLongPress,
+  }) : super(key: key);
 
   double get contentMargin => avatarSize + 10;
 
@@ -80,8 +90,8 @@ class DefaultMessageWidget extends StatelessWidget {
   }
 
   Color get _avatarBgColor => message.ownerType == OwnerType.receiver
-      ? const Color(0xFF2E7D32) // AI 绿色
-      : const Color(0xFF0F3460); // 用户蓝色
+      ? receiverAvatarBackgroundColor ?? const Color(0xFF2E7D32) // AI 绿色
+      : senderAvatarBackgroundColor ?? const Color(0xFF0F3460); // 用户蓝色
 
   Widget get _initialsAvatar => CircleAvatar(
       radius: avatarSize / 2,
@@ -163,7 +173,10 @@ class DefaultMessageWidget extends StatelessWidget {
               margin: BubbleEdges.fromLTRB(10, 0, contentMargin, 0),
               stick: true,
               nip: BubbleNip.leftTop,
-              color: backgroundColor ?? const Color.fromRGBO(233, 232, 252, 10),
+              radius: bubbleRadius,
+              color: receiverBackgroundColor ??
+                  backgroundColor ??
+                  const Color.fromRGBO(233, 232, 252, 10),
               alignment: Alignment.topLeft,
               child: _bubbleChild(TextAlign.left, context)),
         ),
@@ -182,7 +195,8 @@ class DefaultMessageWidget extends StatelessWidget {
               margin: BubbleEdges.fromLTRB(contentMargin, 0, 10, 0),
               stick: true,
               nip: BubbleNip.rightTop,
-              color: backgroundColor ?? Colors.white,
+              radius: bubbleRadius,
+              color: senderBackgroundColor ?? backgroundColor ?? Colors.white,
               alignment: Alignment.topRight,
               child: _bubbleChild(TextAlign.left, context)),
         ),

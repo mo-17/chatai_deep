@@ -1,4 +1,6 @@
 import 'package:chatgpt_app_core/data/builtin_mcp_servers.dart';
+import 'package:chatgpt_app_core/theme/app_visual_theme.dart';
+import 'package:chatgpt_app_core/widget/app_visual_widgets.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
@@ -48,19 +50,44 @@ class McpMarketPage extends StatelessWidget {
 
   Widget _tile(BuildContext context, McpStoreEntry e) {
     final cs = Theme.of(context).colorScheme;
-    return ListTile(
-      leading: CircleAvatar(
-          backgroundColor: cs.primaryContainer,
-          child: Text(e.emoji, style: const TextStyle(fontSize: 18))),
-      title: Row(
-        children: [
-          Flexible(child: Text(e.name, overflow: TextOverflow.ellipsis)),
-          const SizedBox(width: 6),
-          _authBadge(context, e.auth),
-          const SizedBox(width: 4),
-          _accessBadge(context, e.access),
-        ],
-      ),
+    final visual = AppVisualTheme.of(context);
+    final badges = <Widget>[
+      _authBadge(context, e.auth),
+      _accessBadge(context, e.access),
+    ];
+    final tile = ListTile(
+      leading: visual.isAnime
+          ? Container(
+              width: 48,
+              height: 48,
+              decoration: BoxDecoration(
+                color: cs.primaryContainer,
+                borderRadius: BorderRadius.circular(16),
+              ),
+              child: Icon(Icons.extension_rounded, color: cs.primary),
+            )
+          : CircleAvatar(
+              backgroundColor: cs.primaryContainer,
+              child: Text(e.emoji, style: const TextStyle(fontSize: 18)),
+            ),
+      title: visual.isAnime
+          ? Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(e.name, overflow: TextOverflow.ellipsis),
+                const SizedBox(height: 6),
+                Wrap(spacing: 6, runSpacing: 6, children: badges),
+              ],
+            )
+          : Row(
+              children: [
+                Flexible(child: Text(e.name, overflow: TextOverflow.ellipsis)),
+                const SizedBox(width: 6),
+                badges[0],
+                const SizedBox(width: 4),
+                badges[1],
+              ],
+            ),
       subtitle: Text(e.description,
           maxLines: 2,
           overflow: TextOverflow.ellipsis,
@@ -72,9 +99,24 @@ class McpMarketPage extends StatelessWidget {
           ? Navigator.pop(context, e)
           : _showEntryInfo(context, e),
     );
+    if (!visual.isAnime) return tile;
+    return AppVisualSurface(
+      margin: const EdgeInsets.fromLTRB(12, 4, 12, 4),
+      padding: EdgeInsets.zero,
+      child: tile,
+    );
   }
 
   Widget _authBadge(BuildContext context, McpAuthKind auth) {
+    if (AppVisualTheme.of(context).isAnime) {
+      final (label, kind) = switch (auth) {
+        McpAuthKind.none => ('免鉴权', AppStatusKind.success),
+        McpAuthKind.header => ('需令牌', AppStatusKind.warning),
+        McpAuthKind.apiKeyInUrl => ('需 Key', AppStatusKind.warning),
+        McpAuthKind.oauth => ('需 OAuth', AppStatusKind.error),
+      };
+      return AppStatusBadge(label: label, kind: kind);
+    }
     final (label, color) = switch (auth) {
       McpAuthKind.none => ('免鉴权', Colors.green),
       McpAuthKind.header => ('需令牌', Colors.orange),
@@ -92,6 +134,14 @@ class McpMarketPage extends StatelessWidget {
   }
 
   Widget _accessBadge(BuildContext context, McpAccessKind access) {
+    if (AppVisualTheme.of(context).isAnime) {
+      final (label, kind) = switch (access) {
+        McpAccessKind.freeDirect => ('直连', AppStatusKind.success),
+        McpAccessKind.keyRequired => ('配置', AppStatusKind.info),
+        McpAccessKind.externalEntry => ('入口', AppStatusKind.error),
+      };
+      return AppStatusBadge(label: label, kind: kind);
+    }
     final (label, color) = switch (access) {
       McpAccessKind.freeDirect => ('直连', Colors.green),
       McpAccessKind.keyRequired => ('配置', Colors.blue),
@@ -154,14 +204,21 @@ class McpMarketPage extends StatelessWidget {
 
   Widget _footer(BuildContext context) {
     final cs = Theme.of(context).colorScheme;
+    final content = Text(
+      '直连：免费或匿名可用，可直接添加。配置：需要补 API Key 或请求头。'
+      '入口：OAuth / 付费 / 高权限服务，仅展示官方入口，不直接写入直连列表。'
+      '本地 stdio 型移动端无法直连，请在管理后台「MCP 服务」里配置，App 端打开「后端 MCP Host」开关即可使用。',
+      style: TextStyle(fontSize: 12, color: cs.onSurfaceVariant),
+    );
+    if (AppVisualTheme.of(context).isAnime) {
+      return AppVisualSurface(
+        margin: const EdgeInsets.fromLTRB(16, 20, 16, 32),
+        child: content,
+      );
+    }
     return Padding(
       padding: const EdgeInsets.fromLTRB(16, 24, 16, 32),
-      child: Text(
-        '直连：免费或匿名可用，可直接添加。配置：需要补 API Key 或请求头。'
-        '入口：OAuth / 付费 / 高权限服务，仅展示官方入口，不直接写入直连列表。'
-        '本地 stdio 型移动端无法直连，请在管理后台「MCP 服务」里配置，App 端打开「后端 MCP Host」开关即可使用。',
-        style: TextStyle(fontSize: 12, color: cs.onSurfaceVariant),
-      ),
+      child: content,
     );
   }
 }

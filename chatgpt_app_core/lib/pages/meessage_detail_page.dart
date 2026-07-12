@@ -1,42 +1,70 @@
 import 'package:chat_message/util/wechat_date_format.dart';
 import 'package:chatgpt_app_core/model/favorite_model.dart';
+import 'package:chatgpt_app_core/theme/app_visual_theme.dart';
 import 'package:chatgpt_app_core/util/hi_selection_area.dart';
-import 'package:chatgpt_app_core/util/hi_utils.dart';
+import 'package:chatgpt_app_core/widget/app_visual_widgets.dart';
 import 'package:flutter/material.dart';
 
 ///展示精彩内容详情
 class MessageDetailPage extends StatefulWidget {
   final FavoriteModel model;
 
-  const MessageDetailPage({Key? key, required this.model}) : super(key: key);
+  const MessageDetailPage({super.key, required this.model});
 
   @override
   State<MessageDetailPage> createState() => _MessageDetailPageState();
 }
 
 class _MessageDetailPageState extends State<MessageDetailPage> {
-  TapDownDetails? details;
+  Widget get _titleView {
+    final isAnime = AppVisualTheme.of(context).isAnime;
+    if (isAnime) return const Text('详情');
+    return Column(
+      children: [
+        const Text(
+          '详情',
+          style: TextStyle(fontSize: 16),
+        ),
+        Text(
+          '来自 ${widget.model.ownerName} ${WechatDateFormat.formatYMd(widget.model.createdAt!)}',
+          style: const TextStyle(fontSize: 12),
+        ),
+      ],
+    );
+  }
 
-  get _titleView => Column(
-        children: [
-          const Text(
-            '详情',
-            style: TextStyle(fontSize: 16),
-          ),
-          Text(
-            '来自 ${widget.model.ownerName} ${WechatDateFormat.formatYMd(widget.model.createdAt!)}',
-            style: const TextStyle(fontSize: 12),
-          ),
-        ],
-      );
+  Widget get _listView {
+    final isAnime = AppVisualTheme.of(context).isAnime;
+    final scheme = Theme.of(context).colorScheme;
+    final Widget body = isAnime
+        ? Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                '来自 ${widget.model.ownerName} ${WechatDateFormat.formatYMd(widget.model.createdAt!)}',
+                style: Theme.of(context).textTheme.labelMedium?.copyWith(
+                      color: scheme.onSurfaceVariant,
+                    ),
+              ),
+              const SizedBox(height: 10),
+              const Divider(),
+              const SizedBox(height: 12),
+              _content,
+            ],
+          )
+        : _content;
+    return ListView(
+      padding: const EdgeInsets.only(top: 20, bottom: 20, left: 15, right: 15),
+      children: [
+        AppVisualSurface(
+          animeKey: const ValueKey('favorite_detail_surface'),
+          child: body,
+        ),
+      ],
+    );
+  }
 
-  get _listView => ListView(
-        padding:
-            const EdgeInsets.only(top: 20, bottom: 20, left: 15, right: 15),
-        children: [_content],
-      );
-
-  get _content => HiSelectionArea.wrap(Text(
+  Widget get _content => HiSelectionArea.wrap(Text(
         widget.model.content,
         style: const TextStyle(fontSize: 18),
       ));
@@ -49,23 +77,5 @@ class _MessageDetailPageState extends State<MessageDetailPage> {
       ),
       body: _listView,
     );
-  }
-
-  ///让弹框的位置跟随手势
-  void _onLongPress() {
-    //根据点击的位置计算出弹框的位置
-    var offsetY = details?.localPosition.dy ?? 0;
-    var offsetX = details?.localPosition.dx ?? 0;
-    final RelativeRect position =
-        RelativeRect.fromLTRB(offsetX, offsetY + 120, offsetX, 0);
-    showMenu(context: context, position: position, items: [
-      PopupMenuItem(
-          onTap: () => HiUtils.copyMessage(widget.model.content, context),
-          child: const Text('复制'))
-    ]);
-  }
-
-  void _onTapDown(TapDownDetails details) {
-    this.details = details;
   }
 }
