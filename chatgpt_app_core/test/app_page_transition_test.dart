@@ -1,10 +1,13 @@
+import 'dart:typed_data';
+import 'dart:ui' as ui;
+
 import 'package:chatgpt_app_core/theme/app_visual_theme.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 void main() {
-  test('anime 使用轻量平台转场，classic 保持 Flutter 默认配置', () {
+  test('anime 使用平台化翻页，classic 保持 Flutter 默认配置', () {
     final anime = AppThemeFactory.anime().pageTransitionsTheme;
     for (final platform in const [
       TargetPlatform.android,
@@ -14,12 +17,17 @@ void main() {
     ]) {
       final builder = anime.builders[platform];
       expect(builder, isA<AppAnimePageTransitionsBuilder>());
-      expect(builder!.transitionDuration,
-          AppAnimePageTransitionsBuilder.enterDuration);
-      expect(builder.reverseTransitionDuration,
-          AppAnimePageTransitionsBuilder.exitDuration);
+      expect(
+        builder!.transitionDuration,
+        AppAnimePageTransitionsBuilder.enterDuration,
+      );
+      expect(
+        builder.reverseTransitionDuration,
+        AppAnimePageTransitionsBuilder.exitDuration,
+      );
     }
 
+    const cupertinoDefault = CupertinoPageTransitionsBuilder();
     for (final platform in const [
       TargetPlatform.iOS,
       TargetPlatform.macOS,
@@ -27,23 +35,24 @@ void main() {
       final builder = anime.builders[platform];
       expect(builder, isA<AppAnimeCupertinoPageTransitionsBuilder>());
       expect(builder, isA<CupertinoPageTransitionsBuilder>());
-      expect(builder!.transitionDuration,
-          AppAnimeCupertinoPageTransitionsBuilder.enterDuration);
-      expect(builder.reverseTransitionDuration,
-          AppAnimeCupertinoPageTransitionsBuilder.exitDuration);
+      expect(
+        builder!.transitionDuration,
+        cupertinoDefault.transitionDuration,
+      );
+      expect(
+        builder.reverseTransitionDuration,
+        cupertinoDefault.reverseTransitionDuration,
+      );
       expect(builder.delegatedTransition, isNotNull);
     }
 
     final classic = AppThemeFactory.classic(Colors.pink);
     final flutterDefault = ThemeData(primarySwatch: Colors.pink);
-    expect(
-      classic.pageTransitionsTheme,
-      flutterDefault.pageTransitionsTheme,
-    );
+    expect(classic.pageTransitionsTheme, flutterDefault.pageTransitionsTheme);
   });
 
-  testWidgets('anime 可见页面只做轻微位移，不再使用交叉淡化', (tester) async {
-    await _pumpTransition(tester, progress: 0.5);
+  testWidgets('Android 只移动不透明顶页，不使用叠加型动画', (tester) async {
+    await _pumpTransition(tester, progress: 0.5, secondaryProgress: 0.75);
 
     final probe = find.byKey(const ValueKey('transition_probe'));
     final transition = find.descendant(
@@ -51,95 +60,179 @@ void main() {
       matching: find.byKey(const ValueKey('anime_page_transition')),
     );
     expect(transition, findsOneWidget);
-    final slide = tester.widget<SlideTransition>(transition);
-    final returnSlide = tester.widget<SlideTransition>(
+    expect(
       find.descendant(
         of: transition,
-        matching: find.byKey(
-          const ValueKey('anime_page_return_transition'),
-        ),
+        matching: find.byKey(const ValueKey('anime_route_surface')),
       ),
+      findsOneWidget,
     );
-    final paintGate = tester.widget<Opacity>(_paintGateIn(probe));
-    final curvedProgress = Curves.easeOutCubic.transform(0.5);
-    expect(paintGate.opacity, 1);
+
+    final slide = tester.widget<SlideTransition>(transition);
     expect(
       slide.position.value.dx,
-      closeTo(
-        AppAnimePageTransitionsBuilder.beginOffsetX * (1 - curvedProgress),
-        0.000000001,
-      ),
+      closeTo(1 - Curves.easeOutCubic.transform(0.5), 0.000000001),
     );
     expect(slide.position.value.dy, 0);
-    expect(returnSlide.position.value, Offset.zero);
-    expect(
-      find.descendant(
-        of: transition,
-        matching: find.byType(RepaintBoundary),
-      ),
-      findsNothing,
-    );
-    expect(
-      find.descendant(of: transition, matching: find.byType(ScaleTransition)),
-      findsNothing,
-    );
-    expect(
-      find.descendant(of: transition, matching: find.byType(FadeTransition)),
-      findsNothing,
-    );
+
+    for (final forbiddenType in <Type>[
+      FadeTransition,
+      ScaleTransition,
+      Opacity,
+      BackdropFilter,
+    ]) {
+      expect(
+        find.descendant(of: probe, matching: find.byType(forbiddenType)),
+        findsNothing,
+      );
+    }
+    for (final removedKey in const [
+      'anime_page_return_transition',
+      'anime_page_paint_gate',
+      'anime_page_ticker_gate',
+    ]) {
+      expect(
+        find.descendant(
+          of: probe,
+          matching: find.byKey(ValueKey(removedKey)),
+        ),
+        findsNothing,
+      );
+    }
     expect(tester.takeException(), isNull);
   });
 
-  testWidgets('push 开始的第一个状态帧就停止绘制旧页面', (tester) async {
-    final secondaryController = AnimationController(
-      vsync: tester,
-      duration: AppAnimePageTransitionsBuilder.enterDuration,
+  testWidgets('中间帧重叠区像素与独立页面一致，不会和底页混色', (tester) async {
+    await _pumpSurfaceReference(tester);
+    final reference = await _captureFrame(tester);
+
+    await _pumpSolidGreenReference(tester);
+    final bottomReference = await _captureFrame(tester);
+
+    await _pumpTransitionFrame(tester);
+    final transition = await _captureFrame(tester);
+
+    // 80px 宽页面在 50% 进度时偏移 10px：左侧仍应露出纯绿色底页。
+    _expectColorNear(
+      transition.averageAround(4, 40),
+      bottomReference.averageAround(4, 40),
+      tolerance: 2,
     );
-    try {
-      secondaryController.forward(from: 0);
-      await _pumpTransition(
-        tester,
-        progress: 1,
-        secondaryAnimation: secondaryController,
-      );
 
-      final probe = find.byKey(const ValueKey('transition_probe'));
-      final paintGate = _paintGateIn(probe);
-      final opacity = tester.widget<Opacity>(paintGate);
-      final renderOpacity = tester.renderObject<RenderOpacity>(paintGate);
-      final tickerGate = tester.widget<TickerMode>(
-        find.descendant(
-          of: probe,
-          matching: find.byKey(const ValueKey('anime_page_ticker_gate')),
-        ),
-      );
-
-      expect(secondaryController.value, 0);
-      expect(secondaryController.status, AnimationStatus.forward);
-      expect(opacity.opacity, 0);
-      expect(renderOpacity.paintsChild(renderOpacity.child!), isFalse);
-      expect(tickerGate.enabled, isFalse);
-      expect(tester.takeException(), isNull);
-    } finally {
-      secondaryController.dispose();
-    }
+    // 屏幕 x=60 对应滑入页面的本地 x=50。它必须与独立渲染的同一像素
+    // 一致，证明半透明页面内容只与自己的不透明 surface 合成。
+    final overlapPixel = transition.averageAround(60, 40);
+    final referencePixel = reference.averageAround(50, 40);
+    _expectColorNear(overlapPixel, referencePixel, tolerance: 8);
+    expect(overlapPixel[3], closeTo(255, 1));
+    expect(referencePixel[3], closeTo(255, 1));
+    expect(tester.takeException(), isNull);
   });
 
-  testWidgets('实际 Navigator push 和 pop 的每一采样帧都只绘制一个页面', (tester) async {
+  testWidgets('实际 Navigator push/pop 时底页静止且顶页全屏滑动', (tester) async {
+    await _pumpNavigator(tester);
+
+    expect(find.byKey(const ValueKey('anime_route_surface')), findsOneWidget);
+    await tester.tap(find.text('打开'));
+    await tester.pump();
+    await tester.pump(
+      AppAnimePageTransitionsBuilder.enterDuration ~/ 2,
+    );
+
+    _expectRoutePairDuringTransition(tester);
+    final pushOffsets = _visibleSlideOffsets(tester);
+    expect(pushOffsets, hasLength(2));
+    expect(pushOffsets.any((offset) => offset.dx == 0), isTrue);
+    expect(pushOffsets.any((offset) => offset.dx > 0 && offset.dx < 1), isTrue);
+
+    await tester.pumpAndSettle();
+    expect(find.text('目标页'), findsOneWidget);
+    expect(find.byKey(const ValueKey('anime_route_surface')), findsOneWidget);
+
+    tester.state<NavigatorState>(find.byType(Navigator)).pop();
+    await tester.pump();
+    await tester.pump(AppAnimePageTransitionsBuilder.exitDuration ~/ 2);
+
+    _expectRoutePairDuringTransition(tester);
+    final popOffsets = _visibleSlideOffsets(tester);
+    expect(popOffsets, hasLength(2));
+    expect(popOffsets.any((offset) => offset.dx == 0), isTrue);
+    expect(popOffsets.any((offset) => offset.dx > 0 && offset.dx < 1), isTrue);
+
+    await tester.pumpAndSettle();
+    expect(find.text('打开'), findsOneWidget);
+    expect(find.byKey(const ValueKey('anime_route_surface')), findsOneWidget);
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('iOS 路由仍走 Cupertino 转场并携带不透明 surface', (tester) async {
+    await _pumpNavigator(tester, platform: TargetPlatform.iOS);
+
+    await tester.tap(find.text('打开'));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 250));
+
+    expect(find.byKey(const ValueKey('anime_route_surface')), findsNWidgets(2));
+    expect(find.text('打开'), findsOneWidget);
+    expect(find.text('目标页'), findsOneWidget);
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('系统减少动态效果时直接切页且不创建 Slide', (tester) async {
+    tester.platformDispatcher.accessibilityFeaturesTestValue =
+        const FakeAccessibilityFeatures(disableAnimations: true);
+    addTearDown(
+      tester.platformDispatcher.clearAccessibilityFeaturesTestValue,
+    );
+
+    await _pumpNavigator(tester);
+    expect(
+      find.byKey(
+        const ValueKey('anime_page_transition'),
+        skipOffstage: false,
+      ),
+      findsNothing,
+    );
+
+    await tester.tap(find.text('打开'));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 20));
+    expect(find.text('目标页'), findsOneWidget);
+    expect(
+      find.byKey(
+        const ValueKey('anime_page_transition'),
+        skipOffstage: false,
+      ),
+      findsNothing,
+    );
+    await tester.pumpAndSettle();
+
+    tester.state<NavigatorState>(find.byType(Navigator)).pop();
+    await tester.pump();
+    expect(
+      find.byKey(
+        const ValueKey('anime_page_transition'),
+        skipOffstage: false,
+      ),
+      findsNothing,
+    );
+    await tester.pumpAndSettle();
+    expect(find.text('打开'), findsOneWidget);
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('Dialog 覆盖当前 route surface，不会创建第二张页面背景', (tester) async {
     await tester.pumpWidget(
       MaterialApp(
-        theme: AppThemeFactory.anime().copyWith(
-          platform: TargetPlatform.android,
-        ),
+        theme: AppThemeFactory.anime(),
         home: Scaffold(
           body: Builder(
             builder: (context) => TextButton(
-              onPressed: () => Navigator.of(context).push<void>(
-                MaterialPageRoute<void>(
-                  builder: (_) => const Scaffold(body: Text('目标页')),
-                ),
+              onPressed: () => showDialog<void>(
+                context: context,
+                builder: (_) => const AlertDialog(title: Text('弹窗')),
               ),
-              child: const Text('打开'),
+              child: const Text('显示弹窗'),
             ),
           ),
         ),
@@ -147,277 +240,85 @@ void main() {
     );
     await tester.pumpAndSettle();
 
-    await tester.tap(find.text('打开'));
-    await tester.pump();
-    _expectSinglePaintedRoute(tester, expectedRouteCount: 2);
-    await tester.pump(const Duration(milliseconds: 16));
-    _expectSinglePaintedRoute(tester, expectedRouteCount: 2);
-    await tester.pump(const Duration(milliseconds: 40));
-    _expectSinglePaintedRoute(tester, expectedRouteCount: 2);
+    await tester.tap(find.text('显示弹窗'));
     await tester.pumpAndSettle();
 
-    final navigator = tester.state<NavigatorState>(find.byType(Navigator));
-    navigator.pop();
-    await tester.pump();
-    _expectSinglePaintedRoute(tester, expectedRouteCount: 2);
-    await tester.pump(const Duration(milliseconds: 16));
-    _expectSinglePaintedRoute(tester, expectedRouteCount: 2);
-    await tester.pump(const Duration(milliseconds: 30));
-    _expectSinglePaintedRoute(tester, expectedRouteCount: 2);
-    await tester.pumpAndSettle();
-
-    _expectSinglePaintedRoute(tester, expectedRouteCount: 1);
-    expect(find.text('打开'), findsOneWidget);
-    expect(tester.takeException(), isNull);
-  });
-
-  testWidgets('pop 被取消时绘制所有权原子切回顶页，不产生叠绘帧', (tester) async {
-    final transitionController = AnimationController(
-      vsync: tester,
-      duration: AppAnimePageTransitionsBuilder.exitDuration,
-    );
-    try {
-      transitionController.reverse(from: 0.5);
-      await _pumpRoutePair(tester, transitionController);
-
-      final bottomRoute = find.byKey(const ValueKey('bottom_route'));
-      final topRoute = find.byKey(const ValueKey('top_route'));
-      final routePair = find.byKey(const ValueKey('route_pair'));
-      expect(tester.widget<Opacity>(_paintGateIn(bottomRoute)).opacity, 1);
-      expect(tester.widget<Opacity>(_paintGateIn(topRoute)).opacity, 0);
-      _expectSinglePaintedRoute(
-        tester,
-        expectedRouteCount: 2,
-        ancestor: routePair,
-      );
-
-      transitionController.forward();
-      await tester.pump();
-
-      expect(tester.widget<Opacity>(_paintGateIn(bottomRoute)).opacity, 0);
-      expect(tester.widget<Opacity>(_paintGateIn(topRoute)).opacity, 1);
-      _expectSinglePaintedRoute(
-        tester,
-        expectedRouteCount: 2,
-        ancestor: routePair,
-      );
-      expect(tester.takeException(), isNull);
-    } finally {
-      transitionController.dispose();
-    }
-  });
-
-  testWidgets('pop 时底页从反方向轻微归位且立即成为唯一绘制页', (tester) async {
-    final secondaryController = AnimationController(
-      vsync: tester,
-      duration: AppAnimePageTransitionsBuilder.exitDuration,
-    );
-    try {
-      secondaryController.reverse(from: 0.5);
-
-      await _pumpTransition(
-        tester,
-        progress: 1,
-        secondaryAnimation: secondaryController,
-      );
-
-      final probe = find.byKey(const ValueKey('transition_probe'));
-      final paintGate = _paintGateIn(probe);
-      final returnSlide = tester.widget<SlideTransition>(
-        find.descendant(
-          of: probe,
-          matching: find.byKey(
-            const ValueKey('anime_page_return_transition'),
-          ),
-        ),
-      );
-      final opacity = tester.widget<Opacity>(paintGate);
-      final renderOpacity = tester.renderObject<RenderOpacity>(paintGate);
-      final reverseProgress = Curves.easeInCubic.transform(0.5);
-
-      expect(secondaryController.status, AnimationStatus.reverse);
-      expect(opacity.opacity, 1);
-      expect(renderOpacity.paintsChild(renderOpacity.child!), isTrue);
-      expect(
-        returnSlide.position.value.dx,
-        closeTo(
-          AppAnimePageTransitionsBuilder.returnOffsetX * reverseProgress,
-          0.000000001,
-        ),
-      );
-      expect(returnSlide.position.value.dy, 0);
-      expect(tester.takeException(), isNull);
-    } finally {
-      secondaryController.dispose();
-    }
-  });
-
-  testWidgets('系统减少动态效果时直接显示目标页', (tester) async {
-    await _pumpTransition(
-      tester,
-      progress: 1,
-      disableAnimations: true,
-    );
-
-    final probe = find.byKey(const ValueKey('transition_probe'));
-    final paintGate = tester.widget<Opacity>(_paintGateIn(probe));
-    expect(
-      find.descendant(
-        of: probe,
-        matching: find.byKey(const ValueKey('anime_page_transition')),
-      ),
-      findsNothing,
-    );
-    expect(
-      find.descendant(
-        of: probe,
-        matching: find.byKey(const ValueKey('transition_destination')),
-      ),
-      findsOneWidget,
-    );
-    expect(
-      find.descendant(
-        of: probe,
-        matching: find.byKey(
-          const ValueKey('anime_page_return_transition'),
-        ),
-      ),
-      findsNothing,
-    );
-    expect(paintGate.opacity, 1);
+    expect(find.text('弹窗'), findsOneWidget);
+    expect(find.byKey(const ValueKey('anime_route_surface')), findsOneWidget);
     expect(tester.takeException(), isNull);
   });
 }
 
-Finder _paintGateIn(Finder ancestor) {
-  return find.descendant(
-    of: ancestor,
-    matching: find.byKey(const ValueKey('anime_page_paint_gate')),
+void _expectRoutePairDuringTransition(WidgetTester tester) {
+  expect(find.byKey(const ValueKey('anime_route_surface')), findsNWidgets(2));
+  expect(
+    find.byKey(
+      const ValueKey('anime_page_paint_gate'),
+      skipOffstage: false,
+    ),
+    findsNothing,
   );
 }
 
-void _expectSinglePaintedRoute(
-  WidgetTester tester, {
-  required int expectedRouteCount,
-  Finder? ancestor,
-}) {
-  final gateKey = find.byKey(
-    const ValueKey('anime_page_paint_gate'),
-    skipOffstage: false,
-  );
-  final gates = ancestor == null
-      ? gateKey
-      : find.descendant(
-          of: ancestor,
-          matching: gateKey,
-          skipOffstage: false,
-        );
-  final elements = gates.evaluate().toList();
-  expect(elements, hasLength(expectedRouteCount));
-
-  final opacities = elements
-      .map((element) => element.widget as Opacity)
-      .map((widget) => widget.opacity)
+List<Offset> _visibleSlideOffsets(WidgetTester tester) {
+  return find
+      .byKey(const ValueKey('anime_page_transition'))
+      .evaluate()
+      .map((element) => (element.widget as SlideTransition).position.value)
       .toList();
-  final paintedRoutes = elements.where((element) {
-    final renderOpacity = element.renderObject! as RenderOpacity;
-    return renderOpacity.child != null &&
-        renderOpacity.paintsChild(renderOpacity.child!);
-  }).length;
-
-  expect(opacities.every((opacity) => opacity == 0 || opacity == 1), isTrue);
-  expect(opacities.where((opacity) => opacity == 1), hasLength(1));
-  expect(paintedRoutes, 1);
 }
 
-Future<void> _pumpRoutePair(
-  WidgetTester tester,
-  Animation<double> transitionAnimation,
-) {
-  const transitionBuilder = AppAnimePageTransitionsBuilder();
-  const completed = _FixedStatusAnimation(
-    value: 1,
-    status: AnimationStatus.completed,
-  );
-  const dismissed = _FixedStatusAnimation(
-    value: 0,
-    status: AnimationStatus.dismissed,
-  );
-  return tester.pumpWidget(
+Future<void> _pumpNavigator(
+  WidgetTester tester, {
+  TargetPlatform platform = TargetPlatform.android,
+}) async {
+  await tester.pumpWidget(
     MaterialApp(
-      theme: AppThemeFactory.anime(),
-      home: Builder(
-        builder: (context) => KeyedSubtree(
-          key: const ValueKey('route_pair'),
-          child: Stack(
-            fit: StackFit.expand,
-            children: [
-              KeyedSubtree(
-                key: const ValueKey('bottom_route'),
-                child: transitionBuilder.buildTransitions<void>(
-                  MaterialPageRoute<void>(
-                    builder: (_) => const SizedBox.shrink(),
-                  ),
-                  context,
-                  completed,
-                  transitionAnimation,
-                  const ColoredBox(color: Colors.purple),
-                ),
+      theme: AppThemeFactory.anime().copyWith(platform: platform),
+      home: Scaffold(
+        body: Builder(
+          builder: (context) => TextButton(
+            onPressed: () => Navigator.of(context).push<void>(
+              MaterialPageRoute<void>(
+                builder: (_) => const Scaffold(body: Text('目标页')),
               ),
-              KeyedSubtree(
-                key: const ValueKey('top_route'),
-                child: transitionBuilder.buildTransitions<void>(
-                  MaterialPageRoute<void>(
-                    builder: (_) => const SizedBox.shrink(),
-                  ),
-                  context,
-                  transitionAnimation,
-                  dismissed,
-                  const ColoredBox(color: Colors.pink),
-                ),
-              ),
-            ],
+            ),
+            child: const Text('打开'),
           ),
         ),
       ),
     ),
   );
+  await tester.pumpAndSettle();
 }
 
 Future<void> _pumpTransition(
   WidgetTester tester, {
   required double progress,
   double secondaryProgress = 0,
-  Animation<double>? secondaryAnimation,
   bool disableAnimations = false,
 }) {
   const transitionBuilder = AppAnimePageTransitionsBuilder();
   return tester.pumpWidget(
-    MaterialApp(
-      theme: AppThemeFactory.anime(),
-      home: MediaQuery(
-        data: MediaQueryData(disableAnimations: disableAnimations),
-        child: Builder(
-          builder: (context) => KeyedSubtree(
-            key: const ValueKey('transition_probe'),
-            child: transitionBuilder.buildTransitions<void>(
-              MaterialPageRoute<void>(
-                builder: (_) => const SizedBox.shrink(),
-              ),
-              context,
-              _FixedStatusAnimation(
-                value: progress,
-                status: _statusForProgress(progress),
-              ),
-              secondaryAnimation ??
-                  _FixedStatusAnimation(
-                    value: secondaryProgress,
-                    status: _statusForProgress(secondaryProgress),
-                  ),
-              const SizedBox(
-                key: ValueKey('transition_destination'),
-              ),
-            ),
+    _bareTestHost(
+      disableAnimations: disableAnimations,
+      childBuilder: (context) => KeyedSubtree(
+        key: const ValueKey('transition_probe'),
+        child: transitionBuilder.buildTransitions<void>(
+          MaterialPageRoute<void>(
+            builder: (_) => const SizedBox.shrink(),
+          ),
+          context,
+          _FixedStatusAnimation(
+            value: progress,
+            status: _statusForProgress(progress),
+          ),
+          _FixedStatusAnimation(
+            value: secondaryProgress,
+            status: _statusForProgress(secondaryProgress),
+          ),
+          const SizedBox.expand(
+            key: ValueKey('transition_destination'),
           ),
         ),
       ),
@@ -425,10 +326,156 @@ Future<void> _pumpTransition(
   );
 }
 
+Future<void> _pumpSurfaceReference(WidgetTester tester) {
+  return tester.pumpWidget(
+    _bareTestHost(
+      childBuilder: (_) => const RepaintBoundary(
+        key: ValueKey('capture_boundary'),
+        child: AppAnimeRouteSurface(
+          child: ColoredBox(color: Color(0x66FF00FF)),
+        ),
+      ),
+    ),
+  );
+}
+
+Future<void> _pumpSolidGreenReference(WidgetTester tester) {
+  return tester.pumpWidget(
+    _bareTestHost(
+      childBuilder: (_) => const RepaintBoundary(
+        key: ValueKey('capture_boundary'),
+        child: ColoredBox(color: Color(0xFF00FF00)),
+      ),
+    ),
+  );
+}
+
+Future<void> _pumpTransitionFrame(WidgetTester tester) {
+  const transitionBuilder = AppAnimePageTransitionsBuilder();
+  return tester.pumpWidget(
+    _bareTestHost(
+      childBuilder: (context) => RepaintBoundary(
+        key: const ValueKey('capture_boundary'),
+        child: Stack(
+          fit: StackFit.expand,
+          children: [
+            const ColoredBox(color: Color(0xFF00FF00)),
+            transitionBuilder.buildTransitions<void>(
+              MaterialPageRoute<void>(
+                builder: (_) => const SizedBox.shrink(),
+              ),
+              context,
+              const _FixedStatusAnimation(
+                value: 0.5,
+                status: AnimationStatus.forward,
+              ),
+              const _FixedStatusAnimation(
+                value: 0,
+                status: AnimationStatus.dismissed,
+              ),
+              const ColoredBox(color: Color(0x66FF00FF)),
+            ),
+          ],
+        ),
+      ),
+    ),
+  );
+}
+
+Widget _bareTestHost({
+  required Widget Function(BuildContext context) childBuilder,
+  bool disableAnimations = false,
+}) {
+  return Directionality(
+    textDirection: TextDirection.ltr,
+    child: MediaQuery(
+      data: MediaQueryData(disableAnimations: disableAnimations),
+      child: Theme(
+        data: AppThemeFactory.anime(),
+        child: Center(
+          child: SizedBox(
+            width: 80,
+            height: 80,
+            child: Builder(builder: childBuilder),
+          ),
+        ),
+      ),
+    ),
+  );
+}
+
+Future<_RgbaFrame> _captureFrame(WidgetTester tester) async {
+  final boundary = tester.renderObject<RenderRepaintBoundary>(
+    find.byKey(const ValueKey('capture_boundary')),
+  );
+  final frame = await tester.runAsync<_RgbaFrame>(() async {
+    final image = await boundary.toImage(pixelRatio: 1);
+    try {
+      final data = await image.toByteData(format: ui.ImageByteFormat.rawRgba);
+      if (data == null) {
+        throw StateError('无法读取 route transition 测试帧');
+      }
+      final bytes = data.buffer.asUint8List(
+        data.offsetInBytes,
+        data.lengthInBytes,
+      );
+      return _RgbaFrame(
+        image.width,
+        image.height,
+        Uint8List.fromList(bytes),
+      );
+    } finally {
+      image.dispose();
+    }
+  });
+  if (frame == null) throw StateError('无法捕获 route transition 测试帧');
+  return frame;
+}
+
+void _expectColorNear(
+  List<double> actual,
+  List<double> expected, {
+  required double tolerance,
+}) {
+  expect(actual, hasLength(4));
+  expect(expected, hasLength(4));
+  for (var channel = 0; channel < 4; channel++) {
+    expect(
+      actual[channel],
+      closeTo(expected[channel], tolerance),
+      reason: 'RGBA 通道 $channel 不一致：actual=$actual, expected=$expected',
+    );
+  }
+}
+
 AnimationStatus _statusForProgress(double progress) {
   if (progress <= 0) return AnimationStatus.dismissed;
   if (progress >= 1) return AnimationStatus.completed;
   return AnimationStatus.forward;
+}
+
+class _RgbaFrame {
+  final int width;
+  final int height;
+  final Uint8List bytes;
+
+  const _RgbaFrame(this.width, this.height, this.bytes);
+
+  List<double> averageAround(int centerX, int centerY) {
+    final totals = List<int>.filled(4, 0);
+    var count = 0;
+    for (var y = centerY - 1; y <= centerY + 1; y++) {
+      for (var x = centerX - 1; x <= centerX + 1; x++) {
+        if (x < 0 || x >= width || y < 0 || y >= height) continue;
+        final offset = (y * width + x) * 4;
+        for (var channel = 0; channel < 4; channel++) {
+          totals[channel] += bytes[offset + channel];
+        }
+        count++;
+      }
+    }
+    return totals.map((total) => total / count).toList();
+  }
 }
 
 class _FixedStatusAnimation extends Animation<double> {

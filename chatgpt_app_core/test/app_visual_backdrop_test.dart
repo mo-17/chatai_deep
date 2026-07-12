@@ -13,7 +13,7 @@ void main() {
     await HiCache.getInstance().prefs?.clear();
   });
 
-  testWidgets('全局背景只在二次元风格启用并可恢复经典', (tester) async {
+  testWidgets('路由背景只在二次元风格启用并可恢复经典', (tester) async {
     final provider = ThemeProvider();
     await tester.pumpWidget(
       ChangeNotifierProvider.value(
@@ -22,26 +22,23 @@ void main() {
           builder: (context, value, _) => MaterialApp(
             theme: value.getTheme(),
             themeAnimationDuration: Duration.zero,
-            builder: (context, child) => AppVisualBackdrop(
-              child: child ?? const SizedBox.shrink(),
-            ),
             home: const Scaffold(body: Text('页面内容')),
           ),
         ),
       ),
     );
 
-    expect(find.byKey(const ValueKey('anime_app_backdrop')), findsNothing);
+    expect(find.byKey(const ValueKey('anime_route_surface')), findsNothing);
 
     provider.setVisualStyle(AppVisualStyle.anime);
     await tester.pump();
-    expect(find.byKey(const ValueKey('anime_app_backdrop')), findsOneWidget);
+    expect(find.byKey(const ValueKey('anime_route_surface')), findsOneWidget);
     expect(Theme.of(tester.element(find.text('页面内容'))).scaffoldBackgroundColor,
         Colors.transparent);
 
     provider.setVisualStyle(AppVisualStyle.classic);
     await tester.pump();
-    expect(find.byKey(const ValueKey('anime_app_backdrop')), findsNothing);
+    expect(find.byKey(const ValueKey('anime_route_surface')), findsNothing);
     expect(tester.takeException(), isNull);
   });
 }

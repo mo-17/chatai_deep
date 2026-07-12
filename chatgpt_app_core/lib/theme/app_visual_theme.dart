@@ -184,20 +184,16 @@ class AppStatusPalette {
   }
 }
 
-/// 二次元模式的轻量页面转场。
+/// 二次元模式在 Android/桌面使用纯水平翻页。
 ///
-/// Flutter 在 Android/桌面默认使用整页 Zoom + snapshot。对于透明 Scaffold、
-/// 渐变背景和卡片较多的页面，交叉淡化仍会让两个页面在同一帧参与绘制。这里
-/// 根据 primary/secondary animation 的状态做互斥 paint：进入时只绘制新页面，
-/// 返回时只绘制底页。可见页面只做极轻的位移，既保留方向感，也彻底避开双页
-/// 叠绘；全局 [AppVisualBackdrop] 仍由 Navigator 外层持续提供。
+/// 新页面携带自己的全不透明 [AppAnimeRouteSurface] 从屏幕外滑入；底页保持
+/// 静止，且不使用 Fade、Scale、Opacity 或 secondary animation。这样既避开
+/// 默认 Zoom snapshot，也不会让两个透明 Scaffold 在重叠区域发生混色。
 class AppAnimePageTransitionsBuilder extends PageTransitionsBuilder {
   const AppAnimePageTransitionsBuilder();
 
-  static const enterDuration = Duration(milliseconds: 200);
-  static const exitDuration = Duration(milliseconds: 150);
-  static const beginOffsetX = 0.02;
-  static const returnOffsetX = -0.01;
+  static const enterDuration = Duration(milliseconds: 240);
+  static const exitDuration = Duration(milliseconds: 200);
 
   @override
   Duration get transitionDuration => enterDuration;
@@ -213,120 +209,102 @@ class AppAnimePageTransitionsBuilder extends PageTransitionsBuilder {
     Animation<double> secondaryAnimation,
     Widget child,
   ) {
-    // _ModalScope 已在 route transition 与 cached page 外各提供 RepaintBoundary。
-    // 这里不再叠加第三层，避免额外 layer 和缓存内存。
-    Widget page = child;
-    if (!MediaQuery.disableAnimationsOf(context)) {
-      final enterPosition = Tween<Offset>(
-        begin: const Offset(beginOffsetX, 0),
-        end: Offset.zero,
-      ).chain(CurveTween(curve: Curves.easeOutCubic)).animate(animation);
-      final returnPosition = Tween<Offset>(
-        begin: Offset.zero,
-        end: const Offset(returnOffsetX, 0),
-      ).chain(CurveTween(curve: Curves.easeInCubic)).animate(
-            secondaryAnimation,
-          );
-      page = SlideTransition(
-        key: const ValueKey('anime_page_transition'),
-        position: enterPosition,
-        textDirection: Directionality.of(context),
-        child: SlideTransition(
-          key: const ValueKey('anime_page_return_transition'),
-          position: returnPosition,
-          textDirection: Directionality.of(context),
-          child: page,
-        ),
-      );
+    final page = AppAnimeRouteSurface(child: child);
+    if (MediaQuery.disableAnimationsOf(context)) {
+      return page;
     }
-
-    return _AnimeRoutePaintGate(
-      primaryAnimation: animation,
-      secondaryAnimation: secondaryAnimation,
+    return _AnimeRouteSlideTransition(
+      animation: animation,
       child: page,
     );
   }
 }
 
-/// 让透明路由在切换时互斥绘制，同时保留其 Element/State 与布局状态。
-///
-/// [Opacity] 只取 0/1；Flutter 在 0 时完全跳过 child paint，在 1 时走无离屏
-/// buffer 的快速路径。隐藏页同时禁用 ticker、焦点和点击，避免不可见子树继续
-/// 消耗帧预算或接收交互。
-class _AnimeRoutePaintGate extends StatusTransitionWidget {
-  final Animation<double> secondaryAnimation;
+class _AnimeRouteSlideTransition extends StatefulWidget {
+  final Animation<double> animation;
   final Widget child;
 
-  const _AnimeRoutePaintGate({
-    required Animation<double> primaryAnimation,
-    required this.secondaryAnimation,
-    required this.child,
-  }) : super(animation: primaryAnimation);
-
-  @override
-  Widget build(BuildContext context) {
-    final primaryStatus = animation.status;
-    final ownsForeground = primaryStatus == AnimationStatus.forward ||
-        primaryStatus == AnimationStatus.completed;
-    return _AnimeRouteSecondaryPaintGate(
-      animation: secondaryAnimation,
-      ownsForeground: ownsForeground,
-      child: child,
-    );
-  }
-}
-
-class _AnimeRouteSecondaryPaintGate extends StatusTransitionWidget {
-  final bool ownsForeground;
-  final Widget child;
-
-  const _AnimeRouteSecondaryPaintGate({
-    required super.animation,
-    required this.ownsForeground,
+  const _AnimeRouteSlideTransition({
+    required this.animation,
     required this.child,
   });
 
   @override
+  State<_AnimeRouteSlideTransition> createState() =>
+      _AnimeRouteSlideTransitionState();
+}
+
+class _AnimeRouteSlideTransitionState
+    extends State<_AnimeRouteSlideTransition> {
+  late CurvedAnimation _curvedAnimation;
+  late Animation<Offset> _position;
+
+  @override
+  void initState() {
+    super.initState();
+    _createAnimations();
+  }
+
+  @override
+  void didUpdateWidget(covariant _AnimeRouteSlideTransition oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.animation != widget.animation) {
+      _curvedAnimation.dispose();
+      _createAnimations();
+    }
+  }
+
+  void _createAnimations() {
+    _curvedAnimation = CurvedAnimation(
+      parent: widget.animation,
+      curve: Curves.easeOutCubic,
+      reverseCurve: Curves.easeInCubic,
+    );
+    _position = Tween<Offset>(
+      begin: const Offset(1, 0),
+      end: Offset.zero,
+    ).animate(_curvedAnimation);
+  }
+
+  @override
+  void dispose() {
+    _curvedAnimation.dispose();
+    super.dispose();
+  }
+
+  @override
   Widget build(BuildContext context) {
-    final secondaryStatus = animation.status;
-    final isUncovered = secondaryStatus == AnimationStatus.dismissed ||
-        secondaryStatus == AnimationStatus.reverse;
-    final isVisible = ownsForeground && isUncovered;
-    return TickerMode(
-      key: const ValueKey('anime_page_ticker_gate'),
-      enabled: isVisible,
-      child: ExcludeFocus(
-        excluding: !isVisible,
-        child: IgnorePointer(
-          ignoring: !isVisible,
-          child: Opacity(
-            key: const ValueKey('anime_page_paint_gate'),
-            opacity: isVisible ? 1 : 0,
-            child: child,
-          ),
-        ),
-      ),
+    return SlideTransition(
+      key: const ValueKey('anime_page_transition'),
+      position: _position,
+      textDirection: Directionality.of(context),
+      child: widget.child,
     );
   }
 }
 
-/// iOS/macOS 继续使用 Cupertino 的交互式侧滑转场，只把默认 500ms 收紧到
-/// 二次元动效体系的节奏。继承原 builder 可保留边缘返回手势与 delegated
-/// transition。系统“减少动态效果”由 TransitionRoute 的 AnimationController
-/// 自动压缩至约 5% 时长；不在这里绕过 buildTransitions，以免移除私有的
-/// Cupertino 边缘返回手势层。
+/// iOS/macOS 完整继承 Cupertino 的原生时长、边缘返回手势、取消手势和
+/// delegated transition；这里只给路由内容补上全不透明二次元背景。
 class AppAnimeCupertinoPageTransitionsBuilder
     extends CupertinoPageTransitionsBuilder {
   const AppAnimeCupertinoPageTransitionsBuilder();
 
-  static const enterDuration = Duration(milliseconds: 260);
-  static const exitDuration = Duration(milliseconds: 220);
-
   @override
-  Duration get transitionDuration => enterDuration;
-
-  @override
-  Duration get reverseTransitionDuration => exitDuration;
+  Widget buildTransitions<T>(
+    PageRoute<T> route,
+    BuildContext context,
+    Animation<double> animation,
+    Animation<double> secondaryAnimation,
+    Widget child,
+  ) {
+    return super.buildTransitions(
+      route,
+      context,
+      animation,
+      secondaryAnimation,
+      AppAnimeRouteSurface(child: child),
+    );
+  }
 }
 
 abstract final class AppThemeFactory {
@@ -380,7 +358,7 @@ abstract final class AppThemeFactory {
     final base = ThemeData(
       useMaterial3: true,
       colorScheme: scheme,
-      // 所有路由共用 [AppVisualBackdrop]；Scaffold 透明后才能显示统一氛围层。
+      // 每个路由由 [AppAnimeRouteSurface] 提供独立背景。
       scaffoldBackgroundColor: Colors.transparent,
       visualDensity: VisualDensity.standard,
       materialTapTargetSize: MaterialTapTargetSize.padded,
@@ -735,39 +713,44 @@ abstract final class AppThemeFactory {
   }
 }
 
-/// 二次元模式的全局氛围背景，放在 MaterialApp.builder 中覆盖所有路由。
-/// 经典模式直接返回 child，不改变历史渲染结构。
-class AppVisualBackdrop extends StatelessWidget {
+/// 二次元页面自己的全屏、全不透明氛围背景。
+///
+/// 它必须位于 route transition 的 child 内，让滑动中的新页面从背景到内容都
+/// 是一张不透明表面。[_ModalScope] 已为页面提供 RepaintBoundary，这里不再
+/// 叠加额外缓存层。
+class AppAnimeRouteSurface extends StatelessWidget {
   final Widget child;
 
-  const AppVisualBackdrop({super.key, required this.child});
+  const AppAnimeRouteSurface({super.key, required this.child});
 
   @override
   Widget build(BuildContext context) {
     final visualTheme = AppVisualTheme.of(context);
     if (!visualTheme.isAnime) return child;
     final colorScheme = Theme.of(context).colorScheme;
-    return DecoratedBox(
-      key: const ValueKey('anime_app_backdrop'),
-      decoration: const BoxDecoration(
-        gradient: LinearGradient(
-          colors: [
-            Color(0xFFFCF9FF),
-            AppThemeFactory.animeBackground,
-            Color(0xFFFFF7FB),
-          ],
-          begin: Alignment.topLeft,
-          end: Alignment.bottomRight,
+    return SizedBox.expand(
+      child: DecoratedBox(
+        key: const ValueKey('anime_route_surface'),
+        decoration: const BoxDecoration(
+          gradient: LinearGradient(
+            colors: [
+              Color(0xFFFCF9FF),
+              AppThemeFactory.animeBackground,
+              Color(0xFFFFF7FB),
+            ],
+            begin: Alignment.topLeft,
+            end: Alignment.bottomRight,
+          ),
         ),
-      ),
-      child: CustomPaint(
-        isComplex: true,
-        painter: _AnimeBackdropPainter(
-          primary: colorScheme.primary,
-          secondary: colorScheme.secondary,
-          tertiary: colorScheme.tertiary,
+        child: CustomPaint(
+          isComplex: true,
+          painter: _AnimeBackdropPainter(
+            primary: colorScheme.primary,
+            secondary: colorScheme.secondary,
+            tertiary: colorScheme.tertiary,
+          ),
+          child: child,
         ),
-        child: RepaintBoundary(child: child),
       ),
     );
   }
@@ -786,6 +769,10 @@ class _AnimeBackdropPainter extends CustomPainter {
 
   @override
   void paint(Canvas canvas, Size size) {
+    // 装饰圆允许在 route 内从边缘探入，但不能在翻页时越界染到旧页面。
+    canvas
+      ..save()
+      ..clipRect(Offset.zero & size);
     canvas
       ..drawCircle(
         Offset(-24, size.height * 0.16),
@@ -801,7 +788,8 @@ class _AnimeBackdropPainter extends CustomPainter {
         Offset(size.width * 0.35, size.height + 34),
         144,
         Paint()..color = tertiary.withValues(alpha: 0.040),
-      );
+      )
+      ..restore();
   }
 
   @override
