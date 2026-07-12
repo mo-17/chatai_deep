@@ -41,3 +41,35 @@ Primary request: Change only the four near-white exterior corner regions outside
 Constraints: Change only those four near-white corner regions. Keep the mascot, four-point star core, geometric light wings, dark visor, eyes, halo, rounded-square boundary, composition, scale, placement, central 80% safe area, lighting, linework, and every other color unchanged. Do not crop, scale, rotate, move, redraw, or restyle the subject. Keep the full canvas opaque. Add no new elements, text, letters, watermark, badge, glow, texture, or transparency.
 Output intent: A non-destructive precise edit candidate whose only visible difference from Image 1 is that all four formerly near-white outer corners are #120D24 midnight violet.
 ```
+
+## Explorer avatar
+
+```text
+Use case: stylized-concept
+Asset type: square assistant avatar for circular crop
+Input images: Image 1 is the canonical identity reference; preserve its exact Starcore Guide silhouette, four-point star, visor, eye geometry, and twin light wings.
+Primary request: Create the Explorer variant of the same gender-neutral Starcore Guide digital spirit.
+Scene/backdrop: Opaque circular midnight-violet energy field inside a square canvas, clean edge and no environmental scene.
+Subject: The same non-human floating spirit from Image 1, with a slightly focused eye expression and one minimal cyan scanning-ring accessory. Do not change the base body.
+Style/medium: Match Image 1's crisp high-end anime cel shading and graphic shadow shapes.
+Composition/framing: Centered front view; star core, visor, and wings remain inside the central 70% circular-crop safe area.
+Color palette: Preserve Image 1; increase #22D3EE emphasis only for the scanning accessory.
+Constraints: Change only expression and one scanning-ring accessory; preserve identity and proportions; opaque image; no text; no watermark.
+Avoid: human or animal features, gender cues, new limbs, clothing, weapon, extra mascot, cropped star, detailed background, translucent glass.
+```
+
+## Creator avatar
+
+```text
+Use case: stylized-concept
+Asset type: square assistant avatar for circular crop
+Input images: Image 1 is the canonical identity reference; preserve its exact Starcore Guide silhouette, four-point star, visor, eye geometry, and twin light wings.
+Primary request: Create the Creator variant of the same gender-neutral Starcore Guide digital spirit.
+Scene/backdrop: Opaque circular midnight-violet energy field inside a square canvas, clean edge and no environmental scene.
+Subject: The same non-human floating spirit from Image 1, with a confident creative eye expression and one short magenta pulse-ribbon accessory. Do not change the base body.
+Style/medium: Match Image 1's crisp high-end anime cel shading and graphic shadow shapes.
+Composition/framing: Centered front view; star core, visor, and wings remain inside the central 70% circular-crop safe area.
+Color palette: Preserve Image 1; increase #EC4899 emphasis only for the pulse ribbon.
+Constraints: Change only expression and one pulse-ribbon accessory; preserve identity and proportions; opaque image; no text; no watermark.
+Avoid: human or animal features, gender cues, new limbs, clothing, weapon, extra mascot, cropped star, detailed background, translucent glass.
+```
