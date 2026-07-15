@@ -422,6 +422,145 @@ void main() {
     expect(reloaded.activeProvider.apiHost, 'https://second.example');
   });
 
+  test('条件保存排在普通保存之后时不覆盖已落盘的目标设置', () async {
+    final secureStore = _MemorySecureStore();
+    AISettingsDao.configureSecretStore(secureStore);
+    await AISettingsDao.prepareAccount('account-a');
+    final blocked = secureStore.blockNextWrite();
+
+    final userSave =
+        AISettingsDao.saveFor('account-a', _settingsWithSecrets('user-first'));
+    await blocked.started;
+    final guestSave = AISettingsDao.saveForIfAbsent(
+      'account-a',
+      _settingsWithSecrets('guest-after'),
+    );
+    blocked.release();
+
+    await userSave;
+    expect(await guestSave, isFalse);
+    AISettingsDao.resetSecureStateForTest();
+    AISettingsDao.configureSecretStore(secureStore);
+    final reloaded = await AISettingsDao.loadForAsync('account-a');
+    expect(reloaded.activeProvider.apiKey, 'provider-user-first');
+    expect(reloaded.tavilyApiKey, 'tavily-user-first');
+  });
+
+  test('条件保存排在普通保存之前时由后续用户设置最终获胜', () async {
+    final secureStore = _MemorySecureStore();
+    AISettingsDao.configureSecretStore(secureStore);
+    await AISettingsDao.prepareAccount('account-a');
+    final blocked = secureStore.blockNextWrite();
+
+    final guestSave = AISettingsDao.saveForIfAbsent(
+      'account-a',
+      _settingsWithSecrets('guest-first'),
+    );
+    await blocked.started;
+    final userSave =
+        AISettingsDao.saveFor('account-a', _settingsWithSecrets('user-after'));
+    blocked.release();
+
+    expect(await guestSave, isTrue);
+    await userSave;
+    AISettingsDao.resetSecureStateForTest();
+    AISettingsDao.configureSecretStore(secureStore);
+    final reloaded = await AISettingsDao.loadForAsync('account-a');
+    expect(reloaded.activeProvider.apiKey, 'provider-user-after');
+    expect(reloaded.tavilyApiKey, 'tavily-user-after');
+  });
+
+  test('条件保存未显式 prepare 时可直接完成且不会自锁', () async {
+    final secureStore = _MemorySecureStore();
+    AISettingsDao.configureSecretStore(secureStore);
+
+    final imported = await AISettingsDao.saveForIfAbsent(
+      'account-a',
+      _settingsWithSecrets('unprepared'),
+    ).timeout(const Duration(seconds: 5));
+
+    expect(imported, isTrue);
+    AISettingsDao.resetSecureStateForTest();
+    AISettingsDao.configureSecretStore(secureStore);
+    final reloaded = await AISettingsDao.loadForAsync('account-a');
+    expect(reloaded.activeProvider.apiKey, 'provider-unprepared');
+    expect(reloaded.tavilyApiKey, 'tavily-unprepared');
+  });
+
+  test('条件保存写失败后不毒化同账号队列，普通保存可恢复', () async {
+    final secureStore = _MemorySecureStore()..failWrites = true;
+    AISettingsDao.configureSecretStore(secureStore);
+
+    await expectLater(
+      AISettingsDao.saveForIfAbsent(
+        'account-a',
+        _settingsWithSecrets('conditional-failure'),
+      ),
+      throwsA(isA<AISecretsUnavailableException>()),
+    );
+
+    secureStore.failWrites = false;
+    await AISettingsDao.saveFor(
+      'account-a',
+      _settingsWithSecrets('recovered-normal-save'),
+    ).timeout(const Duration(seconds: 5));
+    AISettingsDao.resetSecureStateForTest();
+    AISettingsDao.configureSecretStore(secureStore);
+    final reloaded = await AISettingsDao.loadForAsync('account-a');
+    expect(reloaded.activeProvider.apiKey, 'provider-recovered-normal-save');
+    expect(reloaded.tavilyApiKey, 'tavily-recovered-normal-save');
+  });
+
+  test('条件保存尊重 clear tombstone，不复活用户已清除的配置', () async {
+    final secureStore = _MemorySecureStore();
+    AISettingsDao.configureSecretStore(secureStore);
+    await AISettingsDao.saveFor(
+      'account-a',
+      _settingsWithSecrets('user-cleared'),
+    );
+    await AISettingsDao.clearFor('account-a');
+    expect(AISettingsDao.hasSettings('account-a'), isFalse);
+
+    final imported = await AISettingsDao.saveForIfAbsent(
+      'account-a',
+      _settingsWithSecrets('guest-must-not-return'),
+    );
+
+    expect(imported, isFalse);
+    AISettingsDao.resetSecureStateForTest();
+    AISettingsDao.configureSecretStore(secureStore);
+    final reloaded = await AISettingsDao.loadForAsync('account-a');
+    expect(reloaded.activeProvider.apiKey, isEmpty);
+    expect(reloaded.tavilyApiKey, isEmpty);
+  });
+
+  test('条件保存直接认领正式账号旧全局配置并拒绝游客导入', () async {
+    await LoginSdkConfig.instance.storage.writeProfile(
+      token: 'account-token',
+      userName: 'account-a',
+      extras: const {'accountHash': 'account-a'},
+    );
+    final legacyRaw = jsonEncode(
+      _settingsWithSecrets('legacy-global-target').toJson(),
+    );
+    await HiCache.getInstance().setString('ai_settings_v1', legacyRaw);
+    final secureStore = _MemorySecureStore();
+    AISettingsDao.configureSecretStore(secureStore);
+
+    final imported = await AISettingsDao.saveForIfAbsent(
+      'account-a',
+      _settingsWithSecrets('guest-must-not-overwrite-legacy'),
+    );
+
+    expect(imported, isFalse);
+    expect(HiCache.getInstance().get('ai_settings_v1'), isNull);
+    AISettingsDao.resetSecureStateForTest();
+    AISettingsDao.configureSecretStore(secureStore);
+    final reloaded = await AISettingsDao.loadForAsync('account-a');
+    expect(reloaded.activeProvider.apiKey, 'provider-legacy-global-target');
+    expect(reloaded.tavilyApiKey, 'tavily-legacy-global-target');
+  });
+
   test('双槽提交半写新槽时保留上一版完整 secure 快照', () async {
     final secureStore = _MemorySecureStore();
     AISettingsDao.configureSecretStore(secureStore);

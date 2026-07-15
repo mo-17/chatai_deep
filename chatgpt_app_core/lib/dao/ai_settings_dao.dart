@@ -689,6 +689,46 @@ class AISettingsDao {
     return operation;
   }
 
+  /// 仅当账号在同一持久化队列内确认没有任何设置状态时写入 [settings]。
+  ///
+  /// prepare、check、write 共用 [_saveTails] 的同账号串行边界，避免游客迁移
+  /// 在判断为空后覆盖用户刚保存的设置。clear tombstone 代表用户明确清除，
+  /// 同样属于权威状态，不能借“缺少有效设置”把游客配置复活。
+  static Future<bool> saveForIfAbsent(String hash, AISettings settings) {
+    final snapshot = settings.clone();
+    final previous = _saveTails[hash];
+    final ready = previous?.then<void>(
+          (_) {},
+          onError: (Object _, StackTrace __) {},
+        ) ??
+        Future<void>.value();
+    late final Future<bool> operation;
+    operation =
+        ready.then((_) => _saveForIfAbsentNow(hash, snapshot)).whenComplete(() {
+      if (identical(_saveTails[hash], operation)) _saveTails.remove(hash);
+    });
+    _saveTails[hash] = operation;
+    return operation;
+  }
+
+  static Future<bool> _saveForIfAbsentNow(
+    String hash,
+    AISettings settings,
+  ) async {
+    // 已在账号队列中，直接准备，避免调用 prepareAccount 再次入队自锁。
+    // 即使未配置 secure store 也要先认领旧版全局设置，再判断是否为空。
+    if (!_preparedAccounts.contains(hash)) {
+      await _prepareAccount(hash);
+    }
+    // 普通区的任意账号记录（包括 tombstone/损坏记录）都不是“从未设置”；
+    // secure 已提交但普通区待修复时，内存权威快照也必须阻止条件导入。
+    if (_rawFor(hash) != null || _snapshotsByAccount.containsKey(hash)) {
+      return false;
+    }
+    await _saveForNow(hash, settings);
+    return true;
+  }
+
   static Future<AISettings> _saveForNow(
       String hash, AISettings settings) async {
     final store = _secretStore;
