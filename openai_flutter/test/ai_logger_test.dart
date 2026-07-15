@@ -109,6 +109,47 @@ void main() {
     );
   });
 
+  const credentialShapes = {
+    'Base64': 'dXNlcjpwYXNzd29yZA==',
+    'JWT': 'eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.'
+        'SflKxwRJSMeKKF2QT4fwpMeJf36POk6yJV_adQssw5c',
+    '32+ hex': '4f3c2b1a9876543210fedcba12345678',
+    'mixed URL-safe opaque': 'v8Qm2Rz7Lx4Np9Tw6Yc3Kd5Hs1Jf0B-_U',
+    'mixed URL-unreserved opaque': 'v8Qm2Rz7Lx4Np9Tw6Yc3.Kd5Hs1Jf0B~U',
+  };
+  const fragmentLocations = {
+    'absolute': ['https://e/cb#', 'https://e/cb#<redacted>'],
+    'relative': ['callback#', 'callback#<redacted>'],
+    'fragment-only': ['#', '#<redacted>'],
+  };
+  for (final shape in credentialShapes.entries) {
+    for (final location in fragmentLocations.entries) {
+      test(
+        'redactSensitive 隐去 ${location.key} ${shape.key} credential fragment',
+        () {
+          expect(
+            AILogger.redactSensitive('${location.value[0]}${shape.value}'),
+            location.value[1],
+          );
+        },
+      );
+    }
+  }
+
+  const encodedCredentialShapes = {
+    'Base64': 'dXNlcjpwYXNzd29yZA%3D%3D',
+    'JWT': 'eyJhbGciOiJIUzI1NiJ9%2EeyJzdWIiOiIxMjM0NTY3ODkwIn0%2E'
+        'SflKxwRJSMeKKF2QT4fwpMeJf36POk6yJV_adQssw5c',
+  };
+  for (final shape in encodedCredentialShapes.entries) {
+    test('redactSensitive 隐去 percent-encoded ${shape.key} fragment', () {
+      expect(
+        AILogger.redactSensitive('https://e/cb#${shape.value}'),
+        'https://e/cb#<redacted>',
+      );
+    });
+  }
+
   test('redactSensitive 隐去 fragment 时保留尾随日志标点', () {
     expect(
       AILogger.redactSensitive(

@@ -50,6 +50,24 @@ class AILogger {
     r'(?:^|[?&=:/])(?:code=|(?:bearer|basic)(?:\s+|=))',
     caseSensitive: false,
   );
+  static final RegExp _paddedBase64Fragment = RegExp(
+    r'^[a-z0-9+/_-]+={1,2}$',
+    caseSensitive: false,
+  );
+  static final RegExp _jwtFragment = RegExp(
+    r'^[a-z0-9_-]+\.[a-z0-9_-]+\.[a-z0-9_-]+$',
+    caseSensitive: false,
+  );
+  static final RegExp _longHexFragment = RegExp(
+    r'^[a-f0-9]{32,}$',
+    caseSensitive: false,
+  );
+  static final RegExp _longUrlSafeFragment = RegExp(
+    r'^[a-z0-9._~-]{32,}$',
+    caseSensitive: false,
+  );
+  static final RegExp _asciiLetter = RegExp(r'[a-z]', caseSensitive: false);
+  static final RegExp _asciiDigit = RegExp(r'[0-9]');
 
   static set isEnable(bool value) {
     _isEnable = value;
@@ -142,7 +160,23 @@ class AILogger {
       // 非法 percent-encoding 仍按原文判定，不影响日志输出。
     }
     return _sensitiveFragmentMarker.hasMatch(candidate) ||
-        _sensitiveFragmentCredential.hasMatch(candidate);
+        _sensitiveFragmentCredential.hasMatch(candidate) ||
+        _isCredentialShapedFragment(candidate);
+  }
+
+  static bool _isCredentialShapedFragment(String candidate) {
+    if (candidate.length >= 8 &&
+        candidate.length % 4 == 0 &&
+        _paddedBase64Fragment.hasMatch(candidate)) {
+      return true;
+    }
+    if (candidate.length >= 24 && _jwtFragment.hasMatch(candidate)) {
+      return true;
+    }
+    if (_longHexFragment.hasMatch(candidate)) return true;
+    return _longUrlSafeFragment.hasMatch(candidate) &&
+        _asciiLetter.hasMatch(candidate) &&
+        _asciiDigit.hasMatch(candidate);
   }
 
   /// 截断长文本，避免日志泄漏完整用户/AI 内容
