@@ -266,6 +266,7 @@ class MigratingTokenStorage implements TokenStorage, InitializableTokenStorage {
     Map<String, dynamic> extras = const {},
   }) async {
     if (readOnly) throw StateError('只读登录存储不能写入 profile');
+    await initialize();
     final previousState = _readMigrationState();
     final previousProfile = readProfileSync();
     final profile = <String, dynamic>{
@@ -288,8 +289,29 @@ class MigratingTokenStorage implements TokenStorage, InitializableTokenStorage {
         );
       }
 
+      // secure 写入不是事务；先持久化 fail-closed tombstone，保证进程在
+      // secure mutation 与最终 marker 提交之间退出时，下次启动不会接受
+      // 状态不明的新 token。
+      try {
+        await _writeMigrationState(_cleared);
+      } catch (error) {
+        throw SecureStorageUnavailableException(
+          'state-prepare',
+          cause: error,
+        );
+      }
+
       final secureSaved = await _writeSecureProfile(profile);
       if (secureSaved) {
+        try {
+          await _writeMigrationState(_verified);
+        } catch (error) {
+          await _stayCleared();
+          throw SecureStorageUnavailableException(
+            'state-commit',
+            cause: error,
+          );
+        }
         _profile = profile;
         return;
       }
@@ -300,13 +322,20 @@ class MigratingTokenStorage implements TokenStorage, InitializableTokenStorage {
       final restoredSecure =
           previousProfile != null && await _writeSecureProfile(previousProfile);
       if (restoredSecure) {
+        try {
+          await _writeMigrationState(_verified);
+        } catch (error) {
+          await _stayCleared();
+          throw SecureStorageUnavailableException(
+            'state-rollback',
+            cause: error,
+          );
+        }
         _profile = previousProfile;
-        await _writeMigrationState(_verified);
-      } else {
-        _profile = null;
-        await _writeMigrationState(_cleared);
-        await _bestEffort(() => secureStore.delete(secureProfileKey));
+        throw const SecureStorageUnavailableException('write');
       }
+
+      await _stayCleared();
       throw const SecureStorageUnavailableException('write');
     }
 
@@ -418,6 +447,12 @@ class MigratingTokenStorage implements TokenStorage, InitializableTokenStorage {
     if (prefs == null || !await prefs.setString(_migrationStateKey, state)) {
       throw StateError('登录态迁移状态写入失败');
     }
+  }
+
+  Future<void> _stayCleared() async {
+    _profile = null;
+    await _bestEffort(() => _writeMigrationState(_cleared));
+    await _bestEffort(() => secureStore.delete(secureProfileKey));
   }
 
   static bool _sameProfile(

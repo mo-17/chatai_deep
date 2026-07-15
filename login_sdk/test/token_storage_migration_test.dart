@@ -1,9 +1,8 @@
 import 'package:flutter_hi_cache/flutter_hi_cache.dart';
 import 'package:flutter_test/flutter_test.dart';
-import 'package:login_sdk/config/secure_key_value_store.dart';
-import 'package:login_sdk/config/login_sdk_config.dart';
-import 'package:login_sdk/config/token_storage.dart';
+import 'package:flutter/widgets.dart';
 import 'package:login_sdk/dao/login_dao.dart';
+import 'package:login_sdk/login_sdk.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 void main() {
@@ -23,6 +22,30 @@ void main() {
   tearDown(() {
     LoginDao.resetHooksForTest();
     LoginSdkConfig.reset();
+  });
+
+  test('LoginConfig.init 在同步读取前完成注入存储初始化', () async {
+    await legacy.writeProfile(token: 'legacy-token', userName: 'alice');
+    final storage = MigratingTokenStorage(
+      secureStore: secure,
+      legacyStorage: legacy,
+    );
+
+    await LoginConfig.instance().init(
+      homePage: const SizedBox.shrink(),
+      sdk: LoginSdkConfig(
+        baseUrl: 'localhost:3000',
+        headerProvider: () async => const <String, String>{},
+        syncHeaders: () => const <String, String>{},
+        routes: LoginRoutes.imooc,
+        responseAdapter: ImoocResponseAdapter(),
+        storage: storage,
+        onLogoutNavigate: () {},
+      ),
+    );
+
+    expect(LoginDao.getBoardingPass(), 'legacy-token');
+    expect(LoginDao.getAccountHash(), 'alice'.hashCode.toString());
   });
 
   test('首次启动迁移旧登录态但保留一轮旧值', () async {
@@ -329,6 +352,116 @@ void main() {
     expect(restarted.readTokenSync(), 'old-token');
   });
 
+  test('fresh verified 实例写入前自动初始化并在 secure 失败时保留旧会话', () async {
+    await legacy.writeProfile(token: 'old-token', userName: 'alice');
+    await MigratingTokenStorage(
+      secureStore: secure,
+      legacyStorage: legacy,
+    ).initialize();
+    await MigratingTokenStorage(
+      secureStore: secure,
+      legacyStorage: legacy,
+    ).initialize();
+    final fresh = MigratingTokenStorage(
+      secureStore: secure,
+      legacyStorage: legacy,
+    );
+
+    secure.ignoreWrites = true;
+    await expectLater(
+      fresh.writeProfile(token: 'new-token', userName: 'alice'),
+      throwsA(isA<SecureStorageUnavailableException>()),
+    );
+
+    expect(fresh.readTokenSync(), 'old-token');
+    expect(legacy.readTokenSync(), isNull);
+    expect(
+      secure.values[MigratingTokenStorage.secureProfileKey],
+      allOf(contains('old-token'), isNot(contains('new-token'))),
+    );
+  });
+
+  test('verified 更新最终 marker 提交失败时保持 cleared 且不接受新 token', () async {
+    await legacy.writeProfile(token: 'old-token', userName: 'alice');
+    await MigratingTokenStorage(
+      secureStore: secure,
+      legacyStorage: legacy,
+    ).initialize();
+    final verified = MigratingTokenStorage(
+      secureStore: secure,
+      legacyStorage: legacy,
+    );
+    await verified.initialize();
+    final prefs = HiCache.getInstance().prefs!;
+    secure.afterRead = () {
+      secure.afterRead = null;
+      HiCache.getInstance().prefs = null;
+    };
+
+    try {
+      await expectLater(
+        verified.writeProfile(token: 'new-token', userName: 'alice'),
+        throwsA(isA<SecureStorageUnavailableException>()),
+      );
+    } finally {
+      secure.afterRead = null;
+      HiCache.getInstance().prefs = prefs;
+    }
+
+    expect(verified.readTokenSync(), isNull);
+    expect(legacy.readTokenSync(), isNull);
+    final restarted = MigratingTokenStorage(
+      secureStore: secure,
+      legacyStorage: legacy,
+    );
+    await restarted.initialize();
+    expect(restarted.readTokenSync(), isNull);
+  });
+
+  test('verified 回滚只有 secure 与 marker 都成功才恢复旧会话', () async {
+    await legacy.writeProfile(token: 'old-token', userName: 'alice');
+    await MigratingTokenStorage(
+      secureStore: secure,
+      legacyStorage: legacy,
+    ).initialize();
+    final verified = MigratingTokenStorage(
+      secureStore: secure,
+      legacyStorage: legacy,
+    );
+    await verified.initialize();
+    final prefs = HiCache.getInstance().prefs!;
+    var updateReadCount = 0;
+    secure
+      ..ignoreWrites = true
+      ..afterRead = () {
+        updateReadCount++;
+        if (updateReadCount == 2) {
+          secure.afterRead = null;
+          HiCache.getInstance().prefs = null;
+        }
+      };
+
+    try {
+      await expectLater(
+        verified.writeProfile(token: 'new-token', userName: 'alice'),
+        throwsA(isA<SecureStorageUnavailableException>()),
+      );
+    } finally {
+      secure.afterRead = null;
+      HiCache.getInstance().prefs = prefs;
+    }
+
+    expect(verified.readTokenSync(), isNull);
+    expect(legacy.readTokenSync(), isNull);
+    secure.ignoreWrites = false;
+    final restarted = MigratingTokenStorage(
+      secureStore: secure,
+      legacyStorage: legacy,
+    );
+    await restarted.initialize();
+    expect(restarted.readTokenSync(), isNull);
+  });
+
   test('verified 后无法验证 secure 回滚时安全登出且不保留明文 token', () async {
     await legacy.writeProfile(token: 'old-token', userName: 'alice');
     await MigratingTokenStorage(
@@ -435,12 +568,15 @@ class _MemorySecureStore implements SecureKeyValueStore {
   bool failWrite = false;
   bool failDelete = false;
   bool ignoreWrites = false;
+  void Function()? afterRead;
   int writeCount = 0;
 
   @override
   Future<String?> read(String key) async {
     if (failRead) throw StateError('read failed');
-    return values[key];
+    final value = values[key];
+    afterRead?.call();
+    return value;
   }
 
   @override

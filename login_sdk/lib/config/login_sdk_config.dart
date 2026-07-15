@@ -51,6 +51,17 @@ class LoginSdkConfig {
 
   static void install(LoginSdkConfig cfg) => _instance = cfg;
 
+  LoginSdkConfig copyWith({TokenStorage? storage}) => LoginSdkConfig(
+        baseUrl: baseUrl,
+        useHttps: useHttps,
+        headerProvider: headerProvider,
+        syncHeaders: syncHeaders,
+        routes: routes,
+        responseAdapter: responseAdapter,
+        storage: storage ?? this.storage,
+        onLogoutNavigate: onLogoutNavigate,
+      );
+
   /// 测试用 — 重置回未 install 状态
   static void reset() => _instance = null;
 

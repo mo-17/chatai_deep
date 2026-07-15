@@ -4,10 +4,23 @@ import 'package:flutter/cupertino.dart';
 import 'package:flutter_hi_cache/flutter_hi_cache.dart';
 
 import 'config/login_sdk_config.dart';
+import 'config/token_storage.dart';
 
-export 'config/login_sdk_config.dart' show
-    LoginSdkConfig, LoginRoutes, LoginResult, LoginResponseAdapter, ImoocResponseAdapter;
-export 'config/token_storage.dart' show TokenStorage, HiCacheTokenStorage;
+export 'config/login_sdk_config.dart'
+    show
+        LoginSdkConfig,
+        LoginRoutes,
+        LoginResult,
+        LoginResponseAdapter,
+        ImoocResponseAdapter;
+export 'config/secure_key_value_store.dart' show SecureKeyValueStore;
+export 'config/token_storage.dart'
+    show
+        TokenStorage,
+        InitializableTokenStorage,
+        SecureStorageUnavailableException,
+        HiCacheTokenStorage,
+        MigratingTokenStorage;
 
 class LoginConfig {
   static LoginConfig? _instance;
@@ -26,12 +39,22 @@ class LoginConfig {
   Future<void> init({
     required Widget homePage,
     LoginSdkConfig? sdk,
+    TokenStorage? tokenStorage,
   }) async {
     this.homePage = homePage;
+    await HiCache.preInit();
     if (sdk != null) {
       LoginSdkConfig.install(sdk);
     }
-    await HiCache.preInit();
+    if (tokenStorage != null) {
+      LoginSdkConfig.install(
+        LoginSdkConfig.instance.copyWith(storage: tokenStorage),
+      );
+    }
+    final storage = LoginSdkConfig.instance.storage;
+    if (storage is InitializableTokenStorage) {
+      await (storage as InitializableTokenStorage).initialize();
+    }
   }
 
   LoginConfig._();
