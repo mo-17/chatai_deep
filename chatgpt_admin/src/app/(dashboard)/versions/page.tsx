@@ -1,6 +1,6 @@
 'use client';
 
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import {
   Table, TableHeader, TableColumn, TableBody, TableRow, TableCell,
@@ -33,17 +33,19 @@ export default function VersionsPage() {
     enabled: editId !== null && !isCreate,
   });
 
-  if (editData && editId !== null && !isCreate) {
+  useEffect(() => {
+    if (!editData || editId === null || isCreate) return;
     form.reset({
       versionName: editData.versionName,
       versionCode: editData.versionCode,
       url: editData.url || '',
+      sha256: editData.sha256 || '',
       description: editData.description || '',
       cid: editData.cid,
       forceUpdate: editData.forceUpdate,
       enabled: editData.enabled,
     });
-  }
+  }, [editData, editId, form, isCreate]);
 
   const saveMutation = useMutation({
     mutationFn: (body: VersionForm) =>
@@ -67,7 +69,7 @@ export default function VersionsPage() {
   });
 
   const openCreate = () => {
-    form.reset({ versionName: '', versionCode: 0, url: '', description: '', cid: 'all', forceUpdate: false, enabled: true });
+    form.reset({ versionName: '', versionCode: 0, url: '', sha256: '', description: '', cid: 'all', forceUpdate: false, enabled: true });
     setIsCreate(true);
     setEditId(-1);
   };
@@ -141,8 +143,15 @@ export default function VersionsPage() {
           <ModalBody>
             <form className="space-y-3">
               <Input label="版本名 (如 1.2.0)" {...form.register('versionName')} isInvalid={!!form.formState.errors.versionName} errorMessage={form.formState.errors.versionName?.message} />
-              <Input label="版本码 (正整数)" type="number" {...form.register('versionCode')} isInvalid={!!form.formState.errors.versionCode} errorMessage={form.formState.errors.versionCode?.message} />
+              <Input label="版本码 (正整数)" type="number" {...form.register('versionCode', { valueAsNumber: true })} isInvalid={!!form.formState.errors.versionCode} errorMessage={form.formState.errors.versionCode?.message} />
               <Input label="下载 URL" {...form.register('url')} />
+              <Input
+                label="APK SHA-256（direct 新发布必填）"
+                description="新建或更换 direct APK/版本码时填写 64 位摘要；仅未改动的历史记录可继续留空。"
+                {...form.register('sha256')}
+                isInvalid={!!form.formState.errors.sha256}
+                errorMessage={form.formState.errors.sha256?.message}
+              />
               <Input label="更新说明" {...form.register('description')} />
               <Input label="渠道" {...form.register('cid')} />
               <Switch {...form.register('forceUpdate')}>强制更新</Switch>

@@ -34,6 +34,7 @@ export interface AppVersion {
   versionName: string;
   versionCode: number;
   url?: string;
+  sha256?: string | null;
   description?: string;
   cid: string;
   forceUpdate: boolean;
