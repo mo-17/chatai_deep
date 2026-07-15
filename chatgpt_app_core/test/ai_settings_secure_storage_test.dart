@@ -10,6 +10,8 @@ import 'package:flutter_hi_cache/flutter_hi_cache.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:login_sdk/login_sdk.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+// ignore: depend_on_referenced_packages
+import 'package:shared_preferences_platform_interface/shared_preferences_platform_interface.dart';
 
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
@@ -515,6 +517,34 @@ void main() {
     );
 
     AISettingsDao.resetSecureStateForTest();
+    AISettingsDao.configureSecretStore(secureStore);
+    final loaded = await AISettingsDao.loadForAsync('account-a');
+    expect(loaded.activeProvider.apiKey, 'provider-old-safe');
+    expect(loaded.tavilyApiKey, 'tavily-old-safe');
+  });
+
+  test('quarantine 平台删除失败且内存 cache 已清时重启仍保留旧快照', () async {
+    final prefs = HiCache.getInstance().prefs!;
+    final preferencesStore = _FailingRemoveSharedPreferencesStore();
+    SharedPreferencesStorePlatform.instance = preferencesStore;
+    await prefs.reload();
+    final secureStore = _MemorySecureStore();
+    AISettingsDao.configureSecretStore(secureStore);
+    await AISettingsDao.saveFor('account-a', _settingsWithSecrets('old-safe'));
+    preferencesStore.failNextRemove = true;
+
+    await expectLater(
+      AISettingsDao.saveFor('account-a', _settingsWithSecrets('new-save')),
+      throwsA(isA<AISecretsUnavailableException>()),
+    );
+    expect(
+      preferencesStore.values[
+          'flutter.ai_settings_secure_verification_quarantine_v1_account-a'],
+      AISettingsDao.secondarySecretKeyFor('account-a'),
+    );
+
+    AISettingsDao.resetSecureStateForTest();
+    await prefs.reload();
     AISettingsDao.configureSecretStore(secureStore);
     final loaded = await AISettingsDao.loadForAsync('account-a');
     expect(loaded.activeProvider.apiKey, 'provider-old-safe');
@@ -1178,6 +1208,37 @@ String _providerKey(Map<String, dynamic> json, String providerId) {
       .cast<Map>()
       .firstWhere((entry) => entry['id'] == providerId);
   return provider['apiKey'] as String;
+}
+
+class _FailingRemoveSharedPreferencesStore
+    extends SharedPreferencesStorePlatform {
+  final Map<String, Object> values = {};
+  bool failNextRemove = false;
+
+  @override
+  Future<bool> clear() async {
+    values.clear();
+    return true;
+  }
+
+  @override
+  Future<Map<String, Object>> getAll() async => Map.of(values);
+
+  @override
+  Future<bool> remove(String key) async {
+    if (failNextRemove) {
+      failNextRemove = false;
+      return false;
+    }
+    values.remove(key);
+    return true;
+  }
+
+  @override
+  Future<bool> setValue(String valueType, String key, Object value) async {
+    values[key] = value is List<String> ? value.toList() : value;
+    return true;
+  }
 }
 
 class _MemorySecureStore implements SecureKeyValueStore {

@@ -1038,12 +1038,34 @@ class AISettingsDao {
     } catch (_) {
       return false;
     }
+    var quarantineStateConfirmed = false;
     try {
       await _removeCacheKey(quarantineKey);
+      quarantineStateConfirmed = true;
     } catch (_) {
-      // remove 可能已经完成删除却报告失败；最终以同步读回状态为准。
+      // legacy SharedPreferences.remove 会先清内存 cache，再调用平台层。
+      // 平台删除失败时必须 reload 磁盘态，不能把 cache null 当作成功确认。
+      final prefs = HiCache.getInstance().prefs;
+      if (prefs != null) {
+        try {
+          await prefs.reload();
+          quarantineStateConfirmed = true;
+        } catch (_) {
+          // 无法确认平台态时重新持久化隔离标记，并按提交失败处理。
+          try {
+            await _setCacheString(
+              quarantineKey,
+              target,
+              applyTestOverride: false,
+            );
+          } catch (_) {}
+          return false;
+        }
+      }
     }
-    if (_cachedValue(quarantineKey) != null) return false;
+    if (!quarantineStateConfirmed || _cachedValue(quarantineKey) != null) {
+      return false;
+    }
     _activeSecretKeysByAccount[hash] = target;
     return true;
   }
