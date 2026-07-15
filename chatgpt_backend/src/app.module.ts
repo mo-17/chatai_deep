@@ -15,12 +15,8 @@ import { HealthModule } from './health/health.module';
 import { AuthModule } from './auth/auth.module';
 import { McpModule } from './mcp/mcp.module';
 import { SyncModule } from './sync/sync.module';
-import {
-  VerificationCode,
-  SmtpProvider,
-  AuthSettings,
-  EmailTemplate,
-} from '@auth-kit';
+import { SyncV2Module } from './sync-v2/sync-v2.module';
+import { buildPostgresOptions } from './database/postgres-options';
 
 @Module({
   imports: [
@@ -58,35 +54,10 @@ import {
     TypeOrmModule.forRootAsync({
       inject: [ConfigService],
       useFactory: (cfg: ConfigService) => ({
-        type: 'postgres',
-        host: cfg.get<string>('DB_HOST', 'localhost'),
-        port: cfg.get<number>('DB_PORT', 5432),
-        username: cfg.get<string>('DB_USER', 'huangzhibin'),
-        password: cfg.get<string>('DB_PASSWORD', ''),
-        database: cfg.get<string>('DB_NAME', 'chatgpt_flutter'),
-        entities: [
-          __dirname + '/**/*.entity{.ts,.js}',
-          VerificationCode,
-          SmtpProvider,
-          AuthSettings,
-          EmailTemplate,
-        ],
+        ...buildPostgresOptions((key) => cfg.get<string>(key), __dirname),
         synchronize:
           cfg.get<string>('DB_SYNCHRONIZE') === 'true' ||
           cfg.get<string>('NODE_ENV') !== 'production',
-        logging:
-          cfg.get<string>('DB_LOGGING') === 'true'
-            ? ['error', 'warn']
-            : ['error'],
-        ssl:
-          cfg.get<string>('DB_SSL') === 'true'
-            ? {
-                rejectUnauthorized:
-                  cfg.get<string>('DB_SSL_REJECT_UNAUTHORIZED', 'true') !==
-                  'false',
-              }
-            : false,
-        extra: { max: parseInt(cfg.get<string>('DB_POOL_MAX', '10'), 10) },
       }),
     }),
     UserModule,
@@ -100,6 +71,7 @@ import {
     AuthModule,
     McpModule,
     SyncModule,
+    SyncV2Module,
   ],
   providers: [{ provide: APP_GUARD, useClass: ThrottlerGuard }],
 })
