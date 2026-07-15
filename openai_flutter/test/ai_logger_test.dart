@@ -153,4 +153,37 @@ void main() {
     expect(redacted, 'url#<redacted>');
     expect(redacted, isNot(contains('tail-secret')));
   });
+
+  test('redactSensitive 不保留 value 含 secret 的 structured suffix', () {
+    const input = 'url#fragment-secret,next=tail-secret';
+    expect(AILogger.redactSensitive(input), 'url#<redacted>');
+  });
+
+  test('redactSensitive 不因前半 fragment 安全而放行敏感 suffix', () {
+    const input = 'url#safe,next=fragment-secret';
+    expect(AILogger.redactSensitive(input), 'url#<redacted>');
+  });
+
+  test('redactSensitive 保留终止标点但不保留标点后的 credential tail', () {
+    expect(
+      AILogger.redactSensitive('url#fragment-secret.'),
+      'url#<redacted>.',
+    );
+    expect(
+      AILogger.redactSensitive('url#fragment-secret!'),
+      'url#<redacted>!',
+    );
+    expect(
+      AILogger.redactSensitive('url#fragment-secret?'),
+      'url#<redacted>?',
+    );
+    expect(
+      AILogger.redactSensitive('url#fragment-secret:'),
+      'url#<redacted>:',
+    );
+    expect(
+      AILogger.redactSensitive('url#fragment-secret.tail-secret'),
+      'url#<redacted>',
+    );
+  });
 }

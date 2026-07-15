@@ -28,7 +28,7 @@ class AILogger {
     r'[,;][a-z_][a-z0-9_.-]*=',
     caseSensitive: false,
   );
-  static final RegExp _fragmentTrailingPunctuation = RegExp(r'[,;]+$');
+  static final RegExp _fragmentTrailingPunctuation = RegExp(r'[,;.!?:]+$');
   static final RegExp _sensitiveFragmentMarker = RegExp(
     r'(?:^|[?&=:/._-])(?:authorization|x-api-key|api[_-]?key|key|(?:access|refresh|id|auth|session)[_-]?token|token|(?:client|api|private|secret)[_-]?secret|secret|password|boarding[-_]?pass|credential|signature|sig)(?![a-z0-9])',
     caseSensitive: false,
@@ -79,8 +79,11 @@ class AILogger {
     var suffix = '';
     final structuredField = _fragmentStructuredField.firstMatch(fragment);
     if (structuredField != null) {
-      suffix = fragment.substring(structuredField.start);
-      fragment = fragment.substring(0, structuredField.start);
+      final candidateSuffix = fragment.substring(structuredField.start);
+      if (!_isSensitiveFragment(candidateSuffix)) {
+        suffix = candidateSuffix;
+        fragment = fragment.substring(0, structuredField.start);
+      }
     } else {
       suffix =
           _fragmentTrailingPunctuation.firstMatch(fragment)?.group(0) ?? '';
