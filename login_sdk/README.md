@@ -86,6 +86,33 @@ await LoginConfig.instance().init(
 );
 ```
 
+宿主已接入平台认证时，可通过 `LoginAuthDependencies` 注入真实实现；也可只在
+单个 `LoginPage` / `RegisterPage` 构造时传入 `authDependencies` 覆盖全局配置。
+页面按「widget override → `LoginSdkConfig` → SDK 默认」逐项回退。默认的
+Apple / Huawei service 仍为 unavailable，SDK 本身不包含任何原生登录包：
+
+```dart
+final authDependencies = LoginAuthDependencies(
+  authDao: AuthDao(AuthApiClient(
+    baseUrl: 'https://api.your-domain.com',
+    headerProvider: () async => {'Authorization': 'Bearer <host token>'},
+  )),
+  appleSignInService: yourAppleSignInService,
+  huaweiLoginService: yourHuaweiLoginService,
+);
+
+await LoginConfig.instance().init(
+  homePage: BottomNavigator(),
+  sdk: yourLoginSdkConfig.copyWith(
+    authDependencies: authDependencies,
+  ),
+);
+```
+
+第三方账号尚未绑定邮箱或手机号时，SDK 会等待绑定页返回最终 token，再通过同一
+个 last-attempt-wins 保存路径完成登录；返回/取消绑定不会写入登录态。宿主必须
+自行提供并配置真实的 Apple / Huawei 平台实现、原生能力和相关 entitlement。
+
 详见 [REFACTOR_GENERIC_SDK.md](./REFACTOR_GENERIC_SDK.md) 的设计说明。
 
 ### 3. 根据登录态选择首屏

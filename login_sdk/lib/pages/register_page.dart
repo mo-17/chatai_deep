@@ -3,6 +3,8 @@ import 'dart:ui' as ui;
 import 'package:auth_kit_flutter/auth_kit_flutter.dart';
 import 'package:flutter/foundation.dart' show kDebugMode;
 import 'package:flutter/material.dart';
+import 'package:login_sdk/config/login_auth_dependencies.dart';
+import 'package:login_sdk/config/login_sdk_config.dart' show LoginSdkConfig;
 import 'package:login_sdk/dao/auth_dao.dart';
 import 'package:login_sdk/dao/login_dao.dart';
 import 'package:login_sdk/util/navigator_util.dart';
@@ -18,12 +20,14 @@ class RegisterPage extends StatefulWidget {
   final bool showAgreement;
   final RegisterPageStyle style;
   final LoginBgVariant bgVariant;
+  final LoginAuthDependencies? authDependencies;
 
   const RegisterPage({
     super.key,
     this.showAgreement = true,
     this.style = RegisterPageStyle.tabs,
     this.bgVariant = LoginBgVariant.mesh,
+    this.authDependencies,
   });
 
   @override
@@ -42,6 +46,7 @@ class _RegisterPageState extends State<RegisterPage> {
   String? _error;
   late RegisterPageStyle _activeStyle;
   late LoginBgVariant _activeBgVariant;
+  late final AuthDao _authDao;
 
   // Recomputed in build().
   LoginBackgroundMeta? _bgMeta;
@@ -52,6 +57,9 @@ class _RegisterPageState extends State<RegisterPage> {
     super.initState();
     _activeStyle = widget.style;
     _activeBgVariant = widget.bgVariant;
+    _authDao = widget.authDependencies?.authDao ??
+        LoginSdkConfig.instance.authDependencies?.authDao ??
+        AuthDaoBridge.instance;
   }
 
   static const _lightTheme = AuthKitTheme(
@@ -136,7 +144,7 @@ class _RegisterPageState extends State<RegisterPage> {
     final fullId = channel == 'sms' ? _fullPhoneIdentifier : identifier;
     setState(() => _error = null);
     try {
-      await AuthDaoBridge.instance.sendCode(
+      await _authDao.sendCode(
         channel: channel,
         identifier: fullId,
         purpose: 'register',
@@ -170,7 +178,7 @@ class _RegisterPageState extends State<RegisterPage> {
     });
     final authAttempt = _beginGlobalAuthAttempt();
     try {
-      final result = await AuthDaoBridge.instance.register(
+      final result = await _authDao.register(
         channel: channel,
         identifier: fullId,
         code: _code,

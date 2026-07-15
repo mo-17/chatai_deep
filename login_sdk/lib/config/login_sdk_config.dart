@@ -1,4 +1,5 @@
 import '../util/navigator_util.dart';
+import 'login_auth_dependencies.dart';
 import 'token_storage.dart';
 
 /// SDK 主配置 — 把所有"非通用"的耦合点集中在这里。
@@ -29,6 +30,7 @@ class LoginSdkConfig {
   final LoginResponseAdapter responseAdapter;
   final TokenStorage storage;
   final void Function() onLogoutNavigate;
+  final LoginAuthDependencies? authDependencies;
 
   const LoginSdkConfig({
     required this.baseUrl,
@@ -39,6 +41,7 @@ class LoginSdkConfig {
     required this.storage,
     required this.onLogoutNavigate,
     this.useHttps = false,
+    this.authDependencies,
   });
 
   static LoginSdkConfig? _instance;
@@ -51,7 +54,11 @@ class LoginSdkConfig {
 
   static void install(LoginSdkConfig cfg) => _instance = cfg;
 
-  LoginSdkConfig copyWith({TokenStorage? storage}) => LoginSdkConfig(
+  LoginSdkConfig copyWith({
+    TokenStorage? storage,
+    LoginAuthDependencies? authDependencies,
+  }) =>
+      LoginSdkConfig(
         baseUrl: baseUrl,
         useHttps: useHttps,
         headerProvider: headerProvider,
@@ -60,6 +67,7 @@ class LoginSdkConfig {
         responseAdapter: responseAdapter,
         storage: storage ?? this.storage,
         onLogoutNavigate: onLogoutNavigate,
+        authDependencies: authDependencies ?? this.authDependencies,
       );
 
   /// 测试用 — 重置回未 install 状态

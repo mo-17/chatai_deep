@@ -6,6 +6,7 @@ import 'package:flutter_hi_cache/flutter_hi_cache.dart';
 import 'config/login_sdk_config.dart';
 import 'config/token_storage.dart';
 
+export 'config/login_auth_dependencies.dart' show LoginAuthDependencies;
 export 'config/login_sdk_config.dart'
     show
         LoginSdkConfig,

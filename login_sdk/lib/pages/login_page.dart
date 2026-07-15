@@ -4,6 +4,8 @@ import 'dart:ui' as ui;
 import 'package:auth_kit_flutter/auth_kit_flutter.dart';
 import 'package:flutter/foundation.dart' show kDebugMode;
 import 'package:flutter/material.dart';
+import 'package:login_sdk/config/login_auth_dependencies.dart';
+import 'package:login_sdk/config/login_sdk_config.dart' show LoginSdkConfig;
 import 'package:login_sdk/dao/auth_dao.dart';
 import 'package:login_sdk/dao/login_dao.dart';
 import 'package:login_sdk/pages/forgot_password_page.dart';
@@ -18,12 +20,14 @@ class LoginPage extends StatefulWidget {
   final LoginPageStyle style;
   final LoginBgVariant bgVariant;
   final VoidCallback? onLoginSuccess;
+  final LoginAuthDependencies? authDependencies;
 
   const LoginPage({
     super.key,
     this.style = LoginPageStyle.tabs,
     this.bgVariant = LoginBgVariant.mesh,
     this.onLoginSuccess,
+    this.authDependencies,
   });
 
   @override
@@ -45,17 +49,27 @@ class _LoginPageState extends State<LoginPage> {
   bool _agreementChecked = false;
   late LoginPageStyle _activeStyle;
   late LoginBgVariant _activeBgVariant;
+  late final AuthDao _authDao;
+  late final IAppleSignInService _appleService;
+  late final IHuaweiLoginService _huaweiService;
 
   @override
   void initState() {
     super.initState();
     _activeStyle = widget.style;
     _activeBgVariant = widget.bgVariant;
+    final widgetDependencies = widget.authDependencies;
+    final configuredDependencies = LoginSdkConfig.instance.authDependencies;
+    _authDao = widgetDependencies?.authDao ??
+        configuredDependencies?.authDao ??
+        AuthDaoBridge.instance;
+    _appleService = widgetDependencies?.appleSignInService ??
+        configuredDependencies?.appleSignInService ??
+        AppleSignInUnavailable();
+    _huaweiService = widgetDependencies?.huaweiLoginService ??
+        configuredDependencies?.huaweiLoginService ??
+        HuaweiLoginUnavailable();
   }
-
-  // ---- Services ----
-  final _appleService = AppleSignInUnavailable();
-  final _huaweiService = HuaweiLoginUnavailable();
 
   static const _lightTheme = AuthKitTheme(
     primaryColor: Color(0xFF0F3460),
@@ -173,7 +187,7 @@ class _LoginPageState extends State<LoginPage> {
     if (attempt == null) return;
     final authAttempt = _beginGlobalAuthAttempt();
     try {
-      final result = await AuthDaoBridge.instance.loginByPassword(
+      final result = await _authDao.loginByPassword(
         channel: 'email',
         identifier: identifier,
         password: password,
@@ -208,7 +222,7 @@ class _LoginPageState extends State<LoginPage> {
       _error = null;
     });
     try {
-      await AuthDaoBridge.instance.sendCode(
+      await _authDao.sendCode(
         channel: channel,
         identifier: fullId,
         purpose: 'login',
@@ -240,7 +254,7 @@ class _LoginPageState extends State<LoginPage> {
     if (attempt == null) return;
     final authAttempt = _beginGlobalAuthAttempt();
     try {
-      final result = await AuthDaoBridge.instance.loginByCode(
+      final result = await _authDao.loginByCode(
         channel: channel,
         identifier: fullId,
         code: _code,
@@ -285,37 +299,17 @@ class _LoginPageState extends State<LoginPage> {
     final authAttempt = _beginGlobalAuthAttempt();
     try {
       final appleResult = await _appleService.signIn();
-      final authResult = await AuthDaoBridge.instance.appleLogin(
+      final authResult = await _authDao.appleLogin(
         identityToken: appleResult.identityToken,
         authorizationCode: appleResult.authorizationCode,
         fullName: appleResult.fullName,
       );
-      if (!mounted || !_isCurrentAttempt(attempt)) return;
-      if (authResult.needBinding) {
-        if (mounted && _isCurrentAttempt(attempt)) {
-          _showBindPage(
-            bindTicket: authResult.bindTicket!,
-            provider: 'apple',
-          );
-        }
-        return;
-      }
-      if (authResult.token != null) {
-        if (!mounted || !_isCurrentAttempt(attempt)) return;
-        await LoginDao.saveAuthTokenForAttempt(
-          authResult.token!,
-          attempt: authAttempt,
-          userName: authResult.extra?['userName']?.toString(),
-          avatar: authResult.extra?['avatar']?.toString(),
-        );
-        if (!mounted || !_isCurrentAttempt(attempt)) return;
-        if (_isCurrentAttempt(attempt)) {
-          widget.onLoginSuccess?.call();
-          if (widget.onLoginSuccess == null) {
-            NavigatorUtil.goToHome(context);
-          }
-        }
-      }
+      await _handleThirdPartyResult(
+        authResult,
+        provider: 'apple',
+        attempt: attempt,
+        authAttempt: authAttempt,
+      );
     } on LoginAccountChangedException {
       return;
     } catch (e) {
@@ -337,37 +331,17 @@ class _LoginPageState extends State<LoginPage> {
     final authAttempt = _beginGlobalAuthAttempt();
     try {
       final hwResult = await _huaweiService.signInWithQuickLogin();
-      final authResult = await AuthDaoBridge.instance.huaweiLogin(
+      final authResult = await _authDao.huaweiLogin(
         mode: hwResult.mode,
         authCode: hwResult.authCode,
         accessToken: hwResult.accessToken,
       );
-      if (!mounted || !_isCurrentAttempt(attempt)) return;
-      if (authResult.needBinding) {
-        if (mounted && _isCurrentAttempt(attempt)) {
-          _showBindPage(
-            bindTicket: authResult.bindTicket!,
-            provider: 'huawei',
-          );
-        }
-        return;
-      }
-      if (authResult.token != null) {
-        if (!mounted || !_isCurrentAttempt(attempt)) return;
-        await LoginDao.saveAuthTokenForAttempt(
-          authResult.token!,
-          attempt: authAttempt,
-          userName: authResult.extra?['userName']?.toString(),
-          avatar: authResult.extra?['avatar']?.toString(),
-        );
-        if (!mounted || !_isCurrentAttempt(attempt)) return;
-        if (_isCurrentAttempt(attempt)) {
-          widget.onLoginSuccess?.call();
-          if (widget.onLoginSuccess == null) {
-            NavigatorUtil.goToHome(context);
-          }
-        }
-      }
+      await _handleThirdPartyResult(
+        authResult,
+        provider: 'huawei',
+        attempt: attempt,
+        authAttempt: authAttempt,
+      );
     } on LoginAccountChangedException {
       return;
     } catch (e) {
@@ -383,17 +357,49 @@ class _LoginPageState extends State<LoginPage> {
     }
   }
 
-  void _showBindPage({
+  Future<void> _handleThirdPartyResult(
+    ThirdPartyLoginResult authResult, {
+    required String provider,
+    required int attempt,
+    required LoginAuthAttempt authAttempt,
+  }) async {
+    if (!_isCurrentAttempt(attempt)) return;
+    final LoginResult? result;
+    if (authResult.needBinding) {
+      final bindTicket = authResult.bindTicket;
+      if (bindTicket == null || bindTicket.isEmpty) {
+        throw StateError('$provider 登录缺少 bindTicket');
+      }
+      result = await _showBindPage(
+        bindTicket: bindTicket,
+        provider: provider,
+      );
+    } else {
+      final token = authResult.token;
+      result = token == null
+          ? null
+          : LoginResult(token: token, extra: authResult.extra ?? const {});
+    }
+    if (result == null || !_isCurrentAttempt(attempt)) return;
+    await _onLoginSuccess(result, attempt, authAttempt);
+  }
+
+  Future<LoginResult?> _showBindPage({
     required String bindTicket,
     required String provider,
   }) {
-    Navigator.push(
+    return Navigator.push<LoginResult>(
       context,
       MaterialPageRoute(
-        builder: (_) => BindIdentityPage(
-          authDao: AuthDaoBridge.instance,
+        builder: (routeContext) => BindIdentityPage(
+          authDao: _authDao,
           bindTicket: bindTicket,
           provider: provider,
+          onSuccess: (result) {
+            if (routeContext.mounted) {
+              Navigator.of(routeContext).pop(result);
+            }
+          },
         ),
       ),
     );
@@ -953,7 +959,11 @@ class _LoginPageState extends State<LoginPage> {
                   ? () {
                       Navigator.push(
                         context,
-                        MaterialPageRoute(builder: (_) => const RegisterPage()),
+                        MaterialPageRoute(
+                          builder: (_) => RegisterPage(
+                            authDependencies: widget.authDependencies,
+                          ),
+                        ),
                       );
                     }
                   : null,
