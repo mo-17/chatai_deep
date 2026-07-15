@@ -1,11 +1,13 @@
 import 'package:chatgpt_app_core/backup/backup_service.dart';
 import 'package:chatgpt_app_core/dao/ai_settings_dao.dart';
 import 'package:chatgpt_app_core/db/assistant_dao.dart';
+import 'package:chatgpt_app_core/db/assistant_memory_dao.dart';
 import 'package:chatgpt_app_core/db/conversation_dao.dart';
 import 'package:chatgpt_app_core/db/favorite_dao.dart';
 import 'package:chatgpt_app_core/db/hi_db_manager.dart';
 import 'package:chatgpt_app_core/db/message_dao.dart';
 import 'package:chatgpt_app_core/db/project_dao.dart';
+import 'package:chatgpt_app_core/util/uuid_v4.dart';
 import 'package:flutter_hi_cache/flutter_hi_cache.dart';
 import 'package:login_sdk/dao/login_dao.dart';
 import 'package:openai_flutter/utils/ai_logger.dart';
@@ -18,6 +20,7 @@ class GuestMigrationResult {
   final int assistants;
   final int favorites;
   final int projects;
+  final int memories;
 
   /// 是否套用了游客的 AI 设置（仅在账号原本没有设置时才会）。
   final bool settingsImported;
@@ -28,9 +31,14 @@ class GuestMigrationResult {
     this.assistants = 0,
     this.favorites = 0,
     this.projects = 0,
+    this.memories = 0,
     this.settingsImported = false,
   });
 }
+
+typedef GuestMigrationStorageResolver = Future<HiDBManager> Function(
+  String hash,
+);
 
 /// 游客数据一次性迁移（登录正式账号时把游客模式攒下的会话/AI 设置导入新账号）。
 ///
@@ -38,13 +46,15 @@ class GuestMigrationResult {
 /// AI 设置 key `ai_settings_v1_guest`），登出/登录都不会删除它。本服务在
 /// 用户首次以正式账号进入主页时检测这批数据，弹窗征得同意后整体导入。
 ///
-/// 采用**行级合并**（追加，不覆盖）：助手/消息/收藏走自增 id 追加；会话以
-/// 唯一 `cid` 为业务键，与账号既有 cid 冲突时重映射到新 cid，并同步改写其
-/// 消息的 cid 与会话引用的 assistantId。因此对**已有数据的账号**也安全。
+/// 采用**行级合并**（追加，不覆盖）：助手/长期记忆/消息/收藏走追加写入；会话
+/// 以唯一 `cid` 为业务键，与账号既有 cid 冲突时重映射到新 cid，并同步改写消息
+/// 与长期记忆的 cid、assistantId 引用。因此对**已有数据的账号**也安全。
 /// AI 设置只在账号原本没有设置时才套用，避免覆盖已配置账号。
 class GuestMigrationService {
   /// 游客分区固定 hash（与 [LoginDao.loginAsGuest] 写入的 accountHash 一致）。
   static const guestHash = 'guest';
+  static const _migrationJournalTable = 'tb_guest_migration_journal';
+  static const _guestImportJournalKey = 'guest_import_v1';
 
   /// 「已处理过」标记 key（导入或拒绝后都置位，之后不再提示）。
   static String doneKey(String hash) => 'guest_migrated_$hash';
@@ -52,68 +62,103 @@ class GuestMigrationService {
   /// 是否应向当前账号提示迁移：
   /// - 当前为正式账号（非游客）且能取到 accountHash；
   /// - 该账号尚未处理过（无 done 标记）；
-  /// - 游客侧确有可迁移的数据（有会话或有 AI 设置）。
+  /// - 游客侧确有可迁移的数据（有会话、有效长期记忆或 AI 设置）。
   ///
   /// 不再要求目标账号为空——行级合并对已有数据的账号同样安全。
-  static Future<bool> shouldPrompt() async {
+  static Future<bool> shouldPrompt({
+    GuestMigrationStorageResolver? storageResolver,
+  }) async {
     if (LoginDao.isGuest()) return false;
     final hash = LoginDao.getAccountHash();
     if (hash == null || hash == guestHash) return false;
     if (HiCache.getInstance().get(doneKey(hash)) != null) return false;
 
-    final guest = await HiDBManager.instance(dbName: guestHash);
-    return await _conversationCount(guest) > 0 ||
-        AISettingsDao.hasSettings(guestHash);
+    final resolve = storageResolver ??
+        (String value) => HiDBManager.instance(dbName: value);
+    final guest = await resolve(guestHash);
+    if (await _conversationCount(guest) > 0 ||
+        await _validMemoryCount(guest) > 0) {
+      return true;
+    }
+    // 系统恢复可能只留下 secure v2 快照；先强一致准备，才能恢复普通 marker。
+    await AISettingsDao.loadForAsync(guestHash);
+    return AISettingsDao.hasSettings(guestHash);
   }
 
   /// 执行迁移：把游客库合并进当前（正式）账号库，必要时套用游客 AI 设置，
   /// 刷新会话列表并置位标记。调用前应已通过 [shouldPrompt]。失败会抛出。
-  static Future<GuestMigrationResult> migrate() async {
+  static Future<GuestMigrationResult> migrate({
+    GuestMigrationStorageResolver? storageResolver,
+  }) async {
     final hash = LoginDao.getAccountHash();
     if (hash == null || hash == guestHash) {
       throw StateError('当前不是正式账号，无法迁移游客数据');
     }
-    final guest = await HiDBManager.instance(dbName: guestHash);
-    final to = await HiDBManager.instance(dbName: hash);
-    final counts = await mergeGuestData(from: guest, to: to);
 
-    // AI 设置：仅当账号原本没有设置时才套用游客设置（含 key，不脱敏）。
-    var settingsImported = false;
-    if (!AISettingsDao.hasSettings(hash) &&
-        AISettingsDao.hasSettings(guestHash)) {
-      await AISettingsDao.save(AISettingsDao.loadFor(guestHash));
-      settingsImported = true;
-    }
+    final resolve = storageResolver ??
+        (String value) => HiDBManager.instance(dbName: value);
+    return LoginDao.runWithStableAccount<GuestMigrationResult>(
+      expectedAccountHash: hash,
+      action: () async {
+        // 先强一致读取 guest secrets；失败时不得先合并数据库，否则重试会重复追加。
+        final candidate = await AISettingsDao.loadForAsync(guestHash);
+        final guestSettings =
+            AISettingsDao.hasSettings(guestHash) ? candidate : null;
 
-    // 通知会话列表等常驻页面重新加载。
-    BackupService.restoreTick.value++;
-    await markDone();
-    AILogger.log('guest migration done -> $hash: '
-        '${counts.conversations} conversations, ${counts.messages} messages, '
-        '${counts.projects} projects, '
-        'settings=$settingsImported');
-    return GuestMigrationResult(
-      conversations: counts.conversations,
-      messages: counts.messages,
-      assistants: counts.assistants,
-      favorites: counts.favorites,
-      projects: counts.projects,
-      settingsImported: settingsImported,
+        final guest = await resolve(guestHash);
+        final to = await resolve(hash);
+        final counts = await mergeGuestData(
+          from: guest,
+          to: to,
+          idempotencyKey: _guestImportJournalKey,
+        );
+
+        // prepare/check/write 在 AISettingsDao 的同账号队列中原子完成，不能覆盖
+        // lease 期间已经排队或落盘的目标账号设置。
+        final settingsImported = guestSettings != null &&
+            await AISettingsDao.saveForIfAbsent(hash, guestSettings);
+
+        // 通知会话列表等常驻页面重新加载，并只给捕获到的账号置位。
+        BackupService.restoreTick.value++;
+        await _markDoneFor(hash);
+        AILogger.log('guest migration done -> $hash: '
+            '${counts.conversations} conversations, '
+            '${counts.messages} messages, ${counts.projects} projects, '
+            '${counts.memories} memories, settings=$settingsImported');
+        return GuestMigrationResult(
+          conversations: counts.conversations,
+          messages: counts.messages,
+          assistants: counts.assistants,
+          favorites: counts.favorites,
+          projects: counts.projects,
+          memories: counts.memories,
+          settingsImported: settingsImported,
+        );
+      },
     );
   }
 
-  /// 标记当前账号已处理（导入成功或用户拒绝都调用），之后不再提示。
+  /// 用户拒绝迁移时，标记当前账号已处理，之后不再提示。
   static Future<void> markDone() async {
     final hash = LoginDao.getAccountHash();
     if (hash == null) return;
-    await HiCache.getInstance().setString(doneKey(hash), '1');
+    await _markDoneFor(hash);
   }
 
-  /// 行级合并核心（纯库操作，便于单测）：把 [from] 库的会话/消息/助手/收藏
-  /// **追加**进 [to] 库，处理 id/cid 冲突重映射。不动 AI 设置、不置标记。
+  static Future<void> _markDoneFor(String hash) async {
+    final prefs = HiCache.getInstance().prefs;
+    if (prefs == null || !await prefs.setString(doneKey(hash), '1')) {
+      throw StateError('游客迁移完成标记写入失败');
+    }
+  }
+
+  /// 行级合并核心（纯库操作，便于单测）：把 [from] 库的会话/消息/助手/长期
+  /// 记忆/收藏/项目**追加**进 [to] 库，处理 id/cid 冲突重映射。不动 AI 设置、
+  /// 不置标记。
   static Future<GuestMigrationResult> mergeGuestData({
     required HiDBManager from,
     required HiDBManager to,
+    String? idempotencyKey,
   }) async {
     await _ensureSchema(from);
     await _ensureSchema(to);
@@ -123,6 +168,7 @@ class GuestMigrationService {
     final messages = await from.db.query('tb_messages');
     final favorites = await from.db.query('tb_favorite');
     final projects = await from.db.query('tb_project');
+    final memories = await from.db.query('tb_assistant_memory');
     final hasProjectIdColumn =
         await _hasColumn(to.db, 'tb_conversation_list', 'projectId');
     final normalizedConversations = conversations
@@ -146,8 +192,25 @@ class GuestMigrationService {
       return maxCid;
     }
 
-    var conv = 0, msg = 0, ast = 0, fav = 0, prj = 0;
+    var conv = 0, msg = 0, ast = 0, fav = 0, prj = 0, mem = 0;
+    GuestMigrationResult? journalResult;
     await to.db.transaction((txn) async {
+      if (idempotencyKey != null) {
+        // journal 的 schema、幂等检查和业务插入必须在同一事务中：
+        // 任何中途失败都不得留下「已开始迁移」的局部状态。
+        await _ensureMigrationJournal(txn);
+        final committed = await txn.query(
+          _migrationJournalTable,
+          where: 'migrationKey = ?',
+          whereArgs: [idempotencyKey],
+          limit: 1,
+        );
+        if (committed.isNotEmpty) {
+          journalResult = _resultFromJournal(committed.single);
+          return;
+        }
+      }
+
       // 助手：丢弃原 id，自增插入，记录 旧id→新id。
       final assistantIdMap = <int, int>{};
       for (final a in assistants) {
@@ -198,6 +261,50 @@ class GuestMigrationService {
         conv++;
       }
 
+      // 长期记忆：只迁移已成功映射的助手，稳定 memoryId 无冲突时保留；
+      // 与目标库或本批次冲突时生成新的 UUID v4。
+      final existingMemoryRows = await txn.query(
+        'tb_assistant_memory',
+        columns: ['memoryId'],
+      );
+      final usedMemoryIds = <String>{
+        for (final row in existingMemoryRows)
+          if (row['memoryId'] != null && row['memoryId'].toString().isNotEmpty)
+            row['memoryId'].toString(),
+      };
+      for (final memory in memories) {
+        final row = Map<String, Object?>.from(memory);
+        row.remove('id');
+        final oldAssistantId = _intValue(row['assistantId']);
+        final newAssistantId =
+            oldAssistantId == null ? null : assistantIdMap[oldAssistantId];
+        if (newAssistantId == null) continue;
+        row['assistantId'] = newAssistantId;
+
+        if (row['assistantSyncId']?.toString() == 'legacy:$oldAssistantId') {
+          row['assistantSyncId'] = 'legacy:$newAssistantId';
+        }
+
+        final sourceConversationId =
+            row['sourceConversationId']?.toString() ?? '';
+        final sourceCid = int.tryParse(sourceConversationId);
+        final mappedSourceCid = sourceCid == null ? null : cidMap[sourceCid];
+        if (mappedSourceCid != null) {
+          row['sourceConversationId'] = '$mappedSourceCid';
+        }
+
+        var memoryId = row['memoryId']?.toString() ?? '';
+        if (memoryId.isEmpty || usedMemoryIds.contains(memoryId)) {
+          do {
+            memoryId = generateUuidV4();
+          } while (usedMemoryIds.contains(memoryId));
+          row['memoryId'] = memoryId;
+        }
+        usedMemoryIds.add(memoryId);
+        await txn.insert('tb_assistant_memory', row);
+        mem++;
+      }
+
       // 消息：cid 按会话映射改写，丢弃自增 id。
       for (final m in messages) {
         final row = Map<String, Object?>.from(m);
@@ -217,24 +324,75 @@ class GuestMigrationService {
         await txn.insert('tb_favorite', row);
         fav++;
       }
+
+      if (idempotencyKey != null) {
+        await txn.insert(_migrationJournalTable, {
+          'migrationKey': idempotencyKey,
+          'conversations': conv,
+          'messages': msg,
+          'assistants': ast,
+          'favorites': fav,
+          'projects': prj,
+          'memories': mem,
+          'committedAt': DateTime.now().millisecondsSinceEpoch,
+        });
+      }
     });
 
+    if (journalResult != null) return journalResult!;
     return GuestMigrationResult(
       conversations: conv,
       messages: msg,
       assistants: ast,
       favorites: fav,
       projects: prj,
+      memories: mem,
     );
   }
 
-  /// 通过各 DAO 静态工厂确保四张表存在且 schema 最新（含历史 ALTER）。
+  static Future<void> _ensureMigrationJournal(DatabaseExecutor db) async {
+    await db.execute('''
+      create table if not exists $_migrationJournalTable (
+        migrationKey text primary key,
+        conversations integer not null,
+        messages integer not null,
+        assistants integer not null,
+        favorites integer not null,
+        projects integer not null,
+        memories integer not null default 0,
+        committedAt integer not null
+      )
+    ''');
+    if (await _hasColumn(db, _migrationJournalTable, 'memories')) return;
+    try {
+      await db.execute(
+        'alter table $_migrationJournalTable '
+        'add column memories integer not null default 0',
+      );
+    } catch (_) {
+      // 并发/历史升级若已补列可继续；其它失败必须让事务回滚。
+      if (!await _hasColumn(db, _migrationJournalTable, 'memories')) rethrow;
+    }
+  }
+
+  static GuestMigrationResult _resultFromJournal(Map<String, Object?> row) =>
+      GuestMigrationResult(
+        conversations: (row['conversations'] as num?)?.toInt() ?? 0,
+        messages: (row['messages'] as num?)?.toInt() ?? 0,
+        assistants: (row['assistants'] as num?)?.toInt() ?? 0,
+        favorites: (row['favorites'] as num?)?.toInt() ?? 0,
+        projects: (row['projects'] as num?)?.toInt() ?? 0,
+        memories: (row['memories'] as num?)?.toInt() ?? 0,
+      );
+
+  /// 通过各 DAO 静态工厂确保迁移表存在且 schema 最新（含历史 ALTER）。
   static Future<void> _ensureSchema(HiDBManager storage) async {
     await ConversationListDao.create(storage);
     await MessageDao.create(storage, cid: 0);
     await AssistantDao.create(storage);
     await FavoriteDao.create(storage);
     await ProjectDao.create(storage);
+    await AssistantMemoryDao.create(storage);
     await _ensureConversationProjectIdColumn(storage.db);
   }
 
@@ -249,7 +407,7 @@ class GuestMigrationService {
   }
 
   static Future<bool> _hasColumn(
-      Database db, String table, String column) async {
+      DatabaseExecutor db, String table, String column) async {
     final rows = await db.rawQuery('pragma table_info($table)');
     return rows.any((r) => (r['name'] ?? '').toString() == column);
   }
@@ -276,5 +434,22 @@ class GuestMigrationService {
     final rows = await storage.db
         .rawQuery('select count(*) as c from tb_conversation_list');
     return (rows.first['c'] as int?) ?? 0;
+  }
+
+  static Future<int> _validMemoryCount(HiDBManager storage) async {
+    await AssistantDao.create(storage);
+    await AssistantMemoryDao.create(storage);
+    final rows = await storage.db.rawQuery(
+      'select count(*) as c from tb_assistant_memory memory '
+      'inner join tb_assistant assistant '
+      'on assistant.id = memory.assistantId',
+    );
+    return (rows.first['c'] as num?)?.toInt() ?? 0;
+  }
+
+  static int? _intValue(Object? raw) {
+    if (raw is int) return raw;
+    if (raw is num) return raw.toInt();
+    return int.tryParse(raw?.toString() ?? '');
   }
 }
