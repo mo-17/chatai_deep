@@ -53,4 +53,59 @@ void main() {
     expect(result.token, 'token-123');
     expect(result.extra['accountHash'], 'u1');
   });
+
+  test('ThirdPartyLoginResult parses bound-account string token response', () {
+    final result = ThirdPartyLoginResult.fromJson({
+      'code': 0,
+      'data': 'third-party-token',
+      'extra': {
+        'id': 7,
+        'userName': 'alice',
+        'email': 'alice@example.com',
+        'phone': null,
+        'role': 'user',
+      },
+    });
+
+    expect(result.needBinding, isFalse);
+    expect(result.token, 'third-party-token');
+    expect(result.bindTicket, isNull);
+    expect(result.extra?['userName'], 'alice');
+  });
+
+  test('ThirdPartyLoginResult keeps unbound-account bind ticket response', () {
+    final result = ThirdPartyLoginResult.fromJson({
+      'code': 0,
+      'data': {
+        'needBinding': true,
+        'bindTicket': 'bind-ticket-123',
+      },
+      'extra': <String, dynamic>{},
+    });
+
+    expect(result.needBinding, isTrue);
+    expect(result.token, isNull);
+    expect(result.bindTicket, 'bind-ticket-123');
+  });
+
+  test('ThirdPartyLoginResult tolerates unsupported or null data', () {
+    final unsupportedValues = <Object?>[
+      null,
+      42,
+      <Object?>['unexpected'],
+      <String, dynamic>{'unexpected': true},
+    ];
+
+    for (final data in unsupportedValues) {
+      final result = ThirdPartyLoginResult.fromJson({
+        'data': data,
+        'extra': {'accountHash': 'u1'},
+      });
+
+      expect(result.needBinding, isFalse, reason: 'data: $data');
+      expect(result.token, isNull, reason: 'data: $data');
+      expect(result.bindTicket, isNull, reason: 'data: $data');
+      expect(result.extra?['accountHash'], 'u1', reason: 'data: $data');
+    }
+  });
 }

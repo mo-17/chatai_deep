@@ -33,6 +33,7 @@ class _BindIdentityPageState extends State<BindIdentityPage> {
   final _identifierCtrl = TextEditingController();
   bool _codeSent = false;
   bool _loading = false;
+  bool _bindInFlight = false;
   String? _error;
 
   AuthKitTheme get _theme => widget.theme ?? AuthKitTheme.defaults();
@@ -51,28 +52,41 @@ class _BindIdentityPageState extends State<BindIdentityPage> {
   }
 
   Future<void> _sendCode() async {
+    if (!mounted) return;
     final identifier = _identifierCtrl.text.trim();
     if (identifier.isEmpty) {
       setState(() => _error = l10n.identifierHint);
       return;
     }
-    setState(() { _loading = true; _error = null; });
+    setState(() {
+      _loading = true;
+      _error = null;
+    });
     try {
       await widget.authDao.sendCode(
         channel: _channel,
         identifier: identifier,
         purpose: 'bind',
       );
+      if (!mounted) return;
       setState(() => _codeSent = true);
     } catch (e) {
+      if (!mounted) return;
       setState(() => _error = e.toString());
     } finally {
-      setState(() => _loading = false);
+      if (mounted) {
+        setState(() => _loading = false);
+      }
     }
   }
 
   Future<void> _onCodeCompleted(String code) async {
-    setState(() { _loading = true; _error = null; });
+    if (!mounted || _bindInFlight) return;
+    _bindInFlight = true;
+    setState(() {
+      _loading = true;
+      _error = null;
+    });
     try {
       final identifier = _identifierCtrl.text.trim();
       late LoginResult result;
@@ -91,11 +105,16 @@ class _BindIdentityPageState extends State<BindIdentityPage> {
           code: code,
         );
       }
+      if (!mounted) return;
       widget.onSuccess?.call(result);
     } catch (e) {
+      if (!mounted) return;
       setState(() => _error = e.toString());
     } finally {
-      setState(() => _loading = false);
+      _bindInFlight = false;
+      if (mounted) {
+        setState(() => _loading = false);
+      }
     }
   }
 
@@ -118,11 +137,21 @@ class _BindIdentityPageState extends State<BindIdentityPage> {
             // 通道切换
             Row(
               children: [
-                _ChannelChip(label: 'Email', selected: _channel == 'email',
-                    onTap: () => setState(() { _channel = 'email'; _codeSent = false; })),
+                _ChannelChip(
+                    label: 'Email',
+                    selected: _channel == 'email',
+                    onTap: () => setState(() {
+                          _channel = 'email';
+                          _codeSent = false;
+                        })),
                 const SizedBox(width: 12),
-                _ChannelChip(label: 'SMS', selected: _channel == 'sms',
-                    onTap: () => setState(() { _channel = 'sms'; _codeSent = false; })),
+                _ChannelChip(
+                    label: 'SMS',
+                    selected: _channel == 'sms',
+                    onTap: () => setState(() {
+                          _channel = 'sms';
+                          _codeSent = false;
+                        })),
               ],
             ),
             const SizedBox(height: 16),
@@ -147,14 +176,18 @@ class _BindIdentityPageState extends State<BindIdentityPage> {
                   ),
                   child: _loading
                       ? const SizedBox(
-                          width: 20, height: 20,
-                          child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white),
+                          width: 20,
+                          height: 20,
+                          child: CircularProgressIndicator(
+                              strokeWidth: 2, color: Colors.white),
                         )
-                      : Text(l10n.sendCode, style: const TextStyle(fontSize: 16)),
+                      : Text(l10n.sendCode,
+                          style: const TextStyle(fontSize: 16)),
                 ),
               ),
             ] else ...[
-              Text(l10n.codeSent, textAlign: TextAlign.center,
+              Text(l10n.codeSent,
+                  textAlign: TextAlign.center,
                   style: TextStyle(color: _theme.subtitleColor, fontSize: 13)),
               const SizedBox(height: 16),
               VerificationCodeInput(
@@ -165,7 +198,8 @@ class _BindIdentityPageState extends State<BindIdentityPage> {
             ],
             if (_error != null) ...[
               const SizedBox(height: 12),
-              Text(_error!, style: TextStyle(color: _theme.errorColor, fontSize: 13),
+              Text(_error!,
+                  style: TextStyle(color: _theme.errorColor, fontSize: 13),
                   textAlign: TextAlign.center),
             ],
           ],
@@ -180,7 +214,8 @@ class _ChannelChip extends StatelessWidget {
   final bool selected;
   final VoidCallback onTap;
 
-  const _ChannelChip({required this.label, required this.selected, required this.onTap});
+  const _ChannelChip(
+      {required this.label, required this.selected, required this.onTap});
 
   @override
   Widget build(BuildContext context) {
@@ -195,7 +230,8 @@ class _ChannelChip extends StatelessWidget {
           border: Border.all(color: selected ? t.primaryColor : t.borderColor),
         ),
         child: Text(label,
-            style: TextStyle(color: selected ? Colors.white : t.textColor, fontSize: 13)),
+            style: TextStyle(
+                color: selected ? Colors.white : t.textColor, fontSize: 13)),
       ),
     );
   }

@@ -182,20 +182,24 @@ class ThirdPartyLoginResult {
   });
 
   factory ThirdPartyLoginResult.fromJson(Map<String, dynamic> json) {
-    final data = json['data'] as Map<String, dynamic>?;
-    final extra = json['extra'] as Map<String, dynamic>?;
-    if (data == null) {
-      return const ThirdPartyLoginResult(needBinding: false);
+    final data = json['data'];
+    final rawExtra = json['extra'];
+    final extra = rawExtra is Map<String, dynamic> ? rawExtra : null;
+    if (data is String) {
+      return ThirdPartyLoginResult(
+        token: data,
+        needBinding: false,
+        extra: extra,
+      );
     }
-    // needBinding 为 true 时 data 内含 bindTicket
-    if (data['needBinding'] == true) {
+    // needBinding 为 true 时 data 内含 bindTicket；其余 Map 不应被转成 token。
+    if (data is Map && data['needBinding'] == true) {
       return ThirdPartyLoginResult(
         needBinding: true,
         bindTicket: data['bindTicket']?.toString(),
       );
     }
     return ThirdPartyLoginResult(
-      token: data.toString(),
       needBinding: false,
       extra: extra,
     );
