@@ -147,6 +147,42 @@ void main() {
     expect(AILogger.redactSensitive(input), expected);
   });
 
+  test('redactSensitive 保留低风险 structured diagnostic scalar', () {
+    const input =
+        'url#fragment-secret,count=42;enabled=true;value=null;status=ready';
+    const expected =
+        'url#<redacted>,count=42;enabled=true;value=null;status=ready';
+    expect(AILogger.redactSensitive(input), expected);
+  });
+
+  test('redactSensitive 不保留 structured suffix 中的 Base64 credential', () {
+    const basic = 'dXNlcjpwYXNzd29yZA==';
+
+    final redacted = AILogger.redactSensitive(
+      'url#fragment-secret,next=$basic',
+    );
+
+    expect(redacted, 'url#<redacted>');
+    expect(redacted, isNot(contains(basic)));
+  });
+
+  test('redactSensitive 不保留 opaque、JWT 或长 hex structured value', () {
+    const credentials = [
+      'v8Qm2Rz7Lx4Np9Tw6Yc3Kd5Hs1Jf0BgU',
+      'eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.'
+          'SflKxwRJSMeKKF2QT4fwpMeJf36POk6yJV_adQssw5c',
+      '4f3c2b1a9876543210fedcba1234567890abcdef',
+    ];
+
+    for (final credential in credentials) {
+      final redacted = AILogger.redactSensitive(
+        'url#fragment-secret,next=$credential',
+      );
+      expect(redacted, 'url#<redacted>');
+      expect(redacted, isNot(contains(credential)));
+    }
+  });
+
   test('redactSensitive 不保留裸逗号后的 credential tail', () {
     const input = 'url#fragment-secret,tail-secret';
     final redacted = AILogger.redactSensitive(input);

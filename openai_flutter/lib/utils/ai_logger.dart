@@ -28,6 +28,19 @@ class AILogger {
     r'[,;][a-z_][a-z0-9_.-]*=',
     caseSensitive: false,
   );
+  static final RegExp _fragmentStructuredSeparator = RegExp(r'[,;]');
+  static final RegExp _diagnosticFieldName = RegExp(
+    r'^[a-z_][a-z0-9_.-]*$',
+    caseSensitive: false,
+  );
+  static final RegExp _diagnosticNumber = RegExp(
+    r'^[+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:e[+-]?\d+)?$',
+    caseSensitive: false,
+  );
+  static final RegExp _diagnosticStatus = RegExp(
+    r'^(?:active|cancelled|canceled|complete|completed|disabled|done|enabled|error|failed|failure|false|healthy|idle|inactive|no|none|null|off|ok|on|pending|queued|ready|running|skipped|succeeded|success|timeout|true|unknown|unhealthy|warn|warning|yes)$',
+    caseSensitive: false,
+  );
   static final RegExp _fragmentTrailingPunctuation = RegExp(r'[,;.!?:]+$');
   static final RegExp _sensitiveFragmentMarker = RegExp(
     r'(?:^|[?&=:/._-])(?:authorization|x-api-key|api[_-]?key|key|(?:access|refresh|id|auth|session)[_-]?token|token|(?:client|api|private|secret)[_-]?secret|secret|password|boarding[-_]?pass|credential|signature|sig)(?![a-z0-9])',
@@ -77,12 +90,16 @@ class AILogger {
   static String _redactUrlFragment(Match match) {
     var fragment = match.group(2)!;
     var suffix = '';
+    var unsafeStructuredSuffix = false;
     final structuredField = _fragmentStructuredField.firstMatch(fragment);
     if (structuredField != null) {
       final candidateSuffix = fragment.substring(structuredField.start);
-      if (!_isSensitiveFragment(candidateSuffix)) {
+      if (!_isSensitiveFragment(candidateSuffix) &&
+          _isLowRiskStructuredSuffix(candidateSuffix)) {
         suffix = candidateSuffix;
         fragment = fragment.substring(0, structuredField.start);
+      } else {
+        unsafeStructuredSuffix = true;
       }
     } else {
       suffix =
@@ -91,10 +108,30 @@ class AILogger {
         fragment = fragment.substring(0, fragment.length - suffix.length);
       }
     }
-    if (!_isSensitiveFragment(fragment)) {
+    if (!unsafeStructuredSuffix && !_isSensitiveFragment(fragment)) {
       return match.group(0)!;
     }
     return '${match.group(1)}#<redacted>$suffix';
+  }
+
+  static bool _isLowRiskStructuredSuffix(String suffix) {
+    if (suffix.length < 2) return false;
+    final fields = suffix.substring(1).split(_fragmentStructuredSeparator);
+    for (final field in fields) {
+      final separator = field.indexOf('=');
+      if (separator <= 0 || separator == field.length - 1) return false;
+
+      final name = field.substring(0, separator);
+      final value = field.substring(separator + 1);
+      if (!_diagnosticFieldName.hasMatch(name) ||
+          _isSensitiveFragment(field) ||
+          value.length > 24 ||
+          (!_diagnosticNumber.hasMatch(value) &&
+              !_diagnosticStatus.hasMatch(value))) {
+        return false;
+      }
+    }
+    return true;
   }
 
   static bool _isSensitiveFragment(String fragment) {
