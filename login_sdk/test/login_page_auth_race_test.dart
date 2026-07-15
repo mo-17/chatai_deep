@@ -9,7 +9,9 @@ import 'package:login_sdk/config/login_sdk_config.dart';
 import 'package:login_sdk/config/token_storage.dart';
 import 'package:login_sdk/dao/auth_dao.dart';
 import 'package:login_sdk/dao/login_dao.dart';
+import 'package:login_sdk/pages/forgot_password_page.dart';
 import 'package:login_sdk/pages/login_page.dart';
+import 'package:login_sdk/pages/register_page.dart';
 
 void main() {
   late _MemoryTokenStorage storage;
@@ -177,6 +179,18 @@ void main() {
         reason: 'ready hook 未在有限异步轮询内开始',
       );
 
+      final loginElement = tester.element(find.byType(LoginPage));
+      final registerLink = find.text('注册新账号');
+      await tester.ensureVisible(registerLink);
+      await tester.tap(registerLink);
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 400));
+      final registerWasShown = find.byType(RegisterPage).evaluate().isNotEmpty;
+      final forgotPasswordWasShown =
+          find.byType(ForgotPasswordPage).evaluate().isNotEmpty;
+      final loginRouteStayedCurrent =
+          ModalRoute.of(loginElement)?.isCurrent ?? false;
+
       await tester.pumpWidget(
         const MaterialApp(home: SizedBox.shrink()),
       );
@@ -191,8 +205,30 @@ void main() {
       expect(LoginDao.getAccountHash(), isNull);
       expect(loginHookFired, 0);
       expect(pageSuccessCount, 0);
+      expect(registerWasShown, isFalse);
+      expect(forgotPasswordWasShown, isFalse);
+      expect(loginRouteStayedCurrent, isTrue);
     },
   );
+
+  testWidgets('空闲时注册辅助链接仍可正常进入注册页', (tester) async {
+    await tester.pumpWidget(MaterialApp(
+      home: LoginPage(onLoginSuccess: () {}),
+    ));
+    await tester.pump(const Duration(milliseconds: 400));
+
+    final registerLink = find.text('注册新账号');
+    await tester.ensureVisible(registerLink);
+    await tester.tap(registerLink);
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 400));
+
+    expect(find.byType(RegisterPage), findsOneWidget);
+
+    await tester.pumpWidget(
+      const MaterialApp(home: SizedBox.shrink()),
+    );
+  });
 }
 
 Future<void> _pumpUntil(

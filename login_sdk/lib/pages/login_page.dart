@@ -914,36 +914,56 @@ class _LoginPageState extends State<LoginPage> {
   }
 
   Widget _buildHelperLinks() {
+    final linksEnabled = !_loading;
+    final disabledColor = _p.cardSub.withValues(alpha: 0.45);
+
     return Padding(
       padding: const EdgeInsets.only(top: 14),
       child: Row(
         mainAxisAlignment: MainAxisAlignment.spaceBetween,
         children: [
-          GestureDetector(
-            onTap: () {
-              Navigator.push(
-                context,
-                MaterialPageRoute(builder: (_) => const ForgotPasswordPage()),
-              );
-            },
-            child: Text(
-              _emailMode == 'password' ? '忘记密码？' : '收不到验证码？',
-              style: TextStyle(fontSize: 12, color: _p.cardSub),
+          Semantics(
+            button: true,
+            enabled: linksEnabled,
+            child: GestureDetector(
+              onTap: linksEnabled
+                  ? () {
+                      Navigator.push(
+                        context,
+                        MaterialPageRoute(
+                          builder: (_) => const ForgotPasswordPage(),
+                        ),
+                      );
+                    }
+                  : null,
+              child: Text(
+                _emailMode == 'password' ? '忘记密码？' : '收不到验证码？',
+                style: TextStyle(
+                  fontSize: 12,
+                  color: linksEnabled ? _p.cardSub : disabledColor,
+                ),
+              ),
             ),
           ),
-          GestureDetector(
-            onTap: () {
-              Navigator.push(
-                context,
-                MaterialPageRoute(builder: (_) => const RegisterPage()),
-              );
-            },
-            child: Text(
-              '注册新账号',
-              style: TextStyle(
-                fontSize: 12,
-                color: _p.linkColor,
-                fontWeight: FontWeight.w500,
+          Semantics(
+            button: true,
+            enabled: linksEnabled,
+            child: GestureDetector(
+              onTap: linksEnabled
+                  ? () {
+                      Navigator.push(
+                        context,
+                        MaterialPageRoute(builder: (_) => const RegisterPage()),
+                      );
+                    }
+                  : null,
+              child: Text(
+                '注册新账号',
+                style: TextStyle(
+                  fontSize: 12,
+                  color: linksEnabled ? _p.linkColor : disabledColor,
+                  fontWeight: FontWeight.w500,
+                ),
               ),
             ),
           ),
