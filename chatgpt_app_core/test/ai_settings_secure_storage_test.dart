@@ -477,6 +477,50 @@ void main() {
     );
   });
 
+  test('secure write 已真实落盘但两次回读异常时重启仍保留旧快照', () async {
+    final secureStore = _MemorySecureStore();
+    AISettingsDao.configureSecretStore(secureStore);
+    await AISettingsDao.saveFor('account-a', _settingsWithSecrets('old-safe'));
+    secureStore.failReadCountAfterNextWrite = 2;
+
+    await expectLater(
+      AISettingsDao.saveFor('account-a', _settingsWithSecrets('unconfirmed')),
+      throwsA(isA<AISecretsUnavailableException>()),
+    );
+    expect(
+      secureStore.values[AISettingsDao.secondarySecretKeyFor('account-a')],
+      contains('provider-unconfirmed'),
+    );
+
+    AISettingsDao.resetSecureStateForTest();
+    AISettingsDao.configureSecretStore(secureStore);
+    final loaded = await AISettingsDao.loadForAsync('account-a');
+    expect(loaded.activeProvider.apiKey, 'provider-old-safe');
+    expect(loaded.tavilyApiKey, 'tavily-old-safe');
+  });
+
+  test('secure 回读为不同的更高 generation 时重启仍保留旧快照', () async {
+    final secureStore = _MemorySecureStore();
+    AISettingsDao.configureSecretStore(secureStore);
+    await AISettingsDao.saveFor('account-a', _settingsWithSecrets('old-safe'));
+    secureStore.transformNextWrite = (raw) {
+      final payload = (jsonDecode(raw) as Map).cast<String, dynamic>();
+      payload['generation'] = (payload['generation'] as int) + 100;
+      return jsonEncode(payload);
+    };
+
+    await expectLater(
+      AISettingsDao.saveFor('account-a', _settingsWithSecrets('different')),
+      throwsA(isA<AISecretsUnavailableException>()),
+    );
+
+    AISettingsDao.resetSecureStateForTest();
+    AISettingsDao.configureSecretStore(secureStore);
+    final loaded = await AISettingsDao.loadForAsync('account-a');
+    expect(loaded.activeProvider.apiKey, 'provider-old-safe');
+    expect(loaded.tavilyApiKey, 'tavily-old-safe');
+  });
+
   test('新槽读取异常时不回退并覆盖旧槽，恢复后仍加载较新 generation', () async {
     final secureStore = _MemorySecureStore();
     AISettingsDao.configureSecretStore(secureStore);
@@ -1141,12 +1185,15 @@ class _MemorySecureStore implements SecureKeyValueStore {
   bool failReads = false;
   final Set<String> failReadKeys = {};
   bool failReadAfterNextWrite = false;
+  int failReadCountAfterNextWrite = 0;
   bool _failNextRead = false;
+  int _remainingReadFailures = 0;
   bool failWrites = false;
   int? failOnWriteNumber;
   bool failDeletes = false;
   bool truncateNextWrite = false;
   bool ignoreNextWrite = false;
+  String Function(String value)? transformNextWrite;
   int writeCount = 0;
   void Function()? onWrite;
   Completer<void>? _nextWriteStarted;
@@ -1167,6 +1214,10 @@ class _MemorySecureStore implements SecureKeyValueStore {
 
   @override
   Future<String?> read(String key) async {
+    if (_remainingReadFailures > 0) {
+      _remainingReadFailures--;
+      throw StateError('secure read acknowledgement failed');
+    }
     if (_failNextRead) {
       _failNextRead = false;
       throw StateError('secure read acknowledgement failed');
@@ -1195,10 +1246,18 @@ class _MemorySecureStore implements SecureKeyValueStore {
       values[key] = value.substring(0, value.length.clamp(1, 24).toInt());
       return;
     }
+    final transform = transformNextWrite;
+    transformNextWrite = null;
     if (ignoreNextWrite) {
       ignoreNextWrite = false;
+    } else if (transform != null) {
+      values[key] = transform(value);
     } else {
       values[key] = value;
+    }
+    if (failReadCountAfterNextWrite > 0) {
+      _remainingReadFailures = failReadCountAfterNextWrite;
+      failReadCountAfterNextWrite = 0;
     }
     if (failReadAfterNextWrite) {
       failReadAfterNextWrite = false;

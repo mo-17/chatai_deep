@@ -65,6 +65,9 @@ class AISettingsDao {
   static String _legacyMigrationKeyFor(String hash) =>
       'ai_settings_legacy_migration_v1_$hash';
 
+  static String _verificationQuarantineKeyFor(String hash) =>
+      'ai_settings_secure_verification_quarantine_v1_$hash';
+
   /// 标准 Flutter 壳层注入 Keychain/KeyStore；null 保持历史 HiCache 行为。
   static void configureSecretStore(SecureKeyValueStore? store) {
     if (identical(_secretStore, store)) return;
@@ -890,8 +893,11 @@ class AISettingsDao {
 
   static String? _rawFor(String hash) => _cachedString(keyFor(hash));
 
+  static Object? _cachedValue(String key) =>
+      HiCache.getInstance().prefs?.get(key);
+
   static String? _cachedString(String key) {
-    final value = HiCache.getInstance().prefs?.get(key);
+    final value = _cachedValue(key);
     return value is String ? value : null;
   }
 
@@ -916,10 +922,28 @@ class AISettingsDao {
   static Future<_AISecurePayload?> _readSecurePayload(String hash) async {
     final store = _secretStore;
     if (store == null) return null;
+    final primary = secretKeyFor(hash);
+    final secondary = secondarySecretKeyFor(hash);
+    final quarantineValue = _cachedValue(
+      _verificationQuarantineKeyFor(hash),
+    );
+    final String? quarantinedKey;
+    if (quarantineValue == null) {
+      quarantinedKey = null;
+    } else if (quarantineValue == primary || quarantineValue == secondary) {
+      quarantinedKey = quarantineValue as String;
+    } else {
+      throw AISecretsUnavailableException(
+        hash,
+        corrupt: true,
+        cause: const FormatException('Invalid secure verification quarantine'),
+      );
+    }
     final candidates = <({String key, _AISecurePayload payload})>[];
     Object? readError;
     Object? corruptError;
-    for (final key in [secretKeyFor(hash), secondarySecretKeyFor(hash)]) {
+    for (final key in [primary, secondary]) {
+      if (key == quarantinedKey) continue;
       final String? raw;
       try {
         raw = await store.read(key);
@@ -975,6 +999,17 @@ class AISettingsDao {
     final secondary = secondarySecretKeyFor(hash);
     final active = _activeSecretKeysByAccount[hash];
     final target = active == primary ? secondary : primary;
+    final quarantineKey = _verificationQuarantineKeyFor(hash);
+    try {
+      await _setCacheString(
+        quarantineKey,
+        target,
+        applyTestOverride: false,
+      );
+      if (_cachedString(quarantineKey) != target) return false;
+    } catch (_) {
+      return false;
+    }
     try {
       await store.write(target, raw);
     } catch (_) {
@@ -1003,6 +1038,12 @@ class AISettingsDao {
     } catch (_) {
       return false;
     }
+    try {
+      await _removeCacheKey(quarantineKey);
+    } catch (_) {
+      // remove 可能已经完成删除却报告失败；最终以同步读回状态为准。
+    }
+    if (_cachedValue(quarantineKey) != null) return false;
     _activeSecretKeysByAccount[hash] = target;
     return true;
   }
@@ -1025,13 +1066,19 @@ class AISettingsDao {
     await _setCacheString(keyFor(hash), jsonEncode(json));
   }
 
-  static Future<void> _setCacheString(String key, String value) async {
-    final override = plainWriteOverrideForTest;
-    if (override != null) {
-      if (!await override(key, value)) {
-        throw StateError('AI 设置写入失败: $key');
+  static Future<void> _setCacheString(
+    String key,
+    String value, {
+    bool applyTestOverride = true,
+  }) async {
+    if (applyTestOverride) {
+      final override = plainWriteOverrideForTest;
+      if (override != null) {
+        if (!await override(key, value)) {
+          throw StateError('AI 设置写入失败: $key');
+        }
+        return;
       }
-      return;
     }
     final prefs = HiCache.getInstance().prefs;
     if (prefs == null || !await prefs.setString(key, value)) {
@@ -1072,6 +1119,16 @@ class AISettingsDao {
         await store.delete(key);
       } catch (_) {
         deleted = false;
+      }
+    }
+    if (deleted) {
+      final quarantineKey = _verificationQuarantineKeyFor(hash);
+      if (_cachedValue(quarantineKey) != null) {
+        try {
+          await _removeCacheKey(quarantineKey);
+        } catch (_) {
+          // 两个 secure 槽均已删除；marker 清理失败只留下无害的隔离状态。
+        }
       }
     }
     return deleted;
