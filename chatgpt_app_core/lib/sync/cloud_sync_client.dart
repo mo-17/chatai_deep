@@ -40,27 +40,34 @@ class CloudSyncClient {
   }
 
   Future<CloudSyncResult> syncOnce({bool auto = false}) async {
+    final accountGuard = _LoginAccountGuard.capture();
     final cursor = cursorStore.readCursor();
     final lastPushAt = cursorStore.readLastPushAt();
     final localChanges =
         await localSync.exportChanges(updatedAfter: lastPushAt);
+    accountGuard.verify();
 
-    final pulled = await _pullAllRemoteChanges(cursor);
+    final pulled = await _pullAllRemoteChanges(cursor, accountGuard);
+    accountGuard.verify();
     final merge = await localSync.applyRemoteChanges(pulled.changes);
+    accountGuard.verify();
     await cursorStore.writeCursor(pulled.cursor);
 
+    accountGuard.verify();
     final pushed = localChanges.isEmpty
         ? const PushSyncResult(accepted: [], conflictDetails: [], cursor: 0)
-        : await pushLocalChanges(localChanges);
+        : await _pushLocalChanges(localChanges, accountGuard);
 
     final maxAcceptedAt = pushed.accepted.fold<int>(
       lastPushAt,
       (max, change) => change.updatedAt > max ? change.updatedAt : max,
     );
     if (maxAcceptedAt > lastPushAt) {
+      accountGuard.verify();
       await cursorStore.writeLastPushAt(maxAcceptedAt);
     }
     final finishedAt = nowProvider().millisecondsSinceEpoch;
+    accountGuard.verify();
     await cursorStore.writeLastSyncAt(finishedAt);
 
     final localConflictDetails = [
@@ -84,7 +91,10 @@ class CloudSyncClient {
     );
   }
 
-  Future<PullSyncResult> _pullAllRemoteChanges(int cursor) async {
+  Future<PullSyncResult> _pullAllRemoteChanges(
+    int cursor,
+    _LoginAccountGuard accountGuard,
+  ) async {
     final changes = <SyncChange>[];
     var pullCursor = cursor;
     var resultCursor = cursor;
@@ -93,7 +103,9 @@ class CloudSyncClient {
     const maxPages = 100;
 
     for (var page = 0; page < maxPages; page++) {
+      accountGuard.verify();
       final pageResult = await pullRemoteChanges(cursor: pullCursor);
+      accountGuard.verify();
       changes.addAll(pageResult.changes);
       resultCursor = pageResult.cursor;
       if (!pageResult.hasMore) {
@@ -132,7 +144,13 @@ class CloudSyncClient {
     );
   }
 
-  Future<PushSyncResult> pushLocalChanges(List<SyncChange> changes) async {
+  Future<PushSyncResult> pushLocalChanges(List<SyncChange> changes) =>
+      _pushLocalChanges(changes, null);
+
+  Future<PushSyncResult> _pushLocalChanges(
+    List<SyncChange> changes,
+    _LoginAccountGuard? accountGuard,
+  ) async {
     if (changes.isEmpty) {
       return const PushSyncResult(
         accepted: [],
@@ -144,7 +162,9 @@ class CloudSyncClient {
     final conflicts = <SyncConflictDetail>[];
     var cursor = 0;
     for (final batch in _pushBatches(changes)) {
+      accountGuard?.verify();
       final result = await _pushBatch(batch);
+      accountGuard?.verify();
       accepted.addAll(result.accepted);
       conflicts.addAll(result.conflictDetails);
       if (result.cursor > cursor) cursor = result.cursor;
@@ -253,6 +273,21 @@ class CloudSyncClient {
     if (value is num) return value.toInt();
     if (value is String) return int.tryParse(value) ?? 0;
     return 0;
+  }
+}
+
+final class _LoginAccountGuard {
+  final String? _accountHash;
+
+  const _LoginAccountGuard._(this._accountHash);
+
+  factory _LoginAccountGuard.capture() =>
+      _LoginAccountGuard._(LoginDao.getAccountHash());
+
+  void verify() {
+    if (LoginDao.getAccountHash() != _accountHash) {
+      throw const LoginAccountChangedException();
+    }
   }
 }
 
