@@ -5,7 +5,7 @@ import 'package:flutter/foundation.dart';
 class AILogger {
   static bool _isEnable = true;
   static final RegExp _namedSecret = RegExp(
-    r'''\b(authorization|x-api-key|[a-z0-9_-]*api[_-]?key|(?:access|refresh|id|auth|session)[_-]?token|token|(?:client|api|private|secret)[_-]?secret|secret|password|boarding[-_]?pass)\b(["']?\s*[:=]\s*)(?:"([^"]*)"|'([^']*)'|((?:bearer|basic)\s+)?([^"'\s,;&}\]]+))''',
+    r'''\b(authorization|x-api-key|[a-z0-9_-]*api[_-]?key|(?:access|refresh|id|auth|session)[_-]?token|token|(?:client|api|private|secret)[_-]?secret|secret|password|boarding[-_]?pass)\b(["']?\s*[:=]\s*)(?:"((?:\\.|[^"\\])*)"|'((?:\\.|[^'\\])*)'|((?:bearer|basic)\s+)?([^"'\s,;&}\]]+))''',
     caseSensitive: false,
   );
   static final RegExp _bearerSecret = RegExp(
@@ -17,11 +17,15 @@ class AILogger {
     caseSensitive: false,
   );
   static final RegExp _querySecret = RegExp(
-    r'''([?&]key\s*=\s*)(?:"([^"]*)"|'([^']*)'|([^&#\s]+))''',
+    r'''([?&]key\s*=\s*)(?:"((?:\\.|[^"\\])*)"|'((?:\\.|[^'\\])*)'|([^&#\s]+))''',
     caseSensitive: false,
   );
   static final RegExp _urlFragment = RegExp(
-    r'\b([a-z][a-z0-9+.-]*://[^\s#]*)#[^\s]*',
+    r'((?:\b[a-z][a-z0-9+.-]*://|//|(?:\.\.?/|/))[^\s#]*)#([^\s]*)',
+    caseSensitive: false,
+  );
+  static final RegExp _sensitiveFragmentMarker = RegExp(
+    r'(?:^|[?&=:/._-])(?:authorization|x-api-key|api[_-]?key|key|(?:access|refresh|id|auth|session)[_-]?token|token|(?:client|api|private|secret)[_-]?secret|secret|password|boarding[-_]?pass|credential|signature|sig|bearer|basic|code)(?:$|[?&=:/._-])',
     caseSensitive: false,
   );
 
@@ -56,9 +60,21 @@ class AILogger {
     });
     redacted = redacted.replaceAllMapped(
       _urlFragment,
-      (match) => '${match.group(1)}#<redacted>',
+      (match) => _isSensitiveFragment(match.group(2)!)
+          ? '${match.group(1)}#<redacted>'
+          : match.group(0)!,
     );
     return redacted.replaceAll(_bearerSecret, 'Bearer <redacted>');
+  }
+
+  static bool _isSensitiveFragment(String fragment) {
+    var candidate = fragment;
+    try {
+      candidate = Uri.decodeComponent(fragment);
+    } on FormatException {
+      // 非法 percent-encoding 仍按原文判定，不影响日志输出。
+    }
+    return _sensitiveFragmentMarker.hasMatch(candidate);
   }
 
   /// 截断长文本，避免日志泄漏完整用户/AI 内容
