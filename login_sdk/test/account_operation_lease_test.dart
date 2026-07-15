@@ -252,6 +252,70 @@ void main() {
     expect(LoginDao.getAccountHash(), 'first-account');
     expect(loginHookCalls, 1);
   });
+
+  test('取消当前网络句柄后保存会被拒绝且取消操作幂等', () async {
+    final attempt = LoginDao.beginAuthAttempt();
+
+    LoginDao.cancelAuthAttempt(attempt);
+    LoginDao.cancelAuthAttempt(attempt);
+
+    await expectLater(
+      LoginDao.saveAuthTokenForAttempt(
+        'cancelled-token',
+        attempt: attempt,
+        userName: 'cancelled-user',
+      ),
+      throwsA(isA<LoginAccountChangedException>()),
+    );
+    expect(LoginDao.getBoardingPass(), 'token-a');
+    expect(LoginDao.getAccountHash(), 'account-a');
+  });
+
+  test('取消旧句柄不会误伤更新的网络认证', () async {
+    final oldAttempt = LoginDao.beginAuthAttempt();
+    final newAttempt = LoginDao.beginAuthAttempt();
+
+    LoginDao.cancelAuthAttempt(oldAttempt);
+    await LoginDao.saveAuthTokenForAttempt(
+      'new-token',
+      attempt: newAttempt,
+      userName: 'new-user',
+      extras: const {'accountHash': 'new-account'},
+    );
+
+    expect(LoginDao.getBoardingPass(), 'new-token');
+    expect(LoginDao.getAccountHash(), 'new-account');
+  });
+
+  test('ready hook 阻塞期间取消已消费句柄会回滚且不触发登录 hook', () async {
+    final readyStarted = Completer<void>();
+    final releaseReady = Completer<void>();
+    var loginHookCalls = 0;
+    LoginDao.addLoginReadyHook(() async {
+      readyStarted.complete();
+      await releaseReady.future;
+    });
+    LoginDao.addLoginHook(() => loginHookCalls++);
+    final attempt = LoginDao.beginAuthAttempt();
+
+    final save = LoginDao.saveAuthTokenForAttempt(
+      'cancelled-token',
+      attempt: attempt,
+      userName: 'cancelled-user',
+      extras: const {'accountHash': 'cancelled-account'},
+    );
+    await readyStarted.future;
+    LoginDao.cancelAuthAttempt(attempt);
+    releaseReady.complete();
+
+    await expectLater(
+      save,
+      throwsA(isA<LoginAccountChangedException>()),
+    );
+    expect(LoginDao.getBoardingPass(), 'token-a');
+    expect(LoginDao.getAccountHash(), 'account-a');
+    expect(loginHookCalls, 0);
+  });
 }
 
 final class _MemoryTokenStorage implements TokenStorage {

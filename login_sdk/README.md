@@ -120,6 +120,7 @@ LoginDao.addLogoutHook(() => AISettingsProvider.instance.resetIfConfigured());
 | `requestPasswordReset(userName)` | 忘记密码 第 1 步：让后端发 reset code |
 | `confirmPasswordReset(userName, code, newPassword)` | 忘记密码 第 2 步：用 code 重置密码 |
 | `beginAuthAttempt()` | 在发起网络认证前创建不可伪造、仅可消费一次的认证句柄 |
+| `cancelAuthAttempt(attempt)` | 页面/请求生命周期结束时同步取消仍为 current 的句柄；旧句柄取消不影响新认证 |
 | `saveAuthTokenForAttempt(token, {required attempt, ...})` | 仅在句柄仍代表最新认证意图时写入网络响应 |
 | `saveAuthToken(token, {userName, avatar, imoocId})` | 宿主可信账号切换的兼容 API；会使待处理网络句柄失效 |
 | `getBoardingPass()` → `String?` | 当前 token（用于 `hiHeaders`） |
@@ -132,12 +133,16 @@ LoginDao.addLogoutHook(() => AISettingsProvider.instance.resetIfConfigured());
 
 ```dart
 final attempt = LoginDao.beginAuthAttempt();
-final result = await authApi.login(...);
-await LoginDao.saveAuthTokenForAttempt(
-  result.token,
-  attempt: attempt,
-  userName: result.userName,
-);
+try {
+  final result = await authApi.login(...);
+  await LoginDao.saveAuthTokenForAttempt(
+    result.token,
+    attempt: attempt,
+    userName: result.userName,
+  );
+} finally {
+  LoginDao.cancelAuthAttempt(attempt);
+}
 ```
 
 当期间发生更新的登录/注册、游客登录、可信 `saveAuthToken` 或 `logOut` 时，
@@ -145,6 +150,10 @@ await LoginDao.saveAuthTokenForAttempt(
 hook。`saveAuthToken` 保留原签名和行为，供宿主已确认的本地账号切换流程使用，
 不要直接用于不受信任的网络响应。SDK 内置的密码/验证码/Apple/Huawei 登录和
 注册，以及 `LoginDao.login` / `register`，均已使用 last-attempt-wins 保护。
+`cancelAuthAttempt` 是同步、幂等且 generation-aware 的：仅 current 句柄会推进
+generation，迟到的旧页面 `dispose/finally` 不会误伤更新请求。内置登录/注册页会
+保存 active handle，并在 `dispose` 和请求 `finally` 自动取消；若页面在安全存储
+或 ready hook 等待期间被销毁，队列 guard 会回滚资料且不触发登录成功 hook。
 
 ### `BackendConfig`（`dao/backend_host.dart`）
 

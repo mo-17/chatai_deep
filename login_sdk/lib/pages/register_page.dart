@@ -37,6 +37,7 @@ class _RegisterPageState extends State<RegisterPage> {
   CountryCode _countryCode = supportedCountries[0];
   String _code = '';
   bool _loading = false;
+  LoginAuthAttempt? _activeAuthAttempt;
   bool _agreementChecked = false;
   String? _error;
   late RegisterPageStyle _activeStyle;
@@ -99,6 +100,11 @@ class _RegisterPageState extends State<RegisterPage> {
 
   @override
   void dispose() {
+    final authAttempt = _activeAuthAttempt;
+    _activeAuthAttempt = null;
+    if (authAttempt != null) {
+      LoginDao.cancelAuthAttempt(authAttempt);
+    }
     _identifierCtrl.dispose();
     _passwordCtrl.dispose();
     super.dispose();
@@ -106,6 +112,19 @@ class _RegisterPageState extends State<RegisterPage> {
 
   String get _fullPhoneIdentifier =>
       '${_countryCode.dialCode} ${_identifierCtrl.text.trim()}';
+
+  LoginAuthAttempt _beginGlobalAuthAttempt() {
+    final attempt = LoginDao.beginAuthAttempt();
+    _activeAuthAttempt = attempt;
+    return attempt;
+  }
+
+  void _releaseGlobalAuthAttempt(LoginAuthAttempt attempt) {
+    LoginDao.cancelAuthAttempt(attempt);
+    if (identical(_activeAuthAttempt, attempt)) {
+      _activeAuthAttempt = null;
+    }
+  }
 
   Future<void> _handleSendCode() async {
     final identifier = _identifierCtrl.text.trim();
@@ -149,7 +168,7 @@ class _RegisterPageState extends State<RegisterPage> {
       _loading = true;
       _error = null;
     });
-    final authAttempt = LoginDao.beginAuthAttempt();
+    final authAttempt = _beginGlobalAuthAttempt();
     try {
       final result = await AuthDaoBridge.instance.register(
         channel: channel,
@@ -157,19 +176,21 @@ class _RegisterPageState extends State<RegisterPage> {
         code: _code,
         password: password,
       );
-      if (!mounted) return;
+      if (!mounted || !(ModalRoute.of(context)?.isCurrent ?? false)) return;
       await LoginDao.saveAuthTokenForAttempt(
         result.token,
         attempt: authAttempt,
         userName: result.extra['userName']?.toString(),
         avatar: result.extra['avatar']?.toString(),
       );
-      if (mounted) NavigatorUtil.goToHome(context);
+      if (!mounted || !(ModalRoute.of(context)?.isCurrent ?? false)) return;
+      NavigatorUtil.goToHome(context);
     } on LoginAccountChangedException {
       return;
     } catch (e) {
       if (mounted) setState(() => _error = e.toString());
     } finally {
+      _releaseGlobalAuthAttempt(authAttempt);
       if (mounted) setState(() => _loading = false);
     }
   }

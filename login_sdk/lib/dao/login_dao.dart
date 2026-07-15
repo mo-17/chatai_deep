@@ -197,6 +197,16 @@ class LoginDao {
     return LoginAuthAttempt._(generation);
   }
 
+  /// 取消仍代表当前认证意图的句柄。
+  ///
+  /// 操作同步且幂等；旧句柄的 generation 已落后时不会使更新的认证失效。
+  /// 已在 mutation 队列中消费的当前句柄同样可以取消，后续 guard 会回滚写入。
+  static void cancelAuthAttempt(LoginAuthAttempt attempt) {
+    if (attempt._generation == _authAttemptGeneration) {
+      _invalidateAuthAttempts();
+    }
+  }
+
   /// 保存仍属于当前用户意图的网络认证响应。
   ///
   /// 校验与消费发生在账号 mutation 队列内、资料写入前。过期或已消费的

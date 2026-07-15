@@ -40,6 +40,7 @@ class _LoginPageState extends State<LoginPage> {
   String _code = '';
   bool _loading = false;
   int _loginAttempt = 0;
+  LoginAuthAttempt? _activeAuthAttempt;
   String? _error;
   bool _agreementChecked = false;
   late LoginPageStyle _activeStyle;
@@ -107,6 +108,11 @@ class _LoginPageState extends State<LoginPage> {
 
   @override
   void dispose() {
+    final authAttempt = _activeAuthAttempt;
+    _activeAuthAttempt = null;
+    if (authAttempt != null) {
+      LoginDao.cancelAuthAttempt(authAttempt);
+    }
     _loginAttempt++;
     _identifierCtrl.dispose();
     _passwordCtrl.dispose();
@@ -132,6 +138,19 @@ class _LoginPageState extends State<LoginPage> {
     return attempt;
   }
 
+  LoginAuthAttempt _beginGlobalAuthAttempt() {
+    final attempt = LoginDao.beginAuthAttempt();
+    _activeAuthAttempt = attempt;
+    return attempt;
+  }
+
+  void _releaseGlobalAuthAttempt(LoginAuthAttempt attempt) {
+    LoginDao.cancelAuthAttempt(attempt);
+    if (identical(_activeAuthAttempt, attempt)) {
+      _activeAuthAttempt = null;
+    }
+  }
+
   bool _ownsAttempt(int attempt) => mounted && attempt == _loginAttempt;
 
   bool _isCurrentAttempt(int attempt) =>
@@ -152,7 +171,7 @@ class _LoginPageState extends State<LoginPage> {
     }
     final attempt = _beginLoginAttempt();
     if (attempt == null) return;
-    final authAttempt = LoginDao.beginAuthAttempt();
+    final authAttempt = _beginGlobalAuthAttempt();
     try {
       final result = await AuthDaoBridge.instance.loginByPassword(
         channel: 'email',
@@ -168,6 +187,7 @@ class _LoginPageState extends State<LoginPage> {
         setState(() => _error = e.toString());
       }
     } finally {
+      _releaseGlobalAuthAttempt(authAttempt);
       _finishLoginAttempt(attempt);
     }
   }
@@ -218,7 +238,7 @@ class _LoginPageState extends State<LoginPage> {
     final fullId = channel == 'sms' ? _fullPhoneIdentifier : identifier;
     final attempt = _beginLoginAttempt();
     if (attempt == null) return;
-    final authAttempt = LoginDao.beginAuthAttempt();
+    final authAttempt = _beginGlobalAuthAttempt();
     try {
       final result = await AuthDaoBridge.instance.loginByCode(
         channel: channel,
@@ -234,6 +254,7 @@ class _LoginPageState extends State<LoginPage> {
         setState(() => _error = e.toString());
       }
     } finally {
+      _releaseGlobalAuthAttempt(authAttempt);
       _finishLoginAttempt(attempt);
     }
   }
@@ -261,7 +282,7 @@ class _LoginPageState extends State<LoginPage> {
   Future<void> _handleAppleLogin() async {
     final attempt = _beginLoginAttempt();
     if (attempt == null) return;
-    final authAttempt = LoginDao.beginAuthAttempt();
+    final authAttempt = _beginGlobalAuthAttempt();
     try {
       final appleResult = await _appleService.signIn();
       final authResult = await AuthDaoBridge.instance.appleLogin(
@@ -305,6 +326,7 @@ class _LoginPageState extends State<LoginPage> {
         );
       }
     } finally {
+      _releaseGlobalAuthAttempt(authAttempt);
       _finishLoginAttempt(attempt);
     }
   }
@@ -312,7 +334,7 @@ class _LoginPageState extends State<LoginPage> {
   Future<void> _handleHuaweiLogin() async {
     final attempt = _beginLoginAttempt();
     if (attempt == null) return;
-    final authAttempt = LoginDao.beginAuthAttempt();
+    final authAttempt = _beginGlobalAuthAttempt();
     try {
       final hwResult = await _huaweiService.signInWithQuickLogin();
       final authResult = await AuthDaoBridge.instance.huaweiLogin(
@@ -356,6 +378,7 @@ class _LoginPageState extends State<LoginPage> {
         );
       }
     } finally {
+      _releaseGlobalAuthAttempt(authAttempt);
       _finishLoginAttempt(attempt);
     }
   }
