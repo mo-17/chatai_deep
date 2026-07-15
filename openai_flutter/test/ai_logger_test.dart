@@ -134,4 +134,23 @@ void main() {
     expect(AILogger.redactSensitive(errorCode), errorCode);
     expect(AILogger.redactSensitive(basicUsage), basicUsage);
   });
+
+  test('redactSensitive 保留 JSON URL fragment 后的安全字段', () {
+    const input = '{"url":"https://e/cb#fragment-secret","safe":1}';
+    const expected = '{"url":"https://e/cb#<redacted>","safe":1}';
+    expect(AILogger.redactSensitive(input), expected);
+  });
+
+  test('redactSensitive 保留 fragment 后的逗号诊断字段', () {
+    const input = 'url#fragment-secret,next=ok';
+    const expected = 'url#<redacted>,next=ok';
+    expect(AILogger.redactSensitive(input), expected);
+  });
+
+  test('redactSensitive 不保留裸逗号后的 credential tail', () {
+    const input = 'url#fragment-secret,tail-secret';
+    final redacted = AILogger.redactSensitive(input);
+    expect(redacted, 'url#<redacted>');
+    expect(redacted, isNot(contains('tail-secret')));
+  });
 }

@@ -21,10 +21,14 @@ class AILogger {
     caseSensitive: false,
   );
   static final RegExp _urlFragment = RegExp(
-    r'([^\s#]*)#([^\s#]+)',
+    r'''([^\s#]*)#([^\s#"'()\[\]{}<>]+)''',
     caseSensitive: false,
   );
-  static final RegExp _fragmentLogSuffix = RegExp(r'''["',;)\]}>]+$''');
+  static final RegExp _fragmentStructuredField = RegExp(
+    r'[,;][a-z_][a-z0-9_.-]*=',
+    caseSensitive: false,
+  );
+  static final RegExp _fragmentTrailingPunctuation = RegExp(r'[,;]+$');
   static final RegExp _sensitiveFragmentMarker = RegExp(
     r'(?:^|[?&=:/._-])(?:authorization|x-api-key|api[_-]?key|key|(?:access|refresh|id|auth|session)[_-]?token|token|(?:client|api|private|secret)[_-]?secret|secret|password|boarding[-_]?pass|credential|signature|sig)(?![a-z0-9])',
     caseSensitive: false,
@@ -72,11 +76,19 @@ class AILogger {
 
   static String _redactUrlFragment(Match match) {
     var fragment = match.group(2)!;
-    final suffix = _fragmentLogSuffix.firstMatch(fragment)?.group(0) ?? '';
-    if (suffix.isNotEmpty) {
-      fragment = fragment.substring(0, fragment.length - suffix.length);
+    var suffix = '';
+    final structuredField = _fragmentStructuredField.firstMatch(fragment);
+    if (structuredField != null) {
+      suffix = fragment.substring(structuredField.start);
+      fragment = fragment.substring(0, structuredField.start);
+    } else {
+      suffix =
+          _fragmentTrailingPunctuation.firstMatch(fragment)?.group(0) ?? '';
+      if (suffix.isNotEmpty) {
+        fragment = fragment.substring(0, fragment.length - suffix.length);
+      }
     }
-    if (fragment.isEmpty || !_isSensitiveFragment(fragment)) {
+    if (!_isSensitiveFragment(fragment)) {
       return match.group(0)!;
     }
     return '${match.group(1)}#<redacted>$suffix';
