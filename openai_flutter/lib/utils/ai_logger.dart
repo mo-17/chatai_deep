@@ -21,11 +21,16 @@ class AILogger {
     caseSensitive: false,
   );
   static final RegExp _urlFragment = RegExp(
-    r'((?:\b[a-z][a-z0-9+.-]*://|//|(?:\.\.?/|/))[^\s#]*)#([^\s]*)',
+    r'([^\s#]*)#([^\s#]+)',
     caseSensitive: false,
   );
+  static final RegExp _fragmentLogSuffix = RegExp(r'''["',;)\]}>]+$''');
   static final RegExp _sensitiveFragmentMarker = RegExp(
-    r'(?:^|[?&=:/._-])(?:authorization|x-api-key|api[_-]?key|key|(?:access|refresh|id|auth|session)[_-]?token|token|(?:client|api|private|secret)[_-]?secret|secret|password|boarding[-_]?pass|credential|signature|sig|bearer|basic|code)(?:$|[?&=:/._-])',
+    r'(?:^|[?&=:/._-])(?:authorization|x-api-key|api[_-]?key|key|(?:access|refresh|id|auth|session)[_-]?token|token|(?:client|api|private|secret)[_-]?secret|secret|password|boarding[-_]?pass|credential|signature|sig)(?![a-z0-9])',
+    caseSensitive: false,
+  );
+  static final RegExp _sensitiveFragmentCredential = RegExp(
+    r'(?:^|[?&=:/])(?:code=|(?:bearer|basic)(?:\s+|=))',
     caseSensitive: false,
   );
 
@@ -60,11 +65,21 @@ class AILogger {
     });
     redacted = redacted.replaceAllMapped(
       _urlFragment,
-      (match) => _isSensitiveFragment(match.group(2)!)
-          ? '${match.group(1)}#<redacted>'
-          : match.group(0)!,
+      _redactUrlFragment,
     );
     return redacted.replaceAll(_bearerSecret, 'Bearer <redacted>');
+  }
+
+  static String _redactUrlFragment(Match match) {
+    var fragment = match.group(2)!;
+    final suffix = _fragmentLogSuffix.firstMatch(fragment)?.group(0) ?? '';
+    if (suffix.isNotEmpty) {
+      fragment = fragment.substring(0, fragment.length - suffix.length);
+    }
+    if (fragment.isEmpty || !_isSensitiveFragment(fragment)) {
+      return match.group(0)!;
+    }
+    return '${match.group(1)}#<redacted>$suffix';
   }
 
   static bool _isSensitiveFragment(String fragment) {
@@ -74,7 +89,8 @@ class AILogger {
     } on FormatException {
       // 非法 percent-encoding 仍按原文判定，不影响日志输出。
     }
-    return _sensitiveFragmentMarker.hasMatch(candidate);
+    return _sensitiveFragmentMarker.hasMatch(candidate) ||
+        _sensitiveFragmentCredential.hasMatch(candidate);
   }
 
   /// 截断长文本，避免日志泄漏完整用户/AI 内容

@@ -97,4 +97,41 @@ void main() {
     const message = 'https://docs.example/guide#troubleshooting';
     expect(AILogger.redactSensitive(message), message);
   });
+
+  test('redactSensitive 隐去 bare-relative 和 fragment-only URI 的敏感 fragment', () {
+    expect(
+      AILogger.redactSensitive('callback#fragment-secret'),
+      'callback#<redacted>',
+    );
+    expect(
+      AILogger.redactSensitive('#fragment-secret'),
+      '#<redacted>',
+    );
+  });
+
+  test('redactSensitive 隐去 fragment 时保留尾随日志标点', () {
+    expect(
+      AILogger.redactSensitive(
+        'https://example.com/callback#fragment-secret"',
+      ),
+      'https://example.com/callback#<redacted>"',
+    );
+    expect(
+      AILogger.redactSensitive(
+        'https://example.com/callback#fragment-secret,',
+      ),
+      'https://example.com/callback#<redacted>,',
+    );
+    expect(
+      AILogger.redactSensitive('(#fragment-secret)'),
+      '(#<redacted>)',
+    );
+  });
+
+  test('redactSensitive 保留 error-code 和 basic-usage 普通 anchor', () {
+    const errorCode = 'https://docs.example/guide#error-code';
+    const basicUsage = '#basic-usage';
+    expect(AILogger.redactSensitive(errorCode), errorCode);
+    expect(AILogger.redactSensitive(basicUsage), basicUsage);
+  });
 }
