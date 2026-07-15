@@ -115,16 +115,36 @@ LoginDao.addLogoutHook(() => AISettingsProvider.instance.resetIfConfigured());
 ### `LoginDao`（全部为静态方法）
 | 方法 | 用途 |
 |---|---|
-| `login({userName, password})` | 旧密码登录，命中后自动落盘 + 触发 login hook |
-| `register({userName, password})` | 注册成功后自动登录 |
+| `login({userName, password})` | 旧密码登录；多个请求并发时仅最后一次认证意图可落盘 |
+| `register({userName, password})` | 注册成功后自动登录；与 `login` 共用 last-attempt-wins 保护 |
 | `requestPasswordReset(userName)` | 忘记密码 第 1 步：让后端发 reset code |
 | `confirmPasswordReset(userName, code, newPassword)` | 忘记密码 第 2 步：用 code 重置密码 |
-| `saveAuthToken(token, {userName, avatar, imoocId})` | auth_kit 通道登录成功后手动写入 token |
+| `beginAuthAttempt()` | 在发起网络认证前创建不可伪造、仅可消费一次的认证句柄 |
+| `saveAuthTokenForAttempt(token, {required attempt, ...})` | 仅在句柄仍代表最新认证意图时写入网络响应 |
+| `saveAuthToken(token, {userName, avatar, imoocId})` | 宿主可信账号切换的兼容 API；会使待处理网络句柄失效 |
 | `getBoardingPass()` → `String?` | 当前 token（用于 `hiHeaders`） |
 | `getUserInfo()` → `Map?` | 包含 boardingPass / userName / avatar / imoocId / accountHash |
 | `getAccountHash()` → `String?` | 多账号数据隔离用的稳定 hash（基于 userName.hashCode） |
 | `logOut()` | 触发 logout hooks → 清缓存 → `NavigatorUtil.goToLogin()` |
 | `addLoginHook(cb)` / `addLogoutHook(cb)` | 见上文 |
+
+网络认证响应必须成对使用 attempt API：
+
+```dart
+final attempt = LoginDao.beginAuthAttempt();
+final result = await authApi.login(...);
+await LoginDao.saveAuthTokenForAttempt(
+  result.token,
+  attempt: attempt,
+  userName: result.userName,
+);
+```
+
+当期间发生更新的登录/注册、游客登录、可信 `saveAuthToken` 或 `logOut` 时，
+旧响应会抛出 `LoginAccountChangedException`，不会写回旧账号，也不会触发登录
+hook。`saveAuthToken` 保留原签名和行为，供宿主已确认的本地账号切换流程使用，
+不要直接用于不受信任的网络响应。SDK 内置的密码/验证码/Apple/Huawei 登录和
+注册，以及 `LoginDao.login` / `register`，均已使用 last-attempt-wins 保护。
 
 ### `BackendConfig`（`dao/backend_host.dart`）
 

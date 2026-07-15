@@ -125,6 +125,133 @@ void main() {
     expect(LoginDao.isGuest(), isTrue);
     expect(LoginDao.getAccountHash(), 'guest');
   });
+
+  test('退出登录会同步使已排队的网络登录句柄失效', () async {
+    final entered = Completer<void>();
+    final release = Completer<void>();
+    final lease = LoginDao.runWithStableAccount<void>(
+      expectedAccountHash: 'account-a',
+      action: () async {
+        entered.complete();
+        await release.future;
+      },
+    );
+    await entered.future;
+
+    final attempt = LoginDao.beginAuthAttempt();
+    final staleSave = LoginDao.saveAuthTokenForAttempt(
+      'late-token',
+      attempt: attempt,
+      userName: 'late-user',
+    );
+    final logout = LoginDao.logOut();
+
+    release.complete();
+    await lease;
+    await expectLater(
+      staleSave,
+      throwsA(isA<LoginAccountChangedException>()),
+    );
+    await logout;
+    expect(LoginDao.getBoardingPass(), isNull);
+  });
+
+  test('新网络登录句柄会使较旧且已排队的句柄失效', () async {
+    final entered = Completer<void>();
+    final release = Completer<void>();
+    final lease = LoginDao.runWithStableAccount<void>(
+      expectedAccountHash: 'account-a',
+      action: () async {
+        entered.complete();
+        await release.future;
+      },
+    );
+    await entered.future;
+
+    final oldAttempt = LoginDao.beginAuthAttempt();
+    final oldSave = LoginDao.saveAuthTokenForAttempt(
+      'old-token',
+      attempt: oldAttempt,
+      userName: 'old-user',
+    );
+    final newAttempt = LoginDao.beginAuthAttempt();
+    final newSave = LoginDao.saveAuthTokenForAttempt(
+      'new-token',
+      attempt: newAttempt,
+      userName: 'new-user',
+      extras: const {'accountHash': 'new-account'},
+    );
+
+    release.complete();
+    await lease;
+    await expectLater(
+      oldSave,
+      throwsA(isA<LoginAccountChangedException>()),
+    );
+    await newSave;
+    expect(LoginDao.getBoardingPass(), 'new-token');
+    expect(LoginDao.getAccountHash(), 'new-account');
+  });
+
+  test('可信 saveAuthToken 会同步使已排队的网络句柄失效', () async {
+    final entered = Completer<void>();
+    final release = Completer<void>();
+    final lease = LoginDao.runWithStableAccount<void>(
+      expectedAccountHash: 'account-a',
+      action: () async {
+        entered.complete();
+        await release.future;
+      },
+    );
+    await entered.future;
+
+    final attempt = LoginDao.beginAuthAttempt();
+    final staleSave = LoginDao.saveAuthTokenForAttempt(
+      'late-token',
+      attempt: attempt,
+      userName: 'late-user',
+    );
+    final trustedSave = LoginDao.saveAuthToken(
+      'trusted-token',
+      userName: 'trusted-user',
+      extras: const {'accountHash': 'trusted-account'},
+    );
+
+    release.complete();
+    await lease;
+    await expectLater(
+      staleSave,
+      throwsA(isA<LoginAccountChangedException>()),
+    );
+    await trustedSave;
+    expect(LoginDao.getBoardingPass(), 'trusted-token');
+    expect(LoginDao.getAccountHash(), 'trusted-account');
+  });
+
+  test('同一个网络登录句柄只能成功消费一次', () async {
+    var loginHookCalls = 0;
+    LoginDao.addLoginHook(() => loginHookCalls++);
+    final attempt = LoginDao.beginAuthAttempt();
+
+    await LoginDao.saveAuthTokenForAttempt(
+      'first-token',
+      attempt: attempt,
+      userName: 'first-user',
+      extras: const {'accountHash': 'first-account'},
+    );
+    await expectLater(
+      LoginDao.saveAuthTokenForAttempt(
+        'second-token',
+        attempt: attempt,
+        userName: 'second-user',
+      ),
+      throwsA(isA<LoginAccountChangedException>()),
+    );
+
+    expect(LoginDao.getBoardingPass(), 'first-token');
+    expect(LoginDao.getAccountHash(), 'first-account');
+    expect(loginHookCalls, 1);
+  });
 }
 
 final class _MemoryTokenStorage implements TokenStorage {

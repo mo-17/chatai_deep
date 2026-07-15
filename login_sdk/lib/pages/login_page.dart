@@ -39,6 +39,7 @@ class _LoginPageState extends State<LoginPage> {
   CountryCode _countryCode = supportedCountries[0];
   String _code = '';
   bool _loading = false;
+  int _loginAttempt = 0;
   String? _error;
   bool _agreementChecked = false;
   late LoginPageStyle _activeStyle;
@@ -106,6 +107,7 @@ class _LoginPageState extends State<LoginPage> {
 
   @override
   void dispose() {
+    _loginAttempt++;
     _identifierCtrl.dispose();
     _passwordCtrl.dispose();
     super.dispose();
@@ -120,6 +122,27 @@ class _LoginPageState extends State<LoginPage> {
 
   // ---- Actions ----
 
+  int? _beginLoginAttempt() {
+    if (_loading || !mounted) return null;
+    final attempt = ++_loginAttempt;
+    setState(() {
+      _loading = true;
+      _error = null;
+    });
+    return attempt;
+  }
+
+  bool _ownsAttempt(int attempt) => mounted && attempt == _loginAttempt;
+
+  bool _isCurrentAttempt(int attempt) =>
+      _ownsAttempt(attempt) && (ModalRoute.of(context)?.isCurrent ?? false);
+
+  void _finishLoginAttempt(int attempt) {
+    if (_ownsAttempt(attempt)) {
+      setState(() => _loading = false);
+    }
+  }
+
   Future<void> _handlePasswordLogin() async {
     final identifier = _identifierCtrl.text.trim();
     final password = _passwordCtrl.text;
@@ -127,21 +150,25 @@ class _LoginPageState extends State<LoginPage> {
       setState(() => _error = '请输入邮箱地址和密码');
       return;
     }
-    setState(() {
-      _loading = true;
-      _error = null;
-    });
+    final attempt = _beginLoginAttempt();
+    if (attempt == null) return;
+    final authAttempt = LoginDao.beginAuthAttempt();
     try {
       final result = await AuthDaoBridge.instance.loginByPassword(
         channel: 'email',
         identifier: identifier,
         password: password,
       );
-      await _onLoginSuccess(result);
+      if (!_isCurrentAttempt(attempt)) return;
+      await _onLoginSuccess(result, attempt, authAttempt);
+    } on LoginAccountChangedException {
+      return;
     } catch (e) {
-      setState(() => _error = e.toString());
+      if (_isCurrentAttempt(attempt)) {
+        setState(() => _error = e.toString());
+      }
     } finally {
-      setState(() => _loading = false);
+      _finishLoginAttempt(attempt);
     }
   }
 
@@ -189,40 +216,52 @@ class _LoginPageState extends State<LoginPage> {
     }
     final channel = _tab == 'email' ? 'email' : 'sms';
     final fullId = channel == 'sms' ? _fullPhoneIdentifier : identifier;
-    setState(() {
-      _loading = true;
-      _error = null;
-    });
+    final attempt = _beginLoginAttempt();
+    if (attempt == null) return;
+    final authAttempt = LoginDao.beginAuthAttempt();
     try {
       final result = await AuthDaoBridge.instance.loginByCode(
         channel: channel,
         identifier: fullId,
         code: _code,
       );
-      await _onLoginSuccess(result);
+      if (!_isCurrentAttempt(attempt)) return;
+      await _onLoginSuccess(result, attempt, authAttempt);
+    } on LoginAccountChangedException {
+      return;
     } catch (e) {
-      setState(() => _error = e.toString());
+      if (_isCurrentAttempt(attempt)) {
+        setState(() => _error = e.toString());
+      }
     } finally {
-      setState(() => _loading = false);
+      _finishLoginAttempt(attempt);
     }
   }
 
-  Future<void> _onLoginSuccess(LoginResult result) async {
-    LoginDao.saveAuthToken(
+  Future<void> _onLoginSuccess(
+    LoginResult result,
+    int attempt,
+    LoginAuthAttempt authAttempt,
+  ) async {
+    if (!_isCurrentAttempt(attempt)) return;
+    await LoginDao.saveAuthTokenForAttempt(
       result.token,
+      attempt: authAttempt,
       userName: result.extra['userName']?.toString(),
       avatar: result.extra['avatar']?.toString(),
       imoocId: result.extra['imoocId']?.toString(),
     );
-    if (mounted) {
-      widget.onLoginSuccess?.call();
-      if (widget.onLoginSuccess == null) {
-        NavigatorUtil.goToHome(context);
-      }
+    if (!mounted || !_isCurrentAttempt(attempt)) return;
+    widget.onLoginSuccess?.call();
+    if (widget.onLoginSuccess == null) {
+      NavigatorUtil.goToHome(context);
     }
   }
 
   Future<void> _handleAppleLogin() async {
+    final attempt = _beginLoginAttempt();
+    if (attempt == null) return;
+    final authAttempt = LoginDao.beginAuthAttempt();
     try {
       final appleResult = await _appleService.signIn();
       final authResult = await AuthDaoBridge.instance.appleLogin(
@@ -230,8 +269,9 @@ class _LoginPageState extends State<LoginPage> {
         authorizationCode: appleResult.authorizationCode,
         fullName: appleResult.fullName,
       );
+      if (!mounted || !_isCurrentAttempt(attempt)) return;
       if (authResult.needBinding) {
-        if (mounted) {
+        if (mounted && _isCurrentAttempt(attempt)) {
           _showBindPage(
             bindTicket: authResult.bindTicket!,
             provider: 'apple',
@@ -240,27 +280,39 @@ class _LoginPageState extends State<LoginPage> {
         return;
       }
       if (authResult.token != null) {
-        LoginDao.saveAuthToken(authResult.token!,
-            userName: authResult.extra?['userName']?.toString(),
-            avatar: authResult.extra?['avatar']?.toString());
-        if (mounted) {
+        if (!mounted || !_isCurrentAttempt(attempt)) return;
+        await LoginDao.saveAuthTokenForAttempt(
+          authResult.token!,
+          attempt: authAttempt,
+          userName: authResult.extra?['userName']?.toString(),
+          avatar: authResult.extra?['avatar']?.toString(),
+        );
+        if (!mounted || !_isCurrentAttempt(attempt)) return;
+        if (_isCurrentAttempt(attempt)) {
           widget.onLoginSuccess?.call();
           if (widget.onLoginSuccess == null) {
             NavigatorUtil.goToHome(context);
           }
         }
       }
+    } on LoginAccountChangedException {
+      return;
     } catch (e) {
-      if (mounted) {
+      if (mounted && _isCurrentAttempt(attempt)) {
         ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(
               content: Text('Apple 登录暂未接入'), backgroundColor: Colors.orange),
         );
       }
+    } finally {
+      _finishLoginAttempt(attempt);
     }
   }
 
   Future<void> _handleHuaweiLogin() async {
+    final attempt = _beginLoginAttempt();
+    if (attempt == null) return;
+    final authAttempt = LoginDao.beginAuthAttempt();
     try {
       final hwResult = await _huaweiService.signInWithQuickLogin();
       final authResult = await AuthDaoBridge.instance.huaweiLogin(
@@ -268,8 +320,9 @@ class _LoginPageState extends State<LoginPage> {
         authCode: hwResult.authCode,
         accessToken: hwResult.accessToken,
       );
+      if (!mounted || !_isCurrentAttempt(attempt)) return;
       if (authResult.needBinding) {
-        if (mounted) {
+        if (mounted && _isCurrentAttempt(attempt)) {
           _showBindPage(
             bindTicket: authResult.bindTicket!,
             provider: 'huawei',
@@ -278,23 +331,32 @@ class _LoginPageState extends State<LoginPage> {
         return;
       }
       if (authResult.token != null) {
-        LoginDao.saveAuthToken(authResult.token!,
-            userName: authResult.extra?['userName']?.toString(),
-            avatar: authResult.extra?['avatar']?.toString());
-        if (mounted) {
+        if (!mounted || !_isCurrentAttempt(attempt)) return;
+        await LoginDao.saveAuthTokenForAttempt(
+          authResult.token!,
+          attempt: authAttempt,
+          userName: authResult.extra?['userName']?.toString(),
+          avatar: authResult.extra?['avatar']?.toString(),
+        );
+        if (!mounted || !_isCurrentAttempt(attempt)) return;
+        if (_isCurrentAttempt(attempt)) {
           widget.onLoginSuccess?.call();
           if (widget.onLoginSuccess == null) {
             NavigatorUtil.goToHome(context);
           }
         }
       }
+    } on LoginAccountChangedException {
+      return;
     } catch (e) {
-      if (mounted) {
+      if (mounted && _isCurrentAttempt(attempt)) {
         ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(
               content: Text('华为登录暂未接入'), backgroundColor: Colors.orange),
         );
       }
+    } finally {
+      _finishLoginAttempt(attempt);
     }
   }
 
@@ -810,12 +872,21 @@ class _LoginPageState extends State<LoginPage> {
   }
 
   Future<void> _handleGuestLogin() async {
-    await LoginDao.loginAsGuest();
-    if (mounted) {
+    final attempt = _beginLoginAttempt();
+    if (attempt == null) return;
+    try {
+      await LoginDao.loginAsGuest();
+      if (!mounted || !_isCurrentAttempt(attempt)) return;
       widget.onLoginSuccess?.call();
       if (widget.onLoginSuccess == null) {
         NavigatorUtil.goToHome(context);
       }
+    } catch (error) {
+      if (_isCurrentAttempt(attempt)) {
+        setState(() => _error = '$error');
+      }
+    } finally {
+      _finishLoginAttempt(attempt);
     }
   }
 

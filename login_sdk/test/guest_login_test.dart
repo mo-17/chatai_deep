@@ -1,4 +1,9 @@
+import 'dart:async';
+import 'dart:convert';
+
 import 'package:flutter_test/flutter_test.dart';
+import 'package:http/http.dart' as http;
+import 'package:http/testing.dart';
 import 'package:login_sdk/config/login_sdk_config.dart';
 import 'package:login_sdk/config/token_storage.dart';
 import 'package:login_sdk/dao/header_util.dart';
@@ -9,6 +14,7 @@ import 'package:login_sdk/dao/login_dao.dart';
 /// 用于在不初始化 HiCache 的情况下走真实 LoginDao 代码路径。
 class _MemoryTokenStorage implements TokenStorage {
   Map<String, dynamic>? _profile;
+  bool throwAfterNextWrite = false;
 
   @override
   Future<String?> readToken() async => readTokenSync();
@@ -36,6 +42,10 @@ class _MemoryTokenStorage implements TokenStorage {
       'accountHash': userName.hashCode,
       ...extras,
     };
+    if (throwAfterNextWrite) {
+      throwAfterNextWrite = false;
+      throw StateError('write failed after mutation');
+    }
   }
 
   @override
@@ -47,6 +57,7 @@ void main() {
   var logoutNavigated = 0;
 
   setUp(() {
+    LoginDao.resetHooksForTest();
     storage = _MemoryTokenStorage();
     logoutNavigated = 0;
     LoginSdkConfig.install(LoginSdkConfig(
@@ -61,6 +72,7 @@ void main() {
   });
 
   tearDown(() {
+    LoginDao.resetHooksForTest();
     LoginSdkConfig.reset();
   });
 
@@ -86,8 +98,171 @@ void main() {
       expect(loginHookFired, 1);
     });
 
-    test('游客的 hiHeaders 带哨兵 boarding-pass（后端会拒绝，由 UI 层屏蔽入口）',
-        () async {
+    test('异步 ready hook 在旧同步 hook 前完成', () async {
+      final order = <String>[];
+      LoginDao.addLoginReadyHook(() async {
+        await Future<void>.delayed(Duration.zero);
+        order.add('ready');
+      });
+      LoginDao.addLoginHook(() => order.add('legacy'));
+
+      await LoginDao.loginAsGuest();
+
+      expect(order, ['ready', 'legacy']);
+    });
+
+    test('异步 ready hook 失败会阻止旧同步 hook 继续加载未就绪数据', () async {
+      var legacyHookCalled = false;
+      LoginDao.addLoginReadyHook(() async {
+        throw StateError('secure storage unavailable');
+      });
+      LoginDao.addLoginHook(() => legacyHookCalled = true);
+
+      await expectLater(LoginDao.loginAsGuest(), throwsStateError);
+
+      expect(legacyHookCalled, isFalse);
+      expect(LoginDao.getBoardingPass(), isNull);
+      expect(LoginDao.isGuest(), isFalse);
+    });
+
+    test('storage 写入半提交后抛错会回滚到此前登录态', () async {
+      await storage.writeProfile(token: 'old-token', userName: 'old-user');
+      storage.throwAfterNextWrite = true;
+
+      await expectLater(
+        LoginDao.saveAuthToken('new-token', userName: 'new-user'),
+        throwsStateError,
+      );
+
+      expect(LoginDao.getBoardingPass(), 'old-token');
+      expect(LoginDao.getUserInfo()?['userName'], 'old-user');
+    });
+
+    test('并发登录事务串行，前一失败回滚不会覆盖后一成功登录', () async {
+      await storage.writeProfile(token: 'old-token', userName: 'old-user');
+      final hookStarted = Completer<void>();
+      final releaseHook = Completer<void>();
+      LoginDao.addLoginReadyHook(() async {
+        if (LoginDao.getBoardingPass() != 'token-a') return;
+        hookStarted.complete();
+        await releaseHook.future;
+        throw StateError('account-a prepare failed');
+      });
+
+      final loginA = LoginDao.saveAuthToken(
+        'token-a',
+        userName: 'account-a',
+        extras: const {'accountHash': 'account-a'},
+      );
+      await hookStarted.future;
+      final loginB = LoginDao.saveAuthToken(
+        'token-b',
+        userName: 'account-b',
+        extras: const {'accountHash': 'account-b'},
+      );
+      releaseHook.complete();
+
+      await expectLater(loginA, throwsStateError);
+      await loginB;
+      expect(LoginDao.getBoardingPass(), 'token-b');
+      expect(LoginDao.getAccountHash(), 'account-b');
+    });
+
+    test('网络登录等待期间退出后，迟到响应不能重新写回登录态', () async {
+      final requestStarted = Completer<void>();
+      final responseGate = Completer<http.Response>();
+      var loginHookFired = 0;
+      LoginDao.addLoginHook(() => loginHookFired++);
+      Future<http.Response> handler(http.Request _) {
+        requestStarted.complete();
+        return responseGate.future;
+      }
+
+      Object? loginError;
+
+      await http.runWithClient(() async {
+        final login = LoginDao.login(
+          userName: 'late-user',
+          password: 'password',
+        );
+        await requestStarted.future;
+        await LoginDao.logOut();
+        responseGate.complete(_loginResponse(
+          token: 'late-token',
+          userName: 'late-user',
+        ));
+        try {
+          await login;
+        } catch (error) {
+          loginError = error;
+        }
+      }, () => MockClient(handler));
+
+      expect(loginError, isA<LoginAccountChangedException>());
+      expect(LoginDao.getBoardingPass(), isNull);
+      expect(LoginDao.getAccountHash(), isNull);
+      expect(loginHookFired, 0);
+    });
+
+    test('较旧 register 响应晚于新 login 时不能覆盖新账号', () async {
+      final oldResponse = Completer<http.Response>();
+      final newResponse = Completer<http.Response>();
+      final bothRequestsStarted = Completer<void>();
+      var requestCount = 0;
+      var loginHookFired = 0;
+      LoginDao.addLoginHook(() => loginHookFired++);
+      Future<http.Response> handler(http.Request request) {
+        final body = jsonDecode(request.body) as Map<String, dynamic>;
+        requestCount++;
+        if (requestCount == 2) bothRequestsStarted.complete();
+        return body['userName'] == 'old-user'
+            ? oldResponse.future
+            : newResponse.future;
+      }
+
+      Object? oldError;
+      Object? newError;
+
+      await http.runWithClient(() async {
+        final oldAttempt = LoginDao.register(
+          userName: 'old-user',
+          password: 'password',
+        );
+        final newAttempt = LoginDao.login(
+          userName: 'new-user',
+          password: 'password',
+        );
+        await bothRequestsStarted.future;
+
+        newResponse.complete(_loginResponse(
+          token: 'new-token',
+          userName: 'new-user',
+        ));
+        try {
+          await newAttempt;
+        } catch (error) {
+          newError = error;
+        }
+
+        oldResponse.complete(_loginResponse(
+          token: 'old-token',
+          userName: 'old-user',
+        ));
+        try {
+          await oldAttempt;
+        } catch (error) {
+          oldError = error;
+        }
+      }, () => MockClient(handler));
+
+      expect(newError, isNull);
+      expect(oldError, isA<LoginAccountChangedException>());
+      expect(LoginDao.getBoardingPass(), 'new-token');
+      expect(LoginDao.getAccountHash(), 'new-user');
+      expect(loginHookFired, 1);
+    });
+
+    test('游客的 hiHeaders 带哨兵 boarding-pass（后端会拒绝，由 UI 层屏蔽入口）', () async {
       await LoginDao.loginAsGuest();
       expect(hiHeaders()['boarding-pass'], LoginDao.kGuestToken);
     });
@@ -113,3 +288,20 @@ void main() {
     });
   });
 }
+
+http.Response _loginResponse({
+  required String token,
+  required String userName,
+}) =>
+    http.Response(
+      jsonEncode({
+        'code': 0,
+        'data': token,
+        'extra': {
+          'userName': userName,
+          'accountHash': userName,
+        },
+      }),
+      200,
+      headers: const {'content-type': 'application/json; charset=utf-8'},
+    );

@@ -7,6 +7,17 @@ import 'package:login_sdk/config/token_storage.dart';
 import 'package:login_sdk/dao/backend_host.dart';
 import 'package:login_sdk/dao/header_util.dart';
 
+/// 一次网络认证响应的不可伪造句柄。
+///
+/// 构造器和状态均只在本库内可见；调用方只能通过
+/// [LoginDao.beginAuthAttempt] 获取句柄，并消费一次。
+final class LoginAuthAttempt {
+  LoginAuthAttempt._(this._generation);
+
+  final int _generation;
+  bool _consumed = false;
+}
+
 ///登录接口
 class LoginDao {
   /// 同步存储读取的 key。与 [HiCacheTokenStorage._kUserInfo] 保持一致，
@@ -17,6 +28,7 @@ class LoginDao {
   static final List<VoidCallback> _onLoginHooks = [];
   static final List<Future<void> Function()> _onLoginReadyHooks = [];
   static Future<void> _authMutationTail = Future<void>.value();
+  static int _authAttemptGeneration = 0;
   static bool hooksRegistered = false;
 
   /// 把必须绑定同一账号完成的短操作与登录/登出放进同一串行队列。
@@ -84,6 +96,7 @@ class LoginDao {
     String userName,
     String password,
   ) async {
+    final attempt = beginAuthAttempt();
     final cfg = LoginSdkConfig.instance;
     final uri = BackendConfig.buildUri(path);
     final headers = <String, String>{
@@ -108,6 +121,7 @@ class LoginDao {
       userName: result.userName,
       avatar: result.avatar,
       extras: result.extras,
+      attempt: attempt,
     );
   }
 
@@ -177,20 +191,54 @@ class LoginDao {
     return profile?['accountHash']?.toString();
   }
 
+  /// 开始一次网络认证；新句柄会同步使所有更早的句柄失效。
+  static LoginAuthAttempt beginAuthAttempt() {
+    final generation = ++_authAttemptGeneration;
+    return LoginAuthAttempt._(generation);
+  }
+
+  /// 保存仍属于当前用户意图的网络认证响应。
+  ///
+  /// 校验与消费发生在账号 mutation 队列内、资料写入前。过期或已消费的
+  /// 句柄会抛出 [LoginAccountChangedException]，且不会写资料或触发登录 hook。
+  static Future<void> saveAuthTokenForAttempt(
+    String token, {
+    required LoginAuthAttempt attempt,
+    String? userName,
+    String? avatar,
+    String? imoocId,
+    Map<String, dynamic> extras = const {},
+  }) {
+    final merged = <String, dynamic>{
+      if (imoocId != null) 'imoocId': imoocId,
+      ...extras,
+    };
+    return _commitLoginProfile(
+      storage: LoginSdkConfig.instance.storage,
+      token: token,
+      userName: userName ?? '',
+      avatar: avatar,
+      extras: merged,
+      attempt: attempt,
+    );
+  }
+
   /// 多通道认证（auth_kit_flutter）登录成功后写 token。
-  /// `extras` 用于扩展字段（如 imoocId、phone 等）。
+  /// `extras` 用于扩展字段（如 imoocId、phone 等）。这是宿主可信账号切换的
+  /// 兼容 API；网络响应应使用 [saveAuthTokenForAttempt]。
   static Future<void> saveAuthToken(
     String token, {
     String? userName,
     String? avatar,
     String? imoocId,
     Map<String, dynamic> extras = const {},
-  }) async {
+  }) {
+    _invalidateAuthAttempts();
     final merged = <String, dynamic>{
       if (imoocId != null) 'imoocId': imoocId,
       ...extras,
     };
-    await _commitLoginProfile(
+    return _commitLoginProfile(
       storage: LoginSdkConfig.instance.storage,
       token: token,
       userName: userName ?? '',
@@ -206,8 +254,9 @@ class LoginDao {
   ///游客模式登录：**不访问后端**，写入本地哨兵 token + 游客资料即可进入主界面。
   ///accountHash 固定为 'guest'（extras 覆盖默认的 userName.hashCode），
   ///游客的本地数据（会话库 / AI 设置）独立于任何正式账号。
-  static Future<void> loginAsGuest() async {
-    await _commitLoginProfile(
+  static Future<void> loginAsGuest() {
+    _invalidateAuthAttempts();
+    return _commitLoginProfile(
       storage: LoginSdkConfig.instance.storage,
       token: kGuestToken,
       userName: '游客',
@@ -219,26 +268,33 @@ class LoginDao {
   static bool isGuest() => getUserInfo()?['guest'] == true;
 
   ///登出
-  static Future<void> logOut() => _enqueueAuthMutation(() async {
-        for (final cb in _onLogoutHooks) {
-          try {
-            cb();
-          } catch (_) {}
-        }
-        await LoginSdkConfig.instance.storage.clear();
-        LoginSdkConfig.instance.onLogoutNavigate();
-      });
+  static Future<void> logOut() {
+    _invalidateAuthAttempts();
+    return _enqueueAuthMutation(() async {
+      for (final cb in _onLogoutHooks) {
+        try {
+          cb();
+        } catch (_) {}
+      }
+      await LoginSdkConfig.instance.storage.clear();
+      LoginSdkConfig.instance.onLogoutNavigate();
+    });
+  }
 
-  static Future<void> _runLoginHooks() async {
+  static Future<void> _runLoginHooks({LoginAuthAttempt? attempt}) async {
+    _ensureAttemptCurrent(attempt);
     for (final cb in _onLoginReadyHooks) {
       // ready hook 负责安全存储等登录前置条件；失败必须交给 UI 重试，
       // 不能继续执行旧同步 hook 并用未就绪的空数据覆盖持久化状态。
       await cb();
+      _ensureAttemptCurrent(attempt);
     }
     for (final cb in _onLoginHooks) {
+      _ensureAttemptCurrent(attempt);
       try {
         cb();
       } catch (_) {}
+      _ensureAttemptCurrent(attempt);
     }
   }
 
@@ -248,9 +304,13 @@ class LoginDao {
     required String userName,
     String? avatar,
     Map<String, dynamic> extras = const {},
+    LoginAuthAttempt? attempt,
   }) =>
       _enqueueAuthMutation(() async {
         final previous = await _profileSnapshot(storage);
+        if (attempt != null) {
+          _consumeAuthAttempt(attempt);
+        }
         var profileWriteCompleted = false;
         try {
           await storage.writeProfile(
@@ -260,7 +320,8 @@ class LoginDao {
             extras: extras,
           );
           profileWriteCompleted = true;
-          await _runLoginHooks();
+          _ensureAttemptCurrent(attempt);
+          await _runLoginHooks(attempt: attempt);
         } catch (error, stackTrace) {
           // MigratingTokenStorage 在 verified 账号的 secure 写入失败时，已经
           // 自行恢复旧安全快照或写 tombstone 安全登出。此处若再走通用回滚，
@@ -282,6 +343,24 @@ class LoginDao {
           Error.throwWithStackTrace(error, stackTrace);
         }
       });
+
+  static void _invalidateAuthAttempts() {
+    _authAttemptGeneration++;
+  }
+
+  static void _consumeAuthAttempt(LoginAuthAttempt attempt) {
+    if (attempt._consumed || attempt._generation != _authAttemptGeneration) {
+      throw const LoginAccountChangedException();
+    }
+    attempt._consumed = true;
+  }
+
+  static void _ensureAttemptCurrent(LoginAuthAttempt? attempt) {
+    if (attempt != null &&
+        (!attempt._consumed || attempt._generation != _authAttemptGeneration)) {
+      throw const LoginAccountChangedException();
+    }
+  }
 
   static Future<void> _enqueueAuthMutation(
     Future<void> Function() action,
@@ -340,6 +419,7 @@ class LoginDao {
   /// 测试隔离；生产代码不调用。
   @visibleForTesting
   static void resetHooksForTest() {
+    _invalidateAuthAttempts();
     _onLogoutHooks.clear();
     _onLoginHooks.clear();
     _onLoginReadyHooks.clear();

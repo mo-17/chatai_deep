@@ -145,7 +145,11 @@ class _RegisterPageState extends State<RegisterPage> {
     }
     final channel = _tab == 'email' ? 'email' : 'sms';
     final fullId = channel == 'sms' ? _fullPhoneIdentifier : identifier;
-    setState(() { _loading = true; _error = null; });
+    setState(() {
+      _loading = true;
+      _error = null;
+    });
+    final authAttempt = LoginDao.beginAuthAttempt();
     try {
       final result = await AuthDaoBridge.instance.register(
         channel: channel,
@@ -153,14 +157,18 @@ class _RegisterPageState extends State<RegisterPage> {
         code: _code,
         password: password,
       );
-      LoginDao.saveAuthToken(
+      if (!mounted) return;
+      await LoginDao.saveAuthTokenForAttempt(
         result.token,
+        attempt: authAttempt,
         userName: result.extra['userName']?.toString(),
         avatar: result.extra['avatar']?.toString(),
       );
       if (mounted) NavigatorUtil.goToHome(context);
+    } on LoginAccountChangedException {
+      return;
     } catch (e) {
-      setState(() => _error = e.toString());
+      if (mounted) setState(() => _error = e.toString());
     } finally {
       if (mounted) setState(() => _loading = false);
     }
@@ -278,8 +286,8 @@ class _RegisterPageState extends State<RegisterPage> {
                       child: bgMeta.isSolidCard
                           ? card
                           : BackdropFilter(
-                              filter: ui.ImageFilter.blur(
-                                  sigmaX: 24, sigmaY: 24),
+                              filter:
+                                  ui.ImageFilter.blur(sigmaX: 24, sigmaY: 24),
                               child: card,
                             ),
                     ),
@@ -316,8 +324,7 @@ class _RegisterPageState extends State<RegisterPage> {
         alignment: Alignment.centerLeft,
         child: IconButton(
           onPressed: () => Navigator.pop(context),
-          icon: Icon(Icons.arrow_back_ios_new,
-              color: _p.heroText, size: 18),
+          icon: Icon(Icons.arrow_back_ios_new, color: _p.heroText, size: 18),
           padding: EdgeInsets.zero,
           constraints: const BoxConstraints(),
         ),
@@ -387,14 +394,13 @@ class _RegisterPageState extends State<RegisterPage> {
                         strokeWidth: 2, color: _p.submitFg),
                   )
                 : const Text('创建账号',
-                    style: TextStyle(
-                        fontSize: 14, fontWeight: FontWeight.w500)),
+                    style:
+                        TextStyle(fontSize: 14, fontWeight: FontWeight.w500)),
           ),
         ),
         if (_error != null) ...[
           const SizedBox(height: 10),
-          Text(_error!,
-              style: TextStyle(color: _p.errorColor, fontSize: 13)),
+          Text(_error!, style: TextStyle(color: _p.errorColor, fontSize: 13)),
         ],
       ],
     );
@@ -478,8 +484,7 @@ class _RegisterPageState extends State<RegisterPage> {
       hintStyle: TextStyle(fontSize: 14, color: _p.cardSub),
       filled: _p.inputBg.a > 0,
       fillColor: _p.inputBg,
-      contentPadding:
-          const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
+      contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
       border: OutlineInputBorder(
         borderRadius: BorderRadius.circular(_theme.borderRadius),
         borderSide: BorderSide(color: _p.cardBorderSoft),
@@ -552,15 +557,13 @@ class _RegisterPageState extends State<RegisterPage> {
                   TextSpan(
                     text: '《用户协议》',
                     style: TextStyle(
-                        color: _p.agreementLink,
-                        fontWeight: FontWeight.w500),
+                        color: _p.agreementLink, fontWeight: FontWeight.w500),
                   ),
                   const TextSpan(text: '和'),
                   TextSpan(
                     text: '《隐私政策》',
                     style: TextStyle(
-                        color: _p.agreementLink,
-                        fontWeight: FontWeight.w500),
+                        color: _p.agreementLink, fontWeight: FontWeight.w500),
                   ),
                 ],
               ),
