@@ -291,6 +291,14 @@ class _AssistantMemoryPageState extends State<AssistantMemoryPage> {
       source: memory?.source ?? 'manual',
       createdAt: memory?.createdAt ?? now,
       updatedAt: now,
+      memoryId: memory?.memoryId ?? '',
+      assistantSyncId: memory?.assistantSyncId ?? '',
+      sourceType: memory?.sourceType ?? 'manual',
+      sourceConversationId: memory?.sourceConversationId ?? '',
+      sourceMessageId: memory?.sourceMessageId ?? '',
+      status: memory?.status ?? AssistantMemoryStatus.active,
+      confirmedByUser: memory?.confirmedByUser ?? true,
+      revision: memory?.revision ?? 1,
     );
     if (mounted) {
       setState(() {

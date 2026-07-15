@@ -91,10 +91,23 @@ class AssistantDao implements IAssistant, ITable {
   }
 
   @override
-  Future<int> deleteAssistant(int id) {
+  Future<int> deleteAssistant(int id) async {
     // 不级联清理会话的 assistantId：引用悬空时 getAssistant 返回 null，
     // 会话自然回落「无助手」（见 ConversationPage._loadAssistant）。
-    return storage.db.delete(tableName, where: 'id = ?', whereArgs: [id]);
+    return storage.db.transaction((txn) async {
+      final memoryTable = await txn.rawQuery(
+        "select name from sqlite_master where type = 'table' and name = ?",
+        const ['tb_assistant_memory'],
+      );
+      if (memoryTable.isNotEmpty) {
+        await txn.delete(
+          'tb_assistant_memory',
+          where: 'assistantId = ?',
+          whereArgs: [id],
+        );
+      }
+      return txn.delete(tableName, where: 'id = ?', whereArgs: [id]);
+    });
   }
 
   @override

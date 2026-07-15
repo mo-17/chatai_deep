@@ -119,6 +119,45 @@ void main() {
     expect(dao.items.single.content, '用户喜欢简短回答');
   });
 
+  testWidgets('编辑不会丢失稳定身份、来源和 archived 生命周期', (tester) async {
+    await dao.saveMemory(AssistantMemoryModel(
+      assistantId: 1,
+      content: '已归档记忆',
+      source: 'reply',
+      memoryId: 'memory-stable-id',
+      assistantSyncId: 'assistant-stable-id',
+      sourceType: 'assistant_reply',
+      sourceConversationId: '42',
+      sourceMessageId: '1700000000000',
+      status: AssistantMemoryStatus.archived,
+      confirmedByUser: true,
+      revision: 3,
+      createdAt: 123456,
+    ));
+    final original = dao.items.single;
+    await pumpPage(tester, AssistantModel(id: 1, name: '艾琳'));
+
+    await tester.tap(find.text('已归档记忆'));
+    await tester.pump(const Duration(milliseconds: 300));
+    await tester.enterText(find.widgetWithText(TextField, '记忆内容'), '归档后编辑');
+    await tester.tap(find.widgetWithText(FilledButton, '保存'));
+    await tester.pump(const Duration(milliseconds: 300));
+
+    final saved = dao.items.single;
+    expect(saved.id, original.id);
+    expect(saved.assistantId, original.assistantId);
+    expect(saved.source, 'reply');
+    expect(saved.createdAt, 123456);
+    expect(saved.memoryId, 'memory-stable-id');
+    expect(saved.assistantSyncId, 'assistant-stable-id');
+    expect(saved.sourceType, 'assistant_reply');
+    expect(saved.sourceConversationId, '42');
+    expect(saved.sourceMessageId, '1700000000000');
+    expect(saved.status, AssistantMemoryStatus.archived);
+    expect(saved.confirmedByUser, isTrue);
+    expect(saved.revision, 3);
+  });
+
   testWidgets('长期记忆页展示自动建议来源', (tester) async {
     await dao.saveMemory(AssistantMemoryModel(
       assistantId: 1,
