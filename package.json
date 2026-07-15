@@ -10,6 +10,8 @@
     "backend:cloudflare:dev": "wrangler dev --config cloudflare/backend/wrangler.jsonc",
     "backend:cloudflare:deploy": "wrangler deploy --config cloudflare/backend/wrangler.jsonc",
     "backend:cloudflare:check": "tsc --noEmit -p cloudflare/backend/tsconfig.json",
+    "backend:cloudflare:test": "node --test cloudflare/backend/src/container-env.test.ts",
+    "backend:cloudflare:supervisor-test": "sh cloudflare/backend/test/start-container-supervisor.test.sh",
     "backend:cloudflare:types": "wrangler types --config cloudflare/backend/wrangler.jsonc cloudflare/backend/worker-configuration.d.ts",
     "admin:dev": "pnpm --filter chatgpt_admin run dev",
     "admin:build": "pnpm --filter chatgpt_admin run build",

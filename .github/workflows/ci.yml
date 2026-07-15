@@ -1,4 +1,7 @@
 name: ci
+permissions:
+  contents: read
+
 on:
   push:
     branches: [main]
@@ -9,7 +12,7 @@ jobs:
     runs-on: ubuntu-latest
     services:
       postgres:
-        image: postgres:16
+        image: postgres:16@sha256:eb4759788a2182f08257135e61a34f2cfc3c2914079f3465d64ee62350f4d081
         env:
           POSTGRES_USER: huangzhibin
           POSTGRES_DB: chatgpt_flutter
@@ -25,7 +28,122 @@ jobs:
       - run: pnpm install --frozen-lockfile
       - run: pnpm node:lint
       - run: pnpm --filter chatgpt_backend run build
-      - run: pnpm --filter chatgpt_backend run test -- --runInBand
+      - name: Compiled production runner applies migrations to empty PostgreSQL
+        shell: bash
+        run: |
+          set -o pipefail
+          pnpm --filter chatgpt_backend migration:run:prod | tee /tmp/migration-prod.log
+          grep -Fq 'Applied 3 migration(s)' /tmp/migration-prod.log
+        env:
+          DB_HOST: localhost
+          DB_PORT: '5432'
+          DB_USER: huangzhibin
+          DB_PASSWORD: ''
+          DB_NAME: chatgpt_flutter
+          DB_POOL_MAX: '1'
+      - name: Source migration runner verifies no-op
+        shell: bash
+        run: |
+          set -o pipefail
+          pnpm --filter chatgpt_backend migration:run | tee /tmp/migration-source.log
+          grep -Fq 'No migrations are pending' /tmp/migration-source.log
+        env:
+          DB_HOST: localhost
+          DB_PORT: '5432'
+          DB_USER: huangzhibin
+          DB_PASSWORD: ''
+          DB_NAME: chatgpt_flutter
+          DB_POOL_MAX: '1'
+      - name: Cloudflare worker and startup policy gates
+        shell: bash
+        run: |
+          pnpm backend:cloudflare:test
+          pnpm backend:cloudflare:check
+          timeout 60s pnpm backend:cloudflare:supervisor-test
+          ! env REQUIRE_PRODUCTION_MODE=true NODE_ENV=prod \
+            DB_SYNCHRONIZE=false sh cloudflare/backend/start-container.sh
+          ! env REQUIRE_PRODUCTION_MODE=true NODE_ENV=production \
+            DB_SYNCHRONIZE=true sh cloudflare/backend/start-container.sh
+          ! env REQUIRE_PRODUCTION_MODE=true NODE_ENV=production \
+            DB_SYNCHRONIZE=false \
+            JWT_SECRET=ci-test-jwt-secret-0123456789-abcdefghijklmnopqrstuvwxyz \
+            ADMIN_DEFAULT_PASSWORD=ci-test-admin-password \
+            sh cloudflare/backend/start-container.sh
+          ! env REQUIRE_PRODUCTION_MODE=true NODE_ENV=production \
+            DB_SYNCHRONIZE=false \
+            JWT_SECRET=ci-test-jwt-secret-0123456789-abcdefghijklmnopqrstuvwxyz \
+            APP_SECRET_KEY=ci-test-app-key-0123456789-abcdefghijklmnopqrstuvwxyz \
+            sh cloudflare/backend/start-container.sh
+          ! env REQUIRE_PRODUCTION_MODE=true NODE_ENV=production \
+            DB_SYNCHRONIZE=false REQUIRE_PERSISTENT_UPLOADS=true \
+            JWT_SECRET=ci-test-jwt-secret-0123456789-abcdefghijklmnopqrstuvwxyz \
+            APP_SECRET_KEY=ci-test-app-key-0123456789-abcdefghijklmnopqrstuvwxyz \
+            ADMIN_DEFAULT_PASSWORD=ci-test-admin-password \
+            sh cloudflare/backend/start-container.sh
+      - name: Generated Cloudflare types are current
+        run: |
+          pnpm backend:cloudflare:types
+          git diff --exit-code -- cloudflare/backend/worker-configuration.d.ts
+      - name: Build and smoke production backend image
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker build -f Dockerfile.cloudflare-backend \
+            -t chatai-backend:ci .
+          docker run -d --name chatai-backend-ci --network host \
+            -e NODE_ENV=production \
+            -e DB_SYNCHRONIZE=false \
+            -e REQUIRE_PRODUCTION_MODE=true \
+            -e DB_HOST=127.0.0.1 \
+            -e DB_PORT=5432 \
+            -e DB_USER=huangzhibin \
+            -e DB_PASSWORD= \
+            -e DB_NAME=chatgpt_flutter \
+            -e DB_SSL=false \
+            -e JWT_SECRET=ci-test-jwt-secret-0123456789-abcdefghijklmnopqrstuvwxyz \
+            -e APP_SECRET_KEY=ci-test-app-key-0123456789-abcdefghijklmnopqrstuvwxyz \
+            -e ADMIN_DEFAULT_PASSWORD=ci-test-admin-password \
+            chatai-backend:ci
+          cleanup() {
+            docker logs chatai-backend-ci || true
+            docker rm -f chatai-backend-ci >/dev/null 2>&1 || true
+          }
+          trap cleanup EXIT
+          for attempt in {1..30}; do
+            if curl -fsS http://127.0.0.1:3000/healthz; then
+              exit 0
+            fi
+            if ! docker inspect -f '{{.State.Running}}' chatai-backend-ci | \
+              grep -q true; then
+              exit 1
+            fi
+            sleep 1
+          done
+          exit 1
+      - name: Baseline migration greenfield and legacy-data gates
+        run: >-
+          pnpm --filter chatgpt_backend exec jest
+          src/database/core-baseline.postgres.spec.ts --runInBand
+        env:
+          BASELINE_PG_INTEGRATION: '1'
+          DB_HOST: localhost
+          DB_PORT: '5432'
+          DB_USER: huangzhibin
+          DB_PASSWORD: ''
+          DB_NAME: chatgpt_flutter
+          DB_POOL_MAX: '1'
+      - name: Sync v2 real PostgreSQL concurrency gates
+        run: >-
+          pnpm --filter chatgpt_backend exec jest
+          src/sync-v2/sync-v2.postgres.spec.ts --runInBand
+        env:
+          SYNC_V2_PG_INTEGRATION: '1'
+          DB_HOST: localhost
+          DB_PORT: '5432'
+          DB_USER: huangzhibin
+          DB_PASSWORD: ''
+          DB_NAME: chatgpt_flutter
+      - run: pnpm --filter chatgpt_backend exec jest --runInBand
       - run: pnpm --filter chatgpt_admin run typecheck
       - run: pnpm --filter chatgpt_admin run build
         env:

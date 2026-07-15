@@ -6,6 +6,7 @@ import { join } from 'path';
 import { AiGlobalConfig } from './ai-global-config.entity';
 import { AiProvider } from './ai-provider.entity';
 import { AiModel } from './ai-model.entity';
+import { resolveUploadsDir } from '../common/uploads-path';
 
 @Injectable()
 export class AdminAiGlobalService {
@@ -96,7 +97,7 @@ export class AdminAiGlobalService {
       throw new BadRequestException('头像文件不能超过 2MB');
     }
 
-    const dir = join(process.cwd(), 'uploads', 'avatars');
+    const dir = join(resolveUploadsDir(), 'avatars');
     if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
 
     const filename = `avatar.${ext}`;

@@ -4,6 +4,10 @@ import { AddAppVersionSha2561784020000000 } from '../migrations/1784020000000-Ad
 import { CreateCoreBaseline1783990000000 } from '../migrations/1783990000000-CreateCoreBaseline';
 import { CreateSyncV21784000000000 } from '../migrations/1784000000000-CreateSyncV2';
 import { buildPostgresOptions } from './postgres-options';
+import {
+  MIGRATION_ADVISORY_LOCK_KEYS,
+  runMigrationsWithAdvisoryLock,
+} from './migration-runner';
 
 const describePostgres =
   process.env.BASELINE_PG_INTEGRATION === '1' ? describe : describe.skip;
@@ -83,6 +87,77 @@ describePostgres('Core baseline PostgreSQL migration', () => {
         ]),
       );
       expect(tables).toHaveLength(19);
+    });
+  });
+
+  it('两个生产 runner 并发启动时只执行一次 migration 链', async () => {
+    await withDatabase(async (left, database) => {
+      const right = new DataSource({
+        ...baseOptions,
+        database,
+        migrations: [
+          CreateCoreBaseline1783990000000,
+          CreateSyncV21784000000000,
+          AddAppVersionSha2561784020000000,
+        ],
+      });
+      await right.initialize();
+
+      try {
+        const results = await Promise.all([
+          runMigrationsWithAdvisoryLock(left),
+          runMigrationsWithAdvisoryLock(right),
+        ]);
+
+        expect(results.map((rows) => rows.length).sort()).toEqual([0, 3]);
+        const ledger = await left.query<Array<{ count: number }>>(
+          'SELECT count(*)::int AS count FROM "migrations"',
+        );
+        expect(ledger[0].count).toBe(3);
+      } finally {
+        if (right.isInitialized) await right.destroy();
+      }
+    });
+  });
+
+  it('等待 migration lock 超时后回滚，锁释放后可立即重试', async () => {
+    await withDatabase(async (blockerSource, database) => {
+      const runnerSource = new DataSource({
+        ...baseOptions,
+        database,
+        migrations: [
+          CreateCoreBaseline1783990000000,
+          CreateSyncV21784000000000,
+          AddAppVersionSha2561784020000000,
+        ],
+      });
+      await runnerSource.initialize();
+      const blocker = blockerSource.createQueryRunner();
+      await blocker.connect();
+      await blocker.startTransaction();
+      await blocker.query('SELECT pg_advisory_xact_lock($1, $2)', [
+        ...MIGRATION_ADVISORY_LOCK_KEYS,
+      ]);
+
+      try {
+        await expect(
+          runMigrationsWithAdvisoryLock(runnerSource, undefined, {
+            lockTimeoutMs: 100,
+          }),
+        ).rejects.toMatchObject({ code: '57014' });
+
+        await blocker.rollbackTransaction();
+        const migrations = await runMigrationsWithAdvisoryLock(
+          runnerSource,
+          undefined,
+          { lockTimeoutMs: 1000 },
+        );
+        expect(migrations).toHaveLength(3);
+      } finally {
+        if (blocker.isTransactionActive) await blocker.rollbackTransaction();
+        await blocker.release();
+        if (runnerSource.isInitialized) await runnerSource.destroy();
+      }
     });
   });
 

@@ -9,8 +9,8 @@ import { NestExpressApplication } from '@nestjs/platform-express';
 import { json } from 'express';
 import { AppModule } from './app.module';
 import { AllExceptionsFilter } from './common/all-exceptions.filter';
-import { join } from 'path';
 import { existsSync, mkdirSync } from 'fs';
+import { resolveUploadsDir } from './common/uploads-path';
 
 async function bootstrap() {
   const origins = (
@@ -28,6 +28,7 @@ async function bootstrap() {
     },
     bufferLogs: true,
   });
+  app.enableShutdownHooks();
   app.useLogger(app.get(Logger));
   app.useGlobalPipes(new ValidationPipe({ whitelist: true, transform: true }));
   app.useGlobalInterceptors(new ClassSerializerInterceptor(app.get(Reflector)));
@@ -37,9 +38,7 @@ async function bootstrap() {
   app.use(json({ limit: '5mb' }));
 
   // 静态文件服务 — 头像等上传资源
-  const uploadsDir = process.env.UPLOADS_DIR
-    ? join(process.env.UPLOADS_DIR)
-    : join(process.cwd(), 'uploads');
+  const uploadsDir = resolveUploadsDir();
   if (!existsSync(uploadsDir)) mkdirSync(uploadsDir, { recursive: true });
   app.useStaticAssets(uploadsDir, { prefix: '/uploads/' });
 

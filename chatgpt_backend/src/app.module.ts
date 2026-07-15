@@ -53,12 +53,16 @@ import { buildPostgresOptions } from './database/postgres-options';
     ThrottlerModule.forRoot([{ ttl: 60_000, limit: 10 }]),
     TypeOrmModule.forRootAsync({
       inject: [ConfigService],
-      useFactory: (cfg: ConfigService) => ({
-        ...buildPostgresOptions((key) => cfg.get<string>(key), __dirname),
-        synchronize:
-          cfg.get<string>('DB_SYNCHRONIZE') === 'true' ||
-          cfg.get<string>('NODE_ENV') !== 'production',
-      }),
+      useFactory: (cfg: ConfigService) => {
+        const synchronize = cfg.get<string>('DB_SYNCHRONIZE');
+        return {
+          ...buildPostgresOptions((key) => cfg.get<string>(key), __dirname),
+          synchronize:
+            synchronize === 'true' ||
+            (synchronize !== 'false' &&
+              cfg.get<string>('NODE_ENV') !== 'production'),
+        };
+      },
     }),
     UserModule,
     NoticeModule,

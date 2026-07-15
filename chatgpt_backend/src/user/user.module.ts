@@ -39,9 +39,7 @@ export class UserSeedService implements OnApplicationBootstrap {
           imoocId: '',
         }),
       );
-      console.warn(
-        `[seed] 默认管理员 ${username}/${password} 已创建，请尽快登录修改密码`,
-      );
+      console.warn(`[seed] 默认管理员 ${username} 已创建，请尽快登录修改密码`);
     }
   }
 }

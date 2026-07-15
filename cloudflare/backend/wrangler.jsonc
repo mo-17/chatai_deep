@@ -12,6 +12,11 @@
     "DB_SSL": "true",
     "DB_SSL_REJECT_UNAUTHORIZED": "true",
     "DB_SYNCHRONIZE": "false",
+    "MIGRATION_LOCK_TIMEOUT_MS": "60000",
+    "REQUIRE_PRODUCTION_MODE": "true",
+    "REQUIRE_PERSISTENT_UPLOADS": "true",
+    "SYNC_V2_SHADOW_ENABLED": "false",
+    "SYNC_V2_SHADOW_USER_IDS": "",
     "BCRYPT_ROUNDS": "10",
     "R2_BUCKET_NAME": "chatai-deep-uploads",
     "R2_ACCOUNT_ID": "REPLACE_WITH_CLOUDFLARE_ACCOUNT_ID"
