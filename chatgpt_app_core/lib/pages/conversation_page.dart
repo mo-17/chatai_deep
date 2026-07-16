@@ -3,6 +3,10 @@ import 'dart:async';
 import 'package:chat_message/core/chat_controller.dart';
 import 'package:chat_message/models/message_model.dart';
 import 'package:chat_message/widget/chat_list.dart';
+import 'package:chatgpt_app_core/ai_readiness/ai_health_state_guard.dart';
+import 'package:chatgpt_app_core/ai_readiness/ai_ready_state.dart';
+import 'package:chatgpt_app_core/ai_readiness/ai_readiness_resolver.dart';
+import 'package:chatgpt_app_core/ai_readiness/ai_send_guard.dart';
 import 'package:chatgpt_app_core/chat/application/chat_block_store.dart';
 import 'package:chatgpt_app_core/chat/application/file_processor.dart';
 import 'package:chatgpt_app_core/chat/application/read_aloud_service.dart';
@@ -42,6 +46,9 @@ import 'package:chatgpt_app_core/model/conversation_model.dart';
 import 'package:chatgpt_app_core/model/favorite_model.dart';
 import 'package:chatgpt_app_core/model/assistant_memory_model.dart';
 import 'package:chatgpt_app_core/pages/assistant_profile_page.dart';
+import 'package:chatgpt_app_core/pages/ai_health_check_page.dart';
+import 'package:chatgpt_app_core/pages/ai_settings_page.dart';
+import 'package:chatgpt_app_core/provider/ai_readiness_provider.dart';
 import 'package:chatgpt_app_core/provider/ai_settings_provider.dart';
 import 'package:chatgpt_app_core/theme/app_visual_theme.dart';
 import 'package:chatgpt_app_core/util/app_events.dart';
@@ -50,6 +57,7 @@ import 'package:chatgpt_app_core/util/hi_dialog.dart';
 import 'package:chatgpt_app_core/util/hi_utils.dart';
 import 'package:chatgpt_app_core/util/scroll_jump.dart';
 import 'package:chatgpt_app_core/widget/assistant_avatar.dart';
+import 'package:chatgpt_app_core/widget/ai_readiness_card.dart';
 import 'package:chatgpt_app_core/widget/assistant_picker.dart';
 import 'package:chatgpt_app_core/widget/forward_sheet.dart';
 import 'package:chatgpt_app_core/widget/message_input_widget.dart';
@@ -186,6 +194,7 @@ class _ConversationPageState extends State<ConversationPage> {
   String _lastUserFileText = '';
   bool _userStopped = false;
   bool _disposed = false;
+  bool _readinessDialogOpen = false;
 
   late AISettings _currentSettings;
   List<String> _pendingImages = [];
@@ -734,6 +743,7 @@ class _ConversationPageState extends State<ConversationPage> {
       initialText: widget.initialPrompt,
       onStop: _isStreaming ? _stopStream : null,
       onChanged: (text) => _inputMessage = text,
+      canSend: () => _canStartAIRequest(showPrompt: true),
       onSend: () => _onSend(_inputMessage),
       // 联网搜索开关（阶段五）：当前所选服务商配置了 key 才展示；独立于
       // caps.tool，搜索结果以上下文回填，任何模型都可用（与 Cherry 一致）。
@@ -1457,6 +1467,7 @@ class _ConversationPageState extends State<ConversationPage> {
 
   ///不用_inputMessage是因为在结果回来之前_inputMessage可能会变
   void _onSend(final String inputMessage) async {
+    if (!_canStartAIRequest(showPrompt: true)) return;
     // 防止并发发送：流式进行中直接忽略（输入框回车键也走这里）。
     // 必须在任何 await 之前同步置位 _isStreaming，否则双击/连按会在
     // 图片编码的 await 间隙挤进第二次发送，覆盖活跃流字段、悬挂前一条流。
@@ -1603,6 +1614,114 @@ class _ConversationPageState extends State<ConversationPage> {
     } else {
       // 非流式保持阶段五意图编排（工具回路仅接流式路径，见指南 §7 实施记录）。
       await _onSendNonStream(inputMessage, attachments, webSearch: webSearch);
+    }
+  }
+
+  bool _canStartAIRequest({required bool showPrompt}) {
+    final readiness = context.read<AIReadinessProvider?>();
+    // 独立 widget 测试/嵌入方没有注册 readiness 时保持旧行为；正式 App 的
+    // mainProviders 始终提供它。
+    if (readiness == null) return true;
+
+    final state = readiness.initialized
+        ? resolveAIReadiness(
+            settings: _effective(
+              context.read<AISettingsProvider>().settings,
+            ),
+            isGuest: LoginDao.isGuest(),
+          )
+        : readiness.state;
+    final decision = resolveAISendGuard(
+      state: state,
+      onboardingStatus: readiness.onboardingStatus,
+    );
+    if (decision.allowed) return true;
+    if (showPrompt && !_readinessDialogOpen) {
+      unawaited(_showAIReadinessBlocker(state, decision));
+    }
+    return false;
+  }
+
+  Future<void> _showAIReadinessBlocker(
+    AIReadyState state,
+    AISendGuardDecision decision,
+  ) async {
+    if (!mounted || _readinessDialogOpen) return;
+    _readinessDialogOpen = true;
+    try {
+      final presentation = aiReadinessPresentation(state);
+      final action = await showDialog<AISendGuardAction>(
+        context: context,
+        builder: (dialogContext) => AlertDialog(
+          title: Text(presentation.title),
+          content: Text(presentation.message),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(dialogContext),
+              child: const Text('取消'),
+            ),
+            if (decision.action == AISendGuardAction.verify)
+              TextButton(
+                onPressed: () => Navigator.pop(
+                  dialogContext,
+                  AISendGuardAction.configure,
+                ),
+                child: const Text('服务设置'),
+              ),
+            FilledButton(
+              key: const ValueKey('ai_send_guard_primary'),
+              onPressed: () => Navigator.pop(dialogContext, decision.action),
+              child: Text(_sendGuardActionLabel(decision.action)),
+            ),
+          ],
+        ),
+      );
+      if (!mounted || action == null) return;
+      await _runSendGuardAction(action);
+    } finally {
+      _readinessDialogOpen = false;
+    }
+  }
+
+  String _sendGuardActionLabel(AISendGuardAction action) => switch (action) {
+        AISendGuardAction.none => '确定',
+        AISendGuardAction.retry => '稍后重试',
+        AISendGuardAction.configure => '去配置',
+        AISendGuardAction.verify => '检查连接',
+        AISendGuardAction.login => '去登录',
+      };
+
+  Future<void> _runSendGuardAction(AISendGuardAction action) async {
+    switch (action) {
+      case AISendGuardAction.none:
+        return;
+      case AISendGuardAction.retry:
+        HiDialog.showSnackBar(context, '账号状态仍在初始化，请稍后再试');
+        return;
+      case AISendGuardAction.configure:
+        await Navigator.push<void>(
+          context,
+          MaterialPageRoute(builder: (_) => const AISettingsPage()),
+        );
+        break;
+      case AISendGuardAction.verify:
+        await Navigator.push<void>(
+          context,
+          MaterialPageRoute(builder: (_) => const AiHealthCheckPage()),
+        );
+        break;
+      case AISendGuardAction.login:
+        await LoginDao.logOut();
+        return;
+    }
+    if (!mounted) return;
+    final readiness = context.read<AIReadinessProvider?>();
+    if (readiness?.state.status == AIReadyStatus.ready) {
+      try {
+        await readiness!.markCompleted();
+      } catch (error) {
+        if (mounted) HiDialog.showSnackBar(context, 'AI 引导状态未保存：$error');
+      }
     }
   }
 
@@ -2702,29 +2821,32 @@ class _ConversationPageState extends State<ConversationPage> {
     await ChatService.from(next).chat(prompt: 'ping', history: []);
   }
 
-  void _recordConversationModelTestResult(
+  AIProviderHealthConfiguration? _conversationHealthConfiguration(
+    AISettings settings,
+    String providerId,
+  ) {
+    final providers = settings.providers.where((p) => p.id == providerId);
+    if (providers.isEmpty) return null;
+    return AIProviderHealthConfiguration.capture(providers.first);
+  }
+
+  Future<bool> _recordConversationModelTestResult(
     String providerId,
     String modelId, {
+    required AIProviderHealthConfiguration expectedConfiguration,
+    required String expectedAccountHash,
     required bool success,
     String? error,
   }) {
     final store = context.read<AISettingsProvider>();
-    final providers = store.settings.providers.where((p) => p.id == providerId);
-    if (providers.isEmpty) return;
-    final provider = providers.first;
-    final models = provider.models.where((m) => m.id == modelId);
-    if (models.isEmpty) return;
-    models.first.markTestResult(success: success, error: error);
-    if (success) {
-      final caps = ModelCapabilities.heuristic(models.first.id,
-          providerCode: provider.providerCode);
-      models.first.applyCapabilityHints(
-        vision: caps.image,
-        tool: caps.tool,
-        reasoning: caps.reasoning,
-      );
-    }
-    store.updateProvider(provider);
+    return store.recordModelTestResult(
+      providerId: providerId,
+      modelId: modelId,
+      expectedConfiguration: expectedConfiguration,
+      success: success,
+      error: error,
+      expectedAccountHash: expectedAccountHash,
+    );
   }
 
   Future<void> _recordModelUsed(String providerId, String modelId) async {
@@ -2981,31 +3103,59 @@ class _ConversationPageState extends State<ConversationPage> {
             onPressed: state == _ConversationModelTestState.running
                 ? null
                 : () async {
+                    final expectedAccountHash =
+                        context.read<AISettingsProvider>().accountHash;
+                    final expectedConfiguration =
+                        _conversationHealthConfiguration(
+                      settings,
+                      provider.id,
+                    );
                     setSheetState(() {
                       testStates[stateKey] =
                           _ConversationModelTestState.running;
                       testErrors.remove(stateKey);
                     });
+                    Object? requestError;
                     try {
                       await _testConversationModel(settings,
                           providerId: provider.id, modelId: model.id);
-                      if (!ctx.mounted) return;
-                      _recordConversationModelTestResult(provider.id, model.id,
-                          success: true);
-                      setSheetState(() {
-                        testStates[stateKey] =
-                            _ConversationModelTestState.success;
-                      });
                     } catch (e) {
-                      if (!ctx.mounted) return;
-                      _recordConversationModelTestResult(provider.id, model.id,
-                          success: false, error: '$e');
-                      setSheetState(() {
-                        testStates[stateKey] =
-                            _ConversationModelTestState.failure;
-                        testErrors[stateKey] = '$e';
-                      });
+                      requestError = e;
                     }
+                    if (!ctx.mounted) return;
+
+                    var recorded = false;
+                    Object? recordError;
+                    if (expectedConfiguration != null) {
+                      try {
+                        recorded =
+                            await _recordConversationModelTestResult(
+                          provider.id,
+                          model.id,
+                          expectedConfiguration: expectedConfiguration,
+                          expectedAccountHash: expectedAccountHash,
+                          success: requestError == null,
+                          error: requestError?.toString(),
+                        );
+                      } catch (error) {
+                        recordError = error;
+                      }
+                    }
+                    if (!ctx.mounted) return;
+                    final success =
+                        requestError == null && recorded && recordError == null;
+                    setSheetState(() {
+                      testStates[stateKey] = success
+                          ? _ConversationModelTestState.success
+                          : _ConversationModelTestState.failure;
+                      if (!success) {
+                        testErrors[stateKey] = recordError != null
+                            ? '测试结果未保存：$recordError'
+                            : !recorded
+                                ? '配置已变化，请重新测试'
+                                : '$requestError';
+                      }
+                    });
                   },
           ),
         ],
@@ -3448,6 +3598,10 @@ class _ConversationPageState extends State<ConversationPage> {
     await _saveAssistantMemoryText(
       initialText: message.content.trim(),
       source: message.ownerType == OwnerType.sender ? 'user_message' : 'reply',
+      sourceType: message.ownerType == OwnerType.sender
+          ? 'user_message'
+          : 'assistant_reply',
+      sourceMessageId: message.createdAt.toString(),
     );
   }
 
@@ -3602,6 +3756,8 @@ class _ConversationPageState extends State<ConversationPage> {
     final saved = await _saveAssistantMemoryText(
       initialText: suggestion,
       source: 'suggestion',
+      sourceType: 'ai_suggestion',
+      sourceMessageId: createdAt.toString(),
     );
     if (!saved || !mounted) return;
     setState(() {
@@ -3613,6 +3769,8 @@ class _ConversationPageState extends State<ConversationPage> {
   Future<bool> _saveAssistantMemoryText({
     required String initialText,
     required String source,
+    required String sourceType,
+    required String sourceMessageId,
   }) async {
     final assistantId = _assistant?.id;
     if (assistantId == null || _assistantMemoryDao == null) return false;
@@ -3625,11 +3783,16 @@ class _ConversationPageState extends State<ConversationPage> {
       if (mounted) HiDialog.showSnackBar(context, '这条长期记忆已存在');
       return false;
     }
-    final id = await _assistantMemoryDao!.saveMemory(AssistantMemoryModel(
-      assistantId: assistantId,
-      content: content,
-      source: source,
-    ));
+    final id = await _assistantMemoryDao!.saveMemory(
+      AssistantMemoryModel.confirmedFromConversation(
+        assistantId: assistantId,
+        content: content,
+        source: source,
+        sourceType: sourceType,
+        conversationId: widget.conversationModel.cid.toString(),
+        messageId: sourceMessageId,
+      ),
+    );
     if (id == null) {
       if (mounted) HiDialog.showSnackBar(context, '保存记忆失败');
       return false;
