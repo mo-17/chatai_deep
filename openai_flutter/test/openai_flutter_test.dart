@@ -143,4 +143,68 @@ void main() {
     expect(bodies.map((body) => body['top_p']).take(3), [0, 0.4, 1]);
     expect(bodies.last.containsKey('top_p'), isFalse);
   });
+
+  for (final reservedKey in const [
+    'model',
+    'messages',
+    'stream',
+    'stream_options',
+    'tools',
+    'max_tokens',
+    'temperature',
+    'top_p',
+  ]) {
+    test('createChatStreamEvents rejects reserved extraBody key $reservedKey',
+        () async {
+      final completion = AICompletion(AIConfigBuilder(
+        apiKey: 'test-key',
+        chatUrl: 'http://127.0.0.1:1/chat',
+      ));
+
+      await expectLater(
+        completion.createChatStreamEvents(
+          messages: const [
+            {'role': 'user', 'content': 'hello'},
+          ],
+          extraBody: {reservedKey: 'override'},
+        ).drain<void>(),
+        throwsArgumentError,
+      );
+    });
+  }
+
+  test('createChatStreamEvents merges non-reserved provider fields', () async {
+    final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+    addTearDown(server.close);
+    server.listen((request) async {
+      final body = jsonDecode(await utf8.decoder.bind(request).join())
+          as Map<String, dynamic>;
+      expect(body['model'], 'test-model');
+      expect(body['messages'], [
+        {'role': 'user', 'content': 'hello'}
+      ]);
+      expect(body['reasoning_effort'], 'high');
+      expect(body['metadata'], {'client': 'sdk-test'});
+      request.response.headers.contentType =
+          ContentType('text', 'event-stream', charset: 'utf-8');
+      request.response.write('data: [DONE]\n\n');
+      await request.response.close();
+    });
+
+    final completion = AICompletion(AIConfigBuilder(
+      apiKey: 'test-key',
+      chatUrl: 'http://${server.address.host}:${server.port}/chat',
+    ));
+
+    await completion.createChatStreamEvents(
+      model: 'test-model',
+      messages: const [
+        {'role': 'user', 'content': 'hello'},
+      ],
+      extraBody: const {
+        'reasoning_effort': 'high',
+        'metadata': {'client': 'sdk-test'},
+      },
+    ).drain<void>();
+  });
 }

@@ -13,11 +13,24 @@ class AIException implements Exception {
 class AIRequestException implements Exception {
   final String message;
   final int statusCode;
+  final Map<String, String> headers;
 
-  AIRequestException(this.message, this.statusCode);
+  AIRequestException(
+    this.message,
+    this.statusCode, {
+    Map<String, String> headers = const {},
+  }) : headers = Map.unmodifiable({
+          for (final entry in headers.entries)
+            entry.key.toLowerCase(): entry.value,
+        });
+
+  Duration? get retryAfter {
+    final seconds = int.tryParse(headers['retry-after'] ?? '');
+    return seconds == null ? null : Duration(seconds: seconds);
+  }
 
   @override
   String toString() {
-    return 'RequestFailedException{message: $message, statusCode: $statusCode}';
+    return 'RequestFailedException{statusCode: $statusCode}';
   }
 }

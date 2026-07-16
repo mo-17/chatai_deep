@@ -19,46 +19,66 @@ class AIHttp {
     Duration timeout = const Duration(seconds: 15),
   }) async {
     AILogger.log('starting request to $url');
-
-    ///借助HttpClient来发送请求
-    HttpClient httpClient = HttpClient();
-
-    ///设置代理
-    var proxy = config.proxy;
-    if (proxy != null && proxy.trim().isNotEmpty) {
-      httpClient.findProxy = (uri) {
-        return "PROXY $proxy";
-      };
+    final myClient = _createOwnedClient(config);
+    final requestAbort = Completer<void>();
+    var timedOut = false;
+    void abortOnce() {
+      if (!requestAbort.isCompleted) requestAbort.complete();
     }
 
-    IOClient myClient = IOClient(httpClient);
-    final http.Response response = await myClient
-        .post(Uri.parse(url),
-            headers: config.headers(),
-            body: body != null ? jsonEncode(body) : null)
-        .timeout(timeout);
-    AILogger.log(
-        'request to $url finished with status code ${response.statusCode}');
-    AILogger.log('starting decoding response body');
+    final timeoutTimer = Timer(timeout, () {
+      timedOut = true;
+      abortOnce();
+    });
 
-    ///防止乱码
-    Utf8Decoder utf8decoder = const Utf8Decoder();
-    final bodyString = utf8decoder.convert(response.bodyBytes);
-    Map<String, dynamic> decodedBody;
     try {
-      decodedBody = jsonDecode(bodyString) as Map<String, dynamic>;
-    } catch (_) {
-      throw AIRequestException(
-          'HTTP ${response.statusCode}: $bodyString', response.statusCode);
-    }
-    AILogger.log("response body decoded successfully");
-    if (decodedBody['error'] != null) {
-      AILogger.log("an error occurred, throwing exception");
-      final Map<String, dynamic> error = decodedBody['error'];
-      throw AIRequestException(error['message'], response.statusCode);
-    } else {
+      final request = http.AbortableRequest(
+        'POST',
+        Uri.parse(url),
+        abortTrigger: requestAbort.future,
+      )..headers.addAll(config.headers());
+      if (body != null) request.body = jsonEncode(body);
+      final streamedResponse = await myClient.send(request);
+      final response = await http.Response.fromStream(streamedResponse);
+      AILogger.log(
+          'request to $url finished with status code ${response.statusCode}');
+      AILogger.log('starting decoding response body');
+
+      ///防止乱码
+      final bodyString = const Utf8Decoder().convert(response.bodyBytes);
+      Map<String, dynamic> decodedBody;
+      try {
+        final decoded = jsonDecode(bodyString);
+        if (decoded is! Map<String, dynamic>) throw const FormatException();
+        decodedBody = decoded;
+      } on FormatException {
+        throw AIRequestException(
+          'HTTP ${response.statusCode}',
+          response.statusCode,
+          headers: response.headers,
+        );
+      }
+      AILogger.log("response body decoded successfully");
+      if (decodedBody['error'] != null) {
+        AILogger.log("an error occurred, throwing exception");
+        throw AIRequestException(
+          _errorMessage(
+            decodedBody['error'],
+            fallback: 'HTTP ${response.statusCode}',
+          ),
+          response.statusCode,
+          headers: response.headers,
+        );
+      }
       AILogger.log("request finished successfully");
       return onSuccess(decodedBody);
+    } on http.RequestAbortedException {
+      if (timedOut) throw TimeoutException('Request timed out', timeout);
+      rethrow;
+    } finally {
+      timeoutTimer.cancel();
+      abortOnce();
+      myClient.close();
     }
   }
 
@@ -80,57 +100,99 @@ class AIHttp {
     required AIConfigBuilder config,
     required String url,
     Map<String, dynamic>? body,
+    Future<void>? abortTrigger,
+    Duration connectTimeout = const Duration(seconds: 20),
   }) async* {
     AILogger.log('starting stream request to $url');
 
-    HttpClient httpClient = HttpClient();
-    var proxy = config.proxy;
-    if (proxy != null && proxy.trim().isNotEmpty) {
-      httpClient.findProxy = (uri) => "PROXY $proxy";
+    final myClient = _createOwnedClient(config);
+    final requestAbort = Completer<void>();
+    void abortOnce() {
+      if (!requestAbort.isCompleted) requestAbort.complete();
     }
 
-    IOClient myClient = IOClient(httpClient);
-    final request = http.Request('POST', Uri.parse(url));
-    request.headers.addAll(config.headers());
-    if (body != null) {
-      request.body = jsonEncode(body);
-    }
+    abortTrigger?.then<void>(
+      (_) => abortOnce(),
+      onError: (Object _, StackTrace __) => abortOnce(),
+    );
+    final connectTimer = Timer(connectTimeout, abortOnce);
 
-    final streamedResponse =
-        await myClient.send(request).timeout(const Duration(seconds: 20));
-    AILogger.log(
-        'stream request to $url finished with status ${streamedResponse.statusCode}');
+    try {
+      final request = http.AbortableRequest(
+        'POST',
+        Uri.parse(url),
+        abortTrigger: requestAbort.future,
+      );
+      request.headers.addAll(config.headers());
+      if (body != null) {
+        request.body = jsonEncode(body);
+      }
+      final streamedResponse = await myClient.send(request);
+      connectTimer.cancel();
+      AILogger.log(
+          'stream request to $url finished with status ${streamedResponse.statusCode}');
 
-    if (streamedResponse.statusCode != 200) {
-      final bytes = await streamedResponse.stream.toBytes();
-      final errorBody = const Utf8Decoder().convert(bytes);
-      Map<String, dynamic> decoded;
-      try {
-        decoded = jsonDecode(errorBody) as Map<String, dynamic>;
-      } catch (_) {
+      if (streamedResponse.statusCode != 200) {
+        final bytes = await streamedResponse.stream.toBytes();
+        final errorBody = const Utf8Decoder().convert(bytes);
+        Map<String, dynamic>? decoded;
+        try {
+          final value = jsonDecode(errorBody);
+          if (value is Map<String, dynamic>) decoded = value;
+        } on FormatException {
+          // 非 JSON 错误正文不进入异常文本，避免泄露服务端响应内容。
+        }
         throw AIRequestException(
-            'HTTP ${streamedResponse.statusCode}: $errorBody',
-            streamedResponse.statusCode);
+          _errorMessage(
+            decoded?['error'],
+            fallback: 'HTTP ${streamedResponse.statusCode}',
+          ),
+          streamedResponse.statusCode,
+          headers: streamedResponse.headers,
+        );
       }
-      if (decoded['error'] != null) {
-        final error = decoded['error'] as Map<String, dynamic>;
-        throw AIRequestException(error['message'] as String? ?? errorBody,
-            streamedResponse.statusCode);
-      }
-      throw AIRequestException(
-          'HTTP ${streamedResponse.statusCode}', streamedResponse.statusCode);
-    }
 
-    final lineStream = streamedResponse.stream
-        .transform(const Utf8Decoder())
-        .transform(const LineSplitter());
+      final lineStream = streamedResponse.stream
+          .transform(const Utf8Decoder())
+          .transform(const LineSplitter());
+      String? eventName;
 
-    await for (final line in lineStream) {
-      if (!line.startsWith('data: ')) continue;
-      final data = line.substring(6);
-      if (data == '[DONE]') break;
-      try {
-        final json = jsonDecode(data) as Map<String, dynamic>;
+      await for (final line in lineStream) {
+        if (line.startsWith('event:')) {
+          eventName = line.substring(6).trim();
+          continue;
+        }
+        if (!line.startsWith('data:')) continue;
+        var data = line.substring(5);
+        if (data.startsWith(' ')) data = data.substring(1);
+        if (data == '[DONE]') break;
+
+        Map<String, dynamic>? json;
+        try {
+          final value = jsonDecode(data);
+          if (value is Map<String, dynamic>) json = value;
+        } on FormatException {
+          // 忽略无法解析的数据行；事件错误在 catch 外统一抛出。
+        }
+
+        if (eventName == 'error') {
+          throw AIRequestException(
+            _errorMessage(json?['error'] ?? json,
+                fallback: 'Streaming request failed'),
+            streamedResponse.statusCode,
+            headers: streamedResponse.headers,
+          );
+        }
+        eventName = null;
+        if (json == null) continue;
+        if (json['error'] != null) {
+          throw AIRequestException(
+            _errorMessage(json['error'], fallback: 'Streaming request failed'),
+            streamedResponse.statusCode,
+            headers: streamedResponse.headers,
+          );
+        }
+
         final usage = json['usage'];
         if (usage is Map<String, dynamic>) {
           final promptDetails = usage['prompt_tokens_details'];
@@ -143,40 +205,60 @@ class AIHttp {
           );
         }
         final choices = json['choices'] as List<dynamic>?;
-        if (choices != null && choices.isNotEmpty) {
-          final choice = choices[0];
-          if (choice is! Map<String, dynamic>) continue;
-          final delta = choice['delta'];
-          if (delta is! Map<String, dynamic>) continue;
-          // 推理内容增量 (DeepSeek reasoning models: deepseek-reasoner)
-          // 注意：推理先于正文到达，先 yield 推理再 yield 正文。
-          final reasoning = delta['reasoning_content'];
-          if (reasoning is String && reasoning.isNotEmpty) {
-            yield AIStreamChunk.reasoning(reasoning);
-          }
-          // 常规内容增量 (DeepSeek / OpenAI)
-          final content = delta['content'];
-          if (content is String && content.isNotEmpty) {
-            yield AIStreamChunk.content(content);
-          }
-          // 工具调用增量（阶段六）：id/name 先到、arguments 分片到达，
-          // 原样 yield 分片，由上层按 index 累积成完整调用。
-          final toolCalls = delta['tool_calls'];
-          if (toolCalls is List) {
-            for (final tc in toolCalls.whereType<Map>()) {
-              final fn = tc['function'];
-              yield AIStreamChunk.toolCall(
-                toolIndex: tc['index'] as int? ?? 0,
-                toolId: tc['id'] as String?,
-                toolName: fn is Map ? fn['name'] as String? : null,
-                toolArgsDelta: fn is Map ? fn['arguments'] as String? : null,
-              );
-            }
+        if (choices == null || choices.isEmpty) continue;
+        final choice = choices[0];
+        if (choice is! Map<String, dynamic>) continue;
+        final delta = choice['delta'];
+        if (delta is! Map<String, dynamic>) continue;
+        // 推理内容增量 (DeepSeek reasoning models: deepseek-reasoner)
+        // 注意：推理先于正文到达，先 yield 推理再 yield 正文。
+        final reasoning = delta['reasoning_content'];
+        if (reasoning is String && reasoning.isNotEmpty) {
+          yield AIStreamChunk.reasoning(reasoning);
+        }
+        // 常规内容增量 (DeepSeek / OpenAI)
+        final content = delta['content'];
+        if (content is String && content.isNotEmpty) {
+          yield AIStreamChunk.content(content);
+        }
+        // 工具调用增量（阶段六）：id/name 先到、arguments 分片到达，
+        // 原样 yield 分片，由上层按 index 累积成完整调用。
+        final toolCalls = delta['tool_calls'];
+        if (toolCalls is List) {
+          for (final tc in toolCalls.whereType<Map>()) {
+            final fn = tc['function'];
+            yield AIStreamChunk.toolCall(
+              toolIndex: tc['index'] as int? ?? 0,
+              toolId: tc['id'] as String?,
+              toolName: fn is Map ? fn['name'] as String? : null,
+              toolArgsDelta: fn is Map ? fn['arguments'] as String? : null,
+            );
           }
         }
-      } catch (_) {
-        // 忽略无法解析的行
       }
+    } finally {
+      connectTimer.cancel();
+      abortOnce();
+      myClient.close();
     }
+  }
+
+  static IOClient _createOwnedClient(AIConfigBuilder config) {
+    final httpClient = HttpClient();
+    final proxy = config.proxy;
+    if (proxy != null && proxy.trim().isNotEmpty) {
+      httpClient.findProxy = (uri) => 'PROXY $proxy';
+    }
+    return IOClient(httpClient);
+  }
+
+  static String _errorMessage(Object? error, {required String fallback}) {
+    if (error is Map) {
+      final message = error['message'];
+      if (message is String && message.isNotEmpty) return message;
+    } else if (error is String && error.isNotEmpty) {
+      return error;
+    }
+    return fallback;
   }
 }

@@ -5,6 +5,17 @@ import 'package:openai_flutter/model/ai_response.dart';
 import 'package:openai_flutter/model/ai_stream_chunk.dart';
 
 class AICompletion implements AICreateInterface {
+  static const _reservedExtraBodyKeys = {
+    'model',
+    'messages',
+    'stream',
+    'stream_options',
+    'tools',
+    'max_tokens',
+    'temperature',
+    'top_p',
+  };
+
   final AIConfigBuilder config;
 
   AICompletion(this.config);
@@ -93,6 +104,7 @@ class AICompletion implements AICreateInterface {
   /// 流式 Chat Completions，逐增量 yield「带类型」的片段
   /// （区分正文 content / 推理 reasoning_content / 工具调用 tool_calls 分片）。
   /// [tools] 为 OpenAI function declarations（阶段六工具调用）。
+  @override
   Stream<AIStreamChunk> createChatStreamEvents({
     String model = 'gpt-3.5-turbo',
     dynamic prompt,
@@ -104,7 +116,20 @@ class AICompletion implements AICreateInterface {
     String? user,
     List<Map<String, dynamic>>? messages,
     List<Map<String, dynamic>>? tools,
+    Map<String, dynamic> extraBody = const {},
+    Future<void>? abortTrigger,
+    Duration connectTimeout = const Duration(seconds: 20),
   }) async* {
+    for (final key in extraBody.keys) {
+      if (_reservedExtraBodyKeys.contains(key)) {
+        throw ArgumentError.value(
+          key,
+          'extraBody',
+          'Cannot override canonical request field',
+        );
+      }
+    }
+
     final body = <String, dynamic>{
       "model": model,
       "stream": true,
@@ -125,11 +150,14 @@ class AICompletion implements AICreateInterface {
         {"role": "user", "content": prompt}
       ];
     }
+    body.addAll(extraBody);
 
     yield* AIHttp.postStreamEvents(
       config: config,
       url: config.chatUrl,
       body: body,
+      abortTrigger: abortTrigger,
+      connectTimeout: connectTimeout,
     );
   }
 }
