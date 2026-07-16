@@ -95,9 +95,12 @@ class HiDialog {
     required String content,
     required String confirmText,
     required String cancelText,
+    bool showCancel = true,
+    bool barrierDismissible = true,
   }) {
     return showDialog<bool>(
         context: context,
+        barrierDismissible: barrierDismissible,
         builder: (BuildContext context) {
           final anime = AppVisualTheme.of(context).isAnime;
           return AlertDialog(
@@ -112,7 +115,8 @@ class HiDialog {
                 ? null
                 : const TextStyle(color: Colors.black54, fontSize: 14),
             actions: [
-              TextButton(
+              if (showCancel)
+                TextButton(
                   onPressed: () {
                     //关闭 返回false
                     Navigator.of(context).pop(false);
