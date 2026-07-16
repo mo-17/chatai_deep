@@ -153,6 +153,9 @@ void main() {
     'max_tokens',
     'temperature',
     'top_p',
+    'n',
+    'stop',
+    'user',
   ]) {
     test('createChatStreamEvents rejects reserved extraBody key $reservedKey',
         () async {

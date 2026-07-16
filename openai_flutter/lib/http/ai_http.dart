@@ -18,18 +18,17 @@ class AIHttp {
     Map<String, dynamic>? body,
     Duration timeout = const Duration(seconds: 15),
   }) async {
-    AILogger.log('starting request to $url');
+    AILogger.log('starting request');
     final myClient = _createOwnedClient(config);
     final requestAbort = Completer<void>();
     var timedOut = false;
-    void abortOnce() {
-      if (!requestAbort.isCompleted) requestAbort.complete();
+    void abortOnce({bool timeout = false}) {
+      if (requestAbort.isCompleted) return;
+      timedOut = timeout;
+      requestAbort.complete();
     }
 
-    final timeoutTimer = Timer(timeout, () {
-      timedOut = true;
-      abortOnce();
-    });
+    final timeoutTimer = Timer(timeout, () => abortOnce(timeout: true));
 
     try {
       final request = http.AbortableRequest(
@@ -40,8 +39,7 @@ class AIHttp {
       if (body != null) request.body = jsonEncode(body);
       final streamedResponse = await myClient.send(request);
       final response = await http.Response.fromStream(streamedResponse);
-      AILogger.log(
-          'request to $url finished with status code ${response.statusCode}');
+      AILogger.log('request finished with status code ${response.statusCode}');
       AILogger.log('starting decoding response body');
 
       ///防止乱码
@@ -53,7 +51,7 @@ class AIHttp {
         decodedBody = decoded;
       } on FormatException {
         throw AIRequestException(
-          'HTTP ${response.statusCode}',
+          'HTTP request failed',
           response.statusCode,
           headers: response.headers,
         );
@@ -62,10 +60,7 @@ class AIHttp {
       if (decodedBody['error'] != null) {
         AILogger.log("an error occurred, throwing exception");
         throw AIRequestException(
-          _errorMessage(
-            decodedBody['error'],
-            fallback: 'HTTP ${response.statusCode}',
-          ),
+          'HTTP request failed',
           response.statusCode,
           headers: response.headers,
         );
@@ -74,7 +69,7 @@ class AIHttp {
       return onSuccess(decodedBody);
     } on http.RequestAbortedException {
       if (timedOut) throw TimeoutException('Request timed out', timeout);
-      rethrow;
+      throw const AIRequestCancelledException();
     } finally {
       timeoutTimer.cancel();
       abortOnce();
@@ -103,19 +98,22 @@ class AIHttp {
     Future<void>? abortTrigger,
     Duration connectTimeout = const Duration(seconds: 20),
   }) async* {
-    AILogger.log('starting stream request to $url');
+    AILogger.log('starting stream request');
 
     final myClient = _createOwnedClient(config);
     final requestAbort = Completer<void>();
-    void abortOnce() {
-      if (!requestAbort.isCompleted) requestAbort.complete();
+    var connectTimedOut = false;
+    void abortOnce({bool timeout = false}) {
+      if (requestAbort.isCompleted) return;
+      connectTimedOut = timeout;
+      requestAbort.complete();
     }
 
     abortTrigger?.then<void>(
       (_) => abortOnce(),
       onError: (Object _, StackTrace __) => abortOnce(),
     );
-    final connectTimer = Timer(connectTimeout, abortOnce);
+    final connectTimer = Timer(connectTimeout, () => abortOnce(timeout: true));
 
     try {
       final request = http.AbortableRequest(
@@ -130,23 +128,12 @@ class AIHttp {
       final streamedResponse = await myClient.send(request);
       connectTimer.cancel();
       AILogger.log(
-          'stream request to $url finished with status ${streamedResponse.statusCode}');
+          'stream request finished with status ${streamedResponse.statusCode}');
 
       if (streamedResponse.statusCode != 200) {
-        final bytes = await streamedResponse.stream.toBytes();
-        final errorBody = const Utf8Decoder().convert(bytes);
-        Map<String, dynamic>? decoded;
-        try {
-          final value = jsonDecode(errorBody);
-          if (value is Map<String, dynamic>) decoded = value;
-        } on FormatException {
-          // 非 JSON 错误正文不进入异常文本，避免泄露服务端响应内容。
-        }
+        await streamedResponse.stream.drain<void>();
         throw AIRequestException(
-          _errorMessage(
-            decoded?['error'],
-            fallback: 'HTTP ${streamedResponse.statusCode}',
-          ),
+          'HTTP request failed',
           streamedResponse.statusCode,
           headers: streamedResponse.headers,
         );
@@ -158,6 +145,10 @@ class AIHttp {
       String? eventName;
 
       await for (final line in lineStream) {
+        if (line.isEmpty) {
+          eventName = null;
+          continue;
+        }
         if (line.startsWith('event:')) {
           eventName = line.substring(6).trim();
           continue;
@@ -165,6 +156,14 @@ class AIHttp {
         if (!line.startsWith('data:')) continue;
         var data = line.substring(5);
         if (data.startsWith(' ')) data = data.substring(1);
+
+        if (eventName == 'error') {
+          throw AIRequestException(
+            'Streaming request failed',
+            streamedResponse.statusCode,
+            headers: streamedResponse.headers,
+          );
+        }
         if (data == '[DONE]') break;
 
         Map<String, dynamic>? json;
@@ -175,19 +174,10 @@ class AIHttp {
           // 忽略无法解析的数据行；事件错误在 catch 外统一抛出。
         }
 
-        if (eventName == 'error') {
-          throw AIRequestException(
-            _errorMessage(json?['error'] ?? json,
-                fallback: 'Streaming request failed'),
-            streamedResponse.statusCode,
-            headers: streamedResponse.headers,
-          );
-        }
-        eventName = null;
         if (json == null) continue;
         if (json['error'] != null) {
           throw AIRequestException(
-            _errorMessage(json['error'], fallback: 'Streaming request failed'),
+            'Streaming request failed',
             streamedResponse.statusCode,
             headers: streamedResponse.headers,
           );
@@ -236,6 +226,11 @@ class AIHttp {
           }
         }
       }
+    } on http.RequestAbortedException {
+      if (connectTimedOut) {
+        throw TimeoutException('Connection timed out', connectTimeout);
+      }
+      throw const AIRequestCancelledException();
     } finally {
       connectTimer.cancel();
       abortOnce();
@@ -250,15 +245,5 @@ class AIHttp {
       httpClient.findProxy = (uri) => 'PROXY $proxy';
     }
     return IOClient(httpClient);
-  }
-
-  static String _errorMessage(Object? error, {required String fallback}) {
-    if (error is Map) {
-      final message = error['message'];
-      if (message is String && message.isNotEmpty) return message;
-    } else if (error is String && error.isNotEmpty) {
-      return error;
-    }
-    return fallback;
   }
 }

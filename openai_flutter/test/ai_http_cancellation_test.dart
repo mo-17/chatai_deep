@@ -9,17 +9,19 @@ import 'package:openai_flutter/http/ai_config.dart';
 import 'package:openai_flutter/http/ai_exception.dart';
 
 void main() {
-  test('external abort disconnects an active SSE request', () async {
+  test('external abort exposes a safe typed cancellation and disconnects',
+      () async {
     final server = await _HangingBodyServer.start(
       contentType: ContentType('text', 'event-stream', charset: 'utf-8'),
       body: 'data: {"choices":[{"delta":{"content":"first"}}]}\n\n',
     );
     addTearDown(server.close);
 
-    final completion = AICompletion(_configFor(server.server));
+    final config = _configFor(server.server);
+    final completion = AICompletion(config);
     final abort = Completer<void>();
     final firstToken = Completer<void>();
-    final errors = <Object>[];
+    final failure = Completer<Object>();
     final events = completion.createChatStreamEvents(
       model: 'test',
       messages: const [
@@ -33,11 +35,18 @@ void main() {
           firstToken.complete();
         }
       },
-      onError: errors.add,
+      onError: (Object error) {
+        if (!failure.isCompleted) failure.complete(error);
+      },
     );
 
     await firstToken.future.timeout(const Duration(seconds: 1));
     abort.complete();
+    final error = await failure.future.timeout(const Duration(seconds: 1));
+    expect(error, isA<AIRequestCancelledException>());
+    expect(error, isNot(isA<http.RequestAbortedException>()));
+    expect(error.toString(), 'AIRequestCancelledException: Request cancelled');
+    expect(error.toString(), isNot(contains(config.chatUrl)));
     await expectLater(
       server.clientDisconnected.timeout(const Duration(seconds: 1)),
       completes,
@@ -92,7 +101,7 @@ void main() {
       failure = error;
     }
 
-    expect(failure, isNotNull);
+    expect(failure, isA<TimeoutException>());
     await expectLater(
       server.clientDisconnected.timeout(const Duration(seconds: 1)),
       completes,
@@ -129,7 +138,8 @@ void main() {
       if (!requestReceived.isCompleted) requestReceived.complete();
     });
 
-    final events = AICompletion(_configFor(server)).createChatStreamEvents(
+    final config = _configFor(server);
+    final events = AICompletion(config).createChatStreamEvents(
       model: 'test',
       messages: const [
         {'role': 'user', 'content': 'hello'},
@@ -146,10 +156,10 @@ void main() {
     addTearDown(subscription.cancel);
 
     await requestReceived.future.timeout(const Duration(seconds: 1));
-    expect(
-      await failure.future.timeout(const Duration(seconds: 1)),
-      isA<http.RequestAbortedException>(),
-    );
+    final error = await failure.future.timeout(const Duration(seconds: 1));
+    expect(error, isA<TimeoutException>());
+    expect(error, isNot(isA<http.RequestAbortedException>()));
+    expect(error.toString(), isNot(contains(config.chatUrl)));
     await expectLater(
       serverObservedClose.future.timeout(const Duration(seconds: 1)),
       completes,
@@ -180,7 +190,7 @@ void main() {
         isA<AIRequestException>().having(
           (error) => error.message,
           'message',
-          'stream exploded',
+          'Streaming request failed',
         ),
       ),
     );
@@ -209,10 +219,63 @@ void main() {
         isA<AIRequestException>().having(
           (error) => error.message,
           'message',
-          'provider stream error',
+          'Streaming request failed',
         ),
       ),
     );
+  });
+
+  test('event error takes precedence over a DONE data line', () async {
+    final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+    addTearDown(() => server.close(force: true));
+    server.listen((request) async {
+      request.response.headers.contentType =
+          ContentType('text', 'event-stream', charset: 'utf-8');
+      request.response.write('event: error\ndata: [DONE]\n\n');
+      await request.response.close();
+    });
+
+    await expectLater(
+      AICompletion(_configFor(server)).createChatStreamEvents(
+        model: 'test',
+        messages: const [
+          {'role': 'user', 'content': 'hello'},
+        ],
+      ),
+      emitsError(
+        isA<AIRequestException>().having(
+          (error) => error.message,
+          'message',
+          'Streaming request failed',
+        ),
+      ),
+    );
+  });
+
+  test('blank SSE line resets event state before the next block', () async {
+    final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+    addTearDown(() => server.close(force: true));
+    server.listen((request) async {
+      request.response.headers.contentType =
+          ContentType('text', 'event-stream', charset: 'utf-8');
+      request.response.write(
+        'event: error\n'
+        '\n'
+        'data: {"choices":[{"delta":{"content":"ok"}}]}\n\n'
+        'data: [DONE]\n\n',
+      );
+      await request.response.close();
+    });
+
+    final events =
+        await AICompletion(_configFor(server)).createChatStreamEvents(
+      model: 'test',
+      messages: const [
+        {'role': 'user', 'content': 'hello'},
+      ],
+    ).toList();
+
+    expect(events.single.text, 'ok');
   });
 
   test('request errors retain immutable lowercase response headers safely',
@@ -224,6 +287,13 @@ void main() {
       request.response.statusCode = HttpStatus.tooManyRequests;
       request.response.headers.set('Retry-After', '7');
       request.response.headers.set('X-Request-ID', 'request-123');
+      request.response.headers.set(
+        HttpHeaders.authorizationHeader,
+        'Bearer response-secret',
+      );
+      request.response.headers.set('Set-Cookie', 'session=response-cookie');
+      request.response.headers.set('X-Api-Key', 'response-api-key');
+      request.response.headers.set(HttpHeaders.locationHeader, url);
       request.response.headers.contentType = ContentType.json;
       request.response.write(jsonEncode({
         'error': {
@@ -243,9 +313,13 @@ void main() {
 
     expect(failure, isNotNull);
     expect(failure!.statusCode, HttpStatus.tooManyRequests);
+    expect(failure.message, 'HTTP request failed');
     expect(failure.headers['retry-after'], '7');
     expect(failure.headers['x-request-id'], 'request-123');
-    expect(failure.headers, isNot(contains('Retry-After')));
+    expect(
+      failure.headers.keys,
+      unorderedEquals(const ['retry-after', 'x-request-id']),
+    );
     expect(failure.retryAfter, const Duration(seconds: 7));
     expect(
       () => failure!.headers['retry-after'] = '99',
@@ -256,6 +330,73 @@ void main() {
     expect(failure.toString(), isNot(contains('Authorization')));
     expect(failure.toString(), isNot(contains('test-key')));
     expect(failure.toString(), isNot(contains(url)));
+    expect(failure.message, isNot(contains('sk-secret')));
+    expect(failure.message, isNot(contains('Authorization')));
+    expect(failure.message, isNot(contains('test-key')));
+    expect(failure.message, isNot(contains(url)));
+    expect(failure.headers.toString(), isNot(contains('response-secret')));
+    expect(failure.headers.toString(), isNot(contains('response-cookie')));
+    expect(failure.headers.toString(), isNot(contains('response-api-key')));
+    expect(failure.headers.toString(), isNot(contains(url)));
+  });
+
+  test('non-JSON error body is not saved in the public exception', () async {
+    final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+    addTearDown(() => server.close(force: true));
+    final url = 'http://${server.address.host}:${server.port}/private/path';
+    server.listen((request) async {
+      request.response.statusCode = HttpStatus.badGateway;
+      request.response.headers.contentType =
+          ContentType('text', 'plain', charset: 'utf-8');
+      request.response.write(
+        'upstream body sk-secret Authorization Bearer test-key from $url',
+      );
+      await request.response.close();
+    });
+
+    AIRequestException? failure;
+    try {
+      await AICompletion(AIConfigBuilder(apiKey: 'test-key', chatUrl: url))
+          .createChat(prompt: 'hello');
+    } on AIRequestException catch (error) {
+      failure = error;
+    }
+
+    expect(failure, isNotNull);
+    expect(failure!.message, 'HTTP request failed');
+    expect(failure.toString(), contains('502'));
+    for (final sensitive in [
+      'upstream body',
+      'sk-secret',
+      'Authorization',
+      'test-key',
+      url,
+    ]) {
+      expect(failure.message, isNot(contains(sensitive)));
+      expect(failure.toString(), isNot(contains(sensitive)));
+    }
+  });
+
+  test('retryAfter accepts only non-negative decimal delay-seconds', () {
+    AIRequestException withRetryAfter(String value) => AIRequestException(
+          'safe',
+          HttpStatus.tooManyRequests,
+          headers: {'Retry-After': value},
+        );
+
+    expect(withRetryAfter('0').retryAfter, Duration.zero);
+    expect(withRetryAfter('7').retryAfter, const Duration(seconds: 7));
+    expect(withRetryAfter('007').retryAfter, const Duration(seconds: 7));
+    for (final invalid in const [
+      '-1',
+      '+1',
+      '1.5',
+      ' 1',
+      '1 ',
+      'Wed, 21 Oct 2015 07:28:00 GMT',
+    ]) {
+      expect(withRetryAfter(invalid).retryAfter, isNull, reason: invalid);
+    }
   });
 }
 

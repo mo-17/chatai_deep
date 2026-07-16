@@ -14,6 +14,9 @@ class AICompletion implements AICreateInterface {
     'max_tokens',
     'temperature',
     'top_p',
+    'n',
+    'stop',
+    'user',
   };
 
   final AIConfigBuilder config;

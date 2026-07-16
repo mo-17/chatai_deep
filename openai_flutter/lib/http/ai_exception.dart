@@ -11,6 +11,12 @@ class AIException implements Exception {
 }
 
 class AIRequestException implements Exception {
+  static const _safeResponseHeaders = {
+    'retry-after',
+    'x-request-id',
+  };
+  static final _delaySeconds = RegExp(r'^\d+$');
+
   final String message;
   final int statusCode;
   final Map<String, String> headers;
@@ -21,11 +27,14 @@ class AIRequestException implements Exception {
     Map<String, String> headers = const {},
   }) : headers = Map.unmodifiable({
           for (final entry in headers.entries)
-            entry.key.toLowerCase(): entry.value,
+            if (_safeResponseHeaders.contains(entry.key.toLowerCase()))
+              entry.key.toLowerCase(): entry.value,
         });
 
   Duration? get retryAfter {
-    final seconds = int.tryParse(headers['retry-after'] ?? '');
+    final value = headers['retry-after'];
+    if (value == null || !_delaySeconds.hasMatch(value)) return null;
+    final seconds = int.tryParse(value);
     return seconds == null ? null : Duration(seconds: seconds);
   }
 
@@ -33,4 +42,12 @@ class AIRequestException implements Exception {
   String toString() {
     return 'RequestFailedException{statusCode: $statusCode}';
   }
+}
+
+/// 请求被调用方主动取消时抛出的安全异常，不携带请求 URI 或响应正文。
+class AIRequestCancelledException implements Exception {
+  const AIRequestCancelledException();
+
+  @override
+  String toString() => 'AIRequestCancelledException: Request cancelled';
 }
