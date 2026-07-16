@@ -1,6 +1,9 @@
-import 'dart:convert';
+import 'dart:async';
 import 'dart:io';
 
+import 'package:chatgpt_app_core/ai_readiness/ai_ready_state.dart';
+import 'package:chatgpt_app_core/config/app_distribution.dart';
+import 'package:chatgpt_app_core/diagnostics/diagnostics_consent_store.dart';
 import 'package:chatgpt_app_core/dao/apk_update_dao.dart';
 import 'package:chatgpt_app_core/model/apk_model.dart';
 import 'package:chatgpt_app_core/pages/ai_settings_page.dart';
@@ -15,10 +18,13 @@ import 'package:chatgpt_app_core/pages/mcp_settings_page.dart';
 import 'package:chatgpt_app_core/pages/tool_audit_page.dart';
 import 'package:chatgpt_app_core/pages/tts_model_manager_page.dart';
 import 'package:chatgpt_app_core/pages/usage_stats_page.dart';
+import 'package:chatgpt_app_core/provider/ai_readiness_provider.dart';
 import 'package:chatgpt_app_core/provider/theme_provider.dart';
+import 'package:chatgpt_app_core/update/apk_update_policy.dart';
 import 'package:chatgpt_app_core/util/hi_dialog.dart';
 import 'package:chatgpt_app_core/util/hi_progress_dialog.dart';
 import 'package:chatgpt_app_core/widget/header_widget.dart';
+import 'package:chatgpt_app_core/widget/ai_readiness_card.dart';
 import 'package:flutter/material.dart';
 import 'package:hi_download/hi_download.dart';
 import 'package:login_sdk/dao/login_dao.dart';
@@ -26,10 +32,36 @@ import 'package:login_sdk/util/padding_extension.dart';
 import 'package:open_filex/open_filex.dart';
 import 'package:openai_flutter/utils/ai_logger.dart';
 import 'package:provider/provider.dart';
+import 'package:url_launcher/url_launcher.dart';
+
+typedef ApkUpdateChecker = Future<ApkModel> Function();
+typedef ApkDownloadHandler = Future<String> Function(
+  ApkModel model,
+  DownLoadListener listener,
+);
+typedef StoreUpdateOpener = Future<void> Function(String url);
+typedef ApkInstallHandler = Future<void> Function(String path);
 
 ///我的页面
 class MyPage extends StatefulWidget {
-  const MyPage({super.key});
+  final ApkUpdateChecker? updateChecker;
+  final ApkDownloadHandler? downloadHandler;
+  final StoreUpdateOpener? storeOpener;
+  final ApkInstallHandler? installHandler;
+  final AppDistribution? distribution;
+  final String? operatingSystem;
+  final DiagnosticsConsentStore? diagnosticsConsentStore;
+
+  const MyPage({
+    super.key,
+    this.updateChecker,
+    this.downloadHandler,
+    this.storeOpener,
+    this.installHandler,
+    this.distribution,
+    this.operatingSystem,
+    this.diagnosticsConsentStore,
+  });
 
   @override
   State<MyPage> createState() => _MyPageState();
@@ -45,6 +77,10 @@ class _MyPageState extends State<MyPage> {
   @override
   Widget build(BuildContext context) {
     final themeProvider = context.watch<ThemeProvider>();
+    final readiness = context.watch<AIReadinessProvider?>();
+    final readinessPresentation = readiness == null
+        ? null
+        : aiReadinessPresentation(readiness.state);
     final color = themeProvider.isAnime
         ? Theme.of(context).colorScheme.primary
         : themeProvider.themeColor;
@@ -79,8 +115,11 @@ class _MyPageState extends State<MyPage> {
                 color: color,
                 title: 'AI 服务设置',
                 icon: Icons.smart_toy,
-                onTap: () => Navigator.push(context,
-                    MaterialPageRoute(builder: (_) => const AISettingsPage()))),
+                subtitle: readinessPresentation?.title,
+                badge: readiness == null
+                    ? null
+                    : AIReadinessStatusBadge(state: readiness.state),
+                onTap: () => unawaited(_openAISettings())),
             ..._itemWidget(
                 color: color,
                 title: 'MCP 服务',
@@ -157,6 +196,11 @@ class _MyPageState extends State<MyPage> {
                         builder: (_) => const BackupRestorePage()))),
             ..._itemWidget(
                 color: color,
+                title: '隐私与诊断',
+                icon: Icons.privacy_tip_outlined,
+                onTap: _showDiagnosticsSettings),
+            ..._itemWidget(
+                color: color,
                 title: '检测更新',
                 icon: Icons.update,
                 onTap: _checkUpdate),
@@ -183,6 +227,8 @@ class _MyPageState extends State<MyPage> {
       {required Color color,
       required String title,
       required IconData icon,
+      String? subtitle,
+      Widget? badge,
       GestureTapCallback? onTap}) {
     if (context.read<ThemeProvider>().isAnime) {
       final colorScheme = Theme.of(context).colorScheme;
@@ -215,11 +261,35 @@ class _MyPageState extends State<MyPage> {
                       ),
                       const SizedBox(width: 14),
                       Expanded(
-                        child: Text(
-                          title,
-                          style: Theme.of(context).textTheme.titleMedium,
+                        child: Column(
+                          mainAxisAlignment: MainAxisAlignment.center,
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text(
+                              title,
+                              style: Theme.of(context).textTheme.titleMedium,
+                            ),
+                            if (subtitle != null) ...[
+                              const SizedBox(height: 2),
+                              Text(
+                                subtitle,
+                                maxLines: 1,
+                                overflow: TextOverflow.ellipsis,
+                                style: Theme.of(context)
+                                    .textTheme
+                                    .bodySmall
+                                    ?.copyWith(
+                                      color: colorScheme.onSurfaceVariant,
+                                    ),
+                              ),
+                            ],
+                          ],
                         ),
                       ),
+                      if (badge != null) ...[
+                        badge,
+                        const SizedBox(width: 8),
+                      ],
                       Icon(Icons.chevron_right_rounded,
                           color: colorScheme.onSurfaceVariant),
                     ],
@@ -241,11 +311,32 @@ class _MyPageState extends State<MyPage> {
           child: Row(
             mainAxisAlignment: MainAxisAlignment.spaceBetween,
             children: [
-              Text(
-                title,
-                style: titleStyle,
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(title, style: titleStyle),
+                    if (subtitle != null) ...[
+                      const SizedBox(height: 2),
+                      Text(
+                        subtitle,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                              color:
+                                  Theme.of(context).colorScheme.onSurfaceVariant,
+                            ),
+                      ),
+                    ],
+                  ],
+                ),
               ),
-              Icon(icon, color: color)
+              if (badge != null) ...[
+                const SizedBox(width: 8),
+                badge,
+              ],
+              const SizedBox(width: 10),
+              Icon(icon, color: color),
             ],
           ),
         ),
@@ -257,57 +348,209 @@ class _MyPageState extends State<MyPage> {
     ];
   }
 
-  void _checkUpdate() async {
+  Future<void> _openAISettings() async {
+    await Navigator.push<void>(
+      context,
+      MaterialPageRoute(builder: (_) => const AISettingsPage()),
+    );
+    if (!mounted) return;
+    final readiness = context.read<AIReadinessProvider?>();
+    if (readiness == null || readiness.state.status != AIReadyStatus.ready) {
+      return;
+    }
+    try {
+      await readiness.markCompleted();
+    } catch (error) {
+      if (mounted) HiDialog.showSnackBar(context, 'AI 引导状态未保存：$error');
+    }
+  }
+
+  Future<void> _checkUpdate() async {
+    final operatingSystem = widget.operatingSystem ?? Platform.operatingSystem;
     // ohos: 鸿蒙不支持 APK 安装，统一引导到应用市场
-    if (Platform.operatingSystem == 'ohos') {
+    if (operatingSystem == 'ohos') {
       HiDialog.showSnackBar(context, '鸿蒙版本请前往华为应用市场更新');
       return;
     }
-    if (!Platform.isAndroid) {
+    if (operatingSystem != 'android') {
       HiDialog.showSnackBar(context, '仅支持Android，其他平台敬请期待');
       return;
     }
     try {
-      final model = await ApkUpdateDao.checkUpdate();
-      AILogger.log(jsonEncode(model));
+      final checker = widget.updateChecker ?? () => ApkUpdateDao.checkUpdate();
+      final model = await checker();
       if (!mounted) return;
-      _showUpdateDialog(model);
+      final distribution = widget.distribution ?? DistributionConfig.current;
+      const policy = ApkUpdatePolicy();
+      final action = policy.decide(model, distribution);
+      if (action == UpdateAction.none) {
+        HiDialog.showSnackBar(context, '当前已是最新版本');
+        return;
+      }
+      await _showUpdateDialog(model, action, distribution, policy);
     } catch (e) {
-      AILogger.log(e.toString());
+      AILogger.log('update check failed: ${e.runtimeType}');
       if (!mounted) return;
-      HiDialog.showSnackBar(context, '已是最新版本');
+      HiDialog.showSnackBar(context, '检查更新失败，请稍后重试');
     }
   }
 
-  void _showUpdateDialog(ApkModel model) async {
+  Future<void> _showDiagnosticsSettings() {
+    return showDialog<void>(
+      context: context,
+      builder: (_) => _DiagnosticsConsentDialog(
+        store: widget.diagnosticsConsentStore ??
+            const DiagnosticsConsentStore(),
+      ),
+    );
+  }
+
+  Future<void> _showUpdateDialog(
+    ApkModel model,
+    UpdateAction action,
+    AppDistribution distribution,
+    ApkUpdatePolicy policy,
+  ) async {
     final result = await HiDialog.showDownloadDialog(context,
         title: '有新版本啦',
         content: model.description ?? "",
-        confirmText: "立即更新",
-        cancelText: "取消");
-    AILogger.log('result:$result');
+        confirmText: action == UpdateAction.openStore ? '前往更新' : '立即更新',
+        cancelText: '取消',
+        showCancel: !model.forceUpdate,
+        barrierDismissible: !model.forceUpdate);
     if (!(result ?? false) || !mounted) {
       return;
     }
+    if (action == UpdateAction.openStore) {
+      try {
+        await (widget.storeOpener ?? _openStore)(
+          policy.urlFor(model, distribution),
+        );
+      } catch (e) {
+        AILogger.log('open store failed: ${e.runtimeType}');
+        if (mounted) HiDialog.showSnackBar(context, '无法打开应用市场');
+      }
+      return;
+    }
+
     final dialog = HiProgressDialog();
     dialog.show(context, cancellable: false);
-    String? path;
-    path = await HiDownLoad().download(
-        downLoadUrl: model.url!,
-        fileName: 'ChatGPT.apk',
-        listener: (int total, int received, bool done) {
-          AILogger.log('total$total,received:$received');
-          dialog.update((received / total * 100).toInt());
-          if (done) {
-            dialog.close();
-            installAPK(path!);
-          }
-        });
-    AILogger.log('path:$path');
+    try {
+      final path = await (widget.downloadHandler ?? _downloadApk)(
+        model,
+        (int total, int received, bool done) {
+          if (!mounted || total <= 0) return;
+          dialog.update((received * 100 ~/ total).clamp(0, 100).toInt());
+        },
+      );
+      if (!mounted) return;
+      dialog.close();
+      await (widget.installHandler ?? installAPK)(path);
+    } catch (e) {
+      AILogger.log('update download failed: ${e.runtimeType}');
+      if (!mounted) return;
+      dialog.close();
+      HiDialog.showSnackBar(context, '更新下载失败，请稍后重试');
+    }
   }
 }
 
-void installAPK(String path) async {
+class _DiagnosticsConsentDialog extends StatefulWidget {
+  final DiagnosticsConsentStore store;
+
+  const _DiagnosticsConsentDialog({required this.store});
+
+  @override
+  State<_DiagnosticsConsentDialog> createState() =>
+      _DiagnosticsConsentDialogState();
+}
+
+class _DiagnosticsConsentDialogState
+    extends State<_DiagnosticsConsentDialog> {
+  late bool _consented;
+  bool _saving = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _consented = widget.store.read();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return AlertDialog(
+      title: const Text('隐私与诊断'),
+      content: SingleChildScrollView(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            SwitchListTile(
+              contentPadding: EdgeInsets.zero,
+              title: const Text('匿名错误诊断'),
+              subtitle: Text(_saving ? '正在保存…' : '默认关闭，可随时撤回'),
+              value: _consented,
+              onChanged: _saving ? null : _setConsent,
+            ),
+            const SizedBox(height: 8),
+            Text(
+              '开启后只允许发送异常类型、净化后的 package/dart 调用栈、'
+              'App 版本、平台、HTTP 状态码、耗时和聚合计数。不会发送对话、'
+              '提示词、账号、密钥、URL、文件路径、知识库正文或工具参数。',
+              style: Theme.of(context).textTheme.bodySmall,
+            ),
+          ],
+        ),
+      ),
+      actions: [
+        TextButton(
+          onPressed: _saving ? null : () => Navigator.pop(context),
+          child: const Text('完成'),
+        ),
+      ],
+    );
+  }
+
+  Future<void> _setConsent(bool value) async {
+    setState(() => _saving = true);
+    var failed = false;
+    try {
+      await widget.store.write(value);
+    } catch (_) {
+      failed = true;
+    }
+    if (!mounted) return;
+    setState(() {
+      _consented = widget.store.read();
+      _saving = false;
+    });
+    if (failed) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('诊断设置未保存，请稍后重试')),
+      );
+    }
+  }
+}
+
+Future<String> _downloadApk(
+  ApkModel model,
+  DownLoadListener listener,
+) {
+  return HiDownLoad().download(
+    downLoadUrl: model.downloadUrl,
+    fileName: 'ChatGPT.apk',
+    listener: listener,
+    expectedSha256: model.sha256,
+  );
+}
+
+Future<void> _openStore(String rawUrl) async {
+  final uri = Uri.parse(rawUrl);
+  final opened = await launchUrl(uri, mode: LaunchMode.externalApplication);
+  if (!opened) throw StateError('store URL unavailable');
+}
+
+Future<void> installAPK(String path) async {
   final result = await OpenFilex.open(path);
-  AILogger.log('installAPK:${result.type} message:${result.message}');
+  AILogger.log('installAPK:${result.type}');
 }

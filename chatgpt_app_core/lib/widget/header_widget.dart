@@ -43,17 +43,18 @@ class HeaderWidget extends StatelessWidget {
             overflow: TextOverflow.ellipsis,
             style: const TextStyle(fontSize: 22, fontWeight: FontWeight.bold),
           ),
-          Text(
-            'imooc id：$imoocId',
-            maxLines: 1,
-            overflow: TextOverflow.ellipsis,
-            style: TextStyle(
-              fontSize: 13,
-              color: isAnime
-                  ? Theme.of(context).colorScheme.onSurfaceVariant
-                  : Colors.grey,
+          if (imoocId?.trim().isNotEmpty == true)
+            Text(
+              'imooc id：${imoocId!.trim()}',
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: TextStyle(
+                fontSize: 13,
+                color: isAnime
+                    ? Theme.of(context).colorScheme.onSurfaceVariant
+                    : Colors.grey,
+              ),
             ),
-          )
         ],
       ));
 
