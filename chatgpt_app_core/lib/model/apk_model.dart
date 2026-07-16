@@ -44,7 +44,9 @@ class ApkModel {
       description: _nullableString(json['description']),
       updateAvailable: json['updateAvailable'] is bool
           ? json['updateAvailable'] as bool
-          : legacyUrl.isNotEmpty || downloadUrl.isNotEmpty || storeUrl.isNotEmpty,
+          : legacyUrl.isNotEmpty ||
+              downloadUrl.isNotEmpty ||
+              storeUrl.isNotEmpty,
       forceUpdate: json['forceUpdate'] == true,
       downloadUrl: downloadUrl,
       storeUrl: storeUrl,
@@ -70,6 +72,5 @@ class ApkModel {
 
   static String _asString(Object? value) => value?.toString() ?? '';
 
-  static String? _nullableString(Object? value) =>
-      value == null ? null : value.toString();
+  static String? _nullableString(Object? value) => value?.toString();
 }

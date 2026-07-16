@@ -1,5 +1,3 @@
-import 'dart:async';
-
 import 'package:chatgpt_app_core/diagnostics/diagnostics_event.dart';
 import 'package:chatgpt_app_core/diagnostics/diagnostics_sink.dart';
 import 'package:chatgpt_app_core/diagnostics/flutter_diagnostics_bridge.dart';
@@ -105,8 +103,8 @@ void main() {
     test('嵌套 bridge 乱序释放不会复活已释放 handler', () {
       final firstSink = _CollectingSink();
       final secondSink = _CollectingSink();
-      final FlutterExceptionHandler previousFlutter = (_) {};
-      final PlatformErrorHandler previousPlatform = (_, __) => true;
+      void previousFlutter(FlutterErrorDetails details) {}
+      bool previousPlatform(Object error, StackTrace stackTrace) => true;
       FlutterExceptionHandler? currentFlutter = previousFlutter;
       PlatformErrorHandler? currentPlatform = previousPlatform;
 
@@ -198,6 +196,7 @@ void main() {
         () => syncHandler!(FlutterErrorDetails(exception: Exception('hidden'))),
         returnsNormally,
       );
+      syncBridge.dispose();
 
       final asyncBridge = FlutterDiagnosticsBridge(
         sink: _AsyncThrowingSink(),
@@ -207,7 +206,8 @@ void main() {
         setPlatformHandler: (_) {},
       );
       expect(
-        () => asyncBridge.recordZoneError(Exception('hidden'), StackTrace.empty),
+        () =>
+            asyncBridge.recordZoneError(Exception('hidden'), StackTrace.empty),
         returnsNormally,
       );
       await Future<void>.delayed(Duration.zero);
