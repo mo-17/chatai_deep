@@ -5,6 +5,8 @@ import 'package:chatgpt_app_core/chat/application/story_template_background_work
 import 'package:flutter/foundation.dart';
 import 'package:workmanager/workmanager.dart';
 
+import 'flutter_secure_key_value_store.dart';
+
 const String storyTemplateTranslationTaskName = 'story_template_translation';
 const String storyTemplateTranslationUniqueName =
     'com.example.chatgpt_flutter.story-template-translation';
@@ -26,6 +28,7 @@ void storyTemplateBackgroundCallback() {
     try {
       final completed = await runStoryTemplateTranslationBackgroundWork(
         accountHash: accountHash,
+        secureStore: FlutterSecureKeyValueStore(),
       );
       if (!completed && Platform.isIOS) {
         await scheduleStoryTemplateTranslationBackgroundWork(accountHash);

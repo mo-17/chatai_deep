@@ -12,12 +12,22 @@ import 'package:login_sdk/login_sdk.dart';
 /// 重新初始化持久化层并校验登录账号，防止登出后旧任务访问另一个账号的数据。
 Future<bool> runStoryTemplateTranslationBackgroundWork({
   required String accountHash,
+  SecureKeyValueStore? secureStore,
 }) async {
   final expectedAccount = accountHash.trim();
   if (expectedAccount.isEmpty) return true;
 
   WidgetsFlutterBinding.ensureInitialized();
-  await LoginConfig.instance().init(homePage: const SizedBox.shrink());
+  await LoginConfig.instance().init(
+    homePage: const SizedBox.shrink(),
+    tokenStorage: secureStore == null
+        ? null
+        : MigratingTokenStorage(
+            secureStore: secureStore,
+            readOnly: true,
+          ),
+  );
+  AISettingsDao.configureSecretStore(secureStore);
 
   final currentAccount = LoginDao.getAccountHash();
   if (LoginDao.getBoardingPass() == null || currentAccount != expectedAccount) {
@@ -27,7 +37,8 @@ Future<bool> runStoryTemplateTranslationBackgroundWork({
   final storage = await HiDBManager.instance(dbName: expectedAccount);
   final coordinator = StoryTemplateTranslationCoordinator.instance;
   await coordinator.initialize(storage, accountHash: expectedAccount);
-  final chatService = ChatService.from(AISettingsDao.loadFor(expectedAccount));
+  final settings = await AISettingsDao.loadForBackground(expectedAccount);
+  final chatService = ChatService.from(settings);
   await coordinator.resumeRecoverable(
     complete: (prompt) async =>
         (await chatService.chat(

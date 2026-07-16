@@ -15,7 +15,9 @@ dependencies:
     path: ../login_sdk
   flutter_splash_screen: ^4.0.0
   shared_preferences: ">=2.2.0 <2.3.0"
+  package_info_plus: ^9.0.0
   workmanager: ^0.9.0+3
+  flutter_secure_storage: ^10.3.1
 
 # ───────────────────────────────────────────────────────────────────────────
 # 【临时】OCR 插件用本地 Dart-only stub 覆盖，使 iOS 模拟器可编译。
@@ -32,6 +34,9 @@ dependency_overrides:
 dev_dependencies:
   flutter_test:
     sdk: flutter
+  integration_test:
+    sdk: flutter
+  flutter_hi_cache: ^0.0.1
   flutter_lints: ^2.0.0
 
 flutter:

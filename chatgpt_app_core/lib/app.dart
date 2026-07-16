@@ -1,5 +1,8 @@
 import 'dart:async';
 
+import 'package:chatgpt_app_core/diagnostics/diagnostics_consent_store.dart';
+import 'package:chatgpt_app_core/diagnostics/diagnostics_sink.dart';
+import 'package:chatgpt_app_core/diagnostics/flutter_diagnostics_bridge.dart';
 import 'package:chatgpt_app_core/dao/ai_settings_dao.dart';
 import 'package:chatgpt_app_core/chat/application/story_template_translation_tasks.dart';
 import 'package:chatgpt_app_core/chat/application/story_template_background_scheduler.dart';
@@ -13,6 +16,7 @@ import 'package:chatgpt_app_core/provider/hi_provider.dart';
 import 'package:chatgpt_app_core/provider/theme_provider.dart';
 import 'package:chatgpt_app_core/sync/cloud_sync_client.dart';
 import 'package:chatgpt_app_core/util/model_catalog.dart';
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_hi_cache/flutter_hi_cache.dart';
 import 'package:login_sdk/dao/login_dao.dart';
@@ -23,25 +27,35 @@ import 'package:provider/provider.dart';
 
 Future<void> runChatGptApp({
   Future<void> Function()? platformInitializer,
+  SecureKeyValueStore? secureStore,
+  DiagnosticsSink diagnosticsSink = const NoopDiagnosticsSink(),
+  DiagnosticsConsentStore diagnosticsConsentStore =
+      const DiagnosticsConsentStore(),
+  DiagnosticsFlagReader? diagnosticsBuildConfigured,
+  DiagnosticsFlagReader? diagnosticsRemoteDisabled,
+  void Function()? afterRunApp,
 }) {
   final initialized = Completer<void>();
+  FlutterDiagnosticsBridge? diagnosticsBridge;
   // 必须把 ensureInitialized 与 runApp 放进同一个 Zone，否则平台通道回调
   // （含文本输入）跨 Zone 投递会出错——桌面端表现为输入框打不进字（Zone mismatch）。
   runZonedGuarded(
     () async {
       WidgetsFlutterBinding.ensureInitialized();
-
-      // 全局错误上报 hook（后续接入 Sentry / 自建上报时替换此处）
-      FlutterError.onError = (FlutterErrorDetails details) {
-        FlutterError.presentError(details);
-        // ignore: avoid_print
-        debugPrint('FlutterError: ${details.exceptionAsString()}');
-        // TODO: 接入错误上报服务
-      };
+      final gatedDiagnosticsSink = ConsentGatedDiagnosticsSink(
+        delegate: diagnosticsSink,
+        consentStore: diagnosticsConsentStore,
+        buildConfigured: diagnosticsBuildConfigured,
+        remoteDisabled: diagnosticsRemoteDisabled,
+      );
+      diagnosticsBridge = FlutterDiagnosticsBridge(sink: gatedDiagnosticsSink)
+        ..installFlutterHandler()
+        ..installPlatformHandler();
 
       try {
         await platformInitializer?.call();
-        runApp(const MyApp());
+        runApp(MyApp(secureStore: secureStore));
+        afterRunApp?.call();
         initialized.complete();
       } catch (error, stackTrace) {
         if (!initialized.isCompleted) {
@@ -51,19 +65,22 @@ Future<void> runChatGptApp({
       }
     },
     (Object error, StackTrace stack) {
-      // ignore: avoid_print
-      debugPrint('uncaught error: $error\n$stack');
+      diagnosticsBridge?.recordZoneError(error, stack);
+      if (kDebugMode) {
+        debugPrint('uncaught error: ${error.runtimeType}');
+      }
       if (!initialized.isCompleted) {
         initialized.completeError(error, stack);
       }
-      // TODO: 接入错误上报服务
     },
   );
   return initialized.future;
 }
 
 class MyApp extends StatefulWidget {
-  const MyApp({super.key});
+  final SecureKeyValueStore? secureStore;
+
+  const MyApp({super.key, this.secureStore});
 
   @override
   State<MyApp> createState() => _MyAppState();
@@ -107,11 +124,53 @@ class _MyAppState extends State<MyApp> {
                   },
                   child: const Text('重试'),
                 ),
+                if (error is SecureStorageUnavailableException) ...[
+                  const SizedBox(height: 8),
+                  TextButton(
+                    onPressed: () => _recoverAndRetry(
+                      () => LoginSdkConfig.instance.storage.clear(),
+                    ),
+                    child: Text(error.corrupt ? '清除损坏登录态并重新登录' : '强制退出并重新登录'),
+                  ),
+                ],
+                if (error is AISecretsUnavailableException) ...[
+                  const SizedBox(height: 8),
+                  TextButton(
+                    onPressed: () => _recoverAndRetry(() async {
+                      if (error.corrupt) {
+                        await AISettingsDao.resetCredentialsFor(
+                          error.accountHash,
+                        );
+                      } else {
+                        await AISettingsDao.clearFor(error.accountHash);
+                      }
+                    }),
+                    child: Text(error.corrupt ? '修复并清空 AI 凭据' : '强制重置全部 AI 设置'),
+                  ),
+                  const Padding(
+                    padding: EdgeInsets.symmetric(horizontal: 24),
+                    child: Text(
+                      '会话数据不受影响。损坏时会优先保留可读取的 provider、模型、'
+                      '搜索参数和 MCP 地址；若普通配置也损坏，才会重置全部 AI 设置。',
+                      textAlign: TextAlign.center,
+                      style: TextStyle(fontSize: 12, color: Colors.grey),
+                    ),
+                  ),
+                ],
               ],
             ),
           ),
         ),
       );
+
+  void _recoverAndRetry(Future<void> Function() recovery) {
+    setState(() {
+      _initFuture = () async {
+        await recovery();
+        await doInit();
+      }();
+    });
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -148,8 +207,18 @@ class _MyAppState extends State<MyApp> {
   }
 
   Future<void> doInit() async {
-    await LoginConfig.instance().init(homePage: const BottomNavigator());
-    await HiCache.preInit();
+    final tokenStorage = widget.secureStore == null
+        ? null
+        : MigratingTokenStorage(secureStore: widget.secureStore!);
+    await LoginConfig.instance().init(
+      homePage: const BottomNavigator(),
+      tokenStorage: tokenStorage,
+    );
+    AISettingsDao.configureSecretStore(widget.secureStore);
+    final initialAccount = LoginDao.getAccountHash();
+    if (initialAccount != null) {
+      await AISettingsDao.loadForAsync(initialAccount);
+    }
     HiAPICache.init(HiCache.getInstance());
     ModelCatalog.loadFromCache();
     unawaited(ModelCatalog.refreshFromBackend());
@@ -165,6 +234,12 @@ class _MyAppState extends State<MyApp> {
 
     if (!LoginDao.hooksRegistered) {
       LoginDao.hooksRegistered = true;
+      LoginDao.addLoginReadyHook(() async {
+        final accountHash = LoginDao.getAccountHash();
+        if (accountHash != null) {
+          await AISettingsDao.loadForAsync(accountHash);
+        }
+      });
       LoginDao.addLogoutHook(() {
         final accountHash = LoginDao.getAccountHash();
         if (accountHash != null) {
@@ -217,9 +292,12 @@ class _MyAppState extends State<MyApp> {
             )) ??
             '',
       );
-    } catch (error, stackTrace) {
-      debugPrint(
-          'resume story template translations failed: $error\n$stackTrace');
+    } catch (error) {
+      if (kDebugMode) {
+        debugPrint(
+          'resume story template translations failed: ${error.runtimeType}',
+        );
+      }
     }
   }
 }

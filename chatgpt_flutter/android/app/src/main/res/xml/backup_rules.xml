@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<full-backup-content>
+    <!-- KeyStore 密钥不会随系统备份迁移，只排除与其绑定的安全存储文件。 -->
+    <exclude domain="sharedpref" path="chatai_deep_v1.xml" />
+    <exclude domain="sharedpref" path="FlutterSecureKeyStorage:chatai_deep_v1.xml" />
+    <exclude domain="sharedpref" path="FlutterSecureStorageConfiguration:chatai_deep_v1.xml" />
+</full-backup-content>

@@ -22,6 +22,82 @@ if (flutterVersionName == null) {
     flutterVersionName = '1.0'
 }
 
+def chatgptDistribution = (System.getenv('CHATGPT_DISTRIBUTION') ?: 'direct').trim().toLowerCase()
+if (!(chatgptDistribution in ['direct', 'store'])) {
+    throw new GradleException("CHATGPT_DISTRIBUTION must be direct or store, got: ${chatgptDistribution}")
+}
+
+def requestedRelease = gradle.startParameter.taskNames.any {
+    it.toLowerCase().contains('release')
+}
+def dartDefines = [:]
+if (project.hasProperty('dart-defines')) {
+    project.property('dart-defines').toString().split(',').each { encoded ->
+        try {
+            def decoded = new String(java.util.Base64.getDecoder().decode(encoded), 'UTF-8')
+            def separator = decoded.indexOf('=')
+            if (separator > 0) {
+                dartDefines[decoded.substring(0, separator)] = decoded.substring(separator + 1)
+            }
+        } catch (IllegalArgumentException ignored) {
+            // 其它 Flutter define 由 Dart 工具链校验。
+        }
+    }
+}
+def dartDistribution = dartDefines['APP_DISTRIBUTION']?.trim()?.toLowerCase()
+if (requestedRelease && dartDistribution != null && dartDistribution != chatgptDistribution) {
+    throw new GradleException(
+        "Gradle distribution ${chatgptDistribution} does not match APP_DISTRIBUTION=${dartDistribution}")
+}
+
+def storeApplicationId = System.getenv('CHATGPT_STORE_APPLICATION_ID')?.trim()
+def storeKeystorePath = System.getenv('CHATGPT_STORE_KEYSTORE_PATH')?.trim()
+def storeKeystorePassword = System.getenv('CHATGPT_STORE_KEYSTORE_PASSWORD')
+def storeKeyAlias = System.getenv('CHATGPT_STORE_KEY_ALIAS')?.trim()
+def storeKeyPassword = System.getenv('CHATGPT_STORE_KEY_PASSWORD')
+if (chatgptDistribution == 'store') {
+    def missing = []
+    if (!storeApplicationId) missing += 'CHATGPT_STORE_APPLICATION_ID'
+    if (!storeKeystorePath) missing += 'CHATGPT_STORE_KEYSTORE_PATH'
+    if (!storeKeystorePassword) missing += 'CHATGPT_STORE_KEYSTORE_PASSWORD'
+    if (!storeKeyAlias) missing += 'CHATGPT_STORE_KEY_ALIAS'
+    if (!storeKeyPassword) missing += 'CHATGPT_STORE_KEY_PASSWORD'
+    if (!missing.isEmpty()) {
+        throw new GradleException("Store build is missing: ${missing.join(', ')}")
+    }
+    if (storeApplicationId.startsWith('com.example.')) {
+        throw new GradleException('Store build requires a non-placeholder applicationId')
+    }
+    if (!file(storeKeystorePath).exists()) {
+        throw new GradleException('CHATGPT_STORE_KEYSTORE_PATH does not exist')
+    }
+    if (requestedRelease && dartDistribution != 'store') {
+        throw new GradleException('Store release requires --dart-define=APP_DISTRIBUTION=store')
+    }
+    if (requestedRelease) {
+        def backendHost = dartDefines['BACKEND_HOST']?.trim()?.toLowerCase()
+        def backendHttps = dartDefines['BACKEND_HTTPS']?.trim()?.toLowerCase()
+        def localBackend = (
+            backendHost == 'localhost' ||
+            backendHost?.startsWith('localhost:') ||
+            backendHost == '127.0.0.1' ||
+            backendHost?.startsWith('127.0.0.1:') ||
+            backendHost == '10.0.2.2' ||
+            backendHost?.startsWith('10.0.2.2:') ||
+            backendHost == '[::1]' ||
+            backendHost?.startsWith('[::1]:')
+        )
+        if (!backendHost || backendHost.contains('/') || localBackend) {
+            throw new GradleException(
+                'Store release requires --dart-define=BACKEND_HOST=<public-host>')
+        }
+        if (backendHttps != 'true') {
+            throw new GradleException(
+                'Store release requires --dart-define=BACKEND_HTTPS=true')
+        }
+    }
+}
+
 android {
     namespace "com.example.chatgpt_flutter"
     compileSdk = 36
@@ -38,19 +114,40 @@ android {
 
     sourceSets {
         main.java.srcDirs += 'src/main/kotlin'
+        release {
+            manifest.srcFile "src/${chatgptDistribution}/AndroidManifest.xml"
+        }
     }
 
     defaultConfig {
-        applicationId "com.example.chatgpt_flutter"
+        applicationId = chatgptDistribution == 'store'
+            ? storeApplicationId
+            : "com.example.chatgpt_flutter"
         minSdkVersion flutter.minSdkVersion
         targetSdkVersion 35
         versionCode flutterVersionCode.toInteger()
         versionName flutterVersionName
     }
 
+    signingConfigs {
+        if (chatgptDistribution == 'store') {
+            store {
+                storeFile file(storeKeystorePath)
+                storePassword storeKeystorePassword
+                keyAlias storeKeyAlias
+                keyPassword storeKeyPassword
+            }
+        }
+    }
+
     buildTypes {
         release {
-            signingConfig signingConfigs.debug
+            if (chatgptDistribution == 'store') {
+                signingConfig signingConfigs.store
+            } else {
+                // 历史 direct 包使用 debug 证书；拿到并固定历史私钥前不能替换。
+                signingConfig signingConfigs.debug
+            }
             proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
         }
     }
@@ -58,4 +155,44 @@ android {
 
 dependencies {
     implementation "org.jetbrains.kotlin:kotlin-stdlib-jdk7:1.9.20"
+}
+
+if (requestedRelease && chatgptDistribution == 'direct') {
+    gradle.taskGraph.whenReady {
+        def config = android.signingConfigs.debug
+        if (config.storeFile == null || !config.storeFile.exists()) {
+            throw new GradleException('Historical direct signing keystore is unavailable')
+        }
+        def keyStore = null
+        for (def type : ['JKS', 'PKCS12']) {
+            try {
+                def candidate = java.security.KeyStore.getInstance(type)
+                config.storeFile.withInputStream { stream ->
+                    candidate.load(stream, config.storePassword.toCharArray())
+                }
+                keyStore = candidate
+                break
+            } catch (Exception ignored) {
+                // 尝试下一种常见 keystore 格式。
+            }
+        }
+        if (keyStore == null) {
+            throw new GradleException('Historical direct signing keystore cannot be read')
+        }
+        def certificate = keyStore.getCertificate(config.keyAlias)
+        if (certificate == null) {
+            throw new GradleException('Historical direct signing certificate is unavailable')
+        }
+        def digest = java.security.MessageDigest
+            .getInstance('SHA-256')
+            .digest(certificate.encoded)
+        def fingerprint = digest.collect {
+            String.format('%02X', ((int) it) & 0xff)
+        }.join(':')
+        def expectedFingerprint = 'DA:E0:75:AF:9E:CF:7B:D3:C7:C8:C9:2F:E8:FF:AD:85:5A:61:0C:37:B8:73:1B:1D:E9:31:27:0F:AF:10:2C:7F'
+        if (fingerprint != expectedFingerprint) {
+            throw new GradleException(
+                "Direct release signing fingerprint mismatch. Expected ${expectedFingerprint}")
+        }
+    }
 }
