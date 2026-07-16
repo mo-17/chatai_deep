@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:io';
 
+import 'package:chatgpt_app_core/ai_readiness/ai_ready_state.dart';
 import 'package:chat_message/models/message_model.dart';
 import 'package:chatgpt_app_core/backup/backup_service.dart';
 import 'package:chatgpt_app_core/chat/application/assistant_conversation_factory.dart';
@@ -16,9 +17,13 @@ import 'package:chatgpt_app_core/model/assistant_model.dart';
 import 'package:chatgpt_app_core/model/conversation_model.dart';
 import 'package:chatgpt_app_core/model/project_model.dart';
 import 'package:chatgpt_app_core/pages/conversation_page.dart';
+import 'package:chatgpt_app_core/pages/ai_health_check_page.dart';
+import 'package:chatgpt_app_core/pages/ai_settings_page.dart';
+import 'package:chatgpt_app_core/provider/ai_readiness_provider.dart';
 import 'package:chatgpt_app_core/provider/ai_settings_provider.dart';
 import 'package:chatgpt_app_core/theme/app_visual_theme.dart';
 import 'package:chatgpt_app_core/widget/app_visual_widgets.dart';
+import 'package:chatgpt_app_core/widget/ai_readiness_card.dart';
 import 'package:chatgpt_app_core/widget/assistant_picker.dart';
 import 'package:chatgpt_app_core/util/app_events.dart';
 import 'package:chatgpt_app_core/util/avatar_asset_service.dart';
@@ -26,6 +31,7 @@ import 'package:chatgpt_app_core/util/hi_dialog.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:image_picker/image_picker.dart';
+import 'package:login_sdk/dao/login_dao.dart';
 import 'package:login_sdk/util/navigator_util.dart';
 import 'package:openai_flutter/utils/ai_logger.dart';
 import 'package:provider/provider.dart';
@@ -148,6 +154,7 @@ class _ConversationListPageState extends State<ConversationListPage>
   @override
   Widget build(BuildContext context) {
     super.build(context);
+    final readiness = context.watch<AIReadinessProvider?>();
     return Scaffold(
       appBar: AppBar(
         title: const Text('艾普'),
@@ -174,10 +181,69 @@ class _ConversationListPageState extends State<ConversationListPage>
       body: Column(
         children: [
           _projectBar,
+          if (readiness?.showProactiveCard == true)
+            AIReadinessCard(
+              state: readiness!.state,
+              onRetry: () => unawaited(_refreshReadiness()),
+              onConfigure: () => unawaited(_openAISettings()),
+              onVerify: () => unawaited(_openAIHealthCheck()),
+              onLogin: () => unawaited(LoginDao.logOut()),
+              onDismiss: () => unawaited(_dismissReadinessCard()),
+            ),
           Expanded(child: _listView),
         ],
       ),
     );
+  }
+
+  Future<void> _openAISettings() async {
+    await Navigator.push<void>(
+      context,
+      MaterialPageRoute(builder: (_) => const AISettingsPage()),
+    );
+    if (!mounted) return;
+    await _markReadinessCompletedIfReady();
+  }
+
+  Future<void> _openAIHealthCheck() async {
+    await Navigator.push<void>(
+      context,
+      MaterialPageRoute(builder: (_) => const AiHealthCheckPage()),
+    );
+    if (!mounted) return;
+    await _markReadinessCompletedIfReady();
+  }
+
+  Future<void> _refreshReadiness() async {
+    final readiness = context.read<AIReadinessProvider?>();
+    if (readiness == null) return;
+    try {
+      await readiness.refresh();
+    } catch (error) {
+      if (mounted) HiDialog.showSnackBar(context, 'AI 状态检查失败：$error');
+    }
+  }
+
+  Future<void> _dismissReadinessCard() async {
+    final readiness = context.read<AIReadinessProvider?>();
+    if (readiness == null) return;
+    try {
+      await readiness.dismiss();
+    } catch (error) {
+      if (mounted) HiDialog.showSnackBar(context, '稍后提醒设置未保存：$error');
+    }
+  }
+
+  Future<void> _markReadinessCompletedIfReady() async {
+    final readiness = context.read<AIReadinessProvider?>();
+    if (readiness == null || readiness.state.status != AIReadyStatus.ready) {
+      return;
+    }
+    try {
+      await readiness.markCompleted();
+    } catch (error) {
+      if (mounted) HiDialog.showSnackBar(context, 'AI 引导状态未保存：$error');
+    }
   }
 
   Widget get _projectBar {

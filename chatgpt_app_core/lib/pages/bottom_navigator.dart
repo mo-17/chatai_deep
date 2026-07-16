@@ -1,8 +1,10 @@
+import 'package:chatgpt_app_core/ai_readiness/ai_readiness_startup.dart';
 import 'package:chatgpt_app_core/migration/guest_migration_service.dart';
 import 'package:chatgpt_app_core/pages/conversation_list_page.dart';
 import 'package:chatgpt_app_core/pages/my_page.dart';
 import 'package:chatgpt_app_core/pages/study_page.dart';
 import 'package:chatgpt_app_core/pages/wonderful_page.dart';
+import 'package:chatgpt_app_core/provider/ai_readiness_provider.dart';
 import 'package:chatgpt_app_core/provider/ai_settings_provider.dart';
 import 'package:chatgpt_app_core/provider/theme_provider.dart';
 import 'package:flutter/material.dart';
@@ -24,18 +26,37 @@ class _BottomNavigatorState extends State<BottomNavigator> {
   @override
   void initState() {
     super.initState();
-    // 确保每次进入主页按当前账号加载 AI 设置
-    WidgetsBinding.instance.addPostFrameCallback((_) async {
-      await context.read<AISettingsProvider>().load();
+    WidgetsBinding.instance.addPostFrameCallback((_) => _initializeAccount());
+  }
+
+  Future<void> _initializeAccount() async {
+    try {
+      await initializeAIReadinessAfterGuestMigration(
+        loadSettings: () => context.read<AISettingsProvider>().load(),
+        settleGuestMigration: _maybeMigrateGuestData,
+        initializeReadiness: () async {
+          final settings = context.read<AISettingsProvider>();
+          await context.read<AIReadinessProvider>().initialize(
+                expectedAccountHash: settings.accountHash,
+              );
+        },
+        canContinue: () => mounted,
+      );
+    } catch (error) {
+      // 读取目标 DB / 迁移判定失败时不继续 legacy 分类，防止把旧账号误判
+      // 为新用户；保留历史功能可用，并在下次进入主页时重试。
       if (!mounted) return;
-      await _maybeMigrateGuestData();
-    });
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('账号数据初始化失败，请稍后重试：$error')),
+      );
+    }
   }
 
   /// 正式账号首次进入主页时，若检测到游客模式攒下的数据，弹窗询问是否导入。
   /// 每个账号只问一次（导入或拒绝后置位标记）。
-  Future<void> _maybeMigrateGuestData() async {
-    if (!await GuestMigrationService.shouldPrompt() || !mounted) return;
+  Future<bool> _maybeMigrateGuestData() async {
+    if (!await GuestMigrationService.shouldPrompt()) return true;
+    if (!mounted) return false;
     final confirmed = await showDialog<bool>(
       context: context,
       builder: (ctx) => AlertDialog(
@@ -54,27 +75,29 @@ class _BottomNavigatorState extends State<BottomNavigator> {
         ],
       ),
     );
-    if (!mounted) return;
+    if (!mounted) return false;
     if (confirmed != true) {
       // 拒绝：标记已处理，下次不再询问。
       await GuestMigrationService.markDone();
-      return;
+      return true;
     }
     try {
       final result = await GuestMigrationService.migrate();
-      if (!mounted) return;
+      if (!mounted) return false;
       await context.read<AISettingsProvider>().load();
-      if (!mounted) return;
+      if (!mounted) return false;
       final note = result.settingsImported ? '，并已套用游客的 AI 设置' : '';
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(content: Text('已导入 ${result.conversations} 个会话$note')),
       );
+      return true;
     } catch (e) {
       // 失败不置标记，下次仍可重试。
-      if (!mounted) return;
+      if (!mounted) return false;
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(content: Text('导入失败：$e')),
       );
+      return false;
     }
   }
 

@@ -1,6 +1,6 @@
+import 'package:chatgpt_app_core/ai_readiness/ai_health_state_guard.dart';
 import 'package:chatgpt_app_core/dao/chat/chat_service.dart';
 import 'package:chatgpt_app_core/chat/domain/chat_attachments.dart';
-import 'package:chatgpt_app_core/chat/domain/model_capabilities.dart';
 import 'package:chatgpt_app_core/chat/domain/stream_event.dart';
 import 'package:chatgpt_app_core/model/ai_provider.dart';
 import 'package:chatgpt_app_core/model/ai_settings.dart';
@@ -258,7 +258,14 @@ class _AiHealthCheckPageState extends State<AiHealthCheckPage> {
 
   Future<void> _testOne(
       AISettingsProvider store, AiProvider provider, AiModel model) async {
+    final accountHash = store.accountHash;
     final key = _key(provider.id, model.id);
+    final currentProviders =
+        store.settings.providers.where((item) => item.id == provider.id);
+    if (currentProviders.isEmpty) return;
+    final currentProvider = currentProviders.first;
+    final expectedConfiguration =
+        AIProviderHealthConfiguration.capture(currentProvider);
     setState(() {
       _states[key] = _HealthState.running;
       _errors.remove(key);
@@ -268,34 +275,51 @@ class _AiHealthCheckPageState extends State<AiHealthCheckPage> {
       ..activeProviderId = provider.id;
     final p = settings.providers.firstWhere((e) => e.id == provider.id);
     p.selectedModelId = model.id;
+    Object? requestError;
     try {
       await ChatService.from(settings).chat(prompt: 'ping', history: []);
-      model.markTestResult(success: true);
-      final caps = ModelCapabilities.heuristic(model.id,
-          providerCode: provider.providerCode);
-      model.applyCapabilityHints(
-        vision: caps.image,
-        tool: caps.tool,
-        reasoning: caps.reasoning,
+    } catch (error) {
+      requestError = error;
+    }
+
+    try {
+      final recorded = await store.recordModelTestResult(
+        providerId: provider.id,
+        modelId: model.id,
+        expectedConfiguration: expectedConfiguration,
+        success: requestError == null,
+        error: requestError?.toString(),
+        expectedAccountHash: accountHash,
       );
-      await store.updateProvider(provider);
       if (!mounted) return;
-      setState(() => _states[key] = _HealthState.success);
-    } catch (e) {
-      final error = '$e';
-      model.markTestResult(success: false, error: error);
-      await store.updateProvider(provider);
+      final error = recorded
+          ? requestError?.toString()
+          : '配置已变化，请重新测试';
+      setState(() {
+        _states[key] = recorded && requestError == null
+            ? _HealthState.success
+            : _HealthState.failure;
+        if (error != null) _errors[key] = error;
+      });
+    } catch (error) {
       if (!mounted) return;
       setState(() {
         _states[key] = _HealthState.failure;
-        _errors[key] = error;
+        _errors[key] = '测试结果未保存：$error';
       });
     }
   }
 
   Future<void> _deepProbe(
       AISettingsProvider store, AiProvider provider, AiModel model) async {
+    final accountHash = store.accountHash;
     final key = _key(provider.id, model.id);
+    final currentProviders =
+        store.settings.providers.where((item) => item.id == provider.id);
+    if (currentProviders.isEmpty) return;
+    final currentProvider = currentProviders.first;
+    final expectedConfiguration =
+        AIProviderHealthConfiguration.capture(currentProvider);
     setState(() {
       _states[key] = _HealthState.running;
       _errors.remove(key);
@@ -308,20 +332,14 @@ class _AiHealthCheckPageState extends State<AiHealthCheckPage> {
     final service = ChatService.from(settings);
     final notes = <String>[];
     var ok = true;
+    var toolConfirmed = false;
+    var visionConfirmed = false;
     try {
       await service.chat(prompt: 'ping', history: []);
-      model.markTestResult(success: true);
-      final heuristic = ModelCapabilities.heuristic(model.id,
-          providerCode: provider.providerCode);
-      model.applyCapabilityHints(
-        vision: heuristic.image,
-        tool: heuristic.tool,
-        reasoning: heuristic.reasoning,
-      );
       try {
         final toolOk = await _probeTool(service);
         if (toolOk) {
-          model.applyCapabilityHints(tool: true);
+          toolConfirmed = true;
           notes.add('tool=confirmed');
         } else {
           notes.add('tool=not-called');
@@ -335,17 +353,34 @@ class _AiHealthCheckPageState extends State<AiHealthCheckPage> {
           history: const [],
           attachments: const ChatAttachments(images: [_probeImageDataUri]),
         );
-        model.applyCapabilityHints(vision: true);
+        visionConfirmed = true;
         notes.add('vision=confirmed');
       } catch (e) {
         notes.add('vision=failed:$e');
       }
     } catch (e) {
       ok = false;
-      model.markTestResult(success: false, error: '$e');
       notes.add('base=failed:$e');
     }
-    await store.updateProvider(provider);
+    try {
+      final recorded = await store.recordModelTestResult(
+        providerId: provider.id,
+        modelId: model.id,
+        expectedConfiguration: expectedConfiguration,
+        success: ok,
+        error: ok ? null : notes.last,
+        tool: toolConfirmed,
+        vision: visionConfirmed,
+        expectedAccountHash: accountHash,
+      );
+      if (!recorded) {
+        ok = false;
+        notes.add('配置已变化，请重新测试');
+      }
+    } catch (error) {
+      ok = false;
+      notes.add('测试结果未保存：$error');
+    }
     if (!mounted) return;
     setState(() {
       _states[key] = ok ? _HealthState.success : _HealthState.failure;

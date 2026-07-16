@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:chatgpt_app_core/chat/application/mcp/mcp_backend_client.dart';
 import 'package:chatgpt_app_core/chat/application/mcp/mcp_client.dart';
 import 'package:chatgpt_app_core/chat/application/mcp/mcp_tool_source.dart';
@@ -26,13 +28,29 @@ class McpSettingsPage extends StatefulWidget {
 
 class _McpSettingsPageState extends State<McpSettingsPage> {
   late final AISettingsProvider _store = context.read<AISettingsProvider>();
+  late final String _accountHashAtOpen = _store.accountHash;
 
   /// 改一项就克隆、应用、落盘，并清掉工具发现缓存让改动即时生效。
   void _patch(void Function(AISettings) mutate) {
     final s = _store.settings.clone();
     mutate(s);
-    _store.update(s);
-    McpToolSource.clearCache();
+    unawaited(_persist(s));
+  }
+
+  Future<void> _persist(AISettings settings) async {
+    try {
+      await _store.update(
+        settings,
+        expectedAccountHash: _accountHashAtOpen,
+      );
+      McpToolSource.clearCache();
+    } catch (error) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('MCP 设置未保存，请稍后重试：$error')),
+        );
+      }
+    }
   }
 
   @override

@@ -93,6 +93,35 @@ void main() {
     controller.dispose();
   });
 
+  testWidgets('发送闸门拒绝时保留输入且不调用 onSend', (tester) async {
+    final controller = TextEditingController(text: '请保留这段输入');
+    addTearDown(controller.dispose);
+    var sent = 0;
+    await tester.pumpWidget(
+      ChangeNotifierProvider(
+        create: (_) => ThemeProvider(),
+        child: MaterialApp(
+          home: Scaffold(
+            body: MessageInputWidget(
+              '请输入',
+              controller: controller,
+              speechInputEnabled: false,
+              canSend: () => false,
+              onSend: () => sent++,
+            ),
+          ),
+        ),
+      ),
+    );
+
+    await tester.tap(find.byIcon(Icons.send));
+    await tester.pump();
+
+    expect(sent, 0);
+    expect(controller.text, '请保留这段输入');
+    expect(find.text('请保留这段输入'), findsOneWidget);
+  });
+
   testWidgets('二次元输入栏保持可触控尺寸并可正常发送', (tester) async {
     tester.view.physicalSize = const Size(375, 560);
     tester.view.devicePixelRatio = 1;

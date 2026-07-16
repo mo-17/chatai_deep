@@ -37,6 +37,7 @@ class _AISettingsPageState extends State<AISettingsPage> {
 
   // initState 时缓存，避免 dispose 里再用 context.read。
   late final AISettingsProvider _store = context.read<AISettingsProvider>();
+  late final String _accountHashAtOpen = _store.accountHash;
 
   @override
   void initState() {
@@ -56,7 +57,7 @@ class _AISettingsPageState extends State<AISettingsPage> {
   void dispose() {
     _debounce?.cancel();
     // 落盘未触发的防抖编辑（结果数/长度/搜索 Key），静默保存避免丢失。
-    _flushSearch(notify: false);
+    unawaited(_flushSearch(notify: false, showError: false));
     _searchCountCtl.dispose();
     _searchLimitCtl.dispose();
     _tavilyKeyCtl.dispose();
@@ -73,7 +74,29 @@ class _AISettingsPageState extends State<AISettingsPage> {
   void _patch(void Function(AISettings) mutate) {
     final s = _store.settings.clone();
     mutate(s);
-    _store.update(s);
+    unawaited(_persistSettings(s));
+  }
+
+  Future<bool> _persistSettings(
+    AISettings settings, {
+    bool notify = true,
+    bool showError = true,
+  }) async {
+    try {
+      await _store.update(
+        settings,
+        notify: notify,
+        expectedAccountHash: _accountHashAtOpen,
+      );
+      return true;
+    } catch (error) {
+      if (showError && mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('设置未保存，请稍后重试：$error')),
+        );
+      }
+      return false;
+    }
   }
 
   TextEditingController _searchKeyCtl(String providerId) {
@@ -92,13 +115,19 @@ class _AISettingsPageState extends State<AISettingsPage> {
   /// 防抖：搜索区文本变化后延迟落盘。
   void _scheduleSearchSave() {
     _debounce?.cancel();
-    _debounce = Timer(const Duration(milliseconds: 500), _flushSearch);
+    _debounce = Timer(
+      const Duration(milliseconds: 500),
+      () => unawaited(_flushSearch()),
+    );
   }
 
   /// 一次性把搜索区三类文本框（结果数 / 长度 / 当前服务商 Key）全部读出落盘，
   /// 避免「单字段防抖」在并发编辑不同字段时互相覆盖丢失。
-  void _flushSearch({bool notify = true}) {
-    final s = notify ? _store.settings.clone() : _store.settings;
+  Future<bool> _flushSearch({
+    bool notify = true,
+    bool showError = true,
+  }) async {
+    final s = _store.settings.clone();
     s.searchMaxResults =
         _parseInt(_searchCountCtl.text, fallback: 5).clamp(1, 20);
     s.searchContentLimit = _parseInt(_searchLimitCtl.text);
@@ -116,11 +145,11 @@ class _AISettingsPageState extends State<AISettingsPage> {
       default:
         s.tavilyApiKey = key;
     }
-    if (notify) {
-      _store.update(s);
-    } else {
-      _store.saveQuietly();
-    }
+    return _persistSettings(
+      s,
+      notify: notify,
+      showError: showError,
+    );
   }
 
   @override
@@ -611,10 +640,10 @@ class _AISettingsPageState extends State<AISettingsPage> {
                       for (final p in _searchProviders)
                         DropdownMenuItem(value: p.$1, child: Text(p.$2)),
                     ],
-                    onChanged: (v) {
+                    onChanged: (v) async {
                       if (v == null) return;
                       // 先把当前服务商的 Key/参数落盘，再切换，避免丢失。
-                      _flushSearch(notify: false);
+                      if (!await _flushSearch(notify: false)) return;
                       _patch((x) => x.webSearchProviderId = v);
                     },
                   ),

@@ -54,6 +54,9 @@ String? _normalizeSpeechLocale(String? locale) {
 class MessageInputWidget extends StatefulWidget {
   final ValueChanged<String>? onChanged;
   final VoidCallback? onSend;
+
+  /// 同步发送闸门。返回 false 时不调用 [onSend]，也不清空输入内容。
+  final bool Function()? canSend;
   final VoidCallback? onStop;
   final ValueChanged<List<String>>? onImagesPicked;
   final List<String> pendingImages;
@@ -87,6 +90,7 @@ class MessageInputWidget extends StatefulWidget {
     super.key,
     this.onChanged,
     this.onSend,
+    this.canSend,
     this.onStop,
     this.onImagesPicked,
     this.pendingImages = const [],
@@ -949,6 +953,7 @@ class _MessageInputWidgetState extends State<MessageInputWidget> {
   void _onSend() {
     // 流式进行中或被禁用时（如回车键触发），忽略发送，避免并发请求。
     if (widget.isStreaming || !widget.enable) return;
+    if (widget.canSend?.call() == false) return;
     if (widget.onSend != null) {
       widget.onSend!();
       _controller.clear();

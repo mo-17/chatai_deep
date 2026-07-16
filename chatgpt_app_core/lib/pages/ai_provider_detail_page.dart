@@ -1,8 +1,8 @@
 import 'dart:async';
 
+import 'package:chatgpt_app_core/ai_readiness/ai_health_state_guard.dart';
 import 'package:chatgpt_app_core/data/provider_presets.dart';
 import 'package:chatgpt_app_core/dao/chat/chat_service.dart';
-import 'package:chatgpt_app_core/chat/domain/model_capabilities.dart';
 import 'package:chatgpt_app_core/model/ai_provider.dart';
 import 'package:chatgpt_app_core/model/ai_settings.dart';
 import 'package:chatgpt_app_core/provider/ai_settings_provider.dart';
@@ -39,6 +39,7 @@ class _AiProviderDetailPageState extends State<AiProviderDetailPage> {
 
   // initState 时缓存，避免 dispose 里再用 context.read。
   late final AISettingsProvider _store = context.read<AISettingsProvider>();
+  late final String _accountHashAtOpen = _store.accountHash;
 
   AiProvider? get _provider {
     final list =
@@ -58,7 +59,7 @@ class _AiProviderDetailPageState extends State<AiProviderDetailPage> {
   void dispose() {
     _debounce?.cancel();
     // 落盘未触发的防抖编辑（如粘贴 Key 后立刻返回），静默保存避免丢失。
-    _flush(notify: false);
+    unawaited(_flush(notify: false, showError: false));
     _keyCtl.dispose();
     _hostCtl.dispose();
     super.dispose();
@@ -67,12 +68,18 @@ class _AiProviderDetailPageState extends State<AiProviderDetailPage> {
   /// 文本框防抖保存（500ms），避免每个字符都落盘。
   void _debouncedSave() {
     _debounce?.cancel();
-    _debounce = Timer(const Duration(milliseconds: 500), _flush);
+    _debounce = Timer(
+      const Duration(milliseconds: 500),
+      () => unawaited(_flush()),
+    );
   }
 
-  void _flush({bool notify = true}) {
-    final p = _provider;
-    if (p == null) return;
+  Future<bool> _flush({
+    bool notify = true,
+    bool showError = true,
+  }) async {
+    final p = _provider?.copy();
+    if (p == null) return true;
     final nextKey = _keyCtl.text.trim();
     final nextHost = _hostCtl.text.trim();
     final configChanged = p.apiKey != nextKey || p.apiHost != nextHost;
@@ -83,10 +90,32 @@ class _AiProviderDetailPageState extends State<AiProviderDetailPage> {
         model.clearTestResult();
       }
     }
-    if (notify) {
-      _store.updateProvider(p);
-    } else {
-      _store.saveQuietly();
+    return _persistProvider(
+      p,
+      notify: notify,
+      showError: showError,
+    );
+  }
+
+  Future<bool> _persistProvider(
+    AiProvider provider, {
+    bool notify = true,
+    bool showError = true,
+  }) async {
+    try {
+      await _store.updateProvider(
+        provider,
+        notify: notify,
+        expectedAccountHash: _accountHashAtOpen,
+      );
+      return true;
+    } catch (error) {
+      if (showError && mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('设置未保存，请稍后重试：$error')),
+        );
+      }
+      return false;
     }
   }
 
@@ -107,7 +136,7 @@ class _AiProviderDetailPageState extends State<AiProviderDetailPage> {
   }
 
   Future<void> _runTest() async {
-    _flush();
+    if (!await _flush()) return;
     setState(() {
       _testState = _TestState.running;
       _testError = null;
@@ -131,7 +160,11 @@ class _AiProviderDetailPageState extends State<AiProviderDetailPage> {
   }
 
   Future<void> _runModelTest(String modelId) async {
-    _flush();
+    if (!await _flush()) return;
+    final currentProvider = _provider?.copy();
+    if (currentProvider == null) return;
+    final expectedConfiguration =
+        AIProviderHealthConfiguration.capture(currentProvider);
     setState(() {
       _modelTestStates[modelId] = _TestState.running;
       _modelTestErrors.remove(modelId);
@@ -144,39 +177,45 @@ class _AiProviderDetailPageState extends State<AiProviderDetailPage> {
     if (!p.models.any((m) => m.id == modelId)) {
       p.models.insert(0, AiModel(id: modelId));
     }
+    Object? requestError;
     try {
       await ChatService.from(s).chat(prompt: 'ping', history: []);
-      if (!mounted) return;
-      _recordModelTestResult(modelId, success: true);
-      setState(() => _modelTestStates[modelId] = _TestState.success);
     } catch (e) {
+      requestError = e;
+    }
+    if (!mounted) return;
+
+    try {
+      final recorded = await _store.recordModelTestResult(
+        providerId: widget.providerId,
+        modelId: modelId,
+        expectedConfiguration: expectedConfiguration,
+        success: requestError == null,
+        error: requestError?.toString(),
+        expectedAccountHash: _accountHashAtOpen,
+      );
       if (!mounted) return;
-      _recordModelTestResult(modelId, success: false, error: '$e');
+      if (!recorded) {
+        setState(() {
+          _modelTestStates[modelId] = _TestState.failure;
+          _modelTestErrors[modelId] = '配置已变化，请重新测试';
+        });
+        return;
+      }
+      setState(() {
+        _modelTestStates[modelId] =
+            requestError == null ? _TestState.success : _TestState.failure;
+        if (requestError != null) {
+          _modelTestErrors[modelId] = '$requestError';
+        }
+      });
+    } catch (error) {
+      if (!mounted) return;
       setState(() {
         _modelTestStates[modelId] = _TestState.failure;
-        _modelTestErrors[modelId] = '$e';
+        _modelTestErrors[modelId] = '测试结果未保存：$error';
       });
     }
-  }
-
-  void _recordModelTestResult(String modelId,
-      {required bool success, String? error}) {
-    final p = _provider;
-    if (p == null) return;
-    final models = p.models.where((m) => m.id == modelId);
-    if (models.isEmpty) return;
-    final model = models.first;
-    model.markTestResult(success: success, error: error);
-    if (success) {
-      final caps =
-          ModelCapabilities.heuristic(model.id, providerCode: p.providerCode);
-      model.applyCapabilityHints(
-        vision: caps.image,
-        tool: caps.tool,
-        reasoning: caps.reasoning,
-      );
-    }
-    _store.updateProvider(p);
   }
 
   String _testTimeLabel(int? millis) {
@@ -188,20 +227,25 @@ class _AiProviderDetailPageState extends State<AiProviderDetailPage> {
   }
 
   void _setActive() {
-    _store.setActiveProvider(widget.providerId);
+    unawaited(_persistAction(
+      () => _store.setActiveProvider(
+        widget.providerId,
+        expectedAccountHash: _accountHashAtOpen,
+      ),
+    ));
   }
 
   void _selectModel(String modelId) {
-    final p = _provider;
+    final p = _provider?.copy();
     if (p == null) return;
     p.selectedModelId = modelId;
     final models = p.models.where((m) => m.id == modelId);
     if (models.isNotEmpty) models.first.markUsed();
-    _store.updateProvider(p);
+    unawaited(_persistProvider(p));
   }
 
   void _removeModel(String modelId) {
-    final p = _provider;
+    final p = _provider?.copy();
     if (p == null) return;
     p.models.removeWhere((m) => m.id == modelId);
     _modelTestStates.remove(modelId);
@@ -209,7 +253,21 @@ class _AiProviderDetailPageState extends State<AiProviderDetailPage> {
     if (p.selectedModelId == modelId) {
       p.selectedModelId = p.models.isNotEmpty ? p.models.first.id : '';
     }
-    _store.updateProvider(p);
+    unawaited(_persistProvider(p));
+  }
+
+  Future<bool> _persistAction(Future<void> Function() action) async {
+    try {
+      await action();
+      return true;
+    } catch (error) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('设置未保存，请稍后重试：$error')),
+        );
+      }
+      return false;
+    }
   }
 
   Future<void> _showAddModelSheet() async {
@@ -259,7 +317,7 @@ class _AiProviderDetailPageState extends State<AiProviderDetailPage> {
                 onPressed: () {
                   final id = idCtl.text.trim();
                   if (id.isEmpty) return;
-                  final p = _provider;
+                  final p = _provider?.copy();
                   if (p != null && !p.models.any((m) => m.id == id)) {
                     p.models.add(AiModel(
                         id: id,
@@ -267,7 +325,7 @@ class _AiProviderDetailPageState extends State<AiProviderDetailPage> {
                             ? id
                             : nameCtl.text.trim()));
                     p.selectedModelId = id;
-                    _store.updateProvider(p);
+                    unawaited(_persistProvider(p));
                   }
                   Navigator.pop(ctx);
                 },
@@ -297,8 +355,13 @@ class _AiProviderDetailPageState extends State<AiProviderDetailPage> {
       ),
     );
     if (ok == true) {
-      _store.removeProvider(widget.providerId);
-      if (mounted) Navigator.pop(context);
+      final saved = await _persistAction(
+        () => _store.removeProvider(
+          widget.providerId,
+          expectedAccountHash: _accountHashAtOpen,
+        ),
+      );
+      if (saved && mounted) Navigator.pop(context);
     }
   }
 
@@ -339,7 +402,13 @@ class _AiProviderDetailPageState extends State<AiProviderDetailPage> {
             children: [
               SwitchListTile(
                 value: p.enabled,
-                onChanged: (v) => _store.toggleProvider(p.id, v),
+                onChanged: (v) => unawaited(_persistAction(
+                  () => _store.toggleProvider(
+                    p.id,
+                    v,
+                    expectedAccountHash: _accountHashAtOpen,
+                  ),
+                )),
                 title: const Text('启用'),
                 contentPadding:
                     const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
@@ -423,7 +492,7 @@ class _AiProviderDetailPageState extends State<AiProviderDetailPage> {
                         icon: const Icon(Icons.restart_alt_rounded),
                         onPressed: () {
                           _hostCtl.text = _defaultHost;
-                          _flush();
+                          unawaited(_flush());
                         },
                       ),
               ),

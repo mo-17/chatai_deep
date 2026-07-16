@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:chatgpt_app_core/model/ai_provider.dart';
 import 'package:chatgpt_app_core/pages/ai_provider_detail_page.dart';
 import 'package:chatgpt_app_core/provider/ai_settings_provider.dart';
@@ -203,9 +205,7 @@ class _ProviderTile extends StatelessWidget {
               onTap: () {},
               child: Switch(
                 value: provider.enabled,
-                onChanged: (v) => context
-                    .read<AISettingsProvider>()
-                    .toggleProvider(provider.id, v),
+                onChanged: (v) => unawaited(_toggle(context, v)),
               ),
             ),
             Icon(Icons.chevron_right_rounded,
@@ -214,6 +214,24 @@ class _ProviderTile extends StatelessWidget {
         ),
       ),
     );
+  }
+
+  Future<void> _toggle(BuildContext context, bool enabled) async {
+    try {
+      final store = context.read<AISettingsProvider>();
+      final accountHash = store.accountHash;
+      await store.toggleProvider(
+        provider.id,
+        enabled,
+        expectedAccountHash: accountHash,
+      );
+    } catch (error) {
+      if (context.mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('设置未保存，请稍后重试：$error')),
+        );
+      }
+    }
   }
 }
 
@@ -264,7 +282,7 @@ class _AddProviderSheetState extends State<_AddProviderSheet> {
   bool get _valid =>
       _nameCtl.text.trim().isNotEmpty && _hostCtl.text.trim().isNotEmpty;
 
-  void _submit() {
+  Future<void> _submit() async {
     final name = _nameCtl.text.trim();
     final host = _hostCtl.text.trim();
     final modelId = _modelCtl.text.trim();
@@ -278,8 +296,21 @@ class _AddProviderSheetState extends State<_AddProviderSheet> {
       models: modelId.isEmpty ? [] : [AiModel(id: modelId)],
       selectedModelId: modelId,
     );
-    context.read<AISettingsProvider>().addProvider(provider);
-    Navigator.pop(context);
+    try {
+      final store = context.read<AISettingsProvider>();
+      final accountHash = store.accountHash;
+      await store.addProvider(
+        provider,
+        expectedAccountHash: accountHash,
+      );
+      if (mounted) Navigator.pop(context);
+    } catch (error) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('服务商未保存，请稍后重试：$error')),
+        );
+      }
+    }
   }
 
   @override

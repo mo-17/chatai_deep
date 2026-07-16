@@ -31,7 +31,9 @@ class AiCatalogDao {
   /// 从后端异步拉取，写入缓存。失败/未登录/403 均静默返回 null
   static Future<Map<String, dynamic>?> fetchRemote() async {
     final token = LoginDao.getBoardingPass();
-    if (token == null) return null;
+    // 游客 token 只用于本地进入 App，后端不会接受。直接使用缓存/硬编码清单，
+    // 避免每次游客冷启动都制造一个必然 401 的网络请求。
+    if (token == null || token == LoginDao.kGuestToken) return null;
 
     try {
       final uri = BackendConst.buildUri('/uapi/ai/catalog');
