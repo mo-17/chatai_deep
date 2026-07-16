@@ -64,6 +64,26 @@ void main() {
         return;
       }
       if (request.uri.path.endsWith('/stream')) {
+        const safeFailureCodes = {
+          'reasoning-control-code': ('unsupported_reasoning_control', 400),
+          'raw-unknown-code': ('unknown_parameter', 400),
+          'first-event-deadline-code': ('first_event_timeout', 504),
+          'idle-deadline-code': ('idle_timeout', 504),
+          'total-deadline-code': ('total_timeout', 504),
+        };
+        final safeFailure = safeFailureCodes[prompt];
+        if (safeFailure != null) {
+          final (safeCode, statusCode) = safeFailure;
+          request.response.headers.contentType =
+              ContentType('text', 'event-stream', charset: 'utf-8');
+          request.response.write(
+            'event: error\n'
+            'data: {"code":"upstream_error","safeCode":"$safeCode",'
+            '"statusCode":$statusCode,"message":"SECRET failure detail"}\n\n',
+          );
+          await request.response.close();
+          return;
+        }
         const retryHeaderValues = {
           'retry-header-zero': '0',
           'retry-header-over': '121',
@@ -334,6 +354,85 @@ void main() {
     );
     _expectNoUnsafeErrorData(error);
   });
+
+  test('options-aware stream preserves the reasoning-control safe code',
+      () async {
+    final service =
+        BackendChatService(AISettings.defaults()..mode = AIMode.backend);
+
+    final error = await _captureError(
+      service.chatStreamEventsWithOptions(
+        prompt: 'reasoning-control-code',
+        history: const [],
+        options: const ChatRequestOptions(
+          profile: ChatRequestProfile.translation,
+          reasoningPolicy: ChatReasoningPolicy.offIfSupported,
+        ),
+      ),
+    );
+
+    expect(
+      error,
+      isA<ChatTransportException>()
+          .having((value) => value.statusCode, 'statusCode', 400)
+          .having((value) => value.safeCode, 'safeCode',
+              'unsupported_reasoning_control'),
+    );
+    _expectNoUnsafeErrorData(error);
+  });
+
+  test('options-aware stream keeps a raw unknown parameter distinct', () async {
+    final service =
+        BackendChatService(AISettings.defaults()..mode = AIMode.backend);
+
+    final error = await _captureError(
+      service.chatStreamEventsWithOptions(
+        prompt: 'raw-unknown-code',
+        history: const [],
+        options: const ChatRequestOptions(
+          profile: ChatRequestProfile.translation,
+          reasoningPolicy: ChatReasoningPolicy.offIfSupported,
+        ),
+      ),
+    );
+
+    expect(
+      error,
+      isA<ChatTransportException>()
+          .having((value) => value.statusCode, 'statusCode', 400)
+          .having((value) => value.safeCode, 'safeCode', 'unknown_parameter'),
+    );
+    _expectNoUnsafeErrorData(error);
+  });
+
+  for (final deadline in const {
+    'first-event-deadline-code': 'first_event_timeout',
+    'idle-deadline-code': 'idle_timeout',
+    'total-deadline-code': 'total_timeout',
+  }.entries) {
+    test('options-aware stream preserves ${deadline.value}', () async {
+      final service =
+          BackendChatService(AISettings.defaults()..mode = AIMode.backend);
+
+      final error = await _captureError(
+        service.chatStreamEventsWithOptions(
+          prompt: deadline.key,
+          history: const [],
+          options: const ChatRequestOptions(
+            profile: ChatRequestProfile.translation,
+          ),
+        ),
+      );
+
+      expect(
+        error,
+        isA<ChatTransportException>()
+            .having((value) => value.statusCode, 'statusCode', 504)
+            .having((value) => value.safeCode, 'safeCode', deadline.value),
+      );
+      _expectNoUnsafeErrorData(error);
+    });
+  }
 
   test('options-aware stream keeps app login for trusted provider 401 envelope',
       () async {

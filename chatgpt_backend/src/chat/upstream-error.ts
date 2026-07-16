@@ -1,6 +1,10 @@
 import { GatewayTimeoutException, HttpException } from '@nestjs/common';
 
 export type SafeUpstreamCode =
+  | 'unsupported_reasoning_control'
+  | 'first_event_timeout'
+  | 'idle_timeout'
+  | 'total_timeout'
   | 'unknown_parameter'
   | 'unsupported_parameter'
   | 'invalid_request'
@@ -18,6 +22,10 @@ export interface SafeUpstreamPayload {
 }
 
 const SAFE_UPSTREAM_CODES = new Set<SafeUpstreamCode>([
+  'unsupported_reasoning_control',
+  'first_event_timeout',
+  'idle_timeout',
+  'total_timeout',
   'unknown_parameter',
   'unsupported_parameter',
   'invalid_request',
@@ -99,9 +107,7 @@ export async function safeFailureFromResponse(
 export function safeFailureFromSsePayload(
   payload: Record<string, unknown> | null,
 ): SafeUpstreamException {
-  const explicitCode = explicitParameterCode(payload);
-  const statusCode =
-    safeStatusCode(payload?.['statusCode']) ?? (explicitCode ? 400 : 502);
+  const statusCode = safeStatusCode(payload?.['statusCode']) ?? 502;
   return safeFailureFromPayload(
     statusCode,
     payload,
@@ -152,6 +158,14 @@ function buildSafeUpstreamPayload(
 
 function safeMessageForCode(code: SafeUpstreamCode): string {
   switch (code) {
+    case 'unsupported_reasoning_control':
+      return '上游不支持推理控制';
+    case 'first_event_timeout':
+      return '首个响应事件超时';
+    case 'idle_timeout':
+      return '上游响应空闲超时';
+    case 'total_timeout':
+      return '上游响应总时长超时';
     case 'unknown_parameter':
     case 'unsupported_parameter':
       return '上游不支持请求参数';

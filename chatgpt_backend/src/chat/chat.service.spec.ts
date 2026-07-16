@@ -1,4 +1,3 @@
-import { GatewayTimeoutException } from '@nestjs/common';
 import { EventEmitter } from 'node:events';
 import type { Response as ExpressResponse } from 'express';
 import type { ObjectLiteral, Repository } from 'typeorm';
@@ -371,11 +370,15 @@ describe('ChatService upstream transport', () => {
   });
 
   it.each([
-    [400, { error: { code: 'unknown_parameter' } }, 'unknown_parameter'],
+    [
+      400,
+      { error: { code: 'unknown_parameter' } },
+      'unsupported_reasoning_control',
+    ],
     [
       400,
       { error: { type: 'unsupported_parameter' } },
-      'unsupported_parameter',
+      'unsupported_reasoning_control',
     ],
     [
       400,
@@ -410,6 +413,31 @@ describe('ChatService upstream transport', () => {
       expect(jest.getTimerCount()).toBe(0);
     },
   );
+
+  it('keeps an explicit parameter code when no reasoning field was attached', async () => {
+    const { service } = createService(
+      provider({ code: 'custom_1', displayName: 'Custom' }),
+    );
+    installFetch(
+      () =>
+        new Response(
+          JSON.stringify({
+            error: {
+              code: 'unknown_parameter',
+              message: 'SECRET unrelated upstream parameter',
+            },
+          }),
+          { status: 400 },
+        ),
+    );
+
+    const result = await settle(service.complete(7, requestBody()));
+    const error = (result as { error: SafeFailure }).error;
+
+    expect(error.statusCode).toBe(400);
+    expect(error.safeCode).toBe('unknown_parameter');
+    expect(String(error)).not.toContain('SECRET');
+  });
 
   it.each([
     ['0', 1],
@@ -490,10 +518,62 @@ describe('ChatService upstream transport', () => {
 
     const error = (result as { error: SafeFailure }).error;
     expect(error.statusCode).toBe(400);
-    expect(error.safeCode).toBe('unsupported_parameter');
+    expect(error.safeCode).toBe('unsupported_reasoning_control');
     expect(error.retryAfterSeconds).toBe(1);
     expect(res.chunks.join('')).not.toContain('SECRET upstream detail');
     expect(res.chunks.join('')).not.toContain('data: [DONE]');
+  });
+
+  it('keeps an SSE parameter code when reasoning policy attached no fields', async () => {
+    const { service } = createService();
+    const sse = [
+      'event: error',
+      'data: {"statusCode":400,"error":{"type":"unsupported_parameter","message":"SECRET unrelated upstream parameter"}}',
+      '',
+    ].join('\n');
+    installFetch(() => new Response(sse, { status: 200 }));
+    const res = response();
+
+    const result = await settle(
+      completeStream(
+        service,
+        7,
+        requestBody({ reasoning_policy: 'provider_default' }),
+        res,
+        new AbortController().signal,
+      ),
+    );
+
+    const error = (result as { error: SafeFailure }).error;
+    expect(error.statusCode).toBe(400);
+    expect(error.safeCode).toBe('unsupported_parameter');
+    expect(res.chunks.join('')).not.toContain('SECRET');
+  });
+
+  it('does not infer reasoning-control fallback without explicit SSE status 400', async () => {
+    const { service } = createService();
+    const sse = [
+      'event: error',
+      'data: {"error":{"type":"unsupported_parameter","message":"SECRET missing status"}}',
+      '',
+    ].join('\n');
+    installFetch(() => new Response(sse, { status: 200 }));
+    const res = response();
+
+    const result = await settle(
+      completeStream(
+        service,
+        7,
+        requestBody(),
+        res,
+        new AbortController().signal,
+      ),
+    );
+
+    const error = (result as { error: SafeFailure }).error;
+    expect(error.statusCode).toBe(502);
+    expect(error.safeCode).toBe('server_error');
+    expect(res.chunks.join('')).not.toContain('SECRET');
   });
 
   it('treats client abort as silent and releases reader, listener, and timers', async () => {
@@ -533,7 +613,7 @@ describe('ChatService upstream transport', () => {
     expect(jest.getTimerCount()).toBe(0);
   });
 
-  it('throws GatewayTimeoutException at the translation first-event deadline', async () => {
+  it('preserves first-event timeout kind at the translation deadline', async () => {
     jest.useFakeTimers();
     const { service } = createService();
     const pending = installPendingStreamFetch();
@@ -557,9 +637,9 @@ describe('ChatService upstream transport', () => {
     const result = await settle(completion);
 
     expect(abortedAtDeadline).toBe(true);
-    expect((result as { error: unknown }).error).toBeInstanceOf(
-      GatewayTimeoutException,
-    );
+    const error = (result as { error: SafeFailure }).error;
+    expect(error.statusCode).toBe(504);
+    expect(error.safeCode).toBe('first_event_timeout');
     expect(res.chunks.join('')).not.toContain('data: [DONE]');
     expect(pending.reader.cancel).toHaveBeenCalledTimes(1);
     expect(pending.reader.releaseLock).toHaveBeenCalledTimes(1);
@@ -595,9 +675,39 @@ describe('ChatService upstream transport', () => {
     const result = await settle(completion);
 
     expect(abortedAtIdle).toBe(true);
-    expect((result as { error: unknown }).error).toBeInstanceOf(
-      GatewayTimeoutException,
+    const error = (result as { error: SafeFailure }).error;
+    expect(error.statusCode).toBe(504);
+    expect(error.safeCode).toBe('idle_timeout');
+    expect(res.chunks.join('')).not.toContain('data: [DONE]');
+    expect(jest.getTimerCount()).toBe(0);
+  });
+
+  it('preserves total timeout kind for the standard profile deadline', async () => {
+    jest.useFakeTimers();
+    const { service } = createService();
+    const pending = installPendingStreamFetch();
+    const res = response();
+    const completion = completeStream(
+      service,
+      7,
+      requestBody({ request_profile: 'standard' }),
+      res,
+      new AbortController().signal,
     );
+    await waitFor(() => pending.reads.length === 1);
+
+    jest.advanceTimersByTime(59_999);
+    expect(pending.upstreamSignal?.aborted).toBe(false);
+    jest.advanceTimersByTime(1);
+    await Promise.resolve();
+    const abortedAtTotal = pending.upstreamSignal?.aborted === true;
+    if (!abortedAtTotal) res.closeFromClient();
+    const result = await settle(completion);
+
+    expect(abortedAtTotal).toBe(true);
+    const error = (result as { error: SafeFailure }).error;
+    expect(error.statusCode).toBe(504);
+    expect(error.safeCode).toBe('total_timeout');
     expect(res.chunks.join('')).not.toContain('data: [DONE]');
     expect(jest.getTimerCount()).toBe(0);
   });

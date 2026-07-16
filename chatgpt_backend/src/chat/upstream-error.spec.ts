@@ -70,4 +70,25 @@ describe('safe upstream errors', () => {
     });
     expect(JSON.stringify(payload)).not.toContain('SECRET transport detail');
   });
+
+  it.each([
+    ['first_event_timeout', '首个响应事件超时'],
+    ['idle_timeout', '上游响应空闲超时'],
+    ['total_timeout', '上游响应总时长超时'],
+  ])('preserves allowlisted deadline code %s', (safeCode, message) => {
+    const payload = safeUpstreamPayloadFromError(
+      Object.assign(new Error('SECRET timeout detail'), {
+        statusCode: 504,
+        safeCode,
+      }),
+    );
+
+    expect(payload).toEqual({
+      code: 'upstream_error',
+      safeCode,
+      statusCode: 504,
+      message,
+    });
+    expect(JSON.stringify(payload)).not.toContain('SECRET');
+  });
 });

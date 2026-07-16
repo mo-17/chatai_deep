@@ -387,11 +387,60 @@ void main() {
           .having((value) => value.statusCode, 'statusCode', 400)
           .having((value) => value.retryAfter, 'retryAfter',
               const Duration(seconds: 5))
-          .having((value) => value.safeCode, 'safeCode', 'unknown_parameter'),
+          .having((value) => value.safeCode, 'safeCode',
+              'unsupported_reasoning_control'),
     );
     expect(error.toString(), isNot(contains('Authorization')));
     expect(error.toString(), isNot(contains(unsafeUrl)));
     expect(error.toString(), isNot(contains('secret')));
+  });
+
+  test(
+      'options-aware stream keeps explicit parameter code when no reasoning field was attached',
+      () async {
+    final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+    addTearDown(() => server.close(force: true));
+    server.listen((request) async {
+      final body = jsonDecode(await utf8.decoder.bind(request).join())
+          as Map<String, dynamic>;
+      expect(body.containsKey('reasoning_effort'), isFalse);
+      request.response.statusCode = HttpStatus.badRequest;
+      request.response.headers.contentType = ContentType.json;
+      request.response.write(jsonEncode({
+        'error': {
+          'code': 'unknown_parameter',
+          'message': 'SECRET unrelated upstream parameter',
+        },
+      }));
+      await request.response.close();
+    });
+    final service = DirectChatService(
+      ProviderConfig(
+        apiKey: 'test-key',
+        baseUrl: 'http://${server.address.host}:${server.port}/chat',
+        model: 'gpt-5.2',
+      ),
+      providerId: 'custom_1',
+      providerCode: 'openai',
+    );
+
+    final error = await _captureError(
+      service.chatStreamEventsWithOptions(
+        prompt: 'translate',
+        history: const [],
+        options: const ChatRequestOptions(
+          reasoningPolicy: ChatReasoningPolicy.offIfSupported,
+        ),
+      ),
+    );
+
+    expect(
+      error,
+      isA<ChatTransportException>()
+          .having((value) => value.statusCode, 'statusCode', 400)
+          .having((value) => value.safeCode, 'safeCode', 'unknown_parameter'),
+    );
+    expect(error.toString(), isNot(contains('SECRET')));
   });
 }
 

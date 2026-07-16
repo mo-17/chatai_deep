@@ -1,8 +1,4 @@
-import {
-  Injectable,
-  BadGatewayException,
-  GatewayTimeoutException,
-} from '@nestjs/common';
+import { Injectable, BadGatewayException } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import type { Response } from 'express';
@@ -19,6 +15,7 @@ import {
 } from './reasoning-control';
 import {
   StreamDeadlineController,
+  type StreamDeadlineKind,
   type StreamRequestProfile,
 } from './stream-deadline-controller';
 import {
@@ -159,7 +156,8 @@ export class ChatService {
     assertProviderAvailable(provider);
 
     const url = `${provider.baseUrl}/chat/completions`;
-    const upstreamBody = buildUpstreamBody(provider, body);
+    const reasoningControl = requestReasoningControl(provider, body);
+    const upstreamBody = buildUpstreamBody(body, reasoningControl);
     const t0 = Date.now();
     try {
       const resp = await fetch(url, {
@@ -181,7 +179,9 @@ export class ChatService {
       );
       return data;
     } catch (e) {
-      if (e instanceof SafeUpstreamException) throw e;
+      if (e instanceof SafeUpstreamException) {
+        throw classifyReasoningControlFailure(e, reasoningControl);
+      }
       throw new SafeUpstreamException({ safeCode: 'request_failed' });
     }
   }
@@ -200,8 +200,9 @@ export class ChatService {
 
     const url = `${provider.baseUrl}/chat/completions`;
     const requestProfile = safeRequestProfile(body.request_profile);
+    const reasoningControl = requestReasoningControl(provider, body);
     const streamBody = {
-      ...buildUpstreamBody(provider, body),
+      ...buildUpstreamBody(body, reasoningControl),
       stream: true,
       stream_options: { include_usage: true },
     };
@@ -298,16 +299,17 @@ export class ChatService {
       }
     } catch (error) {
       if (upstreamController.signal.aborted) {
-        if (deadlines.expiredKind !== null) {
-          throw new GatewayTimeoutException('上游响应超时');
+        const deadlineKind = deadlines.expiredKind;
+        if (deadlineKind !== null) {
+          throw new SafeUpstreamException({
+            statusCode: 504,
+            safeCode: safeCodeForDeadline(deadlineKind),
+          });
         }
         if (clientSignal.aborted) return;
       }
-      if (
-        error instanceof SafeUpstreamException ||
-        error instanceof GatewayTimeoutException
-      ) {
-        throw error;
+      if (error instanceof SafeUpstreamException) {
+        throw classifyReasoningControlFailure(error, reasoningControl);
       }
       throw new SafeUpstreamException({ safeCode: 'request_failed' });
     } finally {
@@ -403,13 +405,9 @@ export class ChatService {
 }
 
 function buildUpstreamBody(
-  provider: AiProvider,
   body: CompletionBody,
+  reasoningControl: Record<string, unknown>,
 ): Record<string, unknown> {
-  const policy: ReasoningPolicy =
-    body.reasoning_policy === 'off_if_supported'
-      ? 'off_if_supported'
-      : 'provider_default';
   return {
     model: body.model,
     messages: body.messages,
@@ -419,12 +417,55 @@ function buildUpstreamBody(
       : { temperature: body.temperature }),
     ...(body.top_p === undefined ? {} : { top_p: body.top_p }),
     ...(body.tools === undefined ? {} : { tools: body.tools }),
-    ...resolveReasoningControl({
-      providerCode: provider.code,
-      modelId: body.model,
-      policy,
-    }),
+    ...reasoningControl,
   };
+}
+
+function requestReasoningControl(
+  provider: AiProvider,
+  body: CompletionBody,
+): Record<string, unknown> {
+  const policy: ReasoningPolicy =
+    body.reasoning_policy === 'off_if_supported'
+      ? 'off_if_supported'
+      : 'provider_default';
+  return resolveReasoningControl({
+    providerCode: provider.code,
+    modelId: body.model,
+    policy,
+  });
+}
+
+function classifyReasoningControlFailure(
+  error: SafeUpstreamException,
+  reasoningControl: Record<string, unknown>,
+): SafeUpstreamException {
+  if (
+    Object.keys(reasoningControl).length > 0 &&
+    error.statusCode === 400 &&
+    (error.safeCode === 'unknown_parameter' ||
+      error.safeCode === 'unsupported_parameter')
+  ) {
+    return new SafeUpstreamException({
+      statusCode: 400,
+      safeCode: 'unsupported_reasoning_control',
+      retryAfterSeconds: error.retryAfterSeconds,
+    });
+  }
+  return error;
+}
+
+function safeCodeForDeadline(
+  kind: StreamDeadlineKind,
+): 'first_event_timeout' | 'idle_timeout' | 'total_timeout' {
+  switch (kind) {
+    case 'first_event':
+      return 'first_event_timeout';
+    case 'idle':
+      return 'idle_timeout';
+    case 'total':
+      return 'total_timeout';
+  }
 }
 
 function assertProviderAvailable(provider: AiProvider): void {

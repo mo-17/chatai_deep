@@ -103,6 +103,28 @@ void main() {
       expect(service.requests, isEmpty);
     });
 
+    test('cancellation from waiting phase is installed before any request',
+        () async {
+      final service = _FakeChatService([]);
+      final cancellation = TranslationCancellationController();
+
+      await expectLater(
+        _executor(service).complete(
+          'prompt',
+          cancellation: cancellation,
+          onPhase: (phase) {
+            if (phase == TranslationStreamPhase.waiting) {
+              cancellation.cancel();
+            }
+          },
+        ),
+        throwsA(_failure(TranslationFailureKind.cancelled)),
+      );
+
+      expect(service.requestAttempts, 0);
+      expect(service.requests, isEmpty);
+    });
+
     test('first-event timeout aborts and cancels before completing', () async {
       final service = _FakeChatService([(request) {}]);
 
@@ -199,6 +221,98 @@ void main() {
         future,
         throwsA(_failure(TranslationFailureKind.cancelled)),
       );
+      expect(service.requests.single.abortObserved, isTrue);
+      expect(service.activeSubscriptions, 0);
+    });
+
+    test('a cancelled flag wins over a late text event', () async {
+      final cancellation = _FlagCancellationToken();
+      final service = _FakeChatService([
+        (request) {
+          request.runAfter(const Duration(milliseconds: 2), () {
+            cancellation.markCancelledWithoutSignal();
+            request.addNow(StreamEvent.text('late success'));
+            request.closeNow();
+          });
+        },
+      ]);
+
+      await expectLater(
+        _executor(service).complete(
+          'prompt',
+          cancellation: cancellation,
+        ),
+        throwsA(_failure(TranslationFailureKind.cancelled)),
+      );
+      expect(service.requests.single.abortObserved, isTrue);
+      expect(service.activeSubscriptions, 0);
+    });
+
+    test('a cancelled flag wins over a late stream error', () async {
+      final cancellation = _FlagCancellationToken();
+      final service = _FakeChatService([
+        (request) {
+          request.runAfter(const Duration(milliseconds: 2), () {
+            cancellation.markCancelledWithoutSignal();
+            request.errorNow(const ChatTransportException(
+              statusCode: 503,
+              safeCode: 'server_error',
+              safeMessage: 'late failure',
+            ));
+          });
+        },
+      ]);
+
+      await expectLater(
+        _executor(service).complete(
+          'prompt',
+          cancellation: cancellation,
+        ),
+        throwsA(_failure(TranslationFailureKind.cancelled)),
+      );
+      expect(service.requests.single.abortObserved, isTrue);
+    });
+
+    test('a cancelled flag wins over onDone after collected text', () async {
+      final cancellation = _FlagCancellationToken();
+      final service = _FakeChatService([
+        (request) {
+          request.addAfter(
+            const Duration(milliseconds: 1),
+            StreamEvent.text('would otherwise succeed'),
+          );
+          request.runAfter(const Duration(milliseconds: 3), () {
+            cancellation.markCancelledWithoutSignal();
+            request.closeNow();
+          });
+        },
+      ]);
+
+      await expectLater(
+        _executor(service).complete(
+          'prompt',
+          cancellation: cancellation,
+        ),
+        throwsA(_failure(TranslationFailureKind.cancelled)),
+      );
+      expect(service.requests.single.abortObserved, isTrue);
+    });
+
+    test('an arbitrary cancellation Future error is consumed as cancellation',
+        () async {
+      final cancellation = _ErrorCancellationToken(
+        StateError('https://secret.example/cancellation'),
+      );
+      final service = _FakeChatService([(request) {}]);
+
+      await expectLater(
+        _executor(service).complete(
+          'prompt',
+          cancellation: cancellation,
+        ),
+        throwsA(_failure(TranslationFailureKind.cancelled)),
+      );
+
       expect(service.requests.single.abortObserved, isTrue);
       expect(service.activeSubscriptions, 0);
     });
@@ -325,6 +439,21 @@ void main() {
           safeMessage: 'must not escape',
         ): TranslationFailureKind.server,
         const ChatTransportException(
+          statusCode: 504,
+          safeCode: 'first_event_timeout',
+          safeMessage: 'must not escape',
+        ): TranslationFailureKind.firstEventTimeout,
+        const ChatTransportException(
+          statusCode: 504,
+          safeCode: 'idle_timeout',
+          safeMessage: 'must not escape',
+        ): TranslationFailureKind.idleTimeout,
+        const ChatTransportException(
+          statusCode: 504,
+          safeCode: 'total_timeout',
+          safeMessage: 'must not escape',
+        ): TranslationFailureKind.totalTimeout,
+        const ChatTransportException(
           safeCode: 'network_error',
           safeMessage: 'must not escape',
         ): TranslationFailureKind.network,
@@ -390,7 +519,7 @@ void main() {
                 const Duration(milliseconds: 1),
                 const ChatTransportException(
                   statusCode: 400,
-                  safeCode: 'unknown_parameter',
+                  safeCode: 'unsupported_reasoning_control',
                   safeMessage: 'unsupported',
                 ),
               ),
@@ -446,6 +575,88 @@ void main() {
           service.requests.every((request) => request.abortObserved), isTrue);
     });
 
+    test('failed profile persistence does not commit suppression in memory',
+        () async {
+      final service = _FakeChatService([
+        (request) => request.errorAfter(
+              const Duration(milliseconds: 1),
+              const ChatTransportException(
+                statusCode: 400,
+                safeCode: 'unsupported_reasoning_control',
+                safeMessage: 'unsupported',
+              ),
+            ),
+        (request) {
+          request.addAfter(
+            const Duration(milliseconds: 1),
+            StreamEvent.text('second call'),
+          );
+          request.closeAfter(const Duration(milliseconds: 2));
+        },
+      ]);
+      final executor = TranslationStreamExecutor(
+        service: service,
+        profile: _profile(),
+        onProfileChanged: (_) => Future<void>.error(
+          StateError('SECRET persistence failure'),
+        ),
+        firstEventTimeout: const Duration(milliseconds: 40),
+        idleTimeout: const Duration(milliseconds: 40),
+        totalTimeout: const Duration(milliseconds: 120),
+      );
+
+      await expectLater(
+        executor.complete(
+          'first',
+          cancellation: TranslationCancellationController(),
+        ),
+        throwsA(_failure(TranslationFailureKind.network)),
+      );
+      final second = await executor.complete(
+        'second',
+        cancellation: TranslationCancellationController(),
+      );
+
+      expect(second, 'second call');
+      expect(service.requests, hasLength(2));
+      expect(service.requests[0].options.suppressReasoningControl, isFalse);
+      expect(service.requests[1].options.suppressReasoningControl, isFalse);
+    });
+
+    test('rejects concurrent complete calls without sending a second request',
+        () async {
+      final service = _FakeChatService([(request) {}]);
+      final firstCancellation = TranslationCancellationController();
+      final executor = _executor(
+        service,
+        first: const Duration(milliseconds: 200),
+        idle: const Duration(milliseconds: 200),
+        total: const Duration(milliseconds: 400),
+      );
+      final first = executor.complete(
+        'first',
+        cancellation: firstCancellation,
+      );
+      final firstExpectation = expectLater(
+        first,
+        throwsA(_failure(TranslationFailureKind.cancelled)),
+      );
+      await _waitFor(() => service.requests.isNotEmpty);
+
+      await expectLater(
+        executor.complete(
+          'second',
+          cancellation: TranslationCancellationController(),
+        ),
+        throwsA(_failure(TranslationFailureKind.invalidRequest)),
+      );
+      expect(service.requestAttempts, 1);
+      expect(service.requests, hasLength(1));
+
+      firstCancellation.cancel();
+      await firstExpectation;
+    });
+
     test('a failed suppressed retry never negotiates a third request',
         () async {
       final service = _FakeChatService([
@@ -453,7 +664,7 @@ void main() {
               const Duration(milliseconds: 1),
               const ChatTransportException(
                 statusCode: 400,
-                safeCode: 'unsupported_parameter',
+                safeCode: 'unsupported_reasoning_control',
                 safeMessage: 'unsupported',
               ),
             ),
@@ -461,8 +672,36 @@ void main() {
               const Duration(milliseconds: 1),
               const ChatTransportException(
                 statusCode: 400,
-                safeCode: 'unknown_parameter',
+                safeCode: 'unsupported_reasoning_control',
                 safeMessage: 'still unsupported',
+              ),
+            ),
+      ]);
+
+      await expectLater(
+        _executor(service).complete(
+          'prompt',
+          cancellation: TranslationCancellationController(),
+        ),
+        throwsA(
+          _failure(TranslationFailureKind.unsupportedReasoningControl),
+        ),
+      );
+
+      expect(service.requests, hasLength(2));
+      expect(
+          service.requests.every((request) => request.abortObserved), isTrue);
+      expect(service.activeSubscriptions, 0);
+    });
+
+    test('raw unknown parameter never triggers Thinking negotiation', () async {
+      final service = _FakeChatService([
+        (request) => request.errorAfter(
+              const Duration(milliseconds: 1),
+              const ChatTransportException(
+                statusCode: 400,
+                safeCode: 'unknown_parameter',
+                safeMessage: 'unsupported',
               ),
             ),
       ]);
@@ -475,10 +714,31 @@ void main() {
         throwsA(_failure(TranslationFailureKind.invalidRequest)),
       );
 
-      expect(service.requests, hasLength(2));
-      expect(
-          service.requests.every((request) => request.abortObserved), isTrue);
-      expect(service.activeSubscriptions, 0);
+      expect(service.requests, hasLength(1));
+      expect(service.requests.single.abortObserved, isTrue);
+    });
+
+    test('reasoning-control code without exact 400 never negotiates', () async {
+      final service = _FakeChatService([
+        (request) => request.errorAfter(
+              const Duration(milliseconds: 1),
+              const ChatTransportException(
+                statusCode: 422,
+                safeCode: 'unsupported_reasoning_control',
+                safeMessage: 'unsupported',
+              ),
+            ),
+      ]);
+
+      await expectLater(
+        _executor(service).complete(
+          'prompt',
+          cancellation: TranslationCancellationController(),
+        ),
+        throwsA(_failure(TranslationFailureKind.invalidRequest)),
+      );
+
+      expect(service.requests, hasLength(1));
     });
 
     test('provider-default policy does not treat unknown parameter as Thinking',
@@ -552,6 +812,7 @@ final class _FakeChatService implements ChatService, OptionsAwareChatService {
   final void Function(int index)? onRequest;
   final Future<void> Function()? cancelCleanup;
   final List<_FakeRequest> requests = [];
+  int requestAttempts = 0;
   int activeSubscriptions = 0;
 
   _FakeChatService(
@@ -607,6 +868,7 @@ final class _FakeChatService implements ChatService, OptionsAwareChatService {
     List<Map<String, dynamic>> extraMessages = const [],
     required ChatRequestOptions options,
   }) {
+    requestAttempts += 1;
     final index = requests.length;
     if (index >= scripts.length) {
       throw StateError('unexpected request $index');
@@ -667,12 +929,22 @@ final class _FakeRequest {
     _schedule(delay, () => _controller.add(event));
   }
 
+  void addNow(StreamEvent event) => _controller.add(event);
+
   void errorAfter(Duration delay, Object error) {
     _schedule(delay, () => _controller.addError(error));
   }
 
+  void errorNow(Object error) => _controller.addError(error);
+
   void closeAfter(Duration delay) {
     _schedule(delay, _controller.close);
+  }
+
+  void closeNow() => _controller.close();
+
+  void runAfter(Duration delay, void Function() action) {
+    _schedule(delay, action);
   }
 
   void _schedule(Duration delay, void Function() action) {
@@ -688,4 +960,37 @@ final class _FakeRequest {
       timer.cancel();
     }
   }
+}
+
+final class _FlagCancellationToken implements TranslationCancellationToken {
+  final Completer<void> _signal = Completer<void>();
+  bool _cancelled = false;
+
+  @override
+  bool get isCancelled => _cancelled;
+
+  @override
+  Future<void> get whenCancelled => _signal.future;
+
+  void markCancelledWithoutSignal() => _cancelled = true;
+}
+
+final class _ErrorCancellationToken implements TranslationCancellationToken {
+  final Object error;
+
+  const _ErrorCancellationToken(this.error);
+
+  @override
+  bool get isCancelled => false;
+
+  @override
+  Future<void> get whenCancelled => Future<void>.error(error);
+}
+
+Future<void> _waitFor(bool Function() predicate) async {
+  for (var attempt = 0; attempt < 20; attempt += 1) {
+    if (predicate()) return;
+    await Future<void>.delayed(const Duration(milliseconds: 1));
+  }
+  throw StateError('test condition was not reached');
 }

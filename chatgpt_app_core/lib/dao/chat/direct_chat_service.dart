@@ -182,6 +182,7 @@ class DirectChatService implements ChatService, OptionsAwareChatService {
     List<Map<String, dynamic>> extraMessages = const [],
     required ChatRequestOptions options,
   }) async* {
+    var reasoningControlAttached = false;
     try {
       _ensureApiKey();
       final reasoning = ReasoningControlAdapter.resolve(
@@ -191,6 +192,7 @@ class DirectChatService implements ChatService, OptionsAwareChatService {
         policy: options.reasoningPolicy,
         suppressed: options.suppressReasoningControl,
       );
+      reasoningControlAttached = reasoning.requestFields.isNotEmpty;
       final events = _createStreamEvents(
         prompt: prompt,
         history: history,
@@ -206,7 +208,13 @@ class DirectChatService implements ChatService, OptionsAwareChatService {
         yield event;
       }
     } catch (error, stackTrace) {
-      Error.throwWithStackTrace(_mapTransportFailure(error), stackTrace);
+      Error.throwWithStackTrace(
+        _mapTransportFailure(
+          error,
+          reasoningControlAttached: reasoningControlAttached,
+        ),
+        stackTrace,
+      );
     }
   }
 
@@ -275,7 +283,10 @@ class DirectChatService implements ChatService, OptionsAwareChatService {
   }
 }
 
-ChatTransportException _mapTransportFailure(Object error) {
+ChatTransportException _mapTransportFailure(
+  Object error, {
+  required bool reasoningControlAttached,
+}) {
   if (error is ChatTransportException) return error;
   if (error is AIRequestCancelledException) {
     return const ChatTransportException(
@@ -296,7 +307,14 @@ ChatTransportException _mapTransportFailure(Object error) {
     );
   }
   if (error is AIRequestException) {
-    final code = error.safeCode ?? _safeCodeForStatus(error.statusCode);
+    final upstreamCode = error.safeCode ?? _safeCodeForStatus(error.statusCode);
+    final code = reasoningControlAttached &&
+            ReasoningControlAdapter.isExplicitUnsupportedParameter(
+              statusCode: error.statusCode,
+              safeErrorCode: upstreamCode,
+            )
+        ? 'unsupported_reasoning_control'
+        : upstreamCode;
     return ChatTransportException(
       statusCode: error.statusCode,
       retryAfter: error.retryAfter,
@@ -320,6 +338,8 @@ String _safeCodeForStatus(int statusCode) {
 
 String _safeMessageForCode(String safeCode) {
   switch (safeCode) {
+    case 'unsupported_reasoning_control':
+      return '上游不支持推理控制';
     case 'unknown_parameter':
     case 'unsupported_parameter':
       return '上游不支持请求参数';

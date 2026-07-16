@@ -47,6 +47,7 @@ abstract interface class TranslationCancellationToken {
 final class TranslationCancellationController
     implements TranslationCancellationToken {
   final Completer<void> _cancelled = Completer<void>();
+  final Set<void Function()> _listeners = {};
 
   @override
   bool get isCancelled => _cancelled.isCompleted;
@@ -55,8 +56,91 @@ final class TranslationCancellationController
   Future<void> get whenCancelled => _cancelled.future;
 
   void cancel() {
-    if (!_cancelled.isCompleted) _cancelled.complete();
+    if (_cancelled.isCompleted) return;
+    _cancelled.complete();
+    final listeners = List<void Function()>.of(_listeners);
+    _listeners.clear();
+    for (final listener in listeners) {
+      try {
+        listener();
+      } catch (_) {
+        // A cancellation observer cannot block the remaining observers.
+      }
+    }
   }
+
+  _CancellationRegistration _listen(void Function() listener) {
+    if (isCancelled) {
+      listener();
+      return const _NoopCancellationRegistration();
+    }
+    _listeners.add(listener);
+    return _CallbackCancellationRegistration(
+      () => _listeners.remove(listener),
+    );
+  }
+}
+
+abstract interface class _CancellationRegistration {
+  void dispose();
+}
+
+final class _NoopCancellationRegistration implements _CancellationRegistration {
+  const _NoopCancellationRegistration();
+
+  @override
+  void dispose() {}
+}
+
+final class _CallbackCancellationRegistration
+    implements _CancellationRegistration {
+  void Function()? _dispose;
+
+  _CallbackCancellationRegistration(this._dispose);
+
+  @override
+  void dispose() {
+    final dispose = _dispose;
+    _dispose = null;
+    dispose?.call();
+  }
+}
+
+/// Generic cancellation futures keep only this relay. Once an attempt ends,
+/// [dispose] removes the callback that owns its result, timers and stream.
+final class _CancellationRelay implements _CancellationRegistration {
+  void Function()? _listener;
+
+  _CancellationRelay(this._listener);
+
+  void cancel() {
+    final listener = _listener;
+    _listener = null;
+    listener?.call();
+  }
+
+  @override
+  void dispose() => _listener = null;
+}
+
+_CancellationRegistration _listenForCancellation(
+  TranslationCancellationToken token,
+  void Function() onCancelled,
+) {
+  if (token is TranslationCancellationController) {
+    return token._listen(onCancelled);
+  }
+
+  final relay = _CancellationRelay(onCancelled);
+  try {
+    unawaited(token.whenCancelled.then<void>(
+      (_) => relay.cancel(),
+      onError: (Object _, StackTrace __) => relay.cancel(),
+    ));
+  } catch (_) {
+    relay.cancel();
+  }
+  return relay;
 }
 
 final class TranslationStreamExecutor {
@@ -67,6 +151,7 @@ final class TranslationStreamExecutor {
   final Duration _firstEventTimeout;
   final Duration _idleTimeout;
   final Duration _totalTimeout;
+  bool _active = false;
 
   TranslationStreamExecutor({
     required ChatService service,
@@ -87,40 +172,51 @@ final class TranslationStreamExecutor {
     required TranslationCancellationToken cancellation,
     void Function(TranslationStreamPhase phase)? onPhase,
   }) async {
-    if (cancellation.isCancelled) throw _cancelledFailure;
+    if (_active) {
+      throw const TranslationRequestFailure(
+        kind: TranslationFailureKind.invalidRequest,
+        safeCode: 'translation_in_progress',
+      );
+    }
+    _active = true;
+    try {
+      if (cancellation.isCancelled) throw _cancelledFailure;
 
-    var negotiatedReasoningControl = false;
-    while (true) {
-      final attemptProfile = _profile;
-      try {
-        return await _runAttempt(
-          prompt,
-          profile: attemptProfile,
-          cancellation: cancellation,
-          onPhase: onPhase,
-        );
-      } on TranslationRequestFailure catch (failure) {
-        final canSuppressReasoning = failure.kind ==
-                TranslationFailureKind.unsupportedReasoningControl &&
-            attemptProfile.reasoningPolicy ==
-                ChatReasoningPolicy.offIfSupported &&
-            !attemptProfile.reasoningControlSuppressed &&
-            !negotiatedReasoningControl;
-        if (!canSuppressReasoning) rethrow;
-
-        negotiatedReasoningControl = true;
-        final suppressed = attemptProfile.suppressReasoningControl();
-        _profile = suppressed;
+      var negotiatedReasoningControl = false;
+      while (true) {
+        final attemptProfile = _profile;
         try {
-          await _onProfileChanged?.call(suppressed);
-        } catch (_) {
-          throw const TranslationRequestFailure(
-            kind: TranslationFailureKind.network,
-            safeCode: 'request_failed',
+          return await _runAttempt(
+            prompt,
+            profile: attemptProfile,
+            cancellation: cancellation,
+            onPhase: onPhase,
           );
+        } on TranslationRequestFailure catch (failure) {
+          final canSuppressReasoning = failure.kind ==
+                  TranslationFailureKind.unsupportedReasoningControl &&
+              attemptProfile.reasoningPolicy ==
+                  ChatReasoningPolicy.offIfSupported &&
+              !attemptProfile.reasoningControlSuppressed &&
+              !negotiatedReasoningControl;
+          if (!canSuppressReasoning) rethrow;
+
+          negotiatedReasoningControl = true;
+          final suppressed = attemptProfile.suppressReasoningControl();
+          try {
+            await _onProfileChanged?.call(suppressed);
+          } catch (_) {
+            throw const TranslationRequestFailure(
+              kind: TranslationFailureKind.network,
+              safeCode: 'request_failed',
+            );
+          }
+          _profile = suppressed;
+          if (cancellation.isCancelled) throw _cancelledFailure;
         }
-        if (cancellation.isCancelled) throw _cancelledFailure;
       }
+    } finally {
+      _active = false;
     }
   }
 
@@ -141,6 +237,7 @@ final class TranslationStreamExecutor {
     Timer? firstTimer;
     Timer? idleTimer;
     Timer? totalTimer;
+    _CancellationRegistration? cancellationRegistration;
     var terminal = false;
     var sawEvent = false;
     var phase = TranslationStreamPhase.waiting;
@@ -158,14 +255,11 @@ final class TranslationStreamExecutor {
     Future<void> finish({String? value, Object? error}) async {
       if (terminal) return;
       terminal = true;
-      firstTimer?.cancel();
-      idleTimer?.cancel();
-      totalTimer?.cancel();
       if (!abort.isCompleted) abort.complete();
-      // Let AbortableRequest observers run before exposing the terminal result.
-      await Future<void>.value();
-      final activeSubscription = subscription;
-      if (activeSubscription != null) {
+      void detachSubscription() {
+        final activeSubscription = subscription;
+        if (activeSubscription == null) return;
+        subscription = null;
         try {
           // Calling cancel detaches delivery synchronously. Its cleanup Future
           // belongs to the stream implementation and may fail or never settle;
@@ -179,6 +273,17 @@ final class TranslationStreamExecutor {
           // broken stream cleanup must not replace or strand the real result.
         }
       }
+
+      detachSubscription();
+      firstTimer?.cancel();
+      idleTimer?.cancel();
+      totalTimer?.cancel();
+      cancellationRegistration?.dispose();
+      cancellationRegistration = null;
+      // Let AbortableRequest observers run and catch a synchronously delivered
+      // stream subscription before exposing the terminal result.
+      await Future<void>.value();
+      detachSubscription();
       if (result.isCompleted) return;
       if (error != null) {
         result.completeError(error);
@@ -202,7 +307,19 @@ final class TranslationStreamExecutor {
       );
     }
 
+    cancellationRegistration = _listenForCancellation(
+      cancellation,
+      () => fail(_cancelledFailure),
+    );
+    if (terminal || cancellation.isCancelled) {
+      if (!terminal) fail(_cancelledFailure);
+      return result.future;
+    }
     notifyPhase(TranslationStreamPhase.waiting);
+    if (terminal || cancellation.isCancelled) {
+      if (!terminal) fail(_cancelledFailure);
+      return result.future;
+    }
     firstTimer = Timer(
       _firstEventTimeout,
       () => fail(const TranslationRequestFailure(
@@ -217,11 +334,12 @@ final class TranslationStreamExecutor {
         safeCode: 'total_timeout',
       )),
     );
-    cancellation.whenCancelled.then((_) {
-      if (!terminal) fail(_cancelledFailure);
-    });
 
     try {
+      if (cancellation.isCancelled) {
+        fail(_cancelledFailure);
+        return result.future;
+      }
       final stream = _service.chatStreamEventsWithOptions(
         prompt: prompt,
         history: const [],
@@ -237,6 +355,10 @@ final class TranslationStreamExecutor {
       subscription = stream.listen(
         (event) {
           if (terminal) return;
+          if (cancellation.isCancelled) {
+            fail(_cancelledFailure);
+            return;
+          }
           sawEvent = true;
           firstTimer?.cancel();
           resetIdleTimer();
@@ -262,14 +384,21 @@ final class TranslationStreamExecutor {
         },
         onError: (Object error) {
           if (terminal) return;
+          if (cancellation.isCancelled) {
+            fail(_cancelledFailure);
+            return;
+          }
           fail(_mapFailure(
             error,
-            profile: profile,
             sawEvent: sawEvent,
           ));
         },
         onDone: () {
           if (terminal) return;
+          if (cancellation.isCancelled) {
+            fail(_cancelledFailure);
+            return;
+          }
           if (output.toString().trim().isEmpty) {
             fail(const TranslationRequestFailure(
               kind: TranslationFailureKind.invalidOutput,
@@ -281,7 +410,7 @@ final class TranslationStreamExecutor {
         },
       );
     } catch (error) {
-      fail(_mapFailure(error, profile: profile, sawEvent: sawEvent));
+      fail(_mapFailure(error, sawEvent: sawEvent));
     }
 
     return result.future;
@@ -297,6 +426,10 @@ const _knownTransportCodes = {
   'cancelled',
   'timeout',
   'network_error',
+  'unsupported_reasoning_control',
+  'first_event_timeout',
+  'idle_timeout',
+  'total_timeout',
   'unknown_parameter',
   'unsupported_parameter',
   'invalid_request',
@@ -308,7 +441,6 @@ const _knownTransportCodes = {
 
 TranslationRequestFailure _mapFailure(
   Object error, {
-  required TranslationRequestProfile profile,
   required bool sawEvent,
 }) {
   if (error is TranslationRequestFailure) {
@@ -329,9 +461,6 @@ TranslationRequestFailure _mapFailure(
   final statusCode = _safeStatusCode(error.statusCode);
   final retryAfter = _safeRetryAfter(error.retryAfter);
   final safeCode = _safeTransportCode(error.safeCode);
-  final reasoningControlWasSent =
-      profile.reasoningPolicy == ChatReasoningPolicy.offIfSupported &&
-          !profile.reasoningControlSuppressed;
 
   if (safeCode == 'cancelled') {
     return TranslationRequestFailure(
@@ -349,11 +478,29 @@ TranslationRequestFailure _mapFailure(
       safeCode: 'authentication_error',
     );
   }
-  if ((safeCode == 'unknown_parameter' ||
-          safeCode == 'unsupported_parameter') &&
-      reasoningControlWasSent) {
+  if (safeCode == 'unsupported_reasoning_control' && statusCode == 400) {
     return TranslationRequestFailure(
       kind: TranslationFailureKind.unsupportedReasoningControl,
+      statusCode: statusCode,
+      safeCode: safeCode,
+    );
+  }
+  if (safeCode == 'unsupported_reasoning_control') {
+    return TranslationRequestFailure(
+      kind: TranslationFailureKind.invalidRequest,
+      statusCode: statusCode,
+      safeCode: safeCode,
+    );
+  }
+  final deadlineKind = switch (safeCode) {
+    'first_event_timeout' => TranslationFailureKind.firstEventTimeout,
+    'idle_timeout' => TranslationFailureKind.idleTimeout,
+    'total_timeout' => TranslationFailureKind.totalTimeout,
+    _ => null,
+  };
+  if (deadlineKind != null) {
+    return TranslationRequestFailure(
+      kind: deadlineKind,
       statusCode: statusCode,
       safeCode: safeCode,
     );
