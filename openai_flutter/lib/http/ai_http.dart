@@ -77,6 +77,7 @@ class AIHttp {
           'HTTP request failed',
           response.statusCode,
           headers: response.headers,
+          safeCode: _safeErrorCode(decodedBody),
         );
       }
       AILogger.log("request finished successfully");
@@ -142,11 +143,12 @@ class AIHttp {
           'stream request finished with status ${streamedResponse.statusCode}');
 
       if (streamedResponse.statusCode != 200) {
-        await streamedResponse.stream.drain<void>();
+        final responseBytes = await streamedResponse.stream.toBytes();
         throw AIRequestException(
           'HTTP request failed',
           streamedResponse.statusCode,
           headers: streamedResponse.headers,
+          safeCode: _safeErrorCodeFromBytes(responseBytes),
         );
       }
 
@@ -173,6 +175,7 @@ class AIHttp {
             'Streaming request failed',
             streamedResponse.statusCode,
             headers: streamedResponse.headers,
+            safeCode: _safeErrorCodeFromText(data),
           );
         }
         if (data == '[DONE]') break;
@@ -191,6 +194,7 @@ class AIHttp {
             'Streaming request failed',
             streamedResponse.statusCode,
             headers: streamedResponse.headers,
+            safeCode: _safeErrorCode(json),
           );
         }
 
@@ -277,5 +281,34 @@ class AIHttp {
     } on FormatException {
       throw const AITransportException();
     }
+  }
+
+  static String? _safeErrorCodeFromBytes(List<int> bytes) {
+    try {
+      return _safeErrorCode(jsonDecode(const Utf8Decoder().convert(bytes)));
+    } on FormatException {
+      return null;
+    }
+  }
+
+  static String? _safeErrorCodeFromText(String text) {
+    try {
+      return _safeErrorCode(jsonDecode(text));
+    } on FormatException {
+      return null;
+    }
+  }
+
+  static String? _safeErrorCode(Object? decoded) {
+    if (decoded is! Map) return null;
+    final error = decoded['error'];
+    if (error is! Map) return null;
+    for (final key in const ['code', 'type']) {
+      final value = error[key];
+      if (value == 'unknown_parameter' || value == 'unsupported_parameter') {
+        return value as String;
+      }
+    }
+    return null;
   }
 }

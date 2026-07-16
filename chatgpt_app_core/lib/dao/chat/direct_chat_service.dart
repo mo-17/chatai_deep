@@ -1,5 +1,9 @@
+import 'dart:async';
+
+import 'package:chatgpt_app_core/chat/application/reasoning_control_adapter.dart';
 import 'package:chatgpt_app_core/chat/application/tool_call_accumulator.dart';
 import 'package:chatgpt_app_core/chat/domain/chat_attachments.dart';
+import 'package:chatgpt_app_core/chat/domain/chat_request_options.dart';
 import 'package:chatgpt_app_core/chat/domain/model_capabilities.dart';
 import 'package:chatgpt_app_core/chat/domain/stream_event.dart';
 import 'package:chatgpt_app_core/dao/chat/chat_service.dart';
@@ -7,10 +11,14 @@ import 'package:chatgpt_app_core/model/ai_settings.dart';
 import 'package:chatgpt_app_core/util/model_catalog.dart';
 import 'package:openai_flutter/core/ai_completions.dart';
 import 'package:openai_flutter/http/ai_config.dart';
+import 'package:openai_flutter/http/ai_exception.dart';
 import 'package:openai_flutter/model/ai_stream_chunk.dart';
 
-class DirectChatService implements ChatService {
+class DirectChatService implements ChatService, OptionsAwareChatService {
   final ProviderConfig _cfg;
+
+  /// 精确服务商 id。用于防止 custom/openrouter 因派生 code 被误判为 first-party。
+  final String? _providerId;
 
   /// 本地服务商 code（'openai'/'deepseek'），供能力探测按厂商区分。
   final String? _providerCode;
@@ -27,11 +35,13 @@ class DirectChatService implements ChatService {
 
   DirectChatService(
     this._cfg, {
+    String? providerId,
     String? providerCode,
     int maxOutputTokens = 0,
     double? temperature,
     double? topP,
-  })  : _providerCode = providerCode,
+  })  : _providerId = providerId,
+        _providerCode = providerCode,
         _maxOutputTokens = maxOutputTokens,
         _temperature = temperature,
         _topP = topP;
@@ -153,6 +163,72 @@ class DirectChatService implements ChatService {
     List<Map<String, dynamic>> extraMessages = const [],
   }) async* {
     _ensureApiKey();
+    yield* _createStreamEvents(
+      prompt: prompt,
+      history: history,
+      attachments: attachments,
+      tools: tools,
+      extraMessages: extraMessages,
+      maxTokens: _maxTokensOrNull,
+    );
+  }
+
+  @override
+  Stream<StreamEvent> chatStreamEventsWithOptions({
+    required String prompt,
+    required List<Map<String, dynamic>> history,
+    ChatAttachments? attachments,
+    List<Map<String, dynamic>>? tools,
+    List<Map<String, dynamic>> extraMessages = const [],
+    required ChatRequestOptions options,
+  }) async* {
+    try {
+      _ensureApiKey();
+      final reasoning = ReasoningControlAdapter.resolve(
+        providerId: _providerId,
+        providerCode: _providerCode,
+        modelId: _cfg.model,
+        policy: options.reasoningPolicy,
+        suppressed: options.suppressReasoningControl,
+      );
+      final events = _createStreamEvents(
+        prompt: prompt,
+        history: history,
+        attachments: attachments,
+        tools: tools,
+        extraMessages: extraMessages,
+        maxTokens: _maxTokensFor(options),
+        extraBody: reasoning.requestFields,
+        abortTrigger: options.abortTrigger,
+        connectTimeout: options.connectTimeout,
+      );
+      await for (final event in events) {
+        yield event;
+      }
+    } catch (error, stackTrace) {
+      Error.throwWithStackTrace(_mapTransportFailure(error), stackTrace);
+    }
+  }
+
+  int? _maxTokensFor(ChatRequestOptions options) {
+    final requestedMinimum = options.minOutputTokens ?? 0;
+    final value = _maxOutputTokens >= requestedMinimum
+        ? _maxOutputTokens
+        : requestedMinimum;
+    return value > 0 ? value : null;
+  }
+
+  Stream<StreamEvent> _createStreamEvents({
+    required String prompt,
+    required List<Map<String, dynamic>> history,
+    ChatAttachments? attachments,
+    List<Map<String, dynamic>>? tools,
+    List<Map<String, dynamic>> extraMessages = const [],
+    int? maxTokens,
+    Map<String, dynamic> extraBody = const {},
+    Future<void>? abortTrigger,
+    Duration connectTimeout = const Duration(seconds: 20),
+  }) async* {
     final config = AIConfigBuilder(
       apiKey: _cfg.apiKey,
       chatUrl: _cfg.baseUrl,
@@ -165,10 +241,13 @@ class DirectChatService implements ChatService {
     await for (final chunk in completion.createChatStreamEvents(
       model: _cfg.model,
       messages: messages,
-      maxTokens: _maxTokensOrNull,
+      maxTokens: maxTokens,
       temperature: _temperature,
       topP: _topP,
       tools: tools,
+      extraBody: extraBody,
+      abortTrigger: abortTrigger,
+      connectTimeout: connectTimeout,
     )) {
       switch (chunk.kind) {
         case AIStreamKind.reasoning:
@@ -193,5 +272,66 @@ class DirectChatService implements ChatService {
     for (final e in toolAcc.flush()) {
       yield e;
     }
+  }
+}
+
+ChatTransportException _mapTransportFailure(Object error) {
+  if (error is ChatTransportException) return error;
+  if (error is AIRequestCancelledException) {
+    return const ChatTransportException(
+      safeCode: 'cancelled',
+      safeMessage: '请求已取消',
+    );
+  }
+  if (error is TimeoutException) {
+    return const ChatTransportException(
+      safeCode: 'timeout',
+      safeMessage: '请求超时',
+    );
+  }
+  if (error is AITransportException) {
+    return const ChatTransportException(
+      safeCode: 'network_error',
+      safeMessage: '网络请求失败',
+    );
+  }
+  if (error is AIRequestException) {
+    final code = error.safeCode ?? _safeCodeForStatus(error.statusCode);
+    return ChatTransportException(
+      statusCode: error.statusCode,
+      retryAfter: error.retryAfter,
+      safeCode: code,
+      safeMessage: _safeMessageForCode(code),
+    );
+  }
+  return const ChatTransportException(
+    safeCode: 'request_failed',
+    safeMessage: '请求失败',
+  );
+}
+
+String _safeCodeForStatus(int statusCode) {
+  if (statusCode == 400) return 'invalid_request';
+  if (statusCode == 401 || statusCode == 403) return 'authentication_error';
+  if (statusCode == 429) return 'rate_limited';
+  if (statusCode >= 500) return 'server_error';
+  return 'request_failed';
+}
+
+String _safeMessageForCode(String safeCode) {
+  switch (safeCode) {
+    case 'unknown_parameter':
+    case 'unsupported_parameter':
+      return '上游不支持请求参数';
+    case 'invalid_request':
+      return '请求参数无效';
+    case 'authentication_error':
+      return '身份验证失败';
+    case 'rate_limited':
+      return '请求过于频繁';
+    case 'server_error':
+      return '上游服务异常';
+    default:
+      return '请求失败';
   }
 }

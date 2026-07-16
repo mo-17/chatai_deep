@@ -12,16 +12,23 @@ class AIException implements Exception {
 
 class AIRequestException implements Exception {
   static final _delaySeconds = RegExp(r'^\d+$');
+  static const _safeCodes = {
+    'unknown_parameter',
+    'unsupported_parameter',
+  };
 
   final String message;
   final int statusCode;
   final Map<String, String> headers;
+  final String? safeCode;
 
   AIRequestException(
     this.message,
     this.statusCode, {
     Map<String, String> headers = const {},
-  }) : headers = Map.unmodifiable(_safeHeaders(headers));
+    String? safeCode,
+  })  : headers = Map.unmodifiable(_safeHeaders(headers)),
+        safeCode = _safeCodes.contains(safeCode) ? safeCode : null;
 
   static Map<String, String> _safeHeaders(Map<String, String> headers) {
     String? normalizedRetryAfter;

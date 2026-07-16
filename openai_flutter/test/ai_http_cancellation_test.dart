@@ -371,6 +371,105 @@ void main() {
     expect(events.single.text, 'ok');
   });
 
+  test('request errors expose only exact allowlisted upstream error codes',
+      () async {
+    Future<String?> safeCodeFor(Map<String, dynamic> error) async {
+      final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+      server.listen((request) async {
+        request.response.statusCode = HttpStatus.badRequest;
+        request.response.headers.contentType = ContentType.json;
+        request.response.write(jsonEncode({'error': error}));
+        await request.response.close();
+      });
+      try {
+        await AICompletion(_configFor(server)).createChat(prompt: 'hello');
+      } on AIRequestException catch (failure) {
+        return failure.safeCode;
+      } finally {
+        await server.close(force: true);
+      }
+      return 'request-did-not-fail';
+    }
+
+    expect(
+      await safeCodeFor(const {
+        'code': 'unknown_parameter',
+        'message': 'Authorization Bearer secret',
+      }),
+      'unknown_parameter',
+    );
+    expect(
+      await safeCodeFor(const {
+        'type': 'unsupported_parameter',
+        'message': 'Authorization Bearer secret',
+      }),
+      'unsupported_parameter',
+    );
+    expect(
+      await safeCodeFor(const {
+        'code': 'private_secret_code',
+        'message': 'Authorization Bearer secret',
+      }),
+      isNull,
+    );
+  });
+
+  test('stream errors expose allowlisted code or type without saving messages',
+      () async {
+    Future<AIRequestException?> failureFor(
+      Map<String, dynamic> error, {
+      required bool eventError,
+    }) async {
+      final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+      server.listen((request) async {
+        request.response.headers.contentType = eventError
+            ? ContentType('text', 'event-stream', charset: 'utf-8')
+            : ContentType.json;
+        if (eventError) {
+          request.response.write(
+            'event: error\n'
+            'data: ${jsonEncode({'error': error})}\n\n',
+          );
+        } else {
+          request.response.statusCode = HttpStatus.badRequest;
+          request.response.write(jsonEncode({'error': error}));
+        }
+        await request.response.close();
+      });
+      try {
+        await AICompletion(_configFor(server))
+            .createChatStreamEvents(model: 'test', prompt: 'hello')
+            .drain<void>();
+      } on AIRequestException catch (failure) {
+        return failure;
+      } finally {
+        await server.close(force: true);
+      }
+      return null;
+    }
+
+    final httpFailure = await failureFor(
+      const {
+        'code': 'unknown_parameter',
+        'message': 'Authorization Bearer secret',
+      },
+      eventError: false,
+    );
+    expect(httpFailure?.safeCode, 'unknown_parameter');
+    final sseFailure = await failureFor(
+      const {
+        'type': 'unsupported_parameter',
+        'message': 'Authorization Bearer secret',
+      },
+      eventError: true,
+    );
+    expect(sseFailure?.safeCode, 'unsupported_parameter');
+    for (final failure in [httpFailure, sseFailure]) {
+      expect(failure?.message, isNot(contains('Authorization')));
+      expect(failure.toString(), isNot(contains('secret')));
+    }
+  });
+
   test('request errors retain immutable lowercase response headers safely',
       () async {
     final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);

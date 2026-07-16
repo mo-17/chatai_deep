@@ -1,4 +1,5 @@
 import 'package:chatgpt_app_core/chat/domain/chat_attachments.dart';
+import 'package:chatgpt_app_core/chat/domain/chat_request_options.dart';
 import 'package:chatgpt_app_core/chat/domain/model_capabilities.dart';
 import 'package:chatgpt_app_core/chat/domain/stream_event.dart';
 import 'package:chatgpt_app_core/dao/chat/backend_chat_service.dart';
@@ -86,6 +87,7 @@ abstract class ChatService {
     if (s.mode == AIMode.backend) return BackendChatService(s);
     // 把本地服务商 code（'openai'/'deepseek'）一并传入，供能力探测按厂商区分。
     return DirectChatService(s.activeLocal,
+        providerId: s.activeProvider.id,
         providerCode: providerCodeFor(s),
         maxOutputTokens: s.maxOutputTokens,
         temperature: s.temperature,
@@ -104,4 +106,50 @@ abstract class ChatService {
         s.effectiveModel,
         providerCode: providerCodeFor(s),
       );
+}
+
+/// 可选的 options-aware transport 能力。
+///
+/// 现有 fake 多数以 `implements ChatService` 实现；Dart 不会为 `implements`
+/// 继承 concrete member，因此不能直接给 [ChatService] 增加成员而要求所有 fake
+/// 改签名。Direct/Backend 实现本接口，旧实现则由下面 extension 委托旧入口。
+abstract interface class OptionsAwareChatService {
+  Stream<StreamEvent> chatStreamEventsWithOptions({
+    required String prompt,
+    required List<Map<String, dynamic>> history,
+    ChatAttachments? attachments,
+    List<Map<String, dynamic>>? tools,
+    List<Map<String, dynamic>> extraMessages = const [],
+    required ChatRequestOptions options,
+  });
+}
+
+extension ChatServiceRequestOptionsExtension on ChatService {
+  Stream<StreamEvent> chatStreamEventsWithOptions({
+    required String prompt,
+    required List<Map<String, dynamic>> history,
+    ChatAttachments? attachments,
+    List<Map<String, dynamic>>? tools,
+    List<Map<String, dynamic>> extraMessages = const [],
+    required ChatRequestOptions options,
+  }) {
+    final service = this;
+    if (service is OptionsAwareChatService) {
+      return (service as OptionsAwareChatService).chatStreamEventsWithOptions(
+        prompt: prompt,
+        history: history,
+        attachments: attachments,
+        tools: tools,
+        extraMessages: extraMessages,
+        options: options,
+      );
+    }
+    return chatStreamEvents(
+      prompt: prompt,
+      history: history,
+      attachments: attachments,
+      tools: tools,
+      extraMessages: extraMessages,
+    );
+  }
 }

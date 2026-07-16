@@ -1,8 +1,10 @@
 import 'dart:async';
 import 'dart:convert';
+import 'dart:io';
 
 import 'package:chatgpt_app_core/chat/application/tool_call_accumulator.dart';
 import 'package:chatgpt_app_core/chat/domain/chat_attachments.dart';
+import 'package:chatgpt_app_core/chat/domain/chat_request_options.dart';
 import 'package:chatgpt_app_core/chat/domain/model_capabilities.dart';
 import 'package:chatgpt_app_core/chat/domain/stream_event.dart';
 import 'package:chatgpt_app_core/dao/chat/chat_service.dart';
@@ -13,7 +15,7 @@ import 'package:http/http.dart' as http;
 import 'package:login_sdk/dao/login_dao.dart';
 import 'package:openai_flutter/utils/ai_logger.dart';
 
-class BackendChatService implements ChatService {
+class BackendChatService implements ChatService, OptionsAwareChatService {
   final AISettings _settings;
 
   BackendChatService(this._settings);
@@ -193,102 +195,289 @@ class BackendChatService implements ChatService {
     ChatAttachments? attachments,
     List<Map<String, dynamic>>? tools,
     List<Map<String, dynamic>> extraMessages = const [],
+  }) =>
+      chatStreamEventsWithOptions(
+        prompt: prompt,
+        history: history,
+        attachments: attachments,
+        tools: tools,
+        extraMessages: extraMessages,
+        options: const ChatRequestOptions(),
+      );
+
+  @override
+  Stream<StreamEvent> chatStreamEventsWithOptions({
+    required String prompt,
+    required List<Map<String, dynamic>> history,
+    ChatAttachments? attachments,
+    List<Map<String, dynamic>>? tools,
+    List<Map<String, dynamic>> extraMessages = const [],
+    required ChatRequestOptions options,
   }) async* {
-    final uri = BackendConst.buildUri('/uapi/chat/completions/stream');
-    final messages =
-        _buildMessages(prompt, history, attachments, extraMessages);
-    final body = {
-      'model': _settings.effectiveModel,
-      'messages': messages,
-      // 0 = 不限制：不带 max_tokens，用上游默认（避免长回复被截断）。
-      if (_settings.maxOutputTokens > 0)
-        'max_tokens': _settings.maxOutputTokens,
-      // null = 不带 temperature，用上游默认。
-      if (_settings.temperature != null) 'temperature': _settings.temperature,
-      // null = 不带 top_p，用上游默认。
-      if (_settings.topP != null) 'top_p': _settings.topP,
-      if (tools != null && tools.isNotEmpty) 'tools': tools,
-    };
-    final token = LoginDao.getBoardingPass();
-
-    final request = http.Request('POST', uri);
-    request.headers.addAll({
-      'Content-Type': 'application/json',
-      'Authorization': 'Bearer ${token ?? ''}',
-    });
-    request.body = jsonEncode(body);
-
     final httpClient = http.Client();
     try {
+      final uri = BackendConst.buildUri('/uapi/chat/completions/stream');
+      final messages =
+          _buildMessages(prompt, history, attachments, extraMessages);
+      final maxTokens = _maxTokensFor(options);
+      final body = {
+        'model': _settings.effectiveModel,
+        'messages': messages,
+        if (maxTokens != null) 'max_tokens': maxTokens,
+        if (_settings.temperature != null) 'temperature': _settings.temperature,
+        if (_settings.topP != null) 'top_p': _settings.topP,
+        if (tools != null && tools.isNotEmpty) 'tools': tools,
+        'request_profile': _requestProfile(options.profile),
+        'reasoning_policy': options.suppressReasoningControl
+            ? 'provider_default'
+            : _reasoningPolicy(options.reasoningPolicy),
+      };
+      final token = LoginDao.getBoardingPass();
+      final request = http.AbortableRequest(
+        'POST',
+        uri,
+        abortTrigger: options.abortTrigger,
+      )
+        ..headers.addAll({
+          'Content-Type': 'application/json',
+          'Authorization': 'Bearer ${token ?? ''}',
+        })
+        ..body = jsonEncode(body);
+
       final streamedResponse =
-          await httpClient.send(request).timeout(const Duration(seconds: 20));
+          await httpClient.send(request).timeout(options.connectTimeout);
       AILogger.log('backend stream status: ${streamedResponse.statusCode}');
 
       if (streamedResponse.statusCode == 401) {
         LoginDao.logOut();
-        throw Exception('登录已过期，请重新登录');
       }
-
       if (streamedResponse.statusCode != 200 &&
           streamedResponse.statusCode != 201) {
         final bytes = await streamedResponse.stream.toBytes();
-        final errorBody = const Utf8Decoder().convert(bytes);
-        throw Exception('服务异常(${streamedResponse.statusCode}): $errorBody');
+        throw _httpFailure(
+          statusCode: streamedResponse.statusCode,
+          headers: streamedResponse.headers,
+          bytes: bytes,
+        );
       }
 
       final lineStream = streamedResponse.stream
           .transform(const Utf8Decoder())
           .transform(const LineSplitter());
-
-      // 工具调用分片按 index 累积，流结束后再发完整 toolCall 事件（阶段六）。
       final toolAcc = ToolCallAccumulator();
+      String? eventName;
       await for (final line in lineStream) {
-        if (!line.startsWith('data: ')) continue;
-        final data = line.substring(6);
+        if (line.isEmpty) {
+          eventName = null;
+          continue;
+        }
+        if (line.startsWith('event:')) {
+          eventName = line.substring(6).trim();
+          continue;
+        }
+        if (!line.startsWith('data:')) continue;
+        var data = line.substring(5);
+        if (data.startsWith(' ')) data = data.substring(1);
+        if (eventName == 'error') {
+          throw _sseFailure(_decodeJsonObject(data));
+        }
         if (data == '[DONE]') break;
-        try {
-          final json = jsonDecode(data) as Map<String, dynamic>;
-          final usageEvent = usageEventFromStreamJson(json);
-          if (usageEvent != null) yield usageEvent;
-          final choices = json['choices'] as List<dynamic>?;
-          if (choices != null && choices.isNotEmpty) {
-            final choice = choices[0];
-            if (choice is! Map<String, dynamic>) continue;
-            final delta = choice['delta'];
-            if (delta is! Map<String, dynamic>) continue;
-            // 推理内容增量 (DeepSeek reasoning models)：先于正文到达。
-            final reasoning = delta['reasoning_content'];
-            if (reasoning is String && reasoning.isNotEmpty) {
-              yield StreamEvent.reasoning(reasoning);
-            }
-            // 常规内容增量
-            final content = delta['content'];
-            if (content is String && content.isNotEmpty) {
-              yield StreamEvent.text(content);
-            }
-            // 工具调用增量（后端原样中继上游 SSE，分片格式同 OpenAI）。
-            final toolCalls = delta['tool_calls'];
-            if (toolCalls is List) {
-              for (final tc in toolCalls.whereType<Map>()) {
-                final fn = tc['function'];
-                toolAcc.feed(
-                  index: tc['index'] as int? ?? 0,
-                  id: tc['id'] as String?,
-                  name: fn is Map ? fn['name'] as String? : null,
-                  argsDelta: fn is Map ? fn['arguments'] as String? : null,
-                );
-              }
-            }
+
+        final decoded = _decodeJsonObject(data);
+        if (decoded == null) continue;
+        if (decoded['error'] != null || decoded['code'] == 'upstream_error') {
+          throw _sseFailure(decoded);
+        }
+        final usageEvent = usageEventFromStreamJson(decoded);
+        if (usageEvent != null) yield usageEvent;
+        final choices = decoded['choices'] as List<dynamic>?;
+        if (choices == null || choices.isEmpty) continue;
+        final choice = choices[0];
+        if (choice is! Map<String, dynamic>) continue;
+        final delta = choice['delta'];
+        if (delta is! Map<String, dynamic>) continue;
+        final reasoning = delta['reasoning_content'];
+        if (reasoning is String && reasoning.isNotEmpty) {
+          yield StreamEvent.reasoning(reasoning);
+        }
+        final content = delta['content'];
+        if (content is String && content.isNotEmpty) {
+          yield StreamEvent.text(content);
+        }
+        final toolCalls = delta['tool_calls'];
+        if (toolCalls is List) {
+          for (final tc in toolCalls.whereType<Map>()) {
+            final fn = tc['function'];
+            toolAcc.feed(
+              index: tc['index'] as int? ?? 0,
+              id: tc['id'] as String?,
+              name: fn is Map ? fn['name'] as String? : null,
+              argsDelta: fn is Map ? fn['arguments'] as String? : null,
+            );
           }
-        } catch (_) {
-          // 忽略无法解析的行
         }
       }
-      for (final e in toolAcc.flush()) {
-        yield e;
+      for (final event in toolAcc.flush()) {
+        yield event;
       }
+    } catch (error, stackTrace) {
+      Error.throwWithStackTrace(_mapBackendTransportFailure(error), stackTrace);
     } finally {
       httpClient.close();
     }
+  }
+
+  int? _maxTokensFor(ChatRequestOptions options) {
+    final requestedMinimum = options.minOutputTokens ?? 0;
+    final value = _settings.maxOutputTokens >= requestedMinimum
+        ? _settings.maxOutputTokens
+        : requestedMinimum;
+    return value > 0 ? value : null;
+  }
+}
+
+ChatTransportException _mapBackendTransportFailure(Object error) {
+  if (error is ChatTransportException) return error;
+  if (error is http.RequestAbortedException) {
+    return const ChatTransportException(
+      safeCode: 'cancelled',
+      safeMessage: '请求已取消',
+    );
+  }
+  if (error is TimeoutException) {
+    return const ChatTransportException(
+      safeCode: 'timeout',
+      safeMessage: '请求超时',
+    );
+  }
+  if (error is http.ClientException ||
+      error is SocketException ||
+      error is TlsException ||
+      error is HttpException) {
+    return const ChatTransportException(
+      safeCode: 'network_error',
+      safeMessage: '网络请求失败',
+    );
+  }
+  return const ChatTransportException(
+    safeCode: 'request_failed',
+    safeMessage: '请求失败',
+  );
+}
+
+const _safeBackendCodes = {
+  'unknown_parameter',
+  'unsupported_parameter',
+  'invalid_request',
+  'authentication_error',
+  'rate_limited',
+  'server_error',
+  'request_failed',
+};
+
+String _requestProfile(ChatRequestProfile profile) => switch (profile) {
+      ChatRequestProfile.standard => 'standard',
+      ChatRequestProfile.translation => 'translation',
+    };
+
+String _reasoningPolicy(ChatReasoningPolicy policy) => switch (policy) {
+      ChatReasoningPolicy.providerDefault => 'provider_default',
+      ChatReasoningPolicy.offIfSupported => 'off_if_supported',
+    };
+
+ChatTransportException _httpFailure({
+  required int statusCode,
+  required Map<String, String> headers,
+  required List<int> bytes,
+}) {
+  final decoded = _decodeJsonBytes(bytes);
+  final safeCode =
+      _safeCodeFromPayload(decoded) ?? _safeCodeForBackendStatus(statusCode);
+  return ChatTransportException(
+    statusCode: statusCode,
+    retryAfter:
+        _retryAfterFromHeaders(headers) ?? _retryAfterFromPayload(decoded),
+    safeCode: safeCode,
+    safeMessage: _safeBackendMessage(safeCode),
+  );
+}
+
+ChatTransportException _sseFailure(Map<String, dynamic>? payload) {
+  final statusCode = _safeStatusCode(payload?['statusCode']);
+  final safeCode = _safeCodeFromPayload(payload) ??
+      (statusCode == null
+          ? 'request_failed'
+          : _safeCodeForBackendStatus(statusCode));
+  return ChatTransportException(
+    statusCode: statusCode,
+    retryAfter: _retryAfterFromPayload(payload),
+    safeCode: safeCode,
+    safeMessage: _safeBackendMessage(safeCode),
+  );
+}
+
+Map<String, dynamic>? _decodeJsonBytes(List<int> bytes) {
+  try {
+    return _decodeJsonObject(const Utf8Decoder().convert(bytes));
+  } on FormatException {
+    return null;
+  }
+}
+
+Map<String, dynamic>? _decodeJsonObject(String text) {
+  try {
+    final value = jsonDecode(text);
+    return value is Map<String, dynamic> ? value : null;
+  } on FormatException {
+    return null;
+  }
+}
+
+String? _safeCodeFromPayload(Map<String, dynamic>? payload) {
+  final value = payload?['safeCode'];
+  return value is String && _safeBackendCodes.contains(value) ? value : null;
+}
+
+int? _safeStatusCode(Object? value) =>
+    value is int && value >= 100 && value <= 599 ? value : null;
+
+Duration? _retryAfterFromPayload(Map<String, dynamic>? payload) {
+  final seconds = payload?['retryAfterSeconds'];
+  return seconds is int && seconds >= 0 ? Duration(seconds: seconds) : null;
+}
+
+Duration? _retryAfterFromHeaders(Map<String, String> headers) {
+  String? value;
+  for (final entry in headers.entries) {
+    if (entry.key.toLowerCase() == 'retry-after') value = entry.value;
+  }
+  if (value == null || !RegExp(r'^\d+$').hasMatch(value)) return null;
+  final seconds = int.tryParse(value);
+  return seconds == null ? null : Duration(seconds: seconds);
+}
+
+String _safeCodeForBackendStatus(int statusCode) {
+  if (statusCode == 400) return 'invalid_request';
+  if (statusCode == 401 || statusCode == 403) return 'authentication_error';
+  if (statusCode == 429) return 'rate_limited';
+  if (statusCode >= 500) return 'server_error';
+  return 'request_failed';
+}
+
+String _safeBackendMessage(String safeCode) {
+  switch (safeCode) {
+    case 'unknown_parameter':
+    case 'unsupported_parameter':
+      return '上游不支持请求参数';
+    case 'invalid_request':
+      return '请求参数无效';
+    case 'authentication_error':
+      return '身份验证失败';
+    case 'rate_limited':
+      return '请求过于频繁';
+    case 'server_error':
+      return '上游服务异常';
+    default:
+      return '请求失败';
   }
 }

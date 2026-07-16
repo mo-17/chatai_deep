@@ -22,3 +22,23 @@ final class ChatRequestOptions {
     this.suppressReasoningControl = false,
   });
 }
+
+/// 聊天传输层对上暴露的安全失败信息。
+///
+/// 只保存重试/分类所需的状态、退避和稳定代码，不携带响应正文、请求地址或凭据。
+final class ChatTransportException implements Exception {
+  final int? statusCode;
+  final Duration? retryAfter;
+  final String safeCode;
+  final String safeMessage;
+
+  const ChatTransportException({
+    this.statusCode,
+    this.retryAfter,
+    required this.safeCode,
+    required this.safeMessage,
+  });
+
+  @override
+  String toString() => 'ChatTransportException($safeCode): $safeMessage';
+}

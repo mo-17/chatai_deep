@@ -1,7 +1,14 @@
+import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
+import 'package:chatgpt_app_core/chat/domain/chat_attachments.dart';
+import 'package:chatgpt_app_core/chat/domain/chat_request_options.dart';
+import 'package:chatgpt_app_core/chat/domain/model_capabilities.dart';
+import 'package:chatgpt_app_core/chat/domain/stream_event.dart';
+import 'package:chatgpt_app_core/dao/chat/chat_service.dart';
 import 'package:chatgpt_app_core/dao/chat/direct_chat_service.dart';
+import 'package:chatgpt_app_core/model/ai_provider.dart';
 import 'package:chatgpt_app_core/model/ai_settings.dart';
 import 'package:flutter_test/flutter_test.dart';
 
@@ -82,4 +89,410 @@ void main() {
 
     expect(captured.containsKey('top_p'), isFalse);
   });
+
+  test(
+      'options-aware stream sends provider fields, raises max tokens, and keeps reasoning before text',
+      () async {
+    final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+    addTearDown(() => server.close(force: true));
+    late Map<String, dynamic> captured;
+    server.listen((request) async {
+      captured = jsonDecode(await utf8.decoder.bind(request).join())
+          as Map<String, dynamic>;
+      request.response.headers.contentType =
+          ContentType('text', 'event-stream', charset: 'utf-8');
+      request.response.write(
+        'data: {"choices":[{"delta":{"reasoning_content":"think",'
+        '"content":"answer"}}]}\n\n'
+        'data: [DONE]\n\n',
+      );
+      await request.response.close();
+    });
+
+    final service = DirectChatService(
+      ProviderConfig(
+        apiKey: 'test-key',
+        baseUrl: 'http://${server.address.host}:${server.port}/chat',
+        model: 'deepseek-v4-flash',
+      ),
+      providerId: 'deepseek',
+      providerCode: 'deepseek',
+      maxOutputTokens: 512,
+    );
+
+    final events = await service
+        .chatStreamEventsWithOptions(
+          prompt: 'translate',
+          history: const [],
+          options: const ChatRequestOptions(
+            profile: ChatRequestProfile.translation,
+            reasoningPolicy: ChatReasoningPolicy.offIfSupported,
+            minOutputTokens: 2048,
+          ),
+        )
+        .toList();
+
+    expect(events.map((event) => event.type), [
+      StreamEventType.reasoning,
+      StreamEventType.text,
+    ]);
+    expect(events.map((event) => event.delta), ['think', 'answer']);
+    expect(captured['thinking'], {'type': 'disabled'});
+    expect(captured['max_tokens'], 2048);
+    expect(captured.containsKey('request_profile'), isFalse);
+    expect(captured.containsKey('reasoning_policy'), isFalse);
+  });
+
+  test('ChatService.from passes exact provider id instead of trusting its code',
+      () async {
+    final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+    addTearDown(() => server.close(force: true));
+    late Map<String, dynamic> captured;
+    server.listen((request) async {
+      captured = jsonDecode(await utf8.decoder.bind(request).join())
+          as Map<String, dynamic>;
+      request.response.headers.contentType =
+          ContentType('text', 'event-stream', charset: 'utf-8');
+      request.response.write('data: [DONE]\n\n');
+      await request.response.close();
+    });
+    final settings = AISettings(
+      mode: AIMode.local,
+      providers: [
+        AiProvider(
+          id: 'custom_1',
+          type: 'openai',
+          name: 'Custom',
+          apiKey: 'test-key',
+          apiHost: 'http://${server.address.host}:${server.port}/chat',
+          models: [AiModel(id: 'gpt-5.2')],
+          selectedModelId: 'gpt-5.2',
+          enabled: true,
+        ),
+      ],
+      activeProviderId: 'custom_1',
+      backendModel: 'unused',
+      streamEnabled: true,
+      resetOnLogout: true,
+    );
+    final service = ChatService.from(settings);
+
+    await service
+        .chatStreamEventsWithOptions(
+          prompt: 'translate',
+          history: const [],
+          options: const ChatRequestOptions(
+            profile: ChatRequestProfile.translation,
+            reasoningPolicy: ChatReasoningPolicy.offIfSupported,
+          ),
+        )
+        .drain<void>();
+
+    expect(captured.containsKey('reasoning_effort'), isFalse);
+  });
+
+  test('legacy ChatService uses the default options delegation unchanged',
+      () async {
+    final service = _LegacyChatService();
+
+    final events = await service
+        .chatStreamEventsWithOptions(
+          prompt: 'legacy',
+          history: const [],
+          options: const ChatRequestOptions(
+            profile: ChatRequestProfile.translation,
+            reasoningPolicy: ChatReasoningPolicy.offIfSupported,
+          ),
+        )
+        .toList();
+
+    expect(service.calls, 1);
+    expect(events.single.type, StreamEventType.text);
+    expect(events.single.delta, 'legacy');
+  });
+
+  test('options-aware stream forwards abort and exposes safe cancellation',
+      () async {
+    final server = await _HangingSseServer.start();
+    addTearDown(server.close);
+    final abort = Completer<void>();
+    final firstToken = Completer<void>();
+    final failure = Completer<Object>();
+    final received = <String>[];
+    final service = DirectChatService(
+      ProviderConfig(
+        apiKey: 'test-key',
+        baseUrl:
+            'http://${server.server.address.host}:${server.server.port}/chat',
+        model: 'test-model',
+      ),
+      providerId: 'custom_1',
+      providerCode: 'openai',
+    );
+    final subscription = service
+        .chatStreamEventsWithOptions(
+      prompt: 'translate',
+      history: const [],
+      options: ChatRequestOptions(abortTrigger: abort.future),
+    )
+        .listen(
+      (event) {
+        received.add(event.delta);
+        if (!firstToken.isCompleted) firstToken.complete();
+      },
+      onError: (Object error) {
+        if (!failure.isCompleted) failure.complete(error);
+      },
+      onDone: () {
+        if (!failure.isCompleted) {
+          failure.complete(StateError('stream completed before cancellation'));
+        }
+      },
+    );
+    addTearDown(subscription.cancel);
+
+    await firstToken.future.timeout(const Duration(seconds: 1));
+    abort.complete();
+    final error = await failure.future.timeout(const Duration(seconds: 1));
+
+    expect(received, ['first']);
+    expect(
+      error,
+      isA<ChatTransportException>()
+          .having((value) => value.safeCode, 'safeCode', 'cancelled')
+          .having((value) => value.statusCode, 'statusCode', isNull),
+    );
+    expect(error.toString(), isNot(contains(service.toString())));
+    await expectLater(
+      server.clientDisconnected.timeout(const Duration(seconds: 1)),
+      completes,
+    );
+  });
+
+  test('options-aware stream maps connect timeout to a safe transport error',
+      () async {
+    final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+    Socket? detachedSocket;
+    addTearDown(() async {
+      detachedSocket?.destroy();
+      await server.close(force: true);
+    });
+    final requestReceived = Completer<void>();
+    server.listen((request) async {
+      await request.drain<void>();
+      detachedSocket = await request.response.detachSocket(writeHeaders: false);
+      if (!requestReceived.isCompleted) requestReceived.complete();
+    });
+    final service = DirectChatService(
+      ProviderConfig(
+        apiKey: 'test-key',
+        baseUrl: 'http://${server.address.host}:${server.port}/private',
+        model: 'test-model',
+      ),
+      providerId: 'custom_1',
+      providerCode: 'openai',
+    );
+
+    final failure = _captureError(
+      service.chatStreamEventsWithOptions(
+        prompt: 'translate',
+        history: const [],
+        options: const ChatRequestOptions(
+          connectTimeout: Duration(milliseconds: 50),
+        ),
+      ),
+    );
+    await requestReceived.future.timeout(const Duration(seconds: 1));
+    final error = await failure.timeout(const Duration(seconds: 1));
+
+    expect(
+      error,
+      isA<ChatTransportException>()
+          .having((value) => value.safeCode, 'safeCode', 'timeout'),
+    );
+    expect(error.toString(), isNot(contains('/private')));
+  });
+
+  test('options-aware stream maps network failures without exposing endpoint',
+      () async {
+    const unsafeUrl = 'http://127.0.0.1:not-a-port/private?key=secret';
+    final service = DirectChatService(
+      ProviderConfig(
+        apiKey: 'test-key',
+        baseUrl: unsafeUrl,
+        model: 'test-model',
+      ),
+      providerId: 'custom_1',
+      providerCode: 'openai',
+    );
+
+    final error = await _captureError(
+      service.chatStreamEventsWithOptions(
+        prompt: 'translate',
+        history: const [],
+        options: const ChatRequestOptions(),
+      ),
+    );
+
+    expect(
+      error,
+      isA<ChatTransportException>()
+          .having((value) => value.safeCode, 'safeCode', 'network_error'),
+    );
+    expect(error.toString(), isNot(contains(unsafeUrl)));
+    expect(error.toString(), isNot(contains('secret')));
+  });
+
+  test('options-aware stream preserves only allowlisted request error metadata',
+      () async {
+    final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+    addTearDown(() => server.close(force: true));
+    final unsafeUrl =
+        'http://${server.address.host}:${server.port}/private?key=secret';
+    server.listen((request) async {
+      request.response.statusCode = HttpStatus.badRequest;
+      request.response.headers.set('Retry-After', '5');
+      request.response.headers.contentType = ContentType.json;
+      request.response.write(jsonEncode({
+        'error': {
+          'code': 'unknown_parameter',
+          'message': 'Authorization Bearer secret from $unsafeUrl',
+        },
+      }));
+      await request.response.close();
+    });
+    final service = DirectChatService(
+      ProviderConfig(
+        apiKey: 'test-key',
+        baseUrl: unsafeUrl,
+        model: 'gpt-5.2',
+      ),
+      providerId: 'openai',
+      providerCode: 'openai',
+    );
+
+    final error = await _captureError(
+      service.chatStreamEventsWithOptions(
+        prompt: 'translate',
+        history: const [],
+        options: const ChatRequestOptions(
+          reasoningPolicy: ChatReasoningPolicy.offIfSupported,
+        ),
+      ),
+    );
+
+    expect(
+      error,
+      isA<ChatTransportException>()
+          .having((value) => value.statusCode, 'statusCode', 400)
+          .having((value) => value.retryAfter, 'retryAfter',
+              const Duration(seconds: 5))
+          .having((value) => value.safeCode, 'safeCode', 'unknown_parameter'),
+    );
+    expect(error.toString(), isNot(contains('Authorization')));
+    expect(error.toString(), isNot(contains(unsafeUrl)));
+    expect(error.toString(), isNot(contains('secret')));
+  });
+}
+
+Future<Object> _captureError(Stream<Object?> stream) async {
+  try {
+    await stream.drain<void>();
+  } catch (error) {
+    return error;
+  }
+  return StateError('stream completed without an error');
+}
+
+final class _LegacyChatService implements ChatService {
+  int calls = 0;
+
+  @override
+  ModelCapabilities get capabilities => const ModelCapabilities();
+
+  @override
+  Future<String?> chat({
+    required String prompt,
+    required List<Map<String, dynamic>> history,
+    ChatAttachments? attachments,
+    Duration? timeout,
+  }) async =>
+      'legacy';
+
+  @override
+  Stream<String> chatStream({
+    required String prompt,
+    required List<Map<String, dynamic>> history,
+    ChatAttachments? attachments,
+  }) =>
+      Stream.value('legacy');
+
+  @override
+  Stream<StreamEvent> chatStreamEvents({
+    required String prompt,
+    required List<Map<String, dynamic>> history,
+    ChatAttachments? attachments,
+    List<Map<String, dynamic>>? tools,
+    List<Map<String, dynamic>> extraMessages = const [],
+  }) {
+    calls++;
+    return Stream.value(StreamEvent.text('legacy'));
+  }
+
+  @override
+  Future<ChatCompletionResult> chatWithUsage({
+    required String prompt,
+    required List<Map<String, dynamic>> history,
+    ChatAttachments? attachments,
+  }) async =>
+      const ChatCompletionResult(content: 'legacy');
+}
+
+final class _HangingSseServer {
+  _HangingSseServer._(
+    this.server,
+    this.clientDisconnected,
+    this._sockets,
+  );
+
+  final HttpServer server;
+  final Future<void> clientDisconnected;
+  final List<Socket> _sockets;
+
+  static Future<_HangingSseServer> start() async {
+    final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+    final disconnected = Completer<void>();
+    final sockets = <Socket>[];
+    server.listen((request) async {
+      await request.drain<void>();
+      request.response.headers.contentType =
+          ContentType('text', 'event-stream', charset: 'utf-8');
+      request.response.headers.chunkedTransferEncoding = false;
+      request.response.headers.set(HttpHeaders.connectionHeader, 'close');
+      final socket = await request.response.detachSocket();
+      sockets.add(socket);
+      socket.listen(
+        (_) {},
+        onError: (_) {
+          if (!disconnected.isCompleted) disconnected.complete();
+        },
+        onDone: () {
+          if (!disconnected.isCompleted) disconnected.complete();
+        },
+        cancelOnError: true,
+      );
+      socket.add(utf8.encode(
+        'data: {"choices":[{"delta":{"content":"first"}}]}\n\n',
+      ));
+      await socket.flush();
+    });
+    return _HangingSseServer._(server, disconnected.future, sockets);
+  }
+
+  Future<void> close() async {
+    for (final socket in _sockets) {
+      socket.destroy();
+    }
+    await server.close(force: true);
+  }
 }
