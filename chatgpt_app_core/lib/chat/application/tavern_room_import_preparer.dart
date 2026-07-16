@@ -1,6 +1,9 @@
 import 'package:chatgpt_app_core/chat/application/assistant_role_card_service.dart';
 import 'package:chatgpt_app_core/chat/application/assistant_role_card_translation_service.dart';
 import 'package:chatgpt_app_core/chat/application/story_room_role_card_importer.dart';
+import 'package:chatgpt_app_core/chat/application/translation_chunk_planner.dart';
+import 'package:chatgpt_app_core/chat/application/translation_retry_policy.dart';
+import 'package:chatgpt_app_core/chat/application/translation_stream_executor.dart';
 import 'package:chatgpt_app_core/model/assistant_model.dart';
 
 class TavernRoomImportProgress {
@@ -35,6 +38,10 @@ typedef TavernRoomImportFieldCheckpoint = Future<void> Function(
   String field,
   String value,
 );
+typedef TavernRoomImportChunkCheckpoint = Future<void> Function(
+  String checkpointKey,
+  TranslationChunkCheckpoint checkpoint,
+);
 
 class TavernRoomImportPreparer {
   const TavernRoomImportPreparer._();
@@ -46,11 +53,22 @@ class TavernRoomImportPreparer {
     TavernRoomImportProgressCallback? onProgress,
     Map<int, Map<String, String>> initialTranslatedFields = const {},
     TavernRoomImportFieldCheckpoint? onFieldCheckpoint,
+    Map<String, TranslationChunkCheckpoint> initialChunkCheckpoints = const {},
+    TavernRoomImportChunkCheckpoint? onChunkCheckpoint,
+    TranslationRetryPolicy retryPolicy = const TranslationRetryPolicy(),
   }) async {
     if (!translateToSimplifiedChinese) return results;
     final translated = <AssistantRoleCardImportResult>[];
     for (var i = 0; i < results.length; i++) {
       final result = results[i];
+      final roleChunkCheckpoints = _chunkCheckpointsForRole(
+        i,
+        initialChunkCheckpoints,
+      );
+      final usesChunkPipeline =
+          roleChunkCheckpoints.isNotEmpty || onChunkCheckpoint != null;
+      final latestChunkCheckpoints =
+          Map<String, TranslationChunkCheckpoint>.of(roleChunkCheckpoints);
       onProgress?.call(TavernRoomImportProgress(
         current: i + 1,
         total: results.length,
@@ -65,6 +83,14 @@ class TavernRoomImportPreparer {
         onFieldCheckpoint: onFieldCheckpoint == null
             ? null
             : (field, value) => onFieldCheckpoint(i, field, value),
+        initialChunkCheckpoints: roleChunkCheckpoints,
+        onChunkCheckpoint: !usesChunkPipeline
+            ? null
+            : (field, checkpoint) async {
+                latestChunkCheckpoints[field] = checkpoint;
+                await onChunkCheckpoint?.call('$i:$field', checkpoint);
+              },
+        retryPolicy: retryPolicy,
         onProgress: (value) => onProgress?.call(TavernRoomImportProgress(
           current: i + 1,
           total: results.length,
@@ -77,13 +103,25 @@ class TavernRoomImportPreparer {
           fieldProgress: value.fieldProgress,
         )),
       );
-      final protectedAssistant = _protectMemoryBookParticipants(
-        source: result.assistant,
-        translated: assistant,
-        onProgress: onProgress,
-        current: i + 1,
-        total: results.length,
-      );
+      late final AssistantModel protectedAssistant;
+      if (usesChunkPipeline) {
+        await _pauseOnChunkParticipantLoss(
+          resultIndex: i,
+          source: result.assistant,
+          translated: assistant,
+          latestMemoryBookCheckpoint: latestChunkCheckpoints['memoryBook'],
+          onChunkCheckpoint: onChunkCheckpoint,
+        );
+        protectedAssistant = assistant;
+      } else {
+        protectedAssistant = _protectMemoryBookParticipants(
+          source: result.assistant,
+          translated: assistant,
+          onProgress: onProgress,
+          current: i + 1,
+          total: results.length,
+        );
+      }
       translated.add(AssistantRoleCardImportResult(
         assistant: protectedAssistant,
         avatarPngBytes: result.avatarPngBytes,
@@ -103,11 +141,67 @@ class TavernRoomImportPreparer {
     return translated;
   }
 
+  static Map<String, TranslationChunkCheckpoint> _chunkCheckpointsForRole(
+    int resultIndex,
+    Map<String, TranslationChunkCheckpoint> checkpoints,
+  ) {
+    final prefix = '$resultIndex:';
+    return {
+      for (final entry in checkpoints.entries)
+        if (entry.key.startsWith(prefix) &&
+            entry.key.length > prefix.length &&
+            entry.value.field == entry.key.substring(prefix.length))
+          entry.value.field: entry.value,
+    };
+  }
+
   static int _participantCount(String memoryBook) {
     return StoryRoomRoleCardImporter.parseMemoryBookParticipants(
       memoryBook,
       roomId: 0,
     ).length;
+  }
+
+  static Future<void> _pauseOnChunkParticipantLoss({
+    required int resultIndex,
+    required AssistantModel source,
+    required AssistantModel translated,
+    required TranslationChunkCheckpoint? latestMemoryBookCheckpoint,
+    required TavernRoomImportChunkCheckpoint? onChunkCheckpoint,
+  }) async {
+    final before = _participantCount(source.memoryBook);
+    if (before <= 1 || _participantCount(translated.memoryBook) >= before) {
+      return;
+    }
+    final checkpoint = latestMemoryBookCheckpoint;
+    if (checkpoint != null && checkpoint.field == 'memoryBook') {
+      final retryable = TranslationChunkCheckpoint(
+        field: checkpoint.field,
+        sourceHash: checkpoint.sourceHash,
+        chunks: [
+          for (final state in checkpoint.chunks)
+            state.status == TranslationChunkStatus.retainedOriginal
+                ? state
+                : TranslationChunkState(
+                    chunk: state.chunk,
+                    status: TranslationChunkStatus.pending,
+                    translatedText: '',
+                    attempts: state.attempts,
+                    lastErrorKind: TranslationFailureKind.invalidOutput,
+                  ),
+        ],
+      );
+      await onChunkCheckpoint?.call(
+        '$resultIndex:memoryBook',
+        retryable,
+      );
+    }
+    throw const TranslationWorkPaused(
+      failure: TranslationRequestFailure(
+        kind: TranslationFailureKind.invalidOutput,
+        safeCode: 'invalid_translation_participants',
+      ),
+    );
   }
 
   static AssistantModel _protectMemoryBookParticipants({
