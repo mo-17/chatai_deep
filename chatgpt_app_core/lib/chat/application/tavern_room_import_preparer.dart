@@ -69,6 +69,8 @@ class TavernRoomImportPreparer {
           roleChunkCheckpoints.isNotEmpty || onChunkCheckpoint != null;
       final latestChunkCheckpoints =
           Map<String, TranslationChunkCheckpoint>.of(roleChunkCheckpoints);
+      var hasPendingMemoryBookFieldCheckpoint = false;
+      var pendingMemoryBookFieldCheckpoint = '';
       onProgress?.call(TavernRoomImportProgress(
         current: i + 1,
         total: results.length,
@@ -82,7 +84,14 @@ class TavernRoomImportPreparer {
         initialTranslatedFields: initialTranslatedFields[i] ?? const {},
         onFieldCheckpoint: onFieldCheckpoint == null
             ? null
-            : (field, value) => onFieldCheckpoint(i, field, value),
+            : (field, value) async {
+                if (usesChunkPipeline && field == 'memoryBook') {
+                  hasPendingMemoryBookFieldCheckpoint = true;
+                  pendingMemoryBookFieldCheckpoint = value;
+                  return;
+                }
+                await onFieldCheckpoint(i, field, value);
+              },
         initialChunkCheckpoints: roleChunkCheckpoints,
         onChunkCheckpoint: !usesChunkPipeline
             ? null
@@ -112,6 +121,13 @@ class TavernRoomImportPreparer {
           latestMemoryBookCheckpoint: latestChunkCheckpoints['memoryBook'],
           onChunkCheckpoint: onChunkCheckpoint,
         );
+        if (hasPendingMemoryBookFieldCheckpoint) {
+          await onFieldCheckpoint?.call(
+            i,
+            'memoryBook',
+            pendingMemoryBookFieldCheckpoint,
+          );
+        }
         protectedAssistant = assistant;
       } else {
         protectedAssistant = _protectMemoryBookParticipants(

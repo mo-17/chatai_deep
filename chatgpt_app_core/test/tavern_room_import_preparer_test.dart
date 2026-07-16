@@ -292,6 +292,7 @@ She stands by the door.
     final resetEntered = Completer<void>();
     final releaseReset = Completer<void>();
     TranslationChunkCheckpoint? lastMemoryBookCheckpoint;
+    final persistedMemoryBookFields = <String>[];
     var resetPersisted = false;
     var futureSettled = false;
 
@@ -305,6 +306,9 @@ She stands by the door.
         '0:memoryBook': completedWithZeroAttempts,
       },
       onProgress: progresses.add,
+      onFieldCheckpoint: (_, field, value) async {
+        if (field == 'memoryBook') persistedMemoryBookFields.add(value);
+      },
       onChunkCheckpoint: (key, checkpoint) async {
         if (key != '0:memoryBook') return;
         lastMemoryBookCheckpoint = checkpoint;
@@ -343,6 +347,7 @@ She stands by the door.
     );
 
     expect(resetPersisted, isTrue);
+    expect(persistedMemoryBookFields, isEmpty);
     expect(lastMemoryBookCheckpoint, isNotNull);
     expect(
       lastMemoryBookCheckpoint!.chunks.every(
@@ -418,6 +423,76 @@ She stands by the door.
     expect(sent, [role1Source]);
     expect(prepared[0].assistant.memoryBook, 'Role zero 中文 memory.');
     expect(prepared[1].assistant.memoryBook, 'Role one 中文 memory.');
+  });
+
+  test('pending chunk checkpoint outranks a bad legacy memoryBook on resume',
+      () async {
+    final sourceMemoryBook = [
+      'Alice => Name: Alice',
+      'Type: character',
+      'Personality: careful.',
+      '',
+      'Bob => Name: Bob',
+      'Type: character',
+      'Personality: brave.',
+    ].join('\n');
+    const planner = TranslationChunkPlanner();
+    final planned = planner.plan(
+      field: 'memoryBook',
+      source: sourceMemoryBook,
+    );
+    final reset = TranslationChunkCheckpoint(
+      field: planned.field,
+      sourceHash: planned.sourceHash,
+      chunks: [
+        for (final state in planned.chunks)
+          TranslationChunkState(
+            chunk: state.chunk,
+            status: TranslationChunkStatus.pending,
+            translatedText: '',
+            attempts: 1,
+            lastErrorKind: TranslationFailureKind.invalidOutput,
+          ),
+      ],
+    );
+    final result = AssistantRoleCardImportResult(
+      assistant: AssistantModel(name: 'Party', memoryBook: sourceMemoryBook),
+    );
+    final sent = <String>[];
+    final persistedFields = <String>[];
+
+    final prepared = await TavernRoomImportPreparer.prepare(
+      [result],
+      translateToSimplifiedChinese: true,
+      initialTranslatedFields: {
+        0: {
+          ..._translatedFieldsExceptMemory(result.assistant),
+          'memoryBook': '坏 legacy memoryBook',
+        },
+      },
+      initialChunkCheckpoints: {'0:memoryBook': reset},
+      onChunkCheckpoint: (_, __) async {},
+      onFieldCheckpoint: (_, field, value) async {
+        if (field == 'memoryBook') persistedFields.add(value);
+      },
+      complete: (prompt) async {
+        expect(prompt, contains('修复'));
+        final payload =
+            jsonDecode(prompt.split('\n').last) as Map<String, dynamic>;
+        final value = payload['memoryBook'] as String;
+        sent.add(value);
+        return jsonEncode({
+          'memoryBook':
+              value.replaceAll('careful', '谨慎').replaceAll('brave', '勇敢'),
+        });
+      },
+    );
+
+    expect(sent, isNotEmpty);
+    expect(prepared.single.assistant.memoryBook, contains('谨慎'));
+    expect(prepared.single.assistant.memoryBook, contains('勇敢'));
+    expect(prepared.single.assistant.memoryBook, isNot(contains('坏 legacy')));
+    expect(persistedFields, [prepared.single.assistant.memoryBook]);
   });
 
   test('source hash mismatch replans the current role source', () async {

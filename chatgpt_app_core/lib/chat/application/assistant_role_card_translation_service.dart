@@ -114,6 +114,30 @@ class AssistantRoleCardTranslationService {
       if (failure.kind == TranslationFailureKind.cancelled) {
         throw const RoleCardTranslationCancelled();
       }
+      if (!_isTimeoutFailure(failure.kind)) {
+        final decision = retryPolicy.decide(
+          failure: failure,
+          categoryAttempt: 0,
+          chunkRunes: _wholeCardRuneCount(assistant),
+          minimumSplitRunes: 0,
+          now: DateTime.now(),
+        );
+        switch (decision.action) {
+          case TranslationRetryAction.schedule:
+            throw TranslationWorkDeferred(
+              nextRunAt: decision.nextRunAt!,
+              failure: failure,
+            );
+          case TranslationRetryAction.pause:
+            throw TranslationWorkPaused(failure: failure);
+          case TranslationRetryAction.cancel:
+            throw const RoleCardTranslationCancelled();
+          case TranslationRetryAction.retry:
+          case TranslationRetryAction.repair:
+          case TranslationRetryAction.split:
+            break;
+        }
+      }
       final translated = await translateFieldsIndividually(
         assistant,
         complete: complete,
@@ -159,7 +183,13 @@ class AssistantRoleCardTranslationService {
   }) async {
     final translated = <String, dynamic>{
       for (final entry in initialTranslatedFields.entries)
-        if (_fields.contains(entry.key)) entry.key: entry.value,
+        if (_fields.contains(entry.key) &&
+            initialChunkCheckpoints[entry.key]?.matchesSource(
+                  entry.key,
+                  _fieldValue(assistant, entry.key),
+                ) !=
+                true)
+          entry.key: entry.value,
     };
     for (var i = 0; i < _fields.length; i++) {
       final field = _fields[i];
@@ -401,6 +431,16 @@ class AssistantRoleCardTranslationService {
     return chars <= _wholeCardMaxChars;
   }
 
+  static int _wholeCardRuneCount(AssistantModel assistant) => _fields.fold(
+        0,
+        (sum, field) => sum + _fieldValue(assistant, field).runes.length,
+      );
+
+  static bool _isTimeoutFailure(TranslationFailureKind kind) =>
+      kind == TranslationFailureKind.firstEventTimeout ||
+      kind == TranslationFailureKind.idleTimeout ||
+      kind == TranslationFailureKind.totalTimeout;
+
   static String _fieldLabel(String field) {
     switch (field) {
       case 'name':
@@ -444,6 +484,57 @@ class AssistantRoleCardTranslationService {
         ));
         chunkIndex += 1;
         continue;
+      }
+
+      if (state.chunk.sourceText.isEmpty) {
+        current = _replaceChunkState(
+          current,
+          chunkIndex,
+          TranslationChunkState(
+            chunk: state.chunk,
+            status: TranslationChunkStatus.completed,
+            translatedText: '',
+            attempts: state.attempts,
+            lastErrorKind: state.lastErrorKind,
+          ),
+        );
+        await onChunkCheckpoint?.call(current.field, current);
+        onProgress?.call(RoleCardTranslationProgress(
+          field: current.field,
+          fieldLabel: _fieldLabel(current.field),
+          current: fieldIndex,
+          total: fieldTotal,
+          stage: '空分块已跳过',
+          detail: '块 ${chunkIndex + 1}/${current.chunks.length}',
+          fieldProgress: (chunkIndex + 1) / current.chunks.length,
+        ));
+        chunkIndex += 1;
+        continue;
+      }
+
+      final resumedErrorKind = state.lastErrorKind;
+      if (resumedErrorKind != null && _isTimeoutFailure(resumedErrorKind)) {
+        final failure = TranslationRequestFailure(
+          kind: resumedErrorKind,
+          safeCode: resumedErrorKind.name,
+        );
+        final decision = retryPolicy.decide(
+          failure: failure,
+          categoryAttempt: state.attempts == 0 ? 0 : state.attempts - 1,
+          chunkRunes: state.chunk.sourceText.runes.length,
+          minimumSplitRunes: _minimumSplitRunes(current.field),
+          now: DateTime.now(),
+        );
+        if (decision.action == TranslationRetryAction.split) {
+          current = _chunkPlanner.splitTimedOut(
+            checkpoint: current,
+            chunkId: state.chunk.id,
+          );
+          await onChunkCheckpoint?.call(current.field, current);
+          continue;
+        }
+        await onChunkCheckpoint?.call(current.field, current);
+        throw TranslationWorkPaused(failure: failure);
       }
 
       try {
@@ -507,35 +598,38 @@ class AssistantRoleCardTranslationService {
           attempts: categoryAttempt + 1,
           lastErrorKind: failure.kind,
         );
-        current = _replaceChunkState(current, chunkIndex, failed);
-        await onChunkCheckpoint?.call(current.field, current);
+        final failedCheckpoint =
+            _replaceChunkState(current, chunkIndex, failed);
         final decision = retryPolicy.decide(
           failure: failure,
           categoryAttempt: categoryAttempt,
           chunkRunes: state.chunk.sourceText.runes.length,
-          minimumSplitRunes:
-              current.field == 'memoryBook' || current.field == 'worldBook'
-                  ? 400
-                  : 800,
+          minimumSplitRunes: _minimumSplitRunes(current.field),
           now: DateTime.now(),
         );
         switch (decision.action) {
           case TranslationRetryAction.retry:
           case TranslationRetryAction.repair:
+            current = failedCheckpoint;
+            await onChunkCheckpoint?.call(current.field, current);
             continue;
           case TranslationRetryAction.split:
             current = _chunkPlanner.splitTimedOut(
-              checkpoint: current,
+              checkpoint: failedCheckpoint,
               chunkId: state.chunk.id,
             );
             await onChunkCheckpoint?.call(current.field, current);
             continue;
           case TranslationRetryAction.schedule:
+            current = failedCheckpoint;
+            await onChunkCheckpoint?.call(current.field, current);
             throw TranslationWorkDeferred(
               nextRunAt: decision.nextRunAt!,
               failure: failure,
             );
           case TranslationRetryAction.pause:
+            current = failedCheckpoint;
+            await onChunkCheckpoint?.call(current.field, current);
             throw TranslationWorkPaused(failure: failure);
           case TranslationRetryAction.cancel:
             throw const RoleCardTranslationCancelled();
@@ -559,6 +653,9 @@ class AssistantRoleCardTranslationService {
           ...checkpoint.chunks.skip(index + 1),
         ],
       );
+
+  static int _minimumSplitRunes(String field) =>
+      field == 'memoryBook' || field == 'worldBook' ? 400 : 800;
 
   static String _mergeCheckpoint(TranslationChunkCheckpoint checkpoint) =>
       checkpoint.chunks.map((state) {

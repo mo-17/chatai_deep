@@ -122,6 +122,87 @@ void main() {
     expect(translated.memoryBook, contains('爱丽丝住在贝克街'));
   });
 
+  for (final failureCase in [
+    (
+      name: '429',
+      failure: const TranslationRequestFailure(
+        kind: TranslationFailureKind.rateLimited,
+        retryAfter: Duration(seconds: 9),
+        safeCode: 'rate_limited',
+      ),
+      matcher: isA<TranslationWorkDeferred>(),
+    ),
+    (
+      name: '5xx',
+      failure: const TranslationRequestFailure(
+        kind: TranslationFailureKind.server,
+        safeCode: 'server_error',
+      ),
+      matcher: isA<TranslationWorkDeferred>(),
+    ),
+    (
+      name: 'auth',
+      failure: const TranslationRequestFailure(
+        kind: TranslationFailureKind.authentication,
+        safeCode: 'authentication',
+      ),
+      matcher: isA<TranslationWorkPaused>(),
+    ),
+  ]) {
+    test('whole-card ${failureCase.name} does not fall through to field calls',
+        () async {
+      var calls = 0;
+
+      await expectLater(
+        AssistantRoleCardTranslationService.translateToSimplifiedChinese(
+          sampleAssistant(),
+          complete: (_) {
+            calls += 1;
+            throw failureCase.failure;
+          },
+        ),
+        throwsA(failureCase.matcher),
+      );
+
+      expect(calls, 1);
+    });
+  }
+
+  test(
+      'whole-card typed timeout degrades to fields without resending whole card',
+      () async {
+    final assistant = AssistantModel(
+      name: 'Alice',
+      description: 'A detective.',
+    );
+    var wholeCardCalls = 0;
+    var fieldCalls = 0;
+
+    final translated =
+        await AssistantRoleCardTranslationService.translateToSimplifiedChinese(
+      assistant,
+      complete: (prompt) async {
+        final payload =
+            jsonDecode(prompt.split('\n').last) as Map<String, dynamic>;
+        if (payload.length > 1) {
+          wholeCardCalls += 1;
+          throw const TranslationRequestFailure(
+            kind: TranslationFailureKind.firstEventTimeout,
+            safeCode: 'first_event_timeout',
+          );
+        }
+        fieldCalls += 1;
+        final field = payload.keys.single;
+        return jsonEncode({field: payload[field]});
+      },
+    );
+
+    expect(wholeCardCalls, 1);
+    expect(fieldCalls, 2);
+    expect(translated.name, assistant.name);
+    expect(translated.description, assistant.description);
+  });
+
   test('无效 JSON 仅发送一次明确 repair prompt', () async {
     var descriptionCalls = 0;
     final checkpoints = <TranslationChunkCheckpoint>[];
@@ -275,13 +356,13 @@ void main() {
     expect(sent, hasLength(greaterThanOrEqualTo(3)));
     expect(sent[1].runes.length, lessThan(sent.first.runes.length));
     expect(sent[2].runes.length, lessThan(sent.first.runes.length));
+    expect(persisted.first.chunks.length, greaterThan(1));
     expect(
       persisted.any((checkpoint) => checkpoint.chunks.any(
             (state) =>
-                state.status == TranslationChunkStatus.pending &&
                 state.lastErrorKind == TranslationFailureKind.totalTimeout,
           )),
-      isTrue,
+      isFalse,
     );
     expect(translated.memoryBook, source.replaceAll('Alice keeps', '爱丽丝记录'));
   });
@@ -734,14 +815,18 @@ void main() {
     final checkpointEntered = Completer<void>();
     final releaseCheckpoint = Completer<void>();
     final sent = <String>[];
+    final persisted = <TranslationChunkCheckpoint>[];
 
     final translation =
         AssistantRoleCardTranslationService.translateToSimplifiedChinese(
       AssistantModel(name: '', memoryBook: source),
       onChunkCheckpoint: (field, checkpoint) async {
-        if (field == 'memoryBook' &&
-            checkpoint.chunks.any((state) =>
-                state.lastErrorKind == TranslationFailureKind.idleTimeout)) {
+        if (field != 'memoryBook') return;
+        persisted.add(checkpoint);
+        if (checkpoint.chunks.length > 1 &&
+            checkpoint.chunks.every(
+              (state) => state.status == TranslationChunkStatus.pending,
+            )) {
           if (!checkpointEntered.isCompleted) checkpointEntered.complete();
           await releaseCheckpoint.future;
         }
@@ -767,5 +852,98 @@ void main() {
     await translation;
     expect(sent.length, greaterThan(1));
     expect(sent.where((value) => value == source), hasLength(1));
+    expect(
+      persisted.any((checkpoint) => checkpoint.chunks.any(
+            (state) =>
+                state.lastErrorKind == TranslationFailureKind.idleTimeout,
+          )),
+      isFalse,
+    );
+  });
+
+  test('resumed persisted timeout checkpoint splits before sending parent',
+      () async {
+    final source = List.filled(1000, '界').join();
+    const planner = TranslationChunkPlanner();
+    final planned = planner.plan(field: 'memoryBook', source: source);
+    final interrupted = TranslationChunkCheckpoint(
+      field: planned.field,
+      sourceHash: planned.sourceHash,
+      chunks: [
+        TranslationChunkState(
+          chunk: planned.chunks.single.chunk,
+          status: TranslationChunkStatus.pending,
+          translatedText: '',
+          attempts: 1,
+          lastErrorKind: TranslationFailureKind.idleTimeout,
+        ),
+      ],
+    );
+    final restored = TranslationChunkCheckpoint.fromJson(
+      jsonDecode(jsonEncode(interrupted.toJson())) as Map<String, dynamic>,
+    );
+    final sent = <String>[];
+    final persisted = <TranslationChunkCheckpoint>[];
+
+    final translated =
+        await AssistantRoleCardTranslationService.translateToSimplifiedChinese(
+      AssistantModel(name: '', memoryBook: source),
+      initialChunkCheckpoints: {'memoryBook': restored},
+      onChunkCheckpoint: (field, checkpoint) async {
+        if (field == 'memoryBook') persisted.add(checkpoint);
+      },
+      complete: (requestPrompt) async {
+        final payload =
+            jsonDecode(requestPrompt.split('\n').last) as Map<String, dynamic>;
+        final value = payload['memoryBook'] as String;
+        sent.add(value);
+        return jsonEncode({'memoryBook': value});
+      },
+    );
+
+    expect(sent, isNotEmpty);
+    expect(sent, isNot(contains(source)));
+    expect(sent.every((value) => value.runes.length < source.runes.length),
+        isTrue);
+    expect(persisted.first.chunks.length, greaterThan(1));
+    expect(translated.memoryBook, source);
+  });
+
+  test(
+      'internal empty chunk completes without letting the model alter separators',
+      () async {
+    final source = 'a.${List.filled(2500, ' ').join()}tail';
+    final sent = <String>[];
+    final persisted = <TranslationChunkCheckpoint>[];
+
+    final translated =
+        await AssistantRoleCardTranslationService.translateToSimplifiedChinese(
+      AssistantModel(name: '', prompt: source),
+      onChunkCheckpoint: (field, checkpoint) async {
+        if (field == 'prompt') persisted.add(checkpoint);
+      },
+      complete: (requestPrompt) async {
+        final payload =
+            jsonDecode(requestPrompt.split('\n').last) as Map<String, dynamic>;
+        final value = payload['prompt'] as String;
+        sent.add(value);
+        return jsonEncode({'prompt': value.isEmpty ? 'INJECTED' : value});
+      },
+    );
+
+    expect(sent, isNot(contains('')));
+    expect(translated.prompt, source);
+    final emptyStates = persisted.last.chunks.where(
+      (state) => state.chunk.sourceText.isEmpty,
+    );
+    expect(emptyStates, isNotEmpty);
+    expect(
+      emptyStates.every(
+        (state) =>
+            state.status == TranslationChunkStatus.completed &&
+            state.translatedText.isEmpty,
+      ),
+      isTrue,
+    );
   });
 }
