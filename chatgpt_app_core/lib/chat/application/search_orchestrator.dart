@@ -73,7 +73,7 @@ class SearchOrchestrator {
   }) async {
     final intent = await analyzeIntent(prompt: prompt, history: history);
     if (!intent.needSearch) return const [];
-    AILogger.log('web search queries: ${intent.queries}');
+    AILogger.log('web search query count: ${intent.queries.length}');
     return searchAll(intent.queries);
   }
 

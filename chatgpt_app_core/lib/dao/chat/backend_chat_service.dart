@@ -92,7 +92,6 @@ class BackendChatService implements ChatService {
 
     const utf8decoder = Utf8Decoder();
     final bodyString = utf8decoder.convert(response.bodyBytes);
-    AILogger.log('backend response body: ${AILogger.truncate(bodyString)}');
 
     if (response.statusCode == 200 || response.statusCode == 201) {
       final result = json.decode(bodyString) as Map<String, dynamic>;
@@ -149,7 +148,6 @@ class BackendChatService implements ChatService {
 
     const utf8decoder = Utf8Decoder();
     final bodyString = utf8decoder.convert(response.bodyBytes);
-    AILogger.log('backend response body: ${AILogger.truncate(bodyString)}');
 
     if (response.statusCode == 200 || response.statusCode == 201) {
       final result = json.decode(bodyString) as Map<String, dynamic>;
