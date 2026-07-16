@@ -4,11 +4,16 @@ import 'dart:convert';
 import 'package:chatgpt_app_core/capability/product_capabilities.dart';
 import 'package:chatgpt_app_core/db/hi_db_manager.dart';
 import 'package:chatgpt_app_core/sync/local_sync_service.dart';
+import 'package:chatgpt_app_core/util/account_resource_scope.dart';
 import 'package:chatgpt_app_core/util/hi_const.dart';
 import 'package:flutter_hi_cache/flutter_hi_cache.dart';
 import 'package:http/http.dart' as http;
 import 'package:login_sdk/dao/header_util.dart';
 import 'package:login_sdk/dao/login_dao.dart';
+
+typedef CloudSyncDatabaseResolver = Future<HiDBManager> Function(
+  String accountHash,
+);
 
 class CloudSyncClient {
   final LocalSyncService localSync;
@@ -41,6 +46,9 @@ class CloudSyncClient {
 
   Future<CloudSyncResult> syncOnce({bool auto = false}) async {
     final accountGuard = _LoginAccountGuard.capture();
+    if (AccountResourceScope.currentAccountHash() != localSync.accountHash) {
+      throw const LoginAccountChangedException();
+    }
     final cursor = cursorStore.readCursor();
     final lastPushAt = cursorStore.readLastPushAt();
     final localChanges =
@@ -297,11 +305,18 @@ class CloudSyncCoordinator {
   static bool _running = false;
   static const Duration autoSyncCooldown = Duration(minutes: 10);
 
-  static Future<CloudSyncClient> createClient({http.Client? httpClient}) async {
-    final storage =
-        await HiDBManager.instance(dbName: HiDBManager.getAccountHash());
+  static Future<CloudSyncClient> createClient({
+    http.Client? httpClient,
+    CloudSyncDatabaseResolver? databaseResolver,
+  }) async {
+    final accountGuard = _LoginAccountGuard.capture();
+    final accountHash = HiDBManager.getAccountHash();
+    final storage = databaseResolver == null
+        ? await HiDBManager.instance(dbName: accountHash)
+        : await databaseResolver(accountHash);
+    accountGuard.verify();
     return CloudSyncClient(
-      localSync: LocalSyncService(storage),
+      localSync: LocalSyncService(storage, accountHash: accountHash),
       cursorStore: HiCacheSyncCursorStore(),
       client: httpClient,
     );

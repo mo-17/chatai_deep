@@ -6,9 +6,13 @@ import 'package:chatgpt_app_core/chat/domain/stream_event.dart';
 import 'package:chatgpt_app_core/db/hi_db_manager.dart';
 import 'package:chatgpt_app_core/db/story_room_dao.dart';
 import 'package:chatgpt_app_core/model/story_room_model.dart';
+import 'package:chatgpt_app_core/util/account_resource_scope.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:http/http.dart' as http;
 import 'package:http/testing.dart';
+import 'package:login_sdk/config/login_sdk_config.dart';
+import 'package:login_sdk/config/token_storage.dart';
+import 'package:login_sdk/dao/login_dao.dart';
 import 'package:sqflite_common_ffi/sqflite_ffi.dart';
 
 void main() {
@@ -21,7 +25,35 @@ void main() {
   });
 
   tearDown(() async {
+    LoginSdkConfig.reset();
     if (tempDir.existsSync()) await tempDir.delete(recursive: true);
+  });
+
+  test('saveEvent 隐式账号在异步 resolver 切号后 fail closed', () async {
+    final authStorage = await _installAccount('account-a');
+    final encoded = base64Encode([1, 2, 3]);
+
+    await expectLater(
+      StoryRoomImageService.saveEvent(
+        StreamEvent.image('data:image/png;base64,$encoded'),
+        directoryResolver: () async {
+          await authStorage.writeProfile(
+            token: 'token-b',
+            userName: 'user-b',
+            extras: const {'accountHash': 'account-b'},
+          );
+          return tempDir;
+        },
+      ),
+      throwsA(isA<LoginAccountChangedException>()),
+    );
+    for (final account in ['account-a', 'account-b']) {
+      final directory = Directory(
+        '${tempDir.path}/generated_images/accounts/'
+        '${AccountResourceScope.tokenFor(account)}',
+      );
+      expect(directory.existsSync(), isFalse);
+    }
   });
 
   test('规范化 URL 图片事件并保存到应用相册', () async {
@@ -42,9 +74,16 @@ void main() {
       filename: '../房间/cover?.jpg',
       directoryResolver: () async => tempDir,
       client: client,
+      accountHash: 'guest',
     );
 
-    expect(saved?.path, endsWith('/generated_images/cover.jpg'));
+    expect(
+      saved?.path,
+      endsWith(
+        '/generated_images/accounts/'
+        '${AccountResourceScope.tokenFor('guest')}/cover.jpg',
+      ),
+    );
     expect(await File(saved!.path).readAsBytes(), [1, 2, 3]);
   });
 
@@ -54,6 +93,7 @@ void main() {
       StreamEvent.image('data:image/PNG;base64,$encoded'),
       now: DateTime(2026, 7, 10, 12, 30, 1),
       directoryResolver: () async => tempDir,
+      accountHash: 'guest',
     );
 
     expect(saved?.source, 'data:image/png;base64,$encoded');
@@ -73,6 +113,7 @@ void main() {
     final saved = await StoryRoomImageService.saveEvent(
       StreamEvent.image(local.path),
       directoryResolver: () async => tempDir,
+      accountHash: 'guest',
     );
     expect(saved?.source, local.path);
     expect(await File(saved!.path).readAsBytes(), [7, 8]);
@@ -97,6 +138,7 @@ void main() {
       ),
       filename: 'message.png',
       directoryResolver: () async => tempDir,
+      accountHash: 'guest',
     );
     final message = StoryMessageModel(
       roomId: 1,
@@ -124,4 +166,58 @@ void main() {
     expect(stored.imageSources, [saved.source]);
     expect(stored.citationUrls, ['https://example.com/source']);
   });
+}
+
+Future<_MemoryTokenStorage> _installAccount(String accountHash) async {
+  final storage = _MemoryTokenStorage();
+  await storage.writeProfile(
+    token: 'token-a',
+    userName: 'user-a',
+    extras: {'accountHash': accountHash},
+  );
+  LoginSdkConfig.install(LoginSdkConfig(
+    baseUrl: 'localhost:3000',
+    headerProvider: () async => const {},
+    syncHeaders: () => const {},
+    routes: LoginRoutes.imooc,
+    responseAdapter: ImoocResponseAdapter(),
+    storage: storage,
+    onLogoutNavigate: () {},
+  ));
+  return storage;
+}
+
+final class _MemoryTokenStorage implements TokenStorage {
+  Map<String, dynamic>? _profile;
+
+  @override
+  Future<void> clear() async => _profile = null;
+
+  @override
+  Future<Map<String, dynamic>?> readProfile() async => readProfileSync();
+
+  @override
+  Map<String, dynamic>? readProfileSync() =>
+      _profile == null ? null : Map<String, dynamic>.from(_profile!);
+
+  @override
+  Future<String?> readToken() async => readTokenSync();
+
+  @override
+  String? readTokenSync() => _profile?['boardingPass'] as String?;
+
+  @override
+  Future<void> writeProfile({
+    required String token,
+    required String userName,
+    String? avatar,
+    Map<String, dynamic> extras = const {},
+  }) async {
+    _profile = {
+      'boardingPass': token,
+      'userName': userName,
+      'avatar': avatar,
+      ...extras,
+    };
+  }
 }

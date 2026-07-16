@@ -1,13 +1,18 @@
+import 'dart:async';
 import 'dart:collection';
 import 'dart:convert';
 import 'dart:io';
 
 import 'package:archive/archive.dart';
+import 'package:chatgpt_app_core/backup/backup_archive_limits.dart';
+import 'package:chatgpt_app_core/backup/backup_integrity.dart';
 import 'package:chatgpt_app_core/capability/generated_image_save_service.dart';
 import 'package:chatgpt_app_core/chat/application/assistant_role_card_asset_store.dart';
 import 'package:chatgpt_app_core/chat/application/story_tavern_preset_transfer.dart';
 import 'package:chatgpt_app_core/chat/domain/message_block.dart';
+import 'package:chatgpt_app_core/dao/ai_settings_dao.dart';
 import 'package:chatgpt_app_core/db/assistant_dao.dart';
+import 'package:chatgpt_app_core/db/assistant_memory_dao.dart';
 import 'package:chatgpt_app_core/db/conversation_dao.dart';
 import 'package:chatgpt_app_core/db/db_migration.dart';
 import 'package:chatgpt_app_core/db/favorite_dao.dart';
@@ -21,7 +26,11 @@ import 'package:chatgpt_app_core/db/story_room_dao.dart';
 import 'package:chatgpt_app_core/db/story_template_dao.dart';
 import 'package:chatgpt_app_core/db/story_template_translation_task_dao.dart';
 import 'package:chatgpt_app_core/model/ai_settings.dart';
+import 'package:chatgpt_app_core/model/assistant_memory_model.dart';
+import 'package:chatgpt_app_core/util/account_resource_scope.dart';
 import 'package:chatgpt_app_core/util/avatar_asset_service.dart';
+import 'package:chatgpt_app_core/util/uuid_v4.dart';
+import 'package:crypto/crypto.dart';
 import 'package:flutter/foundation.dart';
 import 'package:openai_flutter/utils/ai_logger.dart';
 import 'package:path_provider/path_provider.dart';
@@ -33,6 +42,7 @@ class BackupRestoreResult {
   final int conversations;
   final int messages;
   final int assistants;
+  final int assistantMemories;
   final int favorites;
   final int projects;
   final int knowledgeDocs;
@@ -58,6 +68,7 @@ class BackupRestoreResult {
     this.conversations = 0,
     this.messages = 0,
     this.assistants = 0,
+    this.assistantMemories = 0,
     this.favorites = 0,
     this.projects = 0,
     this.knowledgeDocs = 0,
@@ -77,6 +88,20 @@ class BackupRestoreResult {
   });
 }
 
+/// 导出产物与仅作提示的规范化报告。导出时的历史孤儿过滤、
+/// 重复 ID 重编只发生在 zip 副本中，不会回写 SQLite。
+class BackupExportResult {
+  final Uint8List bytes;
+  final List<String> warnings;
+
+  const BackupExportResult({
+    required this.bytes,
+    this.warnings = const [],
+  });
+}
+
+typedef BackupAccountGuard = FutureOr<void> Function();
+
 enum BackupImportMode {
   /// 当前默认行为：覆盖全部本地数据。
   overwriteAll,
@@ -94,6 +119,35 @@ enum BackupImportMode {
   mergeAppend,
 }
 
+/// 仅供故障注入测试使用：覆盖资源 staging、目录切换与 SQLite 提交之间的边界。
+enum BackupImportFailurePoint {
+  /// 所有数据库写入与资源 staging 已完成，尚未切换正式目录。
+  beforeResourceSwap,
+
+  /// 第一个资源目录已切换，用来验证部分目录切换也能完整补偿。
+  afterFirstResourceDirectorySwap,
+
+  /// 所有资源目录已切换，但 SQLite transaction 尚未提交。
+  afterResourceSwap,
+}
+
+typedef BackupImportFailureInjector = Future<void> Function(
+  BackupImportFailurePoint point,
+);
+
+/// 资源补偿阶段可独立失败的文件系统操作，仅供故障注入测试使用。
+enum BackupResourceRollbackOperation {
+  removeStagedTarget,
+  restoreOriginal,
+  removeStage,
+  removeBackup,
+}
+
+typedef BackupResourceRollbackFailureInjector = Future<void> Function(
+  int rollbackIndex,
+  BackupResourceRollbackOperation operation,
+);
+
 /// 导入前预览：只解析 zip 与 manifest，不写数据库、不恢复资源。
 class BackupPreview {
   final int formatVersion;
@@ -103,6 +157,7 @@ class BackupPreview {
   final int conversations;
   final int messages;
   final int assistants;
+  final int assistantMemories;
   final int favorites;
   final int projects;
   final int knowledgeDocs;
@@ -120,6 +175,7 @@ class BackupPreview {
   final int fileAssets;
   final int generatedImageAssets;
   final bool hasSettings;
+  final bool integrityVerified;
   final BackupConflictSummary conflictSummary;
   final List<String> warnings;
 
@@ -131,6 +187,7 @@ class BackupPreview {
     required this.conversations,
     required this.messages,
     required this.assistants,
+    this.assistantMemories = 0,
     required this.favorites,
     required this.projects,
     required this.knowledgeDocs,
@@ -148,6 +205,7 @@ class BackupPreview {
     required this.fileAssets,
     this.generatedImageAssets = 0,
     required this.hasSettings,
+    this.integrityVerified = false,
     this.conflictSummary = const BackupConflictSummary(),
     this.warnings = const [],
   });
@@ -156,6 +214,7 @@ class BackupPreview {
       conversations +
       messages +
       assistants +
+      assistantMemories +
       favorites +
       projects +
       knowledgeDocs +
@@ -219,7 +278,10 @@ class BackupPreview {
         return sum('仅项目、会话和消息',
             const ['tb_project', 'tb_conversation_list', 'tb_messages']);
       case BackupImportMode.assistantsOnly:
-        return sum('仅助手', const ['tb_assistant']);
+        return sum(
+          '仅助手',
+          const ['tb_assistant', 'tb_assistant_memory'],
+        );
       case BackupImportMode.knowledgeBaseOnly:
         return sum('仅知识库', const ['tb_kb_doc', 'tb_kb_chunk', 'tb_project_kb']);
       case BackupImportMode.mergeAppend:
@@ -228,6 +290,7 @@ class BackupPreview {
           'tb_conversation_list',
           'tb_messages',
           'tb_assistant',
+          'tb_assistant_memory',
           'tb_favorite',
           'tb_kb_doc',
           'tb_kb_chunk',
@@ -332,12 +395,13 @@ class BackupTableConflict {
 /// 因此可以用 sqflite_common_ffi 内存库做 round-trip 单测。
 class BackupService {
   /// 备份格式版本。导入时大于本值则拒绝（新版本备份导入旧 app）。
-  static const int formatVersion = 10;
+  static const int formatVersion = 11;
 
   static const _kManifest = 'manifest.json';
   static const _kConversations = 'conversations.json';
   static const _kMessages = 'messages.json';
   static const _kAssistants = 'assistants.json';
+  static const _kAssistantMemories = 'assistant_memories.json';
   static const _kFavorites = 'favorites.json';
   static const _kProjects = 'projects.json';
   static const _kSettings = 'settings.json';
@@ -358,12 +422,66 @@ class BackupService {
   static const _kGeneratedImagePrefix = 'assets/generated_images/';
   static const _kRoleCardAssetPrefix = 'assets/assistant_role_assets/';
   static const _imageExtensions = {'.png', '.jpg', '.jpeg', '.webp', '.gif'};
+  static const Map<String, String> _v11RowCountKeys = {
+    _kConversations: 'conversations',
+    _kMessages: 'messages',
+    _kAssistants: 'assistants',
+    _kAssistantMemories: 'assistantMemories',
+    _kFavorites: 'favorites',
+    _kProjects: 'projects',
+    _kKnowledgeDocs: 'knowledgeDocs',
+    _kKnowledgeChunks: 'knowledgeChunks',
+    _kProjectKnowledge: 'projectKnowledge',
+    _kStoryTemplates: 'storyTemplates',
+    _kStoryTemplateTranslationTasks: 'storyTemplateTranslationTasks',
+    _kStoryPersonas: 'storyPersonas',
+    _kStoryRooms: 'storyRooms',
+    _kStoryParticipants: 'storyParticipants',
+    _kStoryMessages: 'storyMessages',
+    _kStoryArtifacts: 'storyArtifacts',
+    _kStoryArtifactRevisions: 'storyArtifactRevisions',
+  };
+  static const Map<String, String> _v11ResourceCountKeys = {
+    _kAvatarPrefix: 'avatarAssets',
+    _kFilePrefix: 'fileAssets',
+    _kGeneratedImagePrefix: 'generatedImageAssets',
+    _kRoleCardAssetPrefix: 'roleCardAssets',
+  };
+  static const Map<String, int> _legacyRequiredRowSince = {
+    _kConversations: 1,
+    _kMessages: 1,
+    _kAssistants: 1,
+    _kFavorites: 1,
+    _kProjects: 2,
+    _kKnowledgeDocs: 2,
+    _kKnowledgeChunks: 2,
+    _kProjectKnowledge: 2,
+    _kStoryTemplates: 3,
+    _kStoryRooms: 4,
+    _kStoryParticipants: 4,
+    _kStoryMessages: 4,
+    _kStoryArtifacts: 4,
+    _kStoryArtifactRevisions: 4,
+    _kStoryTemplateTranslationTasks: 5,
+    _kStoryPersonas: 8,
+  };
+
+  /// 同一账号的恢复必须串行，避免两个 service 实例交错替换 SQLite 与资源目录。
+  /// tail 无论成功失败都会完成并清理，前一次失败不会毒化后续恢复。
+  static final Map<String, Future<void>> _importOperationTails = {};
 
   @visibleForTesting
   static Future<Directory> Function()? debugGeneratedImageDirectoryResolver;
 
   @visibleForTesting
   static RoleCardAssetDirectoryResolver? debugRoleCardAssetsDirectoryResolver;
+
+  @visibleForTesting
+  static BackupImportFailureInjector? debugImportFailureInjector;
+
+  @visibleForTesting
+  static BackupResourceRollbackFailureInjector?
+      debugResourceRollbackFailureInjector;
 
   /// 导入完成后 +1，会话列表等常驻页面监听它重新加载数据
   /// （不强求重启，对应源项目 restore 后 resetAppInitializationState）。
@@ -381,6 +499,19 @@ class BackupService {
     required AISettings settings,
     required String accountHash,
     bool includeApiKeys = false,
+  }) async =>
+      (await exportArchiveWithReport(
+        settings: settings,
+        accountHash: accountHash,
+        includeApiKeys: includeApiKeys,
+      ))
+          .bytes;
+
+  /// 与 [exportArchive] 兼容的导出 API，额外返回历史数据规范化告警。
+  Future<BackupExportResult> exportArchiveWithReport({
+    required AISettings settings,
+    required String accountHash,
+    bool includeApiKeys = false,
   }) async {
     // 表是 DAO 懒建的：先确保 schema 就绪（含 assistantId 列 ALTER），
     // 全新账号没建过的表导出为空列表而不是报错。
@@ -388,6 +519,7 @@ class BackupService {
     final conversations = await storage.db.query('tb_conversation_list');
     final messages = await storage.db.query('tb_messages');
     final assistants = await storage.db.query('tb_assistant');
+    final rawAssistantMemories = await storage.db.query('tb_assistant_memory');
     final favorites = await storage.db.query('tb_favorite');
     final projects = await storage.db.query('tb_project');
     final knowledgeDocs = await storage.db.query('tb_kb_doc');
@@ -403,6 +535,16 @@ class BackupService {
     final storyArtifacts = await storage.db.query('tb_story_artifact');
     final storyArtifactRevisions =
         await storage.db.query('tb_story_artifact_revision');
+    final exportedStoryTemplates = includeApiKeys
+        ? storyTemplates
+        : _sanitizeStoryTemplatesForExport(storyTemplates);
+    final exportedStoryRooms =
+        includeApiKeys ? storyRooms : _sanitizeStoryRoomsForExport(storyRooms);
+    final memoryExport = _normalizeAssistantMemoriesForExport(
+      rawAssistantMemories,
+      assistants,
+    );
+    final assistantMemories = memoryExport.rows;
     final avatarFiles = await _collectAvatarFiles([
       ...conversations,
       ...storyPersonas,
@@ -413,8 +555,12 @@ class BackupService {
         },
     ]);
     final attachmentFiles = await _collectAttachmentFiles(messages);
-    final generatedImageFiles = await _collectGeneratedImageFiles();
-    final roleCardAssetFiles = await _collectRoleCardAssetFiles(assistants);
+    final generatedImageFiles =
+        await _collectGeneratedImageFiles(accountHash: accountHash);
+    final roleCardAssetFiles = await _collectRoleCardAssetFiles(
+      assistants,
+      accountHash: accountHash,
+    );
 
     final exportedSettings = settings.clone();
     if (!includeApiKeys) {
@@ -434,6 +580,36 @@ class BackupService {
       }
     }
 
+    final entries = <String, List<int>>{
+      _kConversations: _jsonBytes(conversations),
+      _kMessages: _jsonBytes(messages),
+      _kAssistants: _jsonBytes(assistants),
+      _kAssistantMemories: _jsonBytes(assistantMemories),
+      _kFavorites: _jsonBytes(favorites),
+      _kProjects: _jsonBytes(projects),
+      _kKnowledgeDocs: _jsonBytes(knowledgeDocs),
+      _kKnowledgeChunks: _jsonBytes(knowledgeChunks),
+      _kProjectKnowledge: _jsonBytes(projectKnowledge),
+      _kStoryTemplates: _jsonBytes(exportedStoryTemplates),
+      _kStoryTemplateTranslationTasks:
+          _jsonBytes(storyTemplateTranslationTasks),
+      _kStoryPersonas: _jsonBytes(storyPersonas),
+      _kStoryRooms: _jsonBytes(exportedStoryRooms),
+      _kStoryParticipants: _jsonBytes(storyParticipants),
+      _kStoryMessages: _jsonBytes(storyMessages),
+      _kStoryArtifacts: _jsonBytes(storyArtifacts),
+      _kStoryArtifactRevisions: _jsonBytes(storyArtifactRevisions),
+      _kSettings: _jsonBytes(exportedSettings.toJson()),
+      for (final entry in avatarFiles.entries)
+        '$_kAvatarPrefix${entry.key}': entry.value,
+      for (final entry in attachmentFiles.entries)
+        '$_kFilePrefix${entry.key}': entry.value,
+      for (final entry in generatedImageFiles.entries)
+        '$_kGeneratedImagePrefix${entry.key}': entry.value,
+      for (final entry in roleCardAssetFiles.entries)
+        '$_kRoleCardAssetPrefix${entry.key}': entry.value,
+    };
+    final entryDigests = digestEntries(entries);
     final manifest = {
       'formatVersion': formatVersion,
       'exportedAt': DateTime.now().millisecondsSinceEpoch,
@@ -443,6 +619,7 @@ class BackupService {
         'conversations': conversations.length,
         'messages': messages.length,
         'assistants': assistants.length,
+        'assistantMemories': assistantMemories.length,
         'favorites': favorites.length,
         'projects': projects.length,
         'knowledgeDocs': knowledgeDocs.length,
@@ -461,46 +638,22 @@ class BackupService {
         'generatedImageAssets': generatedImageFiles.length,
         'roleCardAssets': roleCardAssetFiles.length,
       },
+      'entries': {
+        for (final entry in entryDigests.entries)
+          entry.key: entry.value.toJson(),
+      },
     };
 
     final archive = Archive()
-      ..addFile(_jsonFile(_kManifest, manifest))
-      ..addFile(_jsonFile(_kConversations, conversations))
-      ..addFile(_jsonFile(_kMessages, messages))
-      ..addFile(_jsonFile(_kAssistants, assistants))
-      ..addFile(_jsonFile(_kFavorites, favorites))
-      ..addFile(_jsonFile(_kProjects, projects))
-      ..addFile(_jsonFile(_kKnowledgeDocs, knowledgeDocs))
-      ..addFile(_jsonFile(_kKnowledgeChunks, knowledgeChunks))
-      ..addFile(_jsonFile(_kProjectKnowledge, projectKnowledge))
-      ..addFile(_jsonFile(_kStoryTemplates, storyTemplates))
-      ..addFile(_jsonFile(
-          _kStoryTemplateTranslationTasks, storyTemplateTranslationTasks))
-      ..addFile(_jsonFile(_kStoryPersonas, storyPersonas))
-      ..addFile(_jsonFile(_kStoryRooms, storyRooms))
-      ..addFile(_jsonFile(_kStoryParticipants, storyParticipants))
-      ..addFile(_jsonFile(_kStoryMessages, storyMessages))
-      ..addFile(_jsonFile(_kStoryArtifacts, storyArtifacts))
-      ..addFile(_jsonFile(_kStoryArtifactRevisions, storyArtifactRevisions))
-      ..addFile(_jsonFile(_kSettings, exportedSettings.toJson()));
-    for (final entry in avatarFiles.entries) {
-      archive.addFile(
-          ArchiveFile.bytes('$_kAvatarPrefix${entry.key}', entry.value));
-    }
-    for (final entry in attachmentFiles.entries) {
-      archive
-          .addFile(ArchiveFile.bytes('$_kFilePrefix${entry.key}', entry.value));
-    }
-    for (final entry in generatedImageFiles.entries) {
-      archive.addFile(ArchiveFile.bytes(
-          '$_kGeneratedImagePrefix${entry.key}', entry.value));
-    }
-    for (final entry in roleCardAssetFiles.entries) {
-      archive.addFile(
-          ArchiveFile.bytes('$_kRoleCardAssetPrefix${entry.key}', entry.value));
+      ..addFile(ArchiveFile.bytes(_kManifest, _jsonBytes(manifest)));
+    for (final entry in entries.entries) {
+      archive.addFile(ArchiveFile.bytes(entry.key, entry.value));
     }
     AILogger.log('backup export: ${manifest['counts']}');
-    return ZipEncoder().encodeBytes(archive);
+    return BackupExportResult(
+      bytes: ZipEncoder().encodeBytes(archive),
+      warnings: List.unmodifiable(memoryExport.warnings),
+    );
   }
 
   // ---------------------------------------------------------------- 导入
@@ -512,35 +665,82 @@ class BackupService {
   }) async {
     final archive = _decodeArchive(zipBytes);
     final manifest = _readManifest(archive);
-    final version = manifest['formatVersion'] as int? ?? 0;
-    if (version > formatVersion) {
-      throw FormatException('备份版本过新（v$version），请先升级 App 再导入');
-    }
+    final version = _validateFormatVersion(manifest, archive);
 
     final warnings = <String>[];
+    final integrityVerified = _verifyArchiveIntegrity(
+      archive,
+      manifest,
+      version,
+      warnings,
+      reportLegacyWarning: true,
+    );
     final backupAccount = manifest['accountHash'] as String? ?? '';
     if (backupAccount.isNotEmpty && backupAccount != accountHash) {
       warnings.add('备份来自其他账号，导入会写入当前账号');
     }
 
-    final counts = (manifest['counts'] as Map?)?.cast<String, dynamic>();
-    final conversations = _readRows(archive, _kConversations);
-    final messages = _readRows(archive, _kMessages);
-    final assistants = _readRows(archive, _kAssistants);
-    final favorites = _readRows(archive, _kFavorites);
-    final projects = _readRows(archive, _kProjects);
-    final knowledgeDocs = _readRows(archive, _kKnowledgeDocs);
-    final knowledgeChunks = _readRows(archive, _kKnowledgeChunks);
-    final projectKnowledge = _readRows(archive, _kProjectKnowledge);
-    final storyTemplates = _readRows(archive, _kStoryTemplates);
-    final storyTemplateTranslationTasks =
-        _readRows(archive, _kStoryTemplateTranslationTasks);
-    final storyPersonas = _readRows(archive, _kStoryPersonas);
-    final storyRooms = _readRows(archive, _kStoryRooms);
-    final storyParticipants = _readRows(archive, _kStoryParticipants);
-    final storyMessages = _readRows(archive, _kStoryMessages);
-    final storyArtifacts = _readRows(archive, _kStoryArtifacts);
-    final storyArtifactRevisions = _readRows(archive, _kStoryArtifactRevisions);
+    final strictV11 = version >= 11;
+    final countsValue = manifest['counts'];
+    final counts =
+        countsValue is Map ? Map<String, dynamic>.from(countsValue) : null;
+    final conversations =
+        _readRowsForVersion(archive, _kConversations, version);
+    final messages = _readRowsForVersion(archive, _kMessages, version);
+    final assistants = _readRowsForVersion(archive, _kAssistants, version);
+    final assistantMemories = version >= 11
+        ? _readRows(archive, _kAssistantMemories, strict: true)
+        : <Map<String, dynamic>>[];
+    final favorites = _readRowsForVersion(archive, _kFavorites, version);
+    final projects = _readRowsForVersion(archive, _kProjects, version);
+    final knowledgeDocs =
+        _readRowsForVersion(archive, _kKnowledgeDocs, version);
+    final knowledgeChunks =
+        _readRowsForVersion(archive, _kKnowledgeChunks, version);
+    final projectKnowledge =
+        _readRowsForVersion(archive, _kProjectKnowledge, version);
+    final storyTemplates =
+        _readRowsForVersion(archive, _kStoryTemplates, version);
+    final storyTemplateTranslationTasks = _readRowsForVersion(
+      archive,
+      _kStoryTemplateTranslationTasks,
+      version,
+    );
+    final storyPersonas =
+        _readRowsForVersion(archive, _kStoryPersonas, version);
+    final storyRooms = _readRowsForVersion(archive, _kStoryRooms, version);
+    final storyParticipants =
+        _readRowsForVersion(archive, _kStoryParticipants, version);
+    final storyMessages =
+        _readRowsForVersion(archive, _kStoryMessages, version);
+    final storyArtifacts =
+        _readRowsForVersion(archive, _kStoryArtifacts, version);
+    final storyArtifactRevisions =
+        _readRowsForVersion(archive, _kStoryArtifactRevisions, version);
+    final settingsJson = _readSettingsJson(archive, version);
+    if (strictV11) {
+      _validateV11ManifestCounts(archive, manifest, {
+        _kConversations: conversations.length,
+        _kMessages: messages.length,
+        _kAssistants: assistants.length,
+        _kAssistantMemories: assistantMemories.length,
+        _kFavorites: favorites.length,
+        _kProjects: projects.length,
+        _kKnowledgeDocs: knowledgeDocs.length,
+        _kKnowledgeChunks: knowledgeChunks.length,
+        _kProjectKnowledge: projectKnowledge.length,
+        _kStoryTemplates: storyTemplates.length,
+        _kStoryTemplateTranslationTasks: storyTemplateTranslationTasks.length,
+        _kStoryPersonas: storyPersonas.length,
+        _kStoryRooms: storyRooms.length,
+        _kStoryParticipants: storyParticipants.length,
+        _kStoryMessages: storyMessages.length,
+        _kStoryArtifacts: storyArtifacts.length,
+        _kStoryArtifactRevisions: storyArtifactRevisions.length,
+      });
+    }
+    final normalizedAssistantMemories =
+        _validateAssistantMemories(assistantMemories, assistants);
     _normalizeStoryMessageBranches(
       storyRooms,
       storyParticipants,
@@ -557,6 +757,8 @@ class BackupService {
           return messages.length;
         case _kAssistants:
           return assistants.length;
+        case _kAssistantMemories:
+          return assistantMemories.length;
         case _kFavorites:
           return favorites.length;
         case _kProjects:
@@ -587,11 +789,11 @@ class BackupService {
       return 0;
     }
 
-    final settingsJson = _readJson(archive, _kSettings);
     final conflictSummary = await _previewConflicts(
       conversations: conversations,
       messages: messages,
       assistants: assistants,
+      assistantMemories: normalizedAssistantMemories,
       favorites: favorites,
       projects: projects,
       knowledgeDocs: knowledgeDocs,
@@ -614,6 +816,8 @@ class BackupService {
       conversations: countOf('conversations', _kConversations),
       messages: countOf('messages', _kMessages),
       assistants: countOf('assistants', _kAssistants),
+      assistantMemories:
+          version >= 11 ? countOf('assistantMemories', _kAssistantMemories) : 0,
       favorites: countOf('favorites', _kFavorites),
       projects: countOf('projects', _kProjects),
       knowledgeDocs: countOf('knowledgeDocs', _kKnowledgeDocs),
@@ -648,6 +852,7 @@ class BackupService {
                   (f) => f.isFile && f.name.startsWith(_kGeneratedImagePrefix))
               .length,
       hasSettings: settingsJson is Map<String, dynamic>,
+      integrityVerified: integrityVerified,
       conflictSummary: conflictSummary,
       warnings: warnings,
     );
@@ -660,37 +865,93 @@ class BackupService {
     List<int> zipBytes, {
     required String accountHash,
     BackupImportMode mode = BackupImportMode.overwriteAll,
+    BackupAccountGuard? accountGuard,
+  }) =>
+      _serializeImport(
+        accountHash,
+        () => _importArchiveUnlocked(
+          zipBytes,
+          accountHash: accountHash,
+          mode: mode,
+          accountGuard: accountGuard,
+        ),
+      );
+
+  Future<BackupRestoreResult> _importArchiveUnlocked(
+    List<int> zipBytes, {
+    required String accountHash,
+    required BackupImportMode mode,
+    BackupAccountGuard? accountGuard,
   }) async {
     final archive = _decodeArchive(zipBytes);
     final manifest = _readManifest(archive);
-    final version = manifest['formatVersion'] as int? ?? 0;
-    if (version > formatVersion) {
-      throw FormatException('备份版本过新（v$version），请先升级 App 再导入');
-    }
+    final version = _validateFormatVersion(manifest, archive);
 
     final warnings = <String>[];
+    _verifyArchiveIntegrity(archive, manifest, version, warnings);
     final backupAccount = manifest['accountHash'] as String? ?? '';
     if (backupAccount.isNotEmpty && backupAccount != accountHash) {
       warnings.add('备份来自其他账号，已导入当前账号');
     }
 
-    final conversations = _readRows(archive, _kConversations);
-    final messages = _readRows(archive, _kMessages);
-    final assistants = _readRows(archive, _kAssistants);
-    final favorites = _readRows(archive, _kFavorites);
-    final projects = _readRows(archive, _kProjects);
-    final knowledgeDocs = _readRows(archive, _kKnowledgeDocs);
-    final knowledgeChunks = _readRows(archive, _kKnowledgeChunks);
-    final projectKnowledge = _readRows(archive, _kProjectKnowledge);
-    final storyTemplates = _readRows(archive, _kStoryTemplates);
-    final storyTemplateTranslationTasks =
-        _readRows(archive, _kStoryTemplateTranslationTasks);
-    final storyPersonas = _readRows(archive, _kStoryPersonas);
-    final storyRooms = _readRows(archive, _kStoryRooms);
-    final storyParticipants = _readRows(archive, _kStoryParticipants);
-    final storyMessages = _readRows(archive, _kStoryMessages);
-    final storyArtifacts = _readRows(archive, _kStoryArtifacts);
-    final storyArtifactRevisions = _readRows(archive, _kStoryArtifactRevisions);
+    final strictV11 = version >= 11;
+    final conversations =
+        _readRowsForVersion(archive, _kConversations, version);
+    final messages = _readRowsForVersion(archive, _kMessages, version);
+    final assistants = _readRowsForVersion(archive, _kAssistants, version);
+    final assistantMemories = version >= 11
+        ? _readRows(archive, _kAssistantMemories, strict: true)
+        : <Map<String, dynamic>>[];
+    final favorites = _readRowsForVersion(archive, _kFavorites, version);
+    final projects = _readRowsForVersion(archive, _kProjects, version);
+    final knowledgeDocs =
+        _readRowsForVersion(archive, _kKnowledgeDocs, version);
+    final knowledgeChunks =
+        _readRowsForVersion(archive, _kKnowledgeChunks, version);
+    final projectKnowledge =
+        _readRowsForVersion(archive, _kProjectKnowledge, version);
+    final storyTemplates =
+        _readRowsForVersion(archive, _kStoryTemplates, version);
+    final storyTemplateTranslationTasks = _readRowsForVersion(
+      archive,
+      _kStoryTemplateTranslationTasks,
+      version,
+    );
+    final storyPersonas =
+        _readRowsForVersion(archive, _kStoryPersonas, version);
+    final storyRooms = _readRowsForVersion(archive, _kStoryRooms, version);
+    final storyParticipants =
+        _readRowsForVersion(archive, _kStoryParticipants, version);
+    final storyMessages =
+        _readRowsForVersion(archive, _kStoryMessages, version);
+    final storyArtifacts =
+        _readRowsForVersion(archive, _kStoryArtifacts, version);
+    final storyArtifactRevisions =
+        _readRowsForVersion(archive, _kStoryArtifactRevisions, version);
+    final settingsJson = _readSettingsJson(archive, version);
+    if (strictV11) {
+      _validateV11ManifestCounts(archive, manifest, {
+        _kConversations: conversations.length,
+        _kMessages: messages.length,
+        _kAssistants: assistants.length,
+        _kAssistantMemories: assistantMemories.length,
+        _kFavorites: favorites.length,
+        _kProjects: projects.length,
+        _kKnowledgeDocs: knowledgeDocs.length,
+        _kKnowledgeChunks: knowledgeChunks.length,
+        _kProjectKnowledge: projectKnowledge.length,
+        _kStoryTemplates: storyTemplates.length,
+        _kStoryTemplateTranslationTasks: storyTemplateTranslationTasks.length,
+        _kStoryPersonas: storyPersonas.length,
+        _kStoryRooms: storyRooms.length,
+        _kStoryParticipants: storyParticipants.length,
+        _kStoryMessages: storyMessages.length,
+        _kStoryArtifacts: storyArtifacts.length,
+        _kStoryArtifactRevisions: storyArtifactRevisions.length,
+      });
+    }
+    final normalizedAssistantMemories =
+        _validateAssistantMemories(assistantMemories, assistants);
     _normalizeStoryMessageBranches(
       storyRooms,
       storyParticipants,
@@ -699,6 +960,8 @@ class BackupService {
     );
     final normalizedStoryPersonas =
         _dedupeStoryPersonas(storyPersonas, warnings);
+    final guard = accountGuard;
+    if (guard != null) await guard();
     if (mode == BackupImportMode.mergeAppend) {
       return _importMergeAppend(
         archive: archive,
@@ -707,6 +970,7 @@ class BackupService {
         conversations: conversations,
         messages: messages,
         assistants: assistants,
+        assistantMemories: normalizedAssistantMemories,
         favorites: favorites,
         knowledgeDocs: knowledgeDocs,
         knowledgeChunks: knowledgeChunks,
@@ -720,6 +984,7 @@ class BackupService {
         storyArtifacts: storyArtifacts,
         storyArtifactRevisions: storyArtifactRevisions,
         warnings: warnings,
+        accountGuard: accountGuard,
       );
     }
     if (mode == BackupImportMode.projectConversationsOnly) {
@@ -730,13 +995,17 @@ class BackupService {
         conversations: conversations,
         messages: messages,
         warnings: warnings,
+        accountGuard: accountGuard,
       );
     }
     if (mode == BackupImportMode.assistantsOnly) {
       return _importAssistantsOnly(
         archive: archive,
+        accountHash: accountHash,
         assistants: assistants,
+        assistantMemories: normalizedAssistantMemories,
         warnings: warnings,
+        accountGuard: accountGuard,
       );
     }
     if (mode == BackupImportMode.knowledgeBaseOnly) {
@@ -745,25 +1014,19 @@ class BackupService {
         knowledgeChunks: knowledgeChunks,
         projectKnowledge: projectKnowledge,
         warnings: warnings,
+        accountGuard: accountGuard,
       );
     }
+
+    // 只有“覆盖全部”会应用 settings。选择性/合并导入不解析旧
+    // 备份中与其范围无关的 settings，保留 v1-v10 容错性。
+    final settings = _parseSettings(settingsJson);
     _repairStoryPersonaBindings(
       normalizedStoryPersonas,
       storyRooms,
       warnings,
     );
-    await _restoreAttachmentAssets(archive, messages, warnings);
-    final generatedImageAssets =
-        await _restoreGeneratedImageAssets(archive, replaceExisting: true);
-
     await _ensureSchema();
-    await _restoreRoleCardAssets(
-      archive,
-      assistants,
-      _identityAssistantIdMap(assistants),
-      warnings,
-      replaceExisting: true,
-    );
     final hasProjectColumn =
         await _hasColumn(storage.db, 'tb_conversation_list', 'projectId');
     final normalizedConversations = conversations
@@ -892,17 +1155,46 @@ class BackupService {
     var insertedStoryMessages = 0;
     var insertedStoryArtifacts = 0;
     var insertedStoryArtifactRevisions = 0;
-    await _restoreAvatarAssets(
-      archive,
-      normalizedConversations,
-      warnings,
-      accountHash: accountHash,
-      storyPersonas: normalizedStoryPersonas,
-      storyMessages: normalizedStoryMessages,
-    );
+    final resources = _BackupResourceCoordinator();
+    late final int generatedImageAssets;
+    try {
+      await _restoreAttachmentAssets(
+        archive,
+        messages,
+        warnings,
+        resources,
+      );
+      generatedImageAssets = await _restoreGeneratedImageAssets(
+        archive,
+        resources,
+        accountHash: accountHash,
+        replaceExisting: true,
+      );
+      await _restoreRoleCardAssets(
+        archive,
+        assistants,
+        _identityAssistantIdMap(assistants),
+        warnings,
+        accountHash: accountHash,
+        replaceExisting: true,
+        resources: resources,
+      );
+      await _restoreAvatarAssets(
+        archive,
+        normalizedConversations,
+        warnings,
+        accountHash: accountHash,
+        resources: resources,
+        storyPersonas: normalizedStoryPersonas,
+        storyMessages: normalizedStoryMessages,
+      );
+    } catch (_) {
+      await resources.rollback();
+      rethrow;
+    }
 
     // 单事务覆盖式写入：任何一步失败整体回滚，不会留下半套数据。
-    await storage.db.transaction((txn) async {
+    await _runResourceTransaction(resources, (txn) async {
       await txn.delete('tb_story_artifact_revision');
       await txn.delete('tb_story_artifact');
       await txn.delete('tb_story_message');
@@ -913,6 +1205,7 @@ class BackupService {
       batch.delete('tb_project');
       batch.delete('tb_conversation_list');
       batch.delete('tb_messages');
+      batch.delete('tb_assistant_memory');
       batch.delete('tb_assistant');
       batch.delete('tb_favorite');
       batch.delete('tb_project_kb');
@@ -925,6 +1218,9 @@ class BackupService {
       }
       for (final row in assistants) {
         batch.insert('tb_assistant', row);
+      }
+      for (final row in normalizedAssistantMemories) {
+        batch.insert('tb_assistant_memory', row);
       }
       for (final row in normalizedConversations) {
         batch.insert('tb_conversation_list', row);
@@ -1012,19 +1308,13 @@ class BackupService {
         insertedStoryArtifactRevisions++;
       }
       await batch.commit(noResult: true);
-    });
+    }, accountGuard: accountGuard);
 
     if (skippedStoryArtifacts > 0) {
       warnings.add('$skippedStoryArtifacts 个创作资料找不到所属房间，已跳过');
     }
     if (skippedStoryArtifactRevisions > 0) {
       warnings.add('$skippedStoryArtifactRevisions 条创作资料修订找不到所属资料，已跳过');
-    }
-
-    AISettings? settings;
-    final settingsJson = _readJson(archive, _kSettings);
-    if (settingsJson is Map<String, dynamic>) {
-      settings = AISettings.fromJson(settingsJson);
     }
 
     AILogger.log('backup import: ${conversations.length} conversations'
@@ -1042,6 +1332,7 @@ class BackupService {
       conversations: conversations.length,
       messages: messages.length,
       assistants: assistants.length,
+      assistantMemories: normalizedAssistantMemories.length,
       favorites: favorites.length,
       projects: projects.length,
       knowledgeDocs: knowledgeDocs.length,
@@ -1070,8 +1361,8 @@ class BackupService {
     required List<Map<String, dynamic>> conversations,
     required List<Map<String, dynamic>> messages,
     required List<String> warnings,
+    BackupAccountGuard? accountGuard,
   }) async {
-    await _restoreAttachmentAssets(archive, messages, warnings);
     await _ensureSchema();
     final hasProjectColumn =
         await _hasColumn(storage.db, 'tb_conversation_list', 'projectId');
@@ -1124,16 +1415,33 @@ class BackupService {
       warnings.add('$fixedProjects 个会话引用的项目不在导入数据中，已移动到未分类');
     }
 
-    await _restoreAvatarAssets(archive, normalizedConversations, warnings,
-        accountHash: accountHash);
-
     final existingProjectKnowledge =
         await storage.db.query('tb_project_kb', limit: 1);
     if (existingProjectKnowledge.isNotEmpty) {
       warnings.add('项目知识库绑定未随项目/会话模式导入，已清空以避免旧项目引用失效');
     }
 
-    await storage.db.transaction((txn) async {
+    final resources = _BackupResourceCoordinator();
+    try {
+      await _restoreAttachmentAssets(
+        archive,
+        messages,
+        warnings,
+        resources,
+      );
+      await _restoreAvatarAssets(
+        archive,
+        normalizedConversations,
+        warnings,
+        accountHash: accountHash,
+        resources: resources,
+      );
+    } catch (_) {
+      await resources.rollback();
+      rethrow;
+    }
+
+    await _runResourceTransaction(resources, (txn) async {
       final batch = txn.batch();
       batch.delete('tb_project_kb');
       batch.delete('tb_project');
@@ -1149,7 +1457,7 @@ class BackupService {
         batch.insert('tb_messages', row);
       }
       await batch.commit(noResult: true);
-    });
+    }, accountGuard: accountGuard);
 
     AILogger.log('backup import projects/conversations only: '
         '${projects.length} projects, ${conversations.length} conversations'
@@ -1170,6 +1478,7 @@ class BackupService {
     required List<Map<String, dynamic>> conversations,
     required List<Map<String, dynamic>> messages,
     required List<Map<String, dynamic>> assistants,
+    required List<Map<String, dynamic>> assistantMemories,
     required List<Map<String, dynamic>> favorites,
     required List<Map<String, dynamic>> knowledgeDocs,
     required List<Map<String, dynamic>> knowledgeChunks,
@@ -1183,10 +1492,8 @@ class BackupService {
     required List<Map<String, dynamic>> storyArtifacts,
     required List<Map<String, dynamic>> storyArtifactRevisions,
     required List<String> warnings,
+    BackupAccountGuard? accountGuard,
   }) async {
-    await _restoreAttachmentAssets(archive, messages, warnings);
-    final generatedImageAssets =
-        await _restoreGeneratedImageAssets(archive, replaceExisting: false);
     await _ensureSchema();
     final hasProjectColumn =
         await _hasColumn(storage.db, 'tb_conversation_list', 'projectId');
@@ -1194,14 +1501,6 @@ class BackupService {
         .map((c) =>
             _normalizeConversationRow(c, hasProjectIdColumn: hasProjectColumn))
         .toList();
-    await _restoreAvatarAssets(
-      archive,
-      normalizedConversations,
-      warnings,
-      accountHash: accountHash,
-      storyPersonas: storyPersonas,
-      storyMessages: storyMessages,
-    );
     final localStoryNodeKeys = {
       for (final row in await storage.db.query(
         'tb_story_message',
@@ -1252,8 +1551,46 @@ class BackupService {
     var fixedTranslationTaskTemplateRefs = 0;
     var fixedTranslationTaskOutputTemplateRefs = 0;
     var appliedStoryPersonas = 0;
+    var insertedAssistantMemories = 0;
+    var deduplicatedAssistantMemories = 0;
+    var rekeyedAssistantMemories = 0;
 
-    await storage.db.transaction((txn) async {
+    final resources = _BackupResourceCoordinator();
+    late final int generatedImageAssets;
+    try {
+      await _restoreAttachmentAssets(
+        archive,
+        messages,
+        warnings,
+        resources,
+      );
+      generatedImageAssets = await _restoreGeneratedImageAssets(
+        archive,
+        resources,
+        accountHash: accountHash,
+        replaceExisting: false,
+      );
+      await _restoreAvatarAssets(
+        archive,
+        normalizedConversations,
+        warnings,
+        accountHash: accountHash,
+        resources: resources,
+        storyPersonas: storyPersonas,
+        storyMessages: storyMessages,
+      );
+    } catch (_) {
+      await resources.rollback();
+      rethrow;
+    }
+
+    await _runResourceTransaction(resources, (txn) async {
+      final localAssistantMemoryRows = await txn.query('tb_assistant_memory');
+      final localAssistantMemories = {
+        for (final row in localAssistantMemoryRows)
+          if ('${row['memoryId'] ?? ''}'.trim().isNotEmpty)
+            '${row['memoryId']}'.trim(): Map<String, Object?>.from(row),
+      };
       final localStoryPersonaRows = await txn.query('tb_story_persona');
       final localStoryPersonas = {
         for (final row in localStoryPersonaRows)
@@ -1319,6 +1656,33 @@ class BackupService {
         final oldId = _intValue(row['id']);
         final newId = await txn.insert('tb_assistant', _withoutId(row));
         if (oldId != null) assistantIdMap[oldId] = newId;
+      }
+
+      for (final row in assistantMemories) {
+        final oldAssistantId = _intValue(row['assistantId']);
+        final newAssistantId =
+            oldAssistantId == null ? null : assistantIdMap[oldAssistantId];
+        if (newAssistantId == null) continue;
+        final next = _withoutId(row)
+          ..['assistantId'] = newAssistantId
+          ..['assistantSyncId'] = 'legacy:$newAssistantId';
+        final originalMemoryId = '${next['memoryId'] ?? ''}'.trim();
+        final existing = localAssistantMemories[originalMemoryId];
+        if (existing != null) {
+          // merge 每次都新建助手；即使 memoryId/内容完全相同，
+          // 也不能拿旧助手的记忆当成新助手已拥有。
+          if (_intValue(existing['assistantId']) == newAssistantId &&
+              _assistantMemoryStableKey(existing) ==
+                  _assistantMemoryStableKey(next)) {
+            deduplicatedAssistantMemories++;
+            continue;
+          }
+          next['memoryId'] = generateUuidV4();
+          rekeyedAssistantMemories++;
+        }
+        await txn.insert('tb_assistant_memory', next);
+        localAssistantMemories['${next['memoryId']}'] = next;
+        insertedAssistantMemories++;
       }
 
       for (final row in projects) {
@@ -1534,16 +1898,16 @@ class BackupService {
         }
         await txn.insert('tb_story_template_translation_task', next);
       }
-    });
 
-    await _restoreRoleCardAssets(
-      archive,
-      assistants,
-      assistantIdMap,
-      warnings,
-      replaceExisting: false,
-    );
-    await storage.db.transaction((txn) async {
+      await _restoreRoleCardAssets(
+        archive,
+        assistants,
+        assistantIdMap,
+        warnings,
+        accountHash: accountHash,
+        replaceExisting: false,
+        resources: resources,
+      );
       for (final row in assistants) {
         final oldId = _intValue(row['id']);
         final newId = oldId == null ? null : assistantIdMap[oldId];
@@ -1555,7 +1919,7 @@ class BackupService {
           whereArgs: [newId],
         );
       }
-    });
+    }, accountGuard: accountGuard);
 
     if (remappedCids > 0) {
       warnings.add('$remappedCids 个会话 cid 与本地冲突，已改用新 cid 合并导入');
@@ -1615,6 +1979,12 @@ class BackupService {
       warnings
           .add('$fixedTranslationTaskOutputTemplateRefs 个翻译任务找不到生成的酒馆模板，已清除引用');
     }
+    if (deduplicatedAssistantMemories > 0) {
+      warnings.add('$deduplicatedAssistantMemories 条相同长期记忆已去重');
+    }
+    if (rekeyedAssistantMemories > 0) {
+      warnings.add('$rekeyedAssistantMemories 条 memoryId 已被其它助手占用，已换用新 ID');
+    }
 
     AILogger.log('backup import merge append: '
         '${projects.length} projects, ${conversations.length} conversations'
@@ -1637,6 +2007,7 @@ class BackupService {
       conversations: conversations.length,
       messages: messages.length - skippedMessages,
       assistants: assistants.length,
+      assistantMemories: insertedAssistantMemories,
       favorites: favorites.length,
       projects: projects.length,
       knowledgeDocs: knowledgeDocs.length,
@@ -1657,26 +2028,42 @@ class BackupService {
 
   Future<BackupRestoreResult> _importAssistantsOnly({
     required Archive archive,
+    required String accountHash,
     required List<Map<String, dynamic>> assistants,
+    required List<Map<String, dynamic>> assistantMemories,
     required List<String> warnings,
+    BackupAccountGuard? accountGuard,
   }) async {
     await _ensureSchema();
-    await _restoreRoleCardAssets(
-      archive,
-      assistants,
-      _identityAssistantIdMap(assistants),
-      warnings,
-      replaceExisting: true,
-    );
     final assistantIds = {
       for (final a in assistants)
         if (a['id'] != null) a['id'],
     };
 
-    await storage.db.transaction((txn) async {
+    final resources = _BackupResourceCoordinator();
+    try {
+      await _restoreRoleCardAssets(
+        archive,
+        assistants,
+        _identityAssistantIdMap(assistants),
+        warnings,
+        accountHash: accountHash,
+        replaceExisting: true,
+        resources: resources,
+      );
+    } catch (_) {
+      await resources.rollback();
+      rethrow;
+    }
+
+    await _runResourceTransaction(resources, (txn) async {
+      await txn.delete('tb_assistant_memory');
       await txn.delete('tb_assistant');
       for (final row in assistants) {
         await txn.insert('tb_assistant', row);
+      }
+      for (final row in assistantMemories) {
+        await txn.insert('tb_assistant_memory', row);
       }
 
       final fixedConversations = assistantIds.isEmpty
@@ -1710,7 +2097,7 @@ class BackupService {
       if (fixedProjectAssistants > 0) {
         warnings.add('$fixedProjectAssistants 个项目引用的默认助手不在导入数据中，已清除');
       }
-    });
+    }, accountGuard: accountGuard);
 
     AILogger.log(
         'backup import assistants only: ${assistants.length} assistants'
@@ -1718,6 +2105,7 @@ class BackupService {
     restoreTick.value++;
     return BackupRestoreResult(
       assistants: assistants.length,
+      assistantMemories: assistantMemories.length,
       warnings: warnings,
     );
   }
@@ -1727,6 +2115,7 @@ class BackupService {
     required List<Map<String, dynamic>> knowledgeChunks,
     required List<Map<String, dynamic>> projectKnowledge,
     required List<String> warnings,
+    BackupAccountGuard? accountGuard,
   }) async {
     await _ensureSchema();
     final projectIds = {
@@ -1748,7 +2137,8 @@ class BackupService {
       warnings.add('$skippedProjectKnowledge 条项目知识库绑定无法匹配当前项目，已跳过');
     }
 
-    await storage.db.transaction((txn) async {
+    final resources = _BackupResourceCoordinator();
+    await _runResourceTransaction(resources, (txn) async {
       final batch = txn.batch();
       batch.delete('tb_project_kb');
       batch.delete('tb_kb_chunk');
@@ -1763,7 +2153,7 @@ class BackupService {
         batch.insert('tb_project_kb', row);
       }
       await batch.commit(noResult: true);
-    });
+    }, accountGuard: accountGuard);
 
     AILogger.log('backup import knowledge only: ${knowledgeDocs.length} docs'
         ', ${knowledgeChunks.length} chunks'
@@ -1778,11 +2168,195 @@ class BackupService {
     );
   }
 
+  Future<T> _serializeImport<T>(
+    String accountHash,
+    Future<T> Function() action,
+  ) {
+    final queueKey = '${storage.db.path}\u0000$accountHash';
+    final previous = _importOperationTails[queueKey] ?? Future<void>.value();
+    final gate = Completer<void>();
+    _importOperationTails[queueKey] = gate.future;
+    final ready = previous.then<void>(
+      (_) {},
+      onError: (Object _, StackTrace __) {},
+    );
+    return ready.then((_) => action()).whenComplete(() {
+      if (!gate.isCompleted) gate.complete();
+      if (identical(_importOperationTails[queueKey], gate.future)) {
+        _importOperationTails.remove(queueKey);
+      }
+    });
+  }
+
   static Archive _decodeArchive(List<int> zipBytes) {
+    validateBackupCompressedSize(zipBytes.length);
     try {
-      return ZipDecoder().decodeBytes(zipBytes);
-    } catch (e) {
+      // ZipDecoder 会在 callback 前读取 Unix symlink 内容。先直接读取中央目录
+      // 元数据（只持有压缩 slice，不解压），确保 symlink 与 ZIP bomb 在此前拒绝。
+      final directory = ZipDirectory()..read(InputMemoryStream(zipBytes));
+      validateBackupEntryCount(directory.totalCentralDirectoryEntries);
+      validateBackupEntryCount(directory.fileHeaders.length);
+      if (directory.numberOfThisDisk != 0 ||
+          directory.diskWithTheStartOfTheCentralDirectory != 0 ||
+          directory.totalCentralDirectoryEntriesOnThisDisk !=
+              directory.totalCentralDirectoryEntries ||
+          directory.totalCentralDirectoryEntries !=
+              directory.fileHeaders.length) {
+        throw const FormatException('备份不支持分卷或截断的 ZIP 中央目录');
+      }
+      final preflightNames = <BackupArchiveEntryName>[];
+      final preflightEntries = <BackupArchiveEntryInfo>[];
+      for (final header in directory.fileHeaders) {
+        final localFile = header.file;
+        if (localFile == null || localFile.filename != header.filename) {
+          throw const FormatException('备份 ZIP 本地 header 与中央目录不一致');
+        }
+        final isDirectory =
+            header.filename.endsWith('/') || header.filename.endsWith('\\');
+        final entryMode = header.externalFileAttributes >> 16;
+        preflightNames.add(
+          BackupArchiveEntryName(
+            name: header.filename,
+            isDirectory: isDirectory,
+          ),
+        );
+        preflightEntries.add(
+          BackupArchiveEntryInfo(
+            name: header.filename,
+            isDirectory: isDirectory,
+            isSymbolicLink: (header.versionMadeBy >> 8) == 3 &&
+                (entryMode & 0xf000) == 0xa000,
+            isEncrypted: (header.generalPurposeBitFlag & 0x1) != 0 ||
+                (localFile.flags & 0x1) != 0,
+            hasRawContent: localFile.length == header.compressedSize,
+            uncompressedBytes: header.uncompressedSize,
+            compressedBytes: header.compressedSize,
+          ),
+        );
+      }
+      validateBackupArchiveEntries(
+        preflightEntries,
+        rawEntryNames: preflightNames,
+        compressedInputBytes: zipBytes.length,
+      );
+
+      final outputBudget = BackupArchiveOutputBudget();
+      final archive = Archive();
+      for (var index = 0; index < directory.fileHeaders.length; index++) {
+        final header = directory.fileHeaders[index];
+        final localFile = header.file!;
+        final metadata = preflightEntries[index];
+        if (localFile.flags != header.generalPurposeBitFlag ||
+            localFile.compressedSize != header.compressedSize ||
+            localFile.uncompressedSize != header.uncompressedSize) {
+          throw const FormatException('备份 ZIP 本地 header 与中央目录大小不一致');
+        }
+        if (metadata.isDirectory) {
+          if (header.uncompressedSize != 0) {
+            throw const FormatException('备份目录 entry 大小不合法');
+          }
+          archive.addFile(
+            ArchiveFile.directory(header.filename)
+              ..mode = header.externalFileAttributes >> 16,
+          );
+          continue;
+        }
+
+        final sink = outputBudget.newEntry(header.filename);
+        localFile.decompress(sink);
+        final bytes = sink.getBytes();
+        if (bytes.length != header.uncompressedSize) {
+          throw FormatException(
+            '备份 entry 实际解压大小与 header 不一致：${header.filename}',
+          );
+        }
+        if (getCrc32(bytes) != header.crc32) {
+          throw FormatException('备份 entry CRC 校验失败：${header.filename}');
+        }
+        archive.addFile(
+          ArchiveFile.bytes(header.filename, bytes)
+            ..mode = header.externalFileAttributes >> 16
+            ..crc32 = header.crc32
+            ..lastModTime =
+                header.lastModifiedFileDate << 16 | header.lastModifiedFileTime,
+        );
+      }
+      return archive;
+    } on FormatException {
+      rethrow;
+    } catch (_) {
       throw const FormatException('不是有效的备份文件（zip 解析失败）');
+    }
+  }
+
+  static bool _verifyArchiveIntegrity(
+    Archive archive,
+    Map<String, dynamic> manifest,
+    int version,
+    List<String> warnings, {
+    bool reportLegacyWarning = false,
+  }) {
+    if (version < 11) {
+      if (reportLegacyWarning) {
+        warnings.add('旧备份未包含完整性校验，也不包含长期记忆');
+      }
+      return false;
+    }
+
+    validateBackupEntryNames(archive.files.map((file) => file.name));
+    final entries = <String, List<int>>{};
+    for (final file in archive.files) {
+      if (!file.isFile) {
+        throw const FormatException('备份不应包含目录 entry');
+      }
+      final content = file.content;
+      // _decodeArchive 已按预算完整解压并持有这些 bytes；完整性校验只读，
+      // 直接复用可避免接近总上限时再复制整包内容导致峰值内存翻倍。
+      entries[file.name] = content;
+    }
+    verifyEntryDigests(entries, manifest['entries']);
+    for (final name in [..._v11RowCountKeys.keys, _kSettings]) {
+      if (!entries.containsKey(name)) {
+        throw FormatException('v11 备份缺少必需 entry：$name');
+      }
+    }
+    return true;
+  }
+
+  static void _validateV11ManifestCounts(
+    Archive archive,
+    Map<String, dynamic> manifest,
+    Map<String, int> rowCounts,
+  ) {
+    final rawCounts = manifest['counts'];
+    if (rawCounts is! Map) {
+      throw const FormatException('v11 备份缺少 counts 声明');
+    }
+    final expected = <String, int>{
+      for (final entry in _v11RowCountKeys.entries)
+        entry.value: rowCounts[entry.key] ?? -1,
+      for (final entry in _v11ResourceCountKeys.entries)
+        entry.value: archive.files
+            .where((file) => file.isFile && file.name.startsWith(entry.key))
+            .length,
+    };
+    if (expected.values.any((count) => count < 0)) {
+      throw StateError('v11 实际行数统计不完整');
+    }
+    final actualKeys = rawCounts.keys.whereType<String>().toSet();
+    if (rawCounts.length != expected.length ||
+        actualKeys.length != expected.length ||
+        !expected.keys.every(actualKeys.contains)) {
+      throw const FormatException('v11 备份 counts 字段不完整');
+    }
+    for (final entry in expected.entries) {
+      final declared = rawCounts[entry.key];
+      if (declared is! int || declared < 0 || declared != entry.value) {
+        throw FormatException(
+          'v11 备份数量不一致：${entry.key} '
+          '声明 $declared，实际 ${entry.value}',
+        );
+      }
     }
   }
 
@@ -1793,12 +2367,74 @@ class BackupService {
     throw const FormatException('不是有效的备份文件（缺少 manifest.json）');
   }
 
+  static int _validateFormatVersion(
+    Map<String, dynamic> manifest,
+    Archive archive,
+  ) {
+    final raw = manifest['formatVersion'];
+    if (raw is! int || raw < 1 || raw > formatVersion) {
+      throw FormatException('备份 formatVersion 不受支持：$raw');
+    }
+    if (raw < 11 &&
+        (manifest.containsKey('entries') ||
+            archive.findFile(_kAssistantMemories) != null)) {
+      throw const FormatException('备份版本声明与 v11 完整性结构不一致');
+    }
+    return raw;
+  }
+
+  static bool _isRequiredRowEntry(String name, int version) {
+    if (version >= 11) return _v11RowCountKeys.containsKey(name);
+    final since = _legacyRequiredRowSince[name];
+    return since != null && version >= since;
+  }
+
+  static List<Map<String, dynamic>> _readRowsForVersion(
+    Archive archive,
+    String name,
+    int version,
+  ) =>
+      _readRows(
+        archive,
+        name,
+        strict: _isRequiredRowEntry(name, version),
+      );
+
+  static Object? _readSettingsJson(Archive archive, int _) {
+    final raw = _readJsonStrict(archive, _kSettings);
+    if (raw is! Map) {
+      throw const FormatException('settings.json 必须是 JSON object');
+    }
+    try {
+      return Map<String, dynamic>.from(raw);
+    } catch (_) {
+      throw const FormatException('settings.json 字段格式不合法');
+    }
+  }
+
+  static AISettings? _parseSettings(Object? settingsJson) {
+    if (settingsJson == null) return null;
+    if (settingsJson is! Map) {
+      throw const FormatException('AI 设置格式不合法');
+    }
+    try {
+      final settings = AISettings.fromJson(
+        Map<String, dynamic>.from(settingsJson),
+      );
+      AISettingsDao.validateSettings(settings);
+      return settings;
+    } catch (error) {
+      throw FormatException('AI 设置格式不合法：$error');
+    }
+  }
+
   /// 通过各 DAO 的静态工厂确保四张表存在且 schema 最新（含历史 ALTER）。
   Future<void> _ensureSchema() async {
     await DbMigration.run(storage.db);
     await ConversationListDao.create(storage);
     await MessageDao.create(storage, cid: 0);
     await AssistantDao.create(storage);
+    await AssistantMemoryDao.create(storage);
     await FavoriteDao.create(storage);
     await ProjectDao.create(storage);
     await KnowledgeDao.create(storage);
@@ -2089,6 +2725,135 @@ class BackupService {
     return r;
   }
 
+  static List<Map<String, dynamic>> _validateAssistantMemories(
+    List<Map<String, dynamic>> rows,
+    List<Map<String, dynamic>> assistants,
+  ) {
+    final assistantIds = {
+      for (final row in assistants)
+        if (_intValue(row['id']) != null) _intValue(row['id'])!,
+    };
+    final memoryIds = <String>{};
+    final normalized = <Map<String, dynamic>>[];
+    for (final row in rows) {
+      final memoryId = '${row['memoryId'] ?? ''}'.trim();
+      if (memoryId.isEmpty) {
+        throw const FormatException('长期记忆缺少 memoryId');
+      }
+      if (!memoryIds.add(memoryId)) {
+        throw FormatException('长期记忆 memoryId 重复：$memoryId');
+      }
+      final assistantId = _intValue(row['assistantId']);
+      if (assistantId == null || !assistantIds.contains(assistantId)) {
+        throw FormatException('长期记忆引用了不存在的助手：$memoryId');
+      }
+      final status = row['status']?.toString() ?? '';
+      if (!AssistantMemoryStatus.values.any((value) => value.name == status)) {
+        throw FormatException('长期记忆状态不合法：$memoryId');
+      }
+      final rawConfirmed = row['confirmedByUser'];
+      final bool confirmed;
+      if (rawConfirmed is bool) {
+        confirmed = rawConfirmed;
+      } else if (rawConfirmed is int &&
+          (rawConfirmed == 0 || rawConfirmed == 1)) {
+        confirmed = rawConfirmed == 1;
+      } else {
+        throw FormatException(
+          '长期记忆 confirmedByUser 只能是 bool/0/1：$memoryId',
+        );
+      }
+      if (status == AssistantMemoryStatus.active.name && !confirmed) {
+        throw FormatException('active 长期记忆未经用户确认：$memoryId');
+      }
+      try {
+        final model = AssistantMemoryModel.fromJson(row)
+          ..assistantId = assistantId
+          ..memoryId = memoryId
+          ..confirmedByUser = confirmed;
+        if (model.assistantSyncId.trim().isEmpty) {
+          model.assistantSyncId = 'legacy:$assistantId';
+        }
+        normalized.add(model.toJson());
+      } catch (error) {
+        throw FormatException('长期记忆格式不合法：$memoryId ($error)');
+      }
+    }
+    return normalized;
+  }
+
+  static _AssistantMemoryExportCopy _normalizeAssistantMemoriesForExport(
+    List<Map<String, Object?>> rows,
+    List<Map<String, Object?>> assistants,
+  ) {
+    final assistantIds = {
+      for (final row in assistants)
+        if (_intValue(row['id']) != null) _intValue(row['id'])!,
+    };
+    final usedMemoryIds = <String>{};
+    final normalized = <Map<String, dynamic>>[];
+    var orphaned = 0;
+    var rekeyed = 0;
+    var archivedUnconfirmed = 0;
+    var archivedInvalidStatus = 0;
+
+    for (final source in rows) {
+      final assistantId = _intValue(source['assistantId']);
+      if (assistantId == null || !assistantIds.contains(assistantId)) {
+        orphaned++;
+        continue;
+      }
+      final row = Map<String, dynamic>.from(source)
+        ..['assistantId'] = assistantId;
+      var memoryId = '${row['memoryId'] ?? ''}'.trim();
+      if (memoryId.isEmpty || !usedMemoryIds.add(memoryId)) {
+        do {
+          memoryId = generateUuidV4();
+        } while (!usedMemoryIds.add(memoryId));
+        rekeyed++;
+      }
+      row['memoryId'] = memoryId;
+
+      final rawConfirmed = row['confirmedByUser'];
+      final confirmed = rawConfirmed == true || rawConfirmed == 1;
+      row['confirmedByUser'] = confirmed ? 1 : 0;
+      final rawStatus = '${row['status'] ?? ''}'.trim();
+      final validStatus = AssistantMemoryStatus.values
+          .any((status) => status.name == rawStatus);
+      if (!validStatus) {
+        row['status'] = AssistantMemoryStatus.archived.name;
+        archivedInvalidStatus++;
+      } else if (rawStatus == AssistantMemoryStatus.active.name && !confirmed) {
+        row['status'] = AssistantMemoryStatus.archived.name;
+        archivedUnconfirmed++;
+      }
+      normalized.add(row);
+    }
+
+    final warnings = <String>[
+      if (orphaned > 0) '$orphaned 条已失去助手归属的历史孤儿记忆未纳入备份，原数据库未修改',
+      if (rekeyed > 0) '$rekeyed 条重复或缺失 ID 的长期记忆已在备份副本中重新编号，原数据库未修改',
+      if (archivedUnconfirmed > 0)
+        '$archivedUnconfirmed 条未确认的 active 长期记忆已在备份副本中归档',
+      if (archivedInvalidStatus > 0)
+        '$archivedInvalidStatus 条状态异常的长期记忆已在备份副本中归档',
+    ];
+    return _AssistantMemoryExportCopy(normalized, warnings);
+  }
+
+  /// merge 中的稳定去重键：身份相同且内容、来源、生命周期一致
+  /// 时视为同一条；时间戳与 revision 不影响语义去重。
+  static String _assistantMemoryStableKey(Map<String, Object?> row) =>
+      jsonEncode([
+        '${row['content'] ?? ''}'.trim(),
+        '${row['source'] ?? ''}'.trim(),
+        '${row['sourceType'] ?? ''}'.trim(),
+        '${row['sourceConversationId'] ?? ''}'.trim(),
+        '${row['sourceMessageId'] ?? ''}'.trim(),
+        '${row['status'] ?? ''}'.trim(),
+        row['confirmedByUser'] == true || row['confirmedByUser'] == 1,
+      ]);
+
   static int? _intValue(Object? value) {
     if (value == null) return null;
     if (value is int) return value;
@@ -2096,13 +2861,62 @@ class BackupService {
     return int.tryParse('$value');
   }
 
-  static ArchiveFile _jsonFile(String name, Object content) =>
-      ArchiveFile.bytes(name, utf8.encode(jsonEncode(content)));
+  static List<Map<String, dynamic>> _sanitizeStoryRoomsForExport(
+    List<Map<String, Object?>> rows,
+  ) =>
+      [
+        for (final source in rows)
+          Map<String, dynamic>.from(source)
+            ..['tavernPresetJson'] =
+                StoryTavernPresetTransfer.normalizeRoomBundle(
+              source['tavernPresetJson'],
+            ),
+      ];
+
+  static List<Map<String, dynamic>> _sanitizeStoryTemplatesForExport(
+    List<Map<String, Object?>> rows,
+  ) {
+    return [
+      for (final source in rows) _sanitizeStoryTemplateForExport(source),
+    ];
+  }
+
+  static Map<String, dynamic> _sanitizeStoryTemplateForExport(
+    Map<String, Object?> source,
+  ) {
+    final row = Map<String, dynamic>.from(source);
+    final rawPayload = source['payload'];
+    try {
+      if (rawPayload is! String) {
+        throw const FormatException('模板 payload 不是字符串');
+      }
+      final decoded = jsonDecode(rawPayload);
+      if (decoded is! Map) {
+        throw const FormatException('模板 payload 不是 JSON object');
+      }
+      final payload = Map<String, dynamic>.from(decoded);
+      if (payload.containsKey('tavernPresetJson')) {
+        payload['tavernPresetJson'] =
+            StoryTavernPresetTransfer.normalizeRoomBundle(
+          payload['tavernPresetJson'],
+        );
+      }
+      row['payload'] = jsonEncode(payload);
+    } catch (_) {
+      // 无法解析时不能证明原 payload 不含凭据；只在导出副本中清空。
+      row['payload'] = '{}';
+    }
+    return row;
+  }
+
+  static List<int> _jsonBytes(Object content) =>
+      utf8.encode(jsonEncode(content));
 
   Future<BackupConflictSummary> _previewConflicts({
     required List<Map<String, dynamic>> conversations,
     required List<Map<String, dynamic>> messages,
     required List<Map<String, dynamic>> assistants,
+    required List<Map<String, dynamic>> assistantMemories,
     required List<Map<String, dynamic>> favorites,
     required List<Map<String, dynamic>> projects,
     required List<Map<String, dynamic>> knowledgeDocs,
@@ -2121,6 +2935,11 @@ class BackupService {
       _ConflictSpec('tb_conversation_list', 'cid', conversations),
       _ConflictSpec('tb_messages', 'id', messages),
       _ConflictSpec('tb_assistant', 'id', assistants),
+      _ConflictSpec(
+        'tb_assistant_memory',
+        'memoryId',
+        assistantMemories,
+      ),
       _ConflictSpec('tb_favorite', 'id', favorites),
       _ConflictSpec('tb_project', 'id', projects),
       _ConflictSpec('tb_kb_doc', 'id', knowledgeDocs),
@@ -2234,28 +3053,113 @@ class BackupService {
     return rows.isNotEmpty;
   }
 
-  static Future<Directory> _generatedImageAlbumDir() async {
-    final baseDir = await (debugGeneratedImageDirectoryResolver ??
-        getApplicationDocumentsDirectory)();
-    return Directory(
-        '${baseDir.path}/${GeneratedImageSaveService.albumDirectoryName}');
+  Future<void> _runResourceTransaction(
+    _BackupResourceCoordinator resources,
+    Future<void> Function(Transaction txn) action, {
+    BackupAccountGuard? accountGuard,
+  }) async {
+    try {
+      await storage.db.transaction((txn) async {
+        await action(txn);
+        final guard = accountGuard;
+        if (guard != null) await guard();
+        final injector = debugImportFailureInjector;
+        if (injector != null) {
+          await injector(BackupImportFailurePoint.beforeResourceSwap);
+        }
+        await resources.swapDirectories(
+          afterFirstSwap: () async {
+            final currentInjector = debugImportFailureInjector;
+            if (currentInjector != null) {
+              await currentInjector(
+                BackupImportFailurePoint.afterFirstResourceDirectorySwap,
+              );
+            }
+          },
+        );
+        final currentInjector = debugImportFailureInjector;
+        if (currentInjector != null) {
+          await currentInjector(BackupImportFailurePoint.afterResourceSwap);
+        }
+      });
+      await resources.finish();
+    } catch (error, stackTrace) {
+      try {
+        await resources.rollback(
+          failureInjector: debugResourceRollbackFailureInjector,
+        );
+      } catch (rollbackError, rollbackStackTrace) {
+        Error.throwWithStackTrace(rollbackError, rollbackStackTrace);
+      }
+      Error.throwWithStackTrace(error, stackTrace);
+    }
   }
 
-  static Future<Map<String, List<int>>> _collectGeneratedImageFiles() async {
+  static Future<Directory> _generatedImageDocumentsDir() =>
+      (debugGeneratedImageDirectoryResolver ??
+          getApplicationDocumentsDirectory)();
+
+  static Future<Directory> _generatedImageAlbumDir({
+    required String accountHash,
+  }) async {
+    final baseDir = await (debugGeneratedImageDirectoryResolver ??
+        getApplicationDocumentsDirectory)();
+    return AccountResourceScope.scopedDirectory(
+      base: baseDir,
+      resourceDirectoryName: GeneratedImageSaveService.albumDirectoryName,
+      accountHash: accountHash,
+    );
+  }
+
+  static Future<Map<String, List<int>>> _collectGeneratedImageFiles({
+    required String accountHash,
+  }) async {
     final files = <String, List<int>>{};
     try {
-      final dir = await _generatedImageAlbumDir();
-      if (!await dir.exists()) return files;
-      await for (final entity in dir.list(followLinks: false)) {
-        if (entity is! File) continue;
-        final name = _basename(entity.path);
-        if (!_isImageFileName(name)) continue;
-        files[name] = await entity.readAsBytes();
-      }
+      final baseDir = await _generatedImageDocumentsDir();
+      final scopedDir = AccountResourceScope.scopedDirectory(
+        base: baseDir,
+        resourceDirectoryName: GeneratedImageSaveService.albumDirectoryName,
+        accountHash: accountHash,
+      );
+      final legacyDir = AccountResourceScope.legacyRoot(
+        base: baseDir,
+        resourceDirectoryName: GeneratedImageSaveService.albumDirectoryName,
+      );
+      // 只扫描当前 scoped 与 legacy 顶层，不递归进入 accounts/。
+      await _collectGeneratedImageDirectory(scopedDir, files);
+      await _collectGeneratedImageDirectory(legacyDir, files);
     } catch (_) {
       // 应用内相册资源缺失不阻塞备份。
     }
     return files;
+  }
+
+  static Future<void> _collectGeneratedImageDirectory(
+    Directory directory,
+    Map<String, List<int>> files,
+  ) async {
+    if (!await directory.exists()) return;
+    await for (final entity in directory.list(followLinks: false)) {
+      if (entity is! File) continue;
+      final name = _basename(entity.path);
+      if (!_isImageFileName(name)) continue;
+      final archiveName = _uniqueImageAssetName(files.keys, name);
+      files[archiveName] = await entity.readAsBytes();
+    }
+  }
+
+  static String _uniqueImageAssetName(Iterable<String> existing, String name) {
+    final used = existing.toSet();
+    if (!used.contains(name)) return name;
+    final dot = name.lastIndexOf('.');
+    final stem = dot > 0 ? name.substring(0, dot) : name;
+    final extension = dot > 0 ? name.substring(dot) : '';
+    var index = 1;
+    while (used.contains('${stem}_$index$extension')) {
+      index++;
+    }
+    return '${stem}_$index$extension';
   }
 
   static Future<Directory> _roleCardAssetsRootDir() async {
@@ -2265,9 +3169,21 @@ class BackupService {
         '${base.path}/${AssistantRoleCardAssetStore.directoryName}');
   }
 
+  static Future<Directory> _roleCardAssetsAccountDir({
+    required String accountHash,
+  }) async {
+    final root = await _roleCardAssetsRootDir();
+    return AccountResourceScope.scopedDirectory(
+      base: root.parent,
+      resourceDirectoryName: AssistantRoleCardAssetStore.directoryName,
+      accountHash: accountHash,
+    );
+  }
+
   static Future<Map<String, List<int>>> _collectRoleCardAssetFiles(
-    List<Map<String, Object?>> assistants,
-  ) async {
+    List<Map<String, Object?>> assistants, {
+    required String accountHash,
+  }) async {
     final files = <String, List<int>>{};
     final hasReferences = assistants.any((assistant) {
       final manifest = _roleCardAssetManifest(assistant['roleCardAssets']);
@@ -2292,12 +3208,17 @@ class BackupService {
         if (entry.value is! Map) continue;
         final asset = Map<String, dynamic>.from(entry.value as Map);
         final localPath = asset['localPath']?.toString().trim() ?? '';
-        if (localPath.isEmpty ||
-            !_isManagedRoleCardAssetPath(localPath, assistantId, root)) {
+        final suffix = AssistantRoleCardAssetStore.managedSuffix(
+          localPath,
+          accountHash: accountHash,
+        );
+        if (suffix == null ||
+            !_isRoleCardAssetSuffixForAssistant(suffix, assistantId)) {
           continue;
         }
         try {
-          final file = File(localPath);
+          // 清单的绝对根不可信，只从当前 documents 托管根重定位。
+          final file = File('${root.path}/$suffix');
           if (!await file.exists()) continue;
           files[_roleCardAssetArchiveName(assistantId, entry.key, asset)] =
               await file.readAsBytes();
@@ -2314,19 +3235,24 @@ class BackupService {
     List<Map<String, dynamic>> assistants,
     Map<int, int> assistantIdMap,
     List<String> warnings, {
+    required String accountHash,
     required bool replaceExisting,
+    required _BackupResourceCoordinator resources,
   }) async {
-    if (!_hasRoleCardAssetReferences(assistants)) return;
+    final hasReferences = _hasRoleCardAssetReferences(assistants);
+    if (!hasReferences && !replaceExisting) return;
     late final Directory root;
     try {
-      root = await _roleCardAssetsRootDir();
-      if (replaceExisting && await root.exists()) {
-        await root.delete(recursive: true);
-      }
+      root = await _roleCardAssetsAccountDir(accountHash: accountHash);
     } catch (_) {
       warnings.add('角色卡资源目录无法重建，已跳过资源恢复');
       return;
     }
+    final stageRoot = await resources.stageDirectory(
+      root,
+      preserveExisting: !replaceExisting,
+    );
+    if (!hasReferences) return;
 
     var missing = 0;
     var failed = 0;
@@ -2354,13 +3280,13 @@ class BackupService {
           continue;
         }
         try {
-          final dir = Directory('${root.path}/$newId');
+          final dir = Directory('${stageRoot.path}/$newId');
           if (!await dir.exists()) await dir.create(recursive: true);
-          final target =
-              File('${dir.path}/${_roleCardAssetFileName(entry.key, asset)}');
-          await target.writeAsBytes(archiveFile.content as List<int>,
+          final filename = _roleCardAssetFileName(entry.key, asset);
+          final stagedTarget = File('${dir.path}/$filename');
+          await stagedTarget.writeAsBytes(archiveFile.content as List<int>,
               flush: true);
-          asset['localPath'] = target.path;
+          asset['localPath'] = '${root.path}/$newId/$filename';
           manifest[entry.key] = asset;
           changed = true;
         } catch (_) {
@@ -2411,14 +3337,15 @@ class BackupService {
             false;
       });
 
-  static bool _isManagedRoleCardAssetPath(
-    String path,
+  static bool _isRoleCardAssetSuffixForAssistant(
+    String suffix,
     int assistantId,
-    Directory root,
   ) {
-    final expected = Directory('${root.path}/$assistantId').absolute.path;
-    final actual = File(path).absolute.path;
-    return actual.startsWith('$expected${Platform.pathSeparator}');
+    final segments = suffix.replaceAll('\\', '/').split('/');
+    final idIndex =
+        segments.first == AccountResourceScope.accountsDirectoryName ? 2 : 0;
+    return segments.length > idIndex &&
+        int.tryParse(segments[idIndex]) == assistantId;
   }
 
   static String _roleCardAssetArchiveName(
@@ -2487,6 +3414,7 @@ class BackupService {
     List<Map<String, dynamic>> conversations,
     List<String> warnings, {
     required String accountHash,
+    required _BackupResourceCoordinator resources,
     List<Map<String, dynamic>> storyPersonas = const [],
     List<Map<String, dynamic>> storyMessages = const [],
   }) async {
@@ -2498,6 +3426,8 @@ class BackupService {
     final archiveHasNoAvatarAssets = avatarAssets.isEmpty;
     var dropped = 0;
     final restoredPaths = <String, String>{};
+    Directory? targetDir;
+    Directory? stageDir;
     Future<void> restoreRows(
       Iterable<Map<String, dynamic>> rows, {
       required String typeField,
@@ -2516,11 +3446,17 @@ class BackupService {
         }
         var restored = restoredPaths[oldPath];
         if (restored == null) {
-          final dir =
+          targetDir ??=
               await AvatarAssetService.avatarDir(accountHash: accountHash);
-          final target = File('${dir.path}/${_basename(asset.name)}');
-          await target.writeAsBytes(asset.content as List<int>, flush: true);
-          restored = target.path;
+          stageDir ??= await resources.stageDirectory(
+            targetDir!,
+            preserveExisting: true,
+          );
+          final filename = _basename(asset.name);
+          final stagedTarget = File('${stageDir!.path}/$filename');
+          await stagedTarget.writeAsBytes(asset.content as List<int>,
+              flush: true);
+          restored = '${targetDir!.path}/$filename';
           restoredPaths[oldPath] = restored;
         }
         row[valueField] = restored;
@@ -2558,6 +3494,7 @@ class BackupService {
     Archive archive,
     List<Map<String, dynamic>> messages,
     List<String> warnings,
+    _BackupResourceCoordinator resources,
   ) async {
     final fileAssets = {
       for (final file in archive.files)
@@ -2567,7 +3504,10 @@ class BackupService {
     if (fileAssets.isEmpty) return;
 
     final dir = Directory('${Directory.systemTemp.path}/chatai_restored_files');
-    if (!dir.existsSync()) await dir.create(recursive: true);
+    final stageDir = await resources.stageDirectory(
+      dir,
+      preserveExisting: true,
+    );
     var missing = 0;
     for (final row in messages) {
       final blocks = MessageBlock.decodeList(row['blocks'] as String?);
@@ -2586,8 +3526,9 @@ class BackupService {
           restored.add(block);
           continue;
         }
-        final target = File('${dir.path}/$assetName');
-        await target.writeAsBytes(asset.content as List<int>, flush: true);
+        final stagedTarget = File('${stageDir.path}/$assetName');
+        await stagedTarget.writeAsBytes(asset.content as List<int>,
+            flush: true);
         restored.add(FileBlock(
           id: block.id,
           messageId: block.messageId,
@@ -2597,7 +3538,7 @@ class BackupService {
           modelId: block.modelId,
           file: FileMetadata(
             name: block.file.name,
-            path: target.path,
+            path: '${dir.path}/$assetName',
             mime: block.file.mime,
             size: block.file.size,
             extractedText: block.file.extractedText,
@@ -2613,28 +3554,32 @@ class BackupService {
   }
 
   static Future<int> _restoreGeneratedImageAssets(
-    Archive archive, {
+    Archive archive,
+    _BackupResourceCoordinator resources, {
+    required String accountHash,
     required bool replaceExisting,
   }) async {
     final imageAssets = [
       for (final file in archive.files)
         if (file.isFile && file.name.startsWith(_kGeneratedImagePrefix)) file,
     ];
-    if (imageAssets.isEmpty) return 0;
+    // overwrite 即使备份中没有图片，也要清空“当前账号” scoped；legacy 与
+    // 其它账号目录从未进入 coordinator，因此始终原样保留。
+    if (imageAssets.isEmpty && !replaceExisting) return 0;
 
-    final dir = await _generatedImageAlbumDir();
-    if (replaceExisting && await dir.exists()) {
-      await dir.delete(recursive: true);
-    }
-    if (!await dir.exists()) await dir.create(recursive: true);
+    final dir = await _generatedImageAlbumDir(accountHash: accountHash);
+    final stageDir = await resources.stageDirectory(
+      dir,
+      preserveExisting: !replaceExisting,
+    );
 
     var restored = 0;
     for (final asset in imageAssets) {
       final name = _safeImageAssetName(_basename(asset.name));
       if (name == null) continue;
       final target = replaceExisting
-          ? File('${dir.path}/$name')
-          : await _uniqueFile(dir, name);
+          ? File('${stageDir.path}/$name')
+          : await _uniqueFile(stageDir, name);
       await target.writeAsBytes(asset.content as List<int>, flush: true);
       restored++;
     }
@@ -2691,14 +3636,48 @@ class BackupService {
     }
   }
 
+  static Object? _readJsonStrict(Archive archive, String name) {
+    final file = archive.findFile(name);
+    if (file == null) {
+      throw FormatException('备份缺少必需 entry：$name');
+    }
+    try {
+      return jsonDecode(utf8.decode(file.content));
+    } catch (_) {
+      throw FormatException('备份 entry 不是有效 JSON：$name');
+    }
+  }
+
   /// 读一个「行列表」文件；行是 sqflite 的 Map，缺失时返回空列表。
-  static List<Map<String, dynamic>> _readRows(Archive archive, String name) {
-    final raw = _readJson(archive, name);
-    if (raw is! List) return [];
-    return [
-      for (final row in raw)
-        if (row is Map) Map<String, dynamic>.from(row),
-    ];
+  static List<Map<String, dynamic>> _readRows(
+    Archive archive,
+    String name, {
+    bool strict = false,
+  }) {
+    final raw =
+        strict ? _readJsonStrict(archive, name) : _readJson(archive, name);
+    if (raw is! List) {
+      if (strict) throw FormatException('备份行 entry 必须是列表：$name');
+      return [];
+    }
+    final rows = <Map<String, dynamic>>[];
+    for (var index = 0; index < raw.length; index++) {
+      final row = raw[index];
+      if (row is! Map) {
+        if (strict) {
+          throw FormatException('备份行不是 Map：$name#$index');
+        }
+        continue;
+      }
+      try {
+        rows.add(Map<String, dynamic>.from(row));
+      } catch (_) {
+        if (strict) {
+          throw FormatException('备份行字段格式不合法：$name#$index');
+        }
+      }
+    }
+    return rows;
   }
 }
 
@@ -2710,4 +3689,305 @@ class _ConflictSpec {
 
   const _ConflictSpec(this.table, this.keyColumn, this.backupRows,
       {this.secondColumn});
+}
+
+class _AssistantMemoryExportCopy {
+  final List<Map<String, dynamic>> rows;
+  final List<String> warnings;
+
+  const _AssistantMemoryExportCopy(this.rows, this.warnings);
+}
+
+/// 把一个导入涉及的资源目录先构造成同文件系统的完整 staging 快照。
+///
+/// 正式目录只在 SQLite transaction 回调的最后阶段通过 rename 切换；旧目录
+/// 会保留到 transaction 真正提交后。这样 SQLite commit 自身失败时仍可补偿
+/// 恢复文件资源，而不是留下“新文件 + 旧数据库”或相反的半套状态。
+class _BackupResourceCoordinator {
+  final Map<String, _BackupResourceDirectory> _directories = {};
+
+  Future<Directory> stageDirectory(
+    Directory target, {
+    required bool preserveExisting,
+  }) async {
+    final normalizedTarget = target.absolute;
+    final key = normalizedTarget.path;
+    final existing = _directories[key];
+    if (existing != null) {
+      if (existing.preserveExisting != preserveExisting) {
+        throw StateError('同一资源目录不能同时使用覆盖与合并策略：$key');
+      }
+      return existing.stage;
+    }
+
+    final parent = normalizedTarget.parent;
+    if (!await parent.exists()) await parent.create(recursive: true);
+    final token = generateUuidV4();
+    final stage = Directory('$key.backup-stage-$token');
+    final backup = Directory('$key.backup-original-$token');
+    await stage.create(recursive: true);
+    try {
+      final before = await _snapshotTarget(normalizedTarget);
+      if (preserveExisting && before.existed) {
+        await _copyDirectory(normalizedTarget, stage);
+      }
+      final after = await _snapshotTarget(normalizedTarget);
+      if (before != after) {
+        throw StateError('资源目录在 staging 期间发生变化，已取消导入');
+      }
+      _directories[key] = _BackupResourceDirectory(
+        target: normalizedTarget,
+        stage: stage,
+        backup: backup,
+        targetExisted: before.existed,
+        targetFingerprint: before.fingerprint,
+        preserveExisting: preserveExisting,
+      );
+      return stage;
+    } catch (_) {
+      if (await stage.exists()) await stage.delete(recursive: true);
+      rethrow;
+    }
+  }
+
+  Future<void> swapDirectories({
+    Future<void> Function()? afterFirstSwap,
+  }) async {
+    var swapped = 0;
+    for (final state in _directories.values) {
+      await _assertTargetUnchanged(state);
+      final stagedSnapshot = await _snapshotTarget(state.stage);
+      if (!stagedSnapshot.existed || stagedSnapshot.fingerprint == null) {
+        throw StateError('资源 staging 目录缺失，已取消导入');
+      }
+      if (state.targetExisted) {
+        if (await _entityExists(state.backup.path)) {
+          throw StateError('资源补偿目录已存在，已取消导入');
+        }
+        await state.target.rename(state.backup.path);
+        state.originalMoved = true;
+        state.backupOwned = true;
+        final movedFingerprint = await _directoryFingerprint(state.backup);
+        if (movedFingerprint != state.targetFingerprint) {
+          throw StateError('资源目录在切换期间发生变化，已取消导入');
+        }
+      }
+      await state.stage.rename(state.target.path);
+      // rename 已成功后先记录所有权。后续指纹读取即使失败，
+      // rollback 也知道 staging 已经占用正式路径。
+      state.stageMoved = true;
+      state.swappedTargetFingerprint = stagedSnapshot.fingerprint;
+      final swappedSnapshot = await _snapshotTarget(state.target);
+      if (!swappedSnapshot.existed ||
+          swappedSnapshot.fingerprint != stagedSnapshot.fingerprint) {
+        throw StateError('资源 staging 目录在切换期间发生变化，已取消导入');
+      }
+      swapped++;
+      if (swapped == 1 && afterFirstSwap != null) {
+        await afterFirstSwap();
+      }
+    }
+  }
+
+  Future<void> rollback({
+    BackupResourceRollbackFailureInjector? failureInjector,
+  }) async {
+    final states = _directories.values.toList(growable: false).reversed;
+    final errors = <Object>[];
+    var rollbackIndex = 0;
+    for (final state in states) {
+      Future<void> run(
+        BackupResourceRollbackOperation operation,
+        Future<void> Function() action,
+      ) async {
+        try {
+          final injector = failureInjector;
+          if (injector != null) await injector(rollbackIndex, operation);
+          await action();
+        } catch (error) {
+          errors.add(error);
+        }
+      }
+
+      if (state.stageMoved) {
+        await run(BackupResourceRollbackOperation.removeStagedTarget, () async {
+          final current = await _snapshotTarget(state.target);
+          if (current.existed) {
+            if (current.fingerprint != state.swappedTargetFingerprint) {
+              // 正式路径在 swap 后又被其他操作修改/替换。此时宁可
+              // 保留 backup 等待人工恢复，也不能递归删掉不再属于
+              // 本次导入的外部目录。
+              throw StateError('资源正式目录在切换后发生变化');
+            }
+            await state.target.delete(recursive: true);
+          }
+          state.stageMoved = false;
+        });
+      }
+      if (state.originalMoved) {
+        await run(BackupResourceRollbackOperation.restoreOriginal, () async {
+          if (!await state.backup.exists()) {
+            throw StateError('资源补偿目录缺失');
+          }
+          final backupFingerprint = await _directoryFingerprint(state.backup);
+          if (backupFingerprint != state.targetFingerprint) {
+            throw StateError('资源补偿目录在回滚前发生变化');
+          }
+          if (await _entityExists(state.target.path)) {
+            throw StateError('资源正式目录仍被占用');
+          }
+          await state.backup.rename(state.target.path);
+          state.originalMoved = false;
+          state.backupOwned = false;
+        });
+      }
+      await run(BackupResourceRollbackOperation.removeStage, () async {
+        if (await state.stage.exists()) {
+          await state.stage.delete(recursive: true);
+        }
+      });
+      if (state.backupOwned && !state.originalMoved) {
+        await run(BackupResourceRollbackOperation.removeBackup, () async {
+          if (await state.backup.exists()) {
+            final fingerprint = await _directoryFingerprint(state.backup);
+            if (fingerprint != state.targetFingerprint) {
+              throw StateError('资源补偿目录在清理前发生变化');
+            }
+            await state.backup.delete(recursive: true);
+          }
+          state.backupOwned = false;
+        });
+      }
+      rollbackIndex++;
+    }
+    if (errors.isNotEmpty) {
+      throw StateError('备份资源回滚过程中有 ${errors.length} 个操作未完成');
+    }
+  }
+
+  Future<void> finish() async {
+    // transaction 已提交，清理不再影响导入结果；单个清理失败也不能把已提交的
+    // SQLite 状态伪装成导入失败。残留目录不在正式路径下，下次系统清理即可。
+    for (final state in _directories.values) {
+      try {
+        if (state.backupOwned && await state.backup.exists()) {
+          final fingerprint = await _directoryFingerprint(state.backup);
+          if (fingerprint == state.targetFingerprint) {
+            await state.backup.delete(recursive: true);
+            state.backupOwned = false;
+          }
+        }
+        if (await state.stage.exists()) {
+          await state.stage.delete(recursive: true);
+        }
+      } catch (_) {
+        // best effort cleanup after a successful database commit
+      }
+    }
+  }
+
+  static Future<void> _copyDirectory(
+    Directory source,
+    Directory destination,
+  ) async {
+    await for (final entity in source.list(followLinks: false)) {
+      final name = BackupService._basename(entity.path);
+      if (entity is Directory) {
+        final child = Directory('${destination.path}/$name');
+        await child.create(recursive: true);
+        await _copyDirectory(entity, child);
+      } else if (entity is File) {
+        await entity.copy('${destination.path}/$name');
+      }
+      // Link 不跟随也不复制，避免备份导入借符号链接越过托管目录。
+    }
+  }
+
+  static Future<void> _assertTargetUnchanged(
+    _BackupResourceDirectory state,
+  ) async {
+    final current = await _snapshotTarget(state.target);
+    if (current.existed != state.targetExisted ||
+        current.fingerprint != state.targetFingerprint) {
+      throw StateError('资源目录在导入期间发生变化，已取消导入');
+    }
+  }
+
+  static Future<_BackupTargetSnapshot> _snapshotTarget(
+    Directory target,
+  ) async {
+    final type = await FileSystemEntity.type(target.path, followLinks: false);
+    if (type == FileSystemEntityType.notFound) {
+      return const _BackupTargetSnapshot.absent();
+    }
+    if (type != FileSystemEntityType.directory) {
+      throw StateError('资源目标路径不是目录，已取消导入');
+    }
+    return _BackupTargetSnapshot.present(
+      await _directoryFingerprint(target),
+    );
+  }
+
+  static Future<String> _directoryFingerprint(Directory root) async {
+    final records = <String>[];
+    await for (final entity in root.list(recursive: true, followLinks: false)) {
+      final relative = entity.path.substring(root.path.length);
+      if (entity is File) {
+        final digest = await sha256.bind(entity.openRead()).first;
+        records.add(jsonEncode(['file', relative, '$digest']));
+      } else if (entity is Directory) {
+        records.add(jsonEncode(['directory', relative]));
+      } else if (entity is Link) {
+        records.add(jsonEncode(['link', relative, await entity.target()]));
+      }
+    }
+    records.sort();
+    return sha256.convert(utf8.encode(jsonEncode(records))).toString();
+  }
+
+  static Future<bool> _entityExists(String path) async =>
+      await FileSystemEntity.type(path, followLinks: false) !=
+      FileSystemEntityType.notFound;
+}
+
+class _BackupResourceDirectory {
+  final Directory target;
+  final Directory stage;
+  final Directory backup;
+  final bool targetExisted;
+  final String? targetFingerprint;
+  final bool preserveExisting;
+  bool originalMoved = false;
+  bool stageMoved = false;
+  bool backupOwned = false;
+  String? swappedTargetFingerprint;
+
+  _BackupResourceDirectory({
+    required this.target,
+    required this.stage,
+    required this.backup,
+    required this.targetExisted,
+    required this.targetFingerprint,
+    required this.preserveExisting,
+  });
+}
+
+class _BackupTargetSnapshot {
+  final bool existed;
+  final String? fingerprint;
+
+  const _BackupTargetSnapshot.absent()
+      : existed = false,
+        fingerprint = null;
+
+  const _BackupTargetSnapshot.present(this.fingerprint) : existed = true;
+
+  @override
+  bool operator ==(Object other) =>
+      other is _BackupTargetSnapshot &&
+      other.existed == existed &&
+      other.fingerprint == fingerprint;
+
+  @override
+  int get hashCode => Object.hash(existed, fingerprint);
 }

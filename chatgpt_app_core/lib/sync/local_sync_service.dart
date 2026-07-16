@@ -15,6 +15,7 @@ import 'package:chatgpt_app_core/db/story_room_dao.dart';
 import 'package:chatgpt_app_core/db/story_template_dao.dart';
 import 'package:chatgpt_app_core/db/story_template_translation_task_dao.dart';
 import 'package:chatgpt_app_core/sync/sync_tombstone_store.dart';
+import 'package:chatgpt_app_core/util/account_resource_scope.dart';
 import 'package:chatgpt_app_core/util/avatar_asset_service.dart';
 import 'package:sqflite/sqflite.dart';
 
@@ -128,12 +129,14 @@ class LocalSyncService {
   ];
 
   final HiDBManager storage;
+  final String accountHash;
   final RoleCardAssetDirectoryResolver? roleCardAssetDirectoryResolver;
 
-  const LocalSyncService(
+  LocalSyncService(
     this.storage, {
+    String? accountHash,
     this.roleCardAssetDirectoryResolver,
-  });
+  }) : accountHash = AccountResourceScope.currentAccountHash(accountHash);
 
   Future<List<SyncChange>> exportChanges({int updatedAfter = 0}) async {
     await _ensureTables();
@@ -295,6 +298,7 @@ class LocalSyncService {
       await AssistantRoleCardAssetStore.delete(
         assistantId: id,
         directoryResolver: roleCardAssetDirectoryResolver,
+        accountHash: accountHash,
       );
       await _deleteStagedAssets(id);
     }
@@ -312,6 +316,7 @@ class LocalSyncService {
       await AssistantRoleCardAssetStore.delete(
         assistantId: id,
         directoryResolver: roleCardAssetDirectoryResolver,
+        accountHash: accountHash,
       );
       await _deleteStagedAssets(id);
     }
@@ -489,6 +494,7 @@ class LocalSyncService {
       final loaded = await AssistantRoleCardAssetStore.load(
         raw,
         directoryResolver: roleCardAssetDirectoryResolver,
+        accountHash: accountHash,
       );
       var total = 0;
       final result = <AssistantRoleCardResource>[];
@@ -774,6 +780,7 @@ class LocalSyncService {
           assistantId: key.assistantId,
           resources: resources,
           directoryResolver: roleCardAssetDirectoryResolver,
+          accountHash: accountHash,
         );
         await storage.db.transaction((txn) async {
           final current = await txn.query(

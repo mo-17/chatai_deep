@@ -1,13 +1,16 @@
 import 'dart:io';
 
 import 'package:chatgpt_app_core/backup/backup_service.dart';
+import 'package:chatgpt_app_core/backup/backup_settings_merge.dart';
 import 'package:chatgpt_app_core/db/hi_db_manager.dart';
+import 'package:chatgpt_app_core/model/ai_settings.dart';
 import 'package:chatgpt_app_core/provider/ai_settings_provider.dart';
 import 'package:chatgpt_app_core/theme/app_visual_theme.dart';
 import 'package:chatgpt_app_core/util/hi_dialog.dart';
 import 'package:chatgpt_app_core/widget/app_visual_widgets.dart';
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
+import 'package:login_sdk/dao/login_dao.dart';
 import 'package:openai_flutter/utils/ai_logger.dart';
 import 'package:provider/provider.dart';
 
@@ -22,8 +25,13 @@ class BackupRestorePage extends StatefulWidget {
 
 class BackupImportPreviewDialog extends StatefulWidget {
   final BackupPreview preview;
+  final String targetAccountHash;
 
-  const BackupImportPreviewDialog({super.key, required this.preview});
+  const BackupImportPreviewDialog({
+    super.key,
+    required this.preview,
+    this.targetAccountHash = '',
+  });
 
   @override
   State<BackupImportPreviewDialog> createState() =>
@@ -32,6 +40,13 @@ class BackupImportPreviewDialog extends StatefulWidget {
 
 class _BackupImportPreviewDialogState extends State<BackupImportPreviewDialog> {
   BackupImportMode _mode = BackupImportMode.overwriteAll;
+  bool _crossAccountConfirmed = false;
+  bool _secretsConfirmed = false;
+
+  bool get _isCrossAccount =>
+      widget.preview.accountHash.isNotEmpty &&
+      widget.targetAccountHash.isNotEmpty &&
+      widget.preview.accountHash != widget.targetAccountHash;
 
   @override
   Widget build(BuildContext context) {
@@ -48,6 +63,48 @@ class _BackupImportPreviewDialogState extends State<BackupImportPreviewDialog> {
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
             Text(_previewText(widget.preview)),
+            if (_isCrossAccount) ...[
+              const SizedBox(height: 12),
+              Text(
+                '跨账号恢复：${_maskedAccount(widget.preview.accountHash)} → '
+                '${_maskedAccount(widget.targetAccountHash)}',
+                style: theme.textTheme.bodyMedium?.copyWith(
+                  color: theme.colorScheme.error,
+                  fontWeight: FontWeight.w600,
+                ),
+              ),
+              CheckboxListTile(
+                contentPadding: EdgeInsets.zero,
+                value: _crossAccountConfirmed,
+                onChanged: (value) => setState(
+                  () => _crossAccountConfirmed = value == true,
+                ),
+                title: const Text('我确认将此备份导入当前账号'),
+                subtitle: const Text('备份中的数据不会写回来源账号'),
+                controlAffinity: ListTileControlAffinity.leading,
+              ),
+            ],
+            if (widget.preview.includeApiKeys) ...[
+              const SizedBox(height: 12),
+              Text(
+                '此 ZIP 未加密，包含 API Key 或 MCP 鉴权信息。'
+                '完整性校验不能证明来源可信。',
+                style: theme.textTheme.bodyMedium?.copyWith(
+                  color: theme.colorScheme.error,
+                  fontWeight: FontWeight.w600,
+                ),
+              ),
+              CheckboxListTile(
+                contentPadding: EdgeInsets.zero,
+                value: _secretsConfirmed,
+                onChanged: (value) => setState(
+                  () => _secretsConfirmed = value == true,
+                ),
+                title: const Text('我确认备份来自可信来源，并接受凭据泄露风险'),
+                subtitle: const Text('导入后其中的凭据可能替换当前 AI/MCP 配置'),
+                controlAffinity: ListTileControlAffinity.leading,
+              ),
+            ],
             if (warning.isNotEmpty) ...[
               const SizedBox(height: 12),
               Text(warning.trim()),
@@ -99,7 +156,10 @@ class _BackupImportPreviewDialogState extends State<BackupImportPreviewDialog> {
         TextButton(
             onPressed: () => Navigator.pop(context), child: const Text('取消')),
         TextButton(
-          onPressed: () => Navigator.pop(context, _mode),
+          onPressed: (_isCrossAccount && !_crossAccountConfirmed) ||
+                  (widget.preview.includeApiKeys && !_secretsConfirmed)
+              ? null
+              : () => Navigator.pop(context, _mode),
           style: visual.isAnime && _mode != BackupImportMode.mergeAppend
               ? TextButton.styleFrom(foregroundColor: theme.colorScheme.error)
               : null,
@@ -169,13 +229,18 @@ class _BackupImportPreviewDialogState extends State<BackupImportPreviewDialog> {
 
     return [
       '备份版本：v${preview.formatVersion}',
+      preview.integrityVerified
+          ? '内容与清单一致（不代表来源可信）'
+          : '旧备份未包含完整性校验',
       '导出时间：${exportedAtText()}',
-      if (preview.accountHash.isNotEmpty) '来源账号：${preview.accountHash}',
+      if (preview.accountHash.isNotEmpty)
+        '来源账号：${_maskedAccount(preview.accountHash)}',
       'AI 设置：${preview.hasSettings ? '包含' : '不包含'}'
           '${preview.includeApiKeys ? '（含 API Key）' : '（不含 API Key）'}',
       '会话：${preview.conversations}',
       '消息：${preview.messages}',
       '助手：${preview.assistants}',
+      '长期记忆：${preview.assistantMemories}',
       '收藏：${preview.favorites}',
       '项目：${preview.projects}',
       '知识库文档：${preview.knowledgeDocs}',
@@ -199,6 +264,15 @@ class _BackupImportPreviewDialogState extends State<BackupImportPreviewDialog> {
       ],
     ].join('\n');
   }
+
+  static String _maskedAccount(String value) {
+    final normalized = value.trim();
+    if (normalized.length <= 4) {
+      return List.filled(normalized.length, '•').join();
+    }
+    return '${normalized.substring(0, 2)}…'
+        '${normalized.substring(normalized.length - 2)}';
+  }
 }
 
 class _BackupRestorePageState extends State<BackupRestorePage> {
@@ -211,8 +285,9 @@ class _BackupRestorePageState extends State<BackupRestorePage> {
     final visual = AppVisualTheme.of(context);
     final theme = Theme.of(context);
     final description = Text(
-      '备份内容：会话、聊天记录（含思考/工具等块数据）、助手、收藏、AI 设置。'
-      '按当前登录账号导出/导入。',
+      '备份内容：会话、聊天记录（含思考/工具等块数据）、助手及长期记忆、'
+      '收藏、AI 设置。'
+      '按当前登录账号导出/导入。ZIP 未加密，长期记忆等内容为明文。',
       style: visual.isAnime
           ? theme.textTheme.bodyMedium?.copyWith(
               color: theme.colorScheme.onSurfaceVariant,
@@ -224,7 +299,7 @@ class _BackupRestorePageState extends State<BackupRestorePage> {
           ? const EdgeInsets.symmetric(horizontal: 16, vertical: 4)
           : EdgeInsets.zero,
       title: const Text('备份包含 API Key'),
-      subtitle: const Text('默认不包含，防止备份文件外流时泄露密钥'),
+      subtitle: const Text('开启后 ZIP 将以明文包含 API Key 和 MCP 鉴权请求头'),
       value: _includeApiKeys,
       onChanged: (v) => setState(() => _includeApiKeys = v),
     );
@@ -277,9 +352,10 @@ class _BackupRestorePageState extends State<BackupRestorePage> {
     );
   }
 
-  Future<BackupService> _service() async {
-    final dbManager =
-        await HiDBManager.instance(dbName: HiDBManager.getAccountHash());
+  Future<BackupService> _service({String? accountHash}) async {
+    final dbManager = await HiDBManager.instance(
+      dbName: accountHash ?? HiDBManager.getAccountHash(),
+    );
     return BackupService(dbManager);
   }
 
@@ -298,15 +374,32 @@ class _BackupRestorePageState extends State<BackupRestorePage> {
       HiDialog.showSnackBar(context, '鸿蒙版本暂不支持备份文件选择，敬请期待');
       return;
     }
+    if (_includeApiKeys) {
+      final confirmed = await _confirmSecretExport();
+      if (confirmed != true || !mounted) return;
+    }
     setState(() => _busy = true);
     try {
-      final settings = context.read<AISettingsProvider>().settings;
-      final service = await _service();
-      final bytes = await service.exportArchive(
-        settings: settings,
-        accountHash: HiDBManager.getAccountHash(),
-        includeApiKeys: _includeApiKeys,
+      final expectedAccountHash = _captureStableAccount();
+      final includeApiKeys = _includeApiKeys;
+      // 只把实际读取账号数据的阶段放进 lease；系统保存文件对话框可能等待很久，
+      // 不能因此阻塞用户退出或切换账号。
+      final export = await LoginDao.runWithStableAccount(
+        expectedAccountHash: expectedAccountHash,
+        action: () async {
+          _assertStableAccount(expectedAccountHash);
+          final provider = context.read<AISettingsProvider>();
+          final settingsSnapshot = provider.settings.clone();
+          final service = await _service(accountHash: expectedAccountHash);
+          _assertStableAccount(expectedAccountHash);
+          return service.exportArchiveWithReport(
+            settings: settingsSnapshot,
+            accountHash: expectedAccountHash,
+            includeApiKeys: includeApiKeys,
+          );
+        },
       );
+      final bytes = export.bytes;
       // 移动端 saveFile 由插件代写 bytes；桌面端只返回路径，需自行写文件。
       final path = await FilePicker.saveFile(
         dialogTitle: '保存备份',
@@ -321,6 +414,21 @@ class _BackupRestorePageState extends State<BackupRestorePage> {
       }
       if (!mounted) return;
       HiDialog.showSnackBar(context, '已导出备份（${_sizeText(bytes.length)}）');
+      if (export.warnings.isNotEmpty) {
+        await showDialog<void>(
+          context: context,
+          builder: (dialogContext) => AlertDialog(
+            title: const Text('备份已导出，但有数据规范化提示'),
+            content: Text(export.warnings.join('\n')),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.pop(dialogContext),
+                child: const Text('知道了'),
+              ),
+            ],
+          ),
+        );
+      }
     } catch (e) {
       AILogger.log('backup export failed: $e');
       if (!mounted) return;
@@ -328,6 +436,30 @@ class _BackupRestorePageState extends State<BackupRestorePage> {
     } finally {
       if (mounted) setState(() => _busy = false);
     }
+  }
+
+  Future<bool?> _confirmSecretExport() {
+    return showDialog<bool>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: const Text('确认导出明文凭据'),
+        content: const Text(
+          '此 ZIP 不加密，将包含 API Key 与 MCP 鉴权请求头。'
+          '请只保存到可信位置，不要发送给他人；文件哈希只能检查内容是否变化，'
+          '不能证明备份来源可信。',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(dialogContext, false),
+            child: const Text('取消'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(dialogContext, true),
+            child: const Text('仍要导出'),
+          ),
+        ],
+      ),
+    );
   }
 
   void _import() async {
@@ -350,13 +482,28 @@ class _BackupRestorePageState extends State<BackupRestorePage> {
       return;
     }
     if (!mounted) return;
+    final String accountHash;
+    try {
+      accountHash = _captureStableAccount();
+    } on LoginAccountChangedException {
+      HiDialog.showSnackBar(context, '账号状态不一致，请重新进入备份页面');
+      return;
+    }
 
     final BackupPreview preview;
     try {
-      final service = await _service();
-      preview = await service.previewArchive(
-        bytes,
-        accountHash: HiDBManager.getAccountHash(),
+      preview = await LoginDao.runWithStableAccount(
+        expectedAccountHash: accountHash,
+        action: () async {
+          _assertStableAccount(accountHash);
+          final service = await _service(accountHash: accountHash);
+          final result = await service.previewArchive(
+            bytes,
+            accountHash: accountHash,
+          );
+          _assertStableAccount(accountHash);
+          return result;
+        },
       );
     } on FormatException catch (e) {
       if (mounted) HiDialog.showSnackBar(context, e.message);
@@ -368,18 +515,75 @@ class _BackupRestorePageState extends State<BackupRestorePage> {
     }
     if (!mounted) return;
 
-    final mode = await _confirmImport(preview);
+    if (!_accountStillMatches(accountHash)) {
+      HiDialog.showSnackBar(context, '账号已切换，已取消旧账号的导入操作');
+      return;
+    }
+    final mode = await _confirmImport(preview, accountHash);
     if (mode == null || !mounted) return;
+    if (!_accountStillMatches(accountHash)) {
+      HiDialog.showSnackBar(context, '账号已切换，已取消旧账号的导入操作');
+      return;
+    }
 
     setState(() => _busy = true);
     try {
-      final service = await _service();
-      final result = await service.importArchive(
-        bytes,
-        accountHash: HiDBManager.getAccountHash(),
-        mode: mode,
+      final outcome = await LoginDao.runWithStableAccount(
+        expectedAccountHash: accountHash,
+        action: () async {
+          _assertStableAccount(accountHash);
+          final provider = context.read<AISettingsProvider>();
+          final localSettingsSnapshot = provider.settings.clone();
+          final service = await _service(accountHash: accountHash);
+          Future<void> accountGuard() async =>
+              _assertStableAccount(accountHash);
+          final result = await service.importArchive(
+            bytes,
+            accountHash: accountHash,
+            mode: mode,
+            accountGuard: accountGuard,
+          );
+          Object? settingsError;
+          try {
+            await _applySettings(
+              result,
+              incomingIncludesSecrets: preview.includeApiKeys,
+              expectedAccountHash: accountHash,
+              localSettingsSnapshot: localSettingsSnapshot,
+            );
+          } catch (error) {
+            settingsError = error;
+          }
+          _assertStableAccount(accountHash);
+          return (result: result, settingsError: settingsError);
+        },
       );
-      _applySettings(result);
+      final result = outcome.result;
+      final settingsError = outcome.settingsError;
+      if (settingsError != null) {
+        AILogger.log(
+          'backup settings restore failed after db commit: '
+          '${settingsError.runtimeType}',
+        );
+        if (!mounted) return;
+        await showDialog<void>(
+          context: context,
+          builder: (ctx) => AlertDialog(
+            title: const Text('数据已导入，AI 设置未恢复'),
+            content: Text(
+              '会话等本地数据已经成功恢复，但安全存储暂时无法保存 AI 设置。'
+              '原有 AI 设置未被覆盖，请稍后重新导入。\n\n$settingsError',
+            ),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.pop(ctx),
+                child: const Text('知道了'),
+              ),
+            ],
+          ),
+        );
+        return;
+      }
       if (!mounted) return;
       final warning =
           result.warnings.isEmpty ? '' : '\n${result.warnings.join('\n')}';
@@ -404,10 +608,41 @@ class _BackupRestorePageState extends State<BackupRestorePage> {
     }
   }
 
-  Future<BackupImportMode?> _confirmImport(BackupPreview preview) {
+  String _captureStableAccount() {
+    final accountHash = LoginDao.getAccountHash();
+    if (accountHash == null) throw const LoginAccountChangedException();
+    _assertStableAccount(accountHash);
+    return accountHash;
+  }
+
+  void _assertStableAccount(String expectedAccountHash) {
+    if (!mounted ||
+        LoginDao.getAccountHash() != expectedAccountHash ||
+        HiDBManager.getAccountHash() != expectedAccountHash ||
+        context.read<AISettingsProvider>().accountHash != expectedAccountHash) {
+      throw const LoginAccountChangedException();
+    }
+  }
+
+  bool _accountStillMatches(String accountHash) {
+    try {
+      _assertStableAccount(accountHash);
+      return true;
+    } on LoginAccountChangedException {
+      return false;
+    }
+  }
+
+  Future<BackupImportMode?> _confirmImport(
+    BackupPreview preview,
+    String targetAccountHash,
+  ) {
     return showDialog<BackupImportMode>(
       context: context,
-      builder: (ctx) => BackupImportPreviewDialog(preview: preview),
+      builder: (ctx) => BackupImportPreviewDialog(
+        preview: preview,
+        targetAccountHash: targetAccountHash,
+      ),
     );
   }
 
@@ -417,12 +652,14 @@ class _BackupRestorePageState extends State<BackupRestorePage> {
       case BackupImportMode.overwriteAll:
         return '已恢复 ${result.conversations} 个会话、'
             '${result.messages} 条消息、${result.assistants} 个助手、'
+            '${result.assistantMemories} 条长期记忆、'
             '${result.favorites} 条收藏。$warning';
       case BackupImportMode.projectConversationsOnly:
         return '已恢复 ${result.projects} 个项目、'
             '${result.conversations} 个会话、${result.messages} 条消息。$warning';
       case BackupImportMode.assistantsOnly:
-        return '已恢复 ${result.assistants} 个助手。$warning';
+        return '已恢复 ${result.assistants} 个助手、'
+            '${result.assistantMemories} 条长期记忆。$warning';
       case BackupImportMode.knowledgeBaseOnly:
         return '已恢复 ${result.knowledgeDocs} 个知识库文档、'
             '${result.knowledgeChunks} 个片段、'
@@ -430,33 +667,32 @@ class _BackupRestorePageState extends State<BackupRestorePage> {
       case BackupImportMode.mergeAppend:
         return '已合并 ${result.projects} 个项目、${result.conversations} 个会话、'
             '${result.messages} 条消息、${result.assistants} 个助手、'
+            '${result.assistantMemories} 条长期记忆、'
             '${result.favorites} 条收藏、${result.knowledgeDocs} 个知识库文档。'
             '$warning';
     }
   }
 
-  ///应用备份里的 AI 设置：备份脱敏导出时 key 为空，保留本地已配置的 key，
-  ///避免「导入一份脱敏备份把自己的 key 清掉」。
-  void _applySettings(BackupRestoreResult result) {
+  /// 应用备份里的 AI 设置。脱敏/旧备份保留本地凭据；
+  /// manifest 显式包含凭据时，则完整恢复备份中的凭据状态。
+  Future<void> _applySettings(
+    BackupRestoreResult result, {
+    required bool incomingIncludesSecrets,
+    required String expectedAccountHash,
+    required AISettings localSettingsSnapshot,
+  }) async {
     final incoming = result.settings;
     if (incoming == null) return;
     final provider = context.read<AISettingsProvider>();
-    final local = provider.settings;
-    // 按服务商 id 把缺失的 key 用本地已配置的补上。
-    for (final p in incoming.providers) {
-      if (p.apiKey.isNotEmpty) continue;
-      final matches = local.providers.where((e) => e.id == p.id);
-      if (matches.isNotEmpty && matches.first.apiKey.isNotEmpty) {
-        p.apiKey = matches.first.apiKey;
-      }
-    }
-    if (incoming.tavilyApiKey.isEmpty) {
-      incoming.tavilyApiKey = local.tavilyApiKey;
-    }
-    if (incoming.exaApiKey.isEmpty) incoming.exaApiKey = local.exaApiKey;
-    if (incoming.bochaApiKey.isEmpty) incoming.bochaApiKey = local.bochaApiKey;
-    if (incoming.zhipuApiKey.isEmpty) incoming.zhipuApiKey = local.zhipuApiKey;
-    provider.update(incoming);
+    final merged = mergeImportedSettingsSecrets(
+      incoming,
+      localSettingsSnapshot,
+      incomingIncludesSecrets: incomingIncludesSecrets,
+    );
+    await provider.update(
+      merged,
+      expectedAccountHash: expectedAccountHash,
+    );
   }
 
   String _sizeText(int bytes) {

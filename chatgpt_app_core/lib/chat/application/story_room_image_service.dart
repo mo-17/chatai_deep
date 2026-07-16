@@ -4,6 +4,7 @@ import 'package:chatgpt_app_core/capability/generated_image_save_service.dart';
 import 'package:chatgpt_app_core/capability/product_capabilities.dart';
 import 'package:chatgpt_app_core/chat/domain/stream_event.dart';
 import 'package:chatgpt_app_core/model/story_room_model.dart';
+import 'package:chatgpt_app_core/util/account_resource_scope.dart';
 import 'package:http/http.dart' as http;
 
 enum StoryRoomImageSourceKind { url, dataUri, localPath }
@@ -208,7 +209,12 @@ class StoryRoomImageService {
     DateTime? now,
     ImageSaveDirectoryResolver? directoryResolver,
     http.Client? client,
+    String? accountHash,
   }) async {
+    final explicitAccountHash =
+        AccountResourceScope.hasExplicitAccountHash(accountHash);
+    final resolvedAccountHash =
+        AccountResourceScope.currentAccountHash(accountHash);
     final source = normalize(event);
     if (source == null) return null;
     final safeName = StoryRoomImageSource.safeFilename(
@@ -224,6 +230,11 @@ class StoryRoomImageService {
       ),
       directoryResolver: directoryResolver,
       client: client,
+      accountHash: explicitAccountHash ? resolvedAccountHash : null,
+    );
+    AccountResourceScope.verifyCapturedAccount(
+      capturedAccountHash: resolvedAccountHash,
+      explicitAccountHash: explicitAccountHash,
     );
     return StoryRoomSavedImage(
       path: path,

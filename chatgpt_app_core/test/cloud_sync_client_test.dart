@@ -221,15 +221,15 @@ void main() {
   });
 
   test('syncOnce 拉取期间切换账号后应在合并和上传前中止', () async {
+    final authStorage = await _installTestAccount();
     final storage = await newDb();
     final dao = await ConversationListDao.create(storage);
     await dao.saveConversation(ConversationModel(cid: 7, icon: '')
       ..title = 'A 的本地数据'
       ..stickTime = 0
       ..updateAt = 30);
-    final localSync = LocalSyncService(storage);
+    final localSync = LocalSyncService(storage, accountHash: 'account-a');
     await localSync.exportChanges(updatedAfter: 20);
-    final authStorage = await _installTestAccount();
 
     final cursorStore = MemorySyncCursorStore(
       cursor: 3,
@@ -330,11 +330,41 @@ void main() {
     expect(cursorStore.lastSyncAt, 11);
   });
 
-  test('syncOnce 切号后不应继续请求下一页', () async {
-    final storage = await newDb();
-    final localSync = LocalSyncService(storage);
-    await localSync.exportChanges(updatedAfter: 100);
+  test('syncOnce 拒绝使用前一账号绑定的 LocalSyncService', () async {
     final authStorage = await _installTestAccount();
+    final localSync = LocalSyncService(
+      await newDb(),
+      accountHash: 'account-a',
+    );
+    await authStorage.writeProfile(
+      token: 'token-b',
+      userName: 'user-b',
+      extras: const {'accountHash': 'account-b'},
+    );
+    var requests = 0;
+    final client = CloudSyncClient(
+      localSync: localSync,
+      cursorStore: MemorySyncCursorStore(),
+      headersBuilder: () => const {},
+      client: MockClient((request) async {
+        requests++;
+        throw StateError('不应发起账号 B 的同步请求');
+      }),
+    );
+    addTearDown(client.close);
+
+    await expectLater(
+      client.syncOnce(),
+      throwsA(isA<LoginAccountChangedException>()),
+    );
+    expect(requests, 0);
+  });
+
+  test('syncOnce 切号后不应继续请求下一页', () async {
+    final authStorage = await _installTestAccount();
+    final storage = await newDb();
+    final localSync = LocalSyncService(storage, accountHash: 'account-a');
+    await localSync.exportChanges(updatedAfter: 100);
     final cursorStore = MemorySyncCursorStore(
       cursor: 3,
       lastPushAt: 100,
@@ -571,6 +601,46 @@ void main() {
       ),
       isTrue,
     );
+  });
+
+  test('createClient 用同一账号快照构造数据库与 LocalSyncService', () async {
+    await _installTestAccount();
+    final storage = await newDb();
+    String? openedAccountHash;
+
+    final client = await CloudSyncCoordinator.createClient(
+      databaseResolver: (accountHash) async {
+        openedAccountHash = accountHash;
+        return storage;
+      },
+    );
+    addTearDown(client.close);
+
+    expect(openedAccountHash, 'account-a');
+    expect(client.localSync.accountHash, 'account-a');
+  });
+
+  test('createClient 数据库等待期间切号时 fail closed', () async {
+    final authStorage = await _installTestAccount();
+    final storage = await newDb();
+    String? openedAccountHash;
+
+    await expectLater(
+      CloudSyncCoordinator.createClient(
+        databaseResolver: (accountHash) async {
+          openedAccountHash = accountHash;
+          await authStorage.writeProfile(
+            token: 'token-b',
+            userName: 'user-b',
+            extras: const {'accountHash': 'account-b'},
+          );
+          return storage;
+        },
+      ),
+      throwsA(isA<LoginAccountChangedException>()),
+    );
+
+    expect(openedAccountHash, 'account-a');
   });
 }
 

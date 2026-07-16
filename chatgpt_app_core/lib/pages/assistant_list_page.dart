@@ -41,6 +41,7 @@ import 'package:file_picker/file_picker.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:login_sdk/dao/login_dao.dart';
 import 'package:login_sdk/util/navigator_util.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:provider/provider.dart';
@@ -798,11 +799,17 @@ class _AssistantListPageState extends State<AssistantListPage> {
           );
     if (options == null) return;
     if (!mounted) return;
+    final accountHash = LoginDao.getAccountHash();
+    if (accountHash == null || accountHash.trim().isEmpty) {
+      HiDialog.showSnackBar(context, '账号状态已变化，请重新进入助手页面后导入');
+      return;
+    }
 
     _roleCardImportCoordinator.start(
       plans: importPlans,
       options: options,
       settings: context.read<AISettingsProvider>().settings.clone(),
+      accountHash: accountHash,
     );
   }
 
@@ -1649,8 +1656,28 @@ class _AssistantListPageState extends State<AssistantListPage> {
       ),
     );
     if (confirmed != true || a.id == null) return;
-    await _dao!.deleteAssistant(a.id!);
-    await AssistantRoleCardAssetStore.delete(assistantId: a.id!);
+    final accountHash = LoginDao.getAccountHash();
+    if (accountHash == null || accountHash.trim().isEmpty) {
+      if (mounted) HiDialog.showSnackBar(context, '账号状态已变化，请重新进入助手页面后删除');
+      return;
+    }
+    try {
+      await LoginDao.runWithStableAccount(
+        expectedAccountHash: accountHash,
+        action: () async {
+          final dbManager = await HiDBManager.instance(dbName: accountHash);
+          final dao = await AssistantDao.create(dbManager);
+          await dao.deleteAssistant(a.id!);
+          await AssistantRoleCardAssetStore.delete(
+            assistantId: a.id!,
+            accountHash: accountHash,
+          );
+        },
+      );
+    } catch (e) {
+      if (mounted) HiDialog.showSnackBar(context, '删除失败：$e');
+      return;
+    }
     if (!mounted) return;
     HiDialog.showSnackBar(context, '已删除「${a.name}」');
     _loadData();
@@ -1759,6 +1786,7 @@ class _RoleCardImportCoordinator extends ChangeNotifier {
     required List<_RoleCardImportPlan> plans,
     required _RoleCardImportOptions options,
     required AISettings settings,
+    required String accountHash,
   }) {
     if (plans.isEmpty) return;
     final jobs = [
@@ -1773,7 +1801,14 @@ class _RoleCardImportCoordinator extends ChangeNotifier {
     _jobs.insertAll(0, jobs);
     notifyListeners();
     unawaited(
-        _run(jobs: jobs, plans: plans, options: options, settings: settings));
+      _run(
+        jobs: jobs,
+        plans: plans,
+        options: options,
+        settings: settings,
+        accountHash: accountHash,
+      ),
+    );
   }
 
   void startTavernRoom({
@@ -1810,19 +1845,8 @@ class _RoleCardImportCoordinator extends ChangeNotifier {
     required List<_RoleCardImportPlan> plans,
     required _RoleCardImportOptions options,
     required AISettings settings,
+    required String accountHash,
   }) async {
-    AssistantDao? dao;
-    try {
-      final dbManager =
-          await HiDBManager.instance(dbName: HiDBManager.getAccountHash());
-      dao = await AssistantDao.create(dbManager);
-    } catch (e, stackTrace) {
-      for (final job in jobs) {
-        _failJob(job, options, e, stackTrace, stage: '初始化数据库失败');
-      }
-      return;
-    }
-
     for (var i = 0; i < plans.length; i++) {
       final job = jobs[i];
       final plan = plans[i];
@@ -1851,15 +1875,23 @@ class _RoleCardImportCoordinator extends ChangeNotifier {
           detail: '',
           progress: 0.78,
         );
-        await dao.saveAssistant(assistant);
-        final assistantId = assistant.id;
-        if (assistantId != null && plan.result.resources.isNotEmpty) {
-          assistant.roleCardAssets = await AssistantRoleCardAssetStore.save(
-            assistantId: assistantId,
-            resources: plan.result.resources,
-          );
-          await dao.saveAssistant(assistant);
-        }
+        await LoginDao.runWithStableAccount(
+          expectedAccountHash: accountHash,
+          action: () async {
+            final dbManager = await HiDBManager.instance(dbName: accountHash);
+            final dao = await AssistantDao.create(dbManager);
+            await dao.saveAssistant(assistant);
+            final assistantId = assistant.id;
+            if (assistantId != null && plan.result.resources.isNotEmpty) {
+              assistant.roleCardAssets = await AssistantRoleCardAssetStore.save(
+                assistantId: assistantId,
+                resources: plan.result.resources,
+                accountHash: accountHash,
+              );
+              await dao.saveAssistant(assistant);
+            }
+          },
+        );
         _update(
           job,
           status: _RoleCardImportJobStatus.completed,

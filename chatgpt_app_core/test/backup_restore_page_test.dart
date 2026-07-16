@@ -11,14 +11,15 @@ void main() {
     addTearDown(tester.view.resetDevicePixelRatio);
   }
 
-  BackupPreview preview() => const BackupPreview(
+  BackupPreview preview({bool includeApiKeys = false}) => BackupPreview(
         formatVersion: BackupService.formatVersion,
         exportedAt: 1719820800000,
         accountHash: 'backup-account',
-        includeApiKeys: true,
+        includeApiKeys: includeApiKeys,
         conversations: 3,
         messages: 9,
         assistants: 2,
+        assistantMemories: 3,
         favorites: 1,
         projects: 1,
         knowledgeDocs: 4,
@@ -28,8 +29,9 @@ void main() {
         fileAssets: 2,
         generatedImageAssets: 3,
         hasSettings: true,
-        warnings: ['备份来自其他账号，导入会写入当前账号'],
-        conflictSummary: BackupConflictSummary(
+        integrityVerified: true,
+        warnings: const ['备份来自其他账号，导入会写入当前账号'],
+        conflictSummary: const BackupConflictSummary(
           localRows: 5,
           replacingRows: 1,
           localOnlyRows: 2,
@@ -123,9 +125,11 @@ void main() {
     expect(find.text('导入预览'), findsOneWidget);
     expect(find.textContaining('备份版本：v${BackupService.formatVersion}'),
         findsOneWidget);
-    expect(find.textContaining('来源账号：backup-account'), findsOneWidget);
-    expect(find.textContaining('AI 设置：包含（含 API Key）'), findsOneWidget);
+    expect(find.textContaining('来源账号：ba…nt'), findsOneWidget);
+    expect(find.textContaining('内容与清单一致（不代表来源可信）'), findsOneWidget);
+    expect(find.textContaining('AI 设置：包含（不含 API Key）'), findsOneWidget);
     expect(find.textContaining('会话：3'), findsOneWidget);
+    expect(find.textContaining('长期记忆：3'), findsOneWidget);
     expect(find.textContaining('附件原始文件：2'), findsOneWidget);
     expect(find.textContaining('生成图片：3'), findsOneWidget);
     expect(find.textContaining('备份来自其他账号'), findsOneWidget);
@@ -208,5 +212,90 @@ void main() {
     expect(find.textContaining('仅本地数据将保留'), findsOneWidget);
     expect(find.widgetWithText(TextButton, '合并导入'), findsOneWidget);
     expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('跨账号导入隐藏完整账号且需额外确认', (tester) async {
+    await useLargeSurface(tester);
+    BackupImportMode? selected;
+    await tester.pumpWidget(MaterialApp(
+      home: Builder(
+        builder: (context) => Scaffold(
+          body: FilledButton(
+            onPressed: () async {
+              selected = await showDialog<BackupImportMode>(
+                context: context,
+                builder: (_) => BackupImportPreviewDialog(
+                  preview: preview(),
+                  targetAccountHash: 'current-account',
+                ),
+              );
+            },
+            child: const Text('打开'),
+          ),
+        ),
+      ),
+    ));
+    await tester.tap(find.text('打开'));
+    await tester.pumpAndSettle();
+
+    expect(find.textContaining('ba…nt → cu…nt'), findsOneWidget);
+    expect(find.text('backup-account'), findsNothing);
+    expect(find.text('current-account'), findsNothing);
+    final confirmBefore = tester.widget<TextButton>(
+      find.widgetWithText(TextButton, '覆盖导入'),
+    );
+    expect(confirmBefore.onPressed, isNull);
+
+    await tester.tap(find.text('我确认将此备份导入当前账号'));
+    await tester.pump();
+    final confirmAfter = tester.widget<TextButton>(
+      find.widgetWithText(TextButton, '覆盖导入'),
+    );
+    expect(confirmAfter.onPressed, isNotNull);
+    await tester.tap(find.widgetWithText(TextButton, '覆盖导入'));
+    await tester.pumpAndSettle();
+    expect(selected, BackupImportMode.overwriteAll);
+  });
+
+  testWidgets('包含 API/MCP 凭据的明文 ZIP 必须单独确认来源风险', (tester) async {
+    await useLargeSurface(tester);
+    BackupImportMode? selected;
+    await tester.pumpWidget(MaterialApp(
+      home: Builder(
+        builder: (context) => Scaffold(
+          body: FilledButton(
+            onPressed: () async {
+              selected = await showDialog<BackupImportMode>(
+                context: context,
+                builder: (_) => BackupImportPreviewDialog(
+                  preview: preview(includeApiKeys: true),
+                  targetAccountHash: 'backup-account',
+                ),
+              );
+            },
+            child: const Text('打开'),
+          ),
+        ),
+      ),
+    ));
+    await tester.tap(find.text('打开'));
+    await tester.pumpAndSettle();
+
+    expect(find.textContaining('ZIP 未加密'), findsWidgets);
+    expect(find.textContaining('API Key 或 MCP 鉴权信息'), findsOneWidget);
+    final confirmBefore = tester.widget<TextButton>(
+      find.widgetWithText(TextButton, '覆盖导入'),
+    );
+    expect(confirmBefore.onPressed, isNull);
+
+    await tester.tap(find.text('我确认备份来自可信来源，并接受凭据泄露风险'));
+    await tester.pump();
+    final confirmAfter = tester.widget<TextButton>(
+      find.widgetWithText(TextButton, '覆盖导入'),
+    );
+    expect(confirmAfter.onPressed, isNotNull);
+    await tester.tap(find.widgetWithText(TextButton, '覆盖导入'));
+    await tester.pumpAndSettle();
+    expect(selected, BackupImportMode.overwriteAll);
   });
 }

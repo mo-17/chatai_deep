@@ -22,6 +22,7 @@ import 'package:chatgpt_app_core/model/story_artifact_model.dart';
 import 'package:chatgpt_app_core/model/story_persona_model.dart';
 import 'package:chatgpt_app_core/model/story_template_translation_task_model.dart';
 import 'package:chatgpt_app_core/sync/local_sync_service.dart';
+import 'package:chatgpt_app_core/util/account_resource_scope.dart';
 import 'package:chatgpt_app_core/util/avatar_asset_service.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:flutter_hi_cache/flutter_hi_cache.dart';
@@ -1005,6 +1006,7 @@ void main() {
       final manifest = await AssistantRoleCardAssetStore.save(
         assistantId: assistantId,
         directoryResolver: () async => sourceDir,
+        accountHash: 'source-account',
         resources: [
           AssistantRoleCardResource(
             type: 'background',
@@ -1026,6 +1028,7 @@ void main() {
 
       final sourceSync = LocalSyncService(
         source,
+        accountHash: 'source-account',
         roleCardAssetDirectoryResolver: () async => sourceDir,
       );
       final changes = await sourceSync.exportChanges(updatedAfter: 99);
@@ -1046,6 +1049,7 @@ void main() {
 
       final targetSync = LocalSyncService(
         target,
+        accountHash: 'target-account',
         roleCardAssetDirectoryResolver: () async => targetDir,
       );
       final partial = await targetSync.applyRemoteChanges([
@@ -1072,6 +1076,7 @@ void main() {
       final restored = await AssistantRoleCardAssetStore.load(
         synced['roleCardAssets'] as String,
         directoryResolver: () async => targetDir,
+        accountHash: 'target-account',
       );
       expect(restored.single.bytes, bytes);
 
@@ -1090,7 +1095,8 @@ void main() {
       expect(cleared.accepted.single.key, 'assistant:$assistantId');
       expect(
         Directory(
-          '${targetDir.path}/${AssistantRoleCardAssetStore.directoryName}/$assistantId',
+          '${targetDir.path}/${AssistantRoleCardAssetStore.directoryName}/accounts/'
+          '${AccountResourceScope.tokenFor('target-account')}/$assistantId',
         ).existsSync(),
         isFalse,
       );
@@ -1118,6 +1124,7 @@ void main() {
       );
       final sync = LocalSyncService(
         storage,
+        accountHash: 'target-account',
         roleCardAssetDirectoryResolver: () async {
           if (failWrite) throw Exception('磁盘暂时不可用');
           return dir;
@@ -1168,6 +1175,7 @@ void main() {
       final restored = await AssistantRoleCardAssetStore.load(
         row['roleCardAssets'] as String,
         directoryResolver: () async => dir,
+        accountHash: 'target-account',
       );
       expect(restored.single.bytes, [1, 2, 3]);
     } finally {
