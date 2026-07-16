@@ -86,17 +86,23 @@ class BackendChatService implements ChatService, OptionsAwareChatService {
         .post(uri, headers: headers, body: jsonEncode(body))
         .timeout(timeout ?? const Duration(minutes: 2));
     AILogger.log('backend response: ${response.statusCode}');
+    final payload = _decodeJsonBytes(response.bodyBytes);
 
     if (response.statusCode == 401) {
-      LoginDao.logOut();
+      if (_isTrustedUpstreamAuthEnvelope(payload, response.statusCode)) {
+        throw _httpFailure(
+          statusCode: response.statusCode,
+          headers: response.headers,
+          payload: payload,
+        );
+      }
+      await LoginDao.logOut();
       throw Exception('登录已过期，请重新登录');
     }
 
-    const utf8decoder = Utf8Decoder();
-    final bodyString = utf8decoder.convert(response.bodyBytes);
-
     if (response.statusCode == 200 || response.statusCode == 201) {
-      final result = json.decode(bodyString) as Map<String, dynamic>;
+      final result = payload;
+      if (result == null) throw const FormatException('响应格式无效');
       if (result['code'] == 0 && result['data'] != null) {
         final data = result['data'] as Map<String, dynamic>;
         final content = data['content'] as String?;
@@ -142,17 +148,23 @@ class BackendChatService implements ChatService, OptionsAwareChatService {
         .post(uri, headers: headers, body: jsonEncode(body))
         .timeout(const Duration(seconds: 15));
     AILogger.log('backend response: ${response.statusCode}');
+    final payload = _decodeJsonBytes(response.bodyBytes);
 
     if (response.statusCode == 401) {
-      LoginDao.logOut();
+      if (_isTrustedUpstreamAuthEnvelope(payload, response.statusCode)) {
+        throw _httpFailure(
+          statusCode: response.statusCode,
+          headers: response.headers,
+          payload: payload,
+        );
+      }
+      await LoginDao.logOut();
       throw Exception('登录已过期，请重新登录');
     }
 
-    const utf8decoder = Utf8Decoder();
-    final bodyString = utf8decoder.convert(response.bodyBytes);
-
     if (response.statusCode == 200 || response.statusCode == 201) {
-      final result = json.decode(bodyString) as Map<String, dynamic>;
+      final result = payload;
+      if (result == null) throw const FormatException('响应格式无效');
       if (result['code'] == 0 && result['data'] != null) {
         final data = result['data'] as Map<String, dynamic>;
         final usage = data['usage'] as Map<String, dynamic>?;
@@ -248,16 +260,21 @@ class BackendChatService implements ChatService, OptionsAwareChatService {
           await httpClient.send(request).timeout(options.connectTimeout);
       AILogger.log('backend stream status: ${streamedResponse.statusCode}');
 
-      if (streamedResponse.statusCode == 401) {
-        LoginDao.logOut();
-      }
       if (streamedResponse.statusCode != 200 &&
           streamedResponse.statusCode != 201) {
         final bytes = await streamedResponse.stream.toBytes();
+        final payload = _decodeJsonBytes(bytes);
+        if (streamedResponse.statusCode == 401 &&
+            !_isTrustedUpstreamAuthEnvelope(
+              payload,
+              streamedResponse.statusCode,
+            )) {
+          await LoginDao.logOut();
+        }
         throw _httpFailure(
           statusCode: streamedResponse.statusCode,
           headers: streamedResponse.headers,
-          bytes: bytes,
+          payload: payload,
         );
       }
 
@@ -388,15 +405,14 @@ String _reasoningPolicy(ChatReasoningPolicy policy) => switch (policy) {
 ChatTransportException _httpFailure({
   required int statusCode,
   required Map<String, String> headers,
-  required List<int> bytes,
+  required Map<String, dynamic>? payload,
 }) {
-  final decoded = _decodeJsonBytes(bytes);
   final safeCode =
-      _safeCodeFromPayload(decoded) ?? _safeCodeForBackendStatus(statusCode);
+      _safeCodeFromPayload(payload) ?? _safeCodeForBackendStatus(statusCode);
   return ChatTransportException(
     statusCode: statusCode,
     retryAfter:
-        _retryAfterFromHeaders(headers) ?? _retryAfterFromPayload(decoded),
+        _retryAfterFromHeaders(headers) ?? _retryAfterFromPayload(payload),
     safeCode: safeCode,
     safeMessage: _safeBackendMessage(safeCode),
   );
@@ -438,12 +454,22 @@ String? _safeCodeFromPayload(Map<String, dynamic>? payload) {
   return value is String && _safeBackendCodes.contains(value) ? value : null;
 }
 
+bool _isTrustedUpstreamAuthEnvelope(
+  Map<String, dynamic>? payload,
+  int httpStatusCode,
+) =>
+    httpStatusCode == 401 &&
+    payload?['code'] == 'upstream_error' &&
+    payload?['safeCode'] == 'authentication_error' &&
+    _safeStatusCode(payload?['statusCode']) == httpStatusCode;
+
 int? _safeStatusCode(Object? value) =>
     value is int && value >= 100 && value <= 599 ? value : null;
 
 Duration? _retryAfterFromPayload(Map<String, dynamic>? payload) {
   final seconds = payload?['retryAfterSeconds'];
-  return seconds is int && seconds >= 0 ? Duration(seconds: seconds) : null;
+  if (seconds is! int || seconds < 0) return null;
+  return Duration(seconds: _clampRetryAfterSeconds(seconds));
 }
 
 Duration? _retryAfterFromHeaders(Map<String, String> headers) {
@@ -453,7 +479,15 @@ Duration? _retryAfterFromHeaders(Map<String, String> headers) {
   }
   if (value == null || !RegExp(r'^\d+$').hasMatch(value)) return null;
   final seconds = int.tryParse(value);
-  return seconds == null ? null : Duration(seconds: seconds);
+  return seconds == null
+      ? null
+      : Duration(seconds: _clampRetryAfterSeconds(seconds));
+}
+
+int _clampRetryAfterSeconds(int seconds) {
+  if (seconds < 1) return 1;
+  if (seconds > 120) return 120;
+  return seconds;
 }
 
 String _safeCodeForBackendStatus(int statusCode) {

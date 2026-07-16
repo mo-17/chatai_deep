@@ -568,7 +568,8 @@ void main() {
     }
   });
 
-  test('retryAfter accepts only non-negative decimal delay-seconds', () {
+  test('retryAfter accepts strict decimals and clamps delay to 1..120 seconds',
+      () {
     AIRequestException withRetryAfter(String value) => AIRequestException(
           'safe',
           HttpStatus.tooManyRequests,
@@ -576,14 +577,23 @@ void main() {
         );
 
     final zero = withRetryAfter('0');
-    expect(zero.headers, const {'retry-after': '0'});
-    expect(zero.retryAfter, Duration.zero);
+    expect(zero.headers, const {'retry-after': '1'});
+    expect(zero.retryAfter, const Duration(seconds: 1));
     final seven = withRetryAfter('7');
     expect(seven.headers, const {'retry-after': '7'});
     expect(seven.retryAfter, const Duration(seconds: 7));
     final padded = withRetryAfter('007');
     expect(padded.headers, const {'retry-after': '7'});
     expect(padded.retryAfter, const Duration(seconds: 7));
+    final aboveMaximum = withRetryAfter('121');
+    expect(aboveMaximum.headers, const {'retry-after': '120'});
+    expect(aboveMaximum.retryAfter, const Duration(seconds: 120));
+    final largeButParseable = withRetryAfter('9223372036854775807');
+    expect(largeButParseable.headers, const {'retry-after': '120'});
+    expect(
+      largeButParseable.retryAfter,
+      const Duration(seconds: 120),
+    );
     for (final invalid in const [
       '-1',
       '+1',
@@ -593,6 +603,7 @@ void main() {
       'Wed, 21 Oct 2015 07:28:00 GMT',
       'Bearer header-secret',
       'https://example.com/path?token=query-secret',
+      // Native Dart int overflow: reject rather than retaining the raw value.
       '9999999999999999999999999999999999999999',
     ]) {
       final failure = withRetryAfter(invalid);

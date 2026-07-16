@@ -10,28 +10,29 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:login_sdk/dao/backend_host.dart';
 import 'package:login_sdk/config/login_sdk_config.dart';
 import 'package:login_sdk/config/token_storage.dart';
+import 'package:login_sdk/dao/login_dao.dart';
 
 void main() {
   late HttpServer server;
   late List<Map<String, dynamic>> bodies;
   late String previousHost;
   late bool previousUseHttps;
+  late _RecordingTokenStorage storage;
+  late int logoutNavigations;
 
-  setUpAll(() {
+  setUp(() async {
+    LoginDao.resetHooksForTest();
+    storage = _RecordingTokenStorage.seeded();
+    logoutNavigations = 0;
     LoginSdkConfig.install(LoginSdkConfig(
       baseUrl: 'localhost:3000',
       headerProvider: () async => const {},
       syncHeaders: () => const {},
       routes: LoginRoutes.imooc,
       responseAdapter: ImoocResponseAdapter(),
-      storage: _EmptyTokenStorage(),
-      onLogoutNavigate: () {},
+      storage: storage,
+      onLogoutNavigate: () => logoutNavigations++,
     ));
-  });
-
-  tearDownAll(LoginSdkConfig.reset);
-
-  setUp(() async {
     previousHost = BackendConfig.host;
     previousUseHttps = BackendConfig.useHttps;
     bodies = [];
@@ -44,7 +45,70 @@ void main() {
       bodies.add(body);
       final messages = body['messages'] as List<dynamic>;
       final prompt = (messages.last as Map<String, dynamic>)['content'];
+      if (prompt == 'provider-401' || prompt == 'backend-auth-401') {
+        request.response.statusCode = HttpStatus.unauthorized;
+        request.response.headers.contentType = ContentType.json;
+        request.response.write(jsonEncode(prompt == 'provider-401'
+            ? {
+                'code': 'upstream_error',
+                'safeCode': 'authentication_error',
+                'statusCode': 401,
+                'message':
+                    'Authorization Bearer secret from http://private.example',
+              }
+            : {
+                'statusCode': 401,
+                'message': 'backend JWT expired',
+              }));
+        await request.response.close();
+        return;
+      }
       if (request.uri.path.endsWith('/stream')) {
+        const retryHeaderValues = {
+          'retry-header-zero': '0',
+          'retry-header-over': '121',
+          'retry-header-large': '9223372036854775807',
+          'retry-header-overflow': '9999999999999999999999999999999999999999',
+          'retry-header-signed': '+1',
+          'retry-header-date': 'Wed, 21 Oct 2015 07:28:00 GMT',
+          'retry-header-sensitive': 'Bearer header-secret',
+        };
+        final retryHeader = retryHeaderValues[prompt];
+        if (retryHeader != null) {
+          request.response.statusCode = HttpStatus.tooManyRequests;
+          request.response.headers.set('Retry-After', retryHeader);
+          request.response.headers.contentType = ContentType.json;
+          request.response.write(jsonEncode({
+            'code': 'upstream_error',
+            'safeCode': 'rate_limited',
+            'statusCode': 429,
+          }));
+          await request.response.close();
+          return;
+        }
+        const retryPayloadValues = {
+          'retry-payload-zero': '0',
+          'retry-payload-over': '121',
+          'retry-payload-large': '9223372036854775807',
+          'retry-payload-overflow': '9999999999999999999999999999999999999999',
+          'retry-payload-negative': '-1',
+          'retry-payload-spaced': '" 1"',
+          'retry-payload-date': '"Wed, 21 Oct 2015 07:28:00 GMT"',
+          'retry-payload-sensitive': '"Bearer payload-secret"',
+        };
+        final retryPayload = retryPayloadValues[prompt];
+        if (retryPayload != null) {
+          request.response.headers.contentType =
+              ContentType('text', 'event-stream', charset: 'utf-8');
+          request.response.write(
+            'event: error\n'
+            'data: {"code":"upstream_error","safeCode":"rate_limited",'
+            '"statusCode":429,"retryAfterSeconds":$retryPayload,'
+            '"message":"Authorization Bearer secret"}\n\n',
+          );
+          await request.response.close();
+          return;
+        }
         if (prompt == 'http-error') {
           request.response.statusCode = HttpStatus.tooManyRequests;
           request.response.headers.set('Retry-After', '17');
@@ -99,6 +163,8 @@ void main() {
     BackendConfig.host = previousHost;
     BackendConfig.useHttps = previousUseHttps;
     await server.close();
+    LoginDao.resetHooksForTest();
+    LoginSdkConfig.reset();
   });
 
   BackendChatService serviceWithTopP(double? topP) => BackendChatService(
@@ -269,6 +335,173 @@ void main() {
     _expectNoUnsafeErrorData(error);
   });
 
+  test('options-aware stream keeps app login for trusted provider 401 envelope',
+      () async {
+    final service =
+        BackendChatService(AISettings.defaults()..mode = AIMode.backend);
+
+    final error = await _captureError(
+      service.chatStreamEventsWithOptions(
+        prompt: 'provider-401',
+        history: const [],
+        options: const ChatRequestOptions(),
+      ),
+    );
+    await _awaitAuthQueueWithAccount();
+
+    expect(
+      error,
+      isA<ChatTransportException>()
+          .having((value) => value.statusCode, 'statusCode', 401)
+          .having(
+              (value) => value.safeCode, 'safeCode', 'authentication_error'),
+    );
+    expect(storage.clearCalls, 0);
+    expect(storage.readTokenSync(), 'app-jwt');
+    expect(logoutNavigations, 0);
+    _expectNoUnsafeErrorData(error);
+  });
+
+  test('options-aware stream still logs out for backend-auth 401', () async {
+    final service =
+        BackendChatService(AISettings.defaults()..mode = AIMode.backend);
+
+    final error = await _captureError(
+      service.chatStreamEventsWithOptions(
+        prompt: 'backend-auth-401',
+        history: const [],
+        options: const ChatRequestOptions(),
+      ),
+    );
+    await storage.cleared.future.timeout(const Duration(seconds: 1));
+
+    expect(
+      error,
+      isA<ChatTransportException>()
+          .having((value) => value.statusCode, 'statusCode', 401)
+          .having(
+              (value) => value.safeCode, 'safeCode', 'authentication_error'),
+    );
+    expect(storage.clearCalls, 1);
+    expect(storage.readTokenSync(), isNull);
+    expect(logoutNavigations, 1);
+  });
+
+  for (final method in const ['chat', 'chatWithUsage']) {
+    test('$method keeps app login and exposes typed provider 401 safely',
+        () async {
+      final service =
+          BackendChatService(AISettings.defaults()..mode = AIMode.backend);
+
+      final error = await _captureFutureError(
+        _runNonStreamingRequest(service, method, 'provider-401'),
+      );
+      await _awaitAuthQueueWithAccount();
+
+      expect(
+        error,
+        isA<ChatTransportException>()
+            .having((value) => value.statusCode, 'statusCode', 401)
+            .having(
+              (value) => value.safeCode,
+              'safeCode',
+              'authentication_error',
+            ),
+      );
+      expect(storage.clearCalls, 0);
+      expect(storage.readTokenSync(), 'app-jwt');
+      expect(logoutNavigations, 0);
+      _expectNoUnsafeErrorData(error);
+    });
+
+    test('$method still logs out for backend-auth 401', () async {
+      final service =
+          BackendChatService(AISettings.defaults()..mode = AIMode.backend);
+
+      final error = await _captureFutureError(
+        _runNonStreamingRequest(service, method, 'backend-auth-401'),
+      );
+      await storage.cleared.future.timeout(const Duration(seconds: 1));
+
+      expect(error.toString(), contains('登录已过期'));
+      expect(storage.clearCalls, 1);
+      expect(storage.readTokenSync(), isNull);
+      expect(logoutNavigations, 1);
+    });
+  }
+
+  const headerRetryCases = <String, int?>{
+    'retry-header-zero': 1,
+    'retry-header-over': 120,
+    'retry-header-large': 120,
+    'retry-header-overflow': null,
+    'retry-header-signed': null,
+    'retry-header-date': null,
+    'retry-header-sensitive': null,
+  };
+  for (final testCase in headerRetryCases.entries) {
+    test('options-aware stream clamps strict Retry-After ${testCase.key}',
+        () async {
+      final service =
+          BackendChatService(AISettings.defaults()..mode = AIMode.backend);
+
+      final error = await _captureError(
+        service.chatStreamEventsWithOptions(
+          prompt: testCase.key,
+          history: const [],
+          options: const ChatRequestOptions(),
+        ),
+      );
+
+      expect(
+        error,
+        isA<ChatTransportException>().having(
+          (value) => value.retryAfter,
+          'retryAfter',
+          testCase.value == null ? null : Duration(seconds: testCase.value!),
+        ),
+      );
+      _expectNoUnsafeErrorData(error);
+      expect(error.toString(), isNot(contains('header-secret')));
+    });
+  }
+
+  const payloadRetryCases = <String, int?>{
+    'retry-payload-zero': 1,
+    'retry-payload-over': 120,
+    'retry-payload-large': 120,
+    'retry-payload-overflow': null,
+    'retry-payload-negative': null,
+    'retry-payload-spaced': null,
+    'retry-payload-date': null,
+    'retry-payload-sensitive': null,
+  };
+  for (final testCase in payloadRetryCases.entries) {
+    test('options-aware stream clamps SSE retry seconds ${testCase.key}',
+        () async {
+      final service =
+          BackendChatService(AISettings.defaults()..mode = AIMode.backend);
+
+      final error = await _captureError(
+        service.chatStreamEventsWithOptions(
+          prompt: testCase.key,
+          history: const [],
+          options: const ChatRequestOptions(),
+        ),
+      );
+
+      expect(
+        error,
+        isA<ChatTransportException>().having(
+          (value) => value.retryAfter,
+          'retryAfter',
+          testCase.value == null ? null : Duration(seconds: testCase.value!),
+        ),
+      );
+      _expectNoUnsafeErrorData(error);
+    });
+  }
+
   test('options-aware stream aborts the request and emits no late token',
       () async {
     final delayed = await _DelayedSseServer.start();
@@ -325,6 +558,32 @@ Future<Object> _captureError(Stream<Object?> stream) async {
   }
   return StateError('stream completed without an error');
 }
+
+Future<Object> _captureFutureError(Future<void> future) async {
+  try {
+    await future;
+  } catch (error) {
+    return error;
+  }
+  return StateError('future completed without an error');
+}
+
+Future<void> _runNonStreamingRequest(
+  BackendChatService service,
+  String method,
+  String prompt,
+) async {
+  if (method == 'chat') {
+    await service.chat(prompt: prompt, history: const []);
+    return;
+  }
+  await service.chatWithUsage(prompt: prompt, history: const []);
+}
+
+Future<void> _awaitAuthQueueWithAccount() => LoginDao.runWithStableAccount(
+      expectedAccountHash: 'account-1',
+      action: () async {},
+    );
 
 void _expectNoUnsafeErrorData(Object error) {
   for (final unsafe in [
@@ -394,21 +653,37 @@ final class _DelayedSseServer {
   }
 }
 
-class _EmptyTokenStorage implements TokenStorage {
-  @override
-  Future<void> clear() async {}
+class _RecordingTokenStorage implements TokenStorage {
+  _RecordingTokenStorage.seeded()
+      : _profile = {
+          'boardingPass': 'app-jwt',
+          'userName': 'tester',
+          'accountHash': 'account-1',
+        };
+
+  Map<String, dynamic>? _profile;
+  int clearCalls = 0;
+  final Completer<void> cleared = Completer<void>();
 
   @override
-  Future<Map<String, dynamic>?> readProfile() async => null;
+  Future<void> clear() async {
+    clearCalls++;
+    _profile = null;
+    if (!cleared.isCompleted) cleared.complete();
+  }
 
   @override
-  Map<String, dynamic>? readProfileSync() => null;
+  Future<Map<String, dynamic>?> readProfile() async => readProfileSync();
 
   @override
-  Future<String?> readToken() async => null;
+  Map<String, dynamic>? readProfileSync() =>
+      _profile == null ? null : Map<String, dynamic>.from(_profile!);
 
   @override
-  String? readTokenSync() => null;
+  Future<String?> readToken() async => readTokenSync();
+
+  @override
+  String? readTokenSync() => _profile?['boardingPass'] as String?;
 
   @override
   Future<void> writeProfile({
@@ -416,5 +691,13 @@ class _EmptyTokenStorage implements TokenStorage {
     required String userName,
     String? avatar,
     Map<String, dynamic> extras = const {},
-  }) async {}
+  }) async {
+    _profile = {
+      'boardingPass': token,
+      'userName': userName,
+      'avatar': avatar,
+      'accountHash': userName.hashCode,
+      ...extras,
+    };
+  }
 }

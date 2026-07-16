@@ -34,9 +34,7 @@ class AIRequestException implements Exception {
     String? normalizedRetryAfter;
     for (final entry in headers.entries) {
       if (entry.key.toLowerCase() != 'retry-after') continue;
-      final value = entry.value;
-      final seconds =
-          _delaySeconds.hasMatch(value) ? int.tryParse(value) : null;
+      final seconds = _retryAfterSeconds(entry.value);
       normalizedRetryAfter = seconds?.toString();
     }
     return {
@@ -46,9 +44,18 @@ class AIRequestException implements Exception {
 
   Duration? get retryAfter {
     final value = headers['retry-after'];
-    if (value == null || !_delaySeconds.hasMatch(value)) return null;
-    final seconds = int.tryParse(value);
+    if (value == null) return null;
+    final seconds = _retryAfterSeconds(value);
     return seconds == null ? null : Duration(seconds: seconds);
+  }
+
+  static int? _retryAfterSeconds(String value) {
+    if (!_delaySeconds.hasMatch(value)) return null;
+    final parsed = int.tryParse(value);
+    if (parsed == null) return null;
+    if (parsed < 1) return 1;
+    if (parsed > 120) return 120;
+    return parsed;
   }
 
   @override
