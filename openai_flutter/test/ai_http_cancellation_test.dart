@@ -7,6 +7,7 @@ import 'package:http/http.dart' as http;
 import 'package:openai_flutter/core/ai_completions.dart';
 import 'package:openai_flutter/http/ai_config.dart';
 import 'package:openai_flutter/http/ai_exception.dart';
+import 'package:openai_flutter/http/ai_http.dart';
 
 void main() {
   test('external abort exposes a safe typed cancellation and disconnects',
@@ -166,6 +167,98 @@ void main() {
     );
   });
 
+  for (final streaming in const [false, true]) {
+    test(
+        '${streaming ? 'stream' : 'non-stream'} closed-port failure is a safe transport exception',
+        () async {
+      final socket = await ServerSocket.bind(InternetAddress.loopbackIPv4, 0);
+      final port = socket.port;
+      await socket.close();
+      final url = 'http://127.0.0.1:$port/chat'
+          '?token=query-secret&key=sk-secret';
+      final completion = AICompletion(AIConfigBuilder(
+        apiKey: 'test-key',
+        chatUrl: url,
+      ));
+
+      Object? failure;
+      try {
+        if (streaming) {
+          await completion
+              .createChatStreamEvents(
+                prompt: 'hello',
+                connectTimeout: const Duration(seconds: 1),
+              )
+              .drain<void>();
+        } else {
+          await completion.createChat(
+            prompt: 'hello',
+            timeout: const Duration(seconds: 1),
+          );
+        }
+      } catch (error) {
+        failure = error;
+      }
+
+      _expectSafeTransportFailure(failure, url);
+    });
+  }
+
+  for (final streaming in const [false, true]) {
+    test(
+        '${streaming ? 'stream' : 'non-stream'} malformed endpoint is a safe transport exception',
+        () async {
+      const url =
+          'http://127.0.0.1:not-a-port/chat?token=query-secret&key=sk-secret';
+      final completion = AICompletion(AIConfigBuilder(
+        apiKey: 'test-key',
+        chatUrl: url,
+      ));
+
+      Object? failure;
+      try {
+        if (streaming) {
+          await completion
+              .createChatStreamEvents(prompt: 'hello')
+              .drain<void>();
+        } else {
+          await completion.createChat(prompt: 'hello');
+        }
+      } catch (error) {
+        failure = error;
+      }
+
+      _expectSafeTransportFailure(failure, url);
+    });
+  }
+
+  test('non-stream caller callback errors are not transport-wrapped', () async {
+    final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+    addTearDown(() => server.close(force: true));
+    server.listen((request) async {
+      request.response.headers.contentType = ContentType.json;
+      request.response.write('{"ok":true}');
+      await request.response.close();
+    });
+    final url = 'http://${server.address.host}:${server.port}/chat';
+
+    await expectLater(
+      AIHttp.post<void>(
+        config: AIConfigBuilder(apiKey: 'test-key', chatUrl: url),
+        url: url,
+        body: const {'model': 'test'},
+        onSuccess: (_) => throw const FormatException('caller-owned failure'),
+      ),
+      throwsA(
+        isA<FormatException>().having(
+          (error) => error.message,
+          'message',
+          'caller-owned failure',
+        ),
+      ),
+    );
+  });
+
   test('event error frame fails the SSE stream', () async {
     final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
     addTearDown(() => server.close(force: true));
@@ -315,10 +408,9 @@ void main() {
     expect(failure!.statusCode, HttpStatus.tooManyRequests);
     expect(failure.message, 'HTTP request failed');
     expect(failure.headers['retry-after'], '7');
-    expect(failure.headers['x-request-id'], 'request-123');
     expect(
       failure.headers.keys,
-      unorderedEquals(const ['retry-after', 'x-request-id']),
+      unorderedEquals(const ['retry-after']),
     );
     expect(failure.retryAfter, const Duration(seconds: 7));
     expect(
@@ -384,9 +476,15 @@ void main() {
           headers: {'Retry-After': value},
         );
 
-    expect(withRetryAfter('0').retryAfter, Duration.zero);
-    expect(withRetryAfter('7').retryAfter, const Duration(seconds: 7));
-    expect(withRetryAfter('007').retryAfter, const Duration(seconds: 7));
+    final zero = withRetryAfter('0');
+    expect(zero.headers, const {'retry-after': '0'});
+    expect(zero.retryAfter, Duration.zero);
+    final seven = withRetryAfter('7');
+    expect(seven.headers, const {'retry-after': '7'});
+    expect(seven.retryAfter, const Duration(seconds: 7));
+    final padded = withRetryAfter('007');
+    expect(padded.headers, const {'retry-after': '7'});
+    expect(padded.retryAfter, const Duration(seconds: 7));
     for (final invalid in const [
       '-1',
       '+1',
@@ -394,10 +492,26 @@ void main() {
       ' 1',
       '1 ',
       'Wed, 21 Oct 2015 07:28:00 GMT',
+      'Bearer header-secret',
+      'https://example.com/path?token=query-secret',
+      '9999999999999999999999999999999999999999',
     ]) {
-      expect(withRetryAfter(invalid).retryAfter, isNull, reason: invalid);
+      final failure = withRetryAfter(invalid);
+      expect(failure.headers, isEmpty, reason: invalid);
+      expect(failure.retryAfter, isNull, reason: invalid);
     }
   });
+}
+
+void _expectSafeTransportFailure(Object? failure, String unsafeUrl) {
+  expect(failure, isA<AITransportException>());
+  final transport = failure! as AITransportException;
+  expect(transport.message, 'Network request failed');
+  expect(transport.toString(), 'AITransportException: Network request failed');
+  for (final sensitive in [unsafeUrl, 'query-secret', 'sk-secret']) {
+    expect(transport.message, isNot(contains(sensitive)));
+    expect(transport.toString(), isNot(contains(sensitive)));
+  }
 }
 
 AIConfigBuilder _configFor(HttpServer server) => AIConfigBuilder(

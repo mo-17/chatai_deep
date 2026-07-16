@@ -33,12 +33,26 @@ class AIHttp {
     try {
       final request = http.AbortableRequest(
         'POST',
-        Uri.parse(url),
+        _parseEndpoint(url),
         abortTrigger: requestAbort.future,
       )..headers.addAll(config.headers());
       if (body != null) request.body = jsonEncode(body);
-      final streamedResponse = await myClient.send(request);
-      final response = await http.Response.fromStream(streamedResponse);
+      late http.Response response;
+      try {
+        final streamedResponse = await myClient.send(request);
+        response = await http.Response.fromStream(streamedResponse);
+      } on http.RequestAbortedException {
+        if (timedOut) throw TimeoutException('Request timed out', timeout);
+        throw const AIRequestCancelledException();
+      } on http.ClientException {
+        throw const AITransportException();
+      } on SocketException {
+        throw const AITransportException();
+      } on TlsException {
+        throw const AITransportException();
+      } on HttpException {
+        throw const AITransportException();
+      }
       AILogger.log('request finished with status code ${response.statusCode}');
       AILogger.log('starting decoding response body');
 
@@ -67,9 +81,6 @@ class AIHttp {
       }
       AILogger.log("request finished successfully");
       return onSuccess(decodedBody);
-    } on http.RequestAbortedException {
-      if (timedOut) throw TimeoutException('Request timed out', timeout);
-      throw const AIRequestCancelledException();
     } finally {
       timeoutTimer.cancel();
       abortOnce();
@@ -118,7 +129,7 @@ class AIHttp {
     try {
       final request = http.AbortableRequest(
         'POST',
-        Uri.parse(url),
+        _parseEndpoint(url),
         abortTrigger: requestAbort.future,
       );
       request.headers.addAll(config.headers());
@@ -231,6 +242,14 @@ class AIHttp {
         throw TimeoutException('Connection timed out', connectTimeout);
       }
       throw const AIRequestCancelledException();
+    } on http.ClientException {
+      throw const AITransportException();
+    } on SocketException {
+      throw const AITransportException();
+    } on TlsException {
+      throw const AITransportException();
+    } on HttpException {
+      throw const AITransportException();
     } finally {
       connectTimer.cancel();
       abortOnce();
@@ -245,5 +264,18 @@ class AIHttp {
       httpClient.findProxy = (uri) => 'PROXY $proxy';
     }
     return IOClient(httpClient);
+  }
+
+  static Uri _parseEndpoint(String url) {
+    try {
+      final endpoint = Uri.parse(url);
+      if ((endpoint.scheme != 'http' && endpoint.scheme != 'https') ||
+          endpoint.host.isEmpty) {
+        throw const FormatException();
+      }
+      return endpoint;
+    } on FormatException {
+      throw const AITransportException();
+    }
   }
 }

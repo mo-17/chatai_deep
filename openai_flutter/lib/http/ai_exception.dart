@@ -11,10 +11,6 @@ class AIException implements Exception {
 }
 
 class AIRequestException implements Exception {
-  static const _safeResponseHeaders = {
-    'retry-after',
-    'x-request-id',
-  };
   static final _delaySeconds = RegExp(r'^\d+$');
 
   final String message;
@@ -25,11 +21,21 @@ class AIRequestException implements Exception {
     this.message,
     this.statusCode, {
     Map<String, String> headers = const {},
-  }) : headers = Map.unmodifiable({
-          for (final entry in headers.entries)
-            if (_safeResponseHeaders.contains(entry.key.toLowerCase()))
-              entry.key.toLowerCase(): entry.value,
-        });
+  }) : headers = Map.unmodifiable(_safeHeaders(headers));
+
+  static Map<String, String> _safeHeaders(Map<String, String> headers) {
+    String? normalizedRetryAfter;
+    for (final entry in headers.entries) {
+      if (entry.key.toLowerCase() != 'retry-after') continue;
+      final value = entry.value;
+      final seconds =
+          _delaySeconds.hasMatch(value) ? int.tryParse(value) : null;
+      normalizedRetryAfter = seconds?.toString();
+    }
+    return {
+      if (normalizedRetryAfter != null) 'retry-after': normalizedRetryAfter,
+    };
+  }
 
   Duration? get retryAfter {
     final value = headers['retry-after'];
@@ -50,4 +56,14 @@ class AIRequestCancelledException implements Exception {
 
   @override
   String toString() => 'AIRequestCancelledException: Request cancelled';
+}
+
+/// 网络传输或 endpoint 构造失败时抛出的安全异常，不携带请求 URI。
+class AITransportException implements Exception {
+  const AITransportException() : message = 'Network request failed';
+
+  final String message;
+
+  @override
+  String toString() => 'AITransportException: $message';
 }
