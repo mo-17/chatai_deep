@@ -1,4 +1,5 @@
 import 'package:chatgpt_app_core/db/hi_db_manager.dart';
+import 'package:chatgpt_app_core/db/schema_guard.dart';
 import 'package:chatgpt_app_core/db/table_name.dart';
 import 'package:chatgpt_app_core/model/project_model.dart';
 import 'package:sqflite/sqflite.dart';
@@ -18,16 +19,18 @@ class ProjectDao implements ITable {
         ', defaultProviderId text, defaultModelId text, defaultAssistantId integer'
         ', defaultUseWebSearch integer, defaultToolIds text'
         ', createdAt integer, updatedAt integer);');
-    try {
-      await storage.db.execute('alter table $_kTableName add column icon text');
-    } catch (_) {
-      // 列已存在，忽略
-    }
-    await _addColumn(storage, 'defaultProviderId text');
-    await _addColumn(storage, 'defaultModelId text');
-    await _addColumn(storage, 'defaultAssistantId integer');
-    await _addColumn(storage, 'defaultUseWebSearch integer');
-    await _addColumn(storage, 'defaultToolIds text');
+    await SchemaGuard.ensureColumns(
+      storage.db,
+      table: _kTableName,
+      columns: const {
+        'icon': 'text',
+        'defaultProviderId': 'text',
+        'defaultModelId': 'text',
+        'defaultAssistantId': 'integer',
+        'defaultUseWebSearch': 'integer',
+        'defaultToolIds': 'text',
+      },
+    );
     await storage.db.execute(
         'create index if not exists ${_kTableName}_sort_idx on $_kTableName(sortOrder, updatedAt desc);');
     return ProjectDao._(storage);
@@ -35,15 +38,6 @@ class ProjectDao implements ITable {
 
   @override
   String tableName = _kTableName;
-
-  static Future<void> _addColumn(HiDBManager storage, String columnSql) async {
-    try {
-      await storage.db
-          .execute('alter table $_kTableName add column $columnSql');
-    } catch (_) {
-      // 列已存在，忽略
-    }
-  }
 
   Future<int?> saveProject(ProjectModel model) async {
     model.updatedAt = DateTime.now().millisecondsSinceEpoch;

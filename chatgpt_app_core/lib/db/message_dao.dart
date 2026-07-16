@@ -1,6 +1,7 @@
 import 'package:chat_message/models/message_model.dart';
 import 'package:chatgpt_app_core/chat/application/chat_block_store.dart';
 import 'package:chatgpt_app_core/db/hi_db_manager.dart';
+import 'package:chatgpt_app_core/db/schema_guard.dart';
 import 'package:chatgpt_app_core/db/table_name.dart';
 
 ///消息表数据操作接口
@@ -32,29 +33,25 @@ class MessageDao implements IMessage, ITable {
   MessageDao._(this.storage, {required this.cid});
 
   /// 静态工厂，确保表和索引创建完成后再返回实例
-  static Future<MessageDao> create(HiDBManager storage, {required int cid}) async {
+  static Future<MessageDao> create(HiDBManager storage,
+      {required int cid}) async {
     await storage.db.execute(
         'create table if not exists tb_messages (id integer primary key autoincrement'
-            ', cid integer not null, content text, createdAt integer'
-            ', ownerName text, ownerType text, avatar text'
-            ', images text, blocks text)');
+        ', cid integer not null, content text, createdAt integer'
+        ', ownerName text, ownerType text, avatar text'
+        ', images text, blocks text)');
     await storage.db.execute(
         'create index if not exists tb_messages_cid_id_idx on tb_messages(cid, id desc)');
-    // 兼容旧表：无 images 列时自动新增
-    try {
-      await storage.db.execute(
-          'alter table tb_messages add column images text');
-    } catch (_) {
-      // 列已存在，忽略
-    }
-    // 兼容旧表：无 blocks 列时自动新增（块化消息系统）。
+    // 兼容旧表：缺少 images / blocks 时自动新增（块化消息系统）。
     // blocks 存一条消息的块列表 JSON；content 仍存「主文本」用于历史上下文与预览。
-    try {
-      await storage.db.execute(
-          'alter table tb_messages add column blocks text');
-    } catch (_) {
-      // 列已存在，忽略
-    }
+    await SchemaGuard.ensureColumns(
+      storage.db,
+      table: 'tb_messages',
+      columns: const {
+        'images': 'text',
+        'blocks': 'text',
+      },
+    );
     return MessageDao._(storage, cid: cid);
   }
 
@@ -82,9 +79,7 @@ class MessageDao implements IMessage, ITable {
   @override
   Future<int> getMessageCount() async {
     var result = await storage.db.query(tableName,
-        columns: ['COUNT(*) as cnt'],
-        where: 'cid = ?',
-        whereArgs: [cid]);
+        columns: ['COUNT(*) as cnt'], where: 'cid = ?', whereArgs: [cid]);
     return result.first['cnt'] as int;
   }
 
@@ -115,8 +110,7 @@ class MessageDao implements IMessage, ITable {
 
   /// 保存一条带块列表的消息（assistant 块化消息用）。
   /// [blocksJson] 为 `MessageBlock.encodeList(...)` 的结果。返回新行 id。
-  Future<int> saveMessageWithBlocks(MessageModel model,
-      {String? blocksJson}) {
+  Future<int> saveMessageWithBlocks(MessageModel model, {String? blocksJson}) {
     final data = model.toJson();
     data['cid'] = cid;
     if (blocksJson != null && blocksJson.isNotEmpty) {

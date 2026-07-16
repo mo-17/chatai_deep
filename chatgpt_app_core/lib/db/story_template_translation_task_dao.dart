@@ -1,4 +1,5 @@
 import 'package:chatgpt_app_core/db/hi_db_manager.dart';
+import 'package:chatgpt_app_core/db/schema_guard.dart';
 import 'package:chatgpt_app_core/db/story_template_dao.dart';
 import 'package:chatgpt_app_core/db/table_name.dart';
 import 'package:chatgpt_app_core/model/story_template_model.dart';
@@ -25,20 +26,17 @@ class StoryTemplateTranslationTaskDao implements ITable {
       'fieldPayload text, partialPayload text, leaseOwner text, leaseUntil integer, '
       'attempts integer default 0, nextRunAt integer, createdAt integer, updatedAt integer)',
     );
-    for (final column in const [
-      'fieldPayload text',
-      'leaseOwner text',
-      'leaseUntil integer',
-      'attempts integer default 0',
-      'nextRunAt integer',
-    ]) {
-      try {
-        await storage.db.execute(
-            'alter table tb_story_template_translation_task add column $column');
-      } catch (_) {
-        // 已存在列时忽略，保持旧任务表可升级。
-      }
-    }
+    await SchemaGuard.ensureColumns(
+      storage.db,
+      table: 'tb_story_template_translation_task',
+      columns: const {
+        'fieldPayload': 'text',
+        'leaseOwner': 'text',
+        'leaseUntil': 'integer',
+        'attempts': 'integer default 0',
+        'nextRunAt': 'integer',
+      },
+    );
     await storage.db.execute(
       'create index if not exists tb_story_template_translation_task_status_idx '
       'on tb_story_template_translation_task(status, updatedAt desc)',

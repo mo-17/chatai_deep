@@ -1,3 +1,4 @@
+import 'package:chatgpt_app_core/db/schema_guard.dart';
 import 'package:flutter/cupertino.dart';
 import 'package:sqflite/sqflite.dart';
 
@@ -54,8 +55,14 @@ class DbMigration {
         'create table if not exists tb_messages (id integer primary key autoincrement'
         ', cid integer not null, content text, createdAt integer'
         ', ownerName text, ownerType text, avatar text, images text, blocks text)');
-    await _addColumn(db, 'tb_messages', 'images text');
-    await _addColumn(db, 'tb_messages', 'blocks text');
+    await SchemaGuard.ensureColumns(
+      db,
+      table: 'tb_messages',
+      columns: const {
+        'images': 'text',
+        'blocks': 'text',
+      },
+    );
     await db.execute(
         'create index if not exists tb_messages_cid_id_idx on tb_messages(cid, id desc)');
   }
@@ -72,23 +79,29 @@ class DbMigration {
         ', voiceLocale text, voiceRate real, voiceStyle text'
         ', readAloudTriggerMode text'
         ', roleScene text, roleRelationship text, roleToneNote text);');
-    await _addColumn(db, 'tb_conversation_list', 'assistantId integer');
-    await _addColumn(db, 'tb_conversation_list', 'projectId integer');
-    await _addColumn(db, 'tb_conversation_list', 'avatarType text');
-    await _addColumn(db, 'tb_conversation_list', 'avatarValue text');
-    await _addColumn(db, 'tb_conversation_list', 'modelProviderId text');
-    await _addColumn(db, 'tb_conversation_list', 'modelId text');
-    await _addColumn(db, 'tb_conversation_list', 'webSearchEnabled integer');
-    await _addColumn(db, 'tb_conversation_list', 'toolIds text');
-    await _addColumn(db, 'tb_conversation_list', 'speechInputEnabled integer');
-    await _addColumn(db, 'tb_conversation_list', 'readAloudEnabled integer');
-    await _addColumn(db, 'tb_conversation_list', 'voiceLocale text');
-    await _addColumn(db, 'tb_conversation_list', 'voiceRate real');
-    await _addColumn(db, 'tb_conversation_list', 'voiceStyle text');
-    await _addColumn(db, 'tb_conversation_list', 'readAloudTriggerMode text');
-    await _addColumn(db, 'tb_conversation_list', 'roleScene text');
-    await _addColumn(db, 'tb_conversation_list', 'roleRelationship text');
-    await _addColumn(db, 'tb_conversation_list', 'roleToneNote text');
+    await SchemaGuard.ensureColumns(
+      db,
+      table: 'tb_conversation_list',
+      columns: const {
+        'assistantId': 'integer',
+        'projectId': 'integer',
+        'avatarType': 'text',
+        'avatarValue': 'text',
+        'modelProviderId': 'text',
+        'modelId': 'text',
+        'webSearchEnabled': 'integer',
+        'toolIds': 'text',
+        'speechInputEnabled': 'integer',
+        'readAloudEnabled': 'integer',
+        'voiceLocale': 'text',
+        'voiceRate': 'real',
+        'voiceStyle': 'text',
+        'readAloudTriggerMode': 'text',
+        'roleScene': 'text',
+        'roleRelationship': 'text',
+        'roleToneNote': 'text',
+      },
+    );
     await db.execute(
         'create unique index if not exists tb_conversation_list_cid_idx on tb_conversation_list (cid);');
     await db.execute(
@@ -104,12 +117,18 @@ class DbMigration {
         ', defaultProviderId text, defaultModelId text, defaultAssistantId integer'
         ', defaultUseWebSearch integer, defaultToolIds text'
         ', createdAt integer, updatedAt integer);');
-    await _addColumn(db, 'tb_project', 'icon text');
-    await _addColumn(db, 'tb_project', 'defaultProviderId text');
-    await _addColumn(db, 'tb_project', 'defaultModelId text');
-    await _addColumn(db, 'tb_project', 'defaultAssistantId integer');
-    await _addColumn(db, 'tb_project', 'defaultUseWebSearch integer');
-    await _addColumn(db, 'tb_project', 'defaultToolIds text');
+    await SchemaGuard.ensureColumns(
+      db,
+      table: 'tb_project',
+      columns: const {
+        'icon': 'text',
+        'defaultProviderId': 'text',
+        'defaultModelId': 'text',
+        'defaultAssistantId': 'integer',
+        'defaultUseWebSearch': 'integer',
+        'defaultToolIds': 'text',
+      },
+    );
     await db.execute(
         'create index if not exists tb_project_sort_idx on tb_project(sortOrder, updatedAt desc);');
   }
@@ -135,8 +154,14 @@ class DbMigration {
         'create table if not exists tb_assistant (id integer primary key autoincrement'
         ', name text, emoji text, prompt text, providerId text, model text, useTools integer'
         ', tools text, createdAt integer, updatedAt integer);');
-    await _addColumn(db, 'tb_assistant', 'tools text');
-    await _addColumn(db, 'tb_assistant', 'providerId text');
+    await SchemaGuard.ensureColumns(
+      db,
+      table: 'tb_assistant',
+      columns: const {
+        'tools': 'text',
+        'providerId': 'text',
+      },
+    );
   }
 
   static Future<void> _ensureFavorites(Database db) async {
@@ -151,9 +176,15 @@ class DbMigration {
         ', modelId text not null, providerId text, projectId integer, cid integer'
         ', promptTokens integer not null, completionTokens integer not null'
         ', cost real not null, estimated integer not null, createdAt integer not null);');
-    await _addColumn(db, 'tb_usage', 'providerId text');
-    await _addColumn(db, 'tb_usage', 'projectId integer');
-    await _addColumn(db, 'tb_usage', 'estimated integer');
+    await SchemaGuard.ensureColumns(
+      db,
+      table: 'tb_usage',
+      columns: const {
+        'providerId': 'text',
+        'projectId': 'integer',
+        'estimated': 'integer',
+      },
+    );
     await db.execute(
         'create index if not exists tb_usage_model_idx on tb_usage(modelId)');
     await db.execute(
@@ -175,14 +206,5 @@ class DbMigration {
         'create index if not exists tb_tool_audit_created_idx on tb_tool_audit(createdAt desc);');
     await db.execute(
         'create index if not exists tb_tool_audit_tool_idx on tb_tool_audit(toolName);');
-  }
-
-  static Future<void> _addColumn(
-      Database db, String table, String columnSql) async {
-    try {
-      await db.execute('alter table $table add column $columnSql');
-    } catch (_) {
-      // duplicate column / table absent during older partial schemas: ignored.
-    }
   }
 }

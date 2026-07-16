@@ -1,4 +1,5 @@
 import 'package:chatgpt_app_core/db/hi_db_manager.dart';
+import 'package:chatgpt_app_core/db/schema_guard.dart';
 import 'package:chatgpt_app_core/db/table_name.dart';
 import 'package:chatgpt_app_core/model/conversation_model.dart';
 import 'package:openai_flutter/utils/ai_logger.dart';
@@ -125,110 +126,30 @@ class ConversationListDao implements IConversationList, ITable {
         ', roleScene text, roleRelationship text, roleToneNote text);');
     await storage.db.execute(
         'create unique index if not exists ${_kTableName}_cid_idx on $_kTableName (cid);');
-    // 兼容旧表：无 assistantId 列时自动新增（阶段七 会话绑定助手）。
-    try {
-      await storage.db
-          .execute('alter table $_kTableName add column assistantId integer');
-    } catch (_) {
-      // 列已存在，忽略
-    }
-    // 兼容旧表：无 projectId 列时自动新增。null 表示未分类。
-    try {
-      await storage.db
-          .execute('alter table $_kTableName add column projectId integer');
-    } catch (_) {
-      // 列已存在，忽略
-    }
-    try {
-      await storage.db
-          .execute('alter table $_kTableName add column avatarType text');
-    } catch (_) {
-      // 列已存在，忽略
-    }
-    try {
-      await storage.db
-          .execute('alter table $_kTableName add column avatarValue text');
-    } catch (_) {
-      // 列已存在，忽略
-    }
-    try {
-      await storage.db
-          .execute('alter table $_kTableName add column modelProviderId text');
-    } catch (_) {
-      // 列已存在，忽略
-    }
-    try {
-      await storage.db
-          .execute('alter table $_kTableName add column modelId text');
-    } catch (_) {
-      // 列已存在，忽略
-    }
-    try {
-      await storage.db.execute(
-          'alter table $_kTableName add column webSearchEnabled integer');
-    } catch (_) {
-      // 列已存在，忽略
-    }
-    try {
-      await storage.db
-          .execute('alter table $_kTableName add column toolIds text');
-    } catch (_) {
-      // 列已存在，忽略
-    }
-    try {
-      await storage.db.execute(
-          'alter table $_kTableName add column speechInputEnabled integer');
-    } catch (_) {
-      // 列已存在，忽略
-    }
-    try {
-      await storage.db.execute(
-          'alter table $_kTableName add column readAloudEnabled integer');
-    } catch (_) {
-      // 列已存在，忽略
-    }
-    try {
-      await storage.db
-          .execute('alter table $_kTableName add column voiceLocale text');
-    } catch (_) {
-      // 列已存在，忽略
-    }
-    try {
-      await storage.db
-          .execute('alter table $_kTableName add column voiceRate real');
-    } catch (_) {
-      // 列已存在，忽略
-    }
-    try {
-      await storage.db
-          .execute('alter table $_kTableName add column voiceStyle text');
-    } catch (_) {
-      // 列已存在，忽略
-    }
-    try {
-      await storage.db.execute(
-          'alter table $_kTableName add column readAloudTriggerMode text');
-    } catch (_) {
-      // 列已存在，忽略
-    }
-    try {
-      await storage.db
-          .execute('alter table $_kTableName add column roleScene text');
-    } catch (_) {
-      // 列已存在，忽略
-    }
-    try {
-      await storage.db
-          .execute('alter table $_kTableName add column roleRelationship text');
-    } catch (_) {
-      // 列已存在，忽略
-    }
-    try {
-      await storage.db
-          .execute('alter table $_kTableName add column roleToneNote text');
-    } catch (_) {
-      // 列已存在，忽略
-    }
+    // 兼容旧表：仅在字段真实缺失时补齐，避免每次启动触发 duplicate-column。
+    await SchemaGuard.ensureColumns(
+      storage.db,
+      table: _kTableName,
+      columns: const {
+        'assistantId': 'integer',
+        'projectId': 'integer',
+        'avatarType': 'text',
+        'avatarValue': 'text',
+        'modelProviderId': 'text',
+        'modelId': 'text',
+        'webSearchEnabled': 'integer',
+        'toolIds': 'text',
+        'speechInputEnabled': 'integer',
+        'readAloudEnabled': 'integer',
+        'voiceLocale': 'text',
+        'voiceRate': 'real',
+        'voiceStyle': 'text',
+        'readAloudTriggerMode': 'text',
+        'roleScene': 'text',
+        'roleRelationship': 'text',
+        'roleToneNote': 'text',
+      },
+    );
     //复合索引：置顶+更新时间排序优化
     await storage.db.execute(
         'create index if not exists ${_kTableName}_stick_update_idx on $_kTableName(stickTime, updateAt desc);');

@@ -1,7 +1,7 @@
 import 'package:chatgpt_app_core/db/hi_db_manager.dart';
+import 'package:chatgpt_app_core/db/schema_guard.dart';
 import 'package:chatgpt_app_core/db/table_name.dart';
 import 'package:chatgpt_app_core/model/usage_record.dart';
-import 'package:sqflite/sqflite.dart';
 
 abstract class IUsageDao {
   Future<int> insert(UsageRecord usage);
@@ -63,11 +63,16 @@ class UsageDao extends IUsageDao implements ITable {
         ', completionTokens integer not null'
         ', cost real not null, estimated integer not null'
         ', createdAt integer not null);');
-    await _addColumn(storage.db, 'tb_usage', 'estimated integer');
-    await _addColumn(storage.db, 'tb_usage', 'projectId integer');
-    await _addColumn(storage.db, 'tb_usage', 'providerId text');
-    await _addColumn(
-        storage.db, 'tb_usage', 'cachedPromptTokens integer default 0');
+    await SchemaGuard.ensureColumns(
+      storage.db,
+      table: 'tb_usage',
+      columns: const {
+        'estimated': 'integer',
+        'projectId': 'integer',
+        'providerId': 'text',
+        'cachedPromptTokens': 'integer default 0',
+      },
+    );
     await storage.db.execute(
         'create index if not exists tb_usage_model_idx on tb_usage(modelId)');
     await storage.db.execute(
@@ -408,15 +413,6 @@ class UsageDao extends IUsageDao implements ITable {
     final where = clauses.isEmpty ? '' : 'where ${clauses.join(' and ')}';
 
     return (where, args);
-  }
-
-  static Future<void> _addColumn(
-      Database db, String table, String columnSql) async {
-    try {
-      await db.execute('alter table $table add column $columnSql');
-    } catch (_) {
-      // duplicate column / table absent during partial schema: ignored.
-    }
   }
 
   Future<bool> _tableExists(String table) async {
