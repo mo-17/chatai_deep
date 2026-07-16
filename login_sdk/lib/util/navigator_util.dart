@@ -19,11 +19,12 @@ class NavigatorUtil {
   ///跳转到首页
   static goToHome(BuildContext context) {
     if (LoginConfig.instance().homePage is Widget) {
-      //跳转到主页并不让返回
-      Navigator.pushReplacement(
+      // 清空整个账号导航栈，避免 B 登录后返回到 A 的 BottomNavigator/二级页。
+      Navigator.pushAndRemoveUntil(
           context,
           MaterialPageRoute(
-              builder: (context) => LoginConfig.instance().homePage!));
+              builder: (context) => LoginConfig.instance().homePage!),
+          (route) => false);
     } else {
       throw Exception('please call LoginConfig init first');
     }
@@ -31,8 +32,10 @@ class NavigatorUtil {
 
   ///跳转到登录页
   static goToLogin() {
-    //跳转到登录页，并不让返回
-    Navigator.pushReplacement(
-        _context!, MaterialPageRoute(builder: (context) => const LoginPage()));
+    // 401/登出可能发生在任意二级页；必须清空旧账号的全部路由和 State。
+    Navigator.pushAndRemoveUntil(
+        _context!,
+        MaterialPageRoute(builder: (context) => const LoginPage()),
+        (route) => false);
   }
 }
