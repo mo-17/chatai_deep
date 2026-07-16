@@ -28,17 +28,14 @@ class _HiDownLoadPageState extends State<HiDownLoadPage> {
   }
 
   void _doDownLoad() async {
-    String? path;
-    path = await HiDownLoad().download(
+    final path = await HiDownLoad().download(
         downLoadUrl: 'https://www.devio.org/img/bg-flutter-new.jpg',
         fileName: 'bg-flutter-new.jpg',
-        listener: (int total, int received, bool done) {
-          if (done) {
-            setState(() {
-              imageFile = File(path!);
-            });
-          }
-        });
+        listener: (int total, int received, bool done) {});
+    if (!mounted) return;
+    setState(() {
+      imageFile = File(path);
+    });
     debugPrint('path:$path');
   }
 }
