@@ -17,6 +17,7 @@ import { JwtGuard } from '../auth/jwt.guard';
 import { AdminGuard } from '../auth/admin.guard';
 import { ChatService } from './chat.service';
 import { CompletionBodyDto } from './dto/completion-body.dto';
+import { safeUpstreamPayloadFromError } from './upstream-error';
 
 @Controller('uapi/chat')
 export class ChatController {
@@ -111,21 +112,36 @@ export class ChatController {
     @Body() body: CompletionBodyDto,
     @Res() res: Response,
   ) {
+    const clientAbort = new AbortController();
+    const abortClient = () => clientAbort.abort();
+    req.on('aborted', abortClient);
+    res.on('close', abortClient);
+    if (req.aborted || res.destroyed) abortClient();
+
     try {
-      await this.svc.completeStream(req.user!.userId, body, res);
+      await this.svc.completeStream(
+        req.user!.userId,
+        body,
+        res,
+        clientAbort.signal,
+      );
     } catch (err: unknown) {
-      const e = err as { status?: number; message?: string };
+      if (clientAbort.signal.aborted || res.destroyed || res.writableEnded) {
+        return;
+      }
+      const payload = safeUpstreamPayloadFromError(err);
       if (!res.headersSent) {
-        res.status(e.status || 502).json({
-          code: -1,
-          message: e.message || '流式请求失败',
-        });
+        if (payload.retryAfterSeconds !== undefined) {
+          res.setHeader('Retry-After', String(payload.retryAfterSeconds));
+        }
+        res.status(payload.statusCode).json(payload);
       } else {
-        res.write(
-          `event: error\ndata: ${JSON.stringify({ message: e.message ?? '上游错误' })}\n\n`,
-        );
+        res.write(`event: error\ndata: ${JSON.stringify(payload)}\n\n`);
         res.end();
       }
+    } finally {
+      req.off('aborted', abortClient);
+      res.off('close', abortClient);
     }
   }
 }

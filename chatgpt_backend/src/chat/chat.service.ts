@@ -1,7 +1,11 @@
-import { Injectable, BadGatewayException } from '@nestjs/common';
+import {
+  Injectable,
+  BadGatewayException,
+  GatewayTimeoutException,
+} from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
-import { Response } from 'express';
+import type { Response } from 'express';
 import { Usage } from './usage.entity';
 import { Conversation } from './conversation.entity';
 import { Message } from './message.entity';
@@ -9,6 +13,19 @@ import { AiProvider } from '../ai/ai-provider.entity';
 import { AiModel } from '../ai/ai-model.entity';
 import { AiGlobalConfig } from '../ai/ai-global-config.entity';
 import { ProviderCacheService } from '../ai/provider-cache.service';
+import {
+  resolveReasoningControl,
+  type ReasoningPolicy,
+} from './reasoning-control';
+import {
+  StreamDeadlineController,
+  type StreamRequestProfile,
+} from './stream-deadline-controller';
+import {
+  SafeUpstreamException,
+  safeFailureFromResponse,
+  safeFailureFromSsePayload,
+} from './upstream-error';
 
 export interface CompletionBody {
   model: string;
@@ -18,6 +35,8 @@ export interface CompletionBody {
   top_p?: number;
   // 工具调用声明（阶段六）：随 body 展开原样转发给上游。
   tools?: Record<string, unknown>[];
+  request_profile?: StreamRequestProfile;
+  reasoning_policy?: ReasoningPolicy;
 }
 
 export interface UpstreamResponse {
@@ -34,7 +53,7 @@ export interface UpstreamResponse {
     completion_tokens?: number;
     total_tokens?: number;
   };
-  error?: { message?: string };
+  error?: { message?: string; code?: unknown; type?: unknown };
   [key: string]: unknown;
 }
 
@@ -137,16 +156,10 @@ export class ChatService {
     provider: AiProvider,
     body: CompletionBody,
   ): Promise<UpstreamResponse> {
-    if (!provider.apiKey) {
-      throw new BadGatewayException(
-        `服务商 ${provider.code} 未配置 API Key，请联系管理员`,
-      );
-    }
-    if (!provider.enabled) {
-      throw new BadGatewayException(`服务商 ${provider.displayName} 已停用`);
-    }
+    assertProviderAvailable(provider);
 
     const url = `${provider.baseUrl}/chat/completions`;
+    const upstreamBody = buildUpstreamBody(provider, body);
     const t0 = Date.now();
     try {
       const resp = await fetch(url, {
@@ -155,154 +168,167 @@ export class ChatService {
           'Content-Type': 'application/json',
           Authorization: `Bearer ${provider.apiKey}`,
         },
-        body: JSON.stringify(body),
+        body: JSON.stringify(upstreamBody),
       });
 
-      const data: UpstreamResponse = (await resp.json()) as UpstreamResponse;
-
       if (!resp.ok) {
-        throw new BadGatewayException(
-          data?.error?.message ||
-            `上游 ${provider.code} 返回错误 ${resp.status}`,
-        );
+        throw await safeFailureFromResponse(resp);
       }
+      const data: UpstreamResponse = (await resp.json()) as UpstreamResponse;
 
       console.log(
         `[upstream] ${provider.code}/${body.model} ${Date.now() - t0}ms tokens=${data.usage?.total_tokens ?? '?'}`,
       );
       return data;
     } catch (e) {
-      if (e instanceof BadGatewayException) throw e;
-
-      console.warn(
-        `[upstream] ${provider.code}/${body.model} ${Date.now() - t0}ms FAIL: ${(e as Error).message}`,
-      );
-      throw e;
+      if (e instanceof SafeUpstreamException) throw e;
+      throw new SafeUpstreamException({ safeCode: 'request_failed' });
     }
   }
 
   // --- SSE streaming completion ---
 
-  async completeStream(userId: number, body: CompletionBody, res: Response) {
+  async completeStream(
+    userId: number,
+    body: CompletionBody,
+    res: Response,
+    clientSignal: AbortSignal = new AbortController().signal,
+  ) {
     const provider = await this.resolveProvider(body.model);
-
-    if (!provider.apiKey) {
-      throw new BadGatewayException(
-        `服务商 ${provider.code} 未配置 API Key，请联系管理员`,
-      );
-    }
-    if (!provider.enabled) {
-      throw new BadGatewayException(`服务商 ${provider.displayName} 已停用`);
-    }
+    assertProviderAvailable(provider);
+    if (clientSignal.aborted) return;
 
     const url = `${provider.baseUrl}/chat/completions`;
+    const requestProfile = safeRequestProfile(body.request_profile);
     const streamBody = {
-      ...body,
+      ...buildUpstreamBody(provider, body),
       stream: true,
       stream_options: { include_usage: true },
     };
 
-    const controller = new AbortController();
-    res.on('close', () => controller.abort());
-
-    const upstreamResp = await fetch(url, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        Authorization: `Bearer ${provider.apiKey}`,
-      },
-      body: JSON.stringify(streamBody),
-      signal: AbortSignal.any([controller.signal, AbortSignal.timeout(60_000)]),
+    const upstreamController = new AbortController();
+    const abortUpstreamForClient = () => upstreamController.abort();
+    clientSignal.addEventListener('abort', abortUpstreamForClient, {
+      once: true,
     });
-
-    if (!upstreamResp.ok) {
-      const text = await upstreamResp.text();
-      let errMsg = `上游 ${provider.code} 返回错误 ${upstreamResp.status}`;
-      try {
-        const errData = JSON.parse(text) as UpstreamResponse;
-        if (errData?.error?.message) errMsg = errData.error.message;
-      } catch {
-        // JSON 解析失败，使用默认错误消息
-      }
-      throw new BadGatewayException(errMsg);
-    }
-
-    res.status(200);
-    res.setHeader('Content-Type', 'text/event-stream; charset=utf-8');
-    res.setHeader('Cache-Control', 'no-cache, no-transform');
-    res.setHeader('Connection', 'keep-alive');
-    res.setHeader('X-Accel-Buffering', 'no');
-    res.flushHeaders();
-
-    const reader = upstreamResp.body!.getReader();
-    const decoder = new TextDecoder();
-    let buffer = '';
+    if (clientSignal.aborted) abortUpstreamForClient();
+    const deadlines = new StreamDeadlineController({
+      profile: requestProfile,
+      upstreamController,
+    });
+    let reader: ReadableStreamDefaultReader<Uint8Array> | undefined;
     let lastUsage: UpstreamResponse['usage'] = undefined;
+    let completedNormally = false;
 
     try {
+      const upstreamResp = await fetch(url, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${provider.apiKey}`,
+        },
+        body: JSON.stringify(streamBody),
+        signal: upstreamController.signal,
+      });
+
+      if (!upstreamResp.ok) throw await safeFailureFromResponse(upstreamResp);
+      if (!upstreamResp.body) {
+        throw new SafeUpstreamException({ safeCode: 'request_failed' });
+      }
+      if (clientSignal.aborted || !isResponseWritable(res)) return;
+
+      res.status(200);
+      res.setHeader('Content-Type', 'text/event-stream; charset=utf-8');
+      res.setHeader('Cache-Control', 'no-cache, no-transform');
+      res.setHeader('Connection', 'keep-alive');
+      res.setHeader('X-Accel-Buffering', 'no');
+      res.flushHeaders();
+
+      reader = upstreamResp.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = '';
+      let upstreamDone = false;
+
       while (true) {
         const { done, value } = await reader.read();
-        if (done) break;
-
+        if (done) {
+          buffer += decoder.decode();
+          break;
+        }
+        if (value.byteLength > 0) deadlines.markActivity();
         buffer += decoder.decode(value, { stream: true });
+
         let idx: number;
         while ((idx = buffer.search(SSE_SEP)) !== -1) {
+          const separatorLength = buffer[idx] === '\r' ? 4 : 2;
           const block = buffer.slice(0, idx);
-          buffer = buffer.slice(idx + (buffer[idx] === '\r' ? 4 : 2));
-
-          // Parse SSE block for usage info
-          const lines = block.split(/\r?\n/);
-          for (const rawLine of lines) {
-            const line = rawLine.trimEnd();
-            if (line.startsWith('data: ')) {
-              const data = line.slice(6);
-              if (data === '[DONE]') continue;
-              try {
-                const json = JSON.parse(data) as UpstreamResponse;
-                if (json.usage) {
-                  lastUsage = json.usage;
-                }
-              } catch {
-                // 忽略无法解析的 SSE 行
-              }
-            }
+          buffer = buffer.slice(idx + separatorLength);
+          const inspected = inspectSseBlock(block);
+          if (inspected.usage) lastUsage = inspected.usage;
+          if (inspected.done) {
+            upstreamDone = true;
+            break;
           }
-
-          res.write(block + '\n\n');
+          if (isResponseWritable(res) && !clientSignal.aborted) {
+            res.write(`${block}\n\n`);
+          }
+        }
+        if (upstreamDone) {
+          buffer = '';
+          break;
         }
       }
 
-      // 处理 buffer 中的残余块
       if (buffer.trim()) {
-        const lines = buffer.split(/\r?\n/);
-        for (const rawLine of lines) {
-          const line = rawLine.trimEnd();
-          if (line.startsWith('data: ') && line.slice(6) !== '[DONE]') {
-            try {
-              const json = JSON.parse(line.slice(6)) as UpstreamResponse;
-              if (json.usage) lastUsage = json.usage;
-            } catch {
-              // 忽略
-            }
-          }
+        const inspected = inspectSseBlock(buffer);
+        if (inspected.usage) lastUsage = inspected.usage;
+        if (
+          !inspected.done &&
+          isResponseWritable(res) &&
+          !clientSignal.aborted
+        ) {
+          res.write(buffer);
         }
-        res.write(buffer);
       }
-    } catch (err) {
-      if ((err as Error).name === 'AbortError') {
-        // Client disconnected — normal, just exit
-      } else {
-        throw err;
+
+      if (isResponseWritable(res) && !clientSignal.aborted) {
+        res.write('data: [DONE]\n\n');
+        completedNormally = true;
+        res.end();
       }
+    } catch (error) {
+      if (upstreamController.signal.aborted) {
+        if (deadlines.expiredKind !== null) {
+          throw new GatewayTimeoutException('上游响应超时');
+        }
+        if (clientSignal.aborted) return;
+      }
+      if (
+        error instanceof SafeUpstreamException ||
+        error instanceof GatewayTimeoutException
+      ) {
+        throw error;
+      }
+      throw new SafeUpstreamException({ safeCode: 'request_failed' });
     } finally {
-      reader.releaseLock();
+      if (reader) {
+        try {
+          await reader.cancel();
+        } catch {
+          // 流已关闭或失败，无需再次暴露错误。
+        }
+        try {
+          reader.releaseLock();
+        } catch {
+          // reader 已释放。
+        }
+      }
+      deadlines.dispose();
+      clientSignal.removeEventListener('abort', abortUpstreamForClient);
     }
 
-    res.write('data: [DONE]\n\n');
-    res.end();
-
     // Fire-and-forget usage save
-    if (lastUsage) {
+    if (lastUsage && completedNormally) {
       void this.usageRepo
         .save({
           userId,
@@ -374,4 +400,91 @@ export class ChatService {
     this.providerCache.set(cacheKey, fallback);
     return fallback;
   }
+}
+
+function buildUpstreamBody(
+  provider: AiProvider,
+  body: CompletionBody,
+): Record<string, unknown> {
+  const policy: ReasoningPolicy =
+    body.reasoning_policy === 'off_if_supported'
+      ? 'off_if_supported'
+      : 'provider_default';
+  return {
+    model: body.model,
+    messages: body.messages,
+    ...(body.max_tokens === undefined ? {} : { max_tokens: body.max_tokens }),
+    ...(body.temperature === undefined
+      ? {}
+      : { temperature: body.temperature }),
+    ...(body.top_p === undefined ? {} : { top_p: body.top_p }),
+    ...(body.tools === undefined ? {} : { tools: body.tools }),
+    ...resolveReasoningControl({
+      providerCode: provider.code,
+      modelId: body.model,
+      policy,
+    }),
+  };
+}
+
+function assertProviderAvailable(provider: AiProvider): void {
+  if (!provider.apiKey || !provider.enabled) {
+    throw new SafeUpstreamException({ safeCode: 'request_failed' });
+  }
+}
+
+function safeRequestProfile(value: unknown): StreamRequestProfile {
+  return value === 'translation' ? 'translation' : 'standard';
+}
+
+function inspectSseBlock(block: string): {
+  done: boolean;
+  usage?: UpstreamResponse['usage'];
+} {
+  const lines = block.split(/\r?\n/);
+  const eventName = lines
+    .find((line) => line.startsWith('event:'))
+    ?.slice(6)
+    .trim();
+  const dataLines = lines
+    .filter((line) => line.startsWith('data:'))
+    .map((line) => {
+      const data = line.slice(5);
+      return data.startsWith(' ') ? data.slice(1) : data;
+    });
+  const data = dataLines.join('\n');
+
+  if (data === '[DONE]') return { done: true };
+  const payload = parseJsonObject(data);
+  if (
+    eventName === 'error' ||
+    payload?.['error'] != null ||
+    payload?.['code'] === 'upstream_error'
+  ) {
+    throw safeFailureFromSsePayload(payload);
+  }
+  const usage = asRecord(payload?.['usage']);
+  return {
+    done: false,
+    ...(usage ? { usage: usage } : {}),
+  };
+}
+
+function parseJsonObject(text: string): Record<string, unknown> | null {
+  if (!text) return null;
+  try {
+    return asRecord(JSON.parse(text) as unknown);
+  } catch {
+    return null;
+  }
+}
+
+function asRecord(value: unknown): Record<string, unknown> | null {
+  return value !== null && typeof value === 'object'
+    ? (value as Record<string, unknown>)
+    : null;
+}
+
+function isResponseWritable(res: Response): boolean {
+  return !res.destroyed && !res.writableEnded;
 }

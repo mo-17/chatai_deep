@@ -4,6 +4,7 @@ import {
   IsInt,
   IsNumber,
   IsOptional,
+  IsIn,
   Min,
   Max,
 } from 'class-validator';
@@ -37,4 +38,12 @@ export class CompletionBodyDto {
   @IsOptional()
   @IsArray()
   tools?: Record<string, unknown>[];
+
+  @IsOptional()
+  @IsIn(['standard', 'translation'])
+  request_profile?: 'standard' | 'translation';
+
+  @IsOptional()
+  @IsIn(['provider_default', 'off_if_supported'])
+  reasoning_policy?: 'provider_default' | 'off_if_supported';
 }
