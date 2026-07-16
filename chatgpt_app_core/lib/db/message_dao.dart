@@ -70,15 +70,15 @@ class MessageDao implements IMessage, ITable {
 
   @override
   Future<List<MessageModel>> getAllMessage() async {
-    var results = await storage.db.query(tableName,
+    final results = await storage.db.query(tableName,
         where: 'cid = ?', whereArgs: [cid], orderBy: 'id asc');
-    var list = results.map((item) => MessageModel.fromJson(item)).toList();
+    final list = results.map((item) => MessageModel.fromJson(item)).toList();
     return list;
   }
 
   @override
   Future<int> getMessageCount() async {
-    var result = await storage.db.query(tableName,
+    final result = await storage.db.query(tableName,
         columns: ['COUNT(*) as cnt'], where: 'cid = ?', whereArgs: [cid]);
     return result.first['cnt'] as int;
   }
@@ -86,8 +86,8 @@ class MessageDao implements IMessage, ITable {
   @override
   Future<List<MessageModel>> getMessages(
       {int pageIndex = 1, int pageSize = 15}) async {
-    var offset = (pageIndex - 1) * pageSize;
-    var results = await storage.db.query(tableName,
+    final offset = (pageIndex - 1) * pageSize;
+    final results = await storage.db.query(tableName,
         where: 'cid = ?',
         whereArgs: [cid],
         orderBy: 'id desc',
@@ -95,7 +95,7 @@ class MessageDao implements IMessage, ITable {
         offset: offset);
 
     ///将查询结果转成Dart Model以方便使用
-    var list = results.map((item) => MessageModel.fromJson(item)).toList();
+    final list = results.map((item) => MessageModel.fromJson(item)).toList();
 
     ///反转列表以适应分页查询
     return List.from(list.reversed);

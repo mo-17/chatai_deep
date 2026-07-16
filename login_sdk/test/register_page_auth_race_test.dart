@@ -6,7 +6,6 @@ import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:http/http.dart' as http;
 import 'package:http/testing.dart';
-import 'package:login_sdk/config/token_storage.dart';
 import 'package:login_sdk/dao/login_dao.dart';
 import 'package:login_sdk/login_sdk.dart';
 import 'package:login_sdk/pages/register_page.dart';

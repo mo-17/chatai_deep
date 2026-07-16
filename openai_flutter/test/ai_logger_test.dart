@@ -3,7 +3,7 @@ import 'package:openai_flutter/utils/ai_logger.dart';
 
 void main() {
   test('redactSensitive 隐去 headers、JSON 和 URL 中的凭据', () {
-    final input = 'Authorization: Bearer abc.def '
+    const input = 'Authorization: Bearer abc.def '
         'apiKey="sk-secret" '
         '"password":"p@ss" '
         'boarding-pass=board-token '

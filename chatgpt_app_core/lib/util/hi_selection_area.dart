@@ -19,22 +19,14 @@ class HiSelectionArea {
         if (selectedText.length < (child.data?.length ?? 0)) {
           selectAllEnable = true;
         }
-        final List<ContextMenuButtonItem> buttonItems = [
-          if (selectAll && selectAllEnable)
-            ContextMenuButtonItem(
-                label: '全选',
-                onPressed: () {
-                  selectableRegionState
-                      .selectAll(SelectionChangedCause.toolbar);
-                }),
-          if (copy)
-            ContextMenuButtonItem(
-                label: '复制',
-                onPressed: () {
-                  selectableRegionState
-                      .copySelection(SelectionChangedCause.toolbar);
+        final buttonItems = selectableRegionState.contextMenuButtonItems
+            .where((item) => switch (item.type) {
+                  ContextMenuButtonType.selectAll =>
+                    selectAll && selectAllEnable,
+                  ContextMenuButtonType.copy => copy,
+                  _ => false,
                 })
-        ];
+            .toList();
         return AdaptiveTextSelectionToolbar.buttonItems(
             buttonItems: buttonItems,
             anchors: selectableRegionState.contextMenuAnchors);

@@ -18,20 +18,22 @@ class NoticeDao {
       {int pageIndex = 1,
       int pageSize = 100,
       HitCache<NoticeModel>? hitCache}) async {
-    Map<String, String> paramsMap = {};
-    paramsMap['pageIndex'] = pageIndex.toString();
-    paramsMap['pageSize'] = pageSize.toString();
-    var uri = BackendConst.buildUri('uapi/notice/banner', paramsMap);
+    final paramsMap = <String, String>{
+      'pageIndex': pageIndex.toString(),
+      'pageSize': pageSize.toString(),
+    };
+    final uri = BackendConst.buildUri('uapi/notice/banner', paramsMap);
     //处理缓存
     _handleCache(hitCache, uri);
-    final response = await http.get(uri, headers: hiHeaders())
+    final response = await http
+        .get(uri, headers: hiHeaders())
         .timeout(const Duration(seconds: 15));
-    Utf8Decoder utf8decoder = const Utf8Decoder();
-    String bodyString = utf8decoder.convert(response.bodyBytes);
+    const utf8decoder = Utf8Decoder();
+    final bodyString = utf8decoder.convert(response.bodyBytes);
     if (response.statusCode == 200) {
-      var result = json.decode(bodyString);
+      final result = json.decode(bodyString);
       if (result['code'] == 0 && result['data'] != null) {
-        var data = result['data'];
+        final data = result['data'];
         //更新缓存
         HiAPICache.getInstance().setCache(uri.toString(), jsonEncode(data));
         return NoticeModel.fromJson(result['data']);
@@ -46,7 +48,7 @@ class NoticeDao {
   ///处理缓存
   static void _handleCache(HitCache<NoticeModel>? hitCache, Uri uri) {
     if (hitCache != null) {
-      var cacheString =
+      final cacheString =
           HiAPICache.getInstance().getCache(uri.toString(), expire: expireTime);
       if (cacheString != null) {
         hitCache(NoticeModel.fromJson(json.decode(cacheString)));

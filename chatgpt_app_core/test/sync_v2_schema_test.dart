@@ -101,7 +101,7 @@ void main() {
       where: 'id = ?',
       whereArgs: [project.id],
     );
-    final sync = LocalSyncService(storage);
+    final sync = LocalSyncService(storage, accountHash: 'test');
 
     final before = jsonEncode(
       (await sync.exportChanges()).map(_v1WireJson).toList(),
@@ -122,7 +122,10 @@ void main() {
     await ConversationListDao.create(storage);
     await SyncV2Schema.ensure(storage.db);
 
-    final result = await LocalSyncService(storage).applyRemoteChanges(const [
+    final result = await LocalSyncService(
+      storage,
+      accountHash: 'test',
+    ).applyRemoteChanges(const [
       SyncChange(
         entity: 'conversation',
         id: '7',

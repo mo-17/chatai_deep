@@ -48,10 +48,10 @@ class HiAPICache {
   /// [url] 请求URL
   /// [expire] 缓存过期时间，单位毫秒
   String? getCache(String url, {int? expire}) {
-    var key = _fixedKey(url);
-    var list = _hiCache.get(key);
+    final key = _fixedKey(url);
+    final list = _hiCache.get(key);
     if (list == null) return null;
-    var cacheTime = list[0];
+    final cacheTime = list[0];
     if (expire == null || _timeNow - int.parse(cacheTime) <= expire) {
       AILogger.log('key:$key has cache.');
       return list[1];

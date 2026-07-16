@@ -14,7 +14,7 @@ class HiUtils {
 
   ///打开H5页面
   static void openH5(String url) async {
-    Uri uri = Uri.parse(url);
+    final uri = Uri.parse(url);
     if (!await launchUrl(uri, mode: LaunchMode.externalApplication)) {
       throw 'Could not launch $uri';
     }
