@@ -313,3 +313,61 @@ checkpointVersion: integer
 6. 错误恢复 UI、日志与完整回归。
 
 每一阶段必须先写失败测试并观察预期失败，再实现最小改动；不得把并发翻译或自动测速混入本次范围。
+
+## 15. Tavern raw envelope 翻译修正（2026-07-18）
+
+### 15.1 已核实缺陷
+
+Tavern V2/V3 导入为了无损往返，会在 `memoryBook` 首行保存
+`# [chatai_deep.tavern_raw.v1] <base64url>`。该行是内部原卡备份，不是世界书正文，
+运行时也会主动排除。现有翻译 pipeline 却把完整 `memoryBook` 当作自然语言源文本，
+导致 30K+ Base64 被切块发送给模型。模型可能原样返回、缩短内容或返回非 JSON，
+任务最终以 `invalid_translation_output` 暂停并重复消耗请求。
+
+### 15.2 方案比较与决策
+
+采用方案 A：在翻译边界拆分 raw envelope 与可翻译正文。
+
+- **方案 A（采用）**：复用角色卡服务对 raw marker 的识别规则，checkpoint、prompt、
+  字符数和标记校验仅使用 marker 之外的真实世界书正文；字段完成时把原始 marker
+  逐字保留并重新拼回。改动局部、无数据库迁移，并能让现有失败任务自动恢复。
+- **方案 B（不采用）**：新增数据库字段单独保存 raw Tavern JSON。边界更纯粹，
+  但需要迁移 Assistant、模板、备份、同步和导出格式，超出本缺陷范围。
+- **方案 C（不采用）**：检测到 marker 就跳过整个 `memoryBook`。实现最小，
+  但会漏译 marker 后真实存在的 character book 正文。
+
+### 15.3 数据流与兼容恢复
+
+角色卡服务提供一个不暴露 raw payload 内容的翻译视图：
+
+```text
+完整 memoryBook
+  -> 原样保存 raw marker 行
+  -> translationSource = memoryBookForRuntime(memoryBook)
+  -> 对 translationSource 规划/恢复 chunks、发请求、校验、合并
+  -> restore(translatedBody) 将原 marker 与译文重新组合
+```
+
+- 普通 `memoryBook` 没有 marker 时，行为保持不变。
+- marker-only 卡的 `translationSource` 为空：不发 AI 请求，直接完成空正文检查点并保留 marker。
+- marker 后存在真实世界书时，只翻译真实正文；`[off]`、`[p=]`、`[re]`、
+  `[sec=]` 与 `=>` 的校验也只针对真实正文。
+- chunk `sourceHash` 改为基于 `translationSource`。旧任务的 checkpoint 基于完整
+  Base64 envelope，恢复时必然 hash 不匹配并自动重新规划，不需要修改数据库或手工删任务。
+- 已完成的其它五个字段继续从字段检查点恢复；只废弃受污染的 `memoryBook` 分块。
+- raw marker 不进入 prompt、错误正文或普通日志，避免无意义 token 消耗与原卡数据外发。
+
+### 15.4 错误处理与测试
+
+若 marker 无法解码，仍按 marker 行处理并原样保留；翻译不依赖解码成功，避免损坏
+用户的无损往返数据。若同一字段出现多个内部 marker 行，全部从翻译正文排除并保持原顺序。
+
+新增回归测试必须先观察现有实现失败，并覆盖：
+
+1. 33K marker-only `memoryBook` 不调用模型，输出 marker 与输入完全一致。
+2. marker + 世界书正文时，prompt 不含 marker/Base64，只包含正文；结果重新拼回 marker。
+3. 旧的 full-envelope checkpoint 自动失效，当前失败任务可继续且不复用已污染块。
+4. 新的 body-only checkpoint 中断恢复时仍跳过已完成正文块。
+5. 普通无 marker 世界书、受保护标记校验和 Tavern V2/V3 无损导出回归不变。
+
+本修正不新增 schema、不改变导入/导出格式，也不尝试翻译 raw JSON 内未映射的扩展字段。
