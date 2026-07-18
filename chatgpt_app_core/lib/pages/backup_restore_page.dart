@@ -2,6 +2,7 @@ import 'dart:io';
 
 import 'package:chatgpt_app_core/backup/backup_service.dart';
 import 'package:chatgpt_app_core/backup/backup_settings_merge.dart';
+import 'package:chatgpt_app_core/chat/application/story_template_translation_tasks.dart';
 import 'package:chatgpt_app_core/db/hi_db_manager.dart';
 import 'package:chatgpt_app_core/model/ai_settings.dart';
 import 'package:chatgpt_app_core/provider/ai_settings_provider.dart';
@@ -13,6 +14,25 @@ import 'package:flutter/material.dart';
 import 'package:login_sdk/dao/login_dao.dart';
 import 'package:openai_flutter/utils/ai_logger.dart';
 import 'package:provider/provider.dart';
+
+/// 备份会替换翻译任务表时，旧 runner 必须先完全退出；无论导入成功或失败，
+/// 最后都从当前账号数据库重新绑定任务快照，避免旧 lease/旧 UI 继续写入。
+Future<T> runBackupImportWithTranslationTaskRebind<T>({
+  required StoryTemplateTranslationCoordinator coordinator,
+  required HiDBManager storage,
+  required String accountHash,
+  required Future<T> Function() importAction,
+  bool Function()? shouldRebind,
+}) async {
+  await coordinator.detachForLifecycle();
+  try {
+    return await importAction();
+  } finally {
+    if (shouldRebind?.call() ?? true) {
+      await coordinator.initialize(storage, accountHash: accountHash);
+    }
+  }
+}
 
 ///备份与恢复页（阶段八）：导出 zip / 导入恢复。
 ///文件选择走 file_picker（与阶段四附件同一插件），核心逻辑在 [BackupService]。
@@ -229,9 +249,7 @@ class _BackupImportPreviewDialogState extends State<BackupImportPreviewDialog> {
 
     return [
       '备份版本：v${preview.formatVersion}',
-      preview.integrityVerified
-          ? '内容与清单一致（不代表来源可信）'
-          : '旧备份未包含完整性校验',
+      preview.integrityVerified ? '内容与清单一致（不代表来源可信）' : '旧备份未包含完整性校验',
       '导出时间：${exportedAtText()}',
       if (preview.accountHash.isNotEmpty)
         '来源账号：${_maskedAccount(preview.accountHash)}',
@@ -352,12 +370,12 @@ class _BackupRestorePageState extends State<BackupRestorePage> {
     );
   }
 
-  Future<BackupService> _service({String? accountHash}) async {
-    final dbManager = await HiDBManager.instance(
-      dbName: accountHash ?? HiDBManager.getAccountHash(),
-    );
-    return BackupService(dbManager);
-  }
+  Future<HiDBManager> _storage({String? accountHash}) => HiDBManager.instance(
+        dbName: accountHash ?? HiDBManager.getAccountHash(),
+      );
+
+  Future<BackupService> _service({String? accountHash}) async =>
+      BackupService(await _storage(accountHash: accountHash));
 
   String _fileName() {
     final now = DateTime.now();
@@ -534,15 +552,28 @@ class _BackupRestorePageState extends State<BackupRestorePage> {
           _assertStableAccount(accountHash);
           final provider = context.read<AISettingsProvider>();
           final localSettingsSnapshot = provider.settings.clone();
-          final service = await _service(accountHash: accountHash);
+          final storage = await _storage(accountHash: accountHash);
+          final service = BackupService(storage);
           Future<void> accountGuard() async =>
               _assertStableAccount(accountHash);
-          final result = await service.importArchive(
-            bytes,
-            accountHash: accountHash,
-            mode: mode,
-            accountGuard: accountGuard,
-          );
+          Future<BackupRestoreResult> importAction() => service.importArchive(
+                bytes,
+                accountHash: accountHash,
+                mode: mode,
+                accountGuard: accountGuard,
+              );
+          final affectsTranslationTasks =
+              mode == BackupImportMode.overwriteAll ||
+                  mode == BackupImportMode.mergeAppend;
+          final result = affectsTranslationTasks
+              ? await runBackupImportWithTranslationTaskRebind(
+                  coordinator: StoryTemplateTranslationCoordinator.instance,
+                  storage: storage,
+                  accountHash: accountHash,
+                  importAction: importAction,
+                  shouldRebind: () => _accountStillMatches(accountHash),
+                )
+              : await importAction();
           Object? settingsError;
           try {
             await _applySettings(

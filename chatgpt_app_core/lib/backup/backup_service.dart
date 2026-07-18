@@ -28,6 +28,7 @@ import 'package:chatgpt_app_core/db/story_template_dao.dart';
 import 'package:chatgpt_app_core/db/story_template_translation_task_dao.dart';
 import 'package:chatgpt_app_core/model/ai_settings.dart';
 import 'package:chatgpt_app_core/model/assistant_memory_model.dart';
+import 'package:chatgpt_app_core/model/story_template_translation_task_model.dart';
 import 'package:chatgpt_app_core/util/account_resource_scope.dart';
 import 'package:chatgpt_app_core/util/avatar_asset_service.dart';
 import 'package:chatgpt_app_core/util/uuid_v4.dart';
@@ -704,11 +705,12 @@ class BackupService {
         _readRowsForVersion(archive, _kProjectKnowledge, version);
     final storyTemplates =
         _readRowsForVersion(archive, _kStoryTemplates, version);
-    final storyTemplateTranslationTasks = _readRowsForVersion(
+    final storyTemplateTranslationTasks =
+        _normalizeTranslationTaskRunStates(_readRowsForVersion(
       archive,
       _kStoryTemplateTranslationTasks,
       version,
-    );
+    ));
     final storyPersonas =
         _readRowsForVersion(archive, _kStoryPersonas, version);
     final storyRooms = _readRowsForVersion(archive, _kStoryRooms, version);
@@ -915,11 +917,12 @@ class BackupService {
         _readRowsForVersion(archive, _kProjectKnowledge, version);
     final storyTemplates =
         _readRowsForVersion(archive, _kStoryTemplates, version);
-    final storyTemplateTranslationTasks = _readRowsForVersion(
+    final storyTemplateTranslationTasks =
+        _normalizeTranslationTaskRunStates(_readRowsForVersion(
       archive,
       _kStoryTemplateTranslationTasks,
       version,
-    );
+    ));
     final storyPersonas =
         _readRowsForVersion(archive, _kStoryPersonas, version);
     final storyRooms = _readRowsForVersion(archive, _kStoryRooms, version);
@@ -2916,11 +2919,33 @@ class BackupService {
   ) =>
       [
         for (final source in rows)
-          Map<String, dynamic>.from(source)
+          _normalizeTranslationTaskRunState(source)
             ..['requestProfile'] = _sanitizeTranslationRequestProfile(
               source['requestProfile'],
             ),
       ];
+
+  /// 运行租约只在当前进程内有效，不能跨备份传播。运行中的任务恢复为可重试，
+  /// 其他状态也清掉不一致的租约字段，避免幽灵 worker 或未来租约阻塞恢复。
+  static List<Map<String, dynamic>> _normalizeTranslationTaskRunStates(
+    List<Map<String, dynamic>> rows,
+  ) =>
+      [for (final row in rows) _normalizeTranslationTaskRunState(row)];
+
+  static Map<String, dynamic> _normalizeTranslationTaskRunState(
+    Map<String, Object?> source,
+  ) {
+    final row = Map<String, dynamic>.from(source);
+    if (row['status'] == StoryTemplateTranslationTaskStatus.running) {
+      row
+        ..['status'] = StoryTemplateTranslationTaskStatus.retryable
+        ..['nextRunAt'] = null;
+    }
+    row
+      ..['leaseOwner'] = null
+      ..['leaseUntil'] = null;
+    return row;
+  }
 
   static String _sanitizeTranslationRequestProfile(Object? raw) {
     try {

@@ -852,6 +852,11 @@ void main() {
           'apiKey': 'must-not-export',
         }),
         status: StoryTemplateTranslationTaskStatus.running,
+        leaseOwner: 'dead-export-worker',
+        leaseUntil:
+            DateTime.now().add(const Duration(days: 7)).millisecondsSinceEpoch,
+        nextRunAt:
+            DateTime.now().add(const Duration(days: 8)).millisecondsSinceEpoch,
       );
       await sourceTaskDao.saveTask(task);
       final bytes = await BackupService(src).exportArchive(
@@ -865,13 +870,20 @@ void main() {
       final exportedTasks = jsonDecode(
         utf8.decode(exportedTaskFile.content as List<int>),
       ) as List<dynamic>;
+      final exportedTask = exportedTasks.single as Map<String, dynamic>;
       final exportedProfile = jsonDecode(
-        (exportedTasks.single as Map<String, dynamic>)['requestProfile']
-            as String,
+        exportedTask['requestProfile'] as String,
       ) as Map<String, dynamic>;
       expect(exportedProfile['providerId'], 'fast-provider');
       expect(exportedProfile['modelId'], 'fast-model');
       expect(exportedProfile, isNot(contains('apiKey')));
+      expect(
+        exportedTask['status'],
+        StoryTemplateTranslationTaskStatus.retryable,
+      );
+      expect(exportedTask['leaseOwner'], isNull);
+      expect(exportedTask['leaseUntil'], isNull);
+      expect(exportedTask['nextRunAt'], isNull);
       final sourceTaskId = task.id;
       await src.db.close();
 
@@ -907,8 +919,13 @@ void main() {
       expect(overwrittenTask['outputTemplateId'], outputTemplate.id);
       expect(overwrittenRoom['id'], isNot(sourceRoomId));
       expect(overwrittenTask['outputRoomId'], overwrittenRoom['id']);
-      expect(overwrittenTask['status'],
-          StoryTemplateTranslationTaskStatus.running);
+      expect(
+        overwrittenTask['status'],
+        StoryTemplateTranslationTaskStatus.retryable,
+      );
+      expect(overwrittenTask['leaseOwner'], isNull);
+      expect(overwrittenTask['leaseUntil'], isNull);
+      expect(overwrittenTask['nextRunAt'], isNull);
       await overwrite.db.close();
 
       final merge = await newDb();
@@ -956,8 +973,53 @@ void main() {
           .single;
       expect(mergedTask['outputRoomId'], importedRoom['id']);
       expect(mergedTask['outputRoomId'], isNot(sourceRoomId));
-      expect(mergedTask['status'], StoryTemplateTranslationTaskStatus.running);
+      expect(
+        mergedTask['status'],
+        StoryTemplateTranslationTaskStatus.retryable,
+      );
+      expect(mergedTask['leaseOwner'], isNull);
+      expect(mergedTask['leaseUntil'], isNull);
+      expect(mergedTask['nextRunAt'], isNull);
       await merge.db.close();
+    });
+
+    test('导入边界清理旧运行器和未来租约并立即恢复为可重试', () async {
+      final archivedTask = StoryTemplateTranslationTaskModel(
+        sourceTitle: '旧运行任务',
+        sourcePayload: '{}',
+        outputTitle: '恢复后的任务',
+        status: StoryTemplateTranslationTaskStatus.running,
+        leaseOwner: 'archived-worker',
+        leaseUntil:
+            DateTime.now().add(const Duration(days: 30)).millisecondsSinceEpoch,
+        nextRunAt:
+            DateTime.now().add(const Duration(days: 31)).millisecondsSinceEpoch,
+      ).toJson()
+        ..['id'] = 77;
+      final bytes = zipOf(officialLegacyFiles(10, overrides: {
+        'story_template_translation_tasks.json': [archivedTask],
+      }));
+      final dst = await newDb();
+
+      final result = await BackupService(dst).importArchive(
+        bytes,
+        accountHash: 'acc1',
+      );
+
+      expect(result.storyTemplateTranslationTasks, 1);
+      final restored = (await dst.db.query(
+        'tb_story_template_translation_task',
+      ))
+          .single;
+      expect(restored['id'], 77);
+      expect(
+        restored['status'],
+        StoryTemplateTranslationTaskStatus.retryable,
+      );
+      expect(restored['leaseOwner'], isNull);
+      expect(restored['leaseUntil'], isNull);
+      expect(restored['nextRunAt'], isNull);
+      await dst.db.close();
     });
 
     test('覆盖恢复会清除翻译任务中缺失的生成房间引用并告警', () async {
