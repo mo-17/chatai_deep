@@ -339,6 +339,176 @@ void main() {
       expect(await db.query('tb_story_room'), hasLength(1));
     });
 
+    test(
+        'completed raw memoryBook checkpoint survives interruption before role commit',
+        () async {
+      const marker =
+          '# [chatai_deep.tavern_raw.v1] VU5JUVVFX1JBV19CQVNFNjRfU0VOVElORUw=';
+      const body = 'key => Alice keeps a visible world-book note.';
+      const translatedBody = 'key => 爱丽丝保留了一条可见的世界书记录。';
+      const firstFiveFields = <String, String>{
+        'name': '爱丽丝',
+        'description': '一位谨慎的侦探。',
+        'prompt': '保持警觉。',
+        'openingMessage': '你好。',
+        'exampleDialogs': '<START>\n爱丽丝：你好',
+      };
+      final source = StoryRoomTemplatePayload(results: [
+        AssistantRoleCardImportResult(
+          assistant: AssistantModel(
+            name: 'Alice',
+            description: 'A careful detective.',
+            prompt: 'Stay alert.',
+            openingMessage: 'Hello.',
+            exampleDialogs: '<START>\nAlice: Hello',
+            memoryBook: '$marker\n$body',
+          ),
+        ),
+      ]);
+      final task = StoryTemplateTranslationTaskModel(
+        sourceTitle: 'alice.png',
+        sourcePayload: jsonEncode(source.toJson()),
+        outputTitle: '爱丽丝',
+        taskKind: StoryTemplateTranslationTaskKind.tavernRoomImport,
+        fieldPayload: jsonEncode({
+          'scope': 'role',
+          'roleIndex': 0,
+          'fields': firstFiveFields,
+        }),
+      );
+      await taskDao.saveTask(task);
+      const firstOwner = 'runner-raw-field-interruption';
+      expect(
+        await taskDao.claimTask(
+          task.id!,
+          leaseOwner: firstOwner,
+          leaseDuration: const Duration(minutes: 5),
+        ),
+        isTrue,
+      );
+
+      final firstCalls = <String>[];
+      final lifecycleCancellation = TranslationCancellationController();
+      var lifecycleCancelled = false;
+      await StoryTemplateTranslationTaskRunner(
+        taskDao: taskDao,
+        templateDao: await StoryTemplateDao.create(storage),
+        task: task,
+        leaseOwner: firstOwner,
+        useChunkCheckpoints: true,
+        cancellation: lifecycleCancellation,
+        complete: (prompt) async {
+          final payload =
+              jsonDecode(prompt.split('\n').last) as Map<String, dynamic>;
+          final field = payload.keys.single;
+          firstCalls.add(field);
+          expect(field, 'memoryBook');
+          expect(payload[field], body);
+          return jsonEncode({'memoryBook': translatedBody});
+        },
+        isCancelled: () => false,
+        isLifecycleCancelled: () => lifecycleCancelled,
+        onChanged: () {
+          if (lifecycleCancellation.isCancelled ||
+              task.partialPayload.trim().isNotEmpty) {
+            return;
+          }
+          final fieldPayload = jsonDecode(task.fieldPayload);
+          if (fieldPayload is Map &&
+              fieldPayload['fields'] is Map &&
+              (fieldPayload['fields'] as Map).containsKey('memoryBook')) {
+            lifecycleCancelled = true;
+            lifecycleCancellation.cancel();
+          }
+        },
+      ).run();
+
+      final interrupted = (await taskDao.getTask(task.id!))!;
+      final rawCheckpointPayload = interrupted.chunkPayload;
+      TranslationChunkCheckpoint? memoryBookCheckpoint;
+      if (rawCheckpointPayload.trim().isNotEmpty) {
+        final decoded = jsonDecode(rawCheckpointPayload) as Map;
+        final checkpoints = decoded['checkpoints'] as Map;
+        final rawCheckpoint = checkpoints['role:0:memoryBook'];
+        if (rawCheckpoint is Map) {
+          memoryBookCheckpoint = TranslationChunkCheckpoint.fromJson(
+            Map<String, dynamic>.from(rawCheckpoint),
+          );
+        }
+      }
+      expect(interrupted.status, StoryTemplateTranslationTaskStatus.retryable);
+      expect(interrupted.partialPayload, isEmpty);
+      expect(
+        (jsonDecode(interrupted.fieldPayload) as Map)['fields'],
+        containsPair('memoryBook', '$marker\n$translatedBody'),
+      );
+      expect(firstCalls, ['memoryBook']);
+
+      const secondOwner = 'runner-raw-field-resume';
+      expect(
+        await taskDao.claimTask(
+          interrupted.id!,
+          leaseOwner: secondOwner,
+          leaseDuration: const Duration(minutes: 5),
+        ),
+        isTrue,
+      );
+      final resumed = (await taskDao.getTask(interrupted.id!))!;
+      final secondCalls = <String>[];
+      await StoryTemplateTranslationTaskRunner(
+        taskDao: taskDao,
+        templateDao: await StoryTemplateDao.create(storage),
+        task: resumed,
+        leaseOwner: secondOwner,
+        useChunkCheckpoints: true,
+        complete: (prompt) async {
+          final payload =
+              jsonDecode(prompt.split('\n').last) as Map<String, dynamic>;
+          final field = payload.keys.single;
+          secondCalls.add(field);
+          return jsonEncode({field: payload[field]});
+        },
+        isCancelled: () => false,
+      ).run();
+
+      final stored = await taskDao.getTask(task.id!);
+      final templates =
+          await (await StoryTemplateDao.create(storage)).getTemplates();
+      final output = StoryRoomTemplatePayload.fromTemplate(templates.single);
+      expect(memoryBookCheckpoint, isNotNull,
+          reason: '已完成的 raw memoryBook 必须保留可验证检查点');
+      expect(secondCalls, isEmpty, reason: '恢复时不应再次请求任何字段');
+      expect(memoryBookCheckpoint!.field, 'memoryBook');
+      expect(
+        memoryBookCheckpoint.sourceHash,
+        const TranslationChunkPlanner()
+            .plan(field: 'memoryBook', source: body)
+            .sourceHash,
+      );
+      expect(
+        memoryBookCheckpoint.chunks.every(
+          (state) => state.status == TranslationChunkStatus.completed,
+        ),
+        isTrue,
+      );
+      expect(output.results.single.assistant.name, firstFiveFields['name']);
+      expect(output.results.single.assistant.description,
+          firstFiveFields['description']);
+      expect(output.results.single.assistant.prompt, firstFiveFields['prompt']);
+      expect(output.results.single.assistant.openingMessage,
+          firstFiveFields['openingMessage']);
+      expect(output.results.single.assistant.exampleDialogs,
+          firstFiveFields['exampleDialogs']);
+      expect(output.results.single.assistant.memoryBook,
+          '$marker\n$translatedBody');
+      expect(stored?.status, StoryTemplateTranslationTaskStatus.completed);
+      expect(stored?.outputRoomId, isNotNull);
+      expect(stored?.fieldPayload, isEmpty);
+      expect(stored?.chunkPayload, isEmpty);
+      expect(await db.query('tb_story_template'), hasLength(1));
+      expect(await db.query('tb_story_room'), hasLength(1));
+    });
+
     test('build preserves single and batch empty-opening semantics', () {
       final single = TavernRoomImportFinalizer.build(
         payload: StoryRoomTemplatePayload(

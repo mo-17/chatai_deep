@@ -1207,7 +1207,10 @@ class StoryTemplateTranslationTaskRunner {
       'roleIndex': roleIndex,
       'fields': fields,
     });
-    task.chunkPayload = '';
+    // raw memoryBook 的字段检查点必须由正文 sourceHash 证明可信，直到角色提交。
+    if (!useChunkCheckpoints || field != 'memoryBook') {
+      task.chunkPayload = '';
+    }
     _checkpoint(
         '已保存字段检查点：${task.fieldLabel.isEmpty ? field : task.fieldLabel}');
     await _flush();
