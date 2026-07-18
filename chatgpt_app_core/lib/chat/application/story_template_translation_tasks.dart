@@ -27,7 +27,29 @@ typedef TranslationExecutorResolver = TranslationStreamExecutor Function(
 typedef StoryTemplateTranslationCall = Future<String> Function(String prompt);
 typedef LegacyTranslationRequestProfileResolver = TranslationRequestProfile?
     Function();
-typedef _TranslationRunKey = ({String accountHash, int taskId});
+typedef _TranslationRunKey = ({
+  int bindingEpoch,
+  String accountHash,
+  int taskId,
+});
+
+enum _ClaimStopReason { userCancelled, lifecycleCancelled }
+
+final class _TranslationBindingContext {
+  final int epoch;
+  final String accountHash;
+  final HiDBManager storage;
+  final StoryTemplateTranslationTaskDao taskDao;
+  final StoryTemplateDao templateDao;
+
+  const _TranslationBindingContext({
+    required this.epoch,
+    required this.accountHash,
+    required this.storage,
+    required this.taskDao,
+    required this.templateDao,
+  });
+}
 
 /// 页面可复用的任务协调器。任务行先写入数据库，再启动网络翻译；完成、失败、取消
 /// 都留在数据库中以便重启后查看。
@@ -35,11 +57,11 @@ class StoryTemplateTranslationCoordinator extends ChangeNotifier {
   static final StoryTemplateTranslationCoordinator instance =
       StoryTemplateTranslationCoordinator();
 
-  StoryTemplateTranslationTaskDao? _taskDao;
-  StoryTemplateDao? _templateDao;
-  HiDBManager? _storage;
-  String? _accountHash;
+  _TranslationBindingContext? _binding;
+  int _lifecycleEpoch = 0;
   List<StoryTemplateTranslationTaskModel> _tasks = const [];
+  final Expando<int> _taskBindingEpoch =
+      Expando<int>('story-template-translation-binding-epoch');
   final Set<_TranslationRunKey> _cancelledRuns = {};
   final Set<_TranslationRunKey> _runningRuns = {};
   final Set<_TranslationRunKey> _lifecycleCancelledRuns = {};
@@ -57,19 +79,52 @@ class StoryTemplateTranslationCoordinator extends ChangeNotifier {
     HiDBManager storage, {
     required String accountHash,
   }) async {
-    if (_taskDao != null &&
-        _templateDao != null &&
-        _accountHash == accountHash &&
-        identical(_storage, storage)) {
+    final current = _binding;
+    if (current != null &&
+        _isContextCurrent(current) &&
+        current.accountHash == accountHash &&
+        identical(current.storage, storage)) {
       return;
     }
-    await detachForLifecycle();
-    _storage = storage;
-    _accountHash = accountHash;
-    _taskDao = await StoryTemplateTranslationTaskDao.create(storage);
-    _templateDao = await StoryTemplateDao.create(storage);
-    await _taskDao!.recoverInterruptedTasks();
-    await _reload();
+    final transitionEpoch = ++_lifecycleEpoch;
+    final previous = current;
+    final settlements = _requestLifecycleCancellation(previous);
+    await Future.wait(settlements);
+    if (!_isEpochCurrent(transitionEpoch)) return;
+    _cleanupRunState(previous);
+
+    try {
+      final taskDao = await StoryTemplateTranslationTaskDao.create(storage);
+      if (!_isEpochCurrent(transitionEpoch)) return;
+      final templateDao = await StoryTemplateDao.create(storage);
+      if (!_isEpochCurrent(transitionEpoch)) return;
+      await taskDao.recoverInterruptedTasks();
+      if (!_isEpochCurrent(transitionEpoch)) return;
+      final loadedTasks = await taskDao.getTasks();
+      if (!_isEpochCurrent(transitionEpoch)) return;
+
+      final context = _TranslationBindingContext(
+        epoch: transitionEpoch,
+        accountHash: accountHash,
+        storage: storage,
+        taskDao: taskDao,
+        templateDao: templateDao,
+      );
+      _binding = context;
+      _tasks = loadedTasks;
+      for (final task in _tasks) {
+        _trackTask(context, task);
+      }
+      _sortTasks();
+      notifyListeners();
+    } catch (_) {
+      if (_isEpochCurrent(transitionEpoch)) {
+        _binding = null;
+        _tasks = const [];
+        notifyListeners();
+      }
+      rethrow;
+    }
   }
 
   Future<void> start(
@@ -77,7 +132,7 @@ class StoryTemplateTranslationCoordinator extends ChangeNotifier {
     required TranslationRequestProfile requestProfile,
     required TranslationExecutorResolver resolveExecutor,
   }) async {
-    final taskDao = _requireTaskDao();
+    final context = _requireContext();
     final payload = StoryRoomTemplatePayload.fromTemplate(template);
     if (payload.results.isEmpty) {
       throw const FormatException('酒馆模板至少需要一个角色');
@@ -96,14 +151,15 @@ class StoryTemplateTranslationCoordinator extends ChangeNotifier {
       checkpointVersion: TranslationChunkCheckpoint.currentVersion,
     );
     task.log = _appendLog(task.log, '已创建中文副本任务');
-    await taskDao.saveTask(task);
+    await context.taskDao.saveTask(task);
+    if (!_isContextCurrent(context)) return;
+    _trackTask(context, task);
     _tasks = [task, ..._tasks];
     notifyListeners();
-    final accountHash = _accountHash;
-    if (accountHash != null) {
-      unawaited(StoryTemplateBackgroundScheduler.schedule(accountHash));
-    }
-    unawaited(_run(task, resolveExecutor));
+    unawaited(
+      StoryTemplateBackgroundScheduler.schedule(context.accountHash),
+    );
+    unawaited(_run(context, task, resolveExecutor));
   }
 
   Future<void> startTavernRoomImport(
@@ -116,6 +172,7 @@ class StoryTemplateTranslationCoordinator extends ChangeNotifier {
     if (results.isEmpty) {
       throw const FormatException('酒馆房间导入至少需要一个角色');
     }
+    final context = _requireContext();
     final payload = StoryRoomTemplatePayload(
       results: results,
       initialOpening: initialOpening.trim(),
@@ -132,14 +189,15 @@ class StoryTemplateTranslationCoordinator extends ChangeNotifier {
       stage: '等待翻译并导入酒馆房间',
     );
     task.log = _appendLog(task.log, '已创建酒馆房间翻译任务');
-    await _requireTaskDao().saveTask(task);
+    await context.taskDao.saveTask(task);
+    if (!_isContextCurrent(context)) return;
+    _trackTask(context, task);
     _tasks = [task, ..._tasks];
     notifyListeners();
-    final accountHash = _accountHash;
-    if (accountHash != null) {
-      unawaited(StoryTemplateBackgroundScheduler.schedule(accountHash));
-    }
-    unawaited(_run(task, resolveExecutor));
+    unawaited(
+      StoryTemplateBackgroundScheduler.schedule(context.accountHash),
+    );
+    unawaited(_run(context, task, resolveExecutor));
   }
 
   Future<void> retry(
@@ -147,10 +205,10 @@ class StoryTemplateTranslationCoordinator extends ChangeNotifier {
     TranslationRequestProfile? replacementProfile,
     required TranslationExecutorResolver resolveExecutor,
   }) async {
-    if (!task.canRetry || task.id == null) return;
-    final accountHash = _accountHash;
-    if (accountHash == null) return;
-    _cancelledRuns.remove((accountHash: accountHash, taskId: task.id!));
+    final context = _contextForTask(task);
+    if (context == null || !task.canRetry || task.id == null) return;
+    final key = _runKey(context, task.id!);
+    _cancelledRuns.remove(key);
     task.status = StoryTemplateTranslationTaskStatus.queued;
     task
       ..leaseOwner = null
@@ -163,28 +221,32 @@ class StoryTemplateTranslationCoordinator extends ChangeNotifier {
     task.detail = StoryTemplateTranslationTaskDao.taskCheckpointDetail(task);
     task.error = '';
     task.log = _appendLog(task.log, '用户请求重试');
-    await _requireTaskDao().saveTask(task);
+    await context.taskDao.saveTask(task);
+    if (!_isContextCurrent(context)) return;
     _sortTasks();
     notifyListeners();
-    unawaited(StoryTemplateBackgroundScheduler.schedule(accountHash));
-    unawaited(_run(task, resolveExecutor));
+    unawaited(
+      StoryTemplateBackgroundScheduler.schedule(context.accountHash),
+    );
+    unawaited(_run(context, task, resolveExecutor));
   }
 
   Future<void> cancel(StoryTemplateTranslationTaskModel task) async {
+    final context = _contextForTask(task);
     final id = task.id;
-    final accountHash = _accountHash;
-    if (id == null ||
-        accountHash == null ||
+    if (context == null ||
+        id == null ||
         task.status == StoryTemplateTranslationTaskStatus.completed ||
         task.status ==
             StoryTemplateTranslationTaskStatus.completedWithWarnings ||
         task.status == StoryTemplateTranslationTaskStatus.cancelled) {
       return;
     }
-    final key = (accountHash: accountHash, taskId: id);
+    final key = _runKey(context, id);
     _cancelledRuns.add(key);
     _cancellations[key]?.cancel();
-    await _requireTaskDao().cancelTask(id);
+    await context.taskDao.cancelTask(id);
+    if (!_isContextCurrent(context)) return;
     task
       ..status = StoryTemplateTranslationTaskStatus.cancelled
       ..stage = '已取消'
@@ -201,8 +263,11 @@ class StoryTemplateTranslationCoordinator extends ChangeNotifier {
   Future<void> completeKeepingOriginalChunks(
     StoryTemplateTranslationTaskModel task,
   ) async {
+    final context = _contextForTask(task);
     final id = task.id;
-    if (id == null || task.chunkPayload.trim().isEmpty) return;
+    if (context == null || id == null || task.chunkPayload.trim().isEmpty) {
+      return;
+    }
     final decoded = jsonDecode(task.chunkPayload);
     if (decoded is! Map || decoded['checkpoints'] is! Map) {
       throw const FormatException('任务分块检查点无效');
@@ -255,16 +320,14 @@ class StoryTemplateTranslationCoordinator extends ChangeNotifier {
       ..leaseUntil = null
       ..nextRunAt = 0;
     task.log = _appendLog(task.log, '用户选择保留未完成分块原文');
-    await _requireTaskDao().saveTask(task);
-    final accountHash = _accountHash;
-    if (accountHash != null) {
-      _cancelledRuns.remove((accountHash: accountHash, taskId: id));
-    }
+    await context.taskDao.saveTask(task);
+    if (!_isContextCurrent(context)) return;
+    _cancelledRuns.remove(_runKey(context, id));
     _sortTasks();
     notifyListeners();
-    if (accountHash != null) {
-      unawaited(StoryTemplateBackgroundScheduler.schedule(accountHash));
-    }
+    unawaited(
+      StoryTemplateBackgroundScheduler.schedule(context.accountHash),
+    );
   }
 
   /// App 重启或账号重新登录后，按检查点串行恢复「排队中 / 意外中断」任务。
@@ -280,8 +343,7 @@ class StoryTemplateTranslationCoordinator extends ChangeNotifier {
     if (resolveExecutor == null && complete == null) {
       throw ArgumentError('resolveExecutor 不能为空');
     }
-    final accountHash = _accountHash;
-    if (accountHash == null) throw StateError('翻译任务尚未初始化');
+    final context = _requireContext();
     final now = DateTime.now().millisecondsSinceEpoch;
     final recoverable = _tasks
         .where((task) =>
@@ -294,9 +356,9 @@ class StoryTemplateTranslationCoordinator extends ChangeNotifier {
     var legacyFallback = legacyRequestProfile;
     var legacyFallbackResolved = legacyRequestProfile != null;
     for (final task in recoverable) {
+      if (!_isContextCurrent(context)) break;
       final id = task.id;
-      if (id == null ||
-          _runningRuns.contains((accountHash: accountHash, taskId: id))) {
+      if (id == null || _runningRuns.contains(_runKey(context, id))) {
         continue;
       }
       if (resolveExecutor != null && task.requestProfile.trim().isEmpty) {
@@ -308,6 +370,7 @@ class StoryTemplateTranslationCoordinator extends ChangeNotifier {
             legacyFallback = null;
           }
         }
+        if (!_isContextCurrent(context)) break;
         if (legacyFallback == null) {
           task
             ..status = StoryTemplateTranslationTaskStatus.needsConfiguration
@@ -316,33 +379,46 @@ class StoryTemplateTranslationCoordinator extends ChangeNotifier {
                 StoryTemplateTranslationTaskDao.taskCheckpointDetail(task)
             ..error = 'legacy_profile_missing';
           task.log = _appendLog(task.log, '旧任务缺少模型快照，已暂停等待配置');
-          await _requireTaskDao().saveTask(task);
+          await context.taskDao.saveTask(task);
+          if (!_isContextCurrent(context)) break;
           notifyListeners();
           continue;
         }
         task
           ..requestProfile = jsonEncode(legacyFallback.toJson())
           ..checkpointVersion = TranslationChunkCheckpoint.currentVersion;
-        await _requireTaskDao().saveTask(task);
+        await context.taskDao.saveTask(task);
+        if (!_isContextCurrent(context)) break;
       }
-      _cancelledRuns.remove((accountHash: accountHash, taskId: id));
+      _cancelledRuns.remove(_runKey(context, id));
       task.stage = '自动恢复翻译';
       task.detail = StoryTemplateTranslationTaskDao.taskCheckpointDetail(task);
       task.error = '';
       task.log = _appendLog(task.log, '应用启动后从检查点自动恢复');
-      await _requireTaskDao().saveTask(task);
+      await context.taskDao.saveTask(task);
+      if (!_isContextCurrent(context)) break;
       notifyListeners();
       resumed += 1;
-      await _run(task, resolveExecutor, legacyComplete: complete);
+      await _run(
+        context,
+        task,
+        resolveExecutor,
+        legacyComplete: complete,
+      );
+      if (!_isContextCurrent(context)) break;
     }
     return resumed;
   }
 
   Future<void> dismiss(StoryTemplateTranslationTaskModel task) async {
+    final context = _contextForTask(task);
     final id = task.id;
-    if (id == null || !task.isTerminal) return;
-    await _requireTaskDao().deleteTask(id);
-    _tasks = _tasks.where((item) => item.id != id).toList(growable: false);
+    if (context == null || id == null || !task.isTerminal) return;
+    await context.taskDao.deleteTask(id);
+    if (!_isContextCurrent(context)) return;
+    _tasks = _tasks
+        .where((item) => !identical(item, task) && item.id != id)
+        .toList(growable: false);
     notifyListeners();
   }
 
@@ -350,19 +426,13 @@ class StoryTemplateTranslationCoordinator extends ChangeNotifier {
   /// 租约后解绑 DAO 和 storage。生命周期停止只把任务放回可恢复队列，
   /// 不等同于用户显式取消。
   Future<void> detachForLifecycle() async {
-    final accountHash = _accountHash;
-    await _cancelActiveRunsForLifecycle();
-    if (accountHash != null) {
-      _cancelledRuns.removeWhere((key) => key.accountHash == accountHash);
-      _lifecycleCancelledRuns
-          .removeWhere((key) => key.accountHash == accountHash);
-      _cancellations.removeWhere((key, _) => key.accountHash == accountHash);
-      _runSettlements.removeWhere((key, _) => key.accountHash == accountHash);
-    }
-    _storage = null;
-    _taskDao = null;
-    _templateDao = null;
-    _accountHash = null;
+    final transitionEpoch = ++_lifecycleEpoch;
+    final previous = _binding;
+    final settlements = _requestLifecycleCancellation(previous);
+    await Future.wait(settlements);
+    if (!_isEpochCurrent(transitionEpoch)) return;
+    _cleanupRunState(previous);
+    _binding = null;
     _tasks = const [];
     notifyListeners();
   }
@@ -370,44 +440,53 @@ class StoryTemplateTranslationCoordinator extends ChangeNotifier {
   /// 保留旧入口，调用方依然会完成整个生命周期解绑。
   Future<void> cancelActiveRunsForLifecycle() => detachForLifecycle();
 
-  Future<void> _cancelActiveRunsForLifecycle() async {
-    final accountHash = _accountHash;
-    if (accountHash == null) return;
+  List<Future<void>> _requestLifecycleCancellation(
+    _TranslationBindingContext? context,
+  ) {
+    if (context == null) return const [];
     final keys = _runningRuns
-        .where((key) => key.accountHash == accountHash)
+        .where((key) => key.bindingEpoch == context.epoch)
         .toList(growable: false);
-    if (keys.isEmpty) return;
+    if (keys.isEmpty) return const [];
     _lifecycleCancelledRuns.addAll(keys);
     for (final key in keys) {
       _cancellations[key]?.cancel();
     }
-    final settlements = keys
+    return keys
         .map((key) => _runSettlements[key])
         .whereType<Future<void>>()
         .toList(growable: false);
-    await Future.wait(settlements);
+  }
+
+  void _cleanupRunState(_TranslationBindingContext? context) {
+    if (context == null) return;
+    bool belongsToContext(_TranslationRunKey key) =>
+        key.bindingEpoch == context.epoch;
+    _cancelledRuns.removeWhere(belongsToContext);
+    _lifecycleCancelledRuns.removeWhere(belongsToContext);
+    _cancellations.removeWhere((key, _) => belongsToContext(key));
+    _runSettlements.removeWhere((key, _) => belongsToContext(key));
   }
 
   Future<void> _run(
+    _TranslationBindingContext context,
     StoryTemplateTranslationTaskModel task,
     TranslationExecutorResolver? resolveExecutor, {
     StoryTemplateTranslationCall? legacyComplete,
   }) async {
     final id = task.id;
-    final accountHash = _accountHash;
-    final taskDao = _taskDao;
-    final templateDao = _templateDao;
     if (id == null ||
-        accountHash == null ||
-        taskDao == null ||
-        templateDao == null) {
+        !_isContextCurrent(context) ||
+        !_isTaskOwnedByContext(context, task)) {
       return;
     }
-    final key = (accountHash: accountHash, taskId: id);
+    final taskDao = context.taskDao;
+    final templateDao = context.templateDao;
+    final key = _runKey(context, id);
     if (!_runningRuns.add(key)) return;
     final settlement = Completer<void>();
     _runSettlements[key] = settlement.future;
-    final leaseOwner = '$_workerId:$id';
+    final leaseOwner = '$_workerId:${context.epoch}:$id';
     try {
       final claimed = await taskDao.claimTask(
         id,
@@ -417,8 +496,23 @@ class StoryTemplateTranslationCoordinator extends ChangeNotifier {
       if (!claimed) return;
       final claimedTask = await taskDao.getTask(id);
       if (claimedTask == null) return;
-      final index = _tasks.indexWhere((item) => item.id == id);
-      if (index >= 0) _tasks[index] = claimedTask;
+      _trackTask(context, claimedTask);
+      if (_isContextCurrent(context)) {
+        final index = _tasks.indexWhere(
+          (item) => item.id == id && _taskBindingEpoch[item] == context.epoch,
+        );
+        if (index >= 0) _tasks[index] = claimedTask;
+      }
+      var stopReason = _claimStopReason(context, key);
+      if (stopReason != null) {
+        await _settleStoppedClaim(
+          taskDao,
+          claimedTask,
+          leaseOwner,
+          stopReason,
+        );
+        return;
+      }
       TranslationStreamExecutor? executor;
       if (resolveExecutor != null) {
         try {
@@ -429,7 +523,18 @@ class StoryTemplateTranslationCoordinator extends ChangeNotifier {
           );
           executor = resolveExecutor(profile);
         } on TranslationModelUnavailableException catch (error) {
+          stopReason = _claimStopReason(context, key);
+          if (stopReason != null) {
+            await _settleStoppedClaim(
+              taskDao,
+              claimedTask,
+              leaseOwner,
+              stopReason,
+            );
+            return;
+          }
           await _markNeedsConfiguration(
+            context,
             taskDao,
             claimedTask,
             leaseOwner,
@@ -437,7 +542,18 @@ class StoryTemplateTranslationCoordinator extends ChangeNotifier {
           );
           return;
         } on FormatException {
+          stopReason = _claimStopReason(context, key);
+          if (stopReason != null) {
+            await _settleStoppedClaim(
+              taskDao,
+              claimedTask,
+              leaseOwner,
+              stopReason,
+            );
+            return;
+          }
           await _markNeedsConfiguration(
+            context,
             taskDao,
             claimedTask,
             leaseOwner,
@@ -445,6 +561,16 @@ class StoryTemplateTranslationCoordinator extends ChangeNotifier {
           );
           return;
         }
+      }
+      stopReason = _claimStopReason(context, key);
+      if (stopReason != null) {
+        await _settleStoppedClaim(
+          taskDao,
+          claimedTask,
+          leaseOwner,
+          stopReason,
+        );
+        return;
       }
       final cancellation = TranslationCancellationController();
       _cancellations[key] = cancellation;
@@ -464,7 +590,7 @@ class StoryTemplateTranslationCoordinator extends ChangeNotifier {
             _cancelledRuns.contains(key),
         isLifecycleCancelled: () => _lifecycleCancelledRuns.contains(key),
         onChanged: () {
-          if (_accountHash != accountHash) return;
+          if (!_isContextCurrent(context)) return;
           _sortTasks();
           notifyListeners();
         },
@@ -475,14 +601,68 @@ class StoryTemplateTranslationCoordinator extends ChangeNotifier {
       _lifecycleCancelledRuns.remove(key);
       _runSettlements.remove(key);
       if (!settlement.isCompleted) settlement.complete();
-      if (_accountHash == accountHash) {
+      if (_isContextCurrent(context)) {
         _sortTasks();
         notifyListeners();
       }
     }
   }
 
+  _ClaimStopReason? _claimStopReason(
+    _TranslationBindingContext context,
+    _TranslationRunKey key,
+  ) {
+    if (_cancelledRuns.contains(key)) {
+      return _ClaimStopReason.userCancelled;
+    }
+    if (_lifecycleCancelledRuns.contains(key) || !_isContextCurrent(context)) {
+      return _ClaimStopReason.lifecycleCancelled;
+    }
+    return null;
+  }
+
+  Future<void> _settleStoppedClaim(
+    StoryTemplateTranslationTaskDao taskDao,
+    StoryTemplateTranslationTaskModel task,
+    String leaseOwner,
+    _ClaimStopReason reason,
+  ) async {
+    final id = task.id;
+    if (id == null) return;
+    if (reason == _ClaimStopReason.userCancelled) {
+      await taskDao.cancelTask(id, leaseOwner: leaseOwner);
+      task
+        ..status = StoryTemplateTranslationTaskStatus.cancelled
+        ..stage = '已取消'
+        ..leaseOwner = null
+        ..leaseUntil = null;
+      return;
+    }
+
+    task
+      ..stage = '账号已切换，等待恢复'
+      ..detail = StoryTemplateTranslationTaskDao.taskCheckpointDetail(task)
+      ..error = '';
+    task.log = _appendLog(task.log, '账号生命周期结束，任务已停止并等待恢复');
+    final saved = await taskDao.saveClaimedTask(
+      task,
+      leaseOwner: leaseOwner,
+      leaseDuration: _leaseDuration,
+    );
+    if (!saved) return;
+    final released = await taskDao.releaseLease(
+      id,
+      leaseOwner: leaseOwner,
+    );
+    if (!released) return;
+    task
+      ..status = StoryTemplateTranslationTaskStatus.retryable
+      ..leaseOwner = null
+      ..leaseUntil = null;
+  }
+
   Future<void> _markNeedsConfiguration(
+    _TranslationBindingContext context,
     StoryTemplateTranslationTaskDao taskDao,
     StoryTemplateTranslationTaskModel task,
     String leaseOwner,
@@ -500,13 +680,7 @@ class StoryTemplateTranslationCoordinator extends ChangeNotifier {
       leaseDuration: _leaseDuration,
       releaseLease: true,
     );
-    notifyListeners();
-  }
-
-  Future<void> _reload() async {
-    _tasks = await _requireTaskDao().getTasks();
-    _sortTasks();
-    notifyListeners();
+    if (_isContextCurrent(context)) notifyListeners();
   }
 
   void _sortTasks() {
@@ -536,11 +710,59 @@ class StoryTemplateTranslationCoordinator extends ChangeNotifier {
     });
   }
 
-  StoryTemplateTranslationTaskDao _requireTaskDao() {
-    final value = _taskDao;
-    if (value == null) throw StateError('翻译任务尚未初始化');
-    return value;
+  bool _isEpochCurrent(int epoch) => _lifecycleEpoch == epoch;
+
+  bool _isContextCurrent(_TranslationBindingContext context) =>
+      _isEpochCurrent(context.epoch) && identical(_binding, context);
+
+  _TranslationBindingContext _requireContext() {
+    final context = _binding;
+    if (context == null || !_isContextCurrent(context)) {
+      throw StateError('翻译任务尚未初始化');
+    }
+    return context;
   }
+
+  _TranslationBindingContext? _contextForTask(
+    StoryTemplateTranslationTaskModel task,
+  ) {
+    final context = _binding;
+    if (context == null || !_isTaskOwnedByContext(context, task)) return null;
+    return context;
+  }
+
+  bool _isTaskOwnedByContext(
+    _TranslationBindingContext context,
+    StoryTemplateTranslationTaskModel task,
+  ) {
+    if (!_isContextCurrent(context) ||
+        _taskBindingEpoch[task] != context.epoch) {
+      return false;
+    }
+    final id = task.id;
+    if (id == null) return false;
+    return _tasks.any(
+      (candidate) =>
+          candidate.id == id && _taskBindingEpoch[candidate] == context.epoch,
+    );
+  }
+
+  void _trackTask(
+    _TranslationBindingContext context,
+    StoryTemplateTranslationTaskModel task,
+  ) {
+    _taskBindingEpoch[task] = context.epoch;
+  }
+
+  static _TranslationRunKey _runKey(
+    _TranslationBindingContext context,
+    int taskId,
+  ) =>
+      (
+        bindingEpoch: context.epoch,
+        accountHash: context.accountHash,
+        taskId: taskId,
+      );
 }
 
 /// 单个任务的可恢复运行器。已完成角色会写入 `partialPayload`，中断时只会重做

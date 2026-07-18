@@ -1123,8 +1123,7 @@ void main() {
         options: OpenDatabaseOptions(singleInstance: false),
       );
       final storageA = HiDBManager.test(dbA);
-      final taskDaoA =
-          await StoryTemplateTranslationTaskDao.create(storageA);
+      final taskDaoA = await StoryTemplateTranslationTaskDao.create(storageA);
       final profile = TranslationRequestProfile(
         mode: TranslationExecutionMode.local,
         providerId: 'provider-a',
@@ -1158,8 +1157,7 @@ void main() {
       );
       addTearDown(dbB.close);
       final storageB = HiDBManager.test(dbB);
-      final taskDaoB =
-          await StoryTemplateTranslationTaskDao.create(storageB);
+      final taskDaoB = await StoryTemplateTranslationTaskDao.create(storageB);
       final recoverableTask = taskFor('Bob');
       await taskDaoB.saveTask(recoverableTask);
       expect(staleTask.id, recoverableTask.id);
@@ -1185,8 +1183,7 @@ void main() {
         options: OpenDatabaseOptions(singleInstance: false),
       );
       final storageA = HiDBManager.test(dbA);
-      final taskDaoA =
-          await StoryTemplateTranslationTaskDao.create(storageA);
+      final taskDaoA = await StoryTemplateTranslationTaskDao.create(storageA);
       final profile = TranslationRequestProfile(
         mode: TranslationExecutionMode.local,
         providerId: 'provider-a',
@@ -1219,8 +1216,7 @@ void main() {
       );
       addTearDown(dbB.close);
       final storageB = HiDBManager.test(dbB);
-      final taskDaoB =
-          await StoryTemplateTranslationTaskDao.create(storageB);
+      final taskDaoB = await StoryTemplateTranslationTaskDao.create(storageB);
       final recoverableTask = taskFor('Bob');
       await taskDaoB.saveTask(recoverableTask);
       expect(staleTask.id, recoverableTask.id);
@@ -1238,6 +1234,231 @@ void main() {
       expect(coordinator.tasks.single.sourceTitle, 'Bob source');
       expect(storedB?.status, StoryTemplateTranslationTaskStatus.completed);
       expect(storedB?.outputTemplateId, isNotNull);
+    });
+
+    test('切换账号后旧 resume loop 不会继续运行第二个任务', () async {
+      final dbA = await databaseFactoryFfi.openDatabase(
+        inMemoryDatabasePath,
+        options: OpenDatabaseOptions(singleInstance: false),
+      );
+      final dbB = await databaseFactoryFfi.openDatabase(
+        inMemoryDatabasePath,
+        options: OpenDatabaseOptions(singleInstance: false),
+      );
+      addTearDown(dbA.close);
+      addTearDown(dbB.close);
+      final storageA = HiDBManager.test(dbA);
+      final storageB = HiDBManager.test(dbB);
+      final taskDaoA = await StoryTemplateTranslationTaskDao.create(storageA);
+      final taskDaoB = await StoryTemplateTranslationTaskDao.create(storageB);
+      final taskA1 = _translationTask(
+        'A1',
+        modelId: 'held-a1',
+        createdAt: 1,
+      );
+      final taskA2 = _translationTask(
+        'A2',
+        modelId: 'must-not-run-a2',
+        createdAt: 2,
+      );
+      final taskB1 = _translationTask(
+        'B1',
+        modelId: 'run-b1',
+        createdAt: 1,
+      );
+      final protectedB2 = _translationTask(
+        'B2-protected',
+        modelId: 'never-run-b2',
+        status: StoryTemplateTranslationTaskStatus.cancelled,
+        createdAt: 2,
+      );
+      await taskDaoA.saveTask(taskA1);
+      await taskDaoA.saveTask(taskA2);
+      await taskDaoB.saveTask(taskB1);
+      await taskDaoB.saveTask(protectedB2);
+      expect(taskA1.id, taskB1.id);
+      expect(taskA2.id, protectedB2.id);
+
+      final coordinator = StoryTemplateTranslationCoordinator();
+      await coordinator.initialize(storageA, accountHash: 'account-a');
+      final heldA1 = _HeldTranslationChatService();
+      final forbiddenA2 = _EchoTranslationChatService();
+      final runningA = coordinator.resumeRecoverable(
+        resolveExecutor: (profile) => TranslationStreamExecutor(
+          service: profile.modelId == 'held-a1'
+              ? heldA1 as ChatService
+              : forbiddenA2,
+          profile: profile,
+        ),
+      );
+      await heldA1.requestStarted.future;
+
+      final lockStarted = Completer<void>();
+      final releaseLock = Completer<void>();
+      final blockingTransaction = dbB.transaction((txn) async {
+        await txn.rawQuery('select 1');
+        lockStarted.complete();
+        await releaseLock.future;
+      });
+      addTearDown(() async {
+        if (!releaseLock.isCompleted) releaseLock.complete();
+        await blockingTransaction;
+      });
+      await lockStarted.future;
+      final initializeB =
+          coordinator.initialize(storageB, accountHash: 'account-b');
+      await heldA1.abortObserved.future;
+      try {
+        await runningA;
+      } finally {
+        if (!releaseLock.isCompleted) releaseLock.complete();
+        await blockingTransaction;
+        await initializeB;
+      }
+
+      final storedA1 = await taskDaoA.getTask(taskA1.id!);
+      final storedA2 = await taskDaoA.getTask(taskA2.id!);
+      final storedProtectedB2 = await taskDaoB.getTask(protectedB2.id!);
+      expect(await heldA1.abortObserved.future, isTrue);
+      expect(storedA1?.status, StoryTemplateTranslationTaskStatus.retryable);
+      expect(storedA2?.status, StoryTemplateTranslationTaskStatus.queued);
+      expect(storedA2?.attempts, 0);
+      expect(forbiddenA2.payloads, isEmpty);
+      expect(storedProtectedB2?.sourceTitle, 'B2-protected source');
+      expect(
+        storedProtectedB2?.status,
+        StoryTemplateTranslationTaskStatus.cancelled,
+      );
+
+      final resumedB = await coordinator.resumeRecoverable(
+        resolveExecutor: (profile) => TranslationStreamExecutor(
+          service: _EchoTranslationChatService(),
+          profile: profile,
+        ),
+      );
+      expect(resumedB, 1);
+      expect(
+        (await taskDaoB.getTask(taskB1.id!))?.status,
+        StoryTemplateTranslationTaskStatus.completed,
+      );
+    });
+
+    test('较旧 initialize 完成后不会覆盖更新的 binding', () async {
+      final dbA = await databaseFactoryFfi.openDatabase(
+        inMemoryDatabasePath,
+        options: OpenDatabaseOptions(singleInstance: false),
+      );
+      final dbB = await databaseFactoryFfi.openDatabase(
+        inMemoryDatabasePath,
+        options: OpenDatabaseOptions(singleInstance: false),
+      );
+      final dbC = await databaseFactoryFfi.openDatabase(
+        inMemoryDatabasePath,
+        options: OpenDatabaseOptions(singleInstance: false),
+      );
+      addTearDown(dbA.close);
+      addTearDown(dbB.close);
+      addTearDown(dbC.close);
+      final storageA = HiDBManager.test(dbA);
+      final storageB = HiDBManager.test(dbB);
+      final storageC = HiDBManager.test(dbC);
+      final taskDaoB = await StoryTemplateTranslationTaskDao.create(storageB);
+      final taskDaoC = await StoryTemplateTranslationTaskDao.create(storageC);
+      await taskDaoB.saveTask(_translationTask('B'));
+      await taskDaoC.saveTask(_translationTask('C'));
+      final coordinator = StoryTemplateTranslationCoordinator();
+      await coordinator.initialize(storageA, accountHash: 'account-a');
+
+      final lockStarted = Completer<void>();
+      final releaseLock = Completer<void>();
+      final blockingTransaction = dbB.transaction((txn) async {
+        await txn.rawQuery('select 1');
+        lockStarted.complete();
+        await releaseLock.future;
+      });
+      await lockStarted.future;
+      final olderInitialize =
+          coordinator.initialize(storageB, accountHash: 'account-b');
+      await Future<void>.delayed(Duration.zero);
+      await Future<void>.delayed(Duration.zero);
+
+      await coordinator.initialize(storageC, accountHash: 'account-c');
+      releaseLock.complete();
+      await blockingTransaction;
+      await olderInitialize;
+
+      expect(coordinator.tasks, hasLength(1));
+      expect(coordinator.tasks.single.sourceTitle, 'C source');
+    });
+
+    test('旧页面任务引用不能用相同 id 修改新账号', () async {
+      final dbA = await databaseFactoryFfi.openDatabase(
+        inMemoryDatabasePath,
+        options: OpenDatabaseOptions(singleInstance: false),
+      );
+      final dbB = await databaseFactoryFfi.openDatabase(
+        inMemoryDatabasePath,
+        options: OpenDatabaseOptions(singleInstance: false),
+      );
+      addTearDown(dbA.close);
+      addTearDown(dbB.close);
+      final storageA = HiDBManager.test(dbA);
+      final storageB = HiDBManager.test(dbB);
+      final taskDaoA = await StoryTemplateTranslationTaskDao.create(storageA);
+      final taskDaoB = await StoryTemplateTranslationTaskDao.create(storageB);
+      final checkpoint = const TranslationChunkPlanner().plan(
+        field: 'memoryBook',
+        source: List.filled(1300, '界').join(),
+      );
+      for (var index = 1; index <= 4; index += 1) {
+        await taskDaoA.saveTask(_translationTask(
+          'A$index',
+          status: StoryTemplateTranslationTaskStatus.failed,
+          chunkPayload: index == 3
+              ? jsonEncode({
+                  'version': TranslationChunkCheckpoint.currentVersion,
+                  'checkpoints': {'role:0:memoryBook': checkpoint.toJson()},
+                })
+              : '',
+        ));
+        await taskDaoB.saveTask(_translationTask(
+          'B$index',
+          status: StoryTemplateTranslationTaskStatus.failed,
+        ));
+      }
+      final coordinator = StoryTemplateTranslationCoordinator();
+      await coordinator.initialize(storageA, accountHash: 'account-a');
+      final staleTasks = coordinator.tasks.toList()
+        ..sort((a, b) => a.id!.compareTo(b.id!));
+      await coordinator.initialize(storageB, accountHash: 'account-b');
+      var retryResolverCalls = 0;
+
+      await coordinator.cancel(staleTasks[0]);
+      await coordinator.retry(
+        staleTasks[1],
+        resolveExecutor: (_) {
+          retryResolverCalls += 1;
+          throw const TranslationModelUnavailableException('stale');
+        },
+      );
+      await coordinator.completeKeepingOriginalChunks(staleTasks[2]);
+      await coordinator.dismiss(staleTasks[3]);
+      await Future<void>.delayed(const Duration(milliseconds: 20));
+
+      final storedB = (await taskDaoB.getTasks())
+        ..sort((a, b) => a.id!.compareTo(b.id!));
+      expect(storedB, hasLength(4));
+      expect(storedB.map((task) => task.sourceTitle), [
+        'B1 source',
+        'B2 source',
+        'B3 source',
+        'B4 source',
+      ]);
+      expect(
+        storedB.map((task) => task.status),
+        everyElement(StoryTemplateTranslationTaskStatus.failed),
+      );
+      expect(retryResolverCalls, 0);
     });
 
     test('协调器创建任务时冻结具体模型和任务类型', () async {
@@ -1475,6 +1696,34 @@ void main() {
     });
   });
 }
+
+StoryTemplateTranslationTaskModel _translationTask(
+  String name, {
+  String modelId = 'model-a',
+  String status = StoryTemplateTranslationTaskStatus.queued,
+  String chunkPayload = '',
+  int? createdAt,
+}) =>
+    StoryTemplateTranslationTaskModel(
+      sourceTitle: '$name source',
+      sourcePayload: jsonEncode(StoryRoomTemplatePayload(results: [
+        AssistantRoleCardImportResult(
+          assistant: AssistantModel(name: name),
+        ),
+      ]).toJson()),
+      outputTitle: '$name copy',
+      roleTotal: 1,
+      requestProfile: jsonEncode(TranslationRequestProfile(
+        mode: TranslationExecutionMode.local,
+        providerId: 'provider-a',
+        modelId: modelId,
+        reasoningPolicy: ChatReasoningPolicy.providerDefault,
+        reasoningControlSuppressed: false,
+      ).toJson()),
+      status: status,
+      chunkPayload: chunkPayload,
+      createdAt: createdAt,
+    );
 
 final class _EchoTranslationChatService
     implements ChatService, OptionsAwareChatService {
