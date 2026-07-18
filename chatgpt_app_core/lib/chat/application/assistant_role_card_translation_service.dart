@@ -463,6 +463,14 @@ class AssistantRoleCardTranslationService {
   }
 
   static bool _shouldUseWholeCardTranslation(AssistantModel assistant) {
+    if (_fields.any(
+      (field) => !_chunkPlanner.fitsInSingleRequest(
+        field: field,
+        source: _fieldValue(assistant, field),
+      ),
+    )) {
+      return false;
+    }
     final chars = _fields.fold<int>(
       0,
       (sum, field) => sum + _fieldValue(assistant, field).trim().length,

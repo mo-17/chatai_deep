@@ -123,6 +123,12 @@ final class TranslationChunkCheckpoint {
 final class TranslationChunkPlanner {
   const TranslationChunkPlanner();
 
+  bool fitsInSingleRequest({
+    required String field,
+    required String source,
+  }) =>
+      source.runes.length <= _configFor(field).hardLimit;
+
   TranslationChunkCheckpoint plan({
     required String field,
     required String source,

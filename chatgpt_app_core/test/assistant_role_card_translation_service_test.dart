@@ -32,11 +32,14 @@ void main() {
   test('translateToSimplifiedChinese applies only translated text fields',
       () async {
     final assistant = sampleAssistant();
+    var requests = 0;
 
     final translated =
         await AssistantRoleCardTranslationService.translateToSimplifiedChinese(
       assistant,
-      complete: (_) async => '''
+      complete: (_) async {
+        requests += 1;
+        return '''
 ```json
 {
   "name": "爱丽丝",
@@ -50,9 +53,11 @@ void main() {
   "defaultVoiceStyle": "should-not-apply"
 }
 ```
-''',
+''';
+      },
     );
 
+    expect(requests, 1);
     expect(translated.name, '爱丽丝');
     expect(translated.description, '一位来自伦敦的侦探。');
     expect(translated.prompt, '你是一位细心的侦探。');
@@ -71,6 +76,35 @@ void main() {
     expect(translated.toolIds, assistant.toolIds);
     expect(translated.createdAt, assistant.createdAt);
     expect(translated.updatedAt, assistant.updatedAt);
+  });
+
+  test('first request respects the world-book hard limit without checkpoints',
+      () async {
+    final source = List.filled(2200, '界').join();
+    expect(source.runes.length, 2200);
+    final memoryBookSources = <String>[];
+
+    final translated =
+        await AssistantRoleCardTranslationService.translateToSimplifiedChinese(
+      AssistantModel(name: '', memoryBook: source),
+      complete: (prompt) async {
+        final payload =
+            jsonDecode(prompt.split('\n').last) as Map<String, dynamic>;
+        final memoryBook = payload['memoryBook'];
+        if (memoryBook is String && memoryBook.isNotEmpty) {
+          memoryBookSources.add(memoryBook);
+        }
+        return jsonEncode(payload);
+      },
+    );
+
+    expect(memoryBookSources, isNotEmpty);
+    expect(
+      memoryBookSources.every((text) => text.runes.length <= 1200),
+      isTrue,
+    );
+    expect(memoryBookSources.toSet(), hasLength(memoryBookSources.length));
+    expect(translated.memoryBook, source);
   });
 
   test('applyTranslatedFields keeps original value when a field is missing',
