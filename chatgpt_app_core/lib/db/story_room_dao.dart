@@ -3,12 +3,37 @@ import 'package:chatgpt_app_core/db/table_name.dart';
 import 'package:chatgpt_app_core/model/story_persona_model.dart';
 import 'package:chatgpt_app_core/model/story_room_model.dart';
 import 'package:chatgpt_app_core/sync/sync_tombstone_store.dart';
+import 'package:sqflite/sqflite.dart';
+
+final class _TavernImportInsertResult {
+  final int roomId;
+  final int? personaId;
+  final List<int> participantIds;
+  final List<int> messageIds;
+  final List<int?> messageSpeakerIds;
+  final String? activeMessageKey;
+  final int roomCreatedAt;
+  final int now;
+
+  const _TavernImportInsertResult({
+    required this.roomId,
+    required this.personaId,
+    required this.participantIds,
+    required this.messageIds,
+    required this.messageSpeakerIds,
+    required this.activeMessageKey,
+    required this.roomCreatedAt,
+    required this.now,
+  });
+}
 
 class StoryRoomDao implements ITable {
   final HiDBManager storage;
 
+  static const roomTable = 'tb_story_room';
+
   @override
-  String tableName = 'tb_story_room';
+  String tableName = roomTable;
 
   static const participantTable = 'tb_story_participant';
   static const messageTable = 'tb_story_message';
@@ -263,95 +288,152 @@ class StoryRoomDao implements ITable {
     required List<StoryParticipantModel> participants,
     required List<StoryMessageModel> messages,
     StoryPersonaModel? persona,
-  }) {
+  }) async {
+    final inserted = await storage.db.transaction(
+      (txn) => _insertTavernImport(
+        txn,
+        room: room,
+        participants: participants,
+        messages: messages,
+        persona: persona,
+        now: DateTime.now().millisecondsSinceEpoch,
+      ),
+    );
+    _applyTavernImportResult(
+      inserted,
+      room: room,
+      participants: participants,
+      messages: messages,
+      persona: persona,
+    );
+    return inserted.roomId;
+  }
+
+  /// 在调用方已有的事务中插入完整 Tavern 房间图。
+  ///
+  /// 该方法不创建嵌套事务，也不会在外层事务提交前修改传入对象。
+  static Future<int> insertTavernImport(
+    DatabaseExecutor executor, {
+    required StoryRoomModel room,
+    required List<StoryParticipantModel> participants,
+    required List<StoryMessageModel> messages,
+    StoryPersonaModel? persona,
+    required int now,
+  }) async {
+    final inserted = await _insertTavernImport(
+      executor,
+      room: room,
+      participants: participants,
+      messages: messages,
+      persona: persona,
+      now: now,
+    );
+    return inserted.roomId;
+  }
+
+  static Future<_TavernImportInsertResult> _insertTavernImport(
+    DatabaseExecutor executor, {
+    required StoryRoomModel room,
+    required List<StoryParticipantModel> participants,
+    required List<StoryMessageModel> messages,
+    required StoryPersonaModel? persona,
+    required int now,
+  }) async {
+    int? personaId;
+    if (persona != null) {
+      final personaData = Map<String, dynamic>.from(persona.toJson())
+        ..remove('id')
+        ..['updatedAt'] = now;
+      personaId = await executor.insert('tb_story_persona', personaData);
+    }
+
+    final roomCreatedAt = room.createdAt == 0 ? now : room.createdAt;
+    final roomData = Map<String, dynamic>.from(room.toJson())
+      ..remove('id')
+      ..['mode'] = StoryRoomMode.tavern
+      ..['createdAt'] = roomCreatedAt
+      ..['updatedAt'] = now;
+    final roomId = await executor.insert(roomTable, roomData);
+
     final participantIds = <int>[];
+    final participantIdsByName = <String, int>{};
+    for (final participant in participants) {
+      final data = Map<String, dynamic>.from(participant.toJson())
+        ..remove('id')
+        ..['roomId'] = roomId
+        ..['updatedAt'] = now;
+      final id = await executor.insert(participantTable, data);
+      participantIds.add(id);
+      participantIdsByName.putIfAbsent(participant.name, () => id);
+    }
+
     final messageIds = <int>[];
-    int? insertedPersonaId;
-    final originalRoomId = room.id;
-    final originalPersonaId = persona?.id;
-    final originalParticipantState = [
-      for (final participant in participants)
-        (id: participant.id, roomId: participant.roomId),
-    ];
-    final originalMessageState = [
-      for (final message in messages)
-        (id: message.id, roomId: message.roomId, speakerId: message.speakerId),
-    ];
-    return storage.db.transaction((txn) async {
-      final now = DateTime.now().millisecondsSinceEpoch;
-      if (persona != null) {
-        persona.updatedAt = now;
-        final personaData = persona.toJson()..remove('id');
-        insertedPersonaId = await txn.insert('tb_story_persona', personaData);
-      }
-      room.mode = StoryRoomMode.tavern;
-      room.createdAt = room.createdAt == 0 ? now : room.createdAt;
-      room.updatedAt = now;
-      final roomData = room.toJson()..remove('id');
-      final roomId = await txn.insert(tableName, roomData);
-      room.id = roomId;
+    final messageSpeakerIds = <int?>[];
+    for (final message in messages) {
+      final speakerId = !message.isUser && message.speakerId == null
+          ? participantIdsByName[message.speakerName]
+          : message.speakerId;
+      final data = Map<String, dynamic>.from(message.toJson())
+        ..remove('id')
+        ..['roomId'] = roomId
+        ..['speakerId'] = speakerId
+        ..['updatedAt'] = now;
+      final id = await executor.insert(messageTable, data);
+      messageIds.add(id);
+      messageSpeakerIds.add(speakerId);
+    }
 
-      final participantIdsByName = <String, int>{};
-      for (final participant in participants) {
-        participant.roomId = roomId;
-        participant.updatedAt = now;
-        final data = participant.toJson()..remove('id');
-        final id = await txn.insert(participantTable, data);
-        participantIds.add(id);
-        participantIdsByName.putIfAbsent(participant.name, () => id);
-      }
+    final activeMessageKey = room.activeMessageKey ??
+        (messages.isEmpty ? null : messages.last.nodeKey);
+    await executor.update(
+      roomTable,
+      {'activeMessageKey': activeMessageKey, 'updatedAt': now},
+      where: 'id = ?',
+      whereArgs: [roomId],
+    );
+    return _TavernImportInsertResult(
+      roomId: roomId,
+      personaId: personaId,
+      participantIds: participantIds,
+      messageIds: messageIds,
+      messageSpeakerIds: messageSpeakerIds,
+      activeMessageKey: activeMessageKey,
+      roomCreatedAt: roomCreatedAt,
+      now: now,
+    );
+  }
 
-      for (final message in messages) {
-        message.roomId = roomId;
-        message.updatedAt = now;
-        if (!message.isUser && message.speakerId == null) {
-          message.speakerId = participantIdsByName[message.speakerName];
-        }
-        final data = message.toJson()..remove('id');
-        final id = await txn.insert(messageTable, data);
-        messageIds.add(id);
-      }
-
-      final activeMessageKey = room.activeMessageKey ??
-          (messages.isEmpty ? null : messages.last.nodeKey);
-      room.activeMessageKey = activeMessageKey;
-      await txn.update(
-        tableName,
-        {'activeMessageKey': activeMessageKey, 'updatedAt': now},
-        where: 'id = ?',
-        whereArgs: [roomId],
-      );
-      return roomId;
-    }).then((roomId) {
-      if (persona != null) persona.id = insertedPersonaId;
-      room.id = roomId;
-      for (var index = 0; index < participants.length; index++) {
-        participants[index]
-          ..id = participantIds[index]
-          ..roomId = roomId;
-      }
-      for (var index = 0; index < messages.length; index++) {
-        messages[index]
-          ..id = messageIds[index]
-          ..roomId = roomId;
-      }
-      return roomId;
-    }).catchError((Object error, StackTrace stackTrace) {
-      room.id = originalRoomId;
-      if (persona != null) persona.id = originalPersonaId;
-      for (var index = 0; index < participants.length; index++) {
-        participants[index]
-          ..id = originalParticipantState[index].id
-          ..roomId = originalParticipantState[index].roomId;
-      }
-      for (var index = 0; index < messages.length; index++) {
-        messages[index]
-          ..id = originalMessageState[index].id
-          ..roomId = originalMessageState[index].roomId
-          ..speakerId = originalMessageState[index].speakerId;
-      }
-      Error.throwWithStackTrace(error, stackTrace);
-    });
+  static void _applyTavernImportResult(
+    _TavernImportInsertResult inserted, {
+    required StoryRoomModel room,
+    required List<StoryParticipantModel> participants,
+    required List<StoryMessageModel> messages,
+    required StoryPersonaModel? persona,
+  }) {
+    if (persona != null) {
+      persona
+        ..id = inserted.personaId
+        ..updatedAt = inserted.now;
+    }
+    room
+      ..id = inserted.roomId
+      ..mode = StoryRoomMode.tavern
+      ..createdAt = inserted.roomCreatedAt
+      ..updatedAt = inserted.now
+      ..activeMessageKey = inserted.activeMessageKey;
+    for (var index = 0; index < participants.length; index++) {
+      participants[index]
+        ..id = inserted.participantIds[index]
+        ..roomId = inserted.roomId
+        ..updatedAt = inserted.now;
+    }
+    for (var index = 0; index < messages.length; index++) {
+      messages[index]
+        ..id = inserted.messageIds[index]
+        ..roomId = inserted.roomId
+        ..speakerId = inserted.messageSpeakerIds[index]
+        ..updatedAt = inserted.now;
+    }
   }
 
   Future<List<StoryRoomModel>> getRooms() async {

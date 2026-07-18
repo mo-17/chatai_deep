@@ -1,0 +1,689 @@
+import 'dart:convert';
+
+import 'package:chatgpt_app_core/chat/application/assistant_role_card_service.dart';
+import 'package:chatgpt_app_core/chat/application/story_room_role_card_importer.dart';
+import 'package:chatgpt_app_core/chat/application/tavern_room_import_finalizer.dart';
+import 'package:chatgpt_app_core/db/hi_db_manager.dart';
+import 'package:chatgpt_app_core/db/story_room_dao.dart';
+import 'package:chatgpt_app_core/db/story_template_dao.dart';
+import 'package:chatgpt_app_core/db/story_template_translation_task_dao.dart';
+import 'package:chatgpt_app_core/model/assistant_model.dart';
+import 'package:chatgpt_app_core/model/story_room_model.dart';
+import 'package:chatgpt_app_core/model/story_template_model.dart';
+import 'package:chatgpt_app_core/model/story_template_translation_task_model.dart';
+import 'package:flutter_test/flutter_test.dart';
+import 'package:sqflite_common_ffi/sqflite_ffi.dart';
+
+void main() {
+  setUpAll(sqfliteFfiInit);
+
+  group('TavernRoomImportFinalizer', () {
+    late Database db;
+    late HiDBManager storage;
+    late StoryTemplateTranslationTaskDao taskDao;
+
+    setUp(() async {
+      db = await databaseFactoryFfi.openDatabase(inMemoryDatabasePath);
+      storage = HiDBManager.test(db);
+      taskDao = await StoryTemplateTranslationTaskDao.create(storage);
+      await StoryTemplateDao.create(storage);
+      await StoryRoomDao.create(storage);
+    });
+
+    tearDown(() async => db.close());
+
+    test('build creates a two-role bundle with complete room configuration',
+        () {
+      final payload = _twoRolePayload();
+
+      final bundle = TavernRoomImportFinalizer.build(
+        payload: payload,
+        title: '中文房间',
+        sourceTitle: 'source.zip',
+        translated: true,
+      );
+
+      expect(bundle.hasRetainedOriginal, isFalse);
+      expect(bundle.outputTemplate.id, isNull);
+      expect(bundle.outputTemplate.title, '中文房间');
+      expect(bundle.outputTemplate.sourceTitle, 'source.zip');
+      expect(bundle.outputTemplate.translated, isTrue);
+      final storedPayload =
+          StoryRoomTemplatePayload.fromTemplate(bundle.outputTemplate);
+      expect(storedPayload.toJson(), payload.toJson());
+
+      expect(bundle.room.id, isNull);
+      expect(bundle.room.title, '中文房间');
+      expect(bundle.room.mode, StoryRoomMode.tavern);
+      expect(bundle.room.promptConfigJson, payload.promptConfigJson);
+      expect(bundle.room.quickRepliesJson, payload.quickRepliesJson);
+      expect(bundle.room.regexScriptsJson, payload.regexScriptsJson);
+      expect(bundle.room.tavernPresetJson, payload.tavernPresetJson);
+      expect(bundle.room.temperature, payload.temperature);
+      expect(bundle.room.topP, payload.topP);
+      expect(bundle.room.maxOutputTokens, payload.maxOutputTokens);
+      expect(bundle.participants.map((item) => item.name), ['Alice', 'Bob']);
+      expect(bundle.participants.every((item) => item.roomId == 0), isTrue);
+      expect(bundle.messages, hasLength(1));
+      expect(bundle.messages.single.roomId, 0);
+      expect(bundle.messages.single.speakerRole, 'system');
+      expect(bundle.messages.single.content, payload.initialOpening);
+    });
+
+    test('build preserves single and batch empty-opening semantics', () {
+      final single = TavernRoomImportFinalizer.build(
+        payload: StoryRoomTemplatePayload(
+          results: [
+            AssistantRoleCardImportResult(
+              assistant: AssistantModel(
+                name: 'Alice',
+                openingMessage: '角色默认开场',
+              ),
+            ),
+          ],
+        ),
+        title: '单角色',
+        sourceTitle: 'single.png',
+        translated: true,
+      );
+      final batch = TavernRoomImportFinalizer.build(
+        payload: StoryRoomTemplatePayload(
+          results: [
+            AssistantRoleCardImportResult(
+              assistant: AssistantModel(
+                name: 'Alice',
+                openingMessage: 'Alice 开场',
+              ),
+            ),
+            AssistantRoleCardImportResult(
+              assistant: AssistantModel(
+                name: 'Bob',
+                openingMessage: 'Bob 开场',
+              ),
+            ),
+          ],
+        ),
+        title: '双角色',
+        sourceTitle: 'batch.zip',
+        translated: true,
+      );
+
+      expect(single.messages, isEmpty);
+      expect(batch.messages, hasLength(1));
+      expect(batch.messages.single.content, contains('【Alice】'));
+      expect(batch.messages.single.content, contains('Alice 开场'));
+      expect(batch.messages.single.content, contains('【Bob】'));
+      expect(batch.messages.single.content, contains('Bob 开场'));
+    });
+
+    test('build rejects an empty role payload', () {
+      expect(
+        () => TavernRoomImportFinalizer.build(
+          payload: const StoryRoomTemplatePayload(results: []),
+          title: '空房间',
+          sourceTitle: 'empty.zip',
+          translated: true,
+        ),
+        throwsFormatException,
+      );
+    });
+
+    test('repeated completion reuses one template and one room graph',
+        () async {
+      final now = DateTime.utc(2026, 7, 17, 12);
+      final task = await _claimedTask(
+        taskDao,
+        payload: _twoRolePayload(),
+        leaseOwner: 'runner-a',
+        now: now,
+      );
+      final bundle = TavernRoomImportFinalizer.build(
+        payload: _twoRolePayload(),
+        title: '中文房间',
+        sourceTitle: 'source.zip',
+        translated: true,
+      );
+
+      final first = await taskDao.completeWithTavernRoom(
+        task,
+        bundle: bundle,
+        leaseOwner: 'runner-a',
+        now: now,
+      );
+      final resumedTask = (await taskDao.getTask(task.id!))!;
+      final resumedBundle = TavernRoomImportFinalizer.build(
+        payload: _twoRolePayload(),
+        title: '中文房间',
+        sourceTitle: 'source.zip',
+        translated: true,
+      );
+      final second = await taskDao.completeWithTavernRoom(
+        resumedTask,
+        bundle: resumedBundle,
+        leaseOwner: 'runner-a',
+        now: now.add(const Duration(minutes: 10)),
+      );
+
+      expect(first, isNotNull);
+      expect(second?.outputTemplateId, first?.outputTemplateId);
+      expect(second?.outputRoomId, first?.outputRoomId);
+      expect(await db.query('tb_story_template'), hasLength(1));
+      expect(await db.query('tb_story_room'), hasLength(1));
+      expect(await db.query('tb_story_participant'), hasLength(2));
+      expect(await db.query('tb_story_message'), hasLength(1));
+      expect(bundle.outputTemplate.id, first?.outputTemplateId);
+      expect(bundle.room.id, first?.outputRoomId);
+      expect(resumedBundle.outputTemplate.id, first?.outputTemplateId);
+      expect(resumedBundle.room.id, first?.outputRoomId);
+      expect(task.outputTemplateId, first?.outputTemplateId);
+      expect(task.outputRoomId, first?.outputRoomId);
+      expect(task.status, StoryTemplateTranslationTaskStatus.completed);
+      expect(task.leaseOwner, isNull);
+      expect(task.leaseUntil, isNull);
+      expect(task.nextRunAt, isNull);
+      final stored = await taskDao.getTask(task.id!);
+      expect(stored?.outputTemplateId, first?.outputTemplateId);
+      expect(stored?.outputRoomId, first?.outputRoomId);
+      expect(stored?.status, StoryTemplateTranslationTaskStatus.completed);
+    });
+
+    test('wrong owner and expired lease perform zero output writes', () async {
+      final now = DateTime.utc(2026, 7, 17, 12);
+      final wrongOwnerTask = await _claimedTask(
+        taskDao,
+        payload: _twoRolePayload(),
+        leaseOwner: 'runner-a',
+        now: now,
+      );
+      final wrongOwnerBundle = TavernRoomImportFinalizer.build(
+        payload: _twoRolePayload(),
+        title: '错误 owner',
+        sourceTitle: 'wrong-owner.zip',
+        translated: true,
+      );
+
+      final wrongOwner = await taskDao.completeWithTavernRoom(
+        wrongOwnerTask,
+        bundle: wrongOwnerBundle,
+        leaseOwner: 'runner-b',
+        now: now,
+      );
+      expect(wrongOwner, isNull);
+
+      final expiredTask = await _claimedTask(
+        taskDao,
+        payload: _twoRolePayload(),
+        leaseOwner: 'runner-expired',
+        now: now,
+      );
+      final expiredBundle = TavernRoomImportFinalizer.build(
+        payload: _twoRolePayload(),
+        title: '过期 lease',
+        sourceTitle: 'expired.zip',
+        translated: true,
+      );
+      final expired = await taskDao.completeWithTavernRoom(
+        expiredTask,
+        bundle: expiredBundle,
+        leaseOwner: 'runner-expired',
+        now: now.add(const Duration(minutes: 6)),
+      );
+
+      expect(expired, isNull);
+      expect(await db.query('tb_story_template'), isEmpty);
+      expect(await db.query('tb_story_room'), isEmpty);
+      expect(await db.query('tb_story_participant'), isEmpty);
+      expect(await db.query('tb_story_message'), isEmpty);
+      expect(wrongOwnerBundle.outputTemplate.id, isNull);
+      expect(wrongOwnerBundle.room.id, isNull);
+      expect(expiredBundle.outputTemplate.id, isNull);
+      expect(expiredBundle.room.id, isNull);
+      final wrongOwnerStored = await taskDao.getTask(wrongOwnerTask.id!);
+      final expiredStored = await taskDao.getTask(expiredTask.id!);
+      expect(
+          wrongOwnerStored?.status, StoryTemplateTranslationTaskStatus.running);
+      expect(wrongOwnerStored?.leaseOwner, 'runner-a');
+      expect(expiredStored?.status, StoryTemplateTranslationTaskStatus.running);
+      expect(expiredStored?.leaseOwner, 'runner-expired');
+    });
+
+    test('wrong task kind cannot create Tavern outputs', () async {
+      final now = DateTime.utc(2026, 7, 17, 12);
+      final task = StoryTemplateTranslationTaskModel(
+        sourceTitle: '模板副本任务',
+        sourcePayload: '{}',
+        taskKind: StoryTemplateTranslationTaskKind.templateCopy,
+      );
+      await taskDao.saveTask(task);
+      expect(
+        await taskDao.claimTask(
+          task.id!,
+          leaseOwner: 'runner-a',
+          leaseDuration: const Duration(minutes: 5),
+          now: now,
+        ),
+        isTrue,
+      );
+      final bundle = TavernRoomImportFinalizer.build(
+        payload: _twoRolePayload(),
+        title: '不应创建',
+        sourceTitle: 'wrong-kind.zip',
+        translated: true,
+      );
+
+      final completion = await taskDao.completeWithTavernRoom(
+        task,
+        bundle: bundle,
+        leaseOwner: 'runner-a',
+        now: now,
+      );
+
+      expect(completion, isNull);
+      expect(await db.query('tb_story_template'), isEmpty);
+      expect(await db.query('tb_story_room'), isEmpty);
+      expect(await db.query('tb_story_participant'), isEmpty);
+      expect(await db.query('tb_story_message'), isEmpty);
+      expect(bundle.outputTemplate.id, isNull);
+      expect(bundle.room.id, isNull);
+    });
+
+    test('Tavern task kind cannot complete through the template-only path',
+        () async {
+      final now = DateTime.utc(2026, 7, 17, 12);
+      final task = await _claimedTask(
+        taskDao,
+        payload: _twoRolePayload(),
+        leaseOwner: 'runner-tavern-kind',
+        now: now,
+      );
+      final output = StoryTemplateModel(
+        title: '不应创建的模板',
+        sourceTitle: 'source.zip',
+        translated: true,
+        payload: '{"results":[]}',
+      );
+
+      final completion = await taskDao.completeWithTemplate(
+        task,
+        outputTemplate: output,
+        leaseOwner: 'runner-tavern-kind',
+        now: now,
+      );
+
+      expect(completion, isNull);
+      expect(await db.query('tb_story_template'), isEmpty);
+      expect(output.id, isNull);
+      final stored = await taskDao.getTask(task.id!);
+      expect(stored?.status, StoryTemplateTranslationTaskStatus.running);
+      expect(stored?.leaseOwner, 'runner-tavern-kind');
+    });
+
+    test('template completion preserves warning status and remains idempotent',
+        () async {
+      final now = DateTime.utc(2026, 7, 17, 12);
+      final task = StoryTemplateTranslationTaskModel(
+        sourceTitle: '模板源',
+        sourcePayload: '{}',
+      );
+      await taskDao.saveTask(task);
+      expect(
+        await taskDao.claimTask(
+          task.id!,
+          leaseOwner: 'runner-template',
+          leaseDuration: const Duration(minutes: 5),
+          now: now,
+        ),
+        isTrue,
+      );
+      task.status = StoryTemplateTranslationTaskStatus.completedWithWarnings;
+      final output = StoryTemplateModel(
+        title: '部分翻译模板',
+        sourceTitle: '模板源',
+        translated: true,
+        payload: '{"results":[]}',
+      );
+
+      final first = await taskDao.completeWithTemplate(
+        task,
+        outputTemplate: output,
+        leaseOwner: 'runner-template',
+        now: now,
+      );
+      final resumed = (await taskDao.getTask(task.id!))!;
+      final second = await taskDao.completeWithTemplate(
+        resumed,
+        outputTemplate: StoryTemplateModel(
+          title: '不应重复插入',
+          sourceTitle: '模板源',
+          translated: true,
+          payload: '{"results":[]}',
+        ),
+        leaseOwner: 'runner-template',
+        now: now.add(const Duration(hours: 1)),
+      );
+
+      expect(first, isNotNull);
+      expect(second, first);
+      expect(resumed.status,
+          StoryTemplateTranslationTaskStatus.completedWithWarnings);
+      expect(await db.query('tb_story_template'), hasLength(1));
+    });
+
+    test('template completion rollback leaves database and inputs unchanged',
+        () async {
+      final now = DateTime.utc(2026, 7, 17, 12);
+      final seed = StoryTemplateTranslationTaskModel(
+        sourceTitle: '事务回滚模板源',
+        sourcePayload: '{}',
+      );
+      await taskDao.saveTask(seed);
+      expect(
+        await taskDao.claimTask(
+          seed.id!,
+          leaseOwner: 'runner-template-rollback',
+          leaseDuration: const Duration(minutes: 5),
+          now: now,
+        ),
+        isTrue,
+      );
+      final task = (await taskDao.getTask(seed.id!))!;
+      final output = StoryTemplateModel(
+        title: '不应保留的输出模板',
+        sourceTitle: '事务回滚模板源',
+        translated: true,
+        payload: '{"results":[]}',
+      );
+      final taskBefore = Map<String, dynamic>.from(task.toJson());
+      final outputBefore = Map<String, dynamic>.from(output.toJson());
+      await db.execute('''
+        create trigger fail_template_completion
+        before update on tb_story_template_translation_task
+        when NEW.outputTemplateId is not null
+          or NEW.status in (
+            '${StoryTemplateTranslationTaskStatus.completed}',
+            '${StoryTemplateTranslationTaskStatus.completedWithWarnings}'
+          )
+        begin
+          select raise(abort, 'forced template completion failure');
+        end
+      ''');
+
+      await expectLater(
+        taskDao.completeWithTemplate(
+          task,
+          outputTemplate: output,
+          leaseOwner: 'runner-template-rollback',
+          now: now,
+        ),
+        throwsA(isA<DatabaseException>()),
+      );
+
+      expect(await db.query('tb_story_template'), isEmpty);
+      final stored = await taskDao.getTask(task.id!);
+      expect(stored?.toJson(), taskBefore);
+      expect(stored?.status, StoryTemplateTranslationTaskStatus.running);
+      expect(stored?.leaseOwner, 'runner-template-rollback');
+      expect(stored?.leaseUntil, taskBefore['leaseUntil']);
+      expect(stored?.updatedAt, taskBefore['updatedAt']);
+      expect(task.toJson(), taskBefore);
+      expect(output.toJson(), outputBefore);
+    });
+
+    for (final failingTable in [
+      'tb_story_participant',
+      'tb_story_message',
+    ]) {
+      test('$failingTable insertion failure rolls back every output and object',
+          () async {
+        final now = DateTime.utc(2026, 7, 17, 12);
+        final task = await _claimedTask(
+          taskDao,
+          payload: _twoRolePayload(),
+          leaseOwner: 'runner-a',
+          now: now,
+        );
+        final bundle = TavernRoomImportFinalizer.build(
+          payload: _twoRolePayload(),
+          title: '必须回滚',
+          sourceTitle: 'rollback.zip',
+          translated: true,
+        );
+        final roomBefore = Map<String, dynamic>.from(bundle.room.toJson());
+        final participantBefore = [
+          for (final item in bundle.participants)
+            Map<String, dynamic>.from(item.toJson()),
+        ];
+        final messageBefore = [
+          for (final item in bundle.messages)
+            Map<String, dynamic>.from(item.toJson()),
+        ];
+        await db.execute('''
+          create trigger fail_tavern_graph
+          before insert on $failingTable
+          begin
+            select raise(abort, 'forced tavern graph failure');
+          end
+        ''');
+
+        await expectLater(
+          taskDao.completeWithTavernRoom(
+            task,
+            bundle: bundle,
+            leaseOwner: 'runner-a',
+            now: now,
+          ),
+          throwsA(isA<DatabaseException>()),
+        );
+
+        expect(await db.query('tb_story_template'), isEmpty);
+        expect(await db.query('tb_story_room'), isEmpty);
+        expect(await db.query('tb_story_participant'), isEmpty);
+        expect(await db.query('tb_story_message'), isEmpty);
+        final stored = await taskDao.getTask(task.id!);
+        expect(stored?.status, StoryTemplateTranslationTaskStatus.running);
+        expect(stored?.leaseOwner, 'runner-a');
+        expect(stored?.outputTemplateId, isNull);
+        expect(stored?.outputRoomId, isNull);
+        expect(bundle.outputTemplate.id, isNull);
+        expect(bundle.room.toJson(), roomBefore);
+        expect(
+          bundle.participants.map((item) => item.toJson()).toList(),
+          participantBefore,
+        );
+        expect(
+          bundle.messages.map((item) => item.toJson()).toList(),
+          messageBefore,
+        );
+      });
+    }
+
+    test('retained originals complete once with a terminal warning status',
+        () async {
+      final now = DateTime.utc(2026, 7, 17, 12);
+      final task = await _claimedTask(
+        taskDao,
+        payload: _twoRolePayload(),
+        leaseOwner: 'runner-a',
+        now: now,
+      );
+      final bundle = TavernRoomImportFinalizer.build(
+        payload: _twoRolePayload(),
+        title: '部分翻译房间',
+        sourceTitle: 'warnings.zip',
+        translated: true,
+        hasRetainedOriginal: true,
+      );
+
+      final first = await taskDao.completeWithTavernRoom(
+        task,
+        bundle: bundle,
+        leaseOwner: 'runner-a',
+        now: now,
+      );
+      final resumedTask = (await taskDao.getTask(task.id!))!;
+      final resumedBundle = TavernRoomImportFinalizer.build(
+        payload: _twoRolePayload(),
+        title: '部分翻译房间',
+        sourceTitle: 'warnings.zip',
+        translated: true,
+        hasRetainedOriginal: false,
+      );
+      final second = await taskDao.completeWithTavernRoom(
+        resumedTask,
+        bundle: resumedBundle,
+        leaseOwner: 'runner-a',
+        now: now.add(const Duration(hours: 1)),
+      );
+
+      expect(first, isNotNull);
+      expect(second?.outputTemplateId, first?.outputTemplateId);
+      expect(second?.outputRoomId, first?.outputRoomId);
+      expect(resumedBundle.outputTemplate.id, first?.outputTemplateId);
+      expect(resumedBundle.room.id, first?.outputRoomId);
+      expect(resumedTask.status,
+          StoryTemplateTranslationTaskStatus.completedWithWarnings);
+      expect(task.status,
+          StoryTemplateTranslationTaskStatus.completedWithWarnings);
+      final stored = await taskDao.getTask(task.id!);
+      expect(stored?.status,
+          StoryTemplateTranslationTaskStatus.completedWithWarnings);
+      expect(stored?.isTerminal, isTrue);
+      expect(stored?.canRetry, isFalse);
+      expect(await db.query('tb_story_template'), hasLength(1));
+      expect(await db.query('tb_story_room'), hasLength(1));
+    });
+
+    test('legacy saveTavernImport applies graph identities after commit',
+        () async {
+      final dao = await StoryRoomDao.create(storage);
+      final bundle = TavernRoomImportFinalizer.build(
+        payload: _twoRolePayload(),
+        title: '旧入口',
+        sourceTitle: 'legacy.zip',
+        translated: false,
+      );
+
+      final roomId = await dao.saveTavernImport(
+        room: bundle.room,
+        participants: bundle.participants,
+        messages: bundle.messages,
+      );
+
+      expect(bundle.room.id, roomId);
+      expect(bundle.room.activeMessageKey, bundle.messages.single.nodeKey);
+      expect(
+        bundle.participants.every(
+          (item) => item.id != null && item.roomId == roomId,
+        ),
+        isTrue,
+      );
+      expect(bundle.messages.single.id, isNotNull);
+      expect(bundle.messages.single.roomId, roomId);
+      expect(bundle.messages.single.speakerId, isNull);
+    });
+
+    test('legacy saveTavernImport leaves every graph object unchanged on error',
+        () async {
+      final dao = await StoryRoomDao.create(storage);
+      final bundle = TavernRoomImportFinalizer.build(
+        payload: _twoRolePayload(),
+        title: '旧入口回滚',
+        sourceTitle: 'legacy-rollback.zip',
+        translated: false,
+      );
+      final roomBefore = Map<String, dynamic>.from(bundle.room.toJson());
+      final participantBefore = [
+        for (final item in bundle.participants)
+          Map<String, dynamic>.from(item.toJson()),
+      ];
+      final messageBefore = [
+        for (final item in bundle.messages)
+          Map<String, dynamic>.from(item.toJson()),
+      ];
+      await db.execute('''
+        create trigger fail_legacy_tavern_message
+        before insert on tb_story_message
+        begin
+          select raise(abort, 'forced legacy Tavern failure');
+        end
+      ''');
+
+      await expectLater(
+        dao.saveTavernImport(
+          room: bundle.room,
+          participants: bundle.participants,
+          messages: bundle.messages,
+        ),
+        throwsA(isA<DatabaseException>()),
+      );
+
+      expect(await db.query('tb_story_room'), isEmpty);
+      expect(await db.query('tb_story_participant'), isEmpty);
+      expect(await db.query('tb_story_message'), isEmpty);
+      expect(bundle.room.toJson(), roomBefore);
+      expect(
+        bundle.participants.map((item) => item.toJson()).toList(),
+        participantBefore,
+      );
+      expect(
+        bundle.messages.map((item) => item.toJson()).toList(),
+        messageBefore,
+      );
+    });
+  });
+}
+
+StoryRoomTemplatePayload _twoRolePayload() => StoryRoomTemplatePayload(
+      results: [
+        AssistantRoleCardImportResult(
+          assistant: AssistantModel(
+            name: 'Alice',
+            description: 'A careful detective.',
+            prompt: 'Stay observant.',
+            openingMessage: 'Good evening.',
+          ),
+          sourceName: 'alice.png',
+        ),
+        AssistantRoleCardImportResult(
+          assistant: AssistantModel(
+            name: 'Bob',
+            description: 'A brave guide.',
+            prompt: 'Protect the party.',
+            openingMessage: 'Follow me.',
+          ),
+          sourceName: 'bob.png',
+        ),
+      ],
+      initialOpening: '房间开场',
+      promptConfigJson: '{"version":1,"modules":[]}',
+      quickRepliesJson: '{"roomId":0,"groups":[]}',
+      regexScriptsJson: '{"version":1,"rules":[]}',
+      tavernPresetJson:
+          '{"format":"chatai_deep_story_tavern_preset_bundle","formatVersion":1,"presets":{"context":{"story_string":"safe"}}}',
+      temperature: 0.7,
+      topP: 0.85,
+      maxOutputTokens: 2048,
+    );
+
+Future<StoryTemplateTranslationTaskModel> _claimedTask(
+  StoryTemplateTranslationTaskDao dao, {
+  required StoryRoomTemplatePayload payload,
+  required String leaseOwner,
+  required DateTime now,
+}) async {
+  final task = StoryTemplateTranslationTaskModel(
+    sourceTitle: 'source.zip',
+    sourcePayload: jsonEncode(payload.toJson()),
+    outputTitle: '中文房间',
+    taskKind: StoryTemplateTranslationTaskKind.tavernRoomImport,
+  );
+  await dao.saveTask(task);
+  final claimed = await dao.claimTask(
+    task.id!,
+    leaseOwner: leaseOwner,
+    leaseDuration: const Duration(minutes: 5),
+    now: now,
+  );
+  expect(claimed, isTrue);
+  return task;
+}

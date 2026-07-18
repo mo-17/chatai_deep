@@ -1,13 +1,26 @@
-class StoryTemplateTranslationTaskStatus {
+abstract final class StoryTemplateTranslationTaskKind {
+  static const templateCopy = 'templateCopy';
+  static const tavernRoomImport = 'tavernRoomImport';
+}
+
+abstract final class StoryTemplateTranslationTaskStatus {
   static const queued = 'queued';
   static const running = 'running';
   static const retryable = 'retryable';
   static const completed = 'completed';
+  static const needsConfiguration = 'needsConfiguration';
+  static const completedWithWarnings = 'completedWithWarnings';
   static const failed = 'failed';
   static const cancelled = 'cancelled';
 
   static bool canRetry(String status) =>
       status == retryable || status == failed || status == cancelled;
+
+  static bool isTerminal(String status) =>
+      status == completed ||
+      status == completedWithWarnings ||
+      status == failed ||
+      status == cancelled;
 
   static String labelOf(String status) {
     switch (status) {
@@ -19,6 +32,10 @@ class StoryTemplateTranslationTaskStatus {
         return '可重试';
       case completed:
         return '已完成';
+      case needsConfiguration:
+        return '需要配置';
+      case completedWithWarnings:
+        return '部分翻译完成';
       case failed:
         return '失败';
       case cancelled:
@@ -38,6 +55,11 @@ class StoryTemplateTranslationTaskModel {
   String sourcePayload;
   String outputTitle;
   int? outputTemplateId;
+  String taskKind;
+  String requestProfile;
+  String chunkPayload;
+  int? outputRoomId;
+  int checkpointVersion;
   String status;
   double progress;
   String stage;
@@ -67,6 +89,11 @@ class StoryTemplateTranslationTaskModel {
     required this.sourcePayload,
     this.outputTitle = '',
     this.outputTemplateId,
+    this.taskKind = StoryTemplateTranslationTaskKind.templateCopy,
+    this.requestProfile = '',
+    this.chunkPayload = '',
+    this.outputRoomId,
+    this.checkpointVersion = 0,
     this.status = StoryTemplateTranslationTaskStatus.queued,
     this.progress = 0,
     this.stage = '等待生成中文副本',
@@ -101,6 +128,14 @@ class StoryTemplateTranslationTaskModel {
         sourcePayload: json['sourcePayload'] as String? ?? '{}',
         outputTitle: json['outputTitle'] as String? ?? '',
         outputTemplateId: _intOrNull(json['outputTemplateId']),
+        taskKind: _nonBlankString(
+          json['taskKind'],
+          StoryTemplateTranslationTaskKind.templateCopy,
+        ),
+        requestProfile: json['requestProfile'] as String? ?? '',
+        chunkPayload: json['chunkPayload'] as String? ?? '',
+        outputRoomId: _intOrNull(json['outputRoomId']),
+        checkpointVersion: _intOrNull(json['checkpointVersion']) ?? 0,
         status: json['status'] as String? ??
             StoryTemplateTranslationTaskStatus.failed,
         progress: _double(json['progress']),
@@ -132,6 +167,11 @@ class StoryTemplateTranslationTaskModel {
         'sourcePayload': sourcePayload,
         'outputTitle': outputTitle,
         'outputTemplateId': outputTemplateId,
+        'taskKind': taskKind,
+        'requestProfile': requestProfile,
+        'chunkPayload': chunkPayload,
+        'outputRoomId': outputRoomId,
+        'checkpointVersion': checkpointVersion,
         'status': status,
         'progress': progress.clamp(0, 1),
         'stage': stage,
@@ -157,10 +197,12 @@ class StoryTemplateTranslationTaskModel {
 
   bool get canRetry => StoryTemplateTranslationTaskStatus.canRetry(status);
   bool get isRunning => status == StoryTemplateTranslationTaskStatus.running;
-  bool get isTerminal =>
-      status == StoryTemplateTranslationTaskStatus.completed ||
-      status == StoryTemplateTranslationTaskStatus.failed ||
-      status == StoryTemplateTranslationTaskStatus.cancelled;
+  bool get isTerminal => StoryTemplateTranslationTaskStatus.isTerminal(status);
+
+  static String _nonBlankString(Object? value, String fallback) {
+    if (value is! String || value.trim().isEmpty) return fallback;
+    return value;
+  }
 
   static int? _intOrNull(Object? value) {
     if (value is num) return value.toInt();

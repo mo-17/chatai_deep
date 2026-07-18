@@ -100,6 +100,11 @@ class _RecordingDatabase implements Database {
   }
 
   @override
+  Future<int> rawUpdate(String sql, [List<Object?>? arguments]) {
+    return delegate.rawUpdate(sql, arguments);
+  }
+
+  @override
   dynamic noSuchMethod(Invocation invocation) {
     throw UnsupportedError(
         'Unexpected database call: ${invocation.memberName}');

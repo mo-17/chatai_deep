@@ -159,7 +159,7 @@ void main() {
       expect(restored?.log, contains('可重试'));
     });
 
-    test('旧任务表会 guarded ALTER 新增租约和字段快照列', () async {
+    test('旧任务表会 guarded ALTER 新增租约、字段快照和新检查点列', () async {
       await db.execute('drop table tb_story_template_translation_task');
       await db.execute(
         'create table tb_story_template_translation_task ('
@@ -183,6 +183,11 @@ void main() {
             'leaseUntil',
             'attempts',
             'nextRunAt',
+            'taskKind',
+            'requestProfile',
+            'chunkPayload',
+            'outputRoomId',
+            'checkpointVersion',
           ]));
       final task = StoryTemplateTranslationTaskModel(
         sourceTitle: '兼容旧库',
@@ -194,6 +199,293 @@ void main() {
       final saved = await taskDao.getTask(task.id!);
       expect(saved?.fieldPayload, '{"field":"value"}');
       expect(saved?.attempts, 3);
+    });
+
+    test('旧表迁移会回填任务类型和检查点版本且保留原字段', () async {
+      await db.execute('drop table tb_story_template_translation_task');
+      await db.execute(
+        'create table tb_story_template_translation_task ('
+        'id integer primary key autoincrement, '
+        'templateId integer, sourceTitle text, sourcePayload text, outputTitle text, '
+        'outputTemplateId integer, status text, progress real, stage text, detail text, '
+        'log text, error text, roleIndex integer, roleTotal integer, roleName text, '
+        'fieldIndex integer, fieldTotal integer, fieldLabel text, fieldProgress real, '
+        'fieldPayload text, partialPayload text, leaseOwner text, leaseUntil integer, '
+        'attempts integer default 0, nextRunAt integer, createdAt integer, updatedAt integer)',
+      );
+      final legacyId = await db.insert('tb_story_template_translation_task', {
+        'templateId': 17,
+        'sourceTitle': '旧模板',
+        'sourcePayload': '{"source":true}',
+        'outputTitle': '中文副本',
+        'outputTemplateId': 23,
+        'status': StoryTemplateTranslationTaskStatus.retryable,
+        'progress': 0.4,
+        'stage': '旧阶段',
+        'detail': '旧详情',
+        'log': '旧日志',
+        'error': '旧错误',
+        'roleIndex': 1,
+        'roleTotal': 2,
+        'roleName': 'Alice',
+        'fieldIndex': 3,
+        'fieldTotal': 5,
+        'fieldLabel': '人设',
+        'fieldProgress': 0.6,
+        'fieldPayload': '{"field":"snapshot"}',
+        'partialPayload': '{"partial":true}',
+        'leaseOwner': 'legacy-runner',
+        'leaseUntil': 123456,
+        'attempts': 4,
+        'nextRunAt': 234567,
+        'createdAt': 1000,
+        'updatedAt': 2000,
+      });
+
+      taskDao = await StoryTemplateTranslationTaskDao.create(storage);
+
+      final migrated = await taskDao.getTask(legacyId);
+      expect(migrated?.taskKind, StoryTemplateTranslationTaskKind.templateCopy);
+      expect(migrated?.requestProfile, isEmpty);
+      expect(migrated?.chunkPayload, isEmpty);
+      expect(migrated?.outputRoomId, isNull);
+      expect(migrated?.checkpointVersion, 0);
+      expect(migrated?.templateId, 17);
+      expect(migrated?.sourceTitle, '旧模板');
+      expect(migrated?.sourcePayload, '{"source":true}');
+      expect(migrated?.outputTemplateId, 23);
+      expect(migrated?.status, StoryTemplateTranslationTaskStatus.retryable);
+      expect(migrated?.progress, 0.4);
+      expect(migrated?.fieldPayload, '{"field":"snapshot"}');
+      expect(migrated?.partialPayload, '{"partial":true}');
+      expect(migrated?.leaseOwner, 'legacy-runner');
+      expect(migrated?.attempts, 4);
+
+      final columns = await db
+          .rawQuery('pragma table_info(tb_story_template_translation_task)');
+      final types = {
+        for (final column in columns)
+          column['name'] as String:
+              (column['type'] as String? ?? '').toLowerCase(),
+      };
+      expect(types['taskKind'], 'text');
+      expect(types['requestProfile'], 'text');
+      expect(types['chunkPayload'], 'text');
+      expect(types['outputRoomId'], 'integer');
+      expect(types['checkpointVersion'], 'integer');
+
+      final raw = (await db.rawQuery(
+        'select taskKind, requestProfile, chunkPayload, outputRoomId, '
+        'checkpointVersion, typeof(requestProfile) as requestProfileType, '
+        'typeof(chunkPayload) as chunkPayloadType, '
+        'typeof(outputRoomId) as outputRoomIdType '
+        'from tb_story_template_translation_task where id = ?',
+        [legacyId],
+      ))
+          .single;
+      expect(raw['taskKind'], StoryTemplateTranslationTaskKind.templateCopy);
+      expect(raw['requestProfile'], isNull);
+      expect(raw['chunkPayload'], isNull);
+      expect(raw['outputRoomId'], isNull);
+      expect(raw['checkpointVersion'], 0);
+      expect(raw['requestProfileType'], 'null');
+      expect(raw['chunkPayloadType'], 'null');
+      expect(raw['outputRoomIdType'], 'null');
+
+      await db.update(
+        'tb_story_template_translation_task',
+        {'taskKind': '   ', 'checkpointVersion': null},
+        where: 'id = ?',
+        whereArgs: [legacyId],
+      );
+      taskDao = await StoryTemplateTranslationTaskDao.create(storage);
+      final backfilled = await taskDao.getTask(legacyId);
+      final backfilledRaw = (await db.query(
+        'tb_story_template_translation_task',
+        columns: ['taskKind', 'checkpointVersion'],
+        where: 'id = ?',
+        whereArgs: [legacyId],
+      ))
+          .single;
+      expect(
+        backfilledRaw['taskKind'],
+        StoryTemplateTranslationTaskKind.templateCopy,
+      );
+      expect(backfilledRaw['checkpointVersion'], 0);
+      expect(
+        backfilled?.taskKind,
+        StoryTemplateTranslationTaskKind.templateCopy,
+      );
+      expect(backfilled?.checkpointVersion, 0);
+      expect(backfilled?.fieldPayload, '{"field":"snapshot"}');
+      expect(backfilled?.partialPayload, '{"partial":true}');
+    });
+
+    test('新任务字段可通过 JSON 和 DAO 完整往返', () async {
+      final original = StoryTemplateTranslationTaskModel(
+        templateId: 9,
+        sourceTitle: '酒馆导入',
+        sourcePayload: '{"source":true}',
+        outputTitle: '新房间',
+        taskKind: StoryTemplateTranslationTaskKind.tavernRoomImport,
+        requestProfile: '{"provider":"openai","model":"gpt-test"}',
+        chunkPayload: '{"chunks":[{"id":"role:0:name"}]}',
+        outputRoomId: 42,
+        checkpointVersion: 3,
+        fieldPayload: '{"legacyField":"kept"}',
+        partialPayload: '{"legacyPartial":"kept"}',
+      );
+
+      final decoded = StoryTemplateTranslationTaskModel.fromJson(
+        jsonDecode(jsonEncode(original.toJson())) as Map<String, dynamic>,
+      );
+      expect(
+        decoded.taskKind,
+        StoryTemplateTranslationTaskKind.tavernRoomImport,
+      );
+      expect(
+        decoded.requestProfile,
+        '{"provider":"openai","model":"gpt-test"}',
+      );
+      expect(decoded.chunkPayload, '{"chunks":[{"id":"role:0:name"}]}');
+      expect(decoded.outputRoomId, 42);
+      expect(decoded.checkpointVersion, 3);
+      expect(decoded.fieldPayload, '{"legacyField":"kept"}');
+      expect(decoded.partialPayload, '{"legacyPartial":"kept"}');
+
+      await taskDao.saveTask(decoded);
+      final saved = await taskDao.getTask(decoded.id!);
+      expect(
+        saved?.taskKind,
+        StoryTemplateTranslationTaskKind.tavernRoomImport,
+      );
+      expect(
+        saved?.requestProfile,
+        '{"provider":"openai","model":"gpt-test"}',
+      );
+      expect(saved?.chunkPayload, '{"chunks":[{"id":"role:0:name"}]}');
+      expect(saved?.outputRoomId, 42);
+      expect(saved?.checkpointVersion, 3);
+      expect(saved?.fieldPayload, '{"legacyField":"kept"}');
+      expect(saved?.partialPayload, '{"legacyPartial":"kept"}');
+
+      final raw = (await db.rawQuery(
+        'select typeof(taskKind) as taskKindType, '
+        'typeof(requestProfile) as requestProfileType, '
+        'typeof(chunkPayload) as chunkPayloadType, '
+        'typeof(outputRoomId) as outputRoomIdType, '
+        'typeof(checkpointVersion) as checkpointVersionType '
+        'from tb_story_template_translation_task where id = ?',
+        [decoded.id],
+      ))
+          .single;
+      expect(raw['taskKindType'], 'text');
+      expect(raw['requestProfileType'], 'text');
+      expect(raw['chunkPayloadType'], 'text');
+      expect(raw['outputRoomIdType'], 'integer');
+      expect(raw['checkpointVersionType'], 'integer');
+
+      final defaults = StoryTemplateTranslationTaskModel.fromJson({
+        'sourceTitle': '默认值',
+        'sourcePayload': '{}',
+      });
+      expect(defaults.taskKind, StoryTemplateTranslationTaskKind.templateCopy);
+      expect(defaults.requestProfile, isEmpty);
+      expect(defaults.chunkPayload, isEmpty);
+      expect(defaults.outputRoomId, isNull);
+      expect(defaults.checkpointVersion, 0);
+    });
+
+    test('任务状态保留旧语义并表达待配置和带警告完成', () {
+      final cases = <(String, String, bool, bool)>[
+        (StoryTemplateTranslationTaskStatus.queued, '等待中', false, false),
+        (StoryTemplateTranslationTaskStatus.running, '运行中', false, false),
+        (StoryTemplateTranslationTaskStatus.retryable, '可重试', true, false),
+        (StoryTemplateTranslationTaskStatus.completed, '已完成', false, true),
+        (StoryTemplateTranslationTaskStatus.failed, '失败', true, true),
+        (StoryTemplateTranslationTaskStatus.cancelled, '已取消', true, true),
+        (
+          StoryTemplateTranslationTaskStatus.needsConfiguration,
+          '需要配置',
+          false,
+          false,
+        ),
+        (
+          StoryTemplateTranslationTaskStatus.completedWithWarnings,
+          '部分翻译完成',
+          false,
+          true,
+        ),
+      ];
+
+      for (final (status, label, canRetry, isTerminal) in cases) {
+        expect(StoryTemplateTranslationTaskStatus.labelOf(status), label);
+        expect(StoryTemplateTranslationTaskStatus.canRetry(status), canRetry);
+        expect(
+          StoryTemplateTranslationTaskStatus.isTerminal(status),
+          isTerminal,
+        );
+        final task = StoryTemplateTranslationTaskModel(
+          sourceTitle: status,
+          sourcePayload: '{}',
+          status: status,
+        );
+        expect(task.canRetry, canRetry);
+        expect(task.isTerminal, isTerminal);
+      }
+    });
+
+    test('待配置任务不会自动领取，带警告完成不会被领取或恢复', () async {
+      final now = DateTime(2026, 7, 10, 12);
+      final needsConfiguration = StoryTemplateTranslationTaskModel(
+        sourceTitle: '待配置',
+        sourcePayload: '{}',
+        status: StoryTemplateTranslationTaskStatus.needsConfiguration,
+      );
+      final completedWithWarnings = StoryTemplateTranslationTaskModel(
+        sourceTitle: '带警告完成',
+        sourcePayload: '{}',
+        status: StoryTemplateTranslationTaskStatus.completedWithWarnings,
+        leaseOwner: 'legacy-runner',
+        leaseUntil:
+            now.subtract(const Duration(minutes: 1)).millisecondsSinceEpoch,
+        attempts: 2,
+      );
+      await taskDao.saveTask(needsConfiguration);
+      await taskDao.saveTask(completedWithWarnings);
+
+      expect(
+        await taskDao.claimTask(
+          needsConfiguration.id!,
+          leaseOwner: 'runner-a',
+          leaseDuration: const Duration(minutes: 1),
+          now: now,
+        ),
+        isFalse,
+      );
+      expect(
+        await taskDao.claimTask(
+          completedWithWarnings.id!,
+          leaseOwner: 'runner-a',
+          leaseDuration: const Duration(minutes: 1),
+          now: now,
+        ),
+        isFalse,
+      );
+
+      await taskDao.recoverInterruptedTasks(now: now);
+      final waiting = await taskDao.getTask(needsConfiguration.id!);
+      final completed = await taskDao.getTask(completedWithWarnings.id!);
+      expect(waiting?.status,
+          StoryTemplateTranslationTaskStatus.needsConfiguration);
+      expect(waiting?.attempts, 0);
+      expect(waiting?.leaseOwner, isNull);
+      expect(completed?.status,
+          StoryTemplateTranslationTaskStatus.completedWithWarnings);
+      expect(completed?.attempts, 2);
+      expect(completed?.leaseOwner, 'legacy-runner');
+      expect(completed?.leaseUntil,
+          now.subtract(const Duration(minutes: 1)).millisecondsSinceEpoch);
     });
 
     test('原子领取只允许一个 owner 成功，丢失租约后不能续租或保存', () async {

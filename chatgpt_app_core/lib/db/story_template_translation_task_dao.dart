@@ -1,9 +1,35 @@
+import 'package:chatgpt_app_core/chat/application/tavern_room_import_finalizer.dart';
 import 'package:chatgpt_app_core/db/hi_db_manager.dart';
 import 'package:chatgpt_app_core/db/schema_guard.dart';
+import 'package:chatgpt_app_core/db/story_room_dao.dart';
 import 'package:chatgpt_app_core/db/story_template_dao.dart';
 import 'package:chatgpt_app_core/db/table_name.dart';
 import 'package:chatgpt_app_core/model/story_template_model.dart';
 import 'package:chatgpt_app_core/model/story_template_translation_task_model.dart';
+
+final class _TemplateCompletionResult {
+  final int outputTemplateId;
+  final String status;
+  final int updatedAt;
+
+  const _TemplateCompletionResult({
+    required this.outputTemplateId,
+    required this.status,
+    required this.updatedAt,
+  });
+}
+
+final class _TavernRoomCompletionResult {
+  final TavernRoomImportCompletion completion;
+  final String status;
+  final int updatedAt;
+
+  const _TavernRoomCompletionResult({
+    required this.completion,
+    required this.status,
+    required this.updatedAt,
+  });
+}
 
 class StoryTemplateTranslationTaskDao implements ITable {
   final HiDBManager storage;
@@ -20,7 +46,10 @@ class StoryTemplateTranslationTaskDao implements ITable {
       'create table if not exists tb_story_template_translation_task ('
       'id integer primary key autoincrement, '
       'templateId integer, sourceTitle text, sourcePayload text, outputTitle text, '
-      'outputTemplateId integer, status text, progress real, stage text, detail text, '
+      'outputTemplateId integer, taskKind text default \'templateCopy\', '
+      'requestProfile text, chunkPayload text, outputRoomId integer, '
+      'checkpointVersion integer default 0, '
+      'status text, progress real, stage text, detail text, '
       'log text, error text, roleIndex integer, roleTotal integer, roleName text, '
       'fieldIndex integer, fieldTotal integer, fieldLabel text, fieldProgress real, '
       'fieldPayload text, partialPayload text, leaseOwner text, leaseUntil integer, '
@@ -35,7 +64,21 @@ class StoryTemplateTranslationTaskDao implements ITable {
         'leaseUntil': 'integer',
         'attempts': 'integer default 0',
         'nextRunAt': 'integer',
+        'taskKind': "text default 'templateCopy'",
+        'requestProfile': 'text',
+        'chunkPayload': 'text',
+        'outputRoomId': 'integer',
+        'checkpointVersion': 'integer default 0',
       },
+    );
+    await storage.db.rawUpdate(
+      'update tb_story_template_translation_task set taskKind = ? '
+      'where taskKind is null or trim(taskKind) = ?',
+      [StoryTemplateTranslationTaskKind.templateCopy, ''],
+    );
+    await storage.db.rawUpdate(
+      'update tb_story_template_translation_task set checkpointVersion = 0 '
+      'where checkpointVersion is null',
     );
     await storage.db.execute(
       'create index if not exists tb_story_template_translation_task_status_idx '
@@ -238,7 +281,11 @@ class StoryTemplateTranslationTaskDao implements ITable {
     if (taskId == null || leaseOwner.trim().isEmpty) return null;
     await StoryTemplateDao.create(storage);
     final timestamp = _timestamp(now);
-    return storage.db.transaction((txn) async {
+    final completionStatus =
+        task.status == StoryTemplateTranslationTaskStatus.completedWithWarnings
+            ? StoryTemplateTranslationTaskStatus.completedWithWarnings
+            : StoryTemplateTranslationTaskStatus.completed;
+    final result = await storage.db.transaction((txn) async {
       final rows = await txn.query(
         tableName,
         where: 'id = ?',
@@ -246,15 +293,18 @@ class StoryTemplateTranslationTaskDao implements ITable {
       );
       if (rows.isEmpty) return null;
       final current = StoryTemplateTranslationTaskModel.fromJson(rows.first);
-      if (current.status == StoryTemplateTranslationTaskStatus.completed &&
+      if (current.taskKind != StoryTemplateTranslationTaskKind.templateCopy) {
+        return null;
+      }
+      if ((current.status == StoryTemplateTranslationTaskStatus.completed ||
+              current.status ==
+                  StoryTemplateTranslationTaskStatus.completedWithWarnings) &&
           current.outputTemplateId != null) {
-        task
-          ..outputTemplateId = current.outputTemplateId
-          ..status = current.status
-          ..leaseOwner = null
-          ..leaseUntil = null
-          ..nextRunAt = null;
-        return current.outputTemplateId;
+        return _TemplateCompletionResult(
+          outputTemplateId: current.outputTemplateId!,
+          status: current.status,
+          updatedAt: current.updatedAt,
+        );
       }
 
       final retained = await txn.update(
@@ -273,33 +323,201 @@ class StoryTemplateTranslationTaskDao implements ITable {
 
       var outputTemplateId = current.outputTemplateId;
       if (outputTemplateId == null) {
-        outputTemplate.updatedAt = timestamp;
-        final templateData = outputTemplate.toJson()..remove('id');
+        final templateData = Map<String, dynamic>.from(outputTemplate.toJson())
+          ..remove('id')
+          ..['updatedAt'] = timestamp;
         outputTemplateId = await txn.insert('tb_story_template', templateData);
-        outputTemplate.id = outputTemplateId;
       }
 
-      task
-        ..outputTemplateId = outputTemplateId
-        ..status = StoryTemplateTranslationTaskStatus.completed
-        ..leaseOwner = null
-        ..leaseUntil = null
-        ..nextRunAt = null
-        ..updatedAt = timestamp;
-      final taskData = task.toJson()..remove('id');
+      final taskData = Map<String, dynamic>.from(task.toJson())
+        ..remove('id')
+        ..['outputTemplateId'] = outputTemplateId
+        ..['status'] = completionStatus
+        ..['leaseOwner'] = null
+        ..['leaseUntil'] = null
+        ..['nextRunAt'] = null
+        ..['updatedAt'] = timestamp;
       final completed = await txn.update(
         tableName,
         taskData,
-        where: 'id = ? AND status = ? AND leaseOwner = ?',
+        where: 'id = ? AND taskKind = ? AND status = ? AND leaseOwner = ?',
         whereArgs: [
           taskId,
+          StoryTemplateTranslationTaskKind.templateCopy,
           StoryTemplateTranslationTaskStatus.running,
           leaseOwner,
         ],
       );
       if (completed != 1) throw StateError('完成翻译任务时租约状态异常');
-      return outputTemplateId;
+      return _TemplateCompletionResult(
+        outputTemplateId: outputTemplateId,
+        status: completionStatus,
+        updatedAt: timestamp,
+      );
     });
+    if (result == null) return null;
+
+    outputTemplate
+      ..id = result.outputTemplateId
+      ..updatedAt = result.updatedAt;
+    task
+      ..outputTemplateId = result.outputTemplateId
+      ..status = result.status
+      ..leaseOwner = null
+      ..leaseUntil = null
+      ..nextRunAt = null
+      ..updatedAt = result.updatedAt;
+    return result.outputTemplateId;
+  }
+
+  /// 原子完成 Tavern 房间导入任务；模板、房间图和任务输出 ID 同事务提交。
+  ///
+  /// 任务已经完成时不再要求租约，直接复用数据库记录的两个输出 ID。
+  Future<TavernRoomImportCompletion?> completeWithTavernRoom(
+    StoryTemplateTranslationTaskModel task, {
+    required TavernRoomImportBundle bundle,
+    required String leaseOwner,
+    DateTime? now,
+  }) async {
+    final taskId = task.id;
+    if (taskId == null || leaseOwner.trim().isEmpty) return null;
+    await StoryTemplateDao.create(storage);
+    await StoryRoomDao.create(storage);
+    final timestamp = _timestamp(now);
+    final completionStatus = bundle.hasRetainedOriginal
+        ? StoryTemplateTranslationTaskStatus.completedWithWarnings
+        : StoryTemplateTranslationTaskStatus.completed;
+    final result = await storage.db.transaction((txn) async {
+      final rows = await txn.query(
+        tableName,
+        where: 'id = ?',
+        whereArgs: [taskId],
+        limit: 1,
+      );
+      if (rows.isEmpty) return null;
+      final current = StoryTemplateTranslationTaskModel.fromJson(rows.first);
+      if (current.taskKind !=
+          StoryTemplateTranslationTaskKind.tavernRoomImport) {
+        return null;
+      }
+
+      final isCompleted =
+          current.status == StoryTemplateTranslationTaskStatus.completed ||
+              current.status ==
+                  StoryTemplateTranslationTaskStatus.completedWithWarnings;
+      if (isCompleted) {
+        final outputTemplateId = current.outputTemplateId;
+        final outputRoomId = current.outputRoomId;
+        if (outputTemplateId == null || outputRoomId == null) return null;
+        return _TavernRoomCompletionResult(
+          completion: TavernRoomImportCompletion(
+            outputTemplateId: outputTemplateId,
+            outputRoomId: outputRoomId,
+          ),
+          status: current.status,
+          updatedAt: current.updatedAt,
+        );
+      }
+      if (current.outputRoomId != null) {
+        throw StateError('运行中的 Tavern 翻译任务包含未完成的房间输出');
+      }
+
+      final retained = await txn.update(
+        tableName,
+        {'updatedAt': timestamp},
+        where: 'id = ? AND taskKind = ? AND status = ? AND '
+            'leaseOwner = ? AND leaseUntil IS NOT NULL AND leaseUntil > ?',
+        whereArgs: [
+          taskId,
+          StoryTemplateTranslationTaskKind.tavernRoomImport,
+          StoryTemplateTranslationTaskStatus.running,
+          leaseOwner,
+          timestamp,
+        ],
+      );
+      if (retained != 1) return null;
+
+      var outputTemplateId = current.outputTemplateId;
+      if (outputTemplateId != null) {
+        final existing = await txn.query(
+          'tb_story_template',
+          columns: const ['id'],
+          where: 'id = ?',
+          whereArgs: [outputTemplateId],
+          limit: 1,
+        );
+        if (existing.isEmpty) outputTemplateId = null;
+      }
+      if (outputTemplateId == null) {
+        final templateData =
+            Map<String, dynamic>.from(bundle.outputTemplate.toJson())
+              ..remove('id')
+              ..['updatedAt'] = timestamp;
+        outputTemplateId = await txn.insert(
+          'tb_story_template',
+          templateData,
+        );
+      }
+
+      final outputRoomId = await StoryRoomDao.insertTavernImport(
+        txn,
+        room: bundle.room,
+        participants: bundle.participants,
+        messages: bundle.messages,
+        now: timestamp,
+      );
+      final completed = await txn.update(
+        tableName,
+        {
+          'outputTemplateId': outputTemplateId,
+          'outputRoomId': outputRoomId,
+          'status': completionStatus,
+          'progress': 1.0,
+          'error': '',
+          'leaseOwner': null,
+          'leaseUntil': null,
+          'nextRunAt': null,
+          'updatedAt': timestamp,
+        },
+        where: 'id = ? AND taskKind = ? AND status = ? AND '
+            'leaseOwner = ? AND leaseUntil IS NOT NULL AND leaseUntil > ?',
+        whereArgs: [
+          taskId,
+          StoryTemplateTranslationTaskKind.tavernRoomImport,
+          StoryTemplateTranslationTaskStatus.running,
+          leaseOwner,
+          timestamp,
+        ],
+      );
+      if (completed != 1) {
+        throw StateError('完成 Tavern 翻译任务时租约状态异常');
+      }
+      return _TavernRoomCompletionResult(
+        completion: TavernRoomImportCompletion(
+          outputTemplateId: outputTemplateId,
+          outputRoomId: outputRoomId,
+        ),
+        status: completionStatus,
+        updatedAt: timestamp,
+      );
+    });
+    if (result == null) return null;
+
+    final completion = result.completion;
+    bundle.outputTemplate.id = completion.outputTemplateId;
+    bundle.room.id = completion.outputRoomId;
+    task
+      ..taskKind = StoryTemplateTranslationTaskKind.tavernRoomImport
+      ..outputTemplateId = completion.outputTemplateId
+      ..outputRoomId = completion.outputRoomId
+      ..status = result.status
+      ..progress = 1
+      ..error = ''
+      ..leaseOwner = null
+      ..leaseUntil = null
+      ..nextRunAt = null
+      ..updatedAt = result.updatedAt;
+    return completion;
   }
 
   Future<List<StoryTemplateTranslationTaskModel>> getTasks() async {
