@@ -192,26 +192,34 @@ class StoryTemplateTranslationCoordinator extends ChangeNotifier {
       throw const FormatException('任务分块检查点无效');
     }
     final checkpoints = <String, dynamic>{};
+    var retainedOriginal = false;
     for (final entry in (decoded['checkpoints'] as Map).entries) {
       if (entry.key is! String || entry.value is! Map) continue;
       final checkpoint = TranslationChunkCheckpoint.fromJson(
         Map<String, dynamic>.from(entry.value as Map),
       );
+      final chunks = <TranslationChunkState>[];
+      for (final state in checkpoint.chunks) {
+        if (state.status == TranslationChunkStatus.retainedOriginal) {
+          retainedOriginal = true;
+        }
+        if (state.status != TranslationChunkStatus.pending) {
+          chunks.add(state);
+          continue;
+        }
+        retainedOriginal = true;
+        chunks.add(TranslationChunkState(
+          chunk: state.chunk,
+          status: TranslationChunkStatus.retainedOriginal,
+          translatedText: '',
+          attempts: state.attempts,
+          lastErrorKind: state.lastErrorKind,
+        ));
+      }
       checkpoints[entry.key as String] = TranslationChunkCheckpoint(
         field: checkpoint.field,
         sourceHash: checkpoint.sourceHash,
-        chunks: [
-          for (final state in checkpoint.chunks)
-            state.status == TranslationChunkStatus.pending
-                ? TranslationChunkState(
-                    chunk: state.chunk,
-                    status: TranslationChunkStatus.retainedOriginal,
-                    translatedText: '',
-                    attempts: state.attempts,
-                    lastErrorKind: state.lastErrorKind,
-                  )
-                : state,
-        ],
+        chunks: chunks,
       ).toJson();
     }
     task
@@ -220,6 +228,9 @@ class StoryTemplateTranslationCoordinator extends ChangeNotifier {
         'checkpoints': checkpoints,
       })
       ..checkpointVersion = TranslationChunkCheckpoint.currentVersion
+      ..partialPayload = retainedOriginal
+          ? _withRetainedOriginalFlag(task.partialPayload)
+          : task.partialPayload
       ..status = StoryTemplateTranslationTaskStatus.queued
       ..stage = '保留失败分块原文，等待完成'
       ..detail = StoryTemplateTranslationTaskDao.taskCheckpointDetail(task)
@@ -401,6 +412,21 @@ class StoryTemplateTranslationCoordinator extends ChangeNotifier {
       line,
     ];
     return lines.join('\n');
+  }
+
+  static String _withRetainedOriginalFlag(String partialPayload) {
+    final raw = partialPayload.trim();
+    if (raw.isEmpty) {
+      return jsonEncode({'_translationHasRetainedOriginal': true});
+    }
+    final decoded = jsonDecode(raw);
+    if (decoded is! Map) {
+      throw const FormatException('任务部分检查点无效');
+    }
+    return jsonEncode({
+      ...Map<String, dynamic>.from(decoded),
+      '_translationHasRetainedOriginal': true,
+    });
   }
 
   StoryTemplateTranslationTaskDao _requireTaskDao() {
@@ -639,8 +665,8 @@ class StoryTemplateTranslationTaskRunner {
         topP: source.topP,
         maxOutputTokens: source.maxOutputTokens,
       );
+      final hasRetainedOriginal = _hasRetainedOriginal();
       if (task.taskKind == StoryTemplateTranslationTaskKind.tavernRoomImport) {
-        final hasRetainedOriginal = _hasRetainedOriginal();
         task
           ..outputTitle = title
           ..stage = hasRetainedOriginal ? '已导入房间，部分内容保留原文' : '已导入酒馆房间'
@@ -674,8 +700,10 @@ class StoryTemplateTranslationTaskRunner {
         );
         task
           ..outputTitle = title
-          ..status = StoryTemplateTranslationTaskStatus.completed
-          ..stage = '已生成中文副本'
+          ..status = hasRetainedOriginal
+              ? StoryTemplateTranslationTaskStatus.completedWithWarnings
+              : StoryTemplateTranslationTaskStatus.completed
+          ..stage = hasRetainedOriginal ? '已生成中文副本，部分内容保留原文' : '已生成中文副本'
           ..detail = ''
           ..progress = 1
           ..error = '';

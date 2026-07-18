@@ -5,10 +5,15 @@ import 'package:chatgpt_app_core/chat/application/assistant_role_card_service.da
 import 'package:chatgpt_app_core/chat/application/story_room_role_card_importer.dart';
 import 'package:chatgpt_app_core/chat/application/story_template_transfer.dart';
 import 'package:chatgpt_app_core/chat/application/story_template_translation_tasks.dart';
+import 'package:chatgpt_app_core/chat/application/translation_chunk_planner.dart';
 import 'package:chatgpt_app_core/chat/application/translation_model_resolver.dart';
 import 'package:chatgpt_app_core/chat/application/translation_stream_executor.dart';
+import 'package:chatgpt_app_core/chat/domain/chat_attachments.dart';
 import 'package:chatgpt_app_core/chat/domain/chat_request_options.dart';
+import 'package:chatgpt_app_core/chat/domain/model_capabilities.dart';
+import 'package:chatgpt_app_core/chat/domain/stream_event.dart';
 import 'package:chatgpt_app_core/chat/domain/translation_request_profile.dart';
+import 'package:chatgpt_app_core/dao/chat/chat_service.dart';
 import 'package:chatgpt_app_core/db/hi_db_manager.dart';
 import 'package:chatgpt_app_core/db/story_template_dao.dart';
 import 'package:chatgpt_app_core/db/story_template_translation_task_dao.dart';
@@ -972,6 +977,73 @@ void main() {
       expect(restored?.outputTemplateId, isNotNull);
     });
 
+    test('保留原文 action 恢复后持久化警告且只创建一个模板', () async {
+      final profile = TranslationRequestProfile(
+        mode: TranslationExecutionMode.local,
+        providerId: 'provider-a',
+        modelId: 'model-a',
+        reasoningPolicy: ChatReasoningPolicy.providerDefault,
+        reasoningControlSuppressed: false,
+      );
+      final memoryBook = List.filled(1300, '界').join();
+      final payload = StoryRoomTemplatePayload(results: [
+        AssistantRoleCardImportResult(
+          assistant: AssistantModel(name: 'Alice', memoryBook: memoryBook),
+        ),
+      ]);
+      final checkpoint = const TranslationChunkPlanner().plan(
+        field: 'memoryBook',
+        source: memoryBook,
+      );
+      final task = StoryTemplateTranslationTaskModel(
+        sourceTitle: 'Retained source',
+        sourcePayload: jsonEncode(payload.toJson()),
+        outputTitle: 'Retained copy',
+        roleTotal: 1,
+        status: StoryTemplateTranslationTaskStatus.failed,
+        requestProfile: jsonEncode(profile.toJson()),
+        chunkPayload: jsonEncode({
+          'version': TranslationChunkCheckpoint.currentVersion,
+          'checkpoints': {'role:0:memoryBook': checkpoint.toJson()},
+        }),
+      );
+      await taskDao.saveTask(task);
+      final coordinator = StoryTemplateTranslationCoordinator();
+      await coordinator.initialize(storage, accountHash: 'test');
+
+      await coordinator.completeKeepingOriginalChunks(
+        coordinator.tasks.single,
+      );
+      final service = _EchoTranslationChatService();
+      final resumed = await coordinator.resumeRecoverable(
+        resolveExecutor: (resolved) => TranslationStreamExecutor(
+          service: service,
+          profile: resolved,
+        ),
+      );
+
+      final stored = await taskDao.getTask(task.id!);
+      final outputs = await StoryTemplateDao.create(storage)
+          .then((dao) => dao.getTemplates());
+      final output = StoryRoomTemplatePayload.fromTemplate(outputs.single);
+      expect(resumed, 1);
+      expect(
+        stored?.status,
+        StoryTemplateTranslationTaskStatus.completedWithWarnings,
+      );
+      expect(stored?.stage, '已生成中文副本，部分内容保留原文');
+      expect(
+        service.payloads.where(
+          (request) =>
+              request['memoryBook'] is String &&
+              (request['memoryBook'] as String).isNotEmpty,
+        ),
+        isEmpty,
+      );
+      expect(outputs, hasLength(1));
+      expect(output.results.single.assistant.memoryBook, memoryBook);
+    });
+
     test('协调器创建任务时冻结具体模型和任务类型', () async {
       final coordinator = StoryTemplateTranslationCoordinator();
       await coordinator.initialize(storage, accountHash: 'test');
@@ -1116,6 +1188,68 @@ void main() {
           ]));
     });
   });
+}
+
+final class _EchoTranslationChatService
+    implements ChatService, OptionsAwareChatService {
+  final List<Map<String, dynamic>> payloads = [];
+
+  @override
+  ModelCapabilities get capabilities => const ModelCapabilities.none();
+
+  @override
+  Future<String?> chat({
+    required String prompt,
+    required List<Map<String, dynamic>> history,
+    ChatAttachments? attachments,
+    Duration? timeout,
+  }) =>
+      throw UnsupportedError('translation must use typed stream events');
+
+  @override
+  Future<ChatCompletionResult> chatWithUsage({
+    required String prompt,
+    required List<Map<String, dynamic>> history,
+    ChatAttachments? attachments,
+  }) =>
+      throw UnsupportedError('translation must use typed stream events');
+
+  @override
+  Stream<String> chatStream({
+    required String prompt,
+    required List<Map<String, dynamic>> history,
+    ChatAttachments? attachments,
+  }) =>
+      throw UnsupportedError('translation must use typed stream events');
+
+  @override
+  Stream<StreamEvent> chatStreamEvents({
+    required String prompt,
+    required List<Map<String, dynamic>> history,
+    ChatAttachments? attachments,
+    List<Map<String, dynamic>>? tools,
+    List<Map<String, dynamic>> extraMessages = const [],
+  }) =>
+      _respond(prompt);
+
+  @override
+  Stream<StreamEvent> chatStreamEventsWithOptions({
+    required String prompt,
+    required List<Map<String, dynamic>> history,
+    ChatAttachments? attachments,
+    List<Map<String, dynamic>>? tools,
+    List<Map<String, dynamic>> extraMessages = const [],
+    required ChatRequestOptions options,
+  }) =>
+      _respond(prompt);
+
+  Stream<StreamEvent> _respond(String prompt) {
+    final payload = Map<String, dynamic>.from(
+      jsonDecode(prompt.split('\n').last) as Map,
+    );
+    payloads.add(payload);
+    return Stream<StreamEvent>.value(StreamEvent.text(jsonEncode(payload)));
+  }
 }
 
 Future<void> _waitUntil(
