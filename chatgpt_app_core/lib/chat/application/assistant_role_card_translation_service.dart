@@ -196,9 +196,13 @@ class AssistantRoleCardTranslationService {
     RoleCardChunkCheckpoint? onChunkCheckpoint,
     TranslationRetryPolicy retryPolicy = const TranslationRetryPolicy(),
   }) async {
+    final memoryBookView = AssistantRoleCardService.memoryBookTranslationView(
+      assistant.memoryBook,
+    );
     final translated = <String, dynamic>{
       for (final entry in initialTranslatedFields.entries)
         if (_fields.contains(entry.key) &&
+            (entry.key != 'memoryBook' || !memoryBookView.hasRawMarker) &&
             initialChunkCheckpoints[entry.key]?.matchesSource(
                   entry.key,
                   _translationFieldInput(assistant, entry.key).source,

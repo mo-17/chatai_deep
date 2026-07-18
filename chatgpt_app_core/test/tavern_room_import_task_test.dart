@@ -251,6 +251,94 @@ void main() {
       expect(await db.query('tb_story_room'), hasLength(1));
     });
 
+    test(
+        'legacy raw memoryBook field checkpoint is retried with only visible body',
+        () async {
+      const prefix = '# [chatai_deep.tavern_raw.v1] ';
+      const base64Sentinel = 'VU5JUVVFX1JBV19CQVNFNjRfU0VOVElORUw=';
+      const marker = '$prefix$base64Sentinel';
+      const body = 'key => Alice keeps a visible world-book note.';
+      const corruptedField = '${prefix}CORRUPTED_RAW_FIELD_SENTINEL';
+      final source = StoryRoomTemplatePayload(results: [
+        AssistantRoleCardImportResult(
+          assistant: AssistantModel(
+            name: 'Alice',
+            description: 'A careful detective.',
+            prompt: 'Stay alert.',
+            openingMessage: 'Hello there.',
+            exampleDialogs: '<START>\nAlice: Hello',
+            memoryBook: '$marker\n$body',
+          ),
+        ),
+      ]);
+      final task = StoryTemplateTranslationTaskModel(
+        sourceTitle: 'alice.png',
+        sourcePayload: jsonEncode(source.toJson()),
+        outputTitle: '爱丽丝',
+        taskKind: StoryTemplateTranslationTaskKind.tavernRoomImport,
+        fieldPayload: jsonEncode({
+          'scope': 'role',
+          'roleIndex': 0,
+          'fields': {
+            'name': '爱丽丝',
+            'description': '一位谨慎的侦探。',
+            'prompt': '保持警觉。',
+            'openingMessage': '你好。',
+            'exampleDialogs': '<START>\n爱丽丝：你好',
+            'memoryBook': corruptedField,
+          },
+        }),
+      );
+      expect(task.chunkPayload, isEmpty);
+      expect(task.partialPayload, isEmpty);
+      await taskDao.saveTask(task);
+      expect(
+        await taskDao.claimTask(
+          task.id!,
+          leaseOwner: 'runner-legacy-raw-field',
+          leaseDuration: const Duration(minutes: 5),
+        ),
+        isTrue,
+      );
+      final prompts = <String>[];
+
+      await StoryTemplateTranslationTaskRunner(
+        taskDao: taskDao,
+        templateDao: await StoryTemplateDao.create(storage),
+        task: task,
+        leaseOwner: 'runner-legacy-raw-field',
+        useChunkCheckpoints: true,
+        complete: (prompt) async {
+          prompts.add(prompt);
+          final payload =
+              jsonDecode(prompt.split('\n').last) as Map<String, dynamic>;
+          expect(payload.keys, ['memoryBook']);
+          expect(payload['memoryBook'], body);
+          return jsonEncode({
+            'memoryBook': 'key => 爱丽丝保留了一条可见的世界书记录。',
+          });
+        },
+        isCancelled: () => false,
+      ).run();
+
+      final stored = await taskDao.getTask(task.id!);
+      final templates =
+          await (await StoryTemplateDao.create(storage)).getTemplates();
+      final output = StoryRoomTemplatePayload.fromTemplate(templates.single);
+      final memoryBook = output.results.single.assistant.memoryBook;
+      expect(prompts, hasLength(1));
+      expect(prompts.single, isNot(contains(prefix)));
+      expect(prompts.single, isNot(contains(base64Sentinel)));
+      expect(prompts.single, isNot(contains(corruptedField)));
+      expect(memoryBook, startsWith('$marker\n'));
+      expect(memoryBook, contains('爱丽丝保留了一条可见的世界书记录。'));
+      expect(memoryBook, isNot(contains(corruptedField)));
+      expect(stored?.status, StoryTemplateTranslationTaskStatus.completed);
+      expect(stored?.fieldPayload, isEmpty);
+      expect(stored?.outputRoomId, isNotNull);
+      expect(await db.query('tb_story_room'), hasLength(1));
+    });
+
     test('build preserves single and batch empty-opening semantics', () {
       final single = TavernRoomImportFinalizer.build(
         payload: StoryRoomTemplatePayload(
