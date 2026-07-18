@@ -13,7 +13,6 @@ import 'package:chatgpt_app_core/db/story_artifact_dao.dart';
 import 'package:chatgpt_app_core/db/story_persona_dao.dart';
 import 'package:chatgpt_app_core/db/story_room_dao.dart';
 import 'package:chatgpt_app_core/db/story_template_dao.dart';
-import 'package:chatgpt_app_core/db/story_template_translation_task_dao.dart';
 import 'package:chatgpt_app_core/sync/sync_tombstone_store.dart';
 import 'package:chatgpt_app_core/util/account_resource_scope.dart';
 import 'package:chatgpt_app_core/util/avatar_asset_service.dart';
@@ -117,12 +116,6 @@ class LocalSyncService {
     _SyncEntitySpec(
       entity: 'story_template',
       table: 'tb_story_template',
-      idColumns: ['id'],
-      timestampColumn: 'updatedAt',
-    ),
-    _SyncEntitySpec(
-      entity: 'story_template_translation_task',
-      table: 'tb_story_template_translation_task',
       idColumns: ['id'],
       timestampColumn: 'updatedAt',
     ),
@@ -977,7 +970,6 @@ class LocalSyncService {
     await StoryRoomDao.create(storage);
     await StoryArtifactDao.create(storage);
     await StoryTemplateDao.create(storage);
-    await StoryTemplateTranslationTaskDao.create(storage);
     await SyncTombstoneStore.ensure(storage.db);
     await storage.db.execute(
       'create table if not exists $_roleAssetStageTable ('

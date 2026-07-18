@@ -32,6 +32,7 @@ import 'package:chatgpt_app_core/pages/story_persona_list_page.dart';
 import 'package:chatgpt_app_core/provider/ai_settings_provider.dart';
 import 'package:chatgpt_app_core/util/hi_dialog.dart';
 import 'package:chatgpt_app_core/widget/translation_task_log_dialog.dart';
+import 'package:chatgpt_app_core/widget/translation_settings_dialog.dart';
 import 'package:chatgpt_app_core/widget/story_visual_widgets.dart';
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
@@ -77,7 +78,10 @@ class _StoryRoomListPageState extends State<StoryRoomListPage> {
     setState(() {});
     final newCompleted = _storyTemplateTranslationCoordinator.tasks
         .where((task) =>
-            task.status == StoryTemplateTranslationTaskStatus.completed &&
+            task.taskKind == StoryTemplateTranslationTaskKind.templateCopy &&
+            (task.status == StoryTemplateTranslationTaskStatus.completed ||
+                task.status ==
+                    StoryTemplateTranslationTaskStatus.completedWithWarnings) &&
             task.id != null)
         .map((task) => task.id!)
         .where(_observedCompletedTemplateTaskIds.add)
@@ -183,7 +187,10 @@ class _StoryRoomListPageState extends State<StoryRoomListPage> {
   }
 
   Widget _buildTemplateTranslationJobs() {
-    final jobs = _storyTemplateTranslationCoordinator.tasks;
+    final jobs = _storyTemplateTranslationCoordinator.tasks
+        .where((task) =>
+            task.taskKind == StoryTemplateTranslationTaskKind.templateCopy)
+        .toList(growable: false);
     if (jobs.isEmpty) return const SizedBox.shrink();
     return Column(
       children: [
@@ -191,8 +198,8 @@ class _StoryRoomListPageState extends State<StoryRoomListPage> {
           _StoryTemplateTranslationJobTile(
             job: job,
             onShowLog: () => _showTemplateTranslationLog(job),
-            onRetry: job.canRetry ? () => _retryTemplateTranslation(job) : null,
-            onCancel: job.isRunning
+            onRetry: job.canRetry ? () => _showTranslationRecovery(job) : null,
+            onCancel: _canCancelTranslationTask(job)
                 ? () => _storyTemplateTranslationCoordinator.cancel(job)
                 : null,
             onDismiss: job.isTerminal
@@ -971,8 +978,9 @@ class _StoryRoomListPageState extends State<StoryRoomListPage> {
   Future<void> _translateTemplateAsSimplifiedCopy(
     StoryTemplateModel template,
   ) async {
+    late final StoryRoomTemplatePayload payload;
     try {
-      StoryRoomTemplatePayload.fromTemplate(template);
+      payload = StoryRoomTemplatePayload.fromTemplate(template);
     } catch (e) {
       HiDialog.showSnackBar(context, '模板数据异常：$e');
       return;
@@ -982,13 +990,36 @@ class _StoryRoomListPageState extends State<StoryRoomListPage> {
       return;
     }
     final settings = context.read<AISettingsProvider>().settings.clone();
+    final accountHash =
+        LoginDao.getAccountHash() ?? HiDBManager.getAccountHash();
+    final preferenceStore = TranslationModelPreferenceStore();
+    final selected = await showTranslationSettingsDialog(
+      context,
+      settings: settings,
+      initialValue: preferenceStore.read(accountHash),
+      estimatedRunes: jsonEncode(payload.toJson()).runes.length,
+      title: '生成中文副本',
+    );
+    if (selected == null || !mounted) return;
     try {
-      final profile = _translationProfile(settings);
+      final profile = TranslationModelResolver.snapshot(settings, selected);
       await _storyTemplateTranslationCoordinator.start(
         template,
         requestProfile: profile,
         resolveExecutor: _translationExecutorResolver(settings),
       );
+      if (!mounted) return;
+      try {
+        await preferenceStore.save(
+          selected,
+          expectedAccountHash: accountHash,
+        );
+      } catch (_) {
+        if (mounted) {
+          HiDialog.showSnackBar(context, '任务已创建，但翻译模型偏好未能保存');
+        }
+        return;
+      }
       if (!mounted) return;
       HiDialog.showSnackBar(context, '已加入后台任务，可在当前页面查看进度');
     } catch (error) {
@@ -998,21 +1029,121 @@ class _StoryRoomListPageState extends State<StoryRoomListPage> {
   }
 
   Future<void> _retryTemplateTranslation(
-    StoryTemplateTranslationTaskModel task,
-  ) async {
+    StoryTemplateTranslationTaskModel task, {
+    TranslationRequestProfile? replacementProfile,
+  }) async {
     final settings = context.read<AISettingsProvider>().settings.clone();
     await _storyTemplateTranslationCoordinator.retry(
       task,
+      replacementProfile: replacementProfile,
       resolveExecutor: _translationExecutorResolver(settings),
     );
   }
 
-  TranslationRequestProfile _translationProfile(AISettings settings) {
+  Future<void> _showTranslationRecovery(
+    StoryTemplateTranslationTaskModel task,
+  ) async {
+    final action = await showModalBottomSheet<String>(
+      context: context,
+      showDragHandle: true,
+      builder: (sheetContext) => SafeArea(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            ListTile(
+              leading: const Icon(Icons.replay),
+              title: const Text('继续使用原模型'),
+              onTap: () => Navigator.pop(sheetContext, 'retry'),
+            ),
+            ListTile(
+              leading: const Icon(Icons.swap_horiz),
+              title: const Text('更换模型后继续'),
+              onTap: () => Navigator.pop(sheetContext, 'replace'),
+            ),
+            if (task.chunkPayload.trim().isNotEmpty)
+              ListTile(
+                leading: const Icon(Icons.rule_folder_outlined),
+                title: const Text('保留失败块原文并完成'),
+                onTap: () => Navigator.pop(sheetContext, 'retain'),
+              ),
+            ListTile(
+              leading: const Icon(Icons.cancel_outlined),
+              title: const Text('取消任务'),
+              onTap: () => Navigator.pop(sheetContext, 'cancel'),
+            ),
+          ],
+        ),
+      ),
+    );
+    if (!mounted || action == null) return;
+    if (action == 'retry') {
+      await _retryTemplateTranslation(task);
+      return;
+    }
+    if (action == 'cancel') {
+      await _storyTemplateTranslationCoordinator.cancel(task);
+      return;
+    }
+    final settings = context.read<AISettingsProvider>().settings.clone();
+    if (action == 'retain') {
+      await _storyTemplateTranslationCoordinator
+          .completeKeepingOriginalChunks(task);
+      await _storyTemplateTranslationCoordinator.resumeRecoverable(
+        resolveExecutor: _translationExecutorResolver(settings),
+      );
+      return;
+    }
     final accountHash =
         LoginDao.getAccountHash() ?? HiDBManager.getAccountHash();
-    final preference = TranslationModelPreferenceStore().read(accountHash);
-    return TranslationModelResolver.snapshot(settings, preference);
+    final store = TranslationModelPreferenceStore();
+    final selected = await showTranslationSettingsDialog(
+      context,
+      settings: settings,
+      initialValue: _preferenceFromTask(task) ?? store.read(accountHash),
+      estimatedRunes: task.sourcePayload.runes.length,
+      title: '更换翻译模型',
+    );
+    if (selected == null || !mounted) return;
+    try {
+      final profile = TranslationModelResolver.snapshot(settings, selected);
+      await _retryTemplateTranslation(task, replacementProfile: profile);
+    } catch (error) {
+      if (mounted) HiDialog.showSnackBar(context, '更换翻译模型失败：$error');
+      return;
+    }
+    try {
+      await store.save(selected, expectedAccountHash: accountHash);
+    } catch (_) {
+      if (mounted) HiDialog.showSnackBar(context, '任务已恢复，但翻译模型偏好未能保存');
+    }
   }
+
+  TranslationModelPreference? _preferenceFromTask(
+    StoryTemplateTranslationTaskModel task,
+  ) {
+    try {
+      final decoded = jsonDecode(task.requestProfile);
+      if (decoded is! Map) return null;
+      final profile = TranslationRequestProfile.fromJson(
+        Map<String, dynamic>.from(decoded),
+      );
+      return TranslationModelPreference(
+        mode: profile.mode == TranslationExecutionMode.local
+            ? TranslationModelPreferenceMode.local
+            : TranslationModelPreferenceMode.backend,
+        providerId: profile.providerId,
+        modelId: profile.modelId,
+        reasoningPolicy: profile.reasoningPolicy,
+      );
+    } catch (_) {
+      return null;
+    }
+  }
+
+  bool _canCancelTranslationTask(StoryTemplateTranslationTaskModel task) =>
+      task.status != StoryTemplateTranslationTaskStatus.completed &&
+      task.status != StoryTemplateTranslationTaskStatus.completedWithWarnings &&
+      task.status != StoryTemplateTranslationTaskStatus.cancelled;
 
   TranslationExecutorResolver _translationExecutorResolver(
     AISettings settings,

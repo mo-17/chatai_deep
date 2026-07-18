@@ -10,6 +10,7 @@ import 'package:chatgpt_app_core/capability/generated_image_save_service.dart';
 import 'package:chatgpt_app_core/chat/application/assistant_role_card_asset_store.dart';
 import 'package:chatgpt_app_core/chat/application/story_tavern_preset_transfer.dart';
 import 'package:chatgpt_app_core/chat/domain/message_block.dart';
+import 'package:chatgpt_app_core/chat/domain/translation_request_profile.dart';
 import 'package:chatgpt_app_core/dao/ai_settings_dao.dart';
 import 'package:chatgpt_app_core/db/assistant_dao.dart';
 import 'package:chatgpt_app_core/db/assistant_memory_dao.dart';
@@ -528,6 +529,8 @@ class BackupService {
     final storyTemplates = await storage.db.query('tb_story_template');
     final storyTemplateTranslationTasks =
         await storage.db.query('tb_story_template_translation_task');
+    final exportedStoryTemplateTranslationTasks =
+        _sanitizeTranslationTasksForExport(storyTemplateTranslationTasks);
     final storyPersonas = await storage.db.query('tb_story_persona');
     final storyRooms = await storage.db.query('tb_story_room');
     final storyParticipants = await storage.db.query('tb_story_participant');
@@ -592,7 +595,7 @@ class BackupService {
       _kProjectKnowledge: _jsonBytes(projectKnowledge),
       _kStoryTemplates: _jsonBytes(exportedStoryTemplates),
       _kStoryTemplateTranslationTasks:
-          _jsonBytes(storyTemplateTranslationTasks),
+          _jsonBytes(exportedStoryTemplateTranslationTasks),
       _kStoryPersonas: _jsonBytes(storyPersonas),
       _kStoryRooms: _jsonBytes(exportedStoryRooms),
       _kStoryParticipants: _jsonBytes(storyParticipants),
@@ -1550,6 +1553,7 @@ class BackupService {
     var insertedStoryArtifactRevisions = 0;
     var fixedTranslationTaskTemplateRefs = 0;
     var fixedTranslationTaskOutputTemplateRefs = 0;
+    var fixedTranslationTaskOutputRoomRefs = 0;
     var appliedStoryPersonas = 0;
     var insertedAssistantMemories = 0;
     var deduplicatedAssistantMemories = 0;
@@ -1896,6 +1900,12 @@ class BackupService {
             fixedTranslationTaskOutputTemplateRefs++;
           }
         }
+        final oldOutputRoomId = _intValue(next['outputRoomId']);
+        if (oldOutputRoomId != null) {
+          final newOutputRoomId = storyRoomIdMap[oldOutputRoomId];
+          next['outputRoomId'] = newOutputRoomId;
+          if (newOutputRoomId == null) fixedTranslationTaskOutputRoomRefs++;
+        }
         await txn.insert('tb_story_template_translation_task', next);
       }
 
@@ -1978,6 +1988,9 @@ class BackupService {
     if (fixedTranslationTaskOutputTemplateRefs > 0) {
       warnings
           .add('$fixedTranslationTaskOutputTemplateRefs 个翻译任务找不到生成的酒馆模板，已清除引用');
+    }
+    if (fixedTranslationTaskOutputRoomRefs > 0) {
+      warnings.add('$fixedTranslationTaskOutputRoomRefs 个翻译任务找不到生成的酒馆房间，已清除引用');
     }
     if (deduplicatedAssistantMemories > 0) {
       warnings.add('$deduplicatedAssistantMemories 条相同长期记忆已去重');
@@ -2879,6 +2892,33 @@ class BackupService {
     return [
       for (final source in rows) _sanitizeStoryTemplateForExport(source),
     ];
+  }
+
+  /// 翻译执行快照只允许模型定位和推理策略字段。即使数据库行被旧版本或
+  /// 外部工具写入了额外 JSON 字段，备份也不会把 API Key 一并带出。
+  static List<Map<String, dynamic>> _sanitizeTranslationTasksForExport(
+    List<Map<String, Object?>> rows,
+  ) =>
+      [
+        for (final source in rows)
+          Map<String, dynamic>.from(source)
+            ..['requestProfile'] = _sanitizeTranslationRequestProfile(
+              source['requestProfile'],
+            ),
+      ];
+
+  static String _sanitizeTranslationRequestProfile(Object? raw) {
+    try {
+      if (raw is! String || raw.trim().isEmpty) return '';
+      final decoded = jsonDecode(raw);
+      if (decoded is! Map) return '';
+      final profile = TranslationRequestProfile.fromJson(
+        Map<String, dynamic>.from(decoded),
+      );
+      return jsonEncode(profile.toJson());
+    } catch (_) {
+      return '';
+    }
   }
 
   static Map<String, dynamic> _sanitizeStoryTemplateForExport(

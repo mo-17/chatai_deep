@@ -95,13 +95,17 @@ class StoryTemplateTranslationCoordinator extends ChangeNotifier {
   Future<void> startTavernRoomImport(
     List<AssistantRoleCardImportResult> results, {
     required String sourceTitle,
+    String initialOpening = '',
     required TranslationRequestProfile requestProfile,
     required TranslationExecutorResolver resolveExecutor,
   }) async {
     if (results.isEmpty) {
       throw const FormatException('酒馆房间导入至少需要一个角色');
     }
-    final payload = StoryRoomTemplatePayload(results: results);
+    final payload = StoryRoomTemplatePayload(
+      results: results,
+      initialOpening: initialOpening.trim(),
+    );
     final cleanTitle = sourceTitle.trim().isEmpty ? '酒馆房间' : sourceTitle.trim();
     final task = StoryTemplateTranslationTaskModel(
       sourceTitle: cleanTitle,
@@ -155,7 +159,13 @@ class StoryTemplateTranslationCoordinator extends ChangeNotifier {
 
   Future<void> cancel(StoryTemplateTranslationTaskModel task) async {
     final id = task.id;
-    if (id == null || task.isTerminal) return;
+    if (id == null ||
+        task.status == StoryTemplateTranslationTaskStatus.completed ||
+        task.status ==
+            StoryTemplateTranslationTaskStatus.completedWithWarnings ||
+        task.status == StoryTemplateTranslationTaskStatus.cancelled) {
+      return;
+    }
     _cancelledIds.add(id);
     _cancellations[id]?.cancel();
     await _requireTaskDao().cancelTask(id);

@@ -14,7 +14,10 @@ abstract final class StoryTemplateTranslationTaskStatus {
   static const cancelled = 'cancelled';
 
   static bool canRetry(String status) =>
-      status == retryable || status == failed || status == cancelled;
+      status == retryable ||
+      status == needsConfiguration ||
+      status == failed ||
+      status == cancelled;
 
   static bool isTerminal(String status) =>
       status == completed ||

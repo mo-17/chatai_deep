@@ -18,9 +18,9 @@ import 'package:chatgpt_app_core/model/assistant_model.dart';
 import 'package:chatgpt_app_core/model/project_model.dart';
 import 'package:chatgpt_app_core/model/story_room_model.dart';
 import 'package:chatgpt_app_core/model/story_template_model.dart';
+import 'package:chatgpt_app_core/model/story_template_translation_task_model.dart';
 import 'package:chatgpt_app_core/model/story_artifact_model.dart';
 import 'package:chatgpt_app_core/model/story_persona_model.dart';
-import 'package:chatgpt_app_core/model/story_template_translation_task_model.dart';
 import 'package:chatgpt_app_core/sync/local_sync_service.dart';
 import 'package:chatgpt_app_core/util/account_resource_scope.dart';
 import 'package:chatgpt_app_core/util/avatar_asset_service.dart';
@@ -580,31 +580,34 @@ void main() {
     await storage.db.close();
   });
 
-  test('翻译任务按 updatedAt 同步，远端 upsert/delete 只写任务记录', () async {
+  test('翻译执行任务仅保留本机，已完成模板和房间仍正常同步', () async {
     final storage = await newDb();
     final taskDao = await StoryTemplateTranslationTaskDao.create(storage);
     final localTask = StoryTemplateTranslationTaskModel(
-      templateId: 7,
       sourceTitle: '本地英文酒馆',
       sourcePayload: '{}',
       status: StoryTemplateTranslationTaskStatus.running,
+      updatedAt: 30,
     );
     await taskDao.saveTask(localTask);
-    await storage.db.update(
-      'tb_story_template_translation_task',
-      {'updatedAt': 30},
-      where: 'id = ?',
-      whereArgs: [localTask.id],
+    final templateDao = await StoryTemplateDao.create(storage);
+    await templateDao.saveTemplate(
+      StoryTemplateModel(title: '已完成中文模板', payload: '{}'),
     );
+    final roomDao = await StoryRoomDao.create(storage);
+    await roomDao.saveRoom(StoryRoomModel(title: '已完成中文房间'));
 
     final sync = LocalSyncService(storage);
     final localChanges = await sync.exportChanges(updatedAfter: 20);
-    final localChange = localChanges.singleWhere(
-      (change) => change.entity == 'story_template_translation_task',
+    expect(
+      localChanges.where(
+        (change) => change.entity == 'story_template_translation_task',
+      ),
+      isEmpty,
     );
-    expect(localChange.updatedAt, 30);
-    expect(localChange.payload['status'],
-        StoryTemplateTranslationTaskStatus.running);
+    expect(localChanges.any((change) => change.entity == 'story_template'),
+        isTrue);
+    expect(localChanges.any((change) => change.entity == 'story_room'), isTrue);
 
     final upsert = await sync.applyRemoteChanges([
       const SyncChange(
@@ -612,53 +615,11 @@ void main() {
         id: '99',
         op: SyncOp.upsert,
         updatedAt: 100,
-        payload: {
-          'id': 99,
-          'templateId': 8,
-          'sourceTitle': '远端英文酒馆',
-          'sourcePayload': '{}',
-          'outputTitle': '',
-          'outputTemplateId': null,
-          'status': 'running',
-          'progress': 0.5,
-          'stage': '翻译中',
-          'detail': '',
-          'log': '',
-          'error': '',
-          'roleIndex': 1,
-          'roleTotal': 2,
-          'roleName': '',
-          'fieldIndex': 0,
-          'fieldTotal': 0,
-          'fieldLabel': '',
-          'fieldProgress': 0.0,
-          'partialPayload': '{}',
-          'createdAt': 90,
-          'updatedAt': 100,
-        },
+        payload: {'id': 99, 'status': 'running', 'updatedAt': 100},
       ),
     ]);
-    expect(upsert.accepted.map((change) => change.key), [
-      'story_template_translation_task:99',
-    ]);
-    final remoteTask = (await storage.db.query(
-      'tb_story_template_translation_task',
-      where: 'id = ?',
-      whereArgs: [99],
-    ))
-        .single;
-    expect(remoteTask['status'], StoryTemplateTranslationTaskStatus.running);
-    expect(remoteTask['stage'], '翻译中');
-
-    final deletion = await sync.applyRemoteChanges([
-      const SyncChange(
-        entity: 'story_template_translation_task',
-        id: '99',
-        op: SyncOp.delete,
-        updatedAt: 110,
-      ),
-    ]);
-    expect(deletion.accepted.map((change) => change.key), [
+    expect(upsert.accepted, isEmpty);
+    expect(upsert.rejectedStale.map((change) => change.key), [
       'story_template_translation_task:99',
     ]);
     expect(
@@ -669,6 +630,8 @@ void main() {
       ),
       isEmpty,
     );
+    expect(await storage.db.query('tb_story_template_translation_task'),
+        hasLength(1));
     await storage.db.close();
   });
 

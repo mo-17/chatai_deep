@@ -251,6 +251,8 @@ class StoryTemplateTranslationTaskDao implements ITable {
       StoryTemplateTranslationTaskStatus.queued,
       StoryTemplateTranslationTaskStatus.retryable,
       StoryTemplateTranslationTaskStatus.running,
+      StoryTemplateTranslationTaskStatus.failed,
+      StoryTemplateTranslationTaskStatus.needsConfiguration,
       if (leaseOwner != null) ...[leaseOwner, timestamp],
     ];
     final changed = await storage.db.update(
@@ -262,7 +264,7 @@ class StoryTemplateTranslationTaskDao implements ITable {
         'nextRunAt': null,
         'updatedAt': timestamp,
       },
-      where: 'id = ? AND status IN (?, ?, ?)$ownerWhere',
+      where: 'id = ? AND status IN (?, ?, ?, ?, ?)$ownerWhere',
       whereArgs: whereArgs,
     );
     return changed == 1;

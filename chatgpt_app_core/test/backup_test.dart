@@ -831,6 +831,9 @@ void main() {
       final outputTemplate = StoryTemplateModel(title: '中文酒馆', payload: '{}');
       await sourceTemplateDao.saveTemplate(sourceTemplate);
       await sourceTemplateDao.saveTemplate(outputTemplate);
+      final sourceRoomDao = await StoryRoomDao.create(src);
+      final sourceRoom = StoryRoomModel(title: '中文酒馆房间');
+      final sourceRoomId = await sourceRoomDao.saveRoom(sourceRoom);
       final sourceTaskDao = await StoryTemplateTranslationTaskDao.create(src);
       final task = StoryTemplateTranslationTaskModel(
         templateId: sourceTemplate.id,
@@ -838,6 +841,16 @@ void main() {
         sourcePayload: '{}',
         outputTitle: '中文酒馆',
         outputTemplateId: outputTemplate.id,
+        outputRoomId: sourceRoomId,
+        requestProfile: jsonEncode({
+          'version': 1,
+          'mode': 'local',
+          'providerId': 'fast-provider',
+          'modelId': 'fast-model',
+          'reasoningPolicy': 'offIfSupported',
+          'reasoningControlSuppressed': false,
+          'apiKey': 'must-not-export',
+        }),
         status: StoryTemplateTranslationTaskStatus.running,
       );
       await sourceTaskDao.saveTask(task);
@@ -845,6 +858,20 @@ void main() {
         settings: AISettings.defaults(),
         accountHash: 'acc1',
       );
+      final exportedArchive = ZipDecoder().decodeBytes(bytes);
+      final exportedTaskFile = exportedArchive.files.singleWhere(
+        (file) => file.name == 'story_template_translation_tasks.json',
+      );
+      final exportedTasks = jsonDecode(
+        utf8.decode(exportedTaskFile.content as List<int>),
+      ) as List<dynamic>;
+      final exportedProfile = jsonDecode(
+        (exportedTasks.single as Map<String, dynamic>)['requestProfile']
+            as String,
+      ) as Map<String, dynamic>;
+      expect(exportedProfile['providerId'], 'fast-provider');
+      expect(exportedProfile['modelId'], 'fast-model');
+      expect(exportedProfile, isNot(contains('apiKey')));
       await src.db.close();
 
       final overwrite = await newDb();
@@ -864,6 +891,7 @@ void main() {
           .single;
       expect(overwrittenTask['templateId'], sourceTemplate.id);
       expect(overwrittenTask['outputTemplateId'], outputTemplate.id);
+      expect(overwrittenTask['outputRoomId'], sourceRoomId);
       expect(overwrittenTask['status'],
           StoryTemplateTranslationTaskStatus.running);
       await overwrite.db.close();
@@ -876,6 +904,9 @@ void main() {
       await localTemplateDao.saveTemplate(
         StoryTemplateModel(title: '本地模板二', payload: '{}'),
       );
+      final localRoomDao = await StoryRoomDao.create(merge);
+      await localRoomDao.saveRoom(StoryRoomModel(title: '本地房间一'));
+      await localRoomDao.saveRoom(StoryRoomModel(title: '本地房间二'));
       final mergeResult = await BackupService(merge).importArchive(
         bytes,
         accountHash: 'acc1',
@@ -902,6 +933,14 @@ void main() {
       expect(mergedTask['outputTemplateId'], importedOutput['id']);
       expect(mergedTask['templateId'], isNot(sourceTemplate.id));
       expect(mergedTask['outputTemplateId'], isNot(outputTemplate.id));
+      final importedRoom = (await merge.db.query(
+        'tb_story_room',
+        where: 'title = ?',
+        whereArgs: ['中文酒馆房间'],
+      ))
+          .single;
+      expect(mergedTask['outputRoomId'], importedRoom['id']);
+      expect(mergedTask['outputRoomId'], isNot(sourceRoomId));
       expect(mergedTask['status'], StoryTemplateTranslationTaskStatus.running);
       await merge.db.close();
     });

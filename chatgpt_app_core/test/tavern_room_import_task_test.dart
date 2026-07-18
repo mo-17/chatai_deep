@@ -89,6 +89,7 @@ void main() {
       await coordinator.startTavernRoomImport(
         _twoRolePayload().results,
         sourceTitle: 'party.zip',
+        initialOpening: 'Selected opening',
         requestProfile: profile,
         resolveExecutor: (_) {
           throw const TranslationModelUnavailableException('测试暂停');
@@ -102,12 +103,11 @@ void main() {
       expect(task.taskKind, StoryTemplateTranslationTaskKind.tavernRoomImport);
       expect(task.sourceTitle, 'party.zip');
       expect(task.roleTotal, 2);
-      expect(
-        StoryRoomTemplatePayload.fromJson(
-          Map<String, dynamic>.from(jsonDecode(task.sourcePayload) as Map),
-        ).results,
-        hasLength(2),
+      final storedPayload = StoryRoomTemplatePayload.fromJson(
+        Map<String, dynamic>.from(jsonDecode(task.sourcePayload) as Map),
       );
+      expect(storedPayload.results, hasLength(2));
+      expect(storedPayload.initialOpening, 'Selected opening');
       expect(
         TranslationRequestProfile.fromJson(
           Map<String, dynamic>.from(jsonDecode(task.requestProfile) as Map),

@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:convert';
 import 'dart:io';
 
 import 'package:chatgpt_app_core/chat/application/assistant_conversation_factory.dart';
@@ -6,7 +7,11 @@ import 'package:chatgpt_app_core/chat/application/assistant_role_card_service.da
 import 'package:chatgpt_app_core/chat/application/assistant_role_card_asset_store.dart';
 import 'package:chatgpt_app_core/chat/application/assistant_role_card_translation_service.dart';
 import 'package:chatgpt_app_core/chat/application/story_room_role_card_importer.dart';
-import 'package:chatgpt_app_core/chat/application/tavern_room_import_preparer.dart';
+import 'package:chatgpt_app_core/chat/application/story_template_translation_tasks.dart';
+import 'package:chatgpt_app_core/chat/application/translation_model_preference_store.dart';
+import 'package:chatgpt_app_core/chat/application/translation_model_resolver.dart';
+import 'package:chatgpt_app_core/chat/application/translation_stream_executor.dart';
+import 'package:chatgpt_app_core/chat/domain/translation_request_profile.dart';
 import 'package:chatgpt_app_core/dao/ai_catalog_dao.dart';
 import 'package:chatgpt_app_core/dao/chat/chat_service.dart';
 import 'package:chatgpt_app_core/db/assistant_dao.dart';
@@ -21,6 +26,7 @@ import 'package:chatgpt_app_core/model/ai_settings.dart';
 import 'package:chatgpt_app_core/model/assistant_model.dart';
 import 'package:chatgpt_app_core/model/conversation_model.dart';
 import 'package:chatgpt_app_core/model/story_template_model.dart';
+import 'package:chatgpt_app_core/model/story_template_translation_task_model.dart';
 import 'package:chatgpt_app_core/pages/assistant_edit_page.dart';
 import 'package:chatgpt_app_core/pages/assistant_market_page.dart';
 import 'package:chatgpt_app_core/pages/assistant_memory_page.dart';
@@ -37,8 +43,8 @@ import 'package:chatgpt_app_core/util/hi_dialog.dart';
 import 'package:chatgpt_app_core/widget/app_visual_widgets.dart';
 import 'package:chatgpt_app_core/widget/assistant_avatar.dart';
 import 'package:chatgpt_app_core/widget/translation_task_log_dialog.dart';
+import 'package:chatgpt_app_core/widget/translation_settings_dialog.dart';
 import 'package:file_picker/file_picker.dart';
-import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:login_sdk/dao/login_dao.dart';
@@ -48,6 +54,8 @@ import 'package:provider/provider.dart';
 import 'package:share_plus/share_plus.dart';
 
 final _roleCardImportCoordinator = _RoleCardImportCoordinator();
+final _tavernTranslationCoordinator =
+    StoryTemplateTranslationCoordinator.instance;
 
 Color _mutedTextColor(BuildContext context) =>
     Theme.of(context).colorScheme.onSurfaceVariant;
@@ -89,6 +97,7 @@ class _AssistantListPageState extends State<AssistantListPage> {
   AssistantDao? _dao;
   List<AssistantModel> _assistants = [];
   int _lastImportCompletedTick = 0;
+  final Set<int> _observedCompletedTavernTaskIds = <int>{};
   bool _loading = true;
   Object? _loadError;
 
@@ -96,12 +105,14 @@ class _AssistantListPageState extends State<AssistantListPage> {
   void initState() {
     super.initState();
     _roleCardImportCoordinator.addListener(_handleRoleCardImportChanged);
+    _tavernTranslationCoordinator.addListener(_handleTavernImportChanged);
     _doInit();
   }
 
   @override
   void dispose() {
     _roleCardImportCoordinator.removeListener(_handleRoleCardImportChanged);
+    _tavernTranslationCoordinator.removeListener(_handleTavernImportChanged);
     super.dispose();
   }
 
@@ -120,6 +131,10 @@ class _AssistantListPageState extends State<AssistantListPage> {
       final dbManager =
           await HiDBManager.instance(dbName: HiDBManager.getAccountHash());
       _dao = await AssistantDao.create(dbManager);
+      await _tavernTranslationCoordinator.initialize(
+        dbManager,
+        accountHash: HiDBManager.getAccountHash(),
+      );
       if (!mounted) return;
       await _loadData();
     } catch (error) {
@@ -143,6 +158,32 @@ class _AssistantListPageState extends State<AssistantListPage> {
       unawaited(_loadData());
     }
   }
+
+  void _handleTavernImportChanged() {
+    if (!mounted) return;
+    setState(() {});
+    final newCompleted = _tavernTranslationCoordinator.tasks
+        .where((task) =>
+            task.taskKind ==
+                StoryTemplateTranslationTaskKind.tavernRoomImport &&
+            (task.status == StoryTemplateTranslationTaskStatus.completed ||
+                task.status ==
+                    StoryTemplateTranslationTaskStatus.completedWithWarnings) &&
+            task.id != null)
+        .map((task) => task.id!)
+        .where(_observedCompletedTavernTaskIds.add)
+        .isNotEmpty;
+    if (newCompleted) {
+      HiDialog.showSnackBar(context, '酒馆房间翻译导入已完成');
+    }
+  }
+
+  List<StoryTemplateTranslationTaskModel> get _tavernTranslationTasks =>
+      _tavernTranslationCoordinator.tasks
+          .where((task) =>
+              task.taskKind ==
+              StoryTemplateTranslationTaskKind.tavernRoomImport)
+          .toList(growable: false);
 
   @override
   Widget build(BuildContext context) {
@@ -181,10 +222,14 @@ class _AssistantListPageState extends State<AssistantListPage> {
   }
 
   Widget get _body {
-    if (_loading && _roleCardImportCoordinator.jobs.isEmpty) {
+    if (_loading &&
+        _roleCardImportCoordinator.jobs.isEmpty &&
+        _tavernTranslationTasks.isEmpty) {
       return const Center(child: CircularProgressIndicator());
     }
-    if (_loadError != null && _roleCardImportCoordinator.jobs.isEmpty) {
+    if (_loadError != null &&
+        _roleCardImportCoordinator.jobs.isEmpty &&
+        _tavernTranslationTasks.isEmpty) {
       return AppVisualEmptyState(
         icon: Icons.cloud_off_outlined,
         title: '助手列表加载失败',
@@ -196,7 +241,9 @@ class _AssistantListPageState extends State<AssistantListPage> {
         ),
       );
     }
-    return _assistants.isEmpty && _roleCardImportCoordinator.jobs.isEmpty
+    return _assistants.isEmpty &&
+            _roleCardImportCoordinator.jobs.isEmpty &&
+            _tavernTranslationTasks.isEmpty
         ? _emptyView
         : _listView;
   }
@@ -225,8 +272,28 @@ class _AssistantListPageState extends State<AssistantListPage> {
         padding: AppVisualTheme.of(context).isAnime
             ? const EdgeInsets.fromLTRB(12, 12, 12, 24)
             : EdgeInsets.zero,
-        itemCount: _roleCardImportCoordinator.jobs.length + _assistants.length,
+        itemCount: _tavernTranslationTasks.length +
+            _roleCardImportCoordinator.jobs.length +
+            _assistants.length,
         itemBuilder: (context, index) {
+          final tavernTasks = _tavernTranslationTasks;
+          if (index < tavernTasks.length) {
+            final task = tavernTasks[index];
+            return _TavernTranslationTaskTile(
+              task: task,
+              onShowLog: () => _showTavernTranslationLog(task),
+              onRetry: task.canRetry
+                  ? () => _showTavernTranslationRecovery(task)
+                  : null,
+              onCancel: _canCancelTavernTranslationTask(task)
+                  ? () => _tavernTranslationCoordinator.cancel(task)
+                  : null,
+              onDismiss: task.isTerminal
+                  ? () => _tavernTranslationCoordinator.dismiss(task)
+                  : null,
+            );
+          }
+          index -= tavernTasks.length;
           final importJobs = _roleCardImportCoordinator.jobs;
           if (index < importJobs.length) {
             return _RoleCardImportJobTile(
@@ -741,14 +808,27 @@ class _AssistantListPageState extends State<AssistantListPage> {
       if (choice == null) return;
       if (choice.target == _RoleCardImportTarget.tavernRoom) {
         if (choice.translateToSimplifiedChinese) {
-          if (!mounted) return;
-          _roleCardImportCoordinator.startTavernRoom(
-            results: [importResults.single],
-            sourceTitle: '',
-            translateToSimplifiedChinese: true,
-            settings: context.read<AISettingsProvider>().settings.clone(),
+          final selected = await _selectTranslationProfile(
+            estimatedRunes: jsonEncode(importResults.single.assistant.toJson())
+                .runes
+                .length,
+            title: '翻译并创建酒馆房间',
           );
-          HiDialog.showSnackBar(context, '已开始后台创建酒馆房间');
+          if (selected == null || !mounted) return;
+          final configuredChoice =
+              choice.withTranslationProfile(selected.profile);
+          final initialOpening =
+              await _chooseTavernInitialOpening(importResults.single);
+          if (initialOpening == null || !mounted) return;
+          await _startPersistentTavernImport(
+            [importResults.single],
+            sourceTitle: importResults.single.sourceName ??
+                importResults.single.assistant.name,
+            initialOpening: initialOpening,
+            profile: configuredChoice.translationProfile!,
+            preference: selected.preference,
+            accountHash: selected.accountHash,
+          );
           return;
         }
         await _importRoleCardAsTavernRoom(
@@ -766,14 +846,28 @@ class _AssistantListPageState extends State<AssistantListPage> {
       if (choice == null) return;
       if (choice.target == _RoleCardImportTarget.tavernRoom) {
         if (choice.translateToSimplifiedChinese) {
-          if (!mounted) return;
-          _roleCardImportCoordinator.startTavernRoom(
-            results: importResults,
-            sourceTitle: _stripExtension(_basename(path)),
-            translateToSimplifiedChinese: true,
-            settings: context.read<AISettingsProvider>().settings.clone(),
+          final selected = await _selectTranslationProfile(
+            estimatedRunes: importResults.fold<int>(
+              0,
+              (sum, result) =>
+                  sum + jsonEncode(result.assistant.toJson()).runes.length,
+            ),
+            title: '翻译并创建酒馆房间',
           );
-          HiDialog.showSnackBar(context, '已开始后台创建酒馆房间');
+          if (selected == null || !mounted) return;
+          final configuredChoice =
+              choice.withTranslationProfile(selected.profile);
+          final initialOpening =
+              await _chooseTavernBatchInitialOpening(importResults);
+          if (initialOpening == null || !mounted) return;
+          await _startPersistentTavernImport(
+            importResults,
+            sourceTitle: _stripExtension(_basename(path)),
+            initialOpening: initialOpening,
+            profile: configuredChoice.translationProfile!,
+            preference: selected.preference,
+            accountHash: selected.accountHash,
+          );
           return;
         }
         await _importRoleCardBatchAsTavernRoom(
@@ -785,7 +879,8 @@ class _AssistantListPageState extends State<AssistantListPage> {
       }
     }
     final importPlans = _planRoleCardImports(importResults);
-    final options = importPlans.length == 1
+    _SelectedTranslationProfile? selectedTranslation;
+    var options = importPlans.length == 1
         ? await _showRoleCardPreview(
             importPlans.single.result.assistant,
             importMode: true,
@@ -799,6 +894,18 @@ class _AssistantListPageState extends State<AssistantListPage> {
           );
     if (options == null) return;
     if (!mounted) return;
+    if (options.translateToSimplifiedChinese) {
+      selectedTranslation = await _selectTranslationProfile(
+        estimatedRunes: importPlans.fold<int>(
+          0,
+          (sum, plan) =>
+              sum + jsonEncode(plan.result.assistant.toJson()).runes.length,
+        ),
+        title: '翻译角色卡',
+      );
+      if (selectedTranslation == null || !mounted) return;
+      options = options.withTranslationProfile(selectedTranslation.profile);
+    }
     final accountHash = LoginDao.getAccountHash();
     if (accountHash == null || accountHash.trim().isEmpty) {
       HiDialog.showSnackBar(context, '账号状态已变化，请重新进入助手页面后导入');
@@ -811,7 +918,101 @@ class _AssistantListPageState extends State<AssistantListPage> {
       settings: context.read<AISettingsProvider>().settings.clone(),
       accountHash: accountHash,
     );
+    if (selectedTranslation != null) {
+      unawaited(_saveTranslationPreferenceAfterStart(
+        selectedTranslation.preference,
+        selectedTranslation.accountHash,
+      ));
+    }
   }
+
+  Future<void> _startPersistentTavernImport(
+    List<AssistantRoleCardImportResult> results, {
+    required String sourceTitle,
+    required String initialOpening,
+    required TranslationRequestProfile profile,
+    required TranslationModelPreference preference,
+    required String accountHash,
+  }) async {
+    final settings = context.read<AISettingsProvider>().settings.clone();
+    try {
+      await _tavernTranslationCoordinator.startTavernRoomImport(
+        results,
+        sourceTitle: sourceTitle,
+        initialOpening: initialOpening,
+        requestProfile: profile,
+        resolveExecutor: _translationExecutorResolver(settings),
+      );
+      if (!mounted) return;
+      try {
+        await TranslationModelPreferenceStore().save(
+          preference,
+          expectedAccountHash: accountHash,
+        );
+      } catch (_) {
+        if (mounted) {
+          HiDialog.showSnackBar(context, '任务已创建，但翻译模型偏好未能保存');
+        }
+        return;
+      }
+      if (mounted) HiDialog.showSnackBar(context, '已加入后台任务，可断点续传');
+    } catch (error) {
+      if (mounted) HiDialog.showSnackBar(context, '创建翻译任务失败：$error');
+    }
+  }
+
+  Future<_SelectedTranslationProfile?> _selectTranslationProfile({
+    required int estimatedRunes,
+    required String title,
+    TranslationModelPreference? initialValue,
+  }) async {
+    final settings = context.read<AISettingsProvider>().settings.clone();
+    final accountHash =
+        LoginDao.getAccountHash() ?? HiDBManager.getAccountHash();
+    final store = TranslationModelPreferenceStore();
+    final preference = await showTranslationSettingsDialog(
+      context,
+      settings: settings,
+      initialValue: initialValue ?? store.read(accountHash),
+      estimatedRunes: estimatedRunes,
+      title: title,
+    );
+    if (preference == null || !mounted) return null;
+    try {
+      return _SelectedTranslationProfile(
+        preference: preference,
+        profile: TranslationModelResolver.snapshot(settings, preference),
+        accountHash: accountHash,
+      );
+    } catch (error) {
+      HiDialog.showSnackBar(context, '翻译模型不可用：$error');
+      return null;
+    }
+  }
+
+  Future<void> _saveTranslationPreferenceAfterStart(
+    TranslationModelPreference preference,
+    String accountHash,
+  ) async {
+    try {
+      await TranslationModelPreferenceStore().save(
+        preference,
+        expectedAccountHash: accountHash,
+      );
+    } catch (_) {
+      if (mounted) HiDialog.showSnackBar(context, '导入已开始，但翻译模型偏好未能保存');
+    }
+  }
+
+  TranslationExecutorResolver _translationExecutorResolver(
+    AISettings settings,
+  ) =>
+      (profile) => TranslationStreamExecutor(
+            service: ChatService.from(
+              TranslationModelResolver.apply(settings, profile),
+            ),
+            profile: profile,
+          );
 
   Future<_TavernRoomImportOptions?> _showRoleCardBatchImportTarget(
     List<AssistantRoleCardImportResult> results, {
@@ -988,11 +1189,7 @@ class _AssistantListPageState extends State<AssistantListPage> {
     AssistantRoleCardImportResult result, {
     required bool translateToSimplifiedChinese,
   }) async {
-    final prepared = await _prepareTavernRoleCardResults(
-      [result],
-      translateToSimplifiedChinese: translateToSimplifiedChinese,
-    );
-    if (prepared == null || prepared.isEmpty) return;
+    final prepared = [result];
     final translatedResult = prepared.single;
     final initialOpening = await _chooseTavernInitialOpening(translatedResult);
     if (initialOpening == null) return;
@@ -1034,11 +1231,7 @@ class _AssistantListPageState extends State<AssistantListPage> {
     required String sourcePath,
     required bool translateToSimplifiedChinese,
   }) async {
-    final prepared = await _prepareTavernRoleCardResults(
-      results,
-      translateToSimplifiedChinese: translateToSimplifiedChinese,
-    );
-    if (prepared == null || prepared.isEmpty) return;
+    final prepared = results;
     final initialOpening = await _chooseTavernBatchInitialOpening(prepared);
     if (initialOpening == null) return;
     try {
@@ -1072,60 +1265,6 @@ class _AssistantListPageState extends State<AssistantListPage> {
     } catch (e) {
       if (!mounted) return;
       HiDialog.showSnackBar(context, '创建酒馆房间失败：$e');
-    }
-  }
-
-  Future<List<AssistantRoleCardImportResult>?> _prepareTavernRoleCardResults(
-    List<AssistantRoleCardImportResult> results, {
-    required bool translateToSimplifiedChinese,
-  }) async {
-    if (!translateToSimplifiedChinese) return results;
-    final progress = ValueNotifier<_TavernTranslationProgress>(
-      _TavernTranslationProgress(
-        current: 0,
-        total: results.length,
-        name: results.first.assistant.name,
-        stage: '准备翻译',
-      ),
-    );
-    if (!mounted) return null;
-    unawaited(showDialog<void>(
-      context: context,
-      barrierDismissible: false,
-      builder: (ctx) => _TavernTranslationProgressDialog(progress: progress),
-    ));
-    try {
-      final settings = context.read<AISettingsProvider>().settings.clone();
-      final chatService = ChatService.from(settings);
-      return await TavernRoomImportPreparer.prepare(
-        results,
-        translateToSimplifiedChinese: true,
-        complete: (prompt) => chatService.chat(
-          prompt: prompt,
-          history: const [],
-          timeout: const Duration(minutes: 2),
-        ),
-        onProgress: (value) {
-          progress.value = _TavernTranslationProgress(
-            current: value.current,
-            total: value.total,
-            name: value.name,
-            stage: value.stage,
-            detail: _RoleCardImportCoordinator._tavernImportDetail(value),
-          );
-        },
-      );
-    } on FormatException catch (e) {
-      if (mounted) HiDialog.showSnackBar(context, '翻译失败：${e.message}');
-      return null;
-    } catch (e) {
-      if (mounted) HiDialog.showSnackBar(context, '翻译失败：$e');
-      return null;
-    } finally {
-      if (mounted) {
-        await Navigator.of(context, rootNavigator: true).maybePop();
-      }
-      progress.dispose();
     }
   }
 
@@ -1307,6 +1446,119 @@ class _AssistantListPageState extends State<AssistantListPage> {
       ),
     );
   }
+
+  Future<void> _showTavernTranslationLog(
+    StoryTemplateTranslationTaskModel task,
+  ) =>
+      showDialog<void>(
+        context: context,
+        builder: (context) => TranslationTaskLogDialog(
+          title: '酒馆翻译任务日志',
+          log: task.log,
+          error: task.error,
+        ),
+      );
+
+  Future<void> _showTavernTranslationRecovery(
+    StoryTemplateTranslationTaskModel task,
+  ) async {
+    final action = await showModalBottomSheet<String>(
+      context: context,
+      showDragHandle: true,
+      builder: (sheetContext) => SafeArea(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            ListTile(
+              leading: const Icon(Icons.replay),
+              title: const Text('继续使用原模型'),
+              onTap: () => Navigator.pop(sheetContext, 'retry'),
+            ),
+            ListTile(
+              leading: const Icon(Icons.swap_horiz),
+              title: const Text('更换模型后继续'),
+              onTap: () => Navigator.pop(sheetContext, 'replace'),
+            ),
+            if (task.chunkPayload.trim().isNotEmpty)
+              ListTile(
+                leading: const Icon(Icons.rule_folder_outlined),
+                title: const Text('保留失败块原文并完成'),
+                onTap: () => Navigator.pop(sheetContext, 'retain'),
+              ),
+            ListTile(
+              leading: const Icon(Icons.cancel_outlined),
+              title: const Text('取消任务'),
+              onTap: () => Navigator.pop(sheetContext, 'cancel'),
+            ),
+          ],
+        ),
+      ),
+    );
+    if (!mounted || action == null) return;
+    if (action == 'cancel') {
+      await _tavernTranslationCoordinator.cancel(task);
+      return;
+    }
+    final settings = context.read<AISettingsProvider>().settings.clone();
+    if (action == 'retain') {
+      await _tavernTranslationCoordinator.completeKeepingOriginalChunks(task);
+      await _tavernTranslationCoordinator.resumeRecoverable(
+        resolveExecutor: _translationExecutorResolver(settings),
+      );
+      return;
+    }
+    if (action == 'retry') {
+      await _tavernTranslationCoordinator.retry(
+        task,
+        resolveExecutor: _translationExecutorResolver(settings),
+      );
+      return;
+    }
+    final selected = await _selectTranslationProfile(
+      estimatedRunes: task.sourcePayload.runes.length,
+      title: '更换翻译模型',
+      initialValue: _preferenceFromTask(task),
+    );
+    if (selected == null || !mounted) return;
+    await _tavernTranslationCoordinator.retry(
+      task,
+      replacementProfile: selected.profile,
+      resolveExecutor: _translationExecutorResolver(settings),
+    );
+    await _saveTranslationPreferenceAfterStart(
+      selected.preference,
+      selected.accountHash,
+    );
+  }
+
+  TranslationModelPreference? _preferenceFromTask(
+    StoryTemplateTranslationTaskModel task,
+  ) {
+    try {
+      final decoded = jsonDecode(task.requestProfile);
+      if (decoded is! Map) return null;
+      final profile = TranslationRequestProfile.fromJson(
+        Map<String, dynamic>.from(decoded),
+      );
+      return TranslationModelPreference(
+        mode: profile.mode == TranslationExecutionMode.local
+            ? TranslationModelPreferenceMode.local
+            : TranslationModelPreferenceMode.backend,
+        providerId: profile.providerId,
+        modelId: profile.modelId,
+        reasoningPolicy: profile.reasoningPolicy,
+      );
+    } catch (_) {
+      return null;
+    }
+  }
+
+  bool _canCancelTavernTranslationTask(
+    StoryTemplateTranslationTaskModel task,
+  ) =>
+      task.status != StoryTemplateTranslationTaskStatus.completed &&
+      task.status != StoryTemplateTranslationTaskStatus.completedWithWarnings &&
+      task.status != StoryTemplateTranslationTaskStatus.cancelled;
 
   List<_RoleCardImportPlan> _planRoleCardImports(
     List<AssistantRoleCardImportResult> results,
@@ -1691,10 +1943,33 @@ enum _RoleCardImportTarget { assistant, tavernRoom }
 class _TavernRoomImportOptions {
   final _RoleCardImportTarget target;
   final bool translateToSimplifiedChinese;
+  final TranslationRequestProfile? translationProfile;
 
   const _TavernRoomImportOptions({
     required this.target,
     this.translateToSimplifiedChinese = false,
+    this.translationProfile,
+  });
+
+  _TavernRoomImportOptions withTranslationProfile(
+    TranslationRequestProfile profile,
+  ) =>
+      _TavernRoomImportOptions(
+        target: target,
+        translateToSimplifiedChinese: true,
+        translationProfile: profile,
+      );
+}
+
+class _SelectedTranslationProfile {
+  final TranslationModelPreference preference;
+  final TranslationRequestProfile profile;
+  final String accountHash;
+
+  const _SelectedTranslationProfile({
+    required this.preference,
+    required this.profile,
+    required this.accountHash,
   });
 }
 
@@ -1706,73 +1981,6 @@ class _TavernOpeningOption {
     required this.label,
     required this.text,
   });
-}
-
-class _TavernTranslationProgress {
-  final int current;
-  final int total;
-  final String name;
-  final String stage;
-  final String detail;
-
-  const _TavernTranslationProgress({
-    required this.current,
-    required this.total,
-    required this.name,
-    required this.stage,
-    this.detail = '',
-  });
-
-  double get value {
-    if (total <= 0) return nullSafeProgress;
-    final base = (current - 1).clamp(0, total) / total;
-    return base.clamp(0, 1).toDouble();
-  }
-
-  static const nullSafeProgress = 0.0;
-}
-
-class _TavernTranslationProgressDialog extends StatelessWidget {
-  final ValueListenable<_TavernTranslationProgress> progress;
-
-  const _TavernTranslationProgressDialog({required this.progress});
-
-  @override
-  Widget build(BuildContext context) {
-    return AlertDialog(
-      title: const Text('正在翻译角色卡'),
-      content: ValueListenableBuilder<_TavernTranslationProgress>(
-        valueListenable: progress,
-        builder: (context, value, _) {
-          final ratio = value.total <= 0
-              ? 0.0
-              : (value.current / value.total).clamp(0, 1).toDouble();
-          return Column(
-            mainAxisSize: MainAxisSize.min,
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Text(
-                value.name.trim().isEmpty ? '未命名角色' : value.name,
-                maxLines: 1,
-                overflow: TextOverflow.ellipsis,
-              ),
-              const SizedBox(height: 6),
-              Text(
-                [
-                  value.stage,
-                  if (value.detail.trim().isNotEmpty) value.detail.trim(),
-                  '${value.current}/${value.total}',
-                ].join(' · '),
-                style: TextStyle(fontSize: 12, color: _mutedTextColor(context)),
-              ),
-              const SizedBox(height: 12),
-              LinearProgressIndicator(value: ratio),
-            ],
-          );
-        },
-      ),
-    );
-  }
 }
 
 class _RoleCardImportCoordinator extends ChangeNotifier {
@@ -1809,30 +2017,6 @@ class _RoleCardImportCoordinator extends ChangeNotifier {
         accountHash: accountHash,
       ),
     );
-  }
-
-  void startTavernRoom({
-    required List<AssistantRoleCardImportResult> results,
-    required String sourceTitle,
-    required bool translateToSimplifiedChinese,
-    required AISettings settings,
-  }) {
-    if (results.isEmpty) return;
-    final job = _RoleCardImportJob.tavernRoom(
-      title: sourceTitle.trim().isEmpty
-          ? _fallbackTavernRoomTitle(results)
-          : sourceTitle.trim(),
-      translate: translateToSimplifiedChinese,
-    );
-    _jobs.insert(0, job);
-    notifyListeners();
-    unawaited(_runTavernRoom(
-      job: job,
-      results: results,
-      sourceTitle: sourceTitle,
-      translateToSimplifiedChinese: translateToSimplifiedChinese,
-      settings: settings,
-    ));
   }
 
   void dismiss(_RoleCardImportJob job) {
@@ -1909,85 +2093,6 @@ class _RoleCardImportCoordinator extends ChangeNotifier {
     }
   }
 
-  Future<void> _runTavernRoom({
-    required _RoleCardImportJob job,
-    required List<AssistantRoleCardImportResult> results,
-    required String sourceTitle,
-    required bool translateToSimplifiedChinese,
-    required AISettings settings,
-  }) async {
-    try {
-      _update(
-        job,
-        status: _RoleCardImportJobStatus.running,
-        stage: translateToSimplifiedChinese ? '等待 AI 翻译返回' : '正在创建房间',
-        progress: translateToSimplifiedChinese ? 0.12 : 0.45,
-      );
-      final chatService = ChatService.from(settings);
-      final prepared = await TavernRoomImportPreparer.prepare(
-        results,
-        translateToSimplifiedChinese: translateToSimplifiedChinese,
-        complete: (prompt) => chatService.chat(
-          prompt: prompt,
-          history: const [],
-          timeout: const Duration(minutes: 2),
-        ),
-        onProgress: (value) {
-          final ratio = _tavernTranslationProgressRatio(value);
-          _update(
-            job,
-            stage: value.stage,
-            displayName: value.name,
-            detail: _tavernImportDetail(value),
-            progress: 0.12 + (0.58 * ratio),
-          );
-        },
-      );
-      _update(job, stage: '正在保存模板', detail: '', progress: 0.76);
-      final dbManager =
-          await HiDBManager.instance(dbName: HiDBManager.getAccountHash());
-      final dao = await StoryRoomDao.create(dbManager);
-      final existingTitles = (await dao.getRooms()).map((room) => room.title);
-      final title = AssistantRoleCardService.uniqueImportName(
-        _tavernRoomTitle(prepared, sourceTitle),
-        existingTitles,
-      );
-      final importer = StoryRoomRoleCardImportService(dao);
-      final template = await _saveTavernRoomTemplate(
-        dbManager,
-        prepared,
-        title: title,
-        sourceTitle: sourceTitle,
-        translated: translateToSimplifiedChinese,
-      );
-      _update(job, stage: '正在创建房间', detail: '', progress: 0.84);
-      final roomId = await importer.createRoomFromTemplate(template);
-      _update(
-        job,
-        status: _RoleCardImportJobStatus.completed,
-        stage: '已创建房间 #$roomId',
-        displayName: title,
-        detail: '',
-        progress: 1,
-      );
-      _completedTick += 1;
-      notifyListeners();
-    } catch (e, stackTrace) {
-      _failJob(
-        job,
-        _RoleCardImportOptions(
-          keepTools: false,
-          keepModelOverride: false,
-          keepDefaultVoice: false,
-          translateToSimplifiedChinese: translateToSimplifiedChinese,
-        ),
-        e,
-        stackTrace,
-        stage: '创建酒馆房间失败',
-      );
-    }
-  }
-
   void _update(
     _RoleCardImportJob job, {
     _RoleCardImportJobStatus? status,
@@ -2050,9 +2155,8 @@ class _RoleCardImportCoordinator extends ChangeNotifier {
     job.stage = stage;
     job.progress = 1;
     job.error = error is FormatException ? error.message : error.toString();
-    final targetLabel = job.tavernRoom ? '酒馆房间导入' : '角色卡导入';
     final failure = [
-      '$targetLabel失败',
+      '角色卡导入失败',
       '名称：${job.displayName}',
       '阶段：${job.stage}',
       '翻译：${options.translateToSimplifiedChinese ? '是' : '否'}',
@@ -2105,9 +2209,14 @@ class _RoleCardImportCoordinator extends ChangeNotifier {
   }) async {
     var incoming = plan.result.assistant;
     if (options.translateToSimplifiedChinese) {
+      final profile = options.translationProfile;
+      if (profile == null) {
+        throw const FormatException('翻译角色卡缺少模型快照');
+      }
       incoming = await _translateImportedRoleCard(
         incoming,
         settings,
+        profile: profile,
         onProgress: onProgress,
       );
     }
@@ -2165,38 +2274,25 @@ class _RoleCardImportCoordinator extends ChangeNotifier {
     return assistant;
   }
 
-  static String _tavernRoomTitle(
-    List<AssistantRoleCardImportResult> results,
-    String sourceTitle,
-  ) {
-    final source = sourceTitle.trim();
-    if (source.isNotEmpty) return source;
-    return _fallbackTavernRoomTitle(results);
-  }
-
-  static String _fallbackTavernRoomTitle(
-    List<AssistantRoleCardImportResult> results,
-  ) {
-    if (results.isEmpty) return '酒馆房间';
-    final first = results.first.assistant.name.trim();
-    if (first.isEmpty) return '酒馆房间';
-    return results.length == 1 ? first : '$first 等 ${results.length} 人';
-  }
-
   Future<AssistantModel> _translateImportedRoleCard(
     AssistantModel assistant,
     AISettings settings, {
+    required TranslationRequestProfile profile,
     RoleCardTranslationProgressCallback? onProgress,
   }) async {
-    final chatService = ChatService.from(settings);
+    final executor = TranslationStreamExecutor(
+      service:
+          ChatService.from(TranslationModelResolver.apply(settings, profile)),
+      profile: profile,
+    );
+    final cancellation = TranslationCancellationController();
     try {
       return await AssistantRoleCardTranslationService
           .translateToSimplifiedChinese(
         assistant,
-        complete: (prompt) => chatService.chat(
-          prompt: prompt,
-          history: const [],
-          timeout: const Duration(minutes: 2),
+        complete: (prompt) => executor.complete(
+          prompt,
+          cancellation: cancellation,
         ),
         onProgress: onProgress,
       );
@@ -2222,40 +2318,111 @@ class _RoleCardImportCoordinator extends ChangeNotifier {
     final inField = value.fieldProgress.clamp(0, 1).toDouble() / value.total;
     return (fieldBase + inField).clamp(0, 1).toDouble();
   }
+}
 
-  static String _tavernImportDetail(TavernRoomImportProgress value) {
-    final parts = <String>[
-      if (value.total > 1) '角色 ${value.current}/${value.total}',
-      if (value.fieldLabel.isNotEmpty) value.fieldLabel,
-      if (value.fieldTotal > 1) '${value.fieldCurrent}/${value.fieldTotal}',
-      if (value.detail.trim().isNotEmpty) value.detail.trim(),
-    ];
-    return parts.join(' · ');
-  }
+class _TavernTranslationTaskTile extends StatelessWidget {
+  final StoryTemplateTranslationTaskModel task;
+  final VoidCallback onShowLog;
+  final VoidCallback? onRetry;
+  final VoidCallback? onCancel;
+  final VoidCallback? onDismiss;
 
-  static double _tavernTranslationProgressRatio(
-    TavernRoomImportProgress value,
-  ) {
-    if (value.total <= 0) return 0;
-    final roleBase = (value.current - 1).clamp(0, value.total) / value.total;
-    final fieldRatio = value.fieldTotal <= 0
-        ? 0.0
-        : ((value.fieldCurrent - 1).clamp(0, value.fieldTotal) +
-                value.fieldProgress.clamp(0, 1).toDouble()) /
-            value.fieldTotal;
-    return (roleBase + (fieldRatio / value.total)).clamp(0, 1).toDouble();
+  const _TavernTranslationTaskTile({
+    required this.task,
+    required this.onShowLog,
+    this.onRetry,
+    this.onCancel,
+    this.onDismiss,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final completed =
+        task.status == StoryTemplateTranslationTaskStatus.completed;
+    final warning =
+        task.status == StoryTemplateTranslationTaskStatus.completedWithWarnings;
+    final failed = task.status == StoryTemplateTranslationTaskStatus.failed ||
+        task.status == StoryTemplateTranslationTaskStatus.needsConfiguration ||
+        task.status == StoryTemplateTranslationTaskStatus.retryable;
+    final statusKind = completed
+        ? AppStatusKind.success
+        : warning
+            ? AppStatusKind.warning
+            : failed
+                ? AppStatusKind.error
+                : AppStatusKind.info;
+    final palette = AppStatusPalette.of(context, statusKind);
+    final progress = task.progress.clamp(0, 1).toDouble();
+    return AppVisualSurface(
+      padding: EdgeInsets.zero,
+      margin: const EdgeInsets.only(bottom: 8),
+      child: ListTile(
+        leading: CircleAvatar(
+          backgroundColor: palette.container,
+          child: Icon(
+            completed
+                ? Icons.meeting_room_outlined
+                : failed
+                    ? Icons.error_outline
+                    : Icons.translate,
+            color: palette.foreground,
+          ),
+        ),
+        title: Text(
+          task.outputTitle.trim().isEmpty ? task.sourceTitle : task.outputTitle,
+          maxLines: 1,
+          overflow: TextOverflow.ellipsis,
+        ),
+        subtitle: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(
+              [
+                StoryTemplateTranslationTaskStatus.labelOf(task.status),
+                if (task.stage.trim().isNotEmpty) task.stage.trim(),
+                if (task.detail.trim().isNotEmpty) task.detail.trim(),
+              ].join(' · '),
+              maxLines: 2,
+              overflow: TextOverflow.ellipsis,
+              style: TextStyle(color: palette.foreground),
+            ),
+            const SizedBox(height: 4),
+            LinearProgressIndicator(
+              value: progress,
+              minHeight: 3,
+              color: palette.foreground,
+            ),
+          ],
+        ),
+        trailing: PopupMenuButton<String>(
+          tooltip: '任务操作',
+          onSelected: (value) {
+            if (value == 'log') onShowLog();
+            if (value == 'retry') onRetry?.call();
+            if (value == 'cancel') onCancel?.call();
+            if (value == 'dismiss') onDismiss?.call();
+          },
+          itemBuilder: (context) => [
+            const PopupMenuItem(value: 'log', child: Text('查看日志')),
+            if (onRetry != null)
+              const PopupMenuItem(value: 'retry', child: Text('恢复任务')),
+            if (onCancel != null)
+              const PopupMenuItem(value: 'cancel', child: Text('取消任务')),
+            if (onDismiss != null)
+              const PopupMenuItem(value: 'dismiss', child: Text('移除记录')),
+          ],
+        ),
+      ),
+    );
   }
 }
 
 enum _RoleCardImportJobStatus { queued, running, completed, failed }
 
-enum _RoleCardImportJobKind { assistant, tavernRoom }
-
 class _RoleCardImportJob {
   final int total;
   final int index;
   final bool translate;
-  final _RoleCardImportJobKind kind;
   String displayName;
   String stage;
   String detail = '';
@@ -2268,7 +2435,6 @@ class _RoleCardImportJob {
     required this.total,
     required this.index,
     required this.translate,
-    this.kind = _RoleCardImportJobKind.assistant,
     required this.displayName,
     required this.stage,
   });
@@ -2286,7 +2452,6 @@ class _RoleCardImportJob {
       total: total,
       index: index,
       translate: translate,
-      kind: _RoleCardImportJobKind.assistant,
       displayName: targetName.trim().isEmpty
           ? plan.result.assistant.name
           : targetName.trim(),
@@ -2294,25 +2459,10 @@ class _RoleCardImportJob {
     );
   }
 
-  factory _RoleCardImportJob.tavernRoom({
-    required String title,
-    required bool translate,
-  }) {
-    return _RoleCardImportJob(
-      total: 1,
-      index: 1,
-      translate: translate,
-      kind: _RoleCardImportJobKind.tavernRoom,
-      displayName: title.trim().isEmpty ? '酒馆房间' : title.trim(),
-      stage: translate ? '等待翻译' : '等待创建房间',
-    );
-  }
-
   String get counter => total <= 1 ? '' : '$index / $total';
   bool get failed => status == _RoleCardImportJobStatus.failed;
   bool get running => status == _RoleCardImportJobStatus.running;
   bool get completed => status == _RoleCardImportJobStatus.completed;
-  bool get tavernRoom => kind == _RoleCardImportJobKind.tavernRoom;
 }
 
 class _RoleCardImportJobTile extends StatelessWidget {
@@ -2345,7 +2495,6 @@ class _RoleCardImportJobTile extends StatelessWidget {
     final metaItems = [
       if (job.counter.isNotEmpty) job.counter,
       if (job.translate) 'AI 翻译',
-      if (job.tavernRoom) '酒馆房间',
     ];
     final tile = ListTile(
       leading: CircleAvatar(
@@ -2354,7 +2503,7 @@ class _RoleCardImportJobTile extends StatelessWidget {
           failed
               ? Icons.error_outline
               : completed
-                  ? (job.tavernRoom ? Icons.meeting_room_outlined : Icons.check)
+                  ? Icons.check
                   : Icons.sync,
           color: palette.foreground,
         ),
@@ -2485,6 +2634,7 @@ class _RoleCardImportOptions {
   final bool keepModelOverride;
   final bool keepDefaultVoice;
   final bool translateToSimplifiedChinese;
+  final TranslationRequestProfile? translationProfile;
   final _RoleCardImportConflictMode conflictMode;
 
   const _RoleCardImportOptions({
@@ -2492,8 +2642,21 @@ class _RoleCardImportOptions {
     required this.keepModelOverride,
     required this.keepDefaultVoice,
     this.translateToSimplifiedChinese = false,
+    this.translationProfile,
     this.conflictMode = _RoleCardImportConflictMode.rename,
   });
+
+  _RoleCardImportOptions withTranslationProfile(
+    TranslationRequestProfile profile,
+  ) =>
+      _RoleCardImportOptions(
+        keepTools: keepTools,
+        keepModelOverride: keepModelOverride,
+        keepDefaultVoice: keepDefaultVoice,
+        translateToSimplifiedChinese: true,
+        translationProfile: profile,
+        conflictMode: conflictMode,
+      );
 }
 
 class _RoleCardImportPlan {

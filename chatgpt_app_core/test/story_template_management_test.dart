@@ -412,7 +412,7 @@ void main() {
         (
           StoryTemplateTranslationTaskStatus.needsConfiguration,
           '需要配置',
-          false,
+          true,
           false,
         ),
         (
@@ -491,6 +491,28 @@ void main() {
       expect(completed?.leaseOwner, 'legacy-runner');
       expect(completed?.leaseUntil,
           now.subtract(const Duration(minutes: 1)).millisecondsSinceEpoch);
+    });
+
+    test('暂停和待配置任务可以显式取消且保留检查点', () async {
+      for (final status in [
+        StoryTemplateTranslationTaskStatus.failed,
+        StoryTemplateTranslationTaskStatus.needsConfiguration,
+      ]) {
+        final task = StoryTemplateTranslationTaskModel(
+          sourceTitle: status,
+          sourcePayload: '{}',
+          status: status,
+          chunkPayload: '{"checkpoint":"kept"}',
+          fieldPayload: '{"field":"kept"}',
+        );
+        await taskDao.saveTask(task);
+
+        expect(await taskDao.cancelTask(task.id!), isTrue);
+        final stored = await taskDao.getTask(task.id!);
+        expect(stored?.status, StoryTemplateTranslationTaskStatus.cancelled);
+        expect(stored?.chunkPayload, task.chunkPayload);
+        expect(stored?.fieldPayload, task.fieldPayload);
+      }
     });
 
     test('原子领取只允许一个 owner 成功，丢失租约后不能续租或保存', () async {
