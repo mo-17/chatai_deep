@@ -717,6 +717,63 @@ void main() {
       expect(copyPayload.regexScriptsJson, '{"version":1,"rules":[]}');
     });
 
+    test('用户取消与网络返回重叠时取消状态获胜且不写输出模板', () async {
+      final templateDao = await StoryTemplateDao.create(storage);
+      final source = StoryRoomTemplatePayload(
+        results: [
+          AssistantRoleCardImportResult(
+            assistant: AssistantModel(name: 'Alice', prompt: 'Careful.'),
+          ),
+        ],
+      );
+      final task = StoryTemplateTranslationTaskModel(
+        sourceTitle: 'Cancel overlap',
+        sourcePayload: jsonEncode(source.toJson()),
+        outputTitle: '不应生成',
+        roleTotal: 1,
+      );
+      await taskDao.saveTask(task);
+      const owner = 'runner-cancel-overlap';
+      expect(
+        await taskDao.claimTask(
+          task.id!,
+          leaseOwner: owner,
+          leaseDuration: const Duration(minutes: 5),
+        ),
+        isTrue,
+      );
+      final requestStarted = Completer<void>();
+      final releaseResponse = Completer<void>();
+      var cancelled = false;
+
+      final running = StoryTemplateTranslationTaskRunner(
+        taskDao: taskDao,
+        templateDao: templateDao,
+        task: task,
+        leaseOwner: owner,
+        complete: (prompt) async {
+          if (!requestStarted.isCompleted) requestStarted.complete();
+          await releaseResponse.future;
+          final payload =
+              jsonDecode(prompt.split('\n').last) as Map<String, dynamic>;
+          final field = payload.keys.single;
+          return jsonEncode({field: '迟到的网络结果'});
+        },
+        isCancelled: () => cancelled,
+      ).run();
+
+      await requestStarted.future;
+      cancelled = true;
+      expect(await taskDao.cancelTask(task.id!), isTrue);
+      releaseResponse.complete();
+      await running;
+
+      final stored = await taskDao.getTask(task.id!);
+      expect(stored?.status, StoryTemplateTranslationTaskStatus.cancelled);
+      expect(stored?.outputTemplateId, isNull);
+      expect(await templateDao.getTemplates(), isEmpty);
+    });
+
     test('运行器从字段检查点恢复时不重复请求已完成字段', () async {
       final templateDao = await StoryTemplateDao.create(storage);
       final source = StoryRoomTemplatePayload(

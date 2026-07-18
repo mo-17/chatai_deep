@@ -469,6 +469,86 @@ void main() {
     expect(translated.memoryBook, source.replaceAll('Alice keeps', '爱丽丝记录'));
   });
 
+  test('33322-rune world book resumes without resending completed chunks',
+      () async {
+    final raw = List.generate(
+      1200,
+      (index) =>
+          '[entry=$index] key$index => Alice remembers a detailed world rule $index.',
+    ).join('\n');
+    final source = String.fromCharCodes(raw.runes.take(33322));
+    expect(source.runes.length, 33322);
+
+    TranslationChunkCheckpoint? interrupted;
+    var memoryCalls = 0;
+    final firstAttemptSent = <String>[];
+    final firstAttempt =
+        AssistantRoleCardTranslationService.translateToSimplifiedChinese(
+      AssistantModel(name: '', memoryBook: source),
+      onChunkCheckpoint: (field, checkpoint) async {
+        if (field == 'memoryBook') interrupted = checkpoint;
+      },
+      complete: (prompt) async {
+        final payload =
+            jsonDecode(prompt.split('\n').last) as Map<String, dynamic>;
+        final field = payload.keys.single;
+        final value = payload[field] as String;
+        if (field == 'memoryBook') {
+          memoryCalls += 1;
+          firstAttemptSent.add(value);
+          if (memoryCalls == 6) {
+            throw const TranslationRequestFailure(
+              kind: TranslationFailureKind.cancelled,
+              safeCode: 'cancelled',
+            );
+          }
+        }
+        return jsonEncode({field: value.replaceAll('Alice', '爱丽丝')});
+      },
+    );
+
+    await expectLater(
+      firstAttempt,
+      throwsA(isA<RoleCardTranslationCancelled>()),
+    );
+    expect(interrupted, isNotNull);
+    final completedBeforeResume = interrupted!.chunks
+        .where((state) => state.status == TranslationChunkStatus.completed)
+        .map((state) => state.chunk.sourceText)
+        .toSet();
+    expect(completedBeforeResume, isNotEmpty);
+
+    final resumedSent = <String>[];
+    final translated =
+        await AssistantRoleCardTranslationService.translateToSimplifiedChinese(
+      AssistantModel(name: '', memoryBook: source),
+      initialChunkCheckpoints: {'memoryBook': interrupted!},
+      onChunkCheckpoint: (field, checkpoint) async {
+        if (field == 'memoryBook') interrupted = checkpoint;
+      },
+      complete: (prompt) async {
+        final payload =
+            jsonDecode(prompt.split('\n').last) as Map<String, dynamic>;
+        final field = payload.keys.single;
+        final value = payload[field] as String;
+        if (field == 'memoryBook') resumedSent.add(value);
+        return jsonEncode({field: value.replaceAll('Alice', '爱丽丝')});
+      },
+    );
+
+    expect(firstAttemptSent.every((text) => text.runes.length <= 1200), isTrue);
+    expect(resumedSent.every((text) => text.runes.length <= 1200), isTrue);
+    expect(resumedSent.where(completedBeforeResume.contains), isEmpty);
+    expect(resumedSent.toSet(), hasLength(resumedSent.length));
+    expect(translated.memoryBook, source.replaceAll('Alice', '爱丽丝'));
+    expect(
+      interrupted!.chunks.every(
+        (state) => state.status == TranslationChunkStatus.completed,
+      ),
+      isTrue,
+    );
+  });
+
   test('empty fields persist completed checkpoints without network calls',
       () async {
     final checkpoints = <String, TranslationChunkCheckpoint>{};
