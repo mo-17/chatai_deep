@@ -25,6 +25,8 @@ typedef TranslationExecutorResolver = TranslationStreamExecutor Function(
   TranslationRequestProfile profile,
 );
 typedef StoryTemplateTranslationCall = Future<String> Function(String prompt);
+typedef LegacyTranslationRequestProfileResolver = TranslationRequestProfile?
+    Function();
 typedef _TranslationRunKey = ({String accountHash, int taskId});
 
 /// 页面可复用的任务协调器。任务行先写入数据库，再启动网络翻译；完成、失败、取消
@@ -266,6 +268,7 @@ class StoryTemplateTranslationCoordinator extends ChangeNotifier {
     TranslationExecutorResolver? resolveExecutor,
     StoryTemplateTranslationCall? complete,
     TranslationRequestProfile? legacyRequestProfile,
+    LegacyTranslationRequestProfileResolver? resolveLegacyRequestProfile,
   }) async {
     if (resolveExecutor == null && complete == null) {
       throw ArgumentError('resolveExecutor 不能为空');
@@ -281,6 +284,8 @@ class StoryTemplateTranslationCoordinator extends ChangeNotifier {
         .toList()
       ..sort((a, b) => a.createdAt.compareTo(b.createdAt));
     var resumed = 0;
+    var legacyFallback = legacyRequestProfile;
+    var legacyFallbackResolved = legacyRequestProfile != null;
     for (final task in recoverable) {
       final id = task.id;
       if (id == null ||
@@ -288,7 +293,15 @@ class StoryTemplateTranslationCoordinator extends ChangeNotifier {
         continue;
       }
       if (resolveExecutor != null && task.requestProfile.trim().isEmpty) {
-        if (legacyRequestProfile == null) {
+        if (!legacyFallbackResolved) {
+          legacyFallbackResolved = true;
+          try {
+            legacyFallback = resolveLegacyRequestProfile?.call();
+          } catch (_) {
+            legacyFallback = null;
+          }
+        }
+        if (legacyFallback == null) {
           task
             ..status = StoryTemplateTranslationTaskStatus.needsConfiguration
             ..stage = '需要选择翻译模型'
@@ -301,7 +314,7 @@ class StoryTemplateTranslationCoordinator extends ChangeNotifier {
           continue;
         }
         task
-          ..requestProfile = jsonEncode(legacyRequestProfile.toJson())
+          ..requestProfile = jsonEncode(legacyFallback.toJson())
           ..checkpointVersion = TranslationChunkCheckpoint.currentVersion;
         await _requireTaskDao().saveTask(task);
       }
@@ -499,7 +512,6 @@ class StoryTemplateTranslationCoordinator extends ChangeNotifier {
     if (value == null) throw StateError('翻译任务尚未初始化');
     return value;
   }
-
 }
 
 /// 单个任务的可恢复运行器。已完成角色会写入 `partialPayload`，中断时只会重做

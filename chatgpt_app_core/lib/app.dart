@@ -287,13 +287,12 @@ class _MyAppState extends State<MyApp> {
       final storage = await HiDBManager.instance(dbName: accountHash);
       final coordinator = StoryTemplateTranslationCoordinator.instance;
       await coordinator.initialize(storage, accountHash: accountHash);
-      final preference = TranslationModelPreferenceStore().read(accountHash);
-      final legacyProfile = TranslationModelResolver.snapshot(
-        settings,
-        preference,
-      );
       await coordinator.resumeRecoverable(
-        legacyRequestProfile: legacyProfile,
+        resolveLegacyRequestProfile: () =>
+            TranslationModelResolver.legacyFallbackOrNull(
+          settings,
+          TranslationModelPreferenceStore().read(accountHash),
+        ),
         resolveExecutor: (profile) => TranslationStreamExecutor(
           service: ChatService.from(
             TranslationModelResolver.apply(settings, profile),

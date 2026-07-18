@@ -17,6 +17,8 @@ import 'package:chatgpt_app_core/dao/chat/chat_service.dart';
 import 'package:chatgpt_app_core/db/hi_db_manager.dart';
 import 'package:chatgpt_app_core/db/story_template_dao.dart';
 import 'package:chatgpt_app_core/db/story_template_translation_task_dao.dart';
+import 'package:chatgpt_app_core/model/ai_provider.dart';
+import 'package:chatgpt_app_core/model/ai_settings.dart';
 import 'package:chatgpt_app_core/model/assistant_model.dart';
 import 'package:chatgpt_app_core/model/story_template_model.dart';
 import 'package:chatgpt_app_core/model/story_template_translation_task_model.dart';
@@ -1257,6 +1259,96 @@ void main() {
             StoryTemplateTranslationTaskStatus.failed,
             StoryTemplateTranslationTaskStatus.needsConfiguration,
           ]));
+    });
+
+    test('失效 legacy fallback 只暂停旧任务且现代快照继续完成', () async {
+      final settings = AISettings(
+        mode: AIMode.local,
+        providers: [
+          AiProvider(
+            id: 'current-provider',
+            type: 'openai',
+            name: 'Current',
+            apiKey: 'test-key',
+            enabled: true,
+            selectedModelId: 'current-model',
+            models: [AiModel(id: 'current-model')],
+          ),
+        ],
+        activeProviderId: 'current-provider',
+        backendModel: 'backend-modern',
+        streamEnabled: true,
+        resetOnLogout: true,
+      );
+      final modernProfile = TranslationRequestProfile(
+        mode: TranslationExecutionMode.backend,
+        modelId: 'backend-modern',
+        reasoningPolicy: ChatReasoningPolicy.offIfSupported,
+        reasoningControlSuppressed: false,
+      );
+      String payloadFor(String name) => jsonEncode(
+            StoryRoomTemplatePayload(results: [
+              AssistantRoleCardImportResult(
+                assistant: AssistantModel(name: name),
+              ),
+            ]).toJson(),
+          );
+      final legacy = StoryTemplateTranslationTaskModel(
+        sourceTitle: 'Legacy',
+        sourcePayload: payloadFor('Legacy role'),
+        outputTitle: 'Legacy copy',
+        createdAt: 1,
+        updatedAt: 1,
+      );
+      final modern = StoryTemplateTranslationTaskModel(
+        sourceTitle: 'Modern',
+        sourcePayload: payloadFor('Modern role'),
+        outputTitle: 'Modern copy',
+        requestProfile: jsonEncode(modernProfile.toJson()),
+        createdAt: 2,
+        updatedAt: 2,
+      );
+      await taskDao.saveTask(legacy);
+      await taskDao.saveTask(modern);
+      final coordinator = StoryTemplateTranslationCoordinator();
+      await coordinator.initialize(storage, accountHash: 'test');
+      final service = _EchoTranslationChatService();
+      var legacyResolutions = 0;
+      final executedProfiles = <TranslationRequestProfile>[];
+
+      final resumed = await coordinator.resumeRecoverable(
+        resolveLegacyRequestProfile: () {
+          legacyResolutions += 1;
+          return TranslationModelResolver.legacyFallbackOrNull(
+            settings,
+            const TranslationModelPreference(
+              mode: TranslationModelPreferenceMode.local,
+              providerId: 'deleted-provider',
+              modelId: 'deleted-model',
+              reasoningPolicy: ChatReasoningPolicy.offIfSupported,
+            ),
+          );
+        },
+        resolveExecutor: (profile) {
+          executedProfiles.add(profile);
+          return TranslationStreamExecutor(service: service, profile: profile);
+        },
+      );
+
+      final storedLegacy = await taskDao.getTask(legacy.id!);
+      final storedModern = await taskDao.getTask(modern.id!);
+      final outputs = await StoryTemplateDao.create(storage)
+          .then((dao) => dao.getTemplates());
+      expect(resumed, 1);
+      expect(legacyResolutions, 1);
+      expect(storedLegacy?.status,
+          StoryTemplateTranslationTaskStatus.needsConfiguration);
+      expect(storedLegacy?.error, 'legacy_profile_missing');
+      expect(
+          storedModern?.status, StoryTemplateTranslationTaskStatus.completed);
+      expect(executedProfiles, hasLength(1));
+      expect(executedProfiles.single.modelId, 'backend-modern');
+      expect(outputs, hasLength(1));
     });
   });
 }

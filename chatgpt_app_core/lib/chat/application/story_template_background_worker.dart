@@ -42,10 +42,12 @@ Future<bool> runStoryTemplateTranslationBackgroundWork({
   final coordinator = StoryTemplateTranslationCoordinator.instance;
   await coordinator.initialize(storage, accountHash: expectedAccount);
   final settings = await AISettingsDao.loadForBackground(expectedAccount);
-  final preference = TranslationModelPreferenceStore().read(expectedAccount);
-  final legacyProfile = TranslationModelResolver.snapshot(settings, preference);
   await coordinator.resumeRecoverable(
-    legacyRequestProfile: legacyProfile,
+    resolveLegacyRequestProfile: () =>
+        TranslationModelResolver.legacyFallbackOrNull(
+      settings,
+      TranslationModelPreferenceStore().read(expectedAccount),
+    ),
     resolveExecutor: (profile) => TranslationStreamExecutor(
       service: ChatService.from(
         TranslationModelResolver.apply(settings, profile),

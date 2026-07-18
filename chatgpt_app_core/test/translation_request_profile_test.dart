@@ -160,6 +160,22 @@ void main() {
     );
   });
 
+  test('restore-only legacy fallback 对失效偏好返回 null', () {
+    final settings = _settingsWithProviders(activeProviderId: 'deepseek');
+
+    final fallback = TranslationModelResolver.legacyFallbackOrNull(
+      settings,
+      const TranslationModelPreference(
+        mode: TranslationModelPreferenceMode.local,
+        providerId: 'deleted-provider',
+        modelId: 'deleted-model',
+        reasoningPolicy: ChatReasoningPolicy.offIfSupported,
+      ),
+    );
+
+    expect(fallback, isNull);
+  });
+
   test('snapshot 拒绝直接构造但违反模式字段合同的偏好', () {
     final settings = _settingsWithProviders(activeProviderId: 'deepseek');
     final invalidPreferences = [

@@ -52,6 +52,20 @@ final class TranslationModelResolver {
     }
   }
 
+  /// 仅供旧任务恢复使用：记忆偏好失效时不借用其他模型，也不阻断现代任务。
+  static TranslationRequestProfile? legacyFallbackOrNull(
+    AISettings settings,
+    TranslationModelPreference preference,
+  ) {
+    try {
+      return snapshot(settings, preference);
+    } on TranslationModelUnavailableException {
+      return null;
+    } on FormatException {
+      return null;
+    }
+  }
+
   static AISettings apply(
     AISettings current,
     TranslationRequestProfile profile,
