@@ -1236,6 +1236,69 @@ void main() {
       expect(storedB?.outputTemplateId, isNotNull);
     });
 
+    test('切换 binding 时会同步隐藏旧账号任务快照', () async {
+      final dbA = await databaseFactoryFfi.openDatabase(
+        inMemoryDatabasePath,
+        options: OpenDatabaseOptions(singleInstance: false),
+      );
+      final dbB = await databaseFactoryFfi.openDatabase(
+        inMemoryDatabasePath,
+        options: OpenDatabaseOptions(singleInstance: false),
+      );
+      addTearDown(dbA.close);
+      addTearDown(dbB.close);
+      final storageA = HiDBManager.test(dbA);
+      final storageB = HiDBManager.test(dbB);
+      final taskDaoA = await StoryTemplateTranslationTaskDao.create(storageA);
+      await taskDaoA.saveTask(_translationTask('Alice'));
+      final coordinator = StoryTemplateTranslationCoordinator();
+      await coordinator.initialize(storageA, accountHash: 'account-a');
+
+      final lockStarted = Completer<void>();
+      final releaseLock = Completer<void>();
+      final blockingTransaction = dbB.transaction((txn) async {
+        await txn.rawQuery('select 1');
+        lockStarted.complete();
+        await releaseLock.future;
+      });
+      addTearDown(() async {
+        if (!releaseLock.isCompleted) releaseLock.complete();
+        await blockingTransaction;
+      });
+      await lockStarted.future;
+      var notifications = 0;
+      coordinator.addListener(() => notifications += 1);
+
+      final initializeB =
+          coordinator.initialize(storageB, accountHash: 'account-b');
+      try {
+        expect(coordinator.tasks, isEmpty);
+        expect(notifications, 1);
+      } finally {
+        if (!releaseLock.isCompleted) releaseLock.complete();
+        await blockingTransaction;
+        await initializeB;
+      }
+    });
+
+    test('detach 会在首个 await 前同步隐藏任务快照', () async {
+      final coordinator = StoryTemplateTranslationCoordinator();
+      await coordinator.initialize(storage, accountHash: 'test');
+      await taskDao.saveTask(_translationTask('Alice'));
+      await coordinator.initialize(
+        HiDBManager.test(db),
+        accountHash: 'test-reload',
+      );
+      expect(coordinator.tasks, isNotEmpty);
+      var notifications = 0;
+      coordinator.addListener(() => notifications += 1);
+
+      final detached = coordinator.detachForLifecycle();
+      expect(coordinator.tasks, isEmpty);
+      expect(notifications, 1);
+      await detached;
+    });
+
     test('切换账号后旧 resume loop 不会继续运行第二个任务', () async {
       final dbA = await databaseFactoryFfi.openDatabase(
         inMemoryDatabasePath,
@@ -1459,6 +1522,153 @@ void main() {
         everyElement(StoryTemplateTranslationTaskStatus.failed),
       );
       expect(retryResolverCalls, 0);
+    });
+
+    test('claim 替换对象后旧引用不能执行任何任务 mutation', () async {
+      final checkpoint = const TranslationChunkPlanner().plan(
+        field: 'memoryBook',
+        source: List.filled(1300, '界').join(),
+      );
+      final chunkPayload = jsonEncode({
+        'version': TranslationChunkCheckpoint.currentVersion,
+        'checkpoints': {'role:0:memoryBook': checkpoint.toJson()},
+      });
+
+      for (final action in ['retry', 'retain', 'cancel', 'dismiss']) {
+        final actionDb = await databaseFactoryFfi.openDatabase(
+          inMemoryDatabasePath,
+          options: OpenDatabaseOptions(singleInstance: false),
+        );
+        final actionStorage = HiDBManager.test(actionDb);
+        final actionDao =
+            await StoryTemplateTranslationTaskDao.create(actionStorage);
+        final persisted = _translationTask(
+          action,
+          status: StoryTemplateTranslationTaskStatus.retryable,
+          chunkPayload: chunkPayload,
+        );
+        await actionDao.saveTask(persisted);
+        final coordinator = StoryTemplateTranslationCoordinator();
+        await coordinator.initialize(
+          actionStorage,
+          accountHash: 'account-$action',
+        );
+        final stale = coordinator.tasks.single;
+        final held = _HeldTranslationChatService();
+        final running = coordinator.resumeRecoverable(
+          resolveExecutor: (profile) => TranslationStreamExecutor(
+            service: held,
+            profile: profile,
+          ),
+        );
+        await held.requestStarted.future;
+        await Future<void>.delayed(const Duration(milliseconds: 20));
+        final current = coordinator.tasks.single;
+        expect(identical(stale, current), isFalse, reason: action);
+        final before = await actionDao.getTask(persisted.id!);
+        expect(before?.status, StoryTemplateTranslationTaskStatus.running,
+            reason: action);
+
+        switch (action) {
+          case 'retry':
+            await coordinator.retry(
+              stale,
+              resolveExecutor: (profile) => TranslationStreamExecutor(
+                service: _EchoTranslationChatService(),
+                profile: profile,
+              ),
+            );
+          case 'retain':
+            await coordinator.completeKeepingOriginalChunks(stale);
+          case 'cancel':
+            await coordinator.cancel(stale);
+          case 'dismiss':
+            stale.status = StoryTemplateTranslationTaskStatus.failed;
+            await coordinator.dismiss(stale);
+        }
+
+        final after = await actionDao.getTask(persisted.id!);
+        expect(after?.status, StoryTemplateTranslationTaskStatus.running,
+            reason: action);
+        expect(after?.leaseOwner, before?.leaseOwner, reason: action);
+        expect(after?.chunkPayload, before?.chunkPayload, reason: action);
+        expect(identical(coordinator.tasks.single, current), isTrue,
+            reason: action);
+
+        await coordinator.detachForLifecycle();
+        await running;
+        await actionDb.close();
+      }
+    });
+
+    test('未知 executor 初始化异常会安全释放租约且不泄漏 unawaited 错误', () async {
+      final coordinator = StoryTemplateTranslationCoordinator();
+      await coordinator.initialize(storage, accountHash: 'test');
+      final errors = <Object>[];
+      final profile = TranslationRequestProfile(
+        mode: TranslationExecutionMode.local,
+        providerId: 'provider-a',
+        modelId: 'model-a',
+        reasoningPolicy: ChatReasoningPolicy.providerDefault,
+        reasoningControlSuppressed: false,
+      );
+      final template = StoryRoomTemplatePayload(results: [
+        AssistantRoleCardImportResult(
+          assistant: AssistantModel(name: 'Alice'),
+        ),
+      ]).toTemplate(title: 'Party', sourceTitle: 'party.json');
+
+      await runZonedGuarded<Future<void>>(
+        () async {
+          await coordinator.start(
+            template,
+            requestProfile: profile,
+            resolveExecutor: (_) => throw StateError('secret setup detail'),
+          );
+          await Future<void>.delayed(const Duration(milliseconds: 50));
+        },
+        (error, _) => errors.add(error),
+      );
+
+      final stored = (await taskDao.getTasks()).single;
+      expect(errors, isEmpty);
+      expect(stored.status, StoryTemplateTranslationTaskStatus.retryable);
+      expect(stored.leaseOwner, isNull);
+      expect(stored.leaseUntil, isNull);
+      expect(stored.error, 'translation_executor_failed');
+      expect(stored.log, contains('StateError'));
+      expect(stored.log, isNot(contains('secret setup detail')));
+    });
+
+    test('cancel CAS 输给已完成任务时以内存和数据库权威结果为准', () async {
+      final task = _translationTask(
+        'Completed tavern',
+        status: StoryTemplateTranslationTaskStatus.failed,
+      )..taskKind = StoryTemplateTranslationTaskKind.tavernRoomImport;
+      await taskDao.saveTask(task);
+      final coordinator = StoryTemplateTranslationCoordinator();
+      await coordinator.initialize(storage, accountHash: 'test');
+      final current = coordinator.tasks.single;
+      final authoritative = StoryTemplateTranslationTaskModel.fromJson(
+        current.toJson(),
+      )
+        ..status = StoryTemplateTranslationTaskStatus.completed
+        ..outputTemplateId = 41
+        ..outputRoomId = 51
+        ..progress = 1
+        ..stage = '已导入酒馆房间';
+      await taskDao.saveTask(authoritative);
+
+      await coordinator.cancel(current);
+
+      final stored = await taskDao.getTask(task.id!);
+      final visible = coordinator.tasks.single;
+      expect(stored?.status, StoryTemplateTranslationTaskStatus.completed);
+      expect(stored?.outputTemplateId, 41);
+      expect(stored?.outputRoomId, 51);
+      expect(visible.status, StoryTemplateTranslationTaskStatus.completed);
+      expect(visible.outputTemplateId, 41);
+      expect(visible.outputRoomId, 51);
     });
 
     test('协调器创建任务时冻结具体模型和任务类型', () async {

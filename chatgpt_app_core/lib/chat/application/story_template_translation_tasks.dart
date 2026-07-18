@@ -88,6 +88,8 @@ class StoryTemplateTranslationCoordinator extends ChangeNotifier {
     }
     final transitionEpoch = ++_lifecycleEpoch;
     final previous = current;
+    _tasks = const [];
+    notifyListeners();
     final settlements = _requestLifecycleCancellation(previous);
     await Future.wait(settlements);
     if (!_isEpochCurrent(transitionEpoch)) return;
@@ -245,8 +247,31 @@ class StoryTemplateTranslationCoordinator extends ChangeNotifier {
     final key = _runKey(context, id);
     _cancelledRuns.add(key);
     _cancellations[key]?.cancel();
-    await context.taskDao.cancelTask(id);
+    final cancelled = await context.taskDao.cancelTask(id);
     if (!_isContextCurrent(context)) return;
+    if (!cancelled) {
+      _cancelledRuns.remove(key);
+      final authoritative = await context.taskDao.getTask(id);
+      if (!_isContextCurrent(context) ||
+          !_isTaskOwnedByContext(context, task)) {
+        return;
+      }
+      final index =
+          _tasks.indexWhere((candidate) => identical(candidate, task));
+      if (authoritative == null) {
+        if (index >= 0) {
+          _tasks = List<StoryTemplateTranslationTaskModel>.from(_tasks)
+            ..removeAt(index);
+        }
+      } else if (index >= 0) {
+        _trackTask(context, authoritative);
+        _tasks[index] = authoritative;
+      }
+      _sortTasks();
+      notifyListeners();
+      return;
+    }
+    if (!_isTaskOwnedByContext(context, task)) return;
     task
       ..status = StoryTemplateTranslationTaskStatus.cancelled
       ..stage = '已取消'
@@ -428,6 +453,8 @@ class StoryTemplateTranslationCoordinator extends ChangeNotifier {
   Future<void> detachForLifecycle() async {
     final transitionEpoch = ++_lifecycleEpoch;
     final previous = _binding;
+    _tasks = const [];
+    notifyListeners();
     final settlements = _requestLifecycleCancellation(previous);
     await Future.wait(settlements);
     if (!_isEpochCurrent(transitionEpoch)) return;
@@ -560,6 +587,26 @@ class StoryTemplateTranslationCoordinator extends ChangeNotifier {
             '翻译模型快照无效',
           );
           return;
+        } catch (error) {
+          stopReason = _claimStopReason(context, key);
+          if (stopReason != null) {
+            await _settleStoppedClaim(
+              taskDao,
+              claimedTask,
+              leaseOwner,
+              stopReason,
+            );
+            return;
+          }
+          await _markExecutorSetupFailed(
+            context,
+            taskDao,
+            claimedTask,
+            leaseOwner,
+            key,
+            error,
+          );
+          return;
         }
       }
       stopReason = _claimStopReason(context, key);
@@ -683,6 +730,49 @@ class StoryTemplateTranslationCoordinator extends ChangeNotifier {
     if (_isContextCurrent(context)) notifyListeners();
   }
 
+  Future<void> _markExecutorSetupFailed(
+    _TranslationBindingContext context,
+    StoryTemplateTranslationTaskDao taskDao,
+    StoryTemplateTranslationTaskModel task,
+    String leaseOwner,
+    _TranslationRunKey key,
+    Object error,
+  ) async {
+    final id = task.id;
+    if (id == null) return;
+    task
+      ..stage = '翻译执行器初始化失败，可重试'
+      ..detail = StoryTemplateTranslationTaskDao.taskCheckpointDetail(task)
+      ..error = 'translation_executor_failed';
+    task.log = _appendLog(task.log, '翻译执行器初始化失败（${error.runtimeType}）');
+    final saved = await taskDao.saveClaimedTask(
+      task,
+      leaseOwner: leaseOwner,
+      leaseDuration: _leaseDuration,
+    );
+    if (!saved) return;
+    final stopReason = _claimStopReason(context, key);
+    if (stopReason != null) {
+      await _settleStoppedClaim(
+        taskDao,
+        task,
+        leaseOwner,
+        stopReason,
+      );
+      return;
+    }
+    final released = await taskDao.releaseLease(
+      id,
+      leaseOwner: leaseOwner,
+    );
+    if (!released || _claimStopReason(context, key) != null) return;
+    task
+      ..status = StoryTemplateTranslationTaskStatus.retryable
+      ..leaseOwner = null
+      ..leaseUntil = null;
+    if (_isContextCurrent(context)) notifyListeners();
+  }
+
   void _sortTasks() {
     _tasks.sort((a, b) => b.updatedAt.compareTo(a.updatedAt));
   }
@@ -743,7 +833,9 @@ class StoryTemplateTranslationCoordinator extends ChangeNotifier {
     if (id == null) return false;
     return _tasks.any(
       (candidate) =>
-          candidate.id == id && _taskBindingEpoch[candidate] == context.epoch,
+          identical(candidate, task) &&
+          candidate.id == id &&
+          _taskBindingEpoch[candidate] == context.epoch,
     );
   }
 
