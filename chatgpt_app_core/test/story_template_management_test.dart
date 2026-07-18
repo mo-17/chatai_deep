@@ -574,6 +574,100 @@ void main() {
       expect((await taskDao.getTask(task.id!))?.attempts, 2);
     });
 
+    test('unclaimed CAS 同时校验 status 和 updatedAt 且同毫秒也单调递增', () async {
+      final task = _translationTask(
+        'CAS writers',
+        status: StoryTemplateTranslationTaskStatus.retryable,
+        chunkPayload: '{"checkpoint":"base"}',
+      );
+      await taskDao.saveTask(task);
+      final persisted = (await taskDao.getTask(task.id!))!;
+      final first = StoryTemplateTranslationTaskModel.fromJson(
+        persisted.toJson(),
+      )
+        ..stage = 'first writer'
+        ..chunkPayload = '{"checkpoint":"first"}';
+      final staleSecond = StoryTemplateTranslationTaskModel.fromJson(
+        persisted.toJson(),
+      )
+        ..stage = 'stale second writer'
+        ..chunkPayload = '{"checkpoint":"stale"}';
+      final sameNow = DateTime.fromMillisecondsSinceEpoch(persisted.updatedAt);
+
+      expect(
+        await taskDao.saveTaskIfUnclaimed(
+          first,
+          expectedStatus: persisted.status,
+          expectedUpdatedAt: persisted.updatedAt,
+          now: sameNow,
+        ),
+        isTrue,
+      );
+      expect(first.updatedAt, persisted.updatedAt + 1);
+      expect(
+        await taskDao.saveTaskIfUnclaimed(
+          staleSecond,
+          expectedStatus: persisted.status,
+          expectedUpdatedAt: persisted.updatedAt,
+          now: sameNow,
+        ),
+        isFalse,
+      );
+      expect(staleSecond.updatedAt, persisted.updatedAt);
+      final stored = await taskDao.getTask(task.id!);
+      expect(stored?.stage, 'first writer');
+      expect(stored?.chunkPayload, '{"checkpoint":"first"}');
+      expect(stored?.updatedAt, persisted.updatedAt + 1);
+    });
+
+    test('pre-claim stale CAS 在另一 owner 领取后不能抹掉有效租约', () async {
+      final task = _translationTask(
+        'CAS lease',
+        status: StoryTemplateTranslationTaskStatus.retryable,
+        chunkPayload: '{"checkpoint":"kept"}',
+      );
+      await taskDao.saveTask(task);
+      final stale = (await taskDao.getTask(task.id!))!;
+      final attempted = StoryTemplateTranslationTaskModel.fromJson(
+        stale.toJson(),
+      )
+        ..status = StoryTemplateTranslationTaskStatus.queued
+        ..stage = 'stale retry'
+        ..chunkPayload = '{"checkpoint":"overwritten"}';
+      final writerReady = Completer<void>();
+      final releaseWriter = Completer<void>();
+      final staleWrite = () async {
+        writerReady.complete();
+        await releaseWriter.future;
+        return taskDao.saveTaskIfUnclaimed(
+          attempted,
+          expectedStatus: stale.status,
+          expectedUpdatedAt: stale.updatedAt,
+        );
+      }();
+      await writerReady.future;
+
+      expect(
+        await taskDao.claimTask(
+          task.id!,
+          leaseOwner: 'background-owner',
+          leaseDuration: const Duration(minutes: 5),
+        ),
+        isTrue,
+      );
+      final claimed = (await taskDao.getTask(task.id!))!;
+      releaseWriter.complete();
+
+      expect(await staleWrite, isFalse);
+      expect(attempted.updatedAt, stale.updatedAt);
+      final stored = await taskDao.getTask(task.id!);
+      expect(stored?.status, StoryTemplateTranslationTaskStatus.running);
+      expect(stored?.leaseOwner, 'background-owner');
+      expect(stored?.leaseUntil, claimed.leaseUntil);
+      expect(stored?.attempts, 1);
+      expect(stored?.chunkPayload, '{"checkpoint":"kept"}');
+    });
+
     test('恢复只处理过期租约，并保留有效运行中的任务', () async {
       final now = DateTime(2026, 7, 10, 12);
       final expired = StoryTemplateTranslationTaskModel(
@@ -602,6 +696,52 @@ void main() {
       expect((await taskDao.getTask(active.id!))?.status,
           StoryTemplateTranslationTaskStatus.running);
       expect((await taskDao.getTask(active.id!))?.leaseOwner, 'active-runner');
+    });
+
+    test('迟到的 interrupted recovery 不能覆盖另一 DAO 新领取的租约', () async {
+      final now = DateTime.now();
+      final expired = _translationTask(
+        'Recovery race',
+        status: StoryTemplateTranslationTaskStatus.running,
+        chunkPayload: '{"checkpoint":"recovery-kept"}',
+      )
+        ..leaseOwner = 'expired-owner'
+        ..leaseUntil =
+            now.subtract(const Duration(seconds: 1)).millisecondsSinceEpoch
+        ..attempts = 2;
+      await taskDao.saveTask(expired);
+      final staleDao = await StoryTemplateTranslationTaskDao.create(storage);
+      final candidatesLoaded = Completer<void>();
+      final releaseStaleRecovery = Completer<void>();
+      final staleRecovery = staleDao.recoverInterruptedTasks(
+        now: now,
+        afterCandidatesLoaded: () async {
+          candidatesLoaded.complete();
+          await releaseStaleRecovery.future;
+        },
+      );
+      await candidatesLoaded.future;
+
+      await taskDao.recoverInterruptedTasks(now: now);
+      expect(
+        await taskDao.claimTask(
+          expired.id!,
+          leaseOwner: 'new-owner',
+          leaseDuration: const Duration(minutes: 5),
+          now: now,
+        ),
+        isTrue,
+      );
+      final claimed = (await taskDao.getTask(expired.id!))!;
+      releaseStaleRecovery.complete();
+      await staleRecovery;
+
+      final stored = await taskDao.getTask(expired.id!);
+      expect(stored?.status, StoryTemplateTranslationTaskStatus.running);
+      expect(stored?.leaseOwner, 'new-owner');
+      expect(stored?.leaseUntil, claimed.leaseUntil);
+      expect(stored?.attempts, 3);
+      expect(stored?.chunkPayload, '{"checkpoint":"recovery-kept"}');
     });
 
     test('完成事务复用已关联输出，且不会重复插入模板', () async {
@@ -1599,6 +1739,193 @@ void main() {
         await running;
         await actionDb.close();
       }
+    });
+
+    test('background claim 后 stale resume 不覆盖租约且不启动第二个 runner', () async {
+      final task = _translationTask(
+        'Resume race',
+        status: StoryTemplateTranslationTaskStatus.retryable,
+        chunkPayload: '{"checkpoint":"resume-kept"}',
+      );
+      await taskDao.saveTask(task);
+      final ownerCoordinator = StoryTemplateTranslationCoordinator();
+      final staleCoordinator = StoryTemplateTranslationCoordinator();
+      await ownerCoordinator.initialize(storage, accountHash: 'test');
+      await staleCoordinator.initialize(storage, accountHash: 'test');
+      final held = _HeldTranslationChatService();
+      final ownerRun = ownerCoordinator.resumeRecoverable(
+        resolveExecutor: (profile) => TranslationStreamExecutor(
+          service: held,
+          profile: profile,
+        ),
+      );
+      await held.requestStarted.future;
+      await Future<void>.delayed(const Duration(milliseconds: 20));
+      final claimed = (await taskDao.getTask(task.id!))!;
+      final forbidden = _EchoTranslationChatService();
+      var staleResolverCalls = 0;
+
+      try {
+        final resumed = await staleCoordinator.resumeRecoverable(
+          resolveExecutor: (profile) {
+            staleResolverCalls += 1;
+            return TranslationStreamExecutor(
+              service: forbidden,
+              profile: profile,
+            );
+          },
+        );
+
+        final stored = await taskDao.getTask(task.id!);
+        expect(resumed, 0);
+        expect(staleResolverCalls, 0);
+        expect(forbidden.payloads, isEmpty);
+        expect(stored?.status, StoryTemplateTranslationTaskStatus.running);
+        expect(stored?.leaseOwner, claimed.leaseOwner);
+        expect(stored?.leaseUntil, claimed.leaseUntil);
+        expect(stored?.attempts, 1);
+        expect(stored?.chunkPayload, claimed.chunkPayload);
+        expect(
+          staleCoordinator.tasks.single.status,
+          StoryTemplateTranslationTaskStatus.running,
+        );
+        expect(staleCoordinator.tasks.single.leaseOwner, claimed.leaseOwner);
+      } finally {
+        await ownerCoordinator.detachForLifecycle();
+        await ownerRun;
+        await staleCoordinator.detachForLifecycle();
+      }
+    });
+
+    test('background claim 后 stale retry 和 retain 都不能覆盖租约', () async {
+      final checkpoint = const TranslationChunkPlanner().plan(
+        field: 'memoryBook',
+        source: List.filled(1300, '界').join(),
+      );
+      final checkpointPayload = jsonEncode({
+        'version': TranslationChunkCheckpoint.currentVersion,
+        'checkpoints': {'role:0:memoryBook': checkpoint.toJson()},
+      });
+
+      for (final action in ['retry', 'retain']) {
+        final actionDb = await databaseFactoryFfi.openDatabase(
+          inMemoryDatabasePath,
+          options: OpenDatabaseOptions(singleInstance: false),
+        );
+        final actionStorage = HiDBManager.test(actionDb);
+        final actionDao =
+            await StoryTemplateTranslationTaskDao.create(actionStorage);
+        final task = _translationTask(
+          'CAS $action',
+          status: StoryTemplateTranslationTaskStatus.retryable,
+          chunkPayload: checkpointPayload,
+        );
+        await actionDao.saveTask(task);
+        final ownerCoordinator = StoryTemplateTranslationCoordinator();
+        final staleCoordinator = StoryTemplateTranslationCoordinator();
+        await ownerCoordinator.initialize(
+          actionStorage,
+          accountHash: 'account-$action',
+        );
+        await staleCoordinator.initialize(
+          actionStorage,
+          accountHash: 'account-$action',
+        );
+        final stale = staleCoordinator.tasks.single;
+        final held = _HeldTranslationChatService();
+        final ownerRun = ownerCoordinator.resumeRecoverable(
+          resolveExecutor: (profile) => TranslationStreamExecutor(
+            service: held,
+            profile: profile,
+          ),
+        );
+        await held.requestStarted.future;
+        await Future<void>.delayed(const Duration(milliseconds: 20));
+        final claimed = (await actionDao.getTask(task.id!))!;
+        var retryResolverCalls = 0;
+
+        try {
+          if (action == 'retry') {
+            await staleCoordinator.retry(
+              stale,
+              resolveExecutor: (profile) {
+                retryResolverCalls += 1;
+                return TranslationStreamExecutor(
+                  service: _EchoTranslationChatService(),
+                  profile: profile,
+                );
+              },
+            );
+          } else {
+            await staleCoordinator.completeKeepingOriginalChunks(stale);
+          }
+          await Future<void>.delayed(const Duration(milliseconds: 20));
+
+          final stored = await actionDao.getTask(task.id!);
+          expect(retryResolverCalls, 0, reason: action);
+          expect(stored?.status, StoryTemplateTranslationTaskStatus.running,
+              reason: action);
+          expect(stored?.leaseOwner, claimed.leaseOwner, reason: action);
+          expect(stored?.leaseUntil, claimed.leaseUntil, reason: action);
+          expect(stored?.attempts, 1, reason: action);
+          expect(stored?.chunkPayload, claimed.chunkPayload, reason: action);
+          expect(
+            staleCoordinator.tasks.single.status,
+            StoryTemplateTranslationTaskStatus.running,
+            reason: action,
+          );
+        } finally {
+          await ownerCoordinator.detachForLifecycle();
+          await ownerRun;
+          await staleCoordinator.detachForLifecycle();
+          await actionDb.close();
+        }
+      }
+    });
+
+    test('legacy needsConfiguration transition CAS 失败时重载 background lease',
+        () async {
+      final legacy = _translationTask(
+        'Legacy CAS',
+        status: StoryTemplateTranslationTaskStatus.retryable,
+      )..requestProfile = '';
+      await taskDao.saveTask(legacy);
+      final coordinator = StoryTemplateTranslationCoordinator();
+      await coordinator.initialize(storage, accountHash: 'test');
+      expect(
+        await taskDao.claimTask(
+          legacy.id!,
+          leaseOwner: 'background-legacy',
+          leaseDuration: const Duration(minutes: 5),
+        ),
+        isTrue,
+      );
+      final claimed = (await taskDao.getTask(legacy.id!))!;
+      var executorCalls = 0;
+
+      final resumed = await coordinator.resumeRecoverable(
+        resolveLegacyRequestProfile: () => null,
+        resolveExecutor: (profile) {
+          executorCalls += 1;
+          return TranslationStreamExecutor(
+            service: _EchoTranslationChatService(),
+            profile: profile,
+          );
+        },
+      );
+
+      final stored = await taskDao.getTask(legacy.id!);
+      expect(resumed, 0);
+      expect(executorCalls, 0);
+      expect(stored?.status, StoryTemplateTranslationTaskStatus.running);
+      expect(stored?.leaseOwner, 'background-legacy');
+      expect(stored?.leaseUntil, claimed.leaseUntil);
+      expect(stored?.attempts, 1);
+      expect(
+        coordinator.tasks.single.status,
+        StoryTemplateTranslationTaskStatus.running,
+      );
+      expect(coordinator.tasks.single.leaseOwner, 'background-legacy');
     });
 
     test('未知 executor 初始化异常会安全释放租约且不泄漏 unawaited 错误', () async {

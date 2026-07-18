@@ -209,28 +209,39 @@ class StoryTemplateTranslationCoordinator extends ChangeNotifier {
   }) async {
     final context = _contextForTask(task);
     if (context == null || !task.canRetry || task.id == null) return;
-    final key = _runKey(context, task.id!);
-    _cancelledRuns.remove(key);
-    task.status = StoryTemplateTranslationTaskStatus.queued;
-    task
+    final expectedStatus = task.status;
+    final expectedUpdatedAt = task.updatedAt;
+    final updated = _cloneTask(task);
+    updated.status = StoryTemplateTranslationTaskStatus.queued;
+    updated
       ..leaseOwner = null
       ..leaseUntil = null
       ..nextRunAt = 0;
     if (replacementProfile != null) {
-      task.requestProfile = jsonEncode(replacementProfile.toJson());
+      updated.requestProfile = jsonEncode(replacementProfile.toJson());
     }
-    task.stage = '等待重试';
-    task.detail = StoryTemplateTranslationTaskDao.taskCheckpointDetail(task);
-    task.error = '';
-    task.log = _appendLog(task.log, '用户请求重试');
-    await context.taskDao.saveTask(task);
+    updated.stage = '等待重试';
+    updated.detail =
+        StoryTemplateTranslationTaskDao.taskCheckpointDetail(updated);
+    updated.error = '';
+    updated.log = _appendLog(updated.log, '用户请求重试');
+    final saved = await context.taskDao.saveTaskIfUnclaimed(
+      updated,
+      expectedStatus: expectedStatus,
+      expectedUpdatedAt: expectedUpdatedAt,
+    );
     if (!_isContextCurrent(context)) return;
-    _sortTasks();
-    notifyListeners();
+    if (!saved) {
+      await _reloadAuthoritativeTask(context, task);
+      return;
+    }
+    if (!_replaceOwnedTask(context, task, updated)) return;
+    final key = _runKey(context, updated.id!);
+    _cancelledRuns.remove(key);
     unawaited(
       StoryTemplateBackgroundScheduler.schedule(context.accountHash),
     );
-    unawaited(_run(context, task, resolveExecutor));
+    unawaited(_run(context, updated, resolveExecutor));
   }
 
   Future<void> cancel(StoryTemplateTranslationTaskModel task) async {
@@ -251,24 +262,7 @@ class StoryTemplateTranslationCoordinator extends ChangeNotifier {
     if (!_isContextCurrent(context)) return;
     if (!cancelled) {
       _cancelledRuns.remove(key);
-      final authoritative = await context.taskDao.getTask(id);
-      if (!_isContextCurrent(context) ||
-          !_isTaskOwnedByContext(context, task)) {
-        return;
-      }
-      final index =
-          _tasks.indexWhere((candidate) => identical(candidate, task));
-      if (authoritative == null) {
-        if (index >= 0) {
-          _tasks = List<StoryTemplateTranslationTaskModel>.from(_tasks)
-            ..removeAt(index);
-        }
-      } else if (index >= 0) {
-        _trackTask(context, authoritative);
-        _tasks[index] = authoritative;
-      }
-      _sortTasks();
-      notifyListeners();
+      await _reloadAuthoritativeTask(context, task);
       return;
     }
     if (!_isTaskOwnedByContext(context, task)) return;
@@ -290,9 +284,14 @@ class StoryTemplateTranslationCoordinator extends ChangeNotifier {
   ) async {
     final context = _contextForTask(task);
     final id = task.id;
-    if (context == null || id == null || task.chunkPayload.trim().isEmpty) {
+    if (context == null ||
+        id == null ||
+        !task.canRetry ||
+        task.chunkPayload.trim().isEmpty) {
       return;
     }
+    final expectedStatus = task.status;
+    final expectedUpdatedAt = task.updatedAt;
     final decoded = jsonDecode(task.chunkPayload);
     if (decoded is! Map || decoded['checkpoints'] is! Map) {
       throw const FormatException('任务分块检查点无效');
@@ -328,28 +327,36 @@ class StoryTemplateTranslationCoordinator extends ChangeNotifier {
         chunks: chunks,
       ).toJson();
     }
-    task
+    final updated = _cloneTask(task);
+    updated
       ..chunkPayload = jsonEncode({
         'version': TranslationChunkCheckpoint.currentVersion,
         'checkpoints': checkpoints,
       })
       ..checkpointVersion = TranslationChunkCheckpoint.currentVersion
       ..partialPayload = retainedOriginal
-          ? _withRetainedOriginalFlag(task.partialPayload)
-          : task.partialPayload
+          ? _withRetainedOriginalFlag(updated.partialPayload)
+          : updated.partialPayload
       ..status = StoryTemplateTranslationTaskStatus.queued
       ..stage = '保留失败分块原文，等待完成'
-      ..detail = StoryTemplateTranslationTaskDao.taskCheckpointDetail(task)
+      ..detail = StoryTemplateTranslationTaskDao.taskCheckpointDetail(updated)
       ..error = ''
       ..leaseOwner = null
       ..leaseUntil = null
       ..nextRunAt = 0;
-    task.log = _appendLog(task.log, '用户选择保留未完成分块原文');
-    await context.taskDao.saveTask(task);
+    updated.log = _appendLog(updated.log, '用户选择保留未完成分块原文');
+    final saved = await context.taskDao.saveTaskIfUnclaimed(
+      updated,
+      expectedStatus: expectedStatus,
+      expectedUpdatedAt: expectedUpdatedAt,
+    );
     if (!_isContextCurrent(context)) return;
+    if (!saved) {
+      await _reloadAuthoritativeTask(context, task);
+      return;
+    }
+    if (!_replaceOwnedTask(context, task, updated)) return;
     _cancelledRuns.remove(_runKey(context, id));
-    _sortTasks();
-    notifyListeners();
     unawaited(
       StoryTemplateBackgroundScheduler.schedule(context.accountHash),
     );
@@ -386,6 +393,9 @@ class StoryTemplateTranslationCoordinator extends ChangeNotifier {
       if (id == null || _runningRuns.contains(_runKey(context, id))) {
         continue;
       }
+      final expectedStatus = task.status;
+      final expectedUpdatedAt = task.updatedAt;
+      final updated = _cloneTask(task);
       if (resolveExecutor != null && task.requestProfile.trim().isEmpty) {
         if (!legacyFallbackResolved) {
           legacyFallbackResolved = true;
@@ -397,36 +407,55 @@ class StoryTemplateTranslationCoordinator extends ChangeNotifier {
         }
         if (!_isContextCurrent(context)) break;
         if (legacyFallback == null) {
-          task
+          updated
             ..status = StoryTemplateTranslationTaskStatus.needsConfiguration
             ..stage = '需要选择翻译模型'
             ..detail =
-                StoryTemplateTranslationTaskDao.taskCheckpointDetail(task)
+                StoryTemplateTranslationTaskDao.taskCheckpointDetail(updated)
             ..error = 'legacy_profile_missing';
-          task.log = _appendLog(task.log, '旧任务缺少模型快照，已暂停等待配置');
-          await context.taskDao.saveTask(task);
+          updated.log = _appendLog(updated.log, '旧任务缺少模型快照，已暂停等待配置');
+          final saved = await context.taskDao.saveTaskIfUnclaimed(
+            updated,
+            expectedStatus: expectedStatus,
+            expectedUpdatedAt: expectedUpdatedAt,
+            requireDue: true,
+          );
           if (!_isContextCurrent(context)) break;
-          notifyListeners();
+          if (!saved) {
+            await _reloadAuthoritativeTask(context, task);
+            if (!_isContextCurrent(context)) break;
+            continue;
+          }
+          _replaceOwnedTask(context, task, updated);
           continue;
         }
-        task
+        updated
           ..requestProfile = jsonEncode(legacyFallback.toJson())
           ..checkpointVersion = TranslationChunkCheckpoint.currentVersion;
-        await context.taskDao.saveTask(task);
-        if (!_isContextCurrent(context)) break;
       }
-      _cancelledRuns.remove(_runKey(context, id));
-      task.stage = '自动恢复翻译';
-      task.detail = StoryTemplateTranslationTaskDao.taskCheckpointDetail(task);
-      task.error = '';
-      task.log = _appendLog(task.log, '应用启动后从检查点自动恢复');
-      await context.taskDao.saveTask(task);
+      updated.stage = '自动恢复翻译';
+      updated.detail =
+          StoryTemplateTranslationTaskDao.taskCheckpointDetail(updated);
+      updated.error = '';
+      updated.log = _appendLog(updated.log, '应用启动后从检查点自动恢复');
+      final saved = await context.taskDao.saveTaskIfUnclaimed(
+        updated,
+        expectedStatus: expectedStatus,
+        expectedUpdatedAt: expectedUpdatedAt,
+        requireDue: true,
+      );
       if (!_isContextCurrent(context)) break;
-      notifyListeners();
+      if (!saved) {
+        await _reloadAuthoritativeTask(context, task);
+        if (!_isContextCurrent(context)) break;
+        continue;
+      }
+      if (!_replaceOwnedTask(context, task, updated)) continue;
+      _cancelledRuns.remove(_runKey(context, id));
       resumed += 1;
       await _run(
         context,
-        task,
+        updated,
         resolveExecutor,
         legacyComplete: complete,
       );
@@ -520,7 +549,10 @@ class StoryTemplateTranslationCoordinator extends ChangeNotifier {
         leaseOwner: leaseOwner,
         leaseDuration: _leaseDuration,
       );
-      if (!claimed) return;
+      if (!claimed) {
+        await _reloadAuthoritativeTask(context, task);
+        return;
+      }
       final claimedTask = await taskDao.getTask(id);
       if (claimedTask == null) return;
       _trackTask(context, claimedTask);
@@ -837,6 +869,53 @@ class StoryTemplateTranslationCoordinator extends ChangeNotifier {
           candidate.id == id &&
           _taskBindingEpoch[candidate] == context.epoch,
     );
+  }
+
+  static StoryTemplateTranslationTaskModel _cloneTask(
+    StoryTemplateTranslationTaskModel task,
+  ) =>
+      StoryTemplateTranslationTaskModel.fromJson(task.toJson());
+
+  bool _replaceOwnedTask(
+    _TranslationBindingContext context,
+    StoryTemplateTranslationTaskModel current,
+    StoryTemplateTranslationTaskModel replacement,
+  ) {
+    if (!_isTaskOwnedByContext(context, current)) return false;
+    final index = _tasks.indexWhere(
+      (candidate) => identical(candidate, current),
+    );
+    if (index < 0) return false;
+    _trackTask(context, replacement);
+    _tasks = List<StoryTemplateTranslationTaskModel>.from(_tasks)
+      ..[index] = replacement;
+    _sortTasks();
+    notifyListeners();
+    return true;
+  }
+
+  Future<void> _reloadAuthoritativeTask(
+    _TranslationBindingContext context,
+    StoryTemplateTranslationTaskModel current,
+  ) async {
+    final id = current.id;
+    if (id == null) return;
+    final authoritative = await context.taskDao.getTask(id);
+    if (!_isTaskOwnedByContext(context, current)) return;
+    final index = _tasks.indexWhere(
+      (candidate) => identical(candidate, current),
+    );
+    if (index < 0) return;
+    final tasks = List<StoryTemplateTranslationTaskModel>.from(_tasks);
+    if (authoritative == null) {
+      tasks.removeAt(index);
+    } else {
+      _trackTask(context, authoritative);
+      tasks[index] = authoritative;
+    }
+    _tasks = tasks;
+    _sortTasks();
+    notifyListeners();
   }
 
   void _trackTask(

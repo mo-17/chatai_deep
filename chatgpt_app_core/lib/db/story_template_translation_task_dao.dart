@@ -6,6 +6,7 @@ import 'package:chatgpt_app_core/db/story_template_dao.dart';
 import 'package:chatgpt_app_core/db/table_name.dart';
 import 'package:chatgpt_app_core/model/story_template_model.dart';
 import 'package:chatgpt_app_core/model/story_template_translation_task_model.dart';
+import 'package:flutter/foundation.dart';
 
 final class _TemplateCompletionResult {
   final int outputTemplateId;
@@ -106,6 +107,47 @@ class StoryTemplateTranslationTaskDao implements ITable {
       whereArgs: [model.id],
     );
     return model.id!;
+  }
+
+  /// 在任务尚未被领取且持久化版本仍与调用方快照一致时保存。
+  ///
+  /// 前台与后台 isolate 都可能持有同一任务的旧对象；因此 claim 前的修改必须同时
+  /// 比较状态和 updatedAt，并拒绝覆盖仍有效的租约。显式 retry 可忽略 nextRunAt，
+  /// 自动恢复则通过 [requireDue] 只更新已经到期的任务。
+  Future<bool> saveTaskIfUnclaimed(
+    StoryTemplateTranslationTaskModel model, {
+    required String expectedStatus,
+    required int expectedUpdatedAt,
+    bool requireDue = false,
+    DateTime? now,
+  }) async {
+    final taskId = model.id;
+    if (taskId == null) return false;
+    final timestamp = _timestamp(now);
+    final updatedAt =
+        timestamp > expectedUpdatedAt ? timestamp : expectedUpdatedAt + 1;
+    final data = model.toJson()
+      ..remove('id')
+      ..['updatedAt'] = updatedAt;
+    final changed = await storage.db.update(
+      tableName,
+      data,
+      where: 'id = ? AND status = ? AND updatedAt = ? AND '
+          '(leaseOwner IS NULL OR trim(leaseOwner) = ? OR '
+          'leaseUntil IS NULL OR leaseUntil <= ?)'
+          '${requireDue ? ' AND (nextRunAt IS NULL OR nextRunAt <= ?)' : ''}',
+      whereArgs: [
+        taskId,
+        expectedStatus,
+        expectedUpdatedAt,
+        '',
+        timestamp,
+        if (requireDue) timestamp,
+      ],
+    );
+    if (changed != 1) return false;
+    model.updatedAt = updatedAt;
+    return true;
   }
 
   /// 原子领取可运行任务。只有排队/可重试任务，或租约已过期的运行中任务可被领取。
@@ -545,25 +587,34 @@ class StoryTemplateTranslationTaskDao implements ITable {
   }
 
   /// 只恢复租约已过期的运行态，仍在有效租约内的任务继续由原运行器处理。
-  Future<void> recoverInterruptedTasks({DateTime? now}) async {
+  Future<void> recoverInterruptedTasks({
+    DateTime? now,
+    @visibleForTesting Future<void> Function()? afterCandidatesLoaded,
+  }) async {
     final timestamp = _timestamp(now);
     final rows = await storage.db.query(
       tableName,
       where: 'status = ? AND (leaseUntil IS NULL OR leaseUntil <= ?)',
       whereArgs: [StoryTemplateTranslationTaskStatus.running, timestamp],
     );
+    await afterCandidatesLoaded?.call();
     for (final row in rows) {
+      final current = StoryTemplateTranslationTaskModel.fromJson(row);
       final task = StoryTemplateTranslationTaskModel.fromJson(row)
         ..status = StoryTemplateTranslationTaskStatus.retryable
         ..stage = '上次运行已中断，可重试'
-        ..detail = taskCheckpointDetail(
-            StoryTemplateTranslationTaskModel.fromJson(row))
+        ..detail = taskCheckpointDetail(current)
         ..error = ''
         ..leaseOwner = null
         ..leaseUntil = null
         ..nextRunAt = timestamp;
       task.log = _appendLog(task.log, '应用已重启，运行中的任务已恢复为可重试状态');
-      await saveTask(task);
+      await saveTaskIfUnclaimed(
+        task,
+        expectedStatus: current.status,
+        expectedUpdatedAt: current.updatedAt,
+        now: now,
+      );
     }
   }
 
