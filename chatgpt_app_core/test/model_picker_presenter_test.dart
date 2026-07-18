@@ -90,4 +90,24 @@ void main() {
       ['deepseek-reasoner'],
     );
   });
+
+  test('默认列表保留健康检查失败模型并继续按最近使用排序', () {
+    final p = provider(models: [
+      AiModel(
+        id: 'failed-fast',
+        lastTestStatus: 'failure',
+        lastUsedAt: 200,
+      ),
+      AiModel(
+        id: 'healthy-slow',
+        lastTestStatus: 'success',
+        lastUsedAt: 100,
+      ),
+    ]);
+
+    expect(
+      ConversationModelPickerPresenter.visibleModels(p).map((m) => m.id),
+      ['failed-fast', 'healthy-slow'],
+    );
+  });
 }

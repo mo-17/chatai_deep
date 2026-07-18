@@ -3,7 +3,6 @@ import 'dart:async';
 import 'package:chat_message/core/chat_controller.dart';
 import 'package:chat_message/models/message_model.dart';
 import 'package:chat_message/widget/chat_list.dart';
-import 'package:chatgpt_app_core/ai_readiness/ai_health_state_guard.dart';
 import 'package:chatgpt_app_core/ai_readiness/ai_ready_state.dart';
 import 'package:chatgpt_app_core/ai_readiness/ai_readiness_resolver.dart';
 import 'package:chatgpt_app_core/ai_readiness/ai_send_guard.dart';
@@ -22,7 +21,8 @@ import 'package:chatgpt_app_core/chat/application/usage_record_service.dart';
 import 'package:chatgpt_app_core/chat/application/mcp/mcp_tool_source.dart';
 import 'package:chatgpt_app_core/chat/application/tool_registry.dart';
 import 'package:chatgpt_app_core/chat/application/user_sherpa_onnx_tts_models.dart';
-import 'package:chatgpt_app_core/capability/model_picker_presenter.dart';
+import 'package:chatgpt_app_core/chat/domain/chat_request_options.dart';
+import 'package:chatgpt_app_core/chat/domain/translation_request_profile.dart';
 import 'package:chatgpt_app_core/skill/js_runtime_service.dart';
 import 'package:chatgpt_app_core/chat/domain/chat_attachments.dart';
 import 'package:chatgpt_app_core/chat/domain/message_block.dart';
@@ -59,6 +59,7 @@ import 'package:chatgpt_app_core/util/scroll_jump.dart';
 import 'package:chatgpt_app_core/widget/assistant_avatar.dart';
 import 'package:chatgpt_app_core/widget/ai_readiness_card.dart';
 import 'package:chatgpt_app_core/widget/assistant_picker.dart';
+import 'package:chatgpt_app_core/widget/configured_ai_model_picker_sheet.dart';
 import 'package:chatgpt_app_core/widget/forward_sheet.dart';
 import 'package:chatgpt_app_core/widget/message_input_widget.dart';
 import 'package:flutter/material.dart';
@@ -2573,7 +2574,7 @@ class _ConversationPageState extends State<ConversationPage> {
     final rawSettings = context.read<AISettingsProvider>().settings;
     final picked = rawSettings.mode == AIMode.backend
         ? await _pickBackendModel(rawSettings)
-        : await _pickLocalModel(rawSettings);
+        : await _pickConfiguredLocalModel(rawSettings);
     if (picked == null || !mounted) return;
     setState(() {
       widget.conversationModel.modelProviderId = picked.providerId;
@@ -2821,34 +2822,6 @@ class _ConversationPageState extends State<ConversationPage> {
     await ChatService.from(next).chat(prompt: 'ping', history: []);
   }
 
-  AIProviderHealthConfiguration? _conversationHealthConfiguration(
-    AISettings settings,
-    String providerId,
-  ) {
-    final providers = settings.providers.where((p) => p.id == providerId);
-    if (providers.isEmpty) return null;
-    return AIProviderHealthConfiguration.capture(providers.first);
-  }
-
-  Future<bool> _recordConversationModelTestResult(
-    String providerId,
-    String modelId, {
-    required AIProviderHealthConfiguration expectedConfiguration,
-    required String expectedAccountHash,
-    required bool success,
-    String? error,
-  }) {
-    final store = context.read<AISettingsProvider>();
-    return store.recordModelTestResult(
-      providerId: providerId,
-      modelId: modelId,
-      expectedConfiguration: expectedConfiguration,
-      success: success,
-      error: error,
-      expectedAccountHash: expectedAccountHash,
-    );
-  }
-
   Future<void> _recordModelUsed(String providerId, String modelId) async {
     final store = context.read<AISettingsProvider>();
     final providers = store.settings.providers.where((p) => p.id == providerId);
@@ -2860,321 +2833,42 @@ class _ConversationPageState extends State<ConversationPage> {
     await store.updateProvider(provider);
   }
 
-  String _modelTestTimeLabel(int? millis) {
-    if (millis == null || millis <= 0) return '';
-    final dt = DateTime.fromMillisecondsSinceEpoch(millis);
-    String two(int v) => v.toString().padLeft(2, '0');
-    return '${dt.year}-${two(dt.month)}-${two(dt.day)} '
-        '${two(dt.hour)}:${two(dt.minute)}';
-  }
-
-  Future<({String? providerId, String? modelId})?> _pickLocalModel(
+  Future<({String? providerId, String? modelId})?> _pickConfiguredLocalModel(
       AISettings settings) async {
-    final currentProviderId =
+    final providerId =
         widget.conversationModel.modelProviderId ?? settings.activeProvider.id;
-    final currentModelId =
+    final modelId =
         widget.conversationModel.modelId ?? _effective(settings).effectiveModel;
-    final testStates = <String, _ConversationModelTestState>{};
-    final testErrors = <String, String>{};
-    final searchController = TextEditingController();
-    var filter = ConversationModelPickerFilter.all;
-    final picked =
-        await showModalBottomSheet<({String? providerId, String? modelId})>(
-      context: context,
-      showDragHandle: true,
-      isScrollControlled: true,
-      builder: (ctx) => StatefulBuilder(
-        builder: (ctx, setSheetState) {
-          final cs = Theme.of(ctx).colorScheme;
-          final tt = Theme.of(ctx).textTheme;
-          final query = searchController.text.trim().toLowerCase();
-          return SafeArea(
-            child: ConstrainedBox(
-              constraints: BoxConstraints(
-                  maxHeight: MediaQuery.of(ctx).size.height * 0.72),
-              child: ListView(
-                shrinkWrap: true,
-                children: [
-                  Padding(
-                    padding: const EdgeInsets.fromLTRB(16, 4, 16, 10),
-                    child: TextField(
-                      controller: searchController,
-                      decoration: const InputDecoration(
-                        prefixIcon: Icon(Icons.search),
-                        hintText: '搜索模型或服务商',
-                        border: OutlineInputBorder(),
-                        isDense: true,
-                      ),
-                      onChanged: (_) => setSheetState(() {}),
-                    ),
-                  ),
-                  Padding(
-                    padding: const EdgeInsets.fromLTRB(16, 0, 16, 8),
-                    child: Wrap(
-                      spacing: 8,
-                      runSpacing: 4,
-                      children: [
-                        _modelFilterChip(
-                            ctx,
-                            '全部',
-                            ConversationModelPickerFilter.all,
-                            filter,
-                            (v) => setSheetState(() => filter = v)),
-                        _modelFilterChip(
-                            ctx,
-                            '可用',
-                            ConversationModelPickerFilter.available,
-                            filter,
-                            (v) => setSheetState(() => filter = v)),
-                        _modelFilterChip(
-                            ctx,
-                            '图片',
-                            ConversationModelPickerFilter.image,
-                            filter,
-                            (v) => setSheetState(() => filter = v)),
-                        _modelFilterChip(
-                            ctx,
-                            '工具',
-                            ConversationModelPickerFilter.tool,
-                            filter,
-                            (v) => setSheetState(() => filter = v)),
-                        _modelFilterChip(
-                            ctx,
-                            '推理',
-                            ConversationModelPickerFilter.reasoning,
-                            filter,
-                            (v) => setSheetState(() => filter = v)),
-                      ],
-                    ),
-                  ),
-                  ListTile(
-                    leading: const Icon(Icons.public),
-                    title: const Text('跟随全局设置'),
-                    subtitle: Text(settings.effectiveModel),
-                    trailing: widget.conversationModel.modelId == null
-                        ? const Icon(Icons.check)
-                        : null,
-                    onTap: () =>
-                        Navigator.pop(ctx, (providerId: null, modelId: null)),
-                  ),
-                  const Divider(height: 1),
-                  for (final provider in settings.enabledProviders)
-                    if (_visibleModels(provider, query, filter).isNotEmpty) ...[
-                      Padding(
-                        padding: const EdgeInsets.fromLTRB(16, 14, 16, 6),
-                        child: Text(provider.name, style: tt.labelLarge),
-                      ),
-                      for (final model
-                          in _visibleModels(provider, query, filter))
-                        _modelPickTile(
-                          ctx,
-                          cs,
-                          tt,
-                          provider: provider,
-                          model: model,
-                          selected: currentProviderId == provider.id &&
-                              currentModelId == model.id,
-                          stateKey: '${provider.id}:${model.id}',
-                          testStates: testStates,
-                          testErrors: testErrors,
-                          setSheetState: setSheetState,
-                          settings: settings,
-                        ),
-                    ],
-                  if (settings.enabledProviders
-                      .every((p) => _visibleModels(p, query, filter).isEmpty))
-                    Padding(
-                      padding: const EdgeInsets.all(24),
-                      child: Center(
-                        child: Text('没有匹配的模型',
-                            style: tt.bodyMedium
-                                ?.copyWith(color: cs.onSurfaceVariant)),
-                      ),
-                    ),
-                ],
-              ),
-            ),
+    final selected = widget.conversationModel.modelId == null
+        ? const TranslationModelPreference(
+            mode: TranslationModelPreferenceMode.followGlobal,
+            reasoningPolicy: ChatReasoningPolicy.providerDefault,
+          )
+        : TranslationModelPreference(
+            mode: TranslationModelPreferenceMode.local,
+            providerId: providerId,
+            modelId: modelId,
+            reasoningPolicy: ChatReasoningPolicy.providerDefault,
           );
-        },
-      ),
+    final picked = await showConfiguredAiModelPickerSheet(
+      context,
+      settings: settings,
+      selected: selected,
+      onlyMode: TranslationExecutionMode.local,
     );
-    searchController.dispose();
-    return picked;
-  }
-
-  Widget _modelFilterChip(
-    BuildContext context,
-    String label,
-    ConversationModelPickerFilter value,
-    ConversationModelPickerFilter selected,
-    ValueChanged<ConversationModelPickerFilter> onSelected,
-  ) =>
-      FilterChip(
-        label: Text(label),
-        selected: selected == value,
-        onSelected: (_) => onSelected(value),
-        visualDensity: VisualDensity.compact,
-      );
-
-  List<AiModel> _visibleModels(AiProvider provider, String query,
-          ConversationModelPickerFilter filter) =>
-      ConversationModelPickerPresenter.visibleModels(
-        provider,
-        query: query,
-        filter: filter,
-      );
-
-  ModelCapabilities _modelCaps(AiProvider provider, AiModel model) {
-    return ConversationModelPickerPresenter.capabilities(provider, model);
-  }
-
-  Widget _modelPickTile(
-    BuildContext ctx,
-    ColorScheme cs,
-    TextTheme tt, {
-    required AiProvider provider,
-    required AiModel model,
-    required bool selected,
-    required String stateKey,
-    required Map<String, _ConversationModelTestState> testStates,
-    required Map<String, String> testErrors,
-    required StateSetter setSheetState,
-    required AISettings settings,
-  }) {
-    final persistedState = switch (model.lastTestStatus) {
-      'success' => _ConversationModelTestState.success,
-      'failure' => _ConversationModelTestState.failure,
-      _ => _ConversationModelTestState.idle,
-    };
-    final state = testStates[stateKey] ?? persistedState;
-    final error = testErrors[stateKey] ?? model.lastTestError;
-    final testTime = _modelTestTimeLabel(model.lastTestAt);
-    final usedTime = _modelTestTimeLabel(model.lastUsedAt);
-    final caps = _modelCaps(provider, model);
-    return ListTile(
-      dense: true,
-      title: Text(model.name),
-      subtitle: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          if (model.id != model.name) Text(model.id),
-          Wrap(
-            spacing: 4,
-            runSpacing: 2,
-            children: [
-              if (caps.image) _miniModelChip(cs, '图片'),
-              if (caps.tool) _miniModelChip(cs, '工具'),
-              if (caps.reasoning) _miniModelChip(cs, '推理'),
-              if (caps.pdf) _miniModelChip(cs, 'PDF'),
-            ],
-          ),
-          if (state == _ConversationModelTestState.success)
-            Text('可用', style: tt.bodySmall?.copyWith(color: cs.primary)),
-          if (state == _ConversationModelTestState.failure && error != null)
-            Text(
-              '不可用：$error',
-              maxLines: 2,
-              overflow: TextOverflow.ellipsis,
-              style: tt.bodySmall?.copyWith(color: cs.error),
-            ),
-          if (testTime.isNotEmpty)
-            Text('上次测试：$testTime',
-                style: tt.bodySmall
-                    ?.copyWith(color: cs.onSurfaceVariant, fontSize: 11)),
-          if (usedTime.isNotEmpty)
-            Text('最近使用：$usedTime',
-                style: tt.bodySmall
-                    ?.copyWith(color: cs.onSurfaceVariant, fontSize: 11)),
-        ],
-      ),
-      trailing: Row(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          if (selected) const Icon(Icons.check),
-          IconButton(
-            tooltip: '测试模型',
-            icon: state == _ConversationModelTestState.running
-                ? const SizedBox(
-                    width: 18,
-                    height: 18,
-                    child: CircularProgressIndicator(strokeWidth: 2),
-                  )
-                : const Icon(Icons.network_check_rounded),
-            onPressed: state == _ConversationModelTestState.running
-                ? null
-                : () async {
-                    final expectedAccountHash =
-                        context.read<AISettingsProvider>().accountHash;
-                    final expectedConfiguration =
-                        _conversationHealthConfiguration(
-                      settings,
-                      provider.id,
-                    );
-                    setSheetState(() {
-                      testStates[stateKey] =
-                          _ConversationModelTestState.running;
-                      testErrors.remove(stateKey);
-                    });
-                    Object? requestError;
-                    try {
-                      await _testConversationModel(settings,
-                          providerId: provider.id, modelId: model.id);
-                    } catch (e) {
-                      requestError = e;
-                    }
-                    if (!ctx.mounted) return;
-
-                    var recorded = false;
-                    Object? recordError;
-                    if (expectedConfiguration != null) {
-                      try {
-                        recorded =
-                            await _recordConversationModelTestResult(
-                          provider.id,
-                          model.id,
-                          expectedConfiguration: expectedConfiguration,
-                          expectedAccountHash: expectedAccountHash,
-                          success: requestError == null,
-                          error: requestError?.toString(),
-                        );
-                      } catch (error) {
-                        recordError = error;
-                      }
-                    }
-                    if (!ctx.mounted) return;
-                    final success =
-                        requestError == null && recorded && recordError == null;
-                    setSheetState(() {
-                      testStates[stateKey] = success
-                          ? _ConversationModelTestState.success
-                          : _ConversationModelTestState.failure;
-                      if (!success) {
-                        testErrors[stateKey] = recordError != null
-                            ? '测试结果未保存：$recordError'
-                            : !recorded
-                                ? '配置已变化，请重新测试'
-                                : '$requestError';
-                      }
-                    });
-                  },
-          ),
-        ],
-      ),
-      onTap: () =>
-          Navigator.pop(ctx, (providerId: provider.id, modelId: model.id)),
-    );
-  }
-
-  Widget _miniModelChip(ColorScheme cs, String label) => Container(
-        padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
-        decoration: BoxDecoration(
-          color: cs.secondaryContainer,
-          borderRadius: BorderRadius.circular(6),
+    if (picked == null) return null;
+    return switch (picked.mode) {
+      TranslationModelPreferenceMode.followGlobal => (
+          providerId: null,
+          modelId: null
         ),
-        child: Text(label,
-            style: TextStyle(
-                fontSize: 10, height: 1, color: cs.onSecondaryContainer)),
-      );
+      TranslationModelPreferenceMode.local => (
+          providerId: picked.providerId,
+          modelId: picked.modelId
+        ),
+      TranslationModelPreferenceMode.backend => null,
+    };
+  }
 
   Widget _backendModelTestStatus(
       _ConversationModelTestState state, String? error) {
