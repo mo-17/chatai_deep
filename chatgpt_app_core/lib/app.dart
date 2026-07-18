@@ -6,6 +6,9 @@ import 'package:chatgpt_app_core/diagnostics/flutter_diagnostics_bridge.dart';
 import 'package:chatgpt_app_core/dao/ai_settings_dao.dart';
 import 'package:chatgpt_app_core/chat/application/story_template_translation_tasks.dart';
 import 'package:chatgpt_app_core/chat/application/story_template_background_scheduler.dart';
+import 'package:chatgpt_app_core/chat/application/translation_model_preference_store.dart';
+import 'package:chatgpt_app_core/chat/application/translation_model_resolver.dart';
+import 'package:chatgpt_app_core/chat/application/translation_stream_executor.dart';
 import 'package:chatgpt_app_core/dao/chat/chat_service.dart';
 import 'package:chatgpt_app_core/dao/hi_api_cache.dart';
 import 'package:chatgpt_app_core/db/hi_db_manager.dart';
@@ -282,15 +285,19 @@ class _MyAppState extends State<MyApp> {
       final storage = await HiDBManager.instance(dbName: accountHash);
       final coordinator = StoryTemplateTranslationCoordinator.instance;
       await coordinator.initialize(storage, accountHash: accountHash);
-      final chatService = ChatService.from(settings);
+      final preference = TranslationModelPreferenceStore().read(accountHash);
+      final legacyProfile = TranslationModelResolver.snapshot(
+        settings,
+        preference,
+      );
       await coordinator.resumeRecoverable(
-        complete: (prompt) async =>
-            (await chatService.chat(
-              prompt: prompt,
-              history: const [],
-              timeout: const Duration(minutes: 2),
-            )) ??
-            '',
+        legacyRequestProfile: legacyProfile,
+        resolveExecutor: (profile) => TranslationStreamExecutor(
+          service: ChatService.from(
+            TranslationModelResolver.apply(settings, profile),
+          ),
+          profile: profile,
+        ),
       );
     } catch (error) {
       if (kDebugMode) {

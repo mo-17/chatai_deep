@@ -1,9 +1,14 @@
+import 'dart:async';
 import 'dart:convert';
 
 import 'package:chatgpt_app_core/chat/application/assistant_role_card_service.dart';
 import 'package:chatgpt_app_core/chat/application/story_room_role_card_importer.dart';
 import 'package:chatgpt_app_core/chat/application/story_template_transfer.dart';
 import 'package:chatgpt_app_core/chat/application/story_template_translation_tasks.dart';
+import 'package:chatgpt_app_core/chat/application/translation_model_resolver.dart';
+import 'package:chatgpt_app_core/chat/application/translation_stream_executor.dart';
+import 'package:chatgpt_app_core/chat/domain/chat_request_options.dart';
+import 'package:chatgpt_app_core/chat/domain/translation_request_profile.dart';
 import 'package:chatgpt_app_core/db/hi_db_manager.dart';
 import 'package:chatgpt_app_core/db/story_template_dao.dart';
 import 'package:chatgpt_app_core/db/story_template_translation_task_dao.dart';
@@ -697,7 +702,8 @@ void main() {
           AssistantRoleCardImportResult(
             assistant: AssistantModel(
               name: 'Alice',
-              prompt: List.filled(3200, 'x').join(),
+              prompt:
+                  'FIRST-${List.filled(1800, 'x').join()}\n\nSECOND-${List.filled(1800, 'y').join()}',
             ),
           ),
         ],
@@ -718,19 +724,27 @@ void main() {
         ),
         isTrue,
       );
-      var calls = 0;
+      var promptCalls = 0;
       var cancelled = false;
+      String? completedPromptChunk;
       await StoryTemplateTranslationTaskRunner(
         taskDao: taskDao,
         templateDao: templateDao,
         task: task,
         leaseOwner: firstOwner,
+        useChunkCheckpoints: true,
         complete: (prompt) async {
-          calls++;
           final payload =
               jsonDecode(prompt.split('\n').last) as Map<String, dynamic>;
           final field = payload.keys.single;
-          if (calls == 2) cancelled = true;
+          if (field == 'prompt') {
+            promptCalls += 1;
+            if (promptCalls == 1) {
+              completedPromptChunk = payload[field] as String;
+            } else if (promptCalls == 2) {
+              cancelled = true;
+            }
+          }
           return jsonEncode({field: '翻译:$field'});
         },
         isCancelled: () => cancelled,
@@ -745,6 +759,7 @@ void main() {
       final checkpoint =
           jsonDecode(interrupted!.fieldPayload) as Map<String, dynamic>;
       expect((checkpoint['fields'] as Map).keys, ['name', 'description']);
+      expect(interrupted.chunkPayload, isNotEmpty);
 
       interrupted
         ..status = StoryTemplateTranslationTaskStatus.queued
@@ -761,16 +776,21 @@ void main() {
         isTrue,
       );
       final resumedFields = <String>[];
+      final resumedPromptChunks = <String>[];
       await StoryTemplateTranslationTaskRunner(
         taskDao: taskDao,
         templateDao: templateDao,
         task: interrupted,
         leaseOwner: secondOwner,
+        useChunkCheckpoints: true,
         complete: (prompt) async {
           final payload =
               jsonDecode(prompt.split('\n').last) as Map<String, dynamic>;
           final field = payload.keys.single;
           resumedFields.add(field);
+          if (field == 'prompt') {
+            resumedPromptChunks.add(payload[field] as String);
+          }
           return jsonEncode({field: '翻译:$field'});
         },
         isCancelled: () => false,
@@ -778,8 +798,58 @@ void main() {
 
       expect(resumedFields, isNot(contains('name')));
       expect(resumedFields, isNot(contains('description')));
+      expect(resumedPromptChunks, isNot(contains(completedPromptChunk)));
       expect((await taskDao.getTask(task.id!))?.status,
           StoryTemplateTranslationTaskStatus.completed);
+    });
+
+    test('限流会保存当前分块、释放租约并保留 nextRunAt', () async {
+      final templateDao = await StoryTemplateDao.create(storage);
+      const secretSource = 'SOURCE_TEXT_MUST_NOT_APPEAR_IN_LOG';
+      final task = StoryTemplateTranslationTaskModel(
+        sourceTitle: 'Rate limited',
+        sourcePayload: jsonEncode(StoryRoomTemplatePayload(results: [
+          AssistantRoleCardImportResult(
+            assistant: AssistantModel(name: secretSource),
+          ),
+        ]).toJson()),
+        outputTitle: 'Rate limited（简中）',
+      );
+      await taskDao.saveTask(task);
+      const owner = 'runner-rate-limit';
+      expect(
+        await taskDao.claimTask(
+          task.id!,
+          leaseOwner: owner,
+          leaseDuration: const Duration(minutes: 5),
+        ),
+        isTrue,
+      );
+      final before = DateTime.now().millisecondsSinceEpoch;
+
+      await StoryTemplateTranslationTaskRunner(
+        taskDao: taskDao,
+        templateDao: templateDao,
+        task: task,
+        leaseOwner: owner,
+        useChunkCheckpoints: true,
+        complete: (_) async => throw const TranslationRequestFailure(
+          kind: TranslationFailureKind.rateLimited,
+          statusCode: 429,
+          retryAfter: Duration(seconds: 30),
+          safeCode: 'rate_limited',
+        ),
+        isCancelled: () => false,
+      ).run();
+
+      final stored = await taskDao.getTask(task.id!);
+      expect(stored?.status, StoryTemplateTranslationTaskStatus.retryable);
+      expect(stored?.leaseOwner, isNull);
+      expect(stored?.leaseUntil, isNull);
+      expect(stored?.nextRunAt, greaterThan(before));
+      expect(stored?.chunkPayload, isNotEmpty);
+      expect(stored?.error, 'rate_limited');
+      expect(stored?.log, isNot(contains(secretSource)));
     });
 
     test('协调器启动后串行自动恢复意外中断任务', () async {
@@ -822,5 +892,162 @@ void main() {
       expect(restored?.log, contains('从检查点自动恢复'));
       expect(restored?.outputTemplateId, isNotNull);
     });
+
+    test('协调器创建任务时冻结具体模型和任务类型', () async {
+      final coordinator = StoryTemplateTranslationCoordinator();
+      await coordinator.initialize(storage, accountHash: 'test');
+      final profile = TranslationRequestProfile(
+        mode: TranslationExecutionMode.local,
+        providerId: 'provider-a',
+        modelId: 'fast-model-a',
+        reasoningPolicy: ChatReasoningPolicy.offIfSupported,
+        reasoningControlSuppressed: false,
+      );
+      TranslationRequestProfile? resolvedProfile;
+      final template = StoryRoomTemplatePayload(
+        results: [
+          AssistantRoleCardImportResult(
+            assistant: AssistantModel(name: 'Alice'),
+          ),
+        ],
+      ).toTemplate(title: 'Party', sourceTitle: 'party.json');
+
+      await coordinator.start(
+        template,
+        requestProfile: profile,
+        resolveExecutor: (resolved) {
+          resolvedProfile = resolved;
+          throw const TranslationModelUnavailableException('测试暂停');
+        },
+      );
+      await _waitUntil(() =>
+          coordinator.tasks.single.status ==
+          StoryTemplateTranslationTaskStatus.needsConfiguration);
+
+      final stored = (await taskDao.getTasks()).single;
+      expect(stored.taskKind, StoryTemplateTranslationTaskKind.templateCopy);
+      expect(stored.checkpointVersion, 1);
+      expect(
+        TranslationRequestProfile.fromJson(
+          Map<String, dynamic>.from(jsonDecode(stored.requestProfile) as Map),
+        ).modelId,
+        'fast-model-a',
+      );
+      expect(resolvedProfile?.providerId, 'provider-a');
+      expect(resolvedProfile?.modelId, 'fast-model-a');
+      expect(
+          stored.status, StoryTemplateTranslationTaskStatus.needsConfiguration);
+      expect(stored.error, 'model_unavailable');
+    });
+
+    test('更换模型重试保留分块和字段检查点', () async {
+      final oldProfile = TranslationRequestProfile(
+        mode: TranslationExecutionMode.backend,
+        modelId: 'slow-model',
+        reasoningPolicy: ChatReasoningPolicy.providerDefault,
+        reasoningControlSuppressed: false,
+      );
+      final replacement = TranslationRequestProfile(
+        mode: TranslationExecutionMode.backend,
+        modelId: 'fast-model',
+        reasoningPolicy: ChatReasoningPolicy.offIfSupported,
+        reasoningControlSuppressed: false,
+      );
+      const chunkPayload =
+          '{"version":1,"checkpoints":{"role:0:memoryBook":{"version":1}}}';
+      final task = StoryTemplateTranslationTaskModel(
+        sourceTitle: 'Party',
+        sourcePayload: jsonEncode(StoryRoomTemplatePayload(results: [
+          AssistantRoleCardImportResult(
+            assistant: AssistantModel(name: 'Alice'),
+          ),
+        ]).toJson()),
+        requestProfile: jsonEncode(oldProfile.toJson()),
+        chunkPayload: chunkPayload,
+        fieldPayload: '{"scope":"role","roleIndex":0,"fields":{}}',
+        status: StoryTemplateTranslationTaskStatus.failed,
+      );
+      await taskDao.saveTask(task);
+      final coordinator = StoryTemplateTranslationCoordinator();
+      await coordinator.initialize(storage, accountHash: 'test');
+
+      await coordinator.retry(
+        coordinator.tasks.single,
+        replacementProfile: replacement,
+        resolveExecutor: (_) {
+          throw const TranslationModelUnavailableException('测试暂停');
+        },
+      );
+      await _waitUntil(() =>
+          coordinator.tasks.single.status ==
+          StoryTemplateTranslationTaskStatus.needsConfiguration);
+
+      final stored = await taskDao.getTask(task.id!);
+      expect(stored?.chunkPayload, chunkPayload);
+      expect(stored?.fieldPayload, task.fieldPayload);
+      expect(
+        TranslationRequestProfile.fromJson(
+          Map<String, dynamic>.from(jsonDecode(stored!.requestProfile) as Map),
+        ).modelId,
+        'fast-model',
+      );
+    });
+
+    test('自动恢复跳过未来退避、暂停和待配置任务', () async {
+      final future = DateTime.now().add(const Duration(minutes: 5));
+      for (final task in [
+        StoryTemplateTranslationTaskModel(
+          sourceTitle: '未来退避',
+          sourcePayload: '{}',
+          status: StoryTemplateTranslationTaskStatus.retryable,
+          nextRunAt: future.millisecondsSinceEpoch,
+        ),
+        StoryTemplateTranslationTaskModel(
+          sourceTitle: '用户暂停',
+          sourcePayload: '{}',
+          status: StoryTemplateTranslationTaskStatus.failed,
+        ),
+        StoryTemplateTranslationTaskModel(
+          sourceTitle: '等待配置',
+          sourcePayload: '{}',
+          status: StoryTemplateTranslationTaskStatus.needsConfiguration,
+        ),
+      ]) {
+        await taskDao.saveTask(task);
+      }
+      final coordinator = StoryTemplateTranslationCoordinator();
+      await coordinator.initialize(storage, accountHash: 'test');
+      var calls = 0;
+
+      final resumed = await coordinator.resumeRecoverable(
+        complete: (_) async {
+          calls += 1;
+          return '{}';
+        },
+      );
+
+      expect(resumed, 0);
+      expect(calls, 0);
+      expect(
+          coordinator.tasks.map((task) => task.status),
+          containsAll([
+            StoryTemplateTranslationTaskStatus.retryable,
+            StoryTemplateTranslationTaskStatus.failed,
+            StoryTemplateTranslationTaskStatus.needsConfiguration,
+          ]));
+    });
   });
+}
+
+Future<void> _waitUntil(
+  bool Function() predicate, {
+  Duration timeout = const Duration(seconds: 2),
+}) async {
+  final deadline = DateTime.now().add(timeout);
+  while (!predicate()) {
+    if (DateTime.now().isAfter(deadline)) {
+      throw TimeoutException('等待异步任务状态超时');
+    }
+    await Future<void>.delayed(const Duration(milliseconds: 5));
+  }
 }

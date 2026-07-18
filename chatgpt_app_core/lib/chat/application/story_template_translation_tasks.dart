@@ -7,6 +7,12 @@ import 'package:chatgpt_app_core/chat/application/story_template_background_sche
 import 'package:chatgpt_app_core/chat/application/story_room_role_card_importer.dart';
 import 'package:chatgpt_app_core/chat/application/story_template_transfer.dart';
 import 'package:chatgpt_app_core/chat/application/tavern_room_import_preparer.dart';
+import 'package:chatgpt_app_core/chat/application/tavern_room_import_finalizer.dart';
+import 'package:chatgpt_app_core/chat/application/translation_chunk_planner.dart';
+import 'package:chatgpt_app_core/chat/application/translation_model_resolver.dart';
+import 'package:chatgpt_app_core/chat/application/translation_retry_policy.dart';
+import 'package:chatgpt_app_core/chat/application/translation_stream_executor.dart';
+import 'package:chatgpt_app_core/chat/domain/translation_request_profile.dart';
 import 'package:chatgpt_app_core/db/hi_db_manager.dart';
 import 'package:chatgpt_app_core/db/story_template_dao.dart';
 import 'package:chatgpt_app_core/db/story_template_translation_task_dao.dart';
@@ -15,6 +21,9 @@ import 'package:chatgpt_app_core/model/story_template_model.dart';
 import 'package:chatgpt_app_core/model/story_template_translation_task_model.dart';
 import 'package:flutter/foundation.dart';
 
+typedef TranslationExecutorResolver = TranslationStreamExecutor Function(
+  TranslationRequestProfile profile,
+);
 typedef StoryTemplateTranslationCall = Future<String> Function(String prompt);
 
 /// 页面可复用的任务协调器。任务行先写入数据库，再启动网络翻译；完成、失败、取消
@@ -29,6 +38,7 @@ class StoryTemplateTranslationCoordinator extends ChangeNotifier {
   List<StoryTemplateTranslationTaskModel> _tasks = const [];
   final Set<int> _cancelledIds = <int>{};
   final Set<int> _runningIds = <int>{};
+  final Map<int, TranslationCancellationController> _cancellations = {};
   final String _workerId =
       'foreground-${DateTime.now().microsecondsSinceEpoch}-${Object().hashCode}';
   static const _leaseDuration = Duration(minutes: 5);
@@ -50,7 +60,8 @@ class StoryTemplateTranslationCoordinator extends ChangeNotifier {
 
   Future<void> start(
     StoryTemplateModel template, {
-    required StoryTemplateTranslationCall complete,
+    required TranslationRequestProfile requestProfile,
+    required TranslationExecutorResolver resolveExecutor,
   }) async {
     final taskDao = _requireTaskDao();
     final payload = StoryRoomTemplatePayload.fromTemplate(template);
@@ -66,6 +77,9 @@ class StoryTemplateTranslationCoordinator extends ChangeNotifier {
       sourcePayload: jsonEncode(payload.toJson()),
       outputTitle: '${template.title}（简中）',
       roleTotal: payload.results.length,
+      taskKind: StoryTemplateTranslationTaskKind.templateCopy,
+      requestProfile: jsonEncode(requestProfile.toJson()),
+      checkpointVersion: TranslationChunkCheckpoint.currentVersion,
     );
     task.log = _appendLog(task.log, '已创建中文副本任务');
     await taskDao.saveTask(task);
@@ -75,12 +89,45 @@ class StoryTemplateTranslationCoordinator extends ChangeNotifier {
     if (accountHash != null) {
       unawaited(StoryTemplateBackgroundScheduler.schedule(accountHash));
     }
-    unawaited(_run(task, complete));
+    unawaited(_run(task, resolveExecutor));
+  }
+
+  Future<void> startTavernRoomImport(
+    List<AssistantRoleCardImportResult> results, {
+    required String sourceTitle,
+    required TranslationRequestProfile requestProfile,
+    required TranslationExecutorResolver resolveExecutor,
+  }) async {
+    if (results.isEmpty) {
+      throw const FormatException('酒馆房间导入至少需要一个角色');
+    }
+    final payload = StoryRoomTemplatePayload(results: results);
+    final cleanTitle = sourceTitle.trim().isEmpty ? '酒馆房间' : sourceTitle.trim();
+    final task = StoryTemplateTranslationTaskModel(
+      sourceTitle: cleanTitle,
+      sourcePayload: jsonEncode(payload.toJson()),
+      outputTitle: '$cleanTitle（简中）',
+      roleTotal: results.length,
+      taskKind: StoryTemplateTranslationTaskKind.tavernRoomImport,
+      requestProfile: jsonEncode(requestProfile.toJson()),
+      checkpointVersion: TranslationChunkCheckpoint.currentVersion,
+      stage: '等待翻译并导入酒馆房间',
+    );
+    task.log = _appendLog(task.log, '已创建酒馆房间翻译任务');
+    await _requireTaskDao().saveTask(task);
+    _tasks = [task, ..._tasks];
+    notifyListeners();
+    final accountHash = _accountHash;
+    if (accountHash != null) {
+      unawaited(StoryTemplateBackgroundScheduler.schedule(accountHash));
+    }
+    unawaited(_run(task, resolveExecutor));
   }
 
   Future<void> retry(
     StoryTemplateTranslationTaskModel task, {
-    required StoryTemplateTranslationCall complete,
+    TranslationRequestProfile? replacementProfile,
+    required TranslationExecutorResolver resolveExecutor,
   }) async {
     if (!task.canRetry || task.id == null) return;
     _cancelledIds.remove(task.id);
@@ -89,6 +136,9 @@ class StoryTemplateTranslationCoordinator extends ChangeNotifier {
       ..leaseOwner = null
       ..leaseUntil = null
       ..nextRunAt = 0;
+    if (replacementProfile != null) {
+      task.requestProfile = jsonEncode(replacementProfile.toJson());
+    }
     task.stage = '等待重试';
     task.detail = StoryTemplateTranslationTaskDao.taskCheckpointDetail(task);
     task.error = '';
@@ -100,13 +150,14 @@ class StoryTemplateTranslationCoordinator extends ChangeNotifier {
     if (accountHash != null) {
       unawaited(StoryTemplateBackgroundScheduler.schedule(accountHash));
     }
-    unawaited(_run(task, complete));
+    unawaited(_run(task, resolveExecutor));
   }
 
   Future<void> cancel(StoryTemplateTranslationTaskModel task) async {
     final id = task.id;
     if (id == null || task.isTerminal) return;
     _cancelledIds.add(id);
+    _cancellations[id]?.cancel();
     await _requireTaskDao().cancelTask(id);
     task
       ..status = StoryTemplateTranslationTaskStatus.cancelled
@@ -119,25 +170,107 @@ class StoryTemplateTranslationCoordinator extends ChangeNotifier {
     notifyListeners();
   }
 
+  /// 将当前仍未完成的分块标记为保留原文。任务随后进入队列，并由前台或后台
+  /// 按原模型快照继续完成字段合并和最终落库。
+  Future<void> completeKeepingOriginalChunks(
+    StoryTemplateTranslationTaskModel task,
+  ) async {
+    final id = task.id;
+    if (id == null || task.chunkPayload.trim().isEmpty) return;
+    final decoded = jsonDecode(task.chunkPayload);
+    if (decoded is! Map || decoded['checkpoints'] is! Map) {
+      throw const FormatException('任务分块检查点无效');
+    }
+    final checkpoints = <String, dynamic>{};
+    for (final entry in (decoded['checkpoints'] as Map).entries) {
+      if (entry.key is! String || entry.value is! Map) continue;
+      final checkpoint = TranslationChunkCheckpoint.fromJson(
+        Map<String, dynamic>.from(entry.value as Map),
+      );
+      checkpoints[entry.key as String] = TranslationChunkCheckpoint(
+        field: checkpoint.field,
+        sourceHash: checkpoint.sourceHash,
+        chunks: [
+          for (final state in checkpoint.chunks)
+            state.status == TranslationChunkStatus.pending
+                ? TranslationChunkState(
+                    chunk: state.chunk,
+                    status: TranslationChunkStatus.retainedOriginal,
+                    translatedText: '',
+                    attempts: state.attempts,
+                    lastErrorKind: state.lastErrorKind,
+                  )
+                : state,
+        ],
+      ).toJson();
+    }
+    task
+      ..chunkPayload = jsonEncode({
+        'version': TranslationChunkCheckpoint.currentVersion,
+        'checkpoints': checkpoints,
+      })
+      ..checkpointVersion = TranslationChunkCheckpoint.currentVersion
+      ..status = StoryTemplateTranslationTaskStatus.queued
+      ..stage = '保留失败分块原文，等待完成'
+      ..detail = StoryTemplateTranslationTaskDao.taskCheckpointDetail(task)
+      ..error = ''
+      ..leaseOwner = null
+      ..leaseUntil = null
+      ..nextRunAt = 0;
+    task.log = _appendLog(task.log, '用户选择保留未完成分块原文');
+    await _requireTaskDao().saveTask(task);
+    _cancelledIds.remove(id);
+    _sortTasks();
+    notifyListeners();
+    final accountHash = _accountHash;
+    if (accountHash != null) {
+      unawaited(StoryTemplateBackgroundScheduler.schedule(accountHash));
+    }
+  }
+
   /// App 重启或账号重新登录后，按检查点串行恢复「排队中 / 意外中断」任务。
   ///
   /// 明确失败和用户取消的任务仍留给用户手动决定，避免在网络或配置持续异常时
   /// 自动重复消耗 token。串行执行也避免多个大模板同时占满上游并触发限流。
   Future<int> resumeRecoverable({
-    required StoryTemplateTranslationCall complete,
+    TranslationExecutorResolver? resolveExecutor,
+    StoryTemplateTranslationCall? complete,
+    TranslationRequestProfile? legacyRequestProfile,
   }) async {
+    if (resolveExecutor == null && complete == null) {
+      throw ArgumentError('resolveExecutor 不能为空');
+    }
+    final now = DateTime.now().millisecondsSinceEpoch;
     final recoverable = _tasks
         .where((task) =>
             task.status == StoryTemplateTranslationTaskStatus.queued ||
-            task.status == StoryTemplateTranslationTaskStatus.retryable)
+            (task.status == StoryTemplateTranslationTaskStatus.retryable &&
+                (task.nextRunAt == null || task.nextRunAt! <= now)))
         .toList()
       ..sort((a, b) => a.createdAt.compareTo(b.createdAt));
     var resumed = 0;
     for (final task in recoverable) {
       final id = task.id;
       if (id == null || _runningIds.contains(id)) continue;
+      if (resolveExecutor != null && task.requestProfile.trim().isEmpty) {
+        if (legacyRequestProfile == null) {
+          task
+            ..status = StoryTemplateTranslationTaskStatus.needsConfiguration
+            ..stage = '需要选择翻译模型'
+            ..detail =
+                StoryTemplateTranslationTaskDao.taskCheckpointDetail(task)
+            ..error = 'legacy_profile_missing';
+          task.log = _appendLog(task.log, '旧任务缺少模型快照，已暂停等待配置');
+          await _requireTaskDao().saveTask(task);
+          notifyListeners();
+          continue;
+        }
+        task
+          ..requestProfile = jsonEncode(legacyRequestProfile.toJson())
+          ..checkpointVersion = TranslationChunkCheckpoint.currentVersion;
+        await _requireTaskDao().saveTask(task);
+      }
       _cancelledIds.remove(id);
-      task.status = StoryTemplateTranslationTaskStatus.queued;
       task.stage = '自动恢复翻译';
       task.detail = StoryTemplateTranslationTaskDao.taskCheckpointDetail(task);
       task.error = '';
@@ -145,7 +278,7 @@ class StoryTemplateTranslationCoordinator extends ChangeNotifier {
       await _requireTaskDao().saveTask(task);
       notifyListeners();
       resumed += 1;
-      await _run(task, complete);
+      await _run(task, resolveExecutor, legacyComplete: complete);
     }
     return resumed;
   }
@@ -160,8 +293,9 @@ class StoryTemplateTranslationCoordinator extends ChangeNotifier {
 
   Future<void> _run(
     StoryTemplateTranslationTaskModel task,
-    StoryTemplateTranslationCall complete,
-  ) async {
+    TranslationExecutorResolver? resolveExecutor, {
+    StoryTemplateTranslationCall? legacyComplete,
+  }) async {
     final id = task.id;
     if (id == null || !_runningIds.add(id)) return;
     final leaseOwner = '$_workerId:$id';
@@ -176,13 +310,34 @@ class StoryTemplateTranslationCoordinator extends ChangeNotifier {
       if (claimedTask == null) return;
       final index = _tasks.indexWhere((item) => item.id == id);
       if (index >= 0) _tasks[index] = claimedTask;
+      TranslationStreamExecutor? executor;
+      if (resolveExecutor != null) {
+        try {
+          final decoded = jsonDecode(claimedTask.requestProfile);
+          if (decoded is! Map) throw const FormatException('模型快照格式无效');
+          final profile = TranslationRequestProfile.fromJson(
+            Map<String, dynamic>.from(decoded),
+          );
+          executor = resolveExecutor(profile);
+        } on TranslationModelUnavailableException catch (error) {
+          await _markNeedsConfiguration(claimedTask, leaseOwner, error.message);
+          return;
+        } on FormatException {
+          await _markNeedsConfiguration(claimedTask, leaseOwner, '翻译模型快照无效');
+          return;
+        }
+      }
+      final cancellation = TranslationCancellationController();
+      _cancellations[id] = cancellation;
       await StoryTemplateTranslationTaskRunner(
         taskDao: _requireTaskDao(),
         templateDao: _requireTemplateDao(),
         task: claimedTask,
         leaseOwner: leaseOwner,
         leaseDuration: _leaseDuration,
-        complete: complete,
+        executor: executor,
+        complete: legacyComplete,
+        cancellation: cancellation,
         isCancelled: () =>
             claimedTask.status ==
                 StoryTemplateTranslationTaskStatus.cancelled ||
@@ -193,10 +348,31 @@ class StoryTemplateTranslationCoordinator extends ChangeNotifier {
         },
       ).run();
     } finally {
+      _cancellations.remove(id);
       _runningIds.remove(id);
       _sortTasks();
       notifyListeners();
     }
+  }
+
+  Future<void> _markNeedsConfiguration(
+    StoryTemplateTranslationTaskModel task,
+    String leaseOwner,
+    String message,
+  ) async {
+    task
+      ..status = StoryTemplateTranslationTaskStatus.needsConfiguration
+      ..stage = '翻译模型不可用'
+      ..detail = StoryTemplateTranslationTaskDao.taskCheckpointDetail(task)
+      ..error = 'model_unavailable';
+    task.log = _appendLog(task.log, message);
+    await _requireTaskDao().saveClaimedTask(
+      task,
+      leaseOwner: leaseOwner,
+      leaseDuration: _leaseDuration,
+      releaseLease: true,
+    );
+    notifyListeners();
   }
 
   Future<void> _reload() async {
@@ -238,10 +414,17 @@ class StoryTemplateTranslationTaskRunner {
   final StoryTemplateTranslationTaskModel task;
   final String leaseOwner;
   final Duration leaseDuration;
-  final StoryTemplateTranslationCall complete;
+  final TranslationStreamExecutor? executor;
+  final StoryTemplateTranslationCall? complete;
+  final TranslationCancellationController cancellation;
+  final bool useChunkCheckpoints;
   final bool Function() isCancelled;
   final VoidCallback? onChanged;
   Future<void> _writes = Future<void>.value();
+  Timer? _heartbeat;
+  bool _leaseLost = false;
+  bool _retainedOriginalObserved = false;
+  bool _openingCompleted = false;
 
   StoryTemplateTranslationTaskRunner({
     required this.taskDao,
@@ -249,16 +432,24 @@ class StoryTemplateTranslationTaskRunner {
     required this.task,
     required this.leaseOwner,
     this.leaseDuration = const Duration(minutes: 5),
-    required this.complete,
+    this.executor,
+    this.complete,
+    TranslationCancellationController? cancellation,
+    bool? useChunkCheckpoints,
     required this.isCancelled,
     this.onChanged,
-  });
+  })  : assert(executor != null || complete != null),
+        cancellation = cancellation ?? TranslationCancellationController(),
+        useChunkCheckpoints = useChunkCheckpoints ?? executor != null;
 
   Future<void> run() async {
+    _startHeartbeat();
     try {
       _throwIfCancelled();
       final source = _sourcePayload();
       final translated = _resumeResults(source);
+      _retainedOriginalObserved = _resumeRetainedOriginalFlag();
+      _openingCompleted = _resumeOpeningCompletedFlag();
       task
         ..status = StoryTemplateTranslationTaskStatus.running
         ..roleTotal = source.results.length
@@ -298,6 +489,17 @@ class StoryTemplateTranslationTaskRunner {
             field: field,
             value: value,
           ),
+          initialChunkCheckpoints: !useChunkCheckpoints
+              ? const {}
+              : _resumeRoleChunkCheckpoints(index),
+          onChunkCheckpoint: !useChunkCheckpoints
+              ? null
+              : (_, checkpoint) => _saveChunkCheckpoint(
+                    scope: 'role',
+                    roleIndex: index,
+                    field: checkpoint.field,
+                    checkpoint: checkpoint,
+                  ),
           onProgress: (value) {
             task
               ..roleIndex = index
@@ -330,24 +532,18 @@ class StoryTemplateTranslationTaskRunner {
           ..detail = '角色 ${index + 1}/${source.results.length}'
           ..progress = _progressFor(source.results.length, index + 1, 0)
           ..fieldPayload = ''
-          ..partialPayload = jsonEncode(
-            StoryRoomTemplatePayload(
-              results: translated,
-              promptConfigJson: source.promptConfigJson,
-              quickRepliesJson: source.quickRepliesJson,
-              regexScriptsJson: source.regexScriptsJson,
-              tavernPresetJson: source.tavernPresetJson,
-              temperature: source.temperature,
-              topP: source.topP,
-              maxOutputTokens: source.maxOutputTokens,
-            ).toJson(),
+          ..chunkPayload = ''
+          ..partialPayload = _encodePartialPayload(
+            source: source,
+            translated: translated,
+            opening: source.initialOpening,
           );
         _checkpoint();
         await _flush();
       }
 
-      var opening = source.initialOpening;
-      if (opening.trim().isNotEmpty) {
+      var opening = _resumeOpening(source);
+      if (!_openingCompleted && opening.trim().isNotEmpty) {
         task
           ..roleIndex = source.results.length
           ..roleName = '模板开场'
@@ -369,6 +565,17 @@ class StoryTemplateTranslationTaskRunner {
             field: field,
             value: value,
           ),
+          initialChunkCheckpoints: !useChunkCheckpoints
+              ? const {}
+              : _resumeOpeningChunkCheckpoints(),
+          onChunkCheckpoint: !useChunkCheckpoints
+              ? null
+              : (field, checkpoint) => _saveChunkCheckpoint(
+                    scope: 'opening',
+                    roleIndex: source.results.length,
+                    field: field,
+                    checkpoint: checkpoint,
+                  ),
           onProgress: (value) {
             task
               ..fieldIndex = value.current
@@ -384,7 +591,15 @@ class StoryTemplateTranslationTaskRunner {
         _throwIfCancelled();
         final value = translatedOpening.openingMessage.trim();
         if (value.isNotEmpty) opening = value;
-        task.fieldPayload = '';
+        _openingCompleted = true;
+        task
+          ..fieldPayload = ''
+          ..chunkPayload = ''
+          ..partialPayload = _encodePartialPayload(
+            source: source,
+            translated: translated,
+            opening: opening,
+          );
         _checkpoint();
         await _flush();
       }
@@ -403,7 +618,7 @@ class StoryTemplateTranslationTaskRunner {
         task.outputTitle,
         existingTitles,
       );
-      final copy = StoryRoomTemplatePayload(
+      final outputPayload = StoryRoomTemplatePayload(
         results: translated,
         initialOpening: opening,
         promptConfigJson: source.promptConfigJson,
@@ -413,28 +628,92 @@ class StoryTemplateTranslationTaskRunner {
         temperature: source.temperature,
         topP: source.topP,
         maxOutputTokens: source.maxOutputTokens,
-      ).toTemplate(
-        title: title,
-        sourceTitle: task.sourceTitle,
-        translated: true,
       );
-      task
-        ..outputTitle = title
-        ..status = StoryTemplateTranslationTaskStatus.completed
-        ..stage = '已生成中文副本'
-        ..detail = ''
-        ..progress = 1
-        ..error = '';
-      task.log = _appendLog(task.log, '中文副本已保存：$title');
-      final outputId = await taskDao.completeWithTemplate(
-        task,
-        outputTemplate: copy,
-        leaseOwner: leaseOwner,
-      );
-      if (outputId == null) throw const _StoryTemplateTranslationLeaseLost();
-      task.outputTemplateId = outputId;
+      if (task.taskKind == StoryTemplateTranslationTaskKind.tavernRoomImport) {
+        final hasRetainedOriginal = _hasRetainedOriginal();
+        task
+          ..outputTitle = title
+          ..stage = hasRetainedOriginal ? '已导入房间，部分内容保留原文' : '已导入酒馆房间'
+          ..detail = ''
+          ..progress = 1
+          ..error = '';
+        task.log = _appendLog(task.log, '酒馆房间已保存：$title');
+        final bundle = TavernRoomImportFinalizer.build(
+          payload: outputPayload,
+          title: title,
+          sourceTitle: task.sourceTitle,
+          translated: true,
+          hasRetainedOriginal: hasRetainedOriginal,
+        );
+        final completion = await taskDao.completeWithTavernRoom(
+          task,
+          bundle: bundle,
+          leaseOwner: leaseOwner,
+        );
+        if (completion == null) {
+          throw const _StoryTemplateTranslationLeaseLost();
+        }
+        task
+          ..outputTemplateId = completion.outputTemplateId
+          ..outputRoomId = completion.outputRoomId;
+      } else {
+        final copy = outputPayload.toTemplate(
+          title: title,
+          sourceTitle: task.sourceTitle,
+          translated: true,
+        );
+        task
+          ..outputTitle = title
+          ..status = StoryTemplateTranslationTaskStatus.completed
+          ..stage = '已生成中文副本'
+          ..detail = ''
+          ..progress = 1
+          ..error = '';
+        task.log = _appendLog(task.log, '中文副本已保存：$title');
+        final outputId = await taskDao.completeWithTemplate(
+          task,
+          outputTemplate: copy,
+          leaseOwner: leaseOwner,
+        );
+        if (outputId == null) {
+          throw const _StoryTemplateTranslationLeaseLost();
+        }
+        task.outputTemplateId = outputId;
+      }
       onChanged?.call();
+    } on TranslationWorkDeferred catch (deferred) {
+      if (!await _tryFlush()) return;
+      task
+        ..stage = '等待上游限流恢复'
+        ..detail = StoryTemplateTranslationTaskDao.taskCheckpointDetail(task)
+        ..error = deferred.failure.safeCode
+        ..nextRunAt = deferred.nextRunAt.millisecondsSinceEpoch;
+      task.log = _appendLog(task.log, '请求暂缓，稍后自动重试');
+      _queueSave();
+      if (!await _tryFlush()) return;
+      final released = await taskDao.releaseLease(
+        task.id!,
+        leaseOwner: leaseOwner,
+        nextRunAt: deferred.nextRunAt,
+      );
+      if (!released) return;
+      task
+        ..status = StoryTemplateTranslationTaskStatus.retryable
+        ..leaseOwner = null
+        ..leaseUntil = null;
+      onChanged?.call();
+    } on TranslationWorkPaused catch (paused) {
+      if (!await _tryFlush()) return;
+      task
+        ..status = StoryTemplateTranslationTaskStatus.failed
+        ..stage = '已暂停，可重试'
+        ..detail = StoryTemplateTranslationTaskDao.taskCheckpointDetail(task)
+        ..error = paused.failure.safeCode;
+      task.log = _appendLog(task.log, '翻译已暂停，可更换模型后重试');
+      _queueSave(releaseLease: true);
+      if (!await _tryFlush()) return;
     } on RoleCardTranslationCancelled {
+      if (_leaseLost) return;
       try {
         await _flush();
       } on _StoryTemplateTranslationLeaseLost {
@@ -451,17 +730,20 @@ class StoryTemplateTranslationTaskRunner {
     } on _StoryTemplateTranslationLeaseLost {
       // 另一个前台/系统 worker 已接管，当前运行器立即静默停止。
       return;
-    } catch (error, stackTrace) {
+    } catch (error) {
       task
         ..status = StoryTemplateTranslationTaskStatus.failed
         ..stage = '生成中文副本失败'
-        ..error = error is FormatException ? error.message : error.toString();
+        ..error =
+            error is FormatException ? error.message : 'translation_failed';
       task.log = _appendLog(
         task.log,
-        '失败：${task.error}\n${stackTrace.toString().trim()}',
+        '失败：${task.error}（${error.runtimeType}）',
       );
       _queueSave(releaseLease: true);
-      await _flush();
+      await _tryFlush();
+    } finally {
+      _heartbeat?.cancel();
     }
   }
 
@@ -541,20 +823,201 @@ class StoryTemplateTranslationTaskRunner {
       'roleIndex': roleIndex,
       'fields': fields,
     });
+    task.chunkPayload = '';
     _checkpoint(
         '已保存字段检查点：${task.fieldLabel.isEmpty ? field : task.fieldLabel}');
     await _flush();
   }
 
+  Map<String, TranslationChunkCheckpoint> _resumeRoleChunkCheckpoints(
+    int roleIndex,
+  ) {
+    final checkpoints = _decodeChunkCheckpoints();
+    final prefix = 'role:$roleIndex:';
+    return {
+      for (final entry in checkpoints.entries)
+        if (entry.key.startsWith(prefix))
+          '0:${entry.key.substring(prefix.length)}': entry.value,
+    };
+  }
+
+  Map<String, TranslationChunkCheckpoint> _resumeOpeningChunkCheckpoints() {
+    final checkpoints = _decodeChunkCheckpoints();
+    const prefix = 'opening:';
+    return {
+      for (final entry in checkpoints.entries)
+        if (entry.key.startsWith(prefix))
+          entry.key.substring(prefix.length): entry.value,
+    };
+  }
+
+  Map<String, TranslationChunkCheckpoint> _decodeChunkCheckpoints() {
+    final raw = task.chunkPayload.trim();
+    if (raw.isEmpty) return {};
+    try {
+      final decoded = jsonDecode(raw);
+      if (decoded is! Map || decoded['checkpoints'] is! Map) return {};
+      return {
+        for (final entry in (decoded['checkpoints'] as Map).entries)
+          if (entry.key is String && entry.value is Map)
+            entry.key as String: TranslationChunkCheckpoint.fromJson(
+              Map<String, dynamic>.from(entry.value as Map),
+            ),
+      };
+    } catch (_) {
+      return {};
+    }
+  }
+
+  Future<void> _saveChunkCheckpoint({
+    required String scope,
+    required int roleIndex,
+    required String field,
+    required TranslationChunkCheckpoint checkpoint,
+  }) async {
+    final checkpoints = _decodeChunkCheckpoints();
+    final key =
+        scope == 'opening' ? 'opening:$field' : 'role:$roleIndex:$field';
+    checkpoints[key] = checkpoint;
+    if (checkpoint.chunks.any(
+      (state) => state.status == TranslationChunkStatus.retainedOriginal,
+    )) {
+      _retainedOriginalObserved = true;
+    }
+    task
+      ..checkpointVersion = TranslationChunkCheckpoint.currentVersion
+      ..chunkPayload = jsonEncode({
+        'version': TranslationChunkCheckpoint.currentVersion,
+        'checkpoints': {
+          for (final entry in checkpoints.entries)
+            entry.key: entry.value.toJson(),
+        },
+      });
+    _checkpoint('已保存分块检查点：$field');
+    await _flush();
+  }
+
+  bool _hasRetainedOriginal() =>
+      _retainedOriginalObserved || _resumeRetainedOriginalFlag();
+
+  bool _resumeRetainedOriginalFlag() {
+    final raw = task.partialPayload.trim();
+    if (raw.isEmpty) return false;
+    try {
+      final decoded = jsonDecode(raw);
+      return decoded is Map &&
+          decoded['_translationHasRetainedOriginal'] == true;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  bool _resumeOpeningCompletedFlag() {
+    final raw = task.partialPayload.trim();
+    if (raw.isEmpty) return false;
+    try {
+      final decoded = jsonDecode(raw);
+      return decoded is Map && decoded['_translationOpeningCompleted'] == true;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  String _resumeOpening(StoryRoomTemplatePayload source) {
+    if (!_openingCompleted || task.partialPayload.trim().isEmpty) {
+      return source.initialOpening;
+    }
+    try {
+      final decoded = jsonDecode(task.partialPayload);
+      if (decoded is! Map) return source.initialOpening;
+      return StoryRoomTemplatePayload.fromJson(
+        Map<String, dynamic>.from(decoded),
+      ).initialOpening;
+    } catch (_) {
+      return source.initialOpening;
+    }
+  }
+
+  String _encodePartialPayload({
+    required StoryRoomTemplatePayload source,
+    required List<AssistantRoleCardImportResult> translated,
+    required String opening,
+  }) =>
+      jsonEncode({
+        ...StoryRoomTemplatePayload(
+          results: translated,
+          initialOpening: opening,
+          promptConfigJson: source.promptConfigJson,
+          quickRepliesJson: source.quickRepliesJson,
+          regexScriptsJson: source.regexScriptsJson,
+          tavernPresetJson: source.tavernPresetJson,
+          temperature: source.temperature,
+          topP: source.topP,
+          maxOutputTokens: source.maxOutputTokens,
+        ).toJson(),
+        '_translationHasRetainedOriginal': _retainedOriginalObserved,
+        '_translationOpeningCompleted': _openingCompleted,
+      });
+
   Future<String> _completeWithCancellation(String prompt) async {
     _throwIfCancelled();
-    final response = await complete(prompt);
+    final activeExecutor = executor;
+    if (activeExecutor == null) {
+      final legacyComplete = complete!;
+      final response = await legacyComplete(prompt);
+      _throwIfCancelled();
+      return response;
+    }
+    final response = await activeExecutor.complete(
+      prompt,
+      cancellation: cancellation,
+      onPhase: (phase) {
+        task.stage = switch (phase) {
+          TranslationStreamPhase.waiting => '等待 AI 返回',
+          TranslationStreamPhase.thinking => 'AI 正在处理',
+          TranslationStreamPhase.receiving => '正在接收翻译',
+        };
+        _checkpoint();
+      },
+      onProfileChanged: (profile) async {
+        _throwIfCancelled();
+        task.requestProfile = jsonEncode(profile.toJson());
+        _checkpoint('模型不支持显式关闭 Thinking，已保存兼容设置');
+        await _flush();
+      },
+    );
     _throwIfCancelled();
     return response;
   }
 
   void _throwIfCancelled() {
-    if (isCancelled()) throw const RoleCardTranslationCancelled();
+    if (_leaseLost) throw const _StoryTemplateTranslationLeaseLost();
+    if (isCancelled() || cancellation.isCancelled) {
+      throw const RoleCardTranslationCancelled();
+    }
+  }
+
+  void _startHeartbeat() {
+    final interval = Duration(
+      milliseconds:
+          (leaseDuration.inMilliseconds / 3).floor().clamp(1, 1 << 31).toInt(),
+    );
+    _heartbeat = Timer.periodic(interval, (_) async {
+      if (_leaseLost || cancellation.isCancelled) return;
+      try {
+        final renewed = await taskDao.renewLease(
+          task.id!,
+          leaseOwner: leaseOwner,
+          leaseDuration: leaseDuration,
+        );
+        if (renewed) return;
+      } catch (_) {
+        // A transient database error must stop the request before stale output
+        // can be committed under an unverified lease.
+      }
+      _leaseLost = true;
+      cancellation.cancel();
+    });
   }
 
   void _checkpoint([String? log]) {
@@ -596,6 +1059,15 @@ class StoryTemplateTranslationTaskRunner {
   }
 
   Future<void> _flush() => _writes;
+
+  Future<bool> _tryFlush() async {
+    try {
+      await _flush();
+      return true;
+    } on _StoryTemplateTranslationLeaseLost {
+      return false;
+    }
+  }
 
   static double _progressFor(int total, int completed, double fieldProgress) {
     if (total <= 0) return 0;

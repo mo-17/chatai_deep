@@ -471,8 +471,12 @@ class StoryTemplateTranslationTaskDao implements ITable {
         {
           'outputTemplateId': outputTemplateId,
           'outputRoomId': outputRoomId,
+          'outputTitle': task.outputTitle,
           'status': completionStatus,
           'progress': 1.0,
+          'stage': task.stage,
+          'detail': task.detail,
+          'log': task.log,
           'error': '',
           'leaseOwner': null,
           'leaseUntil': null,

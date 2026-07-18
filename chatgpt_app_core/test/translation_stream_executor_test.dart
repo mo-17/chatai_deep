@@ -536,14 +536,6 @@ void main() {
       final executor = TranslationStreamExecutor(
         service: service,
         profile: _profile(),
-        onProfileChanged: (profile) async {
-          order.add('profile:start');
-          expect(profile.reasoningControlSuppressed, isTrue);
-          expect(service.requests.first.abortObserved, isTrue);
-          expect(service.activeSubscriptions, 0);
-          await Future<void>.delayed(const Duration(milliseconds: 2));
-          order.add('profile:end');
-        },
         firstEventTimeout: const Duration(milliseconds: 40),
         idleTimeout: const Duration(milliseconds: 40),
         totalTimeout: const Duration(milliseconds: 120),
@@ -552,6 +544,14 @@ void main() {
       final result = await executor.complete(
         'prompt',
         cancellation: TranslationCancellationController(),
+        onProfileChanged: (profile) async {
+          order.add('profile:start');
+          expect(profile.reasoningControlSuppressed, isTrue);
+          expect(service.requests.first.abortObserved, isTrue);
+          expect(service.activeSubscriptions, 0);
+          await Future<void>.delayed(const Duration(milliseconds: 2));
+          order.add('profile:end');
+        },
       );
 
       expect(result, '已翻译');

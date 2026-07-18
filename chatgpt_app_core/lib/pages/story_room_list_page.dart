@@ -12,6 +12,10 @@ import 'package:chatgpt_app_core/chat/application/story_template_translation_tas
 import 'package:chatgpt_app_core/chat/application/story_tavern_chat_transfer.dart';
 import 'package:chatgpt_app_core/chat/application/story_tavern_preset_transfer.dart';
 import 'package:chatgpt_app_core/chat/application/tavern_room_import_preparer.dart';
+import 'package:chatgpt_app_core/chat/application/translation_model_preference_store.dart';
+import 'package:chatgpt_app_core/chat/application/translation_model_resolver.dart';
+import 'package:chatgpt_app_core/chat/application/translation_stream_executor.dart';
+import 'package:chatgpt_app_core/chat/domain/translation_request_profile.dart';
 import 'package:chatgpt_app_core/dao/chat/chat_service.dart';
 import 'package:chatgpt_app_core/db/hi_db_manager.dart';
 import 'package:chatgpt_app_core/db/story_room_dao.dart';
@@ -31,6 +35,7 @@ import 'package:chatgpt_app_core/widget/translation_task_log_dialog.dart';
 import 'package:chatgpt_app_core/widget/story_visual_widgets.dart';
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
+import 'package:login_sdk/dao/login_dao.dart';
 
 final _storyTemplateTranslationCoordinator =
     StoryTemplateTranslationCoordinator.instance;
@@ -977,21 +982,12 @@ class _StoryRoomListPageState extends State<StoryRoomListPage> {
       return;
     }
     final settings = context.read<AISettingsProvider>().settings.clone();
-    final chatService = ChatService.from(settings);
     try {
+      final profile = _translationProfile(settings);
       await _storyTemplateTranslationCoordinator.start(
         template,
-        complete: (prompt) async {
-          final response = await chatService.chat(
-            prompt: prompt,
-            history: const [],
-            timeout: const Duration(minutes: 2),
-          );
-          if (response == null || response.trim().isEmpty) {
-            throw StateError('翻译服务未返回内容');
-          }
-          return response;
-        },
+        requestProfile: profile,
+        resolveExecutor: _translationExecutorResolver(settings),
       );
       if (!mounted) return;
       HiDialog.showSnackBar(context, '已加入后台任务，可在当前页面查看进度');
@@ -1005,22 +1001,28 @@ class _StoryRoomListPageState extends State<StoryRoomListPage> {
     StoryTemplateTranslationTaskModel task,
   ) async {
     final settings = context.read<AISettingsProvider>().settings.clone();
-    final chatService = ChatService.from(settings);
     await _storyTemplateTranslationCoordinator.retry(
       task,
-      complete: (prompt) async {
-        final response = await chatService.chat(
-          prompt: prompt,
-          history: const [],
-          timeout: const Duration(minutes: 2),
-        );
-        if (response == null || response.trim().isEmpty) {
-          throw StateError('翻译服务未返回内容');
-        }
-        return response;
-      },
+      resolveExecutor: _translationExecutorResolver(settings),
     );
   }
+
+  TranslationRequestProfile _translationProfile(AISettings settings) {
+    final accountHash =
+        LoginDao.getAccountHash() ?? HiDBManager.getAccountHash();
+    final preference = TranslationModelPreferenceStore().read(accountHash);
+    return TranslationModelResolver.snapshot(settings, preference);
+  }
+
+  TranslationExecutorResolver _translationExecutorResolver(
+    AISettings settings,
+  ) =>
+      (profile) => TranslationStreamExecutor(
+            service: ChatService.from(
+              TranslationModelResolver.apply(settings, profile),
+            ),
+            profile: profile,
+          );
 
   List<String> _templateOpeningCandidates(StoryRoomTemplatePayload payload) {
     final seen = <String>{};

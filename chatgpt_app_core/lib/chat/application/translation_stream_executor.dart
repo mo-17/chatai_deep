@@ -171,6 +171,7 @@ final class TranslationStreamExecutor {
     String prompt, {
     required TranslationCancellationToken cancellation,
     void Function(TranslationStreamPhase phase)? onPhase,
+    Future<void> Function(TranslationRequestProfile profile)? onProfileChanged,
   }) async {
     if (_active) {
       throw const TranslationRequestFailure(
@@ -204,6 +205,7 @@ final class TranslationStreamExecutor {
           negotiatedReasoningControl = true;
           final suppressed = attemptProfile.suppressReasoningControl();
           try {
+            await onProfileChanged?.call(suppressed);
             await _onProfileChanged?.call(suppressed);
           } catch (_) {
             throw const TranslationRequestFailure(

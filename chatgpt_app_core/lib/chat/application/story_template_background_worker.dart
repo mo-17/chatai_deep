@@ -1,7 +1,11 @@
 import 'package:chatgpt_app_core/chat/application/story_template_translation_tasks.dart';
+import 'package:chatgpt_app_core/chat/application/translation_model_preference_store.dart';
+import 'package:chatgpt_app_core/chat/application/translation_model_resolver.dart';
+import 'package:chatgpt_app_core/chat/application/translation_stream_executor.dart';
 import 'package:chatgpt_app_core/dao/ai_settings_dao.dart';
 import 'package:chatgpt_app_core/dao/chat/chat_service.dart';
 import 'package:chatgpt_app_core/db/hi_db_manager.dart';
+import 'package:chatgpt_app_core/model/story_template_translation_task_model.dart';
 import 'package:flutter/widgets.dart';
 import 'package:login_sdk/dao/login_dao.dart';
 import 'package:login_sdk/login_sdk.dart';
@@ -38,19 +42,27 @@ Future<bool> runStoryTemplateTranslationBackgroundWork({
   final coordinator = StoryTemplateTranslationCoordinator.instance;
   await coordinator.initialize(storage, accountHash: expectedAccount);
   final settings = await AISettingsDao.loadForBackground(expectedAccount);
-  final chatService = ChatService.from(settings);
+  final preference = TranslationModelPreferenceStore().read(expectedAccount);
+  final legacyProfile = TranslationModelResolver.snapshot(settings, preference);
   await coordinator.resumeRecoverable(
-    complete: (prompt) async =>
-        (await chatService.chat(
-          prompt: prompt,
-          history: const [],
-          timeout: const Duration(minutes: 2),
-        )) ??
-        '',
+    legacyRequestProfile: legacyProfile,
+    resolveExecutor: (profile) => TranslationStreamExecutor(
+      service: ChatService.from(
+        TranslationModelResolver.apply(settings, profile),
+      ),
+      profile: profile,
+    ),
   );
 
   // false 让 Android WorkManager 按退避策略重试，iOS 壳层会重新预约。
   // 活跃前台租约也继续保留一次系统唤醒，避免后台任务过早执行后，App 随即
   // 被杀导致没有后续恢复机会。明确失败/取消属于终态，不会无限请求。
-  return !coordinator.tasks.any((task) => !task.isTerminal);
+  final now = DateTime.now().millisecondsSinceEpoch;
+  return !coordinator.tasks.any(
+    (task) =>
+        task.status == StoryTemplateTranslationTaskStatus.queued ||
+        task.status == StoryTemplateTranslationTaskStatus.running ||
+        (task.status == StoryTemplateTranslationTaskStatus.retryable &&
+            (task.nextRunAt == null || task.nextRunAt! <= now)),
+  );
 }

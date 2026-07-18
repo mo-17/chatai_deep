@@ -1,8 +1,13 @@
+import 'dart:async';
 import 'dart:convert';
 
 import 'package:chatgpt_app_core/chat/application/assistant_role_card_service.dart';
 import 'package:chatgpt_app_core/chat/application/story_room_role_card_importer.dart';
 import 'package:chatgpt_app_core/chat/application/tavern_room_import_finalizer.dart';
+import 'package:chatgpt_app_core/chat/application/story_template_translation_tasks.dart';
+import 'package:chatgpt_app_core/chat/application/translation_model_resolver.dart';
+import 'package:chatgpt_app_core/chat/domain/chat_request_options.dart';
+import 'package:chatgpt_app_core/chat/domain/translation_request_profile.dart';
 import 'package:chatgpt_app_core/db/hi_db_manager.dart';
 import 'package:chatgpt_app_core/db/story_room_dao.dart';
 import 'package:chatgpt_app_core/db/story_template_dao.dart';
@@ -68,6 +73,97 @@ void main() {
       expect(bundle.messages.single.roomId, 0);
       expect(bundle.messages.single.speakerRole, 'system');
       expect(bundle.messages.single.content, payload.initialOpening);
+    });
+
+    test('coordinator snapshots Tavern import kind, source and model',
+        () async {
+      final coordinator = StoryTemplateTranslationCoordinator();
+      await coordinator.initialize(storage, accountHash: 'test');
+      final profile = TranslationRequestProfile(
+        mode: TranslationExecutionMode.backend,
+        modelId: 'fast-backend-model',
+        reasoningPolicy: ChatReasoningPolicy.offIfSupported,
+        reasoningControlSuppressed: false,
+      );
+
+      await coordinator.startTavernRoomImport(
+        _twoRolePayload().results,
+        sourceTitle: 'party.zip',
+        requestProfile: profile,
+        resolveExecutor: (_) {
+          throw const TranslationModelUnavailableException('测试暂停');
+        },
+      );
+      await _waitUntil(() =>
+          coordinator.tasks.single.status ==
+          StoryTemplateTranslationTaskStatus.needsConfiguration);
+
+      final task = (await taskDao.getTasks()).single;
+      expect(task.taskKind, StoryTemplateTranslationTaskKind.tavernRoomImport);
+      expect(task.sourceTitle, 'party.zip');
+      expect(task.roleTotal, 2);
+      expect(
+        StoryRoomTemplatePayload.fromJson(
+          Map<String, dynamic>.from(jsonDecode(task.sourcePayload) as Map),
+        ).results,
+        hasLength(2),
+      );
+      expect(
+        TranslationRequestProfile.fromJson(
+          Map<String, dynamic>.from(jsonDecode(task.requestProfile) as Map),
+        ).modelId,
+        'fast-backend-model',
+      );
+    });
+
+    test('runner atomically finalizes a translated Tavern room task', () async {
+      final payload = StoryRoomTemplatePayload(results: [
+        AssistantRoleCardImportResult(
+          assistant: AssistantModel(name: 'Alice', prompt: 'Careful.'),
+        ),
+      ]);
+      final task = StoryTemplateTranslationTaskModel(
+        sourceTitle: 'alice.png',
+        sourcePayload: jsonEncode(payload.toJson()),
+        outputTitle: 'Alice（简中）',
+        taskKind: StoryTemplateTranslationTaskKind.tavernRoomImport,
+      );
+      await taskDao.saveTask(task);
+      const owner = 'runner-tavern';
+      expect(
+        await taskDao.claimTask(
+          task.id!,
+          leaseOwner: owner,
+          leaseDuration: const Duration(minutes: 5),
+        ),
+        isTrue,
+      );
+
+      await StoryTemplateTranslationTaskRunner(
+        taskDao: taskDao,
+        templateDao: await StoryTemplateDao.create(storage),
+        task: task,
+        leaseOwner: owner,
+        complete: (_) async => jsonEncode({
+          'name': '爱丽丝',
+          'description': '谨慎的侦探',
+          'prompt': '保持警觉。',
+          'openingMessage': '',
+          'exampleDialogs': '',
+          'memoryBook': '',
+        }),
+        isCancelled: () => false,
+      ).run();
+
+      final stored = await taskDao.getTask(task.id!);
+      expect(stored?.status, StoryTemplateTranslationTaskStatus.completed);
+      expect(stored?.outputTemplateId, isNotNull);
+      expect(stored?.outputRoomId, isNotNull);
+      expect(stored?.stage, '已导入酒馆房间');
+      expect(stored?.log, contains('酒馆房间已保存'));
+      expect(await db.query('tb_story_template'), hasLength(1));
+      expect(await db.query('tb_story_room'), hasLength(1));
+      expect(await db.query('tb_story_participant'), hasLength(1));
     });
 
     test('build preserves single and batch empty-opening semantics', () {
@@ -686,4 +782,17 @@ Future<StoryTemplateTranslationTaskModel> _claimedTask(
   );
   expect(claimed, isTrue);
   return task;
+}
+
+Future<void> _waitUntil(
+  bool Function() predicate, {
+  Duration timeout = const Duration(seconds: 2),
+}) async {
+  final deadline = DateTime.now().add(timeout);
+  while (!predicate()) {
+    if (DateTime.now().isAfter(deadline)) {
+      throw TimeoutException('等待异步任务状态超时');
+    }
+    await Future<void>.delayed(const Duration(milliseconds: 5));
+  }
 }
