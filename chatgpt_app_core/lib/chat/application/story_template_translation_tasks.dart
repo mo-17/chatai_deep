@@ -25,6 +25,7 @@ typedef TranslationExecutorResolver = TranslationStreamExecutor Function(
   TranslationRequestProfile profile,
 );
 typedef StoryTemplateTranslationCall = Future<String> Function(String prompt);
+typedef _TranslationRunKey = ({String accountHash, int taskId});
 
 /// 页面可复用的任务协调器。任务行先写入数据库，再启动网络翻译；完成、失败、取消
 /// 都留在数据库中以便重启后查看。
@@ -36,9 +37,12 @@ class StoryTemplateTranslationCoordinator extends ChangeNotifier {
   StoryTemplateDao? _templateDao;
   String? _accountHash;
   List<StoryTemplateTranslationTaskModel> _tasks = const [];
-  final Set<int> _cancelledIds = <int>{};
-  final Set<int> _runningIds = <int>{};
-  final Map<int, TranslationCancellationController> _cancellations = {};
+  final Set<_TranslationRunKey> _cancelledRuns = {};
+  final Set<_TranslationRunKey> _runningRuns = {};
+  final Set<_TranslationRunKey> _lifecycleCancelledRuns = {};
+  final Map<_TranslationRunKey, TranslationCancellationController>
+      _cancellations = {};
+  final Map<_TranslationRunKey, Future<void>> _runSettlements = {};
   final String _workerId =
       'foreground-${DateTime.now().microsecondsSinceEpoch}-${Object().hashCode}';
   static const _leaseDuration = Duration(minutes: 5);
@@ -51,6 +55,7 @@ class StoryTemplateTranslationCoordinator extends ChangeNotifier {
     required String accountHash,
   }) async {
     if (_taskDao != null && _accountHash == accountHash) return;
+    await cancelActiveRunsForLifecycle();
     _accountHash = accountHash;
     _taskDao = await StoryTemplateTranslationTaskDao.create(storage);
     _templateDao = await StoryTemplateDao.create(storage);
@@ -134,7 +139,9 @@ class StoryTemplateTranslationCoordinator extends ChangeNotifier {
     required TranslationExecutorResolver resolveExecutor,
   }) async {
     if (!task.canRetry || task.id == null) return;
-    _cancelledIds.remove(task.id);
+    final accountHash = _accountHash;
+    if (accountHash == null) return;
+    _cancelledRuns.remove((accountHash: accountHash, taskId: task.id!));
     task.status = StoryTemplateTranslationTaskStatus.queued;
     task
       ..leaseOwner = null
@@ -150,24 +157,24 @@ class StoryTemplateTranslationCoordinator extends ChangeNotifier {
     await _requireTaskDao().saveTask(task);
     _sortTasks();
     notifyListeners();
-    final accountHash = _accountHash;
-    if (accountHash != null) {
-      unawaited(StoryTemplateBackgroundScheduler.schedule(accountHash));
-    }
+    unawaited(StoryTemplateBackgroundScheduler.schedule(accountHash));
     unawaited(_run(task, resolveExecutor));
   }
 
   Future<void> cancel(StoryTemplateTranslationTaskModel task) async {
     final id = task.id;
+    final accountHash = _accountHash;
     if (id == null ||
+        accountHash == null ||
         task.status == StoryTemplateTranslationTaskStatus.completed ||
         task.status ==
             StoryTemplateTranslationTaskStatus.completedWithWarnings ||
         task.status == StoryTemplateTranslationTaskStatus.cancelled) {
       return;
     }
-    _cancelledIds.add(id);
-    _cancellations[id]?.cancel();
+    final key = (accountHash: accountHash, taskId: id);
+    _cancelledRuns.add(key);
+    _cancellations[key]?.cancel();
     await _requireTaskDao().cancelTask(id);
     task
       ..status = StoryTemplateTranslationTaskStatus.cancelled
@@ -240,10 +247,12 @@ class StoryTemplateTranslationCoordinator extends ChangeNotifier {
       ..nextRunAt = 0;
     task.log = _appendLog(task.log, '用户选择保留未完成分块原文');
     await _requireTaskDao().saveTask(task);
-    _cancelledIds.remove(id);
+    final accountHash = _accountHash;
+    if (accountHash != null) {
+      _cancelledRuns.remove((accountHash: accountHash, taskId: id));
+    }
     _sortTasks();
     notifyListeners();
-    final accountHash = _accountHash;
     if (accountHash != null) {
       unawaited(StoryTemplateBackgroundScheduler.schedule(accountHash));
     }
@@ -261,6 +270,8 @@ class StoryTemplateTranslationCoordinator extends ChangeNotifier {
     if (resolveExecutor == null && complete == null) {
       throw ArgumentError('resolveExecutor 不能为空');
     }
+    final accountHash = _accountHash;
+    if (accountHash == null) throw StateError('翻译任务尚未初始化');
     final now = DateTime.now().millisecondsSinceEpoch;
     final recoverable = _tasks
         .where((task) =>
@@ -272,7 +283,10 @@ class StoryTemplateTranslationCoordinator extends ChangeNotifier {
     var resumed = 0;
     for (final task in recoverable) {
       final id = task.id;
-      if (id == null || _runningIds.contains(id)) continue;
+      if (id == null ||
+          _runningRuns.contains((accountHash: accountHash, taskId: id))) {
+        continue;
+      }
       if (resolveExecutor != null && task.requestProfile.trim().isEmpty) {
         if (legacyRequestProfile == null) {
           task
@@ -291,7 +305,7 @@ class StoryTemplateTranslationCoordinator extends ChangeNotifier {
           ..checkpointVersion = TranslationChunkCheckpoint.currentVersion;
         await _requireTaskDao().saveTask(task);
       }
-      _cancelledIds.remove(id);
+      _cancelledRuns.remove((accountHash: accountHash, taskId: id));
       task.stage = '自动恢复翻译';
       task.detail = StoryTemplateTranslationTaskDao.taskCheckpointDetail(task);
       task.error = '';
@@ -312,22 +326,54 @@ class StoryTemplateTranslationCoordinator extends ChangeNotifier {
     notifyListeners();
   }
 
+  /// 账号切换或登出时立即中止当前账号的 transport，并等待运行器释放租约。
+  /// 生命周期停止只把任务放回可恢复队列，不等同于用户显式取消。
+  Future<void> cancelActiveRunsForLifecycle() async {
+    final accountHash = _accountHash;
+    if (accountHash == null) return;
+    final keys = _runningRuns
+        .where((key) => key.accountHash == accountHash)
+        .toList(growable: false);
+    if (keys.isEmpty) return;
+    _lifecycleCancelledRuns.addAll(keys);
+    for (final key in keys) {
+      _cancellations[key]?.cancel();
+    }
+    final settlements = keys
+        .map((key) => _runSettlements[key])
+        .whereType<Future<void>>()
+        .toList(growable: false);
+    await Future.wait(settlements);
+  }
+
   Future<void> _run(
     StoryTemplateTranslationTaskModel task,
     TranslationExecutorResolver? resolveExecutor, {
     StoryTemplateTranslationCall? legacyComplete,
   }) async {
     final id = task.id;
-    if (id == null || !_runningIds.add(id)) return;
+    final accountHash = _accountHash;
+    final taskDao = _taskDao;
+    final templateDao = _templateDao;
+    if (id == null ||
+        accountHash == null ||
+        taskDao == null ||
+        templateDao == null) {
+      return;
+    }
+    final key = (accountHash: accountHash, taskId: id);
+    if (!_runningRuns.add(key)) return;
+    final settlement = Completer<void>();
+    _runSettlements[key] = settlement.future;
     final leaseOwner = '$_workerId:$id';
     try {
-      final claimed = await _requireTaskDao().claimTask(
+      final claimed = await taskDao.claimTask(
         id,
         leaseOwner: leaseOwner,
         leaseDuration: _leaseDuration,
       );
       if (!claimed) return;
-      final claimedTask = await _requireTaskDao().getTask(id);
+      final claimedTask = await taskDao.getTask(id);
       if (claimedTask == null) return;
       final index = _tasks.indexWhere((item) => item.id == id);
       if (index >= 0) _tasks[index] = claimedTask;
@@ -341,18 +387,29 @@ class StoryTemplateTranslationCoordinator extends ChangeNotifier {
           );
           executor = resolveExecutor(profile);
         } on TranslationModelUnavailableException catch (error) {
-          await _markNeedsConfiguration(claimedTask, leaseOwner, error.message);
+          await _markNeedsConfiguration(
+            taskDao,
+            claimedTask,
+            leaseOwner,
+            error.message,
+          );
           return;
         } on FormatException {
-          await _markNeedsConfiguration(claimedTask, leaseOwner, '翻译模型快照无效');
+          await _markNeedsConfiguration(
+            taskDao,
+            claimedTask,
+            leaseOwner,
+            '翻译模型快照无效',
+          );
           return;
         }
       }
       final cancellation = TranslationCancellationController();
-      _cancellations[id] = cancellation;
+      _cancellations[key] = cancellation;
+      if (_lifecycleCancelledRuns.contains(key)) cancellation.cancel();
       await StoryTemplateTranslationTaskRunner(
-        taskDao: _requireTaskDao(),
-        templateDao: _requireTemplateDao(),
+        taskDao: taskDao,
+        templateDao: templateDao,
         task: claimedTask,
         leaseOwner: leaseOwner,
         leaseDuration: _leaseDuration,
@@ -362,21 +419,29 @@ class StoryTemplateTranslationCoordinator extends ChangeNotifier {
         isCancelled: () =>
             claimedTask.status ==
                 StoryTemplateTranslationTaskStatus.cancelled ||
-            _cancelledIds.contains(id),
+            _cancelledRuns.contains(key),
+        isLifecycleCancelled: () => _lifecycleCancelledRuns.contains(key),
         onChanged: () {
+          if (_accountHash != accountHash) return;
           _sortTasks();
           notifyListeners();
         },
       ).run();
     } finally {
-      _cancellations.remove(id);
-      _runningIds.remove(id);
-      _sortTasks();
-      notifyListeners();
+      _cancellations.remove(key);
+      _runningRuns.remove(key);
+      _lifecycleCancelledRuns.remove(key);
+      _runSettlements.remove(key);
+      if (!settlement.isCompleted) settlement.complete();
+      if (_accountHash == accountHash) {
+        _sortTasks();
+        notifyListeners();
+      }
     }
   }
 
   Future<void> _markNeedsConfiguration(
+    StoryTemplateTranslationTaskDao taskDao,
     StoryTemplateTranslationTaskModel task,
     String leaseOwner,
     String message,
@@ -387,7 +452,7 @@ class StoryTemplateTranslationCoordinator extends ChangeNotifier {
       ..detail = StoryTemplateTranslationTaskDao.taskCheckpointDetail(task)
       ..error = 'model_unavailable';
     task.log = _appendLog(task.log, message);
-    await _requireTaskDao().saveClaimedTask(
+    await taskDao.saveClaimedTask(
       task,
       leaseOwner: leaseOwner,
       leaseDuration: _leaseDuration,
@@ -435,11 +500,6 @@ class StoryTemplateTranslationCoordinator extends ChangeNotifier {
     return value;
   }
 
-  StoryTemplateDao _requireTemplateDao() {
-    final value = _templateDao;
-    if (value == null) throw StateError('酒馆模板尚未初始化');
-    return value;
-  }
 }
 
 /// 单个任务的可恢复运行器。已完成角色会写入 `partialPayload`，中断时只会重做
@@ -455,6 +515,7 @@ class StoryTemplateTranslationTaskRunner {
   final TranslationCancellationController cancellation;
   final bool useChunkCheckpoints;
   final bool Function() isCancelled;
+  final bool Function() isLifecycleCancelled;
   final VoidCallback? onChanged;
   Future<void> _writes = Future<void>.value();
   Timer? _heartbeat;
@@ -473,10 +534,12 @@ class StoryTemplateTranslationTaskRunner {
     TranslationCancellationController? cancellation,
     bool? useChunkCheckpoints,
     required this.isCancelled,
+    bool Function()? isLifecycleCancelled,
     this.onChanged,
   })  : assert(executor != null || complete != null),
         cancellation = cancellation ?? TranslationCancellationController(),
-        useChunkCheckpoints = useChunkCheckpoints ?? executor != null;
+        useChunkCheckpoints = useChunkCheckpoints ?? executor != null,
+        isLifecycleCancelled = isLifecycleCancelled ?? (() => false);
 
   Future<void> run() async {
     _startHeartbeat();
@@ -752,6 +815,26 @@ class StoryTemplateTranslationTaskRunner {
       if (!await _tryFlush()) return;
     } on RoleCardTranslationCancelled {
       if (_leaseLost) return;
+      if (isLifecycleCancelled() && !isCancelled()) {
+        task
+          ..stage = '账号已切换，等待恢复'
+          ..detail = StoryTemplateTranslationTaskDao.taskCheckpointDetail(task)
+          ..error = '';
+        task.log = _appendLog(task.log, '账号生命周期结束，任务已停止并等待恢复');
+        _queueSave();
+        if (!await _tryFlush()) return;
+        final released = await taskDao.releaseLease(
+          task.id!,
+          leaseOwner: leaseOwner,
+        );
+        if (!released) return;
+        task
+          ..status = StoryTemplateTranslationTaskStatus.retryable
+          ..leaseOwner = null
+          ..leaseUntil = null;
+        onChanged?.call();
+        return;
+      }
       try {
         await _flush();
       } on _StoryTemplateTranslationLeaseLost {

@@ -281,6 +281,26 @@ void main() {
       expect(logoutNavigated, 1);
     });
 
+    test('异步 logout ready hook 完成后才执行同步清理和 storage clear', () async {
+      await LoginDao.loginAsGuest();
+      final order = <String>[];
+      LoginDao.addLogoutReadyHook(() async {
+        order.add('ready-start');
+        await Future<void>.delayed(Duration.zero);
+        expect(LoginDao.isGuest(), isTrue);
+        order.add('ready-end');
+      });
+      LoginDao.addLogoutHook(() {
+        expect(LoginDao.isGuest(), isTrue);
+        order.add('sync');
+      });
+
+      await LoginDao.logOut();
+
+      expect(order, ['ready-start', 'ready-end', 'sync']);
+      expect(LoginDao.getBoardingPass(), isNull);
+    });
+
     test('正式登录的资料不带 guest 标记', () async {
       await storage.writeProfile(token: 'real-token', userName: 'alice');
       expect(LoginDao.isGuest(), isFalse);

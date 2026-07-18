@@ -1044,6 +1044,77 @@ void main() {
       expect(output.results.single.assistant.memoryBook, memoryBook);
     });
 
+    test('切换账号会立即中止旧 transport 并隔离相同任务 id', () async {
+      final dbB = await databaseFactoryFfi.openDatabase(
+        inMemoryDatabasePath,
+        options: OpenDatabaseOptions(singleInstance: false),
+      );
+      addTearDown(dbB.close);
+      final storageB = HiDBManager.test(dbB);
+      final taskDaoB = await StoryTemplateTranslationTaskDao.create(storageB);
+      final profile = TranslationRequestProfile(
+        mode: TranslationExecutionMode.local,
+        providerId: 'provider-a',
+        modelId: 'model-a',
+        reasoningPolicy: ChatReasoningPolicy.providerDefault,
+        reasoningControlSuppressed: false,
+      );
+      StoryTemplateTranslationTaskModel taskFor(String name) =>
+          StoryTemplateTranslationTaskModel(
+            sourceTitle: '$name source',
+            sourcePayload: jsonEncode(StoryRoomTemplatePayload(results: [
+              AssistantRoleCardImportResult(
+                assistant: AssistantModel(name: name),
+              ),
+            ]).toJson()),
+            outputTitle: '$name copy',
+            roleTotal: 1,
+            requestProfile: jsonEncode(profile.toJson()),
+          );
+
+      final taskA = taskFor('Alice');
+      final taskB = taskFor('Bob');
+      await taskDao.saveTask(taskA);
+      await taskDaoB.saveTask(taskB);
+      expect(taskA.id, taskB.id);
+      final coordinator = StoryTemplateTranslationCoordinator();
+      await coordinator.initialize(storage, accountHash: 'account-a');
+      final heldA = _HeldTranslationChatService();
+
+      final runningA = coordinator.resumeRecoverable(
+        resolveExecutor: (resolved) => TranslationStreamExecutor(
+          service: heldA,
+          profile: resolved,
+        ),
+      );
+      await heldA.requestStarted.future;
+      await coordinator.initialize(storageB, accountHash: 'account-b');
+      final abortPrompt = await heldA.abortObserved.future.timeout(
+        const Duration(milliseconds: 100),
+        onTimeout: () => false,
+      );
+      if (!abortPrompt) heldA.respond();
+      await runningA;
+
+      expect(abortPrompt, isTrue);
+      final storedA = await taskDao.getTask(taskA.id!);
+      expect(storedA?.status, StoryTemplateTranslationTaskStatus.retryable);
+      expect(storedA?.leaseOwner, isNull);
+      expect(storedA?.leaseUntil, isNull);
+
+      final serviceB = _EchoTranslationChatService();
+      final resumedB = await coordinator.resumeRecoverable(
+        resolveExecutor: (resolved) => TranslationStreamExecutor(
+          service: serviceB,
+          profile: resolved,
+        ),
+      );
+      final storedB = await taskDaoB.getTask(taskB.id!);
+      expect(resumedB, 1);
+      expect(storedB?.status, StoryTemplateTranslationTaskStatus.completed);
+      expect(storedB?.outputTemplateId, isNotNull);
+    });
+
     test('协调器创建任务时冻结具体模型和任务类型', () async {
       final coordinator = StoryTemplateTranslationCoordinator();
       await coordinator.initialize(storage, accountHash: 'test');
@@ -1249,6 +1320,78 @@ final class _EchoTranslationChatService
     );
     payloads.add(payload);
     return Stream<StreamEvent>.value(StreamEvent.text(jsonEncode(payload)));
+  }
+}
+
+final class _HeldTranslationChatService
+    implements ChatService, OptionsAwareChatService {
+  final Completer<void> requestStarted = Completer<void>();
+  final Completer<bool> abortObserved = Completer<bool>();
+  late final StreamController<StreamEvent> _controller;
+  late final Map<String, dynamic> _payload;
+
+  @override
+  ModelCapabilities get capabilities => const ModelCapabilities.none();
+
+  @override
+  Future<String?> chat({
+    required String prompt,
+    required List<Map<String, dynamic>> history,
+    ChatAttachments? attachments,
+    Duration? timeout,
+  }) =>
+      throw UnsupportedError('translation must use typed stream events');
+
+  @override
+  Future<ChatCompletionResult> chatWithUsage({
+    required String prompt,
+    required List<Map<String, dynamic>> history,
+    ChatAttachments? attachments,
+  }) =>
+      throw UnsupportedError('translation must use typed stream events');
+
+  @override
+  Stream<String> chatStream({
+    required String prompt,
+    required List<Map<String, dynamic>> history,
+    ChatAttachments? attachments,
+  }) =>
+      throw UnsupportedError('translation must use typed stream events');
+
+  @override
+  Stream<StreamEvent> chatStreamEvents({
+    required String prompt,
+    required List<Map<String, dynamic>> history,
+    ChatAttachments? attachments,
+    List<Map<String, dynamic>>? tools,
+    List<Map<String, dynamic>> extraMessages = const [],
+  }) =>
+      throw UnsupportedError('translation must pass request options');
+
+  @override
+  Stream<StreamEvent> chatStreamEventsWithOptions({
+    required String prompt,
+    required List<Map<String, dynamic>> history,
+    ChatAttachments? attachments,
+    List<Map<String, dynamic>>? tools,
+    List<Map<String, dynamic>> extraMessages = const [],
+    required ChatRequestOptions options,
+  }) {
+    _payload = Map<String, dynamic>.from(
+      jsonDecode(prompt.split('\n').last) as Map,
+    );
+    _controller = StreamController<StreamEvent>(
+      onListen: () => requestStarted.complete(),
+    );
+    options.abortTrigger?.then((_) {
+      if (!abortObserved.isCompleted) abortObserved.complete(true);
+    });
+    return _controller.stream;
+  }
+
+  void respond() {
+    _controller.add(StreamEvent.text(jsonEncode(_payload)));
+    unawaited(_controller.close());
   }
 }
 

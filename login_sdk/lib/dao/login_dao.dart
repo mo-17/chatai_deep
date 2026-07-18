@@ -25,6 +25,7 @@ class LoginDao {
   static const kUserInfo = 'user_info';
 
   static final List<VoidCallback> _onLogoutHooks = [];
+  static final List<Future<void> Function()> _onLogoutReadyHooks = [];
   static final List<VoidCallback> _onLoginHooks = [];
   static final List<Future<void> Function()> _onLoginReadyHooks = [];
   static Future<void> _authMutationTail = Future<void>.value();
@@ -55,6 +56,11 @@ class LoginDao {
   ///注册登出钩子，宿主 App 在初始化时调用，用于清理账号态
   static void addLogoutHook(VoidCallback cb) {
     _onLogoutHooks.add(cb);
+  }
+
+  /// 登出清理账号资料前必须等待的异步生命周期任务。
+  static void addLogoutReadyHook(Future<void> Function() cb) {
+    _onLogoutReadyHooks.add(cb);
   }
 
   ///注册登录成功钩子，在保存登录信息之后触发
@@ -281,6 +287,11 @@ class LoginDao {
   static Future<void> logOut() {
     _invalidateAuthAttempts();
     return _enqueueAuthMutation(() async {
+      for (final cb in _onLogoutReadyHooks) {
+        try {
+          await cb();
+        } catch (_) {}
+      }
       for (final cb in _onLogoutHooks) {
         try {
           cb();
@@ -431,6 +442,7 @@ class LoginDao {
   static void resetHooksForTest() {
     _invalidateAuthAttempts();
     _onLogoutHooks.clear();
+    _onLogoutReadyHooks.clear();
     _onLoginHooks.clear();
     _onLoginReadyHooks.clear();
     _authMutationTail = Future<void>.value();

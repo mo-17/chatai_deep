@@ -249,8 +249,10 @@ class _MyAppState extends State<MyApp> {
           unawaited(StoryTemplateBackgroundScheduler.cancel(accountHash));
         }
       });
-      LoginDao.addLogoutHook(() {
-        HiDBManager.closeAll();
+      LoginDao.addLogoutReadyHook(() async {
+        await StoryTemplateTranslationCoordinator.instance
+            .cancelActiveRunsForLifecycle();
+        await HiDBManager.closeAll();
       });
       LoginDao.addLogoutHook(() {
         // 游客「去登录」不清其本地 AI 配置：游客设置存在独立的 guest key 下，
