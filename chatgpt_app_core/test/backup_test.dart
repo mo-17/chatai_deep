@@ -872,9 +872,16 @@ void main() {
       expect(exportedProfile['providerId'], 'fast-provider');
       expect(exportedProfile['modelId'], 'fast-model');
       expect(exportedProfile, isNot(contains('apiKey')));
+      final sourceTaskId = task.id;
       await src.db.close();
 
       final overwrite = await newDb();
+      final overwriteRoomDao = await StoryRoomDao.create(overwrite);
+      for (var index = 0; index < 3; index++) {
+        await overwriteRoomDao.saveRoom(
+          StoryRoomModel(title: '待覆盖房间 $index'),
+        );
+      }
       final overwritePreview = await BackupService(overwrite).previewArchive(
         bytes,
         accountHash: 'acc1',
@@ -889,9 +896,17 @@ void main() {
         'tb_story_template_translation_task',
       ))
           .single;
+      final overwrittenRoom = (await overwrite.db.query(
+        'tb_story_room',
+        where: 'title = ?',
+        whereArgs: ['中文酒馆房间'],
+      ))
+          .single;
+      expect(overwrittenTask['id'], sourceTaskId);
       expect(overwrittenTask['templateId'], sourceTemplate.id);
       expect(overwrittenTask['outputTemplateId'], outputTemplate.id);
-      expect(overwrittenTask['outputRoomId'], sourceRoomId);
+      expect(overwrittenRoom['id'], isNot(sourceRoomId));
+      expect(overwrittenTask['outputRoomId'], overwrittenRoom['id']);
       expect(overwrittenTask['status'],
           StoryTemplateTranslationTaskStatus.running);
       await overwrite.db.close();
@@ -943,6 +958,51 @@ void main() {
       expect(mergedTask['outputRoomId'], isNot(sourceRoomId));
       expect(mergedTask['status'], StoryTemplateTranslationTaskStatus.running);
       await merge.db.close();
+    });
+
+    test('覆盖恢复会清除翻译任务中缺失的生成房间引用并告警', () async {
+      final src = await newDb();
+      final templateDao = await StoryTemplateDao.create(src);
+      final sourceTemplate = StoryTemplateModel(title: '英文酒馆', payload: '{}');
+      final outputTemplate = StoryTemplateModel(title: '中文酒馆', payload: '{}');
+      await templateDao.saveTemplate(sourceTemplate);
+      await templateDao.saveTemplate(outputTemplate);
+      final taskDao = await StoryTemplateTranslationTaskDao.create(src);
+      final task = StoryTemplateTranslationTaskModel(
+        templateId: sourceTemplate.id,
+        sourceTitle: '英文酒馆',
+        sourcePayload: '{}',
+        outputTitle: '中文酒馆',
+        outputTemplateId: outputTemplate.id,
+        outputRoomId: 999,
+        status: StoryTemplateTranslationTaskStatus.completed,
+      );
+      await taskDao.saveTask(task);
+      final bytes = await BackupService(src).exportArchive(
+        settings: AISettings.defaults(),
+        accountHash: 'acc1',
+      );
+      final sourceTaskId = task.id;
+      await src.db.close();
+
+      final dst = await newDb();
+      final result = await BackupService(dst).importArchive(
+        bytes,
+        accountHash: 'acc1',
+      );
+      final restoredTask = (await dst.db.query(
+        'tb_story_template_translation_task',
+      ))
+          .single;
+      expect(restoredTask['id'], sourceTaskId);
+      expect(restoredTask['templateId'], sourceTemplate.id);
+      expect(restoredTask['outputTemplateId'], outputTemplate.id);
+      expect(restoredTask['outputRoomId'], isNull);
+      expect(
+        result.warnings,
+        contains('1 个翻译任务找不到生成的酒馆房间，已清除引用'),
+      );
+      await dst.db.close();
     });
   });
 

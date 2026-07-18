@@ -1158,6 +1158,7 @@ class BackupService {
     var insertedStoryMessages = 0;
     var insertedStoryArtifacts = 0;
     var insertedStoryArtifactRevisions = 0;
+    var fixedTranslationTaskOutputRoomRefs = 0;
     final resources = _BackupResourceCoordinator();
     late final int generatedImageAssets;
     try {
@@ -1246,9 +1247,6 @@ class BackupService {
       for (final row in storyTemplates) {
         batch.insert('tb_story_template', row);
       }
-      for (final row in storyTemplateTranslationTasks) {
-        batch.insert('tb_story_template_translation_task', row);
-      }
       for (final row in normalizedStoryPersonas) {
         batch.insert('tb_story_persona', _withoutId(row));
       }
@@ -1256,6 +1254,20 @@ class BackupService {
         final oldId = _intValue(row['id']);
         final newId = await txn.insert('tb_story_room', _withoutId(row));
         if (oldId != null) storyRoomIdMap[oldId] = newId;
+      }
+      for (final row in storyTemplateTranslationTasks) {
+        final next = Map<String, dynamic>.from(row);
+        final oldOutputRoomId = _intValue(next['outputRoomId']);
+        if (oldOutputRoomId != null) {
+          final newOutputRoomId = storyRoomIdMap[oldOutputRoomId];
+          next['outputRoomId'] = newOutputRoomId;
+          if (newOutputRoomId == null) {
+            fixedTranslationTaskOutputRoomRefs++;
+          }
+        }
+        // batch 中的模板会先于任务写入；保留任务和模板原 ID，
+        // 仅重映射重建时已去掉原 ID 的酒馆房间。
+        batch.insert('tb_story_template_translation_task', next);
       }
       for (final row in normalizedStoryParticipants) {
         final oldRoomId = _intValue(row['roomId']);
@@ -1313,6 +1325,9 @@ class BackupService {
       await batch.commit(noResult: true);
     }, accountGuard: accountGuard);
 
+    if (fixedTranslationTaskOutputRoomRefs > 0) {
+      warnings.add('$fixedTranslationTaskOutputRoomRefs 个翻译任务找不到生成的酒馆房间，已清除引用');
+    }
     if (skippedStoryArtifacts > 0) {
       warnings.add('$skippedStoryArtifacts 个创作资料找不到所属房间，已跳过');
     }
