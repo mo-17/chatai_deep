@@ -251,7 +251,7 @@ class _MyAppState extends State<MyApp> {
       });
       LoginDao.addLogoutReadyHook(() async {
         await StoryTemplateTranslationCoordinator.instance
-            .cancelActiveRunsForLifecycle();
+            .detachForLifecycle();
         await HiDBManager.closeAll();
       });
       LoginDao.addLogoutHook(() {

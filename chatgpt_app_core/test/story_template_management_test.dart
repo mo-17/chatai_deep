@@ -1117,6 +1117,129 @@ void main() {
       expect(storedB?.outputTemplateId, isNotNull);
     });
 
+    test('同账号登出后会绑定新 storage 并恢复任务', () async {
+      final dbA = await databaseFactoryFfi.openDatabase(
+        inMemoryDatabasePath,
+        options: OpenDatabaseOptions(singleInstance: false),
+      );
+      final storageA = HiDBManager.test(dbA);
+      final taskDaoA =
+          await StoryTemplateTranslationTaskDao.create(storageA);
+      final profile = TranslationRequestProfile(
+        mode: TranslationExecutionMode.local,
+        providerId: 'provider-a',
+        modelId: 'model-a',
+        reasoningPolicy: ChatReasoningPolicy.providerDefault,
+        reasoningControlSuppressed: false,
+      );
+      StoryTemplateTranslationTaskModel taskFor(String name) =>
+          StoryTemplateTranslationTaskModel(
+            sourceTitle: '$name source',
+            sourcePayload: jsonEncode(StoryRoomTemplatePayload(results: [
+              AssistantRoleCardImportResult(
+                assistant: AssistantModel(name: name),
+              ),
+            ]).toJson()),
+            outputTitle: '$name copy',
+            roleTotal: 1,
+            requestProfile: jsonEncode(profile.toJson()),
+          );
+
+      final staleTask = taskFor('Alice');
+      await taskDaoA.saveTask(staleTask);
+      final coordinator = StoryTemplateTranslationCoordinator();
+      await coordinator.initialize(storageA, accountHash: 'account-a');
+      await coordinator.cancelActiveRunsForLifecycle();
+      await dbA.close();
+
+      final dbB = await databaseFactoryFfi.openDatabase(
+        inMemoryDatabasePath,
+        options: OpenDatabaseOptions(singleInstance: false),
+      );
+      addTearDown(dbB.close);
+      final storageB = HiDBManager.test(dbB);
+      final taskDaoB =
+          await StoryTemplateTranslationTaskDao.create(storageB);
+      final recoverableTask = taskFor('Bob');
+      await taskDaoB.saveTask(recoverableTask);
+      expect(staleTask.id, recoverableTask.id);
+
+      await coordinator.initialize(storageB, accountHash: 'account-a');
+      final resumed = await coordinator.resumeRecoverable(
+        resolveExecutor: (resolved) => TranslationStreamExecutor(
+          service: _EchoTranslationChatService(),
+          profile: resolved,
+        ),
+      );
+
+      final storedB = await taskDaoB.getTask(recoverableTask.id!);
+      expect(resumed, 1);
+      expect(coordinator.tasks.single.sourceTitle, 'Bob source');
+      expect(storedB?.status, StoryTemplateTranslationTaskStatus.completed);
+      expect(storedB?.outputTemplateId, isNotNull);
+    });
+
+    test('同账号不同 storage 会绕过旧 fast path', () async {
+      final dbA = await databaseFactoryFfi.openDatabase(
+        inMemoryDatabasePath,
+        options: OpenDatabaseOptions(singleInstance: false),
+      );
+      final storageA = HiDBManager.test(dbA);
+      final taskDaoA =
+          await StoryTemplateTranslationTaskDao.create(storageA);
+      final profile = TranslationRequestProfile(
+        mode: TranslationExecutionMode.local,
+        providerId: 'provider-a',
+        modelId: 'model-a',
+        reasoningPolicy: ChatReasoningPolicy.providerDefault,
+        reasoningControlSuppressed: false,
+      );
+      StoryTemplateTranslationTaskModel taskFor(String name) =>
+          StoryTemplateTranslationTaskModel(
+            sourceTitle: '$name source',
+            sourcePayload: jsonEncode(StoryRoomTemplatePayload(results: [
+              AssistantRoleCardImportResult(
+                assistant: AssistantModel(name: name),
+              ),
+            ]).toJson()),
+            outputTitle: '$name copy',
+            roleTotal: 1,
+            requestProfile: jsonEncode(profile.toJson()),
+          );
+
+      final staleTask = taskFor('Alice');
+      await taskDaoA.saveTask(staleTask);
+      final coordinator = StoryTemplateTranslationCoordinator();
+      await coordinator.initialize(storageA, accountHash: 'account-a');
+      await dbA.close();
+
+      final dbB = await databaseFactoryFfi.openDatabase(
+        inMemoryDatabasePath,
+        options: OpenDatabaseOptions(singleInstance: false),
+      );
+      addTearDown(dbB.close);
+      final storageB = HiDBManager.test(dbB);
+      final taskDaoB =
+          await StoryTemplateTranslationTaskDao.create(storageB);
+      final recoverableTask = taskFor('Bob');
+      await taskDaoB.saveTask(recoverableTask);
+      expect(staleTask.id, recoverableTask.id);
+
+      await coordinator.initialize(storageB, accountHash: 'account-a');
+      final resumed = await coordinator.resumeRecoverable(
+        resolveExecutor: (resolved) => TranslationStreamExecutor(
+          service: _EchoTranslationChatService(),
+          profile: resolved,
+        ),
+      );
+
+      final storedB = await taskDaoB.getTask(recoverableTask.id!);
+      expect(resumed, 1);
+      expect(coordinator.tasks.single.sourceTitle, 'Bob source');
+      expect(storedB?.status, StoryTemplateTranslationTaskStatus.completed);
+      expect(storedB?.outputTemplateId, isNotNull);
+    });
+
     test('协调器创建任务时冻结具体模型和任务类型', () async {
       final coordinator = StoryTemplateTranslationCoordinator();
       await coordinator.initialize(storage, accountHash: 'test');

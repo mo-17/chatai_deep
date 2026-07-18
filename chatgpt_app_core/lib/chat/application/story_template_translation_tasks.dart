@@ -37,6 +37,7 @@ class StoryTemplateTranslationCoordinator extends ChangeNotifier {
 
   StoryTemplateTranslationTaskDao? _taskDao;
   StoryTemplateDao? _templateDao;
+  HiDBManager? _storage;
   String? _accountHash;
   List<StoryTemplateTranslationTaskModel> _tasks = const [];
   final Set<_TranslationRunKey> _cancelledRuns = {};
@@ -56,8 +57,14 @@ class StoryTemplateTranslationCoordinator extends ChangeNotifier {
     HiDBManager storage, {
     required String accountHash,
   }) async {
-    if (_taskDao != null && _accountHash == accountHash) return;
-    await cancelActiveRunsForLifecycle();
+    if (_taskDao != null &&
+        _templateDao != null &&
+        _accountHash == accountHash &&
+        identical(_storage, storage)) {
+      return;
+    }
+    await detachForLifecycle();
+    _storage = storage;
     _accountHash = accountHash;
     _taskDao = await StoryTemplateTranslationTaskDao.create(storage);
     _templateDao = await StoryTemplateDao.create(storage);
@@ -339,9 +346,31 @@ class StoryTemplateTranslationCoordinator extends ChangeNotifier {
     notifyListeners();
   }
 
-  /// 账号切换或登出时立即中止当前账号的 transport，并等待运行器释放租约。
-  /// 生命周期停止只把任务放回可恢复队列，不等同于用户显式取消。
-  Future<void> cancelActiveRunsForLifecycle() async {
+  /// 账号切换或登出时立即中止当前账号的 transport，等待运行器释放
+  /// 租约后解绑 DAO 和 storage。生命周期停止只把任务放回可恢复队列，
+  /// 不等同于用户显式取消。
+  Future<void> detachForLifecycle() async {
+    final accountHash = _accountHash;
+    await _cancelActiveRunsForLifecycle();
+    if (accountHash != null) {
+      _cancelledRuns.removeWhere((key) => key.accountHash == accountHash);
+      _lifecycleCancelledRuns
+          .removeWhere((key) => key.accountHash == accountHash);
+      _cancellations.removeWhere((key, _) => key.accountHash == accountHash);
+      _runSettlements.removeWhere((key, _) => key.accountHash == accountHash);
+    }
+    _storage = null;
+    _taskDao = null;
+    _templateDao = null;
+    _accountHash = null;
+    _tasks = const [];
+    notifyListeners();
+  }
+
+  /// 保留旧入口，调用方依然会完成整个生命周期解绑。
+  Future<void> cancelActiveRunsForLifecycle() => detachForLifecycle();
+
+  Future<void> _cancelActiveRunsForLifecycle() async {
     final accountHash = _accountHash;
     if (accountHash == null) return;
     final keys = _runningRuns
