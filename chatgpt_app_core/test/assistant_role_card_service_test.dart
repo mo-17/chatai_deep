@@ -9,6 +9,27 @@ import 'package:chatgpt_app_core/util/avatar_asset_service.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 void main() {
+  test('memoryBookTranslationView preserves raw markers outside translation', () {
+    const first = '# [chatai_deep.tavern_raw.v1] NOT_BASE64';
+    const second = '# [chatai_deep.tavern_raw.v1] SECOND';
+    final view = AssistantRoleCardService.memoryBookTranslationView(
+      '$first\nkey => English\n$second',
+    );
+
+    expect(view.hasRawMarker, isTrue);
+    expect(view.translationSource, 'key => English');
+    expect(view.restore('key => 中文'), '$first\n$second\nkey => 中文');
+  });
+
+  test('memoryBookTranslationView is identity without a raw marker', () {
+    final view = AssistantRoleCardService.memoryBookTranslationView(
+      'key => English',
+    );
+    expect(view.hasRawMarker, isFalse);
+    expect(view.translationSource, 'key => English');
+    expect(view.restore('key => 中文'), 'key => 中文');
+  });
+
   test('角色卡导出格式文案区分完整格式和 Tavern 兼容格式', () {
     expect(AssistantRoleCardService.fullExportLabel, '完整角色卡');
     expect(AssistantRoleCardService.fullExportDescription, contains('同款 App'));

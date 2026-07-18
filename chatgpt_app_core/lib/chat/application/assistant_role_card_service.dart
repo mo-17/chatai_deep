@@ -550,6 +550,24 @@ class AssistantRoleCardService {
   static String memoryBookForRuntime(String memoryBook) =>
       _withoutTavernRawCardMarker(memoryBook);
 
+  static AssistantMemoryBookTranslationView memoryBookTranslationView(
+    String source,
+  ) {
+    final markerLines = <String>[];
+    final bodyLines = <String>[];
+    for (final line in source.replaceAll('\r\n', '\n').split('\n')) {
+      if (line.startsWith(_tavernRawMarker)) {
+        markerLines.add(line);
+      } else {
+        bodyLines.add(line);
+      }
+    }
+    return AssistantMemoryBookTranslationView._(
+      markerLines: markerLines,
+      translationSource: bodyLines.join('\n').trim(),
+    );
+  }
+
   static List<AssistantRoleCardImportResult> importPackageBytesList(
       List<int> bytes,
       {String? filename}) {
@@ -3158,6 +3176,23 @@ class AssistantRoleCardService {
       }
     }
     return null;
+  }
+}
+
+class AssistantMemoryBookTranslationView {
+  AssistantMemoryBookTranslationView._({
+    required List<String> markerLines,
+    required this.translationSource,
+  }) : _markerLines = List.unmodifiable(markerLines);
+
+  final List<String> _markerLines;
+  final String translationSource;
+
+  bool get hasRawMarker => _markerLines.isNotEmpty;
+
+  String restore(String translatedBody) {
+    if (!hasRawMarker) return translatedBody;
+    return [..._markerLines, translatedBody.trim()].join('\n');
   }
 }
 
