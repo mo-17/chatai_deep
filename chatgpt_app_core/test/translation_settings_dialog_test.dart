@@ -115,6 +115,55 @@ void main() {
     expect(result?.modelId, 'custom-fast');
     expect(settings.activeProviderId, 'deepseek');
   });
+
+  for (final testCase in [
+    (
+      name: '显式后端模型',
+      preference: const TranslationModelPreference(
+        mode: TranslationModelPreferenceMode.backend,
+        modelId: 'backend-fast',
+        reasoningPolicy: ChatReasoningPolicy.offIfSupported,
+      ),
+    ),
+    (
+      name: '跟随后端全局模型',
+      preference: const TranslationModelPreference(
+        mode: TranslationModelPreferenceMode.followGlobal,
+        reasoningPolicy: ChatReasoningPolicy.offIfSupported,
+      ),
+    ),
+  ]) {
+    testWidgets('${testCase.name}允许语义关闭 Thinking', (tester) async {
+      final settings = _settings()..mode = AIMode.backend;
+      TranslationModelPreference? result;
+      await tester.pumpWidget(_host(
+        onOpen: (context) async {
+          result = await showTranslationSettingsDialog(
+            context,
+            settings: settings,
+            initialValue: testCase.preference,
+            estimatedRunes: 100,
+          );
+        },
+      ));
+
+      await tester.tap(find.text('打开'));
+      await tester.pumpAndSettle();
+      expect(find.text('后端会在模型支持时关闭 Thinking。'), findsOneWidget);
+      final thinking = tester.widget<SwitchListTile>(
+        find.byKey(const ValueKey('translation_disable_thinking')),
+      );
+      expect(thinking.value, isTrue);
+      expect(thinking.onChanged, isNotNull);
+
+      await tester.tap(
+        find.byKey(const ValueKey('translation_settings_confirm')),
+      );
+      await tester.pumpAndSettle();
+      expect(result?.mode, testCase.preference.mode);
+      expect(result?.reasoningPolicy, ChatReasoningPolicy.offIfSupported);
+    });
+  }
 }
 
 Widget _host({required Future<void> Function(BuildContext context) onOpen}) =>

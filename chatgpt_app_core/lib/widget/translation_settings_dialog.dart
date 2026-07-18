@@ -63,6 +63,7 @@ class _TranslationSettingsDialogState
   @override
   Widget build(BuildContext context) {
     final decision = _reasoningDecision(widget.settings, _selected);
+    final usesBackend = _usesBackend(widget.settings, _selected);
     final supportsThinkingControl = decision.supported;
     final effectiveSwitch = supportsThinkingControl && _disableThinking;
     return AlertDialog(
@@ -87,9 +88,11 @@ class _TranslationSettingsDialogState
               contentPadding: EdgeInsets.zero,
               title: const Text('关闭深度思考（推荐）'),
               subtitle: Text(
-                supportsThinkingControl
-                    ? '翻译任务会显式请求快速输出，减少首字等待。'
-                    : '该接口不会发送 Thinking 参数',
+                usesBackend
+                    ? '后端会在模型支持时关闭 Thinking。'
+                    : supportsThinkingControl
+                        ? '翻译任务会显式请求快速输出，减少首字等待。'
+                        : '该接口不会发送 Thinking 参数',
               ),
               value: effectiveSwitch,
               onChanged: supportsThinkingControl
@@ -173,12 +176,7 @@ class _TranslationSettingsDialogState
     switch (value.mode) {
       case TranslationModelPreferenceMode.followGlobal:
         if (settings.mode == AIMode.backend) {
-          return ReasoningControlAdapter.resolve(
-            providerId: null,
-            providerCode: null,
-            modelId: settings.backendModel,
-            policy: ChatReasoningPolicy.offIfSupported,
-          );
+          return _backendReasoningDecision;
         }
         final provider = settings.activeProvider;
         return ReasoningControlAdapter.resolve(
@@ -196,14 +194,23 @@ class _TranslationSettingsDialogState
           policy: ChatReasoningPolicy.offIfSupported,
         );
       case TranslationModelPreferenceMode.backend:
-        return ReasoningControlAdapter.resolve(
-          providerId: null,
-          providerCode: null,
-          modelId: value.modelId ?? '',
-          policy: ChatReasoningPolicy.offIfSupported,
-        );
+        return _backendReasoningDecision;
     }
   }
+
+  static const _backendReasoningDecision = ReasoningControlDecision(
+    supported: true,
+    requestFields: {},
+    explanation: 'backend_semantic_policy',
+  );
+
+  static bool _usesBackend(
+    AISettings settings,
+    TranslationModelPreference value,
+  ) =>
+      value.mode == TranslationModelPreferenceMode.backend ||
+      (value.mode == TranslationModelPreferenceMode.followGlobal &&
+          settings.mode == AIMode.backend);
 
   static AiProvider? _provider(AISettings settings, String? providerId) {
     for (final provider in settings.providers) {
