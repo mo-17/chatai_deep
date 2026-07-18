@@ -469,6 +469,56 @@ void main() {
     expect(translated.memoryBook, source.replaceAll('Alice keeps', '爱丽丝记录'));
   });
 
+  test('marker-only memory book never reaches the model', () async {
+    const prefix = '# [chatai_deep.tavern_raw.v1] ';
+    final source =
+        '$prefix${List.filled(33322 - prefix.runes.length, 'A').join()}';
+    var calls = 0;
+    final translated =
+        await AssistantRoleCardTranslationService.translateToSimplifiedChinese(
+      AssistantModel(name: '', memoryBook: source),
+      onChunkCheckpoint: (_, __) async {},
+      complete: (_) async {
+        calls += 1;
+        throw StateError('raw marker reached model');
+      },
+    );
+    expect(calls, 0);
+    expect(translated.memoryBook, source);
+  });
+
+  test('raw marker stays outside memory book prompts', () async {
+    const prefix = '# [chatai_deep.tavern_raw.v1] ';
+    const base64Sentinel = 'VU5JUVVFX1JBV19CQVNFNjRfU0VOVElORUw=';
+    const marker = '$prefix$base64Sentinel';
+    const body = 'key => Alice keeps a visible world-book note.';
+    final prompts = <String>[];
+
+    final translated =
+        await AssistantRoleCardTranslationService.translateToSimplifiedChinese(
+      AssistantModel(name: '', memoryBook: '$marker\n$body'),
+      onChunkCheckpoint: (_, __) async {},
+      complete: (prompt) async {
+        prompts.add(prompt);
+        final payload =
+            jsonDecode(prompt.split('\n').last) as Map<String, dynamic>;
+        final value = payload['memoryBook'] as String;
+        return jsonEncode({
+          'memoryBook': value.replaceAll(
+            'Alice keeps a visible world-book note.',
+            '爱丽丝保留了一条可见的世界书记录。',
+          ),
+        });
+      },
+    );
+
+    expect(prompts, isNotEmpty);
+    expect(prompts.every((prompt) => !prompt.contains(prefix)), isTrue);
+    expect(prompts.every((prompt) => !prompt.contains(base64Sentinel)), isTrue);
+    expect(translated.memoryBook.split('\n').first, marker);
+    expect(translated.memoryBook, contains('爱丽丝保留了一条可见的世界书记录。'));
+  });
+
   test('33322-rune world book resumes without resending completed chunks',
       () async {
     final raw = List.generate(

@@ -5,7 +5,9 @@ import 'package:chatgpt_app_core/chat/application/assistant_role_card_service.da
 import 'package:chatgpt_app_core/chat/application/story_room_role_card_importer.dart';
 import 'package:chatgpt_app_core/chat/application/tavern_room_import_finalizer.dart';
 import 'package:chatgpt_app_core/chat/application/story_template_translation_tasks.dart';
+import 'package:chatgpt_app_core/chat/application/translation_chunk_planner.dart';
 import 'package:chatgpt_app_core/chat/application/translation_model_resolver.dart';
+import 'package:chatgpt_app_core/chat/application/translation_stream_executor.dart';
 import 'package:chatgpt_app_core/chat/domain/chat_request_options.dart';
 import 'package:chatgpt_app_core/chat/domain/translation_request_profile.dart';
 import 'package:chatgpt_app_core/db/hi_db_manager.dart';
@@ -164,6 +166,89 @@ void main() {
       expect(await db.query('tb_story_template'), hasLength(1));
       expect(await db.query('tb_story_room'), hasLength(1));
       expect(await db.query('tb_story_participant'), hasLength(1));
+    });
+
+    test('full-envelope checkpoint is discarded during Tavern task recovery',
+        () async {
+      const marker = '# [chatai_deep.tavern_raw.v1] LEGACY_SENTINEL';
+      final legacy = const TranslationChunkPlanner().plan(
+        field: 'memoryBook',
+        source: marker,
+      );
+      final poisoned = TranslationChunkCheckpoint(
+        field: legacy.field,
+        sourceHash: legacy.sourceHash,
+        chunks: [
+          for (final state in legacy.chunks)
+            TranslationChunkState(
+              chunk: state.chunk,
+              status: TranslationChunkStatus.completed,
+              translatedText: 'CORRUPTED_BASE64_TRANSLATION',
+              attempts: 1,
+              lastErrorKind: TranslationFailureKind.invalidOutput,
+            ),
+        ],
+      );
+      final source = StoryRoomTemplatePayload(results: [
+        AssistantRoleCardImportResult(
+          assistant: AssistantModel(name: 'Gail', memoryBook: marker),
+        ),
+      ]);
+      final task = StoryTemplateTranslationTaskModel(
+        sourceTitle: 'gail.png',
+        sourcePayload: jsonEncode(source.toJson()),
+        outputTitle: '盖尔',
+        taskKind: StoryTemplateTranslationTaskKind.tavernRoomImport,
+        fieldPayload: jsonEncode({
+          'scope': 'role',
+          'roleIndex': 0,
+          'fields': {
+            'name': '盖尔',
+            'description': '',
+            'prompt': '',
+            'openingMessage': '',
+            'exampleDialogs': '',
+          },
+        }),
+        checkpointVersion: TranslationChunkCheckpoint.currentVersion,
+        chunkPayload: jsonEncode({
+          'version': TranslationChunkCheckpoint.currentVersion,
+          'checkpoints': {'role:0:memoryBook': poisoned.toJson()},
+        }),
+      );
+      await taskDao.saveTask(task);
+      expect(
+        await taskDao.claimTask(
+          task.id!,
+          leaseOwner: 'runner-raw-recovery',
+          leaseDuration: const Duration(minutes: 5),
+        ),
+        isTrue,
+      );
+      final prompts = <String>[];
+
+      await StoryTemplateTranslationTaskRunner(
+        taskDao: taskDao,
+        templateDao: await StoryTemplateDao.create(storage),
+        task: task,
+        leaseOwner: 'runner-raw-recovery',
+        useChunkCheckpoints: true,
+        complete: (prompt) async {
+          prompts.add(prompt);
+          throw StateError('marker-only recovery must not call the model');
+        },
+        isCancelled: () => false,
+      ).run();
+
+      final stored = await taskDao.getTask(task.id!);
+      final templates =
+          await (await StoryTemplateDao.create(storage)).getTemplates();
+      final output = StoryRoomTemplatePayload.fromTemplate(templates.single);
+      expect(prompts, isEmpty);
+      expect(output.results.single.assistant.memoryBook, marker);
+      expect(stored?.status, StoryTemplateTranslationTaskStatus.completed);
+      expect(stored?.outputRoomId, isNotNull);
+      expect(await db.query('tb_story_room'), hasLength(1));
     });
 
     test('build preserves single and batch empty-opening semantics', () {
