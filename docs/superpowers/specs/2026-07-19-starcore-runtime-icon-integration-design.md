@@ -1,7 +1,7 @@
 # 星核向导运行时图标接入设计
 
 - 日期：2026-07-19
-- 状态：设计已确认，等待书面规范复核；尚未实施
+- 状态：设计与书面规范已批准；尚未实施
 - 适用项目：`chatai_deep` Flutter 客户端
 - 上游视觉规范：`docs/superpowers/specs/2026-07-13-starcore-icon-system-design.md`
 - 视觉母版：`docs/design-assets/starcore-guide/`
@@ -228,7 +228,7 @@ Story room 使用独立 persona/speaker avatar 链路，本轮不把新的 asset
 第一批接入两个用户能直接核对语义的表面：
 
 1. `assistant_edit_page.dart` 的内置工具多选项：专属 glyph 作为 leading，副作用警告图标和 checkbox 行为不变。
-2. `block_message_content.dart` 的 `ToolBlock` 卡片：成功、失败和静止状态显示专属 glyph；运行中继续显示 `CircularProgressIndicator`。
+2. `block_message_content.dart` 的 `ToolBlock` 卡片：成功状态显示专属 glyph；运行中继续显示 `CircularProgressIndicator`，错误、暂停与未知工具显示通用图标。
 
 其他复用 `ToolRegistry.catalog` 的项目级工具选择 sheet 若有独立 UI，应复用同一映射组件，而不是复制路径字符串。动态 MCP 工具维持通用图标。
 
@@ -246,7 +246,7 @@ Story room 使用独立 persona/speaker avatar 链路，本轮不把新的 asset
        └─ AppVisualTheme.isAnime = true
             ├─ navigation state ──> default / selected SVG
             ├─ avatarType + avatarValue ──> image / asset / emoji / explorer fallback
-            └─ toolId ──> web / knowledge SVG / generic fallback
+            └─ toolName ──> web / knowledge SVG / generic fallback
 ```
 
 运行时错误边界：
