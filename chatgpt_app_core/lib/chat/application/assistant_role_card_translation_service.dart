@@ -33,6 +33,8 @@ class RoleCardTranslationProgress {
   final String stage;
   final String detail;
   final double fieldProgress;
+  final int? completedRunes;
+  final int? totalRunes;
 
   const RoleCardTranslationProgress({
     required this.field,
@@ -42,6 +44,8 @@ class RoleCardTranslationProgress {
     required this.stage,
     this.detail = '',
     this.fieldProgress = 0,
+    this.completedRunes,
+    this.totalRunes,
   });
 }
 
@@ -62,6 +66,7 @@ class AssistantRoleCardTranslationService {
     RoleCardChunkCheckpoint? onChunkCheckpoint,
     TranslationRetryPolicy retryPolicy = const TranslationRetryPolicy(),
   }) async {
+    final totalWork = _workEstimator.totalRunesForAssistant(assistant);
     final memoryBookField = RoleCardTranslationFields.byId(
       assistant,
       'memoryBook',
@@ -85,27 +90,31 @@ class AssistantRoleCardTranslationService {
     }
 
     try {
-      onProgress?.call(const RoleCardTranslationProgress(
+      onProgress?.call(RoleCardTranslationProgress(
         field: 'wholeCard',
         fieldLabel: '整卡',
         current: 1,
         total: 1,
         stage: '提交整卡翻译',
+        completedRunes: 0,
+        totalRunes: totalWork,
       ));
       final response = await complete(buildPrompt(assistant));
-      onProgress?.call(const RoleCardTranslationProgress(
-        field: 'wholeCard',
-        fieldLabel: '整卡',
-        current: 1,
-        total: 1,
-        stage: '解析整卡翻译',
-      ));
       final translated = decodeTranslation(response);
       await _checkpointTranslatedFields(
         assistant,
         translated,
         onFieldCheckpoint,
       );
+      onProgress?.call(RoleCardTranslationProgress(
+        field: 'wholeCard',
+        fieldLabel: '整卡',
+        current: 1,
+        total: 1,
+        stage: '解析整卡翻译',
+        completedRunes: totalWork,
+        totalRunes: totalWork,
+      ));
       return applyTranslatedFields(assistant, translated);
     } on RoleCardTranslationCancelled {
       rethrow;
@@ -149,12 +158,14 @@ class AssistantRoleCardTranslationService {
       );
       return applyTranslatedFields(assistant, translated);
     } catch (_) {
-      onProgress?.call(const RoleCardTranslationProgress(
+      onProgress?.call(RoleCardTranslationProgress(
         field: 'wholeCard',
         fieldLabel: '整卡',
         current: 1,
         total: 1,
         stage: '整卡失败，改为分字段',
+        completedRunes: 0,
+        totalRunes: totalWork,
       ));
       final translated = await translateFieldsIndividually(
         assistant,
@@ -181,6 +192,7 @@ class AssistantRoleCardTranslationService {
     TranslationRetryPolicy retryPolicy = const TranslationRetryPolicy(),
   }) async {
     final fields = RoleCardTranslationFields.fromAssistant(assistant);
+    final totalWork = _workEstimator.totalRunesForAssistant(assistant);
     final memoryBookField = fields.last;
     final hasRawMemoryBookMarker =
         memoryBookField.source != assistant.memoryBook;
@@ -197,6 +209,9 @@ class AssistantRoleCardTranslationService {
     };
     for (var i = 0; i < fields.length; i++) {
       final field = fields[i];
+      final completedBeforeField = fields
+          .take(i)
+          .fold<int>(0, (sum, prior) => sum + prior.source.runes.length);
       if (translated.containsKey(field.id)) {
         onProgress?.call(RoleCardTranslationProgress(
           field: field.id,
@@ -205,6 +220,8 @@ class AssistantRoleCardTranslationService {
           total: fields.length,
           stage: '从检查点恢复字段',
           fieldProgress: 1,
+          completedRunes: completedBeforeField + field.source.runes.length,
+          totalRunes: totalWork,
         ));
         continue;
       }
@@ -244,6 +261,8 @@ class AssistantRoleCardTranslationService {
           total: fields.length,
           stage: '字段为空，已跳过',
           fieldProgress: 1,
+          completedRunes: completedBeforeField + field.source.runes.length,
+          totalRunes: totalWork,
         ));
         continue;
       }
@@ -254,6 +273,8 @@ class AssistantRoleCardTranslationService {
         total: fields.length,
         stage: '准备翻译字段',
         detail: '${field.source.runes.length} 字',
+        completedRunes: completedBeforeField,
+        totalRunes: totalWork,
       ));
       final completed = await _translateCheckpoint(
         checkpoint: checkpoint,
@@ -264,6 +285,8 @@ class AssistantRoleCardTranslationService {
         fieldIndex: i + 1,
         fieldTotal: fields.length,
         fieldLabel: field.label,
+        completedBeforeField: completedBeforeField,
+        totalWork: totalWork,
       );
       final mergedBody = _mergeCheckpoint(completed);
       try {
@@ -310,6 +333,8 @@ class AssistantRoleCardTranslationService {
         total: fields.length,
         stage: retainedOriginal ? '字段部分翻译' : '字段已翻译',
         fieldProgress: 1,
+        completedRunes: completedBeforeField + field.source.runes.length,
+        totalRunes: totalWork,
       ));
     }
     return translated;
@@ -446,6 +471,8 @@ class AssistantRoleCardTranslationService {
     required int fieldIndex,
     required int fieldTotal,
     required String fieldLabel,
+    required int completedBeforeField,
+    required int totalWork,
   }) async {
     var current = checkpoint;
     var chunkIndex = 0;
@@ -460,6 +487,9 @@ class AssistantRoleCardTranslationService {
           stage: '从检查点恢复分块',
           detail: '块 ${chunkIndex + 1}/${current.chunks.length}',
           fieldProgress: (chunkIndex + 1) / current.chunks.length,
+          completedRunes: completedBeforeField +
+              _workEstimator.resolvedRunesForCheckpoint(current),
+          totalRunes: totalWork,
         ));
         chunkIndex += 1;
         continue;
@@ -486,6 +516,9 @@ class AssistantRoleCardTranslationService {
           stage: '空分块已跳过',
           detail: '块 ${chunkIndex + 1}/${current.chunks.length}',
           fieldProgress: (chunkIndex + 1) / current.chunks.length,
+          completedRunes: completedBeforeField +
+              _workEstimator.resolvedRunesForCheckpoint(current),
+          totalRunes: totalWork,
         ));
         chunkIndex += 1;
         continue;
@@ -550,6 +583,9 @@ class AssistantRoleCardTranslationService {
           stage: '分块已翻译',
           detail: '块 ${chunkIndex + 1}/${current.chunks.length}',
           fieldProgress: (chunkIndex + 1) / current.chunks.length,
+          completedRunes: completedBeforeField +
+              _workEstimator.resolvedRunesForCheckpoint(current),
+          totalRunes: totalWork,
         ));
         chunkIndex += 1;
       } on RoleCardTranslationCancelled {

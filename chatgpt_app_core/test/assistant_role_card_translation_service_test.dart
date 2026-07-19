@@ -1110,4 +1110,136 @@ void main() {
       isTrue,
     );
   });
+
+  test('整卡成功以所有字段 rune 总数结束进度', () async {
+    final assistant = sampleAssistant();
+    final progresses = <RoleCardTranslationProgress>[];
+
+    await AssistantRoleCardTranslationService.translateToSimplifiedChinese(
+      assistant,
+      onProgress: progresses.add,
+      complete: (_) async => jsonEncode({
+        'name': '爱丽丝',
+        'description': '一位侦探。',
+        'prompt': '保持谨慎。',
+        'openingMessage': '晚上好。',
+        'exampleDialogs': '示例对话',
+        'memoryBook': '[re] ^Baker Street\$ => 爱丽丝住在贝克街。',
+      }),
+    );
+
+    final completed = progresses.last;
+    expect(completed.completedRunes, completed.totalRunes);
+    expect(completed.totalRunes, greaterThan(0));
+  });
+
+  test('恢复分块按 source 和 separator rune 只累计一次', () async {
+    const planner = TranslationChunkPlanner();
+    final source = List.generate(
+      70,
+      (index) => 'key$index => Alice remembers item $index.',
+    ).join('\r\n');
+    final planned = planner.plan(field: 'memoryBook', source: source);
+    expect(planned.chunks.length, greaterThanOrEqualTo(3));
+    final restored = TranslationChunkCheckpoint(
+      field: planned.field,
+      sourceHash: planned.sourceHash,
+      chunks: [
+        TranslationChunkState(
+          chunk: planned.chunks[0].chunk,
+          status: TranslationChunkStatus.completed,
+          translatedText: planned.chunks[0].chunk.sourceText,
+          attempts: 1,
+          lastErrorKind: null,
+        ),
+        TranslationChunkState(
+          chunk: planned.chunks[1].chunk,
+          status: TranslationChunkStatus.retainedOriginal,
+          translatedText: planned.chunks[1].chunk.sourceText,
+          attempts: 1,
+          lastErrorKind: TranslationFailureKind.invalidOutput,
+        ),
+        ...planned.chunks.skip(2),
+      ],
+    );
+    final progresses = <RoleCardTranslationProgress>[];
+
+    await AssistantRoleCardTranslationService.translateToSimplifiedChinese(
+      AssistantModel(name: '', memoryBook: source),
+      initialChunkCheckpoints: {'memoryBook': restored},
+      onProgress: progresses.add,
+      complete: (prompt) async {
+        final payload =
+            jsonDecode(prompt.split('\n').last) as Map<String, dynamic>;
+        final value = payload['memoryBook'] as String;
+        return jsonEncode({'memoryBook': value});
+      },
+    );
+
+    final restoredProgress =
+        progresses.where((progress) => progress.stage == '从检查点恢复分块').toList();
+    expect(restoredProgress, hasLength(2));
+    expect(
+      restoredProgress.last.completedRunes,
+      planned.chunks.take(2).fold<int>(
+          0,
+          (sum, state) =>
+              sum +
+              state.chunk.sourceText.runes.length +
+              state.chunk.separatorAfter.runes.length),
+    );
+    expect(progresses.last.completedRunes, source.runes.length);
+    expect(progresses.last.totalRunes, source.runes.length);
+  });
+
+  test('等待持久化的 retry 和 timeout split 不会提前累计 rune', () async {
+    final source = List.filled(1000, '界').join();
+    final splitPersisted = Completer<void>();
+    final releaseSplit = Completer<void>();
+    final progresses = <RoleCardTranslationProgress>[];
+    var calls = 0;
+
+    final translation =
+        AssistantRoleCardTranslationService.translateToSimplifiedChinese(
+      AssistantModel(name: '', memoryBook: source),
+      onProgress: progresses.add,
+      onChunkCheckpoint: (field, checkpoint) async {
+        if (field != 'memoryBook' || checkpoint.chunks.length == 1) return;
+        if (!splitPersisted.isCompleted) splitPersisted.complete();
+        await releaseSplit.future;
+      },
+      complete: (prompt) async {
+        final payload =
+            jsonDecode(prompt.split('\n').last) as Map<String, dynamic>;
+        final value = payload['memoryBook'] as String;
+        calls += 1;
+        if (calls == 1) {
+          throw const TranslationRequestFailure(
+            kind: TranslationFailureKind.unsupportedReasoningControl,
+            safeCode: 'unsupported_reasoning_control',
+          );
+        }
+        if (calls == 2) {
+          throw const TranslationRequestFailure(
+            kind: TranslationFailureKind.totalTimeout,
+            safeCode: 'total_timeout',
+          );
+        }
+        return jsonEncode({'memoryBook': value});
+      },
+    );
+
+    await splitPersisted.future;
+    expect(
+      progresses
+          .where((progress) => progress.field == 'memoryBook')
+          .every((progress) => progress.completedRunes == 0),
+      isTrue,
+    );
+    releaseSplit.complete();
+    await translation;
+
+    expect(progresses.last.completedRunes, source.runes.length);
+    expect(progresses.last.totalRunes, source.runes.length);
+  });
 }

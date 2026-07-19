@@ -16,6 +16,8 @@ class TavernRoomImportProgress {
   final int fieldTotal;
   final String fieldLabel;
   final double fieldProgress;
+  final int? completedRunes;
+  final int? totalRunes;
 
   const TavernRoomImportProgress({
     required this.current,
@@ -27,6 +29,8 @@ class TavernRoomImportProgress {
     this.fieldTotal = 0,
     this.fieldLabel = '',
     this.fieldProgress = 0,
+    this.completedRunes,
+    this.totalRunes,
   });
 }
 
@@ -110,6 +114,8 @@ class TavernRoomImportPreparer {
           fieldTotal: value.total,
           fieldLabel: value.fieldLabel,
           fieldProgress: value.fieldProgress,
+          completedRunes: value.completedRunes,
+          totalRunes: value.totalRunes,
         )),
       );
       late final AssistantModel protectedAssistant;

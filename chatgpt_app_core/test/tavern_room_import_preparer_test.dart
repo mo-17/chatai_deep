@@ -623,6 +623,41 @@ She stands by the door.
       throwsA(isA<RoleCardTranslationCancelled>()),
     );
   });
+
+  test('透传角色卡 rune 加权进度', () async {
+    final assistant = AssistantModel(
+      name: 'Alice',
+      description: 'A detective.',
+    );
+    final progresses = <TavernRoomImportProgress>[];
+
+    await TavernRoomImportPreparer.prepare(
+      [AssistantRoleCardImportResult(assistant: assistant)],
+      translateToSimplifiedChinese: true,
+      onProgress: progresses.add,
+      complete: (_) async => jsonEncode({
+        'name': '爱丽丝',
+        'description': '一位侦探。',
+        'prompt': '',
+        'openingMessage': '',
+        'exampleDialogs': '',
+        'memoryBook': '',
+      }),
+    );
+
+    final roleCardProgress = progresses.firstWhere(
+      (progress) => progress.stage == '提交整卡翻译',
+    );
+    expect(roleCardProgress.completedRunes, 0);
+    expect(
+      roleCardProgress.totalRunes,
+      'AliceA detective.'.runes.length,
+    );
+    final completed = progresses.lastWhere(
+      (progress) => progress.stage == '解析整卡翻译',
+    );
+    expect(completed.completedRunes, completed.totalRunes);
+  });
 }
 
 Map<String, String> _translatedFieldsExceptMemory(AssistantModel assistant) => {
