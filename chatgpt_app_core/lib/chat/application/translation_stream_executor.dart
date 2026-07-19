@@ -168,15 +168,8 @@ final class TranslationStreamExecutor {
         _firstEventTimeout = firstEventTimeout,
         _idleTimeout = idleTimeout,
         _totalTimeout = totalTimeout,
-        _maxOutputTokensOverride = maxOutputTokensOverride {
-    if (maxOutputTokensOverride != null && maxOutputTokensOverride <= 0) {
-      throw ArgumentError.value(
-        maxOutputTokensOverride,
-        'maxOutputTokensOverride',
-        '必须大于 0',
-      );
-    }
-  }
+        _maxOutputTokensOverride =
+            validateMaxOutputTokensOverride(maxOutputTokensOverride);
 
   Future<String> complete(
     String prompt, {

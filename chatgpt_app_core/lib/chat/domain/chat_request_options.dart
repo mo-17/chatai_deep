@@ -4,6 +4,17 @@ enum ChatRequestProfile { standard, translation }
 /// 请求对模型推理控制的处理方式。
 enum ChatReasoningPolicy { providerDefault, offIfSupported }
 
+int? validateMaxOutputTokensOverride(int? value) {
+  if (value != null && value <= 0) {
+    throw ArgumentError.value(
+      value,
+      'maxOutputTokensOverride',
+      '必须大于 0',
+    );
+  }
+  return value;
+}
+
 /// 单次聊天请求的不可变选项。
 final class ChatRequestOptions {
   final ChatRequestProfile profile;

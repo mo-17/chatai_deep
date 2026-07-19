@@ -226,12 +226,12 @@ class BackendChatService implements ChatService, OptionsAwareChatService {
     List<Map<String, dynamic>> extraMessages = const [],
     required ChatRequestOptions options,
   }) async* {
+    final maxTokens = _maxTokensFor(options);
     final httpClient = http.Client();
     try {
       final uri = BackendConst.buildUri('/uapi/chat/completions/stream');
       final messages =
           _buildMessages(prompt, history, attachments, extraMessages);
-      final maxTokens = _maxTokensFor(options);
       final body = {
         'model': _settings.effectiveModel,
         'messages': messages,
@@ -345,15 +345,9 @@ class BackendChatService implements ChatService, OptionsAwareChatService {
   }
 
   int? _maxTokensFor(ChatRequestOptions options) {
-    final exact = options.maxOutputTokensOverride;
+    final exact =
+        validateMaxOutputTokensOverride(options.maxOutputTokensOverride);
     if (exact != null) {
-      if (exact <= 0) {
-        throw ArgumentError.value(
-          exact,
-          'maxOutputTokensOverride',
-          '必须大于 0',
-        );
-      }
       return exact;
     }
     final requestedMinimum = options.minOutputTokens ?? 0;

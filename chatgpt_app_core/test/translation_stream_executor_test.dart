@@ -23,6 +23,23 @@ void main() {
     }
   });
 
+  test('runtime max output token validation always rejects non-positive values',
+      () {
+    expect(validateMaxOutputTokensOverride(null), isNull);
+    expect(validateMaxOutputTokensOverride(128), 128);
+
+    for (final invalid in [0, -1]) {
+      expect(
+        () => validateMaxOutputTokensOverride(invalid),
+        throwsA(
+          isA<ArgumentError>()
+              .having((error) => error.name, 'name', 'maxOutputTokensOverride')
+              .having((error) => error.invalidValue, 'invalidValue', invalid),
+        ),
+      );
+    }
+  });
+
   group('TranslationCancellationController', () {
     test('cancel is idempotent and completes whenCancelled once', () async {
       final controller = TranslationCancellationController();

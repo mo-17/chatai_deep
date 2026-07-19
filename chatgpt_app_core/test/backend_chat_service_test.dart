@@ -301,33 +301,25 @@ void main() {
     expect(bodies.single['max_tokens'], 128);
   });
 
-  test('options-aware stream rejects runtime-invalid exact token overrides',
-      () async {
-    var assertionsEnabled = false;
-    assert(assertionsEnabled = true);
-    if (assertionsEnabled) return;
+  test('max token calculation runs before the mapped transport try block', () {
+    final source =
+        File('lib/dao/chat/backend_chat_service.dart').readAsStringSync();
+    final methodStart = source.indexOf(
+      'Stream<StreamEvent> chatStreamEventsWithOptions({',
+    );
+    final methodEnd = source.indexOf('\n  int? _maxTokensFor', methodStart);
+    final method = source.substring(methodStart, methodEnd);
+    final calculation = method.indexOf(
+      'final maxTokens = _maxTokensFor(options);',
+    );
+    final mappedTry = method.indexOf('try {');
 
-    final service = BackendChatService(AISettings.defaults()
-      ..mode = AIMode.backend
-      ..maxOutputTokens = 4096);
-    for (final invalid in [0, -1]) {
-      await expectLater(
-        service
-            .chatStreamEventsWithOptions(
-              prompt: 'probe',
-              history: const [],
-              options: ChatRequestOptions(
-                maxOutputTokensOverride: invalid,
-              ),
-            )
-            .drain<void>(),
-        throwsA(
-          isA<ArgumentError>()
-              .having((error) => error.name, 'name', 'maxOutputTokensOverride')
-              .having((error) => error.invalidValue, 'invalidValue', invalid),
-        ),
-      );
-    }
+    expect(methodStart, isNonNegative);
+    expect(methodEnd, isNonNegative);
+    expect(calculation, isNonNegative);
+    expect(mappedTry, isNonNegative);
+    expect(calculation, lessThan(mappedTry));
+    expect(method, contains("'max_tokens': maxTokens"));
   });
 
   test('options-aware stream sends provider_default when control is suppressed',

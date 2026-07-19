@@ -182,6 +182,7 @@ class DirectChatService implements ChatService, OptionsAwareChatService {
     List<Map<String, dynamic>> extraMessages = const [],
     required ChatRequestOptions options,
   }) async* {
+    final maxTokens = _maxTokensFor(options);
     var reasoningControlAttached = false;
     try {
       _ensureApiKey();
@@ -199,7 +200,7 @@ class DirectChatService implements ChatService, OptionsAwareChatService {
         attachments: attachments,
         tools: tools,
         extraMessages: extraMessages,
-        maxTokens: _maxTokensFor(options),
+        maxTokens: maxTokens,
         extraBody: reasoning.requestFields,
         abortTrigger: options.abortTrigger,
         connectTimeout: options.connectTimeout,
@@ -219,15 +220,9 @@ class DirectChatService implements ChatService, OptionsAwareChatService {
   }
 
   int? _maxTokensFor(ChatRequestOptions options) {
-    final exact = options.maxOutputTokensOverride;
+    final exact =
+        validateMaxOutputTokensOverride(options.maxOutputTokensOverride);
     if (exact != null) {
-      if (exact <= 0) {
-        throw ArgumentError.value(
-          exact,
-          'maxOutputTokensOverride',
-          '必须大于 0',
-        );
-      }
       return exact;
     }
     final requestedMinimum = options.minOutputTokens ?? 0;
