@@ -219,6 +219,17 @@ class DirectChatService implements ChatService, OptionsAwareChatService {
   }
 
   int? _maxTokensFor(ChatRequestOptions options) {
+    final exact = options.maxOutputTokensOverride;
+    if (exact != null) {
+      if (exact <= 0) {
+        throw ArgumentError.value(
+          exact,
+          'maxOutputTokensOverride',
+          '必须大于 0',
+        );
+      }
+      return exact;
+    }
     final requestedMinimum = options.minOutputTokens ?? 0;
     final value = _maxOutputTokens >= requestedMinimum
         ? _maxOutputTokens

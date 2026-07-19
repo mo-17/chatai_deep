@@ -151,6 +151,7 @@ final class TranslationStreamExecutor {
   final Duration _firstEventTimeout;
   final Duration _idleTimeout;
   final Duration _totalTimeout;
+  final int? _maxOutputTokensOverride;
   bool _active = false;
 
   TranslationStreamExecutor({
@@ -160,17 +161,28 @@ final class TranslationStreamExecutor {
     Duration firstEventTimeout = const Duration(seconds: 45),
     Duration idleTimeout = const Duration(seconds: 60),
     Duration totalTimeout = const Duration(minutes: 5),
+    int? maxOutputTokensOverride,
   })  : _service = service,
         _profile = profile,
         _onProfileChanged = onProfileChanged,
         _firstEventTimeout = firstEventTimeout,
         _idleTimeout = idleTimeout,
-        _totalTimeout = totalTimeout;
+        _totalTimeout = totalTimeout,
+        _maxOutputTokensOverride = maxOutputTokensOverride {
+    if (maxOutputTokensOverride != null && maxOutputTokensOverride <= 0) {
+      throw ArgumentError.value(
+        maxOutputTokensOverride,
+        'maxOutputTokensOverride',
+        '必须大于 0',
+      );
+    }
+  }
 
   Future<String> complete(
     String prompt, {
     required TranslationCancellationToken cancellation,
     void Function(TranslationStreamPhase phase)? onPhase,
+    void Function()? onFirstEvent,
     Future<void> Function(TranslationRequestProfile profile)? onProfileChanged,
   }) async {
     if (_active) {
@@ -192,6 +204,7 @@ final class TranslationStreamExecutor {
             profile: attemptProfile,
             cancellation: cancellation,
             onPhase: onPhase,
+            onFirstEvent: onFirstEvent,
           );
         } on TranslationRequestFailure catch (failure) {
           final canSuppressReasoning = failure.kind ==
@@ -227,6 +240,7 @@ final class TranslationStreamExecutor {
     required TranslationRequestProfile profile,
     required TranslationCancellationToken cancellation,
     void Function(TranslationStreamPhase phase)? onPhase,
+    void Function()? onFirstEvent,
   }) {
     if (cancellation.isCancelled) {
       return Future<String>.error(_cancelledFailure);
@@ -352,6 +366,7 @@ final class TranslationStreamExecutor {
           connectTimeout: _firstEventTimeout,
           minOutputTokens: 2048,
           suppressReasoningControl: profile.reasoningControlSuppressed,
+          maxOutputTokensOverride: _maxOutputTokensOverride,
         ),
       );
       subscription = stream.listen(
@@ -361,7 +376,14 @@ final class TranslationStreamExecutor {
             fail(_cancelledFailure);
             return;
           }
-          sawEvent = true;
+          if (!sawEvent) {
+            sawEvent = true;
+            try {
+              onFirstEvent?.call();
+            } catch (_) {
+              // Telemetry callbacks never own the request.
+            }
+          }
           firstTimer?.cancel();
           resetIdleTimer();
           switch (event.type) {

@@ -281,6 +281,55 @@ void main() {
     );
   });
 
+  test('options-aware stream uses the exact max output token override',
+      () async {
+    final service = BackendChatService(AISettings.defaults()
+      ..mode = AIMode.backend
+      ..maxOutputTokens = 4096);
+
+    await service
+        .chatStreamEventsWithOptions(
+          prompt: 'probe',
+          history: const [],
+          options: const ChatRequestOptions(
+            minOutputTokens: 2048,
+            maxOutputTokensOverride: 128,
+          ),
+        )
+        .drain<void>();
+
+    expect(bodies.single['max_tokens'], 128);
+  });
+
+  test('options-aware stream rejects runtime-invalid exact token overrides',
+      () async {
+    var assertionsEnabled = false;
+    assert(assertionsEnabled = true);
+    if (assertionsEnabled) return;
+
+    final service = BackendChatService(AISettings.defaults()
+      ..mode = AIMode.backend
+      ..maxOutputTokens = 4096);
+    for (final invalid in [0, -1]) {
+      await expectLater(
+        service
+            .chatStreamEventsWithOptions(
+              prompt: 'probe',
+              history: const [],
+              options: ChatRequestOptions(
+                maxOutputTokensOverride: invalid,
+              ),
+            )
+            .drain<void>(),
+        throwsA(
+          isA<ArgumentError>()
+              .having((error) => error.name, 'name', 'maxOutputTokensOverride')
+              .having((error) => error.invalidValue, 'invalidValue', invalid),
+        ),
+      );
+    }
+  });
+
   test('options-aware stream sends provider_default when control is suppressed',
       () async {
     final service = BackendChatService(AISettings.defaults()

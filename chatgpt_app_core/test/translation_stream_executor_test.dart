@@ -1,15 +1,28 @@
 import 'dart:async';
 
 import 'package:chatgpt_app_core/chat/application/translation_stream_executor.dart';
-import 'package:chatgpt_app_core/chat/domain/chat_attachments.dart';
 import 'package:chatgpt_app_core/chat/domain/chat_request_options.dart';
-import 'package:chatgpt_app_core/chat/domain/model_capabilities.dart';
 import 'package:chatgpt_app_core/chat/domain/stream_event.dart';
 import 'package:chatgpt_app_core/chat/domain/translation_request_profile.dart';
 import 'package:chatgpt_app_core/dao/chat/chat_service.dart';
 import 'package:flutter_test/flutter_test.dart';
 
+import 'support/fake_translation_chat_service.dart';
+
 void main() {
+  test('ChatRequestOptions asserts positive max output token overrides', () {
+    var assertionsEnabled = false;
+    assert(assertionsEnabled = true);
+    if (!assertionsEnabled) return;
+
+    for (final invalid in [0, -1]) {
+      expect(
+        () => ChatRequestOptions(maxOutputTokensOverride: invalid),
+        throwsA(isA<AssertionError>()),
+      );
+    }
+  });
+
   group('TranslationCancellationController', () {
     test('cancel is idempotent and completes whenCancelled once', () async {
       final controller = TranslationCancellationController();
@@ -24,9 +37,87 @@ void main() {
   });
 
   group('TranslationStreamExecutor', () {
+    test('forwards an exact output token override while retaining the floor',
+        () async {
+      final service = FakeTranslationChatService([
+        (request) {
+          request.addNow(StreamEvent.text('ok'));
+          request.closeNow();
+        },
+      ]);
+
+      final result = await _executor(
+        service,
+        maxOutputTokensOverride: 128,
+      ).complete(
+        'translate me',
+        cancellation: TranslationCancellationController(),
+      );
+
+      expect(result, 'ok');
+      expect(service.requests.single.options.minOutputTokens, 2048);
+      expect(service.requests.single.options.maxOutputTokensOverride, 128);
+    });
+
+    test('rejects non-positive runtime output token overrides', () {
+      for (final invalid in [0, -1]) {
+        expect(
+          () => TranslationStreamExecutor(
+            service: FakeTranslationChatService(const []),
+            profile: _profile(),
+            maxOutputTokensOverride: invalid,
+          ),
+          throwsA(
+            isA<ArgumentError>()
+                .having(
+                    (error) => error.name, 'name', 'maxOutputTokensOverride')
+                .having((error) => error.invalidValue, 'invalidValue', invalid),
+          ),
+        );
+      }
+    });
+
+    test('fires first-event telemetry once on usage without changing output',
+        () async {
+      final trace = <String>[];
+      var firstEventCalls = 0;
+      final service = FakeTranslationChatService([
+        (request) {
+          request.addAfter(
+            const Duration(milliseconds: 1),
+            StreamEvent.usage(promptTokens: 3),
+          );
+          request.addAfter(
+            const Duration(milliseconds: 2),
+            StreamEvent.reasoning('private'),
+          );
+          request.addAfter(
+            const Duration(milliseconds: 3),
+            StreamEvent.text('translated'),
+          );
+          request.closeAfter(const Duration(milliseconds: 4));
+        },
+      ]);
+
+      final result = await _executor(service).complete(
+        'translate me',
+        cancellation: TranslationCancellationController(),
+        onPhase: (phase) => trace.add(phase.name),
+        onFirstEvent: () {
+          firstEventCalls += 1;
+          trace.add('firstEvent');
+          throw StateError('telemetry must not own the request');
+        },
+      );
+
+      expect(result, 'translated');
+      expect(firstEventCalls, 1);
+      expect(trace, ['waiting', 'firstEvent', 'thinking', 'receiving']);
+    });
+
     test('collects only text and treats every typed event as activity',
         () async {
-      final service = _FakeChatService([
+      final service = FakeTranslationChatService([
         (request) {
           request.addAfter(
             const Duration(milliseconds: 2),
@@ -89,7 +180,7 @@ void main() {
     });
 
     test('does not send a request when already cancelled', () async {
-      final service = _FakeChatService([]);
+      final service = FakeTranslationChatService([]);
       final cancellation = TranslationCancellationController()..cancel();
 
       await expectLater(
@@ -105,7 +196,7 @@ void main() {
 
     test('cancellation from waiting phase is installed before any request',
         () async {
-      final service = _FakeChatService([]);
+      final service = FakeTranslationChatService([]);
       final cancellation = TranslationCancellationController();
 
       await expectLater(
@@ -126,7 +217,7 @@ void main() {
     });
 
     test('first-event timeout aborts and cancels before completing', () async {
-      final service = _FakeChatService([(request) {}]);
+      final service = FakeTranslationChatService([(request) {}]);
 
       await expectLater(
         _executor(
@@ -147,7 +238,7 @@ void main() {
 
     test('idle timeout starts after first activity and cleans up first',
         () async {
-      final service = _FakeChatService([
+      final service = FakeTranslationChatService([
         (request) {
           request.addAfter(
             const Duration(milliseconds: 3),
@@ -175,7 +266,7 @@ void main() {
 
     test('total timeout wins while regular activity keeps idle alive',
         () async {
-      final service = _FakeChatService([
+      final service = FakeTranslationChatService([
         (request) {
           for (var millis = 2; millis <= 72; millis += 10) {
             request.addAfter(
@@ -205,7 +296,7 @@ void main() {
 
     test('cancellation aborts the transport and completes as cancelled',
         () async {
-      final service = _FakeChatService([(request) {}]);
+      final service = FakeTranslationChatService([(request) {}]);
       final cancellation = TranslationCancellationController();
       final future = _executor(
         service,
@@ -227,7 +318,7 @@ void main() {
 
     test('a cancelled flag wins over a late text event', () async {
       final cancellation = _FlagCancellationToken();
-      final service = _FakeChatService([
+      final service = FakeTranslationChatService([
         (request) {
           request.runAfter(const Duration(milliseconds: 2), () {
             cancellation.markCancelledWithoutSignal();
@@ -250,7 +341,7 @@ void main() {
 
     test('a cancelled flag wins over a late stream error', () async {
       final cancellation = _FlagCancellationToken();
-      final service = _FakeChatService([
+      final service = FakeTranslationChatService([
         (request) {
           request.runAfter(const Duration(milliseconds: 2), () {
             cancellation.markCancelledWithoutSignal();
@@ -275,7 +366,7 @@ void main() {
 
     test('a cancelled flag wins over onDone after collected text', () async {
       final cancellation = _FlagCancellationToken();
-      final service = _FakeChatService([
+      final service = FakeTranslationChatService([
         (request) {
           request.addAfter(
             const Duration(milliseconds: 1),
@@ -303,7 +394,7 @@ void main() {
       final cancellation = _ErrorCancellationToken(
         StateError('https://secret.example/cancellation'),
       );
-      final service = _FakeChatService([(request) {}]);
+      final service = FakeTranslationChatService([(request) {}]);
 
       await expectLater(
         _executor(service).complete(
@@ -318,7 +409,7 @@ void main() {
     });
 
     test('reasoning-only completion is invalid output', () async {
-      final service = _FakeChatService([
+      final service = FakeTranslationChatService([
         (request) {
           request.addAfter(
             const Duration(milliseconds: 2),
@@ -340,7 +431,7 @@ void main() {
     });
 
     test('whitespace-only text completion is invalid output', () async {
-      final service = _FakeChatService([
+      final service = FakeTranslationChatService([
         (request) {
           request.addAfter(
             const Duration(milliseconds: 2),
@@ -363,7 +454,7 @@ void main() {
 
     test('subscription cleanup errors cannot replace a terminal failure',
         () async {
-      final service = _FakeChatService(
+      final service = FakeTranslationChatService(
         [(request) {}],
         cancelCleanup: () => Future<void>.error(
           StateError('https://secret.example/cleanup'),
@@ -390,7 +481,7 @@ void main() {
     test('subscription cleanup that never completes cannot strand the result',
         () async {
       final cleanup = Completer<void>();
-      final service = _FakeChatService(
+      final service = FakeTranslationChatService(
         [(request) {}],
         cancelCleanup: () => cleanup.future,
       );
@@ -460,7 +551,7 @@ void main() {
       };
 
       for (final entry in cases.entries) {
-        final service = _FakeChatService([
+        final service = FakeTranslationChatService([
           (request) => request.errorAfter(
                 const Duration(milliseconds: 1),
                 entry.key,
@@ -486,7 +577,7 @@ void main() {
     test('sanitizes unknown transport metadata and never retains its cause',
         () async {
       const secret = 'https://secret.example/key=top-secret';
-      final service = _FakeChatService([
+      final service = FakeTranslationChatService([
         (request) => request.errorAfter(
               const Duration(milliseconds: 1),
               const ChatTransportException(
@@ -513,7 +604,7 @@ void main() {
     test('unsupported Thinking control is persisted before one clean retry',
         () async {
       final order = <String>[];
-      final service = _FakeChatService(
+      final service = FakeTranslationChatService(
         [
           (request) => request.errorAfter(
                 const Duration(milliseconds: 1),
@@ -577,7 +668,7 @@ void main() {
 
     test('failed profile persistence does not commit suppression in memory',
         () async {
-      final service = _FakeChatService([
+      final service = FakeTranslationChatService([
         (request) => request.errorAfter(
               const Duration(milliseconds: 1),
               const ChatTransportException(
@@ -625,7 +716,7 @@ void main() {
 
     test('rejects concurrent complete calls without sending a second request',
         () async {
-      final service = _FakeChatService([(request) {}]);
+      final service = FakeTranslationChatService([(request) {}]);
       final firstCancellation = TranslationCancellationController();
       final executor = _executor(
         service,
@@ -659,7 +750,7 @@ void main() {
 
     test('a failed suppressed retry never negotiates a third request',
         () async {
-      final service = _FakeChatService([
+      final service = FakeTranslationChatService([
         (request) => request.errorAfter(
               const Duration(milliseconds: 1),
               const ChatTransportException(
@@ -695,7 +786,7 @@ void main() {
     });
 
     test('raw unknown parameter never triggers Thinking negotiation', () async {
-      final service = _FakeChatService([
+      final service = FakeTranslationChatService([
         (request) => request.errorAfter(
               const Duration(milliseconds: 1),
               const ChatTransportException(
@@ -719,7 +810,7 @@ void main() {
     });
 
     test('reasoning-control code without exact 400 never negotiates', () async {
-      final service = _FakeChatService([
+      final service = FakeTranslationChatService([
         (request) => request.errorAfter(
               const Duration(milliseconds: 1),
               const ChatTransportException(
@@ -743,7 +834,7 @@ void main() {
 
     test('provider-default policy does not treat unknown parameter as Thinking',
         () async {
-      final service = _FakeChatService([
+      final service = FakeTranslationChatService([
         (request) => request.errorAfter(
               const Duration(milliseconds: 1),
               const ChatTransportException(
@@ -780,6 +871,7 @@ TranslationStreamExecutor _executor(
   Duration first = const Duration(milliseconds: 40),
   Duration idle = const Duration(milliseconds: 40),
   Duration total = const Duration(milliseconds: 120),
+  int? maxOutputTokensOverride,
 }) =>
     TranslationStreamExecutor(
       service: service,
@@ -787,6 +879,7 @@ TranslationStreamExecutor _executor(
       firstEventTimeout: first,
       idleTimeout: idle,
       totalTimeout: total,
+      maxOutputTokensOverride: maxOutputTokensOverride,
     );
 
 TranslationRequestProfile _profile({
@@ -804,163 +897,6 @@ TranslationRequestProfile _profile({
 Matcher _failure(TranslationFailureKind kind) =>
     isA<TranslationRequestFailure>()
         .having((failure) => failure.kind, 'kind', kind);
-
-typedef _StreamScript = void Function(_FakeRequest request);
-
-final class _FakeChatService implements ChatService, OptionsAwareChatService {
-  final List<_StreamScript> scripts;
-  final void Function(int index)? onRequest;
-  final Future<void> Function()? cancelCleanup;
-  final List<_FakeRequest> requests = [];
-  int requestAttempts = 0;
-  int activeSubscriptions = 0;
-
-  _FakeChatService(
-    this.scripts, {
-    this.onRequest,
-    this.cancelCleanup,
-  });
-
-  @override
-  ModelCapabilities get capabilities => const ModelCapabilities.none();
-
-  @override
-  Future<String?> chat({
-    required String prompt,
-    required List<Map<String, dynamic>> history,
-    ChatAttachments? attachments,
-    Duration? timeout,
-  }) =>
-      throw UnsupportedError('translation must not use non-streaming chat');
-
-  @override
-  Future<ChatCompletionResult> chatWithUsage({
-    required String prompt,
-    required List<Map<String, dynamic>> history,
-    ChatAttachments? attachments,
-  }) =>
-      throw UnsupportedError('translation must not use non-streaming chat');
-
-  @override
-  Stream<String> chatStream({
-    required String prompt,
-    required List<Map<String, dynamic>> history,
-    ChatAttachments? attachments,
-  }) =>
-      throw UnsupportedError('translation must use typed stream events');
-
-  @override
-  Stream<StreamEvent> chatStreamEvents({
-    required String prompt,
-    required List<Map<String, dynamic>> history,
-    ChatAttachments? attachments,
-    List<Map<String, dynamic>>? tools,
-    List<Map<String, dynamic>> extraMessages = const [],
-  }) =>
-      throw UnsupportedError('translation must pass request options');
-
-  @override
-  Stream<StreamEvent> chatStreamEventsWithOptions({
-    required String prompt,
-    required List<Map<String, dynamic>> history,
-    ChatAttachments? attachments,
-    List<Map<String, dynamic>>? tools,
-    List<Map<String, dynamic>> extraMessages = const [],
-    required ChatRequestOptions options,
-  }) {
-    requestAttempts += 1;
-    final index = requests.length;
-    if (index >= scripts.length) {
-      throw StateError('unexpected request $index');
-    }
-    onRequest?.call(index);
-    late final _FakeRequest request;
-    late final StreamController<StreamEvent> controller;
-    controller = StreamController<StreamEvent>(
-      onListen: () {
-        activeSubscriptions += 1;
-        request._markActive();
-        scripts[index](request);
-      },
-      onCancel: () async {
-        request._dispose();
-        if (request._wasActive) activeSubscriptions -= 1;
-        await cancelCleanup?.call();
-      },
-    );
-    request = _FakeRequest(
-      prompt: prompt,
-      history: history,
-      options: options,
-      controller: controller,
-    );
-    requests.add(request);
-    options.abortTrigger?.then((_) => request.abortObserved = true);
-    return controller.stream;
-  }
-}
-
-final class _FakeRequest {
-  final String prompt;
-  final List<Map<String, dynamic>> history;
-  final ChatRequestOptions options;
-  final StreamController<StreamEvent> _controller;
-  final List<Timer> _timers = [];
-  bool abortObserved = false;
-  bool _active = false;
-  bool _disposed = false;
-
-  _FakeRequest({
-    required this.prompt,
-    required this.history,
-    required this.options,
-    required StreamController<StreamEvent> controller,
-  }) : _controller = controller;
-
-  bool get _wasActive {
-    final wasActive = _active;
-    _active = false;
-    return wasActive;
-  }
-
-  void _markActive() => _active = true;
-
-  void addAfter(Duration delay, StreamEvent event) {
-    _schedule(delay, () => _controller.add(event));
-  }
-
-  void addNow(StreamEvent event) => _controller.add(event);
-
-  void errorAfter(Duration delay, Object error) {
-    _schedule(delay, () => _controller.addError(error));
-  }
-
-  void errorNow(Object error) => _controller.addError(error);
-
-  void closeAfter(Duration delay) {
-    _schedule(delay, _controller.close);
-  }
-
-  void closeNow() => _controller.close();
-
-  void runAfter(Duration delay, void Function() action) {
-    _schedule(delay, action);
-  }
-
-  void _schedule(Duration delay, void Function() action) {
-    _timers.add(Timer(delay, () {
-      if (!_disposed) action();
-    }));
-  }
-
-  void _dispose() {
-    if (_disposed) return;
-    _disposed = true;
-    for (final timer in _timers) {
-      timer.cancel();
-    }
-  }
-}
 
 final class _FlagCancellationToken implements TranslationCancellationToken {
   final Completer<void> _signal = Completer<void>();

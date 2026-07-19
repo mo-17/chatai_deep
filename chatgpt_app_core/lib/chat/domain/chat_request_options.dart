@@ -12,6 +12,7 @@ final class ChatRequestOptions {
   final Duration connectTimeout;
   final int? minOutputTokens;
   final bool suppressReasoningControl;
+  final int? maxOutputTokensOverride;
 
   const ChatRequestOptions({
     this.profile = ChatRequestProfile.standard,
@@ -20,7 +21,10 @@ final class ChatRequestOptions {
     this.connectTimeout = const Duration(seconds: 20),
     this.minOutputTokens,
     this.suppressReasoningControl = false,
-  });
+    this.maxOutputTokensOverride,
+  }) : assert(
+          maxOutputTokensOverride == null || maxOutputTokensOverride > 0,
+        );
 }
 
 /// 聊天传输层对上暴露的安全失败信息。

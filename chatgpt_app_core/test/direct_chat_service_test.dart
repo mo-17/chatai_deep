@@ -143,6 +143,76 @@ void main() {
     expect(captured.containsKey('reasoning_policy'), isFalse);
   });
 
+  test('options-aware stream uses the exact max output token override',
+      () async {
+    final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+    addTearDown(() => server.close(force: true));
+    late Map<String, dynamic> captured;
+    server.listen((request) async {
+      captured = jsonDecode(await utf8.decoder.bind(request).join())
+          as Map<String, dynamic>;
+      request.response.headers.contentType =
+          ContentType('text', 'event-stream', charset: 'utf-8');
+      request.response.write('data: [DONE]\n\n');
+      await request.response.close();
+    });
+    final service = DirectChatService(
+      ProviderConfig(
+        apiKey: 'test-key',
+        baseUrl: 'http://${server.address.host}:${server.port}/chat',
+        model: 'test-model',
+      ),
+      maxOutputTokens: 4096,
+    );
+
+    await service
+        .chatStreamEventsWithOptions(
+          prompt: 'probe',
+          history: const [],
+          options: const ChatRequestOptions(
+            minOutputTokens: 2048,
+            maxOutputTokensOverride: 128,
+          ),
+        )
+        .drain<void>();
+
+    expect(captured['max_tokens'], 128);
+  });
+
+  test('options-aware stream rejects runtime-invalid exact token overrides',
+      () async {
+    var assertionsEnabled = false;
+    assert(assertionsEnabled = true);
+    if (assertionsEnabled) return;
+
+    final service = DirectChatService(
+      ProviderConfig(
+        apiKey: 'test-key',
+        baseUrl: 'http://127.0.0.1:1/chat',
+        model: 'test-model',
+      ),
+      maxOutputTokens: 4096,
+    );
+    for (final invalid in [0, -1]) {
+      await expectLater(
+        service
+            .chatStreamEventsWithOptions(
+              prompt: 'probe',
+              history: const [],
+              options: ChatRequestOptions(
+                maxOutputTokensOverride: invalid,
+              ),
+            )
+            .drain<void>(),
+        throwsA(
+          isA<ArgumentError>()
+              .having((error) => error.name, 'name', 'maxOutputTokensOverride')
+              .having((error) => error.invalidValue, 'invalidValue', invalid),
+        ),
+      );
+    }
+  });
+
   test('ChatService.from passes exact provider id instead of trusting its code',
       () async {
     final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
