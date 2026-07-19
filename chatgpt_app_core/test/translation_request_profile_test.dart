@@ -113,6 +113,55 @@ void main() {
     expect(settings.activeProviderId, 'deepseek');
   });
 
+  test('resolver unavailable exception carries stable safe codes', () {
+    final cases = <({
+      String name,
+      void Function(AISettings settings) mutate,
+      String code
+    })>[
+      (
+        name: 'deleted provider',
+        mutate: (settings) => settings.providers.clear(),
+        code: 'providerMissing',
+      ),
+      (
+        name: 'disabled provider',
+        mutate: (settings) => settings.providers
+            .singleWhere((p) => p.id == 'deepseek')
+            .enabled = false,
+        code: 'providerDisabled',
+      ),
+      (
+        name: 'empty key',
+        mutate: (settings) => settings.providers
+            .singleWhere((p) => p.id == 'deepseek')
+            .apiKey = '',
+        code: 'apiKeyMissing',
+      ),
+      (
+        name: 'removed model',
+        mutate: (settings) => settings.providers
+            .singleWhere((p) => p.id == 'deepseek')
+            .models
+            .clear(),
+        code: 'modelMissing',
+      ),
+    ];
+
+    for (final testCase in cases) {
+      final settings = _settingsWithProviders(activeProviderId: 'deepseek');
+      testCase.mutate(settings);
+      expect(
+        () => TranslationModelResolver.apply(settings, _deepSeekProfile()),
+        throwsA(
+          isA<TranslationModelUnavailableException>()
+              .having((error) => error.safeCode, 'safeCode', testCase.code),
+        ),
+        reason: testCase.name,
+      );
+    }
+  });
+
   test('apply 严格拒绝已停用的 provider 而不回退', () {
     final settings = _settingsWithProviders(activeProviderId: 'deepseek');
     settings.providers.singleWhere((p) => p.id == 'deepseek').enabled = false;

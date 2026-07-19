@@ -5,9 +5,13 @@ import 'package:chatgpt_app_core/model/ai_settings.dart';
 
 /// 快照所指向的模型已经无法按原配置执行。
 final class TranslationModelUnavailableException implements Exception {
+  final String safeCode;
   final String message;
 
-  const TranslationModelUnavailableException(this.message);
+  const TranslationModelUnavailableException(
+    this.message, {
+    this.safeCode = 'model_unavailable',
+  });
 
   @override
   String toString() => 'TranslationModelUnavailableException: $message';
@@ -137,7 +141,10 @@ final class TranslationModelResolver {
     required String? modelId,
   }) {
     if (providerId == null || providerId.trim().isEmpty) {
-      throw const TranslationModelUnavailableException('本地翻译服务商未配置');
+      throw const TranslationModelUnavailableException(
+        '本地翻译服务商未配置',
+        safeCode: 'providerMissing',
+      );
     }
     AiProvider? provider;
     for (final candidate in settings.providers) {
@@ -149,16 +156,19 @@ final class TranslationModelResolver {
     if (provider == null) {
       throw TranslationModelUnavailableException(
         '翻译服务商已删除：$providerId',
+        safeCode: 'providerMissing',
       );
     }
     if (!provider.enabled) {
       throw TranslationModelUnavailableException(
         '翻译服务商已停用：$providerId',
+        safeCode: 'providerDisabled',
       );
     }
     if (provider.apiKey.trim().isEmpty) {
       throw TranslationModelUnavailableException(
         '翻译服务商缺少 API Key：$providerId',
+        safeCode: 'apiKeyMissing',
       );
     }
     final resolvedModel = modelId ?? provider.effectiveModelId;
@@ -166,6 +176,7 @@ final class TranslationModelResolver {
     if (!provider.models.any((model) => model.id == resolvedModel)) {
       throw TranslationModelUnavailableException(
         '翻译模型已从服务商移除：$providerId/$resolvedModel',
+        safeCode: 'modelMissing',
       );
     }
     return provider;
@@ -173,7 +184,10 @@ final class TranslationModelResolver {
 
   static String _requireModelId(String? modelId, {required String scope}) {
     if (modelId == null || modelId.trim().isEmpty) {
-      throw TranslationModelUnavailableException('$scope翻译模型未配置');
+      throw TranslationModelUnavailableException(
+        '$scope翻译模型未配置',
+        safeCode: 'modelMissing',
+      );
     }
     return modelId;
   }
