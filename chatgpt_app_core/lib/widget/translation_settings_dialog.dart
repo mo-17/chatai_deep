@@ -74,7 +74,11 @@ class _TranslationSettingsDialogState
           mainAxisSize: MainAxisSize.min,
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
-            Text('预计翻译 ${_formatRunes(widget.estimatedRunes)} 字'),
+            Text(
+              widget.estimatedRunes <= 0
+                  ? '预计字符数暂不可用'
+                  : '预计翻译 ${_formatRunes(widget.estimatedRunes)} 字',
+            ),
             const SizedBox(height: 16),
             OutlinedButton.icon(
               key: const ValueKey('translation_model_button'),

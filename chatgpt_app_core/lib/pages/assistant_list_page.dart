@@ -12,6 +12,7 @@ import 'package:chatgpt_app_core/chat/application/translation_model_eligibility.
 import 'package:chatgpt_app_core/chat/application/translation_model_preference_store.dart';
 import 'package:chatgpt_app_core/chat/application/translation_model_resolver.dart';
 import 'package:chatgpt_app_core/chat/application/translation_stream_executor.dart';
+import 'package:chatgpt_app_core/chat/application/translation_work_estimator.dart';
 import 'package:chatgpt_app_core/chat/domain/translation_request_profile.dart';
 import 'package:chatgpt_app_core/dao/ai_catalog_dao.dart';
 import 'package:chatgpt_app_core/dao/chat/chat_service.dart';
@@ -57,6 +58,7 @@ import 'package:share_plus/share_plus.dart';
 final _roleCardImportCoordinator = _RoleCardImportCoordinator();
 final _tavernTranslationCoordinator =
     StoryTemplateTranslationCoordinator.instance;
+const _translationWorkEstimator = TranslationWorkEstimator();
 
 Color _mutedTextColor(BuildContext context) =>
     Theme.of(context).colorScheme.onSurfaceVariant;
@@ -809,16 +811,17 @@ class _AssistantListPageState extends State<AssistantListPage> {
       if (choice == null) return;
       if (choice.target == _RoleCardImportTarget.tavernRoom) {
         if (choice.translateToSimplifiedChinese) {
-          final selected = await _selectTranslationProfile(
-            estimatedRunes: jsonEncode(importResults.single.assistant.toJson())
-                .runes
-                .length,
-            title: '翻译并创建酒馆房间',
-          );
-          if (selected == null || !mounted) return;
           final initialOpening =
               await _chooseTavernInitialOpening(importResults.single);
           if (initialOpening == null || !mounted) return;
+          final selected = await _selectTranslationProfile(
+            estimatedRunes: _translationWorkEstimator.totalRunesForAssistant(
+                  importResults.single.assistant,
+                ) +
+                initialOpening.runes.length,
+            title: '翻译并创建酒馆房间',
+          );
+          if (selected == null || !mounted) return;
           await _startPersistentTavernImport(
             [importResults.single],
             sourceTitle: importResults.single.sourceName ??
@@ -844,18 +847,17 @@ class _AssistantListPageState extends State<AssistantListPage> {
       if (choice == null) return;
       if (choice.target == _RoleCardImportTarget.tavernRoom) {
         if (choice.translateToSimplifiedChinese) {
+          final initialOpening =
+              await _chooseTavernBatchInitialOpening(importResults);
+          if (initialOpening == null || !mounted) return;
           final selected = await _selectTranslationProfile(
-            estimatedRunes: importResults.fold<int>(
-              0,
-              (sum, result) =>
-                  sum + jsonEncode(result.assistant.toJson()).runes.length,
+            estimatedRunes: _translationWorkEstimator.totalRunesForResults(
+              importResults,
+              initialOpening: initialOpening,
             ),
             title: '翻译并创建酒馆房间',
           );
           if (selected == null || !mounted) return;
-          final initialOpening =
-              await _chooseTavernBatchInitialOpening(importResults);
-          if (initialOpening == null || !mounted) return;
           await _startPersistentTavernImport(
             importResults,
             sourceTitle: _stripExtension(_basename(path)),
@@ -891,10 +893,8 @@ class _AssistantListPageState extends State<AssistantListPage> {
     if (!mounted) return;
     if (options.translateToSimplifiedChinese) {
       selectedTranslation = await _selectTranslationProfile(
-        estimatedRunes: importPlans.fold<int>(
-          0,
-          (sum, plan) =>
-              sum + jsonEncode(plan.result.assistant.toJson()).runes.length,
+        estimatedRunes: _translationWorkEstimator.totalRunesForResults(
+          importPlans.map((plan) => plan.result),
         ),
         title: '翻译角色卡',
       );
@@ -1540,7 +1540,9 @@ class _AssistantListPageState extends State<AssistantListPage> {
       return;
     }
     final selected = await _selectTranslationProfile(
-      estimatedRunes: task.sourcePayload.runes.length,
+      estimatedRunes: _translationWorkEstimator
+              .tryTotalRunesForTaskSource(task.sourcePayload) ??
+          0,
       title: '更换翻译模型',
       initialValue: _preferenceFromTask(task),
     );
@@ -2350,11 +2352,26 @@ class _RoleCardImportCoordinator extends ChangeNotifier {
       if (value.fieldLabel.isNotEmpty) value.fieldLabel,
       if (value.total > 1) '${value.current}/${value.total}',
       if (value.detail.trim().isNotEmpty) value.detail.trim(),
+      if (value.completedRunes != null &&
+          value.totalRunes != null &&
+          value.totalRunes! > 0)
+        formatRuneProgress(value.completedRunes!, value.totalRunes!),
     ];
     return parts.join(' · ');
   }
 
   static double _translationProgressRatio(RoleCardTranslationProgress value) {
+    if (value.completedRunes != null &&
+        value.totalRunes != null &&
+        value.totalRunes! > 0) {
+      return (value.completedRunes! / value.totalRunes!).clamp(0, 1).toDouble();
+    }
+    return _legacyFieldProgressRatio(value);
+  }
+
+  static double _legacyFieldProgressRatio(
+    RoleCardTranslationProgress value,
+  ) {
     if (value.total <= 0) return 0;
     final fieldBase = (value.current - 1).clamp(0, value.total) / value.total;
     final inField = value.fieldProgress.clamp(0, 1).toDouble() / value.total;

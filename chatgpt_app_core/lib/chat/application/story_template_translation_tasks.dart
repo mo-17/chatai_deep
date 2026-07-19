@@ -13,6 +13,7 @@ import 'package:chatgpt_app_core/chat/application/translation_model_eligibility.
 import 'package:chatgpt_app_core/chat/application/translation_model_resolver.dart';
 import 'package:chatgpt_app_core/chat/application/translation_retry_policy.dart';
 import 'package:chatgpt_app_core/chat/application/translation_stream_executor.dart';
+import 'package:chatgpt_app_core/chat/application/translation_work_estimator.dart';
 import 'package:chatgpt_app_core/chat/domain/translation_request_profile.dart';
 import 'package:chatgpt_app_core/db/hi_db_manager.dart';
 import 'package:chatgpt_app_core/db/story_template_dao.dart';
@@ -36,6 +37,22 @@ typedef _TranslationRunKey = ({
   String accountHash,
   int taskId,
 });
+
+const _translationWorkEstimator = TranslationWorkEstimator();
+
+String _withRuneDetail(String detail, TranslationWorkEstimate work) {
+  final clean = detail.trim().replaceFirst(
+        RegExp(r'(?: · )?已完成 [\d,]+/[\d,]+ 字$'),
+        '',
+      );
+  return [
+    if (clean.isNotEmpty) clean,
+    formatRuneProgress(work.resolvedRunes, work.totalRunes),
+  ].join(' · ');
+}
+
+double _maxProgress(double first, double second) =>
+    first > second ? first : second;
 
 void _requireEligible(
   TranslationRequestProfile profile,
@@ -361,6 +378,13 @@ class StoryTemplateTranslationCoordinator extends ChangeNotifier {
     if (decoded is! Map || decoded['checkpoints'] is! Map) {
       throw const FormatException('任务分块检查点无效');
     }
+    final initialWork = _translationWorkEstimator.estimateTask(task);
+    final anchorResolvedRunes = initialWork != null &&
+            !initialWork.usedFallback &&
+            initialWork.totalRunes > 0
+        ? initialWork.resolvedRunes
+        : 0;
+    final anchorProgress = task.progress;
     final checkpoints = <String, dynamic>{};
     var retainedOriginal = false;
     for (final entry in (decoded['checkpoints'] as Map).entries) {
@@ -409,6 +433,22 @@ class StoryTemplateTranslationCoordinator extends ChangeNotifier {
       ..leaseOwner = null
       ..leaseUntil = null
       ..nextRunAt = 0;
+    final retainedWork = _translationWorkEstimator.estimateTask(updated);
+    if (retainedWork != null &&
+        !retainedWork.usedFallback &&
+        retainedWork.totalRunes > 0) {
+      final anchor = TranslationProgressAnchor(
+        totalRunes: retainedWork.totalRunes,
+        anchorResolvedRunes: anchorResolvedRunes,
+        anchorProgress: anchorProgress,
+      );
+      updated
+        ..progress = _maxProgress(
+          updated.progress,
+          anchor.map(retainedWork.resolvedRunes),
+        )
+        ..detail = _withRuneDetail(updated.detail, retainedWork);
+    }
     updated.log = _appendLog(updated.log, '用户选择保留未完成分块原文');
     final saved = await context.taskDao.saveTaskIfUnclaimed(
       updated,
@@ -1027,6 +1067,9 @@ class StoryTemplateTranslationTaskRunner {
   bool _leaseLost = false;
   bool _retainedOriginalObserved = false;
   bool _openingCompleted = false;
+  double _anchorProgress = 0;
+  int _anchorResolvedRunes = 0;
+  TranslationWorkEstimate? _currentWork;
 
   StoryTemplateTranslationTaskRunner({
     required this.taskDao,
@@ -1051,6 +1094,13 @@ class StoryTemplateTranslationTaskRunner {
     try {
       _throwIfCancelled();
       final source = _sourcePayload();
+      final initialWork = _translationWorkEstimator.estimateTask(task);
+      _anchorProgress = task.progress;
+      _anchorResolvedRunes = initialWork != null &&
+              !initialWork.usedFallback &&
+              initialWork.totalRunes > 0
+          ? initialWork.resolvedRunes
+          : 0;
       final translated = _resumeResults(source);
       _retainedOriginalObserved = _resumeRetainedOriginalFlag();
       _openingCompleted = _resumeOpeningCompletedFlag();
@@ -1060,7 +1110,10 @@ class StoryTemplateTranslationTaskRunner {
         ..roleIndex = translated.length
         ..stage = '初始化翻译引擎'
         ..detail = StoryTemplateTranslationTaskDao.taskCheckpointDetail(task)
-        ..progress = _progressFor(source.results.length, translated.length, 0);
+        ..progress = _taskProgress(
+          _legacyProgressFor(source.results.length, translated.length, 0),
+        );
+      task.detail = _detailWithCurrentWork(task.detail);
       _checkpoint('开始执行翻译任务');
 
       for (var index = translated.length;
@@ -1077,7 +1130,10 @@ class StoryTemplateTranslationTaskRunner {
           ..fieldProgress = 0
           ..stage = '准备翻译角色'
           ..detail = '角色 ${index + 1}/${source.results.length}'
-          ..progress = _progressFor(source.results.length, index, 0);
+          ..progress = _taskProgress(
+            _legacyProgressFor(source.results.length, index, 0),
+          );
+        task.detail = _detailWithCurrentWork(task.detail);
         _checkpoint();
 
         final prepared = await TavernRoomImportPreparer.prepare(
@@ -1114,11 +1170,13 @@ class StoryTemplateTranslationTaskRunner {
               ..fieldLabel = value.fieldLabel
               ..fieldProgress = value.fieldProgress.clamp(0, 1).toDouble()
               ..stage = value.stage
-              ..detail = _roleDetail(value)
-              ..progress = _progressFor(
-                source.results.length,
-                index,
-                _fieldRatio(value),
+              ..detail = _detailWithCurrentWork(_roleDetail(value))
+              ..progress = _taskProgress(
+                _legacyProgressFor(
+                  source.results.length,
+                  index,
+                  _fieldRatio(value),
+                ),
               );
             _checkpoint();
           },
@@ -1134,7 +1192,6 @@ class StoryTemplateTranslationTaskRunner {
           ..fieldProgress = 0
           ..stage = '角色已翻译'
           ..detail = '角色 ${index + 1}/${source.results.length}'
-          ..progress = _progressFor(source.results.length, index + 1, 0)
           ..fieldPayload = ''
           ..chunkPayload = ''
           ..partialPayload = _encodePartialPayload(
@@ -1142,6 +1199,11 @@ class StoryTemplateTranslationTaskRunner {
             translated: translated,
             opening: source.initialOpening,
           );
+        task
+          ..progress = _taskProgress(
+            _legacyProgressFor(source.results.length, index + 1, 0),
+          )
+          ..detail = _detailWithCurrentWork(task.detail);
         _checkpoint();
         await _flush();
       }
@@ -1153,7 +1215,8 @@ class StoryTemplateTranslationTaskRunner {
           ..roleName = '模板开场'
           ..stage = '准备翻译模板开场'
           ..detail = '${opening.length} 字'
-          ..progress = 0.84;
+          ..progress = _taskProgress(0.84);
+        task.detail = _detailWithCurrentWork(task.detail);
         _checkpoint();
         final translatedOpening = await AssistantRoleCardTranslationService
             .translateToSimplifiedChinese(
@@ -1187,8 +1250,10 @@ class StoryTemplateTranslationTaskRunner {
               ..fieldLabel = value.fieldLabel
               ..fieldProgress = value.fieldProgress.clamp(0, 1).toDouble()
               ..stage = value.stage
-              ..detail = _translationDetail(value)
-              ..progress = 0.84 + (0.1 * _fieldRatioFromTranslation(value));
+              ..detail = _detailWithCurrentWork(_translationDetail(value))
+              ..progress = _taskProgress(
+                0.84 + (0.1 * _fieldRatioFromTranslation(value)),
+              );
             _checkpoint();
           },
         );
@@ -1204,6 +1269,9 @@ class StoryTemplateTranslationTaskRunner {
             translated: translated,
             opening: opening,
           );
+        task
+          ..progress = _taskProgress(0.94)
+          ..detail = _detailWithCurrentWork(task.detail);
         _checkpoint();
         await _flush();
       }
@@ -1453,6 +1521,9 @@ class StoryTemplateTranslationTaskRunner {
     if (!useChunkCheckpoints || field != 'memoryBook') {
       task.chunkPayload = '';
     }
+    task
+      ..progress = _taskProgress(task.progress)
+      ..detail = _detailWithCurrentWork(task.detail);
     _checkpoint(
         '已保存字段检查点：${task.fieldLabel.isEmpty ? field : task.fieldLabel}');
     await _flush();
@@ -1522,6 +1593,9 @@ class StoryTemplateTranslationTaskRunner {
             entry.key: entry.value.toJson(),
         },
       });
+    task
+      ..progress = _taskProgress(task.progress)
+      ..detail = _detailWithCurrentWork(task.detail);
     _checkpoint('已保存分块检查点：$field');
     await _flush();
   }
@@ -1698,7 +1772,33 @@ class StoryTemplateTranslationTaskRunner {
     }
   }
 
-  static double _progressFor(int total, int completed, double fieldProgress) {
+  double _taskProgress(double legacyProgress) {
+    final work = _translationWorkEstimator.estimateTask(task);
+    if (work != null && !work.usedFallback && work.totalRunes > 0) {
+      _currentWork = work;
+      final anchor = TranslationProgressAnchor(
+        totalRunes: work.totalRunes,
+        anchorResolvedRunes: _anchorResolvedRunes,
+        anchorProgress: _anchorProgress,
+      );
+      return _maxProgress(task.progress, anchor.map(work.resolvedRunes));
+    }
+    _currentWork = null;
+    return _maxProgress(task.progress, legacyProgress)
+        .clamp(0.04, 0.94)
+        .toDouble();
+  }
+
+  String _detailWithCurrentWork(String detail) {
+    final work = _currentWork;
+    return work == null ? detail : _withRuneDetail(detail, work);
+  }
+
+  static double _legacyProgressFor(
+    int total,
+    int completed,
+    double fieldProgress,
+  ) {
     if (total <= 0) return 0;
     final ratio = (completed + fieldProgress.clamp(0, 1)) / total;
     return (0.04 + (0.78 * ratio)).clamp(0.04, 0.82).toDouble();

@@ -8,7 +8,9 @@ import 'package:chatgpt_app_core/chat/application/story_template_translation_tas
 import 'package:chatgpt_app_core/chat/application/translation_chunk_planner.dart';
 import 'package:chatgpt_app_core/chat/application/translation_model_eligibility.dart';
 import 'package:chatgpt_app_core/chat/application/translation_model_resolver.dart';
+import 'package:chatgpt_app_core/chat/application/translation_retry_policy.dart';
 import 'package:chatgpt_app_core/chat/application/translation_stream_executor.dart';
+import 'package:chatgpt_app_core/chat/application/translation_work_estimator.dart';
 import 'package:chatgpt_app_core/chat/domain/chat_attachments.dart';
 import 'package:chatgpt_app_core/chat/domain/chat_request_options.dart';
 import 'package:chatgpt_app_core/chat/domain/model_capabilities.dart';
@@ -407,6 +409,8 @@ void main() {
       expect(defaults.chunkPayload, isEmpty);
       expect(defaults.outputRoomId, isNull);
       expect(defaults.checkpointVersion, 0);
+      expect(defaults.toJson().containsKey('completedRunes'), isFalse);
+      expect(defaults.toJson().containsKey('totalRunes'), isFalse);
     });
 
     test('任务状态保留旧语义并表达待配置和带警告完成', () {
@@ -865,6 +869,298 @@ void main() {
       expect(copyPayload.regexScriptsJson, '{"version":1,"rules":[]}');
     });
 
+    test('33,322 字世界书按持久化分块推进且流阶段不覆盖字符进度', () async {
+      final templateDao = await StoryTemplateDao.create(storage);
+      final worldBook = List.filled(33322, '界').join();
+      final source = StoryRoomTemplatePayload(results: [
+        AssistantRoleCardImportResult(
+          assistant: AssistantModel(name: '', memoryBook: worldBook),
+        ),
+      ]);
+      final task = StoryTemplateTranslationTaskModel(
+        sourceTitle: '33,322 rune world book',
+        sourcePayload: jsonEncode(source.toJson()),
+        outputTitle: '字符进度副本',
+        roleTotal: 1,
+      );
+      await taskDao.saveTask(task);
+      const owner = 'runner-rune-progress';
+      expect(
+        await taskDao.claimTask(
+          task.id!,
+          leaseOwner: owner,
+          leaseDuration: const Duration(minutes: 5),
+        ),
+        isTrue,
+      );
+      const estimator = TranslationWorkEstimator();
+      final durableRunes = <int>[];
+      final durableProgress = <double>[];
+      final durableDetails = <String>[];
+      final phaseProgress = <double>[];
+      var lastDurableRunes = 0;
+      double? lastDurableProgress;
+
+      await StoryTemplateTranslationTaskRunner(
+        taskDao: taskDao,
+        templateDao: templateDao,
+        task: task,
+        leaseOwner: owner,
+        executor: TranslationStreamExecutor(
+          service: _EchoTranslationChatService(),
+          profile: TranslationRequestProfile(
+            mode: TranslationExecutionMode.local,
+            providerId: 'provider-a',
+            modelId: 'model-a',
+            reasoningPolicy: ChatReasoningPolicy.providerDefault,
+            reasoningControlSuppressed: false,
+          ),
+        ),
+        isCancelled: () => false,
+        onChanged: () {
+          final work = estimator.estimateTask(task);
+          if (task.chunkPayload.trim().isNotEmpty &&
+              work != null &&
+              !work.usedFallback &&
+              work.resolvedRunes > lastDurableRunes) {
+            lastDurableRunes = work.resolvedRunes;
+            lastDurableProgress = task.progress;
+            durableRunes.add(work.resolvedRunes);
+            durableProgress.add(task.progress);
+            durableDetails.add(task.detail);
+          }
+          if ((task.stage == '等待 AI 返回' || task.stage == '正在接收翻译') &&
+              lastDurableProgress != null) {
+            phaseProgress.add(task.progress);
+          }
+        },
+      ).run();
+
+      expect(durableRunes.length, greaterThan(10));
+      expect(durableRunes.last, 33322);
+      for (var index = 1; index < durableProgress.length; index += 1) {
+        expect(
+          durableProgress[index],
+          greaterThan(durableProgress[index - 1]),
+          reason: '每个 durable chunk checkpoint 都必须推动整体进度',
+        );
+      }
+      final anchor = TranslationProgressAnchor(
+        totalRunes: 33322,
+        anchorResolvedRunes: 0,
+        anchorProgress: 0,
+      );
+      for (var index = 0; index < durableRunes.length; index += 1) {
+        expect(
+          durableProgress[index],
+          closeTo(anchor.map(durableRunes[index]), 0.000001),
+        );
+      }
+      expect(phaseProgress, isNotEmpty);
+      expect(
+        phaseProgress.every((value) => value >= durableProgress.first),
+        isTrue,
+      );
+      expect(
+        durableDetails,
+        contains(contains('已完成')),
+      );
+      expect(
+        (await taskDao.getTask(task.id!))?.status,
+        StoryTemplateTranslationTaskStatus.completed,
+      );
+    });
+
+    test('暂停、重启并更换模型后从持久化字符进度单调恢复', () async {
+      final templateDao = await StoryTemplateDao.create(storage);
+      final worldBook = List.filled(5200, '界').join();
+      final profile = TranslationRequestProfile(
+        mode: TranslationExecutionMode.local,
+        providerId: 'provider-a',
+        modelId: 'slow-model',
+        reasoningPolicy: ChatReasoningPolicy.providerDefault,
+        reasoningControlSuppressed: false,
+      );
+      final task = StoryTemplateTranslationTaskModel(
+        sourceTitle: 'paused rune progress',
+        sourcePayload: jsonEncode(StoryRoomTemplatePayload(results: [
+          AssistantRoleCardImportResult(
+            assistant: AssistantModel(name: '', memoryBook: worldBook),
+          ),
+        ]).toJson()),
+        outputTitle: '恢复副本',
+        requestProfile: jsonEncode(profile.toJson()),
+      );
+      await taskDao.saveTask(task);
+      const firstOwner = 'runner-rune-pause';
+      expect(
+        await taskDao.claimTask(
+          task.id!,
+          leaseOwner: firstOwner,
+          leaseDuration: const Duration(minutes: 5),
+        ),
+        isTrue,
+      );
+      var calls = 0;
+      await StoryTemplateTranslationTaskRunner(
+        taskDao: taskDao,
+        templateDao: templateDao,
+        task: task,
+        leaseOwner: firstOwner,
+        useChunkCheckpoints: true,
+        complete: (prompt) async {
+          calls += 1;
+          if (calls == 4) {
+            throw const TranslationWorkPaused(
+              failure: TranslationRequestFailure(
+                kind: TranslationFailureKind.invalidOutput,
+                safeCode: 'pause_for_resume_test',
+              ),
+            );
+          }
+          final payload =
+              jsonDecode(prompt.split('\n').last) as Map<String, dynamic>;
+          return jsonEncode(payload);
+        },
+        isCancelled: () => false,
+      ).run();
+
+      final paused = (await taskDao.getTask(task.id!))!;
+      expect(paused.status, StoryTemplateTranslationTaskStatus.failed);
+      expect(paused.progress, greaterThan(0.04));
+      final persistedProgress = paused.progress;
+
+      final coordinator = StoryTemplateTranslationCoordinator();
+      await coordinator.initialize(storage, accountHash: 'test');
+      var minimumObserved = 1.0;
+      coordinator.addListener(() {
+        final matches =
+            coordinator.tasks.where((candidate) => candidate.id == task.id);
+        if (matches.isNotEmpty) {
+          final current = matches.first;
+          minimumObserved = minimumObserved < current.progress
+              ? minimumObserved
+              : current.progress;
+        }
+      });
+      final replacement = TranslationRequestProfile(
+        mode: TranslationExecutionMode.local,
+        providerId: 'provider-a',
+        modelId: 'fast-model',
+        reasoningPolicy: ChatReasoningPolicy.offIfSupported,
+        reasoningControlSuppressed: false,
+      );
+      await coordinator.retry(
+        coordinator.tasks.single,
+        replacementProfile: replacement,
+        checkEligibility: _allowTranslationProfile,
+        resolveExecutor: (_) => TranslationStreamExecutor(
+          service: _EchoTranslationChatService(),
+          profile: replacement,
+        ),
+      );
+      await _waitUntil(() => coordinator.tasks.single.isTerminal);
+
+      final completed = (await taskDao.getTask(task.id!))!;
+      expect(minimumObserved, greaterThanOrEqualTo(persistedProgress));
+      expect(completed.progress, 1);
+      expect(completed.status, StoryTemplateTranslationTaskStatus.completed);
+      expect(
+        TranslationRequestProfile.fromJson(
+          Map<String, dynamic>.from(
+              jsonDecode(completed.requestProfile) as Map),
+        ).modelId,
+        'fast-model',
+      );
+    });
+
+    test(
+        'unsupported checkpoint version keeps legacy monotonic fallback and completes',
+        () async {
+      final templateDao = await StoryTemplateDao.create(storage);
+      final source = StoryRoomTemplatePayload(results: [
+        AssistantRoleCardImportResult(
+          assistant: AssistantModel(name: 'Alice', prompt: 'Careful.'),
+        ),
+      ]);
+      final task = StoryTemplateTranslationTaskModel(
+        sourceTitle: 'legacy checkpoint',
+        sourcePayload: jsonEncode(source.toJson()),
+        outputTitle: 'legacy output',
+        checkpointVersion: TranslationChunkCheckpoint.currentVersion + 9,
+        progress: 0.61,
+      );
+      await taskDao.saveTask(task);
+      const owner = 'runner-legacy-progress';
+      expect(
+        await taskDao.claimTask(
+          task.id!,
+          leaseOwner: owner,
+          leaseDuration: const Duration(minutes: 5),
+        ),
+        isTrue,
+      );
+      final observed = <double>[];
+
+      await StoryTemplateTranslationTaskRunner(
+        taskDao: taskDao,
+        templateDao: templateDao,
+        task: task,
+        leaseOwner: owner,
+        complete: (_) async => jsonEncode({
+          'name': '爱丽丝',
+          'description': '',
+          'prompt': '谨慎。',
+          'openingMessage': '',
+          'exampleDialogs': '',
+          'memoryBook': '',
+        }),
+        isCancelled: () => false,
+        onChanged: () => observed.add(task.progress),
+      ).run();
+
+      expect(observed, isNotEmpty);
+      expect(observed.every((value) => value >= 0.61), isTrue);
+      expect(
+        (await taskDao.getTask(task.id!))?.status,
+        StoryTemplateTranslationTaskStatus.completed,
+      );
+    });
+
+    test('invalid source still follows the existing failed-task path',
+        () async {
+      final task = StoryTemplateTranslationTaskModel(
+        sourceTitle: 'invalid source',
+        sourcePayload: '{invalid',
+        outputTitle: 'must not exist',
+        progress: 0.43,
+      );
+      await taskDao.saveTask(task);
+      const owner = 'runner-invalid-source';
+      expect(
+        await taskDao.claimTask(
+          task.id!,
+          leaseOwner: owner,
+          leaseDuration: const Duration(minutes: 5),
+        ),
+        isTrue,
+      );
+
+      await StoryTemplateTranslationTaskRunner(
+        taskDao: taskDao,
+        templateDao: await StoryTemplateDao.create(storage),
+        task: task,
+        leaseOwner: owner,
+        complete: (_) async => throw StateError('must not call transport'),
+        isCancelled: () => false,
+      ).run();
+
+      final stored = await taskDao.getTask(task.id!);
+      expect(stored?.status, StoryTemplateTranslationTaskStatus.failed);
+      expect(stored?.error, contains('Unexpected character'));
+      expect(stored?.outputTemplateId, isNull);
+    });
+
     test('用户取消与网络返回重叠时取消状态获胜且不写输出模板', () async {
       final templateDao = await StoryTemplateDao.create(storage);
       final source = StoryRoomTemplatePayload(
@@ -1157,6 +1453,17 @@ void main() {
 
       await coordinator.completeKeepingOriginalChunks(
         coordinator.tasks.single,
+      );
+      final retained = (await taskDao.getTask(task.id!))!;
+      final retainedWork = const TranslationWorkEstimator().estimateTask(
+        retained,
+      );
+      expect(retained.progress, greaterThan(0.04));
+      expect(retainedWork?.resolvedRunes, memoryBook.runes.length);
+      expect(retained.detail, contains('已完成'));
+      expect(
+        jsonDecode(retained.partialPayload),
+        containsPair('_translationHasRetainedOriginal', true),
       );
       final service = _EchoTranslationChatService();
       final resumed = await coordinator.resumeRecoverable(
@@ -2242,6 +2549,7 @@ void main() {
         chunkPayload: chunkPayload,
         fieldPayload: '{"scope":"role","roleIndex":0,"fields":{}}',
         status: StoryTemplateTranslationTaskStatus.failed,
+        progress: 0.73,
       );
       await taskDao.saveTask(task);
       final coordinator = StoryTemplateTranslationCoordinator();
@@ -2262,6 +2570,7 @@ void main() {
       final stored = await taskDao.getTask(task.id!);
       expect(stored?.chunkPayload, chunkPayload);
       expect(stored?.fieldPayload, task.fieldPayload);
+      expect(stored?.progress, greaterThanOrEqualTo(0.73));
       expect(
         TranslationRequestProfile.fromJson(
           Map<String, dynamic>.from(jsonDecode(stored!.requestProfile) as Map),

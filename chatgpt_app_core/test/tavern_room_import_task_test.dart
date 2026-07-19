@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:convert';
+import 'dart:io';
 
 import 'package:chatgpt_app_core/chat/application/assistant_role_card_service.dart';
 import 'package:chatgpt_app_core/chat/application/story_room_role_card_importer.dart';
@@ -27,6 +28,60 @@ import 'package:sqflite_common_ffi/sqflite_ffi.dart';
 
 void main() {
   setUpAll(sqfliteFfiInit);
+
+  test('page translation estimates use translatable bodies instead of JSON',
+      () async {
+    final assistantPage =
+        await File('lib/pages/assistant_list_page.dart').readAsString();
+    final storyPage =
+        await File('lib/pages/story_room_list_page.dart').readAsString();
+
+    for (final source in [assistantPage, storyPage]) {
+      expect(source, isNot(contains('estimatedRunes: jsonEncode')));
+      expect(source, isNot(contains('task.sourcePayload.runes.length')));
+    }
+    expect(assistantPage, isNot(contains('sum + jsonEncode')));
+    expect(
+      RegExp(r'\.totalRunesForAssistant\(').allMatches(assistantPage).length,
+      1,
+    );
+    expect(
+      RegExp(r'\.totalRunesForResults\(').allMatches(assistantPage).length,
+      2,
+    );
+    expect(
+      RegExp(r'\.tryTotalRunesForTaskSource\(')
+          .allMatches(assistantPage)
+          .length,
+      1,
+    );
+    expect(
+      RegExp(r'\.totalRunesForResults\(').allMatches(storyPage).length,
+      1,
+    );
+    expect(
+      RegExp(r'\.tryTotalRunesForTaskSource\(').allMatches(storyPage).length,
+      1,
+    );
+    expect(
+      RegExp(
+        r'final initialOpening\s*=\s*await _chooseTavernInitialOpening[\s\S]*?'
+        r'_selectTranslationProfile\([\s\S]*?initialOpening:\s*initialOpening',
+      ).hasMatch(assistantPage),
+      isTrue,
+      reason: 'single Tavern 必须先选开场，再把开场计入设置页估算',
+    );
+    expect(
+      RegExp(
+        r'final initialOpening\s*=\s*await _chooseTavernBatchInitialOpening[\s\S]*?'
+        r'_selectTranslationProfile\([\s\S]*?initialOpening:\s*initialOpening',
+      ).hasMatch(assistantPage),
+      isTrue,
+      reason: 'batch Tavern 必须先选开场，再把开场计入设置页估算',
+    );
+    expect(assistantPage, contains('value.completedRunes'));
+    expect(assistantPage, contains('_legacyFieldProgressRatio'));
+  });
 
   group('TavernRoomImportFinalizer', () {
     late Database db;

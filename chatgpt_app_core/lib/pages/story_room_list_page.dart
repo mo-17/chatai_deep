@@ -16,6 +16,7 @@ import 'package:chatgpt_app_core/chat/application/translation_model_eligibility.
 import 'package:chatgpt_app_core/chat/application/translation_model_preference_store.dart';
 import 'package:chatgpt_app_core/chat/application/translation_model_resolver.dart';
 import 'package:chatgpt_app_core/chat/application/translation_stream_executor.dart';
+import 'package:chatgpt_app_core/chat/application/translation_work_estimator.dart';
 import 'package:chatgpt_app_core/chat/domain/translation_request_profile.dart';
 import 'package:chatgpt_app_core/dao/chat/chat_service.dart';
 import 'package:chatgpt_app_core/db/hi_db_manager.dart';
@@ -41,6 +42,7 @@ import 'package:login_sdk/dao/login_dao.dart';
 
 final _storyTemplateTranslationCoordinator =
     StoryTemplateTranslationCoordinator.instance;
+const _translationWorkEstimator = TranslationWorkEstimator();
 
 class StoryRoomListPage extends StatefulWidget {
   const StoryRoomListPage({super.key});
@@ -998,7 +1000,10 @@ class _StoryRoomListPageState extends State<StoryRoomListPage> {
       context,
       settings: dialogSettings,
       initialValue: preferenceStore.read(accountHash),
-      estimatedRunes: jsonEncode(payload.toJson()).runes.length,
+      estimatedRunes: _translationWorkEstimator.totalRunesForResults(
+        payload.results,
+        initialOpening: payload.initialOpening,
+      ),
       title: '生成中文副本',
     );
     if (selected == null || !mounted) return;
@@ -1137,7 +1142,9 @@ class _StoryRoomListPageState extends State<StoryRoomListPage> {
       context,
       settings: dialogSettings,
       initialValue: _preferenceFromTask(task) ?? store.read(accountHash),
-      estimatedRunes: task.sourcePayload.runes.length,
+      estimatedRunes: _translationWorkEstimator
+              .tryTotalRunesForTaskSource(task.sourcePayload) ??
+          0,
       title: '更换翻译模型',
     );
     if (selected == null || !mounted) return;

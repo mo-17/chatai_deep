@@ -7,6 +7,7 @@ import 'package:chatgpt_app_core/chat/application/translation_chunk_planner.dart
 import 'package:chatgpt_app_core/chat/application/translation_stream_executor.dart';
 import 'package:chatgpt_app_core/chat/application/translation_work_estimator.dart';
 import 'package:chatgpt_app_core/model/assistant_model.dart';
+import 'package:chatgpt_app_core/model/story_template_translation_task_model.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 void main() {
@@ -211,6 +212,255 @@ void main() {
     });
   });
 
+  group('TranslationWorkEstimator persisted tasks', () {
+    test('counts 33,322-rune raw world-book chunks at durable boundaries', () {
+      const marker = '# [chatai_deep.tavern_raw.v1] V09STER1CT09L';
+      final body = List.filled(33322, '界').join();
+      final source = StoryRoomTemplatePayload(results: [
+        AssistantRoleCardImportResult(
+          assistant: AssistantModel(name: '', memoryBook: '$marker\n$body'),
+        ),
+      ]);
+      final planned = const TranslationChunkPlanner().plan(
+        field: 'memoryBook',
+        source: body,
+      );
+      final checkpoint = _withCompletedPrefix(planned, 7);
+      final task = _taskFor(
+        source,
+        checkpointVersion: TranslationChunkCheckpoint.currentVersion,
+        fieldPayload: jsonEncode({
+          'scope': 'role',
+          'roleIndex': 0,
+          'fields': {'memoryBook': '$marker\ntranslated'},
+        }),
+        chunkPayload: _chunkEnvelope({
+          'role:0:memoryBook': checkpoint,
+          'role:1:memoryBook': checkpoint,
+          'opening:memoryBook': checkpoint,
+        }),
+      );
+
+      final estimate = estimator.estimateTask(task);
+
+      expect(estimate, isNotNull);
+      expect(estimate!.usedFallback, isFalse);
+      expect(estimate.totalRunes, 33322);
+      expect(
+        estimate.resolvedRunes,
+        estimator.resolvedRunesForCheckpoint(checkpoint),
+        reason: 'raw-marker memoryBook 不能仅凭 fieldPayload 计为全部完成',
+      );
+      expect(estimate.resolvedRunes, inInclusiveRange(7000, 9500));
+    });
+
+    test('uses completed role then field then chunks without double counting',
+        () {
+      final first = AssistantRoleCardImportResult(
+        assistant: AssistantModel(
+          name: 'Alice',
+          description: 'Detective',
+          prompt: 'First role prompt',
+        ),
+      );
+      final second = AssistantRoleCardImportResult(
+        assistant: AssistantModel(
+          name: 'Bob',
+          prompt: 'Second role prompt',
+        ),
+      );
+      final source = StoryRoomTemplatePayload(results: [first, second]);
+      final promptCheckpoint = _withCompletedPrefix(
+        const TranslationChunkPlanner().plan(
+          field: 'prompt',
+          source: second.assistant.prompt,
+        ),
+        1,
+      );
+      final partial = StoryRoomTemplatePayload(results: [
+        AssistantRoleCardImportResult(
+          assistant: AssistantModel(
+            name: '爱丽丝',
+            description: '侦探',
+            prompt: '第一位角色',
+          ),
+        ),
+      ]);
+      final task = _taskFor(
+        source,
+        roleIndex: 1,
+        partialPayload: jsonEncode(partial.toJson()),
+        fieldPayload: jsonEncode({
+          'scope': 'role',
+          'roleIndex': 1,
+          'fields': {'name': '鲍勃', 'prompt': '第二位角色'},
+        }),
+        chunkPayload: _chunkEnvelope({
+          'role:1:prompt': promptCheckpoint,
+        }),
+      );
+
+      final estimate = estimator.estimateTask(task)!;
+      final completedRoleRunes =
+          estimator.totalRunesForAssistant(first.assistant);
+
+      expect(estimate.usedFallback, isFalse);
+      expect(
+        estimate.resolvedRunes,
+        completedRoleRunes +
+            second.assistant.name.runes.length +
+            second.assistant.prompt.runes.length,
+        reason: 'field checkpoint 优先于同字段 chunk，不能重复相加',
+      );
+    });
+
+    test('counts a committed opening and ignores malformed partial or fields',
+        () {
+      final source = StoryRoomTemplatePayload(
+        results: [
+          AssistantRoleCardImportResult(
+            assistant: AssistantModel(name: 'Alice'),
+          ),
+        ],
+        initialOpening: 'Welcome 😀',
+      );
+      final openingCommitted = _taskFor(
+        source,
+        partialPayload: jsonEncode({
+          ...StoryRoomTemplatePayload(
+            results: const [],
+            initialOpening: '欢迎 😀',
+          ).toJson(),
+          '_translationOpeningCompleted': true,
+        }),
+      );
+      final malformed = _taskFor(
+        source,
+        partialPayload: '{broken',
+        fieldPayload: '[not-a-field-envelope]',
+      );
+
+      expect(
+        estimator.estimateTask(openingCommitted)?.resolvedRunes,
+        source.initialOpening.runes.length,
+      );
+      expect(estimator.estimateTask(malformed)?.resolvedRunes, 0);
+    });
+
+    test('mismatched chunks resolve zero without invalidating the estimate',
+        () {
+      final source = StoryRoomTemplatePayload(results: [
+        AssistantRoleCardImportResult(
+          assistant: AssistantModel(name: 'Alice', prompt: 'current source'),
+        ),
+      ]);
+      final stale = const TranslationChunkPlanner().plan(
+        field: 'prompt',
+        source: 'stale source',
+      );
+      final task = _taskFor(
+        source,
+        chunkPayload: _chunkEnvelope({
+          'role:0:prompt': _withCompletedPrefix(stale, 1),
+        }),
+      );
+
+      final estimate = estimator.estimateTask(task);
+
+      expect(estimate, isNotNull);
+      expect(estimate?.usedFallback, isFalse);
+      expect(estimate?.resolvedRunes, 0);
+    });
+
+    test(
+        'ignores future-role checkpoints when malformed partial restarts role zero',
+        () {
+      final source = StoryRoomTemplatePayload(results: [
+        AssistantRoleCardImportResult(
+          assistant: AssistantModel(name: 'Alice'),
+        ),
+        AssistantRoleCardImportResult(
+          assistant: AssistantModel(name: 'Bob', prompt: 'future prompt'),
+        ),
+      ]);
+      final futurePrompt = _withCompletedPrefix(
+        const TranslationChunkPlanner().plan(
+          field: 'prompt',
+          source: 'future prompt',
+        ),
+        1,
+      );
+      final task = _taskFor(
+        source,
+        roleIndex: 1,
+        partialPayload: '{broken',
+        fieldPayload: jsonEncode({
+          'scope': 'role',
+          'roleIndex': 1,
+          'fields': {'name': '鲍勃'},
+        }),
+        chunkPayload: _chunkEnvelope({
+          'role:1:prompt': futurePrompt,
+        }),
+      );
+
+      expect(estimator.estimateTask(task)?.resolvedRunes, 0);
+    });
+
+    test(
+        'unsupported checkpoint metadata uses fallback but corrupt current data is null',
+        () {
+      final source = StoryRoomTemplatePayload(results: [
+        AssistantRoleCardImportResult(
+          assistant: AssistantModel(name: 'Alice'),
+        ),
+      ]);
+      final unsupported = _taskFor(
+        source,
+        checkpointVersion: TranslationChunkCheckpoint.currentVersion + 1,
+        chunkPayload: jsonEncode({
+          'version': TranslationChunkCheckpoint.currentVersion + 1,
+          'checkpoints': const {},
+        }),
+      );
+      final corruptCurrent = _taskFor(
+        source,
+        checkpointVersion: TranslationChunkCheckpoint.currentVersion,
+        chunkPayload: jsonEncode({
+          'version': TranslationChunkCheckpoint.currentVersion,
+          'checkpoints': {
+            'role:0:name': {'version': 1},
+          },
+        }),
+      );
+
+      final fallback = estimator.estimateTask(unsupported);
+
+      expect(fallback, isNotNull);
+      expect(fallback?.usedFallback, isTrue);
+      expect(fallback?.totalRunes, 'Alice'.runes.length);
+      expect(estimator.estimateTask(corruptCurrent), isNull);
+    });
+
+    test('rejects structurally empty sources exactly like the runner', () {
+      final empty = StoryTemplateTranslationTaskModel(
+        sourceTitle: 'empty source',
+        sourcePayload: jsonEncode(
+          const StoryRoomTemplatePayload(results: []).toJson(),
+        ),
+      );
+      final skippedMalformed = StoryTemplateTranslationTaskModel(
+        sourceTitle: 'malformed entries',
+        sourcePayload: jsonEncode({
+          'results': [null, 'not-a-role'],
+        }),
+      );
+
+      expect(estimator.estimateTask(empty), isNull);
+      expect(estimator.estimateTask(skippedMalformed), isNull);
+    });
+  });
+
   group('TranslationProgressAnchor', () {
     test('advances immediately when legacy progress is above canonical work',
         () {
@@ -270,7 +520,63 @@ void main() {
     expect((under.totalRunes, under.resolvedRunes, under.usedFallback),
         (0, 0, true));
   });
+
+  test('formatRuneProgress formats body-weighted progress for task details',
+      () {
+    expect(formatRuneProgress(8420, 33322), '已完成 8,420/33,322 字');
+  });
 }
+
+StoryTemplateTranslationTaskModel _taskFor(
+  StoryRoomTemplatePayload source, {
+  int roleIndex = 0,
+  int checkpointVersion = TranslationChunkCheckpoint.currentVersion,
+  String chunkPayload = '',
+  String fieldPayload = '',
+  String partialPayload = '',
+}) =>
+    StoryTemplateTranslationTaskModel(
+      sourceTitle: 'estimate source',
+      sourcePayload: jsonEncode(source.toJson()),
+      roleIndex: roleIndex,
+      roleTotal: source.results.length,
+      checkpointVersion: checkpointVersion,
+      chunkPayload: chunkPayload,
+      fieldPayload: fieldPayload,
+      partialPayload: partialPayload,
+    );
+
+String _chunkEnvelope(Map<String, TranslationChunkCheckpoint> checkpoints) =>
+    jsonEncode({
+      'version': TranslationChunkCheckpoint.currentVersion,
+      'checkpoints': {
+        for (final entry in checkpoints.entries)
+          entry.key: entry.value.toJson(),
+      },
+    });
+
+TranslationChunkCheckpoint _withCompletedPrefix(
+  TranslationChunkCheckpoint checkpoint,
+  int completedCount,
+) =>
+    TranslationChunkCheckpoint(
+      field: checkpoint.field,
+      sourceHash: checkpoint.sourceHash,
+      chunks: [
+        for (var index = 0; index < checkpoint.chunks.length; index += 1)
+          TranslationChunkState(
+            chunk: checkpoint.chunks[index].chunk,
+            status: index < completedCount
+                ? TranslationChunkStatus.completed
+                : TranslationChunkStatus.pending,
+            translatedText: index < completedCount
+                ? checkpoint.chunks[index].chunk.sourceText
+                : '',
+            attempts: index < completedCount ? 1 : 0,
+            lastErrorKind: null,
+          ),
+      ],
+    );
 
 TranslationChunkCheckpoint _checkpointWith({
   List<(String, String)> completed = const [],

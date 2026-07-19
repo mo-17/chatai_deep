@@ -7,6 +7,28 @@ import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 void main() {
+  testWidgets('未知字符数显示不可用且不声称零工作量', (tester) async {
+    await tester.pumpWidget(_host(
+      onOpen: (context) async {
+        await showTranslationSettingsDialog(
+          context,
+          settings: _settings(),
+          initialValue: const TranslationModelPreference(
+            mode: TranslationModelPreferenceMode.followGlobal,
+            reasoningPolicy: ChatReasoningPolicy.offIfSupported,
+          ),
+          estimatedRunes: 0,
+        );
+      },
+    ));
+
+    await tester.tap(find.text('打开'));
+    await tester.pumpAndSettle();
+
+    expect(find.text('预计字符数暂不可用'), findsOneWidget);
+    expect(find.text('预计翻译 0 字'), findsNothing);
+  });
+
   testWidgets('记住的模型作为初值，显示字数且 Thinking 默认关闭', (tester) async {
     final settings = _settings();
     TranslationModelPreference? result;
