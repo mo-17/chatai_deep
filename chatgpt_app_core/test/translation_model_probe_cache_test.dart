@@ -31,7 +31,7 @@ void main() {
         checkedAt: checkedAt,
         firstEventMs: 120,
         totalMs: 840,
-        safeErrorCode: 'authentication_failed',
+        safeErrorCode: 'auth_failed',
         reasoningControlSuppressed: true,
       );
 
@@ -57,7 +57,7 @@ void main() {
       expect(restored.checkedAt, checkedAt);
       expect(restored.firstEventMs, 120);
       expect(restored.totalMs, 840);
-      expect(restored.safeErrorCode, 'authentication_failed');
+      expect(restored.safeErrorCode, 'auth_failed');
       expect(restored.reasoningControlSuppressed, isTrue);
     });
 
@@ -86,6 +86,68 @@ void main() {
           () => TranslationModelProbeRecord.fromJson(json),
           throwsFormatException,
           reason: json.toString(),
+        );
+      }
+    });
+
+    test('构造与 JSON 解析只接受计划内 safe error code', () {
+      const allowed = <String?>[
+        null,
+        'auth_failed',
+        'unsupported_api',
+        'rate_limited',
+        'first_event_timeout',
+        'idle_timeout',
+        'network_unreachable',
+        'invalid_output',
+        'unknown',
+      ];
+      for (final code in allowed) {
+        final record = TranslationModelProbeRecord(
+          fingerprint: _fingerprint(3),
+          status: TranslationModelProbeStatus.failed,
+          checkedAt: DateTime.utc(2026, 7, 20),
+          safeErrorCode: code,
+          reasoningControlSuppressed: false,
+        );
+        expect(record.toJson()['safeErrorCode'], code);
+      }
+
+      const sensitive =
+          'Authorization: Bearer sk-secret https://private.example/v1';
+      final invalid = <String>[
+        sensitive,
+        'cancelled',
+        'not_planned',
+        'x' * 512,
+      ];
+      final validJson = TranslationModelProbeRecord(
+        fingerprint: _fingerprint(4),
+        status: TranslationModelProbeStatus.failed,
+        checkedAt: DateTime.utc(2026, 7, 20),
+        safeErrorCode: 'unknown',
+        reasoningControlSuppressed: false,
+      ).toJson();
+
+      for (final code in invalid) {
+        expect(
+          () => TranslationModelProbeRecord(
+            fingerprint: _fingerprint(4),
+            status: TranslationModelProbeStatus.failed,
+            checkedAt: DateTime.utc(2026, 7, 20),
+            safeErrorCode: code,
+            reasoningControlSuppressed: false,
+          ),
+          throwsArgumentError,
+          reason: code,
+        );
+        expect(
+          () => TranslationModelProbeRecord.fromJson({
+            ...validJson,
+            'safeErrorCode': code,
+          }),
+          throwsFormatException,
+          reason: code,
         );
       }
     });
@@ -286,6 +348,116 @@ void main() {
         ((cleaned['providers'] as Map)['deepseek'] as List),
         isNot(contains(_fingerprint(7))),
       );
+    });
+
+    test('损坏 safe error code fail closed，后续落盘不含 secret 或 raw endpoint',
+        () async {
+      const sensitive =
+          'Authorization: Bearer sk-secret https://private.example/v1';
+      final key = TranslationModelProbeCache.keyFor('guest');
+      await HiCache.getInstance().setString(
+        key,
+        jsonEncode({
+          'version': 1,
+          'accountGeneration': 0,
+          'providerGenerations': {'deepseek': 0},
+          'records': {
+            _fingerprint(31): {
+              'fingerprint': _fingerprint(31),
+              'status': 'failed',
+              'checkedAt': now.millisecondsSinceEpoch,
+              'safeErrorCode': sensitive,
+              'reasoningControlSuppressed': false,
+            },
+          },
+          'providers': {
+            'deepseek': [_fingerprint(31)],
+          },
+        }),
+      );
+      final cache = TranslationModelProbeCache(now: () => now);
+
+      expect(
+        cache.lookup(accountHash: 'guest', fingerprint: _fingerprint(31)),
+        isNull,
+      );
+      final token =
+          cache.tokenFor(accountHash: 'guest', providerId: 'deepseek');
+      expect(
+        await cache.put(
+          _record(32, now),
+          expectedAccountHash: 'guest',
+          providerId: 'deepseek',
+          expectedToken: token,
+        ),
+        isTrue,
+      );
+
+      final raw = HiCache.getInstance().get(key) as String;
+      expect(raw, isNot(contains(sensitive)));
+      expect(raw, isNot(contains('sk-secret')));
+      expect(raw, isNot(contains('https://private.example/v1')));
+      expect(raw, isNot(contains(_fingerprint(31))));
+    });
+
+    test('provider index 任一结构损坏时 records fail closed 且保留 generation CAS',
+        () async {
+      final key = TranslationModelProbeCache.keyFor('guest');
+      final corruptIndexes = <Map<String, dynamic>>[
+        {'deepseek': _fingerprint(40)},
+        {
+          '': [_fingerprint(40)],
+        },
+        {
+          'deepseek': [42],
+        },
+        {
+          'deepseek': ['not-a-sha256'],
+        },
+      ];
+      final cache = TranslationModelProbeCache(now: () => now);
+
+      for (final providers in corruptIndexes) {
+        await HiCache.getInstance().setString(
+          key,
+          jsonEncode({
+            'version': 1,
+            'accountGeneration': 4,
+            'providerGenerations': {'deepseek': 7},
+            'records': {
+              _fingerprint(40): _record(40, now).toJson(),
+            },
+            'providers': providers,
+          }),
+        );
+
+        final token =
+            cache.tokenFor(accountHash: 'guest', providerId: 'deepseek');
+        expect(token.accountGeneration, 4, reason: providers.toString());
+        expect(token.providerGeneration, 7, reason: providers.toString());
+        expect(
+          cache.lookup(accountHash: 'guest', fingerprint: _fingerprint(40)),
+          isNull,
+          reason: providers.toString(),
+        );
+      }
+
+      await cache.invalidateProviders(
+        accountHash: 'guest',
+        providerIds: {'deepseek'},
+      );
+      expect(
+        cache.lookup(accountHash: 'guest', fingerprint: _fingerprint(40)),
+        isNull,
+      );
+      final envelope = _envelope('guest');
+      expect(envelope['accountGeneration'], 4);
+      expect(
+        (envelope['providerGenerations'] as Map)['deepseek'],
+        8,
+      );
+      expect(envelope['records'], isEmpty);
+      expect(envelope['providers'], isEmpty);
     });
 
     test('provider invalidation 只删除其索引记录并递增对应 generation', () async {

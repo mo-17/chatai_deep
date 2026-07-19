@@ -22,6 +22,16 @@ final class TranslationModelProbeCacheToken {
 
 final class TranslationModelProbeRecord {
   static final _fingerprintPattern = RegExp(r'^[0-9a-f]{64}$');
+  static const _allowedSafeErrorCodes = {
+    'auth_failed',
+    'unsupported_api',
+    'rate_limited',
+    'first_event_timeout',
+    'idle_timeout',
+    'network_unreachable',
+    'invalid_output',
+    'unknown',
+  };
 
   final String fingerprint;
   final TranslationModelProbeStatus status;
@@ -31,7 +41,7 @@ final class TranslationModelProbeRecord {
   final String? safeErrorCode;
   final bool reasoningControlSuppressed;
 
-  const TranslationModelProbeRecord({
+  TranslationModelProbeRecord({
     required this.fingerprint,
     required this.status,
     required this.checkedAt,
@@ -39,7 +49,15 @@ final class TranslationModelProbeRecord {
     this.totalMs,
     this.safeErrorCode,
     required this.reasoningControlSuppressed,
-  });
+  }) {
+    if (!_isAllowedSafeErrorCode(safeErrorCode)) {
+      throw ArgumentError.value(
+        safeErrorCode,
+        'safeErrorCode',
+        '必须是计划内脱敏错误码',
+      );
+    }
+  }
 
   Map<String, dynamic> toJson() {
     _validateFingerprint(fingerprint);
@@ -97,6 +115,9 @@ final class TranslationModelProbeRecord {
     if (rawSafeErrorCode != null && rawSafeErrorCode is! String) {
       throw const FormatException('safeErrorCode 必须是字符串');
     }
+    if (!_isAllowedSafeErrorCode(rawSafeErrorCode)) {
+      throw const FormatException('safeErrorCode 不是计划内脱敏错误码');
+    }
     final rawSuppressed = json['reasoningControlSuppressed'];
     if (rawSuppressed is! bool) {
       throw const FormatException('reasoningControlSuppressed 必须是 bool');
@@ -107,7 +128,7 @@ final class TranslationModelProbeRecord {
       checkedAt: checkedAt,
       firstEventMs: firstEventMs,
       totalMs: totalMs,
-      safeErrorCode: rawSafeErrorCode as String?,
+      safeErrorCode: rawSafeErrorCode,
       reasoningControlSuppressed: rawSuppressed,
     );
   }
@@ -117,6 +138,9 @@ final class TranslationModelProbeRecord {
       throw const FormatException('fingerprint 必须是小写 SHA-256 摘要');
     }
   }
+
+  static bool _isAllowedSafeErrorCode(String? code) =>
+      code == null || _allowedSafeErrorCodes.contains(code);
 
   static int? _optionalInt(Object? raw, String field) {
     if (raw == null) return null;
@@ -482,26 +506,42 @@ final class _ProbeEnvelope {
     }
 
     final providers = <String, Set<String>>{};
+    var providerIndexCorrupt = false;
     for (final entry in rawProviders.entries) {
       final providerId = entry.key;
       final rawFingerprints = entry.value;
       if (providerId is! String ||
           providerId.trim().isEmpty ||
           rawFingerprints is! List) {
-        continue;
+        providerIndexCorrupt = true;
+        break;
       }
       final fingerprints = <String>{};
-      var valid = true;
       for (final fingerprint in rawFingerprints) {
         if (fingerprint is! String) {
-          valid = false;
+          providerIndexCorrupt = true;
+          break;
+        }
+        try {
+          TranslationModelProbeRecord._validateFingerprint(fingerprint);
+        } on FormatException {
+          providerIndexCorrupt = true;
           break;
         }
         fingerprints.add(fingerprint);
       }
-      if (valid && fingerprints.isNotEmpty) {
+      if (providerIndexCorrupt) break;
+      if (fingerprints.isNotEmpty) {
         providers[providerId] = fingerprints;
       }
+    }
+    if (providerIndexCorrupt) {
+      return _ProbeEnvelope(
+        accountGeneration: accountGeneration,
+        providerGenerations: providerGenerations,
+        records: {},
+        providers: {},
+      );
     }
     return _ProbeEnvelope(
       accountGeneration: accountGeneration,

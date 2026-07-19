@@ -839,7 +839,7 @@ void main() {
           fingerprint: 'f' * 64,
           status: TranslationModelProbeStatus.failed,
           checkedAt: DateTime.now(),
-          safeErrorCode: 'network_error',
+          safeErrorCode: 'network_unreachable',
           reasoningControlSuppressed: false,
         ),
         expectedAccountHash: account,
