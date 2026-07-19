@@ -1,6 +1,7 @@
 import 'dart:convert';
 
 import 'package:chatgpt_app_core/ai_readiness/ai_health_state_guard.dart';
+import 'package:chatgpt_app_core/chat/application/translation_model_probe_cache.dart';
 import 'package:chatgpt_app_core/chat/domain/model_capabilities.dart';
 import 'package:chatgpt_app_core/dao/ai_settings_dao.dart';
 import 'package:chatgpt_app_core/model/ai_provider.dart';
@@ -85,6 +86,16 @@ class AISettingsProvider extends ChangeNotifier {
       previous: _settings,
       next: next,
     );
+    final changedProbeProviders = {
+      ...changedProbeProviderIds(_persistedSettings, commitSnapshot),
+      ...changedProbeProviderIds(_settings, commitSnapshot),
+    };
+    final probeBarrier = changedProbeProviders.isEmpty
+        ? null
+        : TranslationModelProbeCache.shared.beginProviderInvalidation(
+            accountHash: _accountHash,
+            providerIds: changedProbeProviders,
+          );
     // 乐观基线必须先前移：紧接着发生的模型/开关操作要基于本次 Key/host
     // 变更构造快照，不能在安全存储 I/O 期间从旧 settings 克隆。
     _settings = commitSnapshot.clone();
@@ -111,6 +122,8 @@ class AISettingsProvider extends ChangeNotifier {
         notifyListeners();
       }
       rethrow;
+    } finally {
+      probeBarrier?.release();
     }
   }
 

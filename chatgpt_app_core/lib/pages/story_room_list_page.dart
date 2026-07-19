@@ -32,6 +32,7 @@ import 'package:chatgpt_app_core/model/story_template_model.dart';
 import 'package:chatgpt_app_core/model/story_template_translation_task_model.dart';
 import 'package:chatgpt_app_core/pages/story_room_page.dart';
 import 'package:chatgpt_app_core/pages/story_persona_list_page.dart';
+import 'package:chatgpt_app_core/pages/ai_settings_page.dart';
 import 'package:chatgpt_app_core/provider/ai_settings_provider.dart';
 import 'package:chatgpt_app_core/util/hi_dialog.dart';
 import 'package:chatgpt_app_core/widget/translation_task_log_dialog.dart';
@@ -44,6 +45,24 @@ import 'package:login_sdk/dao/login_dao.dart';
 final _storyTemplateTranslationCoordinator =
     StoryTemplateTranslationCoordinator.instance;
 const _translationWorkEstimator = TranslationWorkEstimator();
+
+/// Story 页面创建/更换翻译任务共同使用的可测试 production seam。
+Future<TranslationPreflightAccepted?> runStoryTranslationPreflightStart({
+  required TranslationModelPreference initialValue,
+  TranslationSettingsSelection? initialSelection,
+  required TranslationSettingsSelector select,
+  required TranslationModelProbeGateway probeService,
+  required TranslationPreflightStarter start,
+  FutureOr<void> Function()? onConfigurationChanged,
+}) =>
+    runTranslationPreflightStartLoop(
+      initialValue: initialValue,
+      initialSelection: initialSelection,
+      select: select,
+      probeService: probeService,
+      start: start,
+      onConfigurationChanged: onConfigurationChanged,
+    );
 
 class StoryRoomListPage extends StatefulWidget {
   const StoryRoomListPage({super.key});
@@ -998,75 +1017,62 @@ class _StoryRoomListPageState extends State<StoryRoomListPage> {
     );
     final accountHash = readSnapshot().accountHash;
     final preferenceStore = TranslationModelPreferenceStore();
-    var initialValue = preferenceStore.read(accountHash);
-    while (true) {
-      if (!mounted) return;
-      final result = await showTranslationSettingsDialog(
-        context,
-        readSnapshot: readSnapshot,
+    final initialValue = preferenceStore.read(accountHash);
+    try {
+      final accepted = await runStoryTranslationPreflightStart(
         initialValue: initialValue,
-        estimatedRunes: _translationWorkEstimator.totalRunesForResults(
-          payload.results,
-          initialOpening: payload.initialOpening,
-        ),
+        select: (nextInitial) async {
+          if (!mounted) return null;
+          final result = await showTranslationSettingsDialog(
+            context,
+            readSnapshot: readSnapshot,
+            initialValue: nextInitial,
+            estimatedRunes: _translationWorkEstimator.totalRunesForResults(
+              payload.results,
+              initialOpening: payload.initialOpening,
+            ),
+            probeService: TranslationModelProbeService.shared,
+            onFixIssue: _fixTranslationIssue,
+            title: '生成中文副本',
+          );
+          if (result == null || !mounted) return null;
+          return TranslationSettingsSelection(
+            result: result,
+            readSnapshot: readSnapshot,
+          );
+        },
         probeService: TranslationModelProbeService.shared,
-        title: '生成中文副本',
-      );
-      if (result == null || !mounted) return;
-      final handoff = resolveTranslationSettingsHandoff(
-        result: result,
-        readSnapshot: readSnapshot,
-        probeService: TranslationModelProbeService.shared,
-      );
-      if (handoff == null) {
-        HiDialog.showSnackBar(context, '翻译配置已变化，请重新确认');
-        initialValue = result.preference;
-        continue;
-      }
-      final checkEligibility = buildTranslationSettingsEligibilityCheck(
-        readSnapshot: readSnapshot,
-        probeService: TranslationModelProbeService.shared,
-        result: result,
-        expectedProfile: handoff.profile,
-      );
-      try {
-        await _storyTemplateTranslationCoordinator.start(
+        onConfigurationChanged: () {
+          if (mounted) HiDialog.showSnackBar(context, '翻译配置已变化，请重新确认');
+        },
+        start: (handoff, checkEligibility) =>
+            _storyTemplateTranslationCoordinator.start(
           template,
           requestProfile: handoff.profile,
           checkEligibility: checkEligibility,
           resolveExecutor:
               _translationExecutorResolver(handoff.snapshot.settings),
+        ),
+      );
+      if (accepted == null || !mounted) return;
+      try {
+        await preferenceStore.save(
+          accepted.selection.result.preference,
+          expectedAccountHash: accepted.handoff.snapshot.accountHash,
         );
-        if (!mounted) return;
-        try {
-          await preferenceStore.save(
-            result.preference,
-            expectedAccountHash: handoff.snapshot.accountHash,
-          );
-        } catch (_) {
-          if (mounted) {
-            HiDialog.showSnackBar(context, '任务已创建，但翻译模型偏好未能保存');
-          }
-          return;
-        }
+      } catch (_) {
         if (mounted) {
-          HiDialog.showSnackBar(context, '已加入后台任务，可在当前页面查看进度');
+          HiDialog.showSnackBar(context, '任务已创建，但翻译模型偏好未能保存');
         }
-        return;
-      } on TranslationModelUnavailableException catch (error) {
-        if (!mounted) return;
-        if (error.safeCode ==
-            TranslationEligibilityCode.configurationChanged.name) {
-          HiDialog.showSnackBar(context, '翻译配置已变化，请重新确认');
-          initialValue = result.preference;
-          continue;
-        }
-        HiDialog.showSnackBar(context, '创建翻译任务失败：${error.message}');
-        return;
-      } catch (error) {
-        if (mounted) HiDialog.showSnackBar(context, '创建翻译任务失败：$error');
         return;
       }
+      if (mounted) {
+        HiDialog.showSnackBar(context, '已加入后台任务，可在当前页面查看进度');
+      }
+    } on TranslationModelUnavailableException catch (error) {
+      if (mounted) HiDialog.showSnackBar(context, '创建翻译任务失败：${error.message}');
+    } catch (error) {
+      if (mounted) HiDialog.showSnackBar(context, '创建翻译任务失败：$error');
     }
   }
 
@@ -1163,68 +1169,57 @@ class _StoryRoomListPageState extends State<StoryRoomListPage> {
     );
     final accountHash = readSnapshot().accountHash;
     final store = TranslationModelPreferenceStore();
-    var initialValue = _preferenceFromTask(task) ?? store.read(accountHash);
-    while (true) {
-      if (!mounted) return;
-      final result = await showTranslationSettingsDialog(
-        context,
-        readSnapshot: readSnapshot,
+    final initialValue = _preferenceFromTask(task) ?? store.read(accountHash);
+    try {
+      final accepted = await runStoryTranslationPreflightStart(
         initialValue: initialValue,
-        estimatedRunes: _translationWorkEstimator
-                .tryTotalRunesForTaskSource(task.sourcePayload) ??
-            0,
+        select: (nextInitial) async {
+          if (!mounted) return null;
+          final result = await showTranslationSettingsDialog(
+            context,
+            readSnapshot: readSnapshot,
+            initialValue: nextInitial,
+            estimatedRunes: _translationWorkEstimator
+                    .tryTotalRunesForTaskSource(task.sourcePayload) ??
+                0,
+            probeService: TranslationModelProbeService.shared,
+            onFixIssue: _fixTranslationIssue,
+            title: '更换翻译模型',
+          );
+          if (result == null || !mounted) return null;
+          return TranslationSettingsSelection(
+            result: result,
+            readSnapshot: readSnapshot,
+          );
+        },
         probeService: TranslationModelProbeService.shared,
-        title: '更换翻译模型',
-      );
-      if (result == null || !mounted) return;
-      final handoff = resolveTranslationSettingsHandoff(
-        result: result,
-        readSnapshot: readSnapshot,
-        probeService: TranslationModelProbeService.shared,
-      );
-      if (handoff == null) {
-        HiDialog.showSnackBar(context, '翻译配置已变化，请重新确认');
-        initialValue = result.preference;
-        continue;
-      }
-      try {
-        await _storyTemplateTranslationCoordinator.retry(
+        onConfigurationChanged: () {
+          if (mounted) HiDialog.showSnackBar(context, '翻译配置已变化，请重新确认');
+        },
+        start: (handoff, checkEligibility) =>
+            _storyTemplateTranslationCoordinator.retry(
           task,
           replacementProfile: handoff.profile,
-          checkEligibility: buildTranslationSettingsEligibilityCheck(
-            readSnapshot: readSnapshot,
-            probeService: TranslationModelProbeService.shared,
-            result: result,
-            expectedProfile: handoff.profile,
-          ),
+          checkEligibility: checkEligibility,
           resolveExecutor:
               _translationExecutorResolver(handoff.snapshot.settings),
-        );
-      } on TranslationModelUnavailableException catch (error) {
-        if (!mounted) return;
-        if (error.safeCode ==
-            TranslationEligibilityCode.configurationChanged.name) {
-          HiDialog.showSnackBar(context, '翻译配置已变化，请重新确认');
-          initialValue = result.preference;
-          continue;
-        }
-        HiDialog.showSnackBar(context, '更换翻译模型失败：${error.message}');
-        return;
-      } catch (error) {
-        if (mounted) HiDialog.showSnackBar(context, '更换翻译模型失败：$error');
-        return;
-      }
+        ),
+      );
+      if (accepted == null || !mounted) return;
       try {
         await store.save(
-          result.preference,
-          expectedAccountHash: handoff.snapshot.accountHash,
+          accepted.selection.result.preference,
+          expectedAccountHash: accepted.handoff.snapshot.accountHash,
         );
       } catch (_) {
         if (mounted) {
           HiDialog.showSnackBar(context, '任务已恢复，但翻译模型偏好未能保存');
         }
       }
-      return;
+    } on TranslationModelUnavailableException catch (error) {
+      if (mounted) HiDialog.showSnackBar(context, '更换翻译模型失败：${error.message}');
+    } catch (error) {
+      if (mounted) HiDialog.showSnackBar(context, '更换翻译模型失败：$error');
     }
   }
 
@@ -1237,6 +1232,20 @@ class _StoryRoomListPageState extends State<StoryRoomListPage> {
                 LoginDao.getAccountHash() ?? HiDBManager.getAccountHash(),
             eligibilityEnvironment: TranslationEligibilityEnvironment.current(),
           );
+
+  Future<void> _fixTranslationIssue(
+    TranslationEligibilityIssue issue,
+  ) async {
+    if (!mounted) return;
+    if (issue.code == TranslationEligibilityCode.guestBackend) {
+      await LoginDao.logOut();
+      return;
+    }
+    await Navigator.push<void>(
+      context,
+      MaterialPageRoute(builder: (_) => const AISettingsPage()),
+    );
+  }
 
   TranslationModelPreference? _preferenceFromTask(
     StoryTemplateTranslationTaskModel task,

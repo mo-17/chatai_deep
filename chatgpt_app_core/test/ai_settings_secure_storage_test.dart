@@ -5,11 +5,14 @@ import 'package:chatgpt_app_core/ai_readiness/ai_health_state_guard.dart';
 import 'package:chatgpt_app_core/chat/application/mcp/mcp_types.dart';
 import 'package:chatgpt_app_core/chat/application/translation_model_probe_cache.dart';
 import 'package:chatgpt_app_core/chat/application/translation_model_probe_fingerprint.dart';
+import 'package:chatgpt_app_core/chat/application/translation_model_probe_service.dart';
+import 'package:chatgpt_app_core/chat/application/translation_model_eligibility.dart';
 import 'package:chatgpt_app_core/chat/domain/chat_request_options.dart';
 import 'package:chatgpt_app_core/chat/domain/translation_request_profile.dart';
 import 'package:chatgpt_app_core/dao/ai_settings_dao.dart';
 import 'package:chatgpt_app_core/model/ai_settings.dart';
 import 'package:chatgpt_app_core/provider/ai_settings_provider.dart';
+import 'package:chatgpt_app_core/widget/translation_settings_dialog.dart';
 import 'package:flutter_hi_cache/flutter_hi_cache.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:login_sdk/login_sdk.dart';
@@ -874,6 +877,176 @@ void main() {
       'unknown',
     );
     await saving;
+  });
+
+  test('Provider 乐观发布新 Key 时立即隐藏旧 probe 证据直到持久失效完成', () async {
+    final secureStore = _MemorySecureStore();
+    AISettingsDao.configureSecretStore(secureStore);
+    final provider = AISettingsProvider();
+    final configured = provider.settings.clone()
+      ..activeProvider.apiKey = 'provider-probe-old-key'
+      ..activeProvider.apiHost = 'https://probe.example/v1';
+    await provider.update(configured);
+
+    final cache = TranslationModelProbeCache.shared;
+    final service = TranslationModelProbeService(cache: cache);
+    final profile = TranslationRequestProfile(
+      mode: TranslationExecutionMode.local,
+      providerId: provider.settings.activeProvider.id,
+      modelId: provider.settings.activeProvider.effectiveModelId,
+      reasoningPolicy: ChatReasoningPolicy.offIfSupported,
+      reasoningControlSuppressed: false,
+    );
+    final oldIdentity = service.identify(
+      accountHash: 'guest',
+      settings: provider.settings,
+      profile: profile,
+    );
+    final oldRecord = TranslationModelProbeRecord(
+      fingerprint: oldIdentity.fingerprint,
+      status: TranslationModelProbeStatus.verified,
+      checkedAt: DateTime.now(),
+      reasoningControlSuppressed: true,
+    );
+    expect(
+      await cache.put(
+        oldRecord,
+        expectedAccountHash: 'guest',
+        providerId: provider.settings.activeProvider.id,
+        expectedToken: oldIdentity.cacheToken,
+      ),
+      isTrue,
+    );
+    final eligibilityEnvironment = TranslationEligibilityEnvironment.current();
+    final eligibility =
+        const TranslationModelEligibilityEvaluator().evaluateProfile(
+      settings: provider.settings,
+      profile: profile,
+      environment: eligibilityEnvironment,
+    );
+    final dialogResult = TranslationSettingsResult(
+      preference: TranslationModelPreference(
+        mode: TranslationModelPreferenceMode.local,
+        providerId: profile.providerId,
+        modelId: profile.modelId,
+        reasoningPolicy: profile.reasoningPolicy,
+      ),
+      profile: profile.suppressReasoningControl(),
+      identity: oldIdentity,
+      evidenceSignature: buildTranslationSettingsEvidenceSignature(
+        eligibility: eligibility,
+        identity: oldIdentity,
+        record: oldRecord,
+      ),
+      warningsAcknowledged: false,
+    );
+    expect(
+      service
+          .applyCachedEvidence(
+            accountHash: 'guest',
+            settings: provider.settings,
+            profile: profile,
+          )
+          .reasoningControlSuppressed,
+      isTrue,
+    );
+
+    final blocked = secureStore.blockNextWrite();
+    final queueHolder = provider.settings.clone()..streamEnabled = false;
+    final firstSave = provider.update(queueHolder);
+    await blocked.started;
+    final rotated = provider.settings.clone()
+      ..activeProvider.apiKey = 'provider-probe-new-key';
+    final rotatedSave = provider.update(rotated);
+
+    TranslationModelProbeRecord? visibleDuringWindow;
+    late final TranslationRequestProfile appliedDuringWindow;
+    TranslationSettingsHandoff? handoffDuringWindow;
+    late final TranslationModelProbeIdentity newIdentity;
+    try {
+      newIdentity = service.identify(
+        accountHash: 'guest',
+        settings: provider.settings,
+        profile: profile,
+      );
+      visibleDuringWindow = service.lookup(
+        accountHash: 'guest',
+        settings: provider.settings,
+        profile: profile,
+      );
+      appliedDuringWindow = service.applyCachedEvidence(
+        accountHash: 'guest',
+        settings: provider.settings,
+        profile: profile,
+      );
+      handoffDuringWindow = resolveTranslationSettingsHandoff(
+        result: dialogResult,
+        readSnapshot: () => TranslationSettingsSnapshot(
+          settings: provider.settings.clone(),
+          accountHash: 'guest',
+          eligibilityEnvironment: eligibilityEnvironment,
+        ),
+        probeService: service,
+      );
+    } finally {
+      blocked.release();
+      await Future.wait([firstSave, rotatedSave]);
+    }
+
+    expect(oldIdentity.fingerprint, newIdentity.fingerprint,
+        reason: 'API Key 不能进入持久 fingerprint');
+    expect(oldIdentity.cacheToken.sameAs(newIdentity.cacheToken), isFalse,
+        reason: '独立 runtime generation 必须同步隔离旧证据');
+    expect(visibleDuringWindow, isNull);
+    expect(appliedDuringWindow.reasoningControlSuppressed, isFalse);
+    expect(handoffDuringWindow, isNull);
+    expect(
+      service.isIdentityCurrent(
+        oldIdentity,
+        accountHash: 'guest',
+        settings: provider.settings,
+        profile: profile,
+      ),
+      isFalse,
+    );
+  });
+
+  test('Provider K0→K1→K0 重叠提交会为两次可见配置变化各持有一代屏障', () async {
+    final secureStore = _MemorySecureStore();
+    AISettingsDao.configureSecretStore(secureStore);
+    final provider = AISettingsProvider();
+    final k0 = provider.settings.clone()
+      ..activeProvider.apiKey = 'provider-overlap-k0';
+    await provider.update(k0);
+    final providerId = provider.settings.activeProvider.id;
+    final cache = TranslationModelProbeCache.shared;
+    final before = cache.tokenFor(
+      accountHash: 'guest',
+      providerId: providerId,
+    );
+
+    final blocked = secureStore.blockNextWrite();
+    final k1 = provider.settings.clone()
+      ..activeProvider.apiKey = 'provider-overlap-k1';
+    final firstSave = provider.update(k1);
+    await blocked.started;
+    final backToK0 = provider.settings.clone()
+      ..activeProvider.apiKey = 'provider-overlap-k0';
+    final secondSave = provider.update(backToK0);
+    final duringOverlap = cache.tokenFor(
+      accountHash: 'guest',
+      providerId: providerId,
+    );
+
+    blocked.release();
+    await Future.wait([firstSave, secondSave]);
+
+    expect(
+      duringOverlap.runtimeProviderGeneration,
+      before.runtimeProviderGeneration + 2,
+      reason: '第二次变化必须相对 last-visible K1 再 acquire 一代 lease',
+    );
+    expect(provider.settings.activeProvider.apiKey, 'provider-overlap-k0');
   });
 
   test('Provider 丢弃测试期间旧配置返回的 success，不覆盖当前配置', () async {

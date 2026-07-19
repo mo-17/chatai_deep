@@ -1,7 +1,54 @@
+import 'package:chatgpt_app_core/chat/application/reasoning_control_adapter.dart';
 import 'package:chatgpt_app_core/chat/domain/chat_request_options.dart';
 import 'package:chatgpt_app_core/chat/domain/translation_request_profile.dart';
 import 'package:chatgpt_app_core/model/ai_provider.dart';
 import 'package:chatgpt_app_core/model/ai_settings.dart';
+
+/// 将 UI 偏好归一成真正会用于 eligibility、probe 与任务快照的 reasoning 语义。
+///
+/// 不支持显式 reasoning-control 的本地模型不会发送关闭参数，因此其正式偏好
+/// 是 providerDefault。后端由代理层解释统一语义，保留 offIfSupported。
+TranslationModelPreference normalizeTranslationModelPreference(
+  AISettings settings,
+  TranslationModelPreference preference,
+) {
+  final validated = TranslationModelPreference.fromJson(preference.toJson());
+  if (validated.reasoningPolicy != ChatReasoningPolicy.offIfSupported) {
+    return validated;
+  }
+  if (validated.mode == TranslationModelPreferenceMode.backend ||
+      (validated.mode == TranslationModelPreferenceMode.followGlobal &&
+          settings.mode == AIMode.backend)) {
+    return validated;
+  }
+
+  final providerId = validated.mode == TranslationModelPreferenceMode.local
+      ? validated.providerId
+      : settings.activeProviderId;
+  AiProvider? provider;
+  for (final candidate in settings.providers) {
+    if (candidate.id == providerId) {
+      provider = candidate;
+      break;
+    }
+  }
+  final modelId = validated.mode == TranslationModelPreferenceMode.local
+      ? validated.modelId ?? ''
+      : provider?.effectiveModelId ?? '';
+  final decision = ReasoningControlAdapter.resolve(
+    providerId: provider?.id,
+    providerCode: provider?.providerCode,
+    modelId: modelId,
+    policy: ChatReasoningPolicy.offIfSupported,
+  );
+  if (decision.supported) return validated;
+  return TranslationModelPreference(
+    mode: validated.mode,
+    providerId: validated.providerId,
+    modelId: validated.modelId,
+    reasoningPolicy: ChatReasoningPolicy.providerDefault,
+  );
+}
 
 /// 快照所指向的模型已经无法按原配置执行。
 final class TranslationModelUnavailableException implements Exception {

@@ -169,6 +169,9 @@ final class TranslationModelProbeService
     return _cache.lookup(
       accountHash: accountHash,
       fingerprint: fingerprint,
+      providerId: profile.mode == TranslationExecutionMode.local
+          ? profile.providerId
+          : null,
     );
   }
 

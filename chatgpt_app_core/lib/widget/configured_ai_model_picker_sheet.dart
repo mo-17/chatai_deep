@@ -1,6 +1,7 @@
 import 'package:chatgpt_app_core/capability/model_picker_presenter.dart';
 import 'package:chatgpt_app_core/chat/application/translation_model_eligibility.dart';
 import 'package:chatgpt_app_core/chat/application/translation_model_probe_cache.dart';
+import 'package:chatgpt_app_core/chat/application/translation_model_resolver.dart';
 import 'package:chatgpt_app_core/chat/domain/chat_request_options.dart';
 import 'package:chatgpt_app_core/chat/domain/translation_request_profile.dart';
 import 'package:chatgpt_app_core/model/ai_provider.dart';
@@ -135,10 +136,10 @@ class _ConfiguredAiModelPickerSheetState
                 leading: const Icon(Icons.public),
                 title: const Text('跟随全局设置'),
                 subtitle: _selectionSubtitle(
-                  const TranslationModelPreference(
+                  _normalized(const TranslationModelPreference(
                     mode: TranslationModelPreferenceMode.followGlobal,
                     reasoningPolicy: ChatReasoningPolicy.offIfSupported,
-                  ),
+                  )),
                   widget.settings.effectiveModel,
                   providerId: 'follow_global',
                   modelId: widget.settings.effectiveModel,
@@ -149,10 +150,10 @@ class _ConfiguredAiModelPickerSheetState
                     : null,
                 onTap: () => Navigator.pop(
                   context,
-                  const TranslationModelPreference(
+                  _normalized(const TranslationModelPreference(
                     mode: TranslationModelPreferenceMode.followGlobal,
                     reasoningPolicy: ChatReasoningPolicy.offIfSupported,
-                  ),
+                  )),
                 ),
               ),
             if (widget.includeFollowGlobal) const Divider(height: 1),
@@ -162,11 +163,11 @@ class _ConfiguredAiModelPickerSheetState
                 leading: const Icon(Icons.cloud_outlined),
                 title: Text(backendModel),
                 subtitle: _selectionSubtitle(
-                  TranslationModelPreference(
+                  _normalized(TranslationModelPreference(
                     mode: TranslationModelPreferenceMode.backend,
                     modelId: backendModel,
                     reasoningPolicy: ChatReasoningPolicy.offIfSupported,
-                  ),
+                  )),
                   '后端代理',
                   providerId: 'backend',
                   modelId: backendModel,
@@ -176,11 +177,11 @@ class _ConfiguredAiModelPickerSheetState
                     : null,
                 onTap: () => Navigator.pop(
                   context,
-                  TranslationModelPreference(
+                  _normalized(TranslationModelPreference(
                     mode: TranslationModelPreferenceMode.backend,
                     modelId: backendModel,
                     reasoningPolicy: ChatReasoningPolicy.offIfSupported,
-                  ),
+                  )),
                 ),
               ),
             if (hasBackend) const Divider(height: 1),
@@ -236,12 +237,12 @@ class _ConfiguredAiModelPickerSheetState
     final caps = ConversationModelPickerPresenter.capabilities(provider, model);
     final failed = model.lastTestStatus == 'failure';
     final available = model.lastTestStatus == 'success';
-    final preference = TranslationModelPreference(
+    final preference = _normalized(TranslationModelPreference(
       mode: TranslationModelPreferenceMode.local,
       providerId: provider.id,
       modelId: model.id,
       reasoningPolicy: ChatReasoningPolicy.offIfSupported,
-    );
+    ));
     final preflight = _preflightBadge(
       preference,
       providerId: provider.id,
@@ -386,6 +387,11 @@ class _ConfiguredAiModelPickerSheetState
   bool _isSelectedBackend(String modelId) =>
       widget.selected.mode == TranslationModelPreferenceMode.backend &&
       widget.selected.modelId == modelId;
+
+  TranslationModelPreference _normalized(
+    TranslationModelPreference preference,
+  ) =>
+      normalizeTranslationModelPreference(widget.settings, preference);
 
   static List<AiProvider> _providers(
     AISettings settings,

@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:chatgpt_app_core/chat/application/reasoning_control_adapter.dart';
 import 'package:chatgpt_app_core/chat/application/translation_model_eligibility.dart';
 import 'package:chatgpt_app_core/chat/application/translation_model_probe_cache.dart';
@@ -14,15 +16,94 @@ final class TranslationSettingsResult {
   final TranslationModelPreference preference;
   final TranslationRequestProfile profile;
   final TranslationModelProbeIdentity identity;
+  final TranslationSettingsEvidenceSignature evidenceSignature;
   final bool warningsAcknowledged;
 
   const TranslationSettingsResult({
     required this.preference,
     required this.profile,
     required this.identity,
+    required this.evidenceSignature,
     required this.warningsAcknowledged,
   });
 }
+
+/// 用户确认时看到的 eligibility + probe 证据版本。
+///
+/// 签名只包含枚举、时间、脱敏错误码和 cache generation；不包含 API Key、
+/// endpoint 或 warning 原文，也不提供可被误写进日志的字符串表示。
+final class TranslationSettingsEvidenceSignature {
+  final List<String> _eligibilityKeys;
+  final String _fingerprint;
+  final int _accountGeneration;
+  final int _providerGeneration;
+  final int _runtimeProviderGeneration;
+  final String _recordState;
+  final int? _checkedAtMillis;
+  final int? _firstEventMs;
+  final int? _totalMs;
+  final String? _safeErrorCode;
+  final bool? _reasoningControlSuppressed;
+
+  TranslationSettingsEvidenceSignature._({
+    required List<String> eligibilityKeys,
+    required String fingerprint,
+    required int accountGeneration,
+    required int providerGeneration,
+    required int runtimeProviderGeneration,
+    required String recordState,
+    required int? checkedAtMillis,
+    required int? firstEventMs,
+    required int? totalMs,
+    required String? safeErrorCode,
+    required bool? reasoningControlSuppressed,
+  })  : _eligibilityKeys = List.unmodifiable(eligibilityKeys),
+        _fingerprint = fingerprint,
+        _accountGeneration = accountGeneration,
+        _providerGeneration = providerGeneration,
+        _runtimeProviderGeneration = runtimeProviderGeneration,
+        _recordState = recordState,
+        _checkedAtMillis = checkedAtMillis,
+        _firstEventMs = firstEventMs,
+        _totalMs = totalMs,
+        _safeErrorCode = safeErrorCode,
+        _reasoningControlSuppressed = reasoningControlSuppressed;
+
+  bool sameAs(TranslationSettingsEvidenceSignature other) =>
+      _sameStrings(_eligibilityKeys, other._eligibilityKeys) &&
+      _fingerprint == other._fingerprint &&
+      _accountGeneration == other._accountGeneration &&
+      _providerGeneration == other._providerGeneration &&
+      _runtimeProviderGeneration == other._runtimeProviderGeneration &&
+      _recordState == other._recordState &&
+      _checkedAtMillis == other._checkedAtMillis &&
+      _firstEventMs == other._firstEventMs &&
+      _totalMs == other._totalMs &&
+      _safeErrorCode == other._safeErrorCode &&
+      _reasoningControlSuppressed == other._reasoningControlSuppressed;
+}
+
+TranslationSettingsEvidenceSignature buildTranslationSettingsEvidenceSignature({
+  required TranslationEligibilityResult eligibility,
+  required TranslationModelProbeIdentity identity,
+  required TranslationModelProbeRecord? record,
+}) =>
+    TranslationSettingsEvidenceSignature._(
+      eligibilityKeys: [
+        for (final issue in eligibility.issues)
+          '${issue.level.name}:${issue.code.name}',
+      ],
+      fingerprint: identity.fingerprint,
+      accountGeneration: identity.cacheToken.accountGeneration,
+      providerGeneration: identity.cacheToken.providerGeneration,
+      runtimeProviderGeneration: identity.cacheToken.runtimeProviderGeneration,
+      recordState: record?.status.name ?? 'missing',
+      checkedAtMillis: record?.checkedAt.toUtc().millisecondsSinceEpoch,
+      firstEventMs: record?.firstEventMs,
+      totalMs: record?.totalMs,
+      safeErrorCode: record?.safeErrorCode,
+      reasoningControlSuppressed: record?.reasoningControlSuppressed,
+    );
 
 final class TranslationSettingsSnapshot {
   final AISettings settings;
@@ -48,6 +129,91 @@ final class TranslationSettingsHandoff {
     required this.snapshot,
     required this.profile,
   });
+}
+
+/// 一次设置对话框返回值及其绑定的 fresh snapshot reader。
+final class TranslationSettingsSelection {
+  final TranslationSettingsResult result;
+  final TranslationSettingsSnapshotReader readSnapshot;
+
+  const TranslationSettingsSelection({
+    required this.result,
+    required this.readSnapshot,
+  });
+}
+
+/// production caller 已通过边界复核并成功交给 coordinator 的同一份 handoff。
+final class TranslationPreflightAccepted {
+  final TranslationSettingsSelection selection;
+  final TranslationSettingsHandoff handoff;
+
+  const TranslationPreflightAccepted({
+    required this.selection,
+    required this.handoff,
+  });
+}
+
+typedef TranslationSettingsSelector = Future<TranslationSettingsSelection?>
+    Function(TranslationModelPreference initialValue);
+typedef TranslationPreflightStarter = Future<void> Function(
+  TranslationSettingsHandoff handoff,
+  TranslationEligibilityResult Function(TranslationRequestProfile profile)
+      checkEligibility,
+);
+
+/// 设置结果到 coordinator 之间唯一的生产循环：任何 identity/evidence 漂移都
+/// 回到选择器；checker 则在 coordinator 写任务前再做最后一次同步复核。
+Future<TranslationPreflightAccepted?> runTranslationPreflightStartLoop({
+  required TranslationModelPreference initialValue,
+  TranslationSettingsSelection? initialSelection,
+  required TranslationSettingsSelector select,
+  required TranslationModelProbeGateway probeService,
+  required TranslationPreflightStarter start,
+  FutureOr<void> Function()? onConfigurationChanged,
+}) async {
+  var nextInitial = initialValue;
+  var pendingSelection = initialSelection;
+  while (true) {
+    final selection = pendingSelection ?? await select(nextInitial);
+    pendingSelection = null;
+    if (selection == null) return null;
+    final result = selection.result;
+    final handoff = resolveTranslationSettingsHandoff(
+      result: result,
+      readSnapshot: selection.readSnapshot,
+      probeService: probeService,
+    );
+    if (handoff == null) {
+      await onConfigurationChanged?.call();
+      nextInitial = result.preference;
+      continue;
+    }
+    final checkEligibility = buildTranslationSettingsEligibilityCheck(
+      readSnapshot: selection.readSnapshot,
+      probeService: probeService,
+      result: result,
+      expectedProfile: handoff.profile,
+    );
+    if (!checkEligibility(handoff.profile).canStart) {
+      await onConfigurationChanged?.call();
+      nextInitial = result.preference;
+      continue;
+    }
+    try {
+      await start(handoff, checkEligibility);
+      return TranslationPreflightAccepted(
+        selection: selection,
+        handoff: handoff,
+      );
+    } on TranslationModelUnavailableException catch (error) {
+      if (error.safeCode !=
+          TranslationEligibilityCode.configurationChanged.name) {
+        rethrow;
+      }
+      await onConfigurationChanged?.call();
+      nextInitial = result.preference;
+    }
+  }
 }
 
 /// dialog 返回到页面后重新读取缓存和配置。任何身份变化，或出现尚未确认的
@@ -83,6 +249,12 @@ TranslationSettingsHandoff? resolveTranslationSettingsHandoff({
       settings: snapshot.settings,
       profile: profile,
     );
+    final evidenceSignature = buildTranslationSettingsEvidenceSignature(
+      eligibility: eligibility,
+      identity: result.identity,
+      record: record,
+    );
+    if (!result.evidenceSignature.sameAs(evidenceSignature)) return null;
     if (_requiresWarning(eligibility, record) && !result.warningsAcknowledged) {
       return null;
     }
@@ -118,7 +290,7 @@ TranslationEligibilityResult Function(TranslationRequestProfile profile)
             const evaluator = TranslationModelEligibilityEvaluator();
             final eligibility = evaluator.evaluateProfile(
               settings: snapshot.settings,
-              profile: profile,
+              profile: currentProfile,
               environment: snapshot.eligibilityEnvironment,
             );
             if (!eligibility.canStart) return eligibility;
@@ -128,6 +300,19 @@ TranslationEligibilityResult Function(TranslationRequestProfile profile)
               settings: snapshot.settings,
               profile: currentProfile,
             )) {
+              return _configurationChangedResult;
+            }
+            final record = probeService.lookup(
+              accountHash: snapshot.accountHash,
+              settings: snapshot.settings,
+              profile: currentProfile,
+            );
+            final evidenceSignature = buildTranslationSettingsEvidenceSignature(
+              eligibility: eligibility,
+              identity: result.identity,
+              record: record,
+            );
+            if (!result.evidenceSignature.sameAs(evidenceSignature)) {
               return _configurationChangedResult;
             }
             final evidenced = probeService.applyCachedEvidence(
@@ -285,13 +470,13 @@ class _TranslationSettingsDialogState
                 style: Theme.of(context).textTheme.bodySmall,
               ),
             ],
-            if (!view.eligibility.canStart && issue != null) ...[
+            if (!view.eligibility.canStart &&
+                issue != null &&
+                widget.onFixIssue != null) ...[
               const SizedBox(height: 8),
               TextButton.icon(
                 key: const ValueKey('translation_fix_issue'),
-                onPressed: widget.onFixIssue == null || running
-                    ? null
-                    : () => _fixIssue(issue),
+                onPressed: running ? null : () => _fixIssue(issue),
                 icon: const Icon(Icons.settings_outlined),
                 label: Text(issue.actionLabel ?? '修复配置'),
               ),
@@ -507,7 +692,11 @@ class _TranslationSettingsDialogState
       final before = _currentView();
       final profile = before.profile;
       final identity = before.identity;
-      if (!before.eligibility.canStart || profile == null || identity == null) {
+      final evidenceSignature = before.evidenceSignature;
+      if (!before.eligibility.canStart ||
+          profile == null ||
+          identity == null ||
+          evidenceSignature == null) {
         setState(() {});
         return;
       }
@@ -525,7 +714,8 @@ class _TranslationSettingsDialogState
       final refreshedProfile = refreshed.profile;
       if (!refreshed.eligibility.canStart ||
           refreshedProfile == null ||
-          refreshed.identity == null) {
+          refreshed.identity == null ||
+          refreshed.evidenceSignature == null) {
         setState(() => _notice = '翻译配置已变化，请重新确认');
         return;
       }
@@ -535,6 +725,11 @@ class _TranslationSettingsDialogState
         settings: refreshed.snapshot.settings,
         profile: refreshedProfile,
       )) {
+        forceConfigurationConfirmation = true;
+        setState(() => _notice = '翻译配置已变化，请重新确认');
+        continue;
+      }
+      if (!evidenceSignature.sameAs(refreshed.evidenceSignature!)) {
         forceConfigurationConfirmation = true;
         setState(() => _notice = '翻译配置已变化，请重新确认');
         continue;
@@ -551,6 +746,7 @@ class _TranslationSettingsDialogState
           preference: _preferenceWithReasoning(refreshed.snapshot.settings),
           profile: evidenced,
           identity: refreshed.identity!,
+          evidenceSignature: refreshed.evidenceSignature!,
           warningsAcknowledged: acknowledged,
         ),
       );
@@ -627,10 +823,14 @@ class _TranslationSettingsDialogState
     TranslationSettingsSnapshot? snapshot,
   }) {
     final currentSnapshot = snapshot ?? widget.readSnapshot();
+    final normalizedPreference = normalizeTranslationModelPreference(
+      currentSnapshot.settings,
+      preference,
+    );
     const evaluator = TranslationModelEligibilityEvaluator();
     final eligibility = evaluator.evaluatePreference(
       settings: currentSnapshot.settings,
-      preference: preference,
+      preference: normalizedPreference,
       environment: currentSnapshot.eligibilityEnvironment,
     );
     TranslationRequestProfile? profile;
@@ -638,7 +838,7 @@ class _TranslationSettingsDialogState
     TranslationModelProbeRecord? record;
     try {
       profile = TranslationModelResolver.snapshot(
-          currentSnapshot.settings, preference);
+          currentSnapshot.settings, normalizedPreference);
       identity = widget.probeService.identify(
         accountHash: currentSnapshot.accountHash,
         settings: currentSnapshot.settings,
@@ -667,7 +867,7 @@ class _TranslationSettingsDialogState
     }
     return _SelectionView(
       snapshot: currentSnapshot,
-      preference: preference,
+      preference: normalizedPreference,
       profile: profile,
       identity: identity,
       eligibility: eligibility,
@@ -677,11 +877,14 @@ class _TranslationSettingsDialogState
 
   TranslationModelPreference _preferenceWithReasoning(AISettings settings) {
     final decision = _reasoningDecision(settings, _selected);
-    return _copyWithReasoning(
-      _selected,
-      decision.supported && _disableThinking
-          ? ChatReasoningPolicy.offIfSupported
-          : ChatReasoningPolicy.providerDefault,
+    return normalizeTranslationModelPreference(
+      settings,
+      _copyWithReasoning(
+        _selected,
+        decision.supported && _disableThinking
+            ? ChatReasoningPolicy.offIfSupported
+            : ChatReasoningPolicy.providerDefault,
+      ),
     );
   }
 
@@ -820,6 +1023,16 @@ final class _SelectionView {
     required this.eligibility,
     required this.record,
   });
+
+  TranslationSettingsEvidenceSignature? get evidenceSignature {
+    final currentIdentity = identity;
+    if (currentIdentity == null) return null;
+    return buildTranslationSettingsEvidenceSignature(
+      eligibility: eligibility,
+      identity: currentIdentity,
+      record: record,
+    );
+  }
 }
 
 bool _requiresWarning(
@@ -839,6 +1052,14 @@ bool _sameProfile(
     first.modelId == second.modelId &&
     first.reasoningPolicy == second.reasoningPolicy &&
     first.reasoningControlSuppressed == second.reasoningControlSuppressed;
+
+bool _sameStrings(List<String> first, List<String> second) {
+  if (first.length != second.length) return false;
+  for (var index = 0; index < first.length; index += 1) {
+    if (first[index] != second[index]) return false;
+  }
+  return true;
+}
 
 String _probeTiming(TranslationModelProbeRecord record) {
   final checked = record.checkedAt.toLocal();

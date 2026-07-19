@@ -140,6 +140,34 @@ void main() {
     expect(gateway.startCalls, 0);
   });
 
+  testWidgets('过期验证证据在设置 UI 中降级为未验证', (tester) async {
+    final settings = _settings();
+    final gateway = _FakeProbeGateway()
+      ..expiresBefore = DateTime.utc(2026, 7, 21);
+    final profile =
+        TranslationModelResolver.snapshot(settings, _localPreference());
+    final fingerprint = gateway.fingerprint('account-a', settings, profile);
+    gateway.records[fingerprint] = _record(
+      fingerprint,
+      status: TranslationModelProbeStatus.verified,
+    );
+
+    await tester.pumpWidget(_host(
+      onOpen: (context) => showTranslationSettingsDialog(
+        context,
+        readSnapshot: () => _snapshot(settings),
+        initialValue: _localPreference(),
+        estimatedRunes: 100,
+        probeService: gateway,
+      ),
+    ));
+    await tester.tap(find.text('打开'));
+    await tester.pumpAndSettle();
+
+    expect(find.text('已验证'), findsNothing);
+    expect(find.text('未验证'), findsOneWidget);
+  });
+
   testWidgets('测试按钮先提示 Token；取消零请求，确认单请求且可取消', (tester) async {
     final settings = _settings();
     final gateway = _FakeProbeGateway();
@@ -261,6 +289,7 @@ void main() {
     await tester.pumpAndSettle();
     settings = settings.clone();
     settings.providers.first.apiKey = 'changed-key';
+    gateway.generation += 1;
     await tester
         .tap(find.byKey(const ValueKey('translation_probe_notice_confirm')));
     await tester.pumpAndSettle();
@@ -344,6 +373,7 @@ void main() {
 
     settings = settings.clone();
     settings.providers.first.apiKey = 'rotated-key';
+    gateway.generation += 1;
     await tester.tap(
       find.byKey(const ValueKey('translation_disable_thinking')),
     );
@@ -446,6 +476,61 @@ void main() {
     expect(gateway.startCalls, 0);
   });
 
+  testWidgets('调用方未提供修复路由时不展示无效修复按钮', (tester) async {
+    final settings = _settings();
+
+    await tester.pumpWidget(_host(
+      onOpen: (context) => showTranslationSettingsDialog(
+        context,
+        readSnapshot: () => _snapshot(settings),
+        initialValue: _localPreference(),
+        estimatedRunes: 100,
+        probeService: _FakeProbeGateway(),
+      ),
+    ));
+    await tester.tap(find.text('打开'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const ValueKey('translation_model_button')));
+    await tester.pumpAndSettle();
+    await tester.drag(
+      find.byKey(const ValueKey('configured_ai_model_picker')),
+      const Offset(0, -500),
+    );
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Disabled model'));
+    await tester.pumpAndSettle();
+
+    expect(find.text('配置不可用'), findsOneWidget);
+    expect(
+      find.byKey(const ValueKey('translation_fix_issue')),
+      findsNothing,
+    );
+  });
+
+  testWidgets('已删除的初始 provider/model 会回退到跟随全局', (tester) async {
+    final settings = _settings();
+
+    await tester.pumpWidget(_host(
+      onOpen: (context) => showTranslationSettingsDialog(
+        context,
+        readSnapshot: () => _snapshot(settings),
+        initialValue: const TranslationModelPreference(
+          mode: TranslationModelPreferenceMode.local,
+          providerId: 'deleted-provider',
+          modelId: 'deleted-model',
+          reasoningPolicy: ChatReasoningPolicy.offIfSupported,
+        ),
+        estimatedRunes: 100,
+        probeService: _FakeProbeGateway(),
+      ),
+    ));
+    await tester.tap(find.text('打开'));
+    await tester.pumpAndSettle();
+
+    expect(find.text('跟随全局：deepseek-v4-flash'), findsOneWidget);
+    expect(find.textContaining('deleted-provider'), findsNothing);
+  });
+
   testWidgets('本地地址 warning 即使已有 verified 也必须确认', (tester) async {
     final settings = _settings(apiHost: 'http://127.0.0.1:11434/v1');
     final gateway = _FakeProbeGateway();
@@ -483,6 +568,62 @@ void main() {
     );
   });
 
+  testWidgets('warning 等待期间同 identity 的 probe 证据变化会展示新 warning',
+      (tester) async {
+    final settings = _settings(apiHost: 'http://127.0.0.1:11434/v1');
+    final gateway = _FakeProbeGateway();
+    final profile =
+        TranslationModelResolver.snapshot(settings, _localPreference());
+    final fingerprint = gateway.fingerprint('account-a', settings, profile);
+    gateway.records[fingerprint] = _record(
+      fingerprint,
+      status: TranslationModelProbeStatus.verified,
+    );
+    TranslationSettingsResult? result;
+
+    await tester.pumpWidget(_host(
+      onOpen: (context) async {
+        result = await showTranslationSettingsDialog(
+          context,
+          readSnapshot: () => _snapshot(
+            settings,
+            platform: TargetPlatform.iOS,
+          ),
+          initialValue: _localPreference(),
+          estimatedRunes: 100,
+          probeService: gateway,
+        );
+      },
+    ));
+    await tester.tap(find.text('打开'));
+    await tester.pumpAndSettle();
+    await tester.tap(
+      find.byKey(const ValueKey('translation_settings_confirm')),
+    );
+    await tester.pumpAndSettle();
+
+    gateway.records[fingerprint] = TranslationModelProbeRecord(
+      fingerprint: fingerprint,
+      status: TranslationModelProbeStatus.failed,
+      checkedAt: DateTime.utc(2026, 7, 20, 8, 31),
+      safeErrorCode: 'auth_failed',
+      reasoningControlSuppressed: false,
+    );
+    await tester.tap(
+      find.byKey(const ValueKey('translation_warning_continue')),
+    );
+    await tester.pumpAndSettle();
+
+    expect(result, isNull);
+    expect(find.text('翻译配置已变化，请重新确认'), findsOneWidget);
+    expect(find.textContaining('认证失败，请检查 API Key。'), findsOneWidget);
+    expect(find.textContaining('本机地址'), findsWidgets);
+    expect(
+      find.byKey(const ValueKey('translation_warning_continue')),
+      findsOneWidget,
+    );
+  });
+
   testWidgets('未知字符数仍显示不可用且取消返回 null', (tester) async {
     final settings = _settings();
     final gateway = _FakeProbeGateway();
@@ -505,6 +646,59 @@ void main() {
     await tester.tap(find.byKey(const ValueKey('translation_settings_cancel')));
     await tester.pumpAndSettle();
     expect(result, isNull);
+  });
+
+  test('页面 handoff 会拒绝同 identity 下已经变化的 probe 证据', () {
+    final settings = _settings();
+    final gateway = _FakeProbeGateway();
+    final preference = _localPreference();
+    final profile = TranslationModelResolver.snapshot(settings, preference);
+    final identity = gateway.identify(
+      accountHash: 'account-a',
+      settings: settings,
+      profile: profile,
+    );
+    final fingerprint = gateway.fingerprint('account-a', settings, profile);
+    final verified = _record(
+      fingerprint,
+      status: TranslationModelProbeStatus.verified,
+    );
+    gateway.records[fingerprint] = verified;
+    final snapshot = _snapshot(settings);
+    final eligibility =
+        const TranslationModelEligibilityEvaluator().evaluateProfile(
+      settings: snapshot.settings,
+      profile: profile,
+      environment: snapshot.eligibilityEnvironment,
+    );
+    final result = TranslationSettingsResult(
+      preference: preference,
+      profile: profile,
+      identity: identity,
+      evidenceSignature: buildTranslationSettingsEvidenceSignature(
+        eligibility: eligibility,
+        identity: identity,
+        record: verified,
+      ),
+      warningsAcknowledged: false,
+    );
+
+    gateway.records[fingerprint] = TranslationModelProbeRecord(
+      fingerprint: fingerprint,
+      status: TranslationModelProbeStatus.failed,
+      checkedAt: DateTime.utc(2026, 7, 20, 8, 31),
+      safeErrorCode: 'auth_failed',
+      reasoningControlSuppressed: false,
+    );
+
+    expect(
+      resolveTranslationSettingsHandoff(
+        result: result,
+        readSnapshot: () => _snapshot(settings),
+        probeService: gateway,
+      ),
+      isNull,
+    );
   });
 }
 
@@ -616,6 +810,7 @@ final class _FakeProbeGateway implements TranslationModelProbeGateway {
   final Map<String, TranslationModelProbeRecord> records = {};
   TranslationModelProbeRecord Function(String fingerprint)? autoRecord;
   bool storeAutoRecord = true;
+  DateTime? expiresBefore;
   int generation = 0;
   int startCalls = 0;
   int cancelCalls = 0;
@@ -634,7 +829,6 @@ final class _FakeProbeGateway implements TranslationModelProbeGateway {
       );
       localHealth = [
         provider.enabled,
-        provider.apiKey,
         provider.apiHost,
         provider.models.map((model) => model.id).join(','),
       ].join('|');
@@ -686,8 +880,14 @@ final class _FakeProbeGateway implements TranslationModelProbeGateway {
     required String accountHash,
     required AISettings settings,
     required TranslationRequestProfile profile,
-  }) =>
-      records[fingerprint(accountHash, settings, profile)];
+  }) {
+    final record = records[fingerprint(accountHash, settings, profile)];
+    final cutoff = expiresBefore;
+    if (record != null && cutoff != null && record.checkedAt.isBefore(cutoff)) {
+      return null;
+    }
+    return record;
+  }
 
   @override
   TranslationModelProbeHandle start({

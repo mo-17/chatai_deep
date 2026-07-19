@@ -28,6 +28,7 @@ import 'package:chatgpt_app_core/model/ai_settings.dart';
 import 'package:chatgpt_app_core/model/assistant_model.dart';
 import 'package:chatgpt_app_core/model/story_template_model.dart';
 import 'package:chatgpt_app_core/model/story_template_translation_task_model.dart';
+import 'package:chatgpt_app_core/pages/story_room_list_page.dart';
 import 'package:chatgpt_app_core/widget/translation_settings_dialog.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -2416,7 +2417,8 @@ void main() {
       expect(executorCalls, 0);
     });
 
-    test('页面 fresh preflight identity 变化时不创建任务行或 executor', () async {
+    test('Story production preflight loop 在 dialog 返回后 identity 漂移时重新确认且零副作用',
+        () async {
       final coordinator = StoryTemplateTranslationCoordinator();
       await coordinator.initialize(storage, accountHash: 'test');
       final gateway = _BoundaryProbeGateway();
@@ -2431,54 +2433,70 @@ void main() {
         settings,
         preference,
       );
+      final identity = gateway.identify(
+        accountHash: 'test',
+        settings: settings,
+        profile: dialogProfile,
+      );
+      final eligibility =
+          const TranslationModelEligibilityEvaluator().evaluateProfile(
+        settings: settings,
+        profile: dialogProfile,
+        environment: _allowedEnvironment,
+      );
       final result = TranslationSettingsResult(
         preference: preference,
         profile: dialogProfile,
-        identity: gateway.identify(
-          accountHash: 'test',
-          settings: settings,
-          profile: dialogProfile,
+        identity: identity,
+        evidenceSignature: buildTranslationSettingsEvidenceSignature(
+          eligibility: eligibility,
+          identity: identity,
+          record: null,
         ),
         warningsAcknowledged: true,
       );
-      settings.backendModel = 'changed-before-start';
-      final handoff = resolveTranslationSettingsHandoff(
-        result: result,
-        readSnapshot: () => TranslationSettingsSnapshot(
-          settings: settings.clone(),
-          accountHash: 'test',
-          eligibilityEnvironment: _allowedEnvironment,
-        ),
-        probeService: gateway,
-      );
+      TranslationSettingsSnapshot readSnapshot() => TranslationSettingsSnapshot(
+            settings: settings.clone(),
+            accountHash: 'test',
+            eligibilityEnvironment: _allowedEnvironment,
+          );
+      var selectionCalls = 0;
+      var coordinatorCalls = 0;
       var executorCalls = 0;
 
-      if (handoff != null) {
-        await coordinator.start(
-          StoryRoomTemplatePayload(results: [
-            AssistantRoleCardImportResult(
-              assistant: AssistantModel(name: 'Alice'),
-            ),
-          ]).toTemplate(title: 'Changed', sourceTitle: 'changed.json'),
-          requestProfile: handoff.profile,
-          checkEligibility: buildTranslationSettingsEligibilityCheck(
-            readSnapshot: () => TranslationSettingsSnapshot(
-              settings: settings.clone(),
-              accountHash: 'test',
-              eligibilityEnvironment: _allowedEnvironment,
-            ),
-            probeService: gateway,
+      final accepted = await runStoryTranslationPreflightStart(
+        initialValue: preference,
+        select: (initialValue) async {
+          selectionCalls += 1;
+          if (selectionCalls > 1) return null;
+          settings.backendModel = 'changed-before-start';
+          return TranslationSettingsSelection(
             result: result,
-            expectedProfile: handoff.profile,
-          ),
-          resolveExecutor: (_) {
-            executorCalls += 1;
-            throw StateError('must not run');
-          },
-        );
-      }
+            readSnapshot: readSnapshot,
+          );
+        },
+        probeService: gateway,
+        start: (handoff, checkEligibility) async {
+          coordinatorCalls += 1;
+          await coordinator.start(
+            StoryRoomTemplatePayload(results: [
+              AssistantRoleCardImportResult(
+                assistant: AssistantModel(name: 'Alice'),
+              ),
+            ]).toTemplate(title: 'Changed', sourceTitle: 'changed.json'),
+            requestProfile: handoff.profile,
+            checkEligibility: checkEligibility,
+            resolveExecutor: (_) {
+              executorCalls += 1;
+              throw StateError('must not run');
+            },
+          );
+        },
+      );
 
-      expect(handoff, isNull);
+      expect(accepted, isNull);
+      expect(selectionCalls, 2);
+      expect(coordinatorCalls, 0);
       expect(await taskDao.getTasks(), isEmpty);
       expect(coordinator.tasks, isEmpty);
       expect(executorCalls, 0);

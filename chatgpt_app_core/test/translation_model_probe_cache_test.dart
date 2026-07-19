@@ -568,6 +568,94 @@ void main() {
           isFalse);
     });
 
+    test('provider 乐观失效屏障期间 lookup fail closed 且 fresh token 也不能 put',
+        () async {
+      final cache = TranslationModelProbeCache(now: () => now);
+      final oldToken =
+          cache.tokenFor(accountHash: 'guest', providerId: 'deepseek');
+      expect(
+        await cache.put(
+          _record(19, now),
+          expectedAccountHash: 'guest',
+          providerId: 'deepseek',
+          expectedToken: oldToken,
+        ),
+        isTrue,
+      );
+      final barrier = cache.beginProviderInvalidation(
+        accountHash: 'guest',
+        providerIds: {'deepseek'},
+      );
+      try {
+        final freshToken =
+            cache.tokenFor(accountHash: 'guest', providerId: 'deepseek');
+        expect(freshToken.sameAs(oldToken), isFalse);
+        expect(
+          cache.lookup(
+            accountHash: 'guest',
+            fingerprint: _fingerprint(19),
+            providerId: 'deepseek',
+          ),
+          isNull,
+        );
+        expect(
+          await cache.put(
+            _record(20, now),
+            expectedAccountHash: 'guest',
+            providerId: 'deepseek',
+            expectedToken: freshToken,
+          ),
+          isFalse,
+        );
+      } finally {
+        barrier.release();
+      }
+    });
+
+    test('重叠 provider 屏障按引用计数释放且单个 lease release 幂等', () async {
+      final cache = TranslationModelProbeCache(now: () => now);
+      final token =
+          cache.tokenFor(accountHash: 'guest', providerId: 'deepseek');
+      expect(
+        await cache.put(
+          _record(26, now),
+          expectedAccountHash: 'guest',
+          providerId: 'deepseek',
+          expectedToken: token,
+        ),
+        isTrue,
+      );
+      final first = cache.beginProviderInvalidation(
+        accountHash: 'guest',
+        providerIds: {'deepseek'},
+      );
+      final second = cache.beginProviderInvalidation(
+        accountHash: 'guest',
+        providerIds: {'deepseek'},
+      );
+
+      first.release();
+      first.release();
+      expect(
+        cache.lookup(
+          accountHash: 'guest',
+          fingerprint: _fingerprint(26),
+          providerId: 'deepseek',
+        ),
+        isNull,
+      );
+
+      second.release();
+      expect(
+        cache.lookup(
+          accountHash: 'guest',
+          fingerprint: _fingerprint(26),
+          providerId: 'deepseek',
+        ),
+        isNotNull,
+      );
+    });
+
     test('跨实例同 key 队列：invalidate 先入队会拒绝旧 token 的 put', () async {
       final first = TranslationModelProbeCache(now: () => now);
       final second = TranslationModelProbeCache(now: () => now);

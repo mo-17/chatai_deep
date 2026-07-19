@@ -198,6 +198,103 @@ void main() {
     expect(result?.mode, TranslationModelPreferenceMode.backend);
     expect(result?.modelId, 'backend-fast');
   });
+
+  testWidgets('不支持 reasoning-control 的候选用正式 providerDefault profile 查 badge',
+      (tester) async {
+    final settings = AISettings(
+      mode: AIMode.local,
+      providers: [
+        AiProvider(
+          id: 'custom',
+          type: 'openai',
+          name: 'Custom',
+          apiKey: 'key',
+          apiHost: 'https://custom.example/v1',
+          enabled: true,
+          selectedModelId: 'verified-model',
+          models: [
+            AiModel(id: 'verified-model', name: 'Verified unsupported'),
+            AiModel(id: 'failed-model', name: 'Failed unsupported'),
+            AiModel(id: 'warning-model', name: 'Warning verified'),
+          ],
+        ),
+      ],
+      activeProviderId: 'custom',
+      backendModel: 'backend-fast',
+      streamEnabled: true,
+      resetOnLogout: true,
+    );
+    TranslationModelPreference? result;
+    final observedPolicies = <ChatReasoningPolicy>[];
+    await tester.pumpWidget(MaterialApp(
+      home: Builder(
+        builder: (context) => Scaffold(
+          body: TextButton(
+            onPressed: () async {
+              result = await showConfiguredAiModelPickerSheet(
+                context,
+                settings: settings,
+                selected: const TranslationModelPreference(
+                  mode: TranslationModelPreferenceMode.followGlobal,
+                  reasoningPolicy: ChatReasoningPolicy.offIfSupported,
+                ),
+                includeUnavailable: true,
+                eligibilityFor: (preference) {
+                  if (preference.providerId == 'custom') {
+                    observedPolicies.add(preference.reasoningPolicy);
+                  }
+                  if (preference.modelId == 'warning-model') {
+                    return _eligibility(
+                      TranslationEligibilityLevel.warning,
+                      TranslationEligibilityCode.mobileLoopback,
+                    );
+                  }
+                  return const TranslationEligibilityResult();
+                },
+                probeFor: (preference) {
+                  if (preference.providerId == 'custom') {
+                    observedPolicies.add(preference.reasoningPolicy);
+                  }
+                  if (preference.reasoningPolicy !=
+                      ChatReasoningPolicy.providerDefault) {
+                    return null;
+                  }
+                  return switch (preference.modelId) {
+                    'verified-model' || 'warning-model' => _probe(
+                        TranslationModelProbeStatus.verified,
+                        preference.modelId!,
+                      ),
+                    'failed-model' => _probe(
+                        TranslationModelProbeStatus.failed,
+                        preference.modelId!,
+                      ),
+                    _ => null,
+                  };
+                },
+              );
+            },
+            child: const Text('打开'),
+          ),
+        ),
+      ),
+    ));
+
+    await tester.tap(find.text('打开'));
+    await tester.pumpAndSettle();
+
+    expect(_primaryBadge(tester, 'custom', 'verified-model'), '已验证');
+    expect(_primaryBadge(tester, 'custom', 'failed-model'), '测试失败');
+    expect(_primaryBadge(tester, 'custom', 'warning-model'), '地址警告');
+    expect(observedPolicies, isNotEmpty);
+    expect(
+      observedPolicies,
+      everyElement(ChatReasoningPolicy.providerDefault),
+    );
+
+    await tester.tap(find.text('Verified unsupported'));
+    await tester.pumpAndSettle();
+    expect(result?.reasoningPolicy, ChatReasoningPolicy.providerDefault);
+  });
 }
 
 String _primaryBadge(

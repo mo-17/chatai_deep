@@ -9,15 +9,34 @@ enum TranslationModelProbeStatus { verified, failed }
 final class TranslationModelProbeCacheToken {
   final int accountGeneration;
   final int providerGeneration;
+  final int runtimeProviderGeneration;
 
   const TranslationModelProbeCacheToken({
     required this.accountGeneration,
     required this.providerGeneration,
+    this.runtimeProviderGeneration = 0,
   });
 
   bool sameAs(TranslationModelProbeCacheToken other) =>
       accountGeneration == other.accountGeneration &&
-      providerGeneration == other.providerGeneration;
+      providerGeneration == other.providerGeneration &&
+      runtimeProviderGeneration == other.runtimeProviderGeneration;
+}
+
+/// Provider 配置乐观发布与持久 cache 失效之间的进程内屏障。
+///
+/// 它只持有账号/provider 标识与计数，不持有凭据；release 可重复调用。
+final class TranslationModelProbeInvalidationBarrier {
+  final void Function() _release;
+  bool _released = false;
+
+  TranslationModelProbeInvalidationBarrier._(this._release);
+
+  void release() {
+    if (_released) return;
+    _released = true;
+    _release();
+  }
 }
 
 final class TranslationModelProbeRecord {
@@ -164,6 +183,8 @@ final class TranslationModelProbeCache {
 
   static final shared = TranslationModelProbeCache();
   static final Map<String, Future<dynamic>> _mutationTails = {};
+  static final Map<String, int> _runtimeProviderGenerations = {};
+  static final Map<String, int> _pendingProviderInvalidations = {};
 
   final DateTime Function() _now;
 
@@ -183,13 +204,22 @@ final class TranslationModelProbeCache {
   }) {
     _validateProviderId(providerId);
     final envelope = _readEnvelope(keyFor(accountHash));
-    return _tokenFor(envelope, providerId);
+    return _tokenFor(accountHash, envelope, providerId);
   }
 
   TranslationModelProbeRecord? lookup({
     required String accountHash,
     required String fingerprint,
+    String? providerId,
   }) {
+    _validateProviderId(providerId);
+    if (providerId != null &&
+        (_pendingProviderInvalidations[
+                    _runtimeProviderKey(accountHash, providerId)] ??
+                0) >
+            0) {
+      return null;
+    }
     final envelope = _readEnvelope(keyFor(accountHash));
     final record = envelope.records[fingerprint];
     if (record == null || _isExpired(record)) return null;
@@ -205,11 +235,29 @@ final class TranslationModelProbeCache {
     _validateProviderId(providerId);
     final validated = TranslationModelProbeRecord.fromJson(record.toJson());
     final key = keyFor(expectedAccountHash);
+    final runtimeGenerationAtEnqueue = _runtimeProviderGenerationFor(
+      expectedAccountHash,
+      providerId,
+    );
     return _enqueue<bool>(key, () async {
       _ensureCurrentAccount(expectedAccountHash);
+      if (providerId != null &&
+          (_pendingProviderInvalidations[
+                      _runtimeProviderKey(expectedAccountHash, providerId)] ??
+                  0) >
+              0) {
+        return false;
+      }
+      if (runtimeGenerationAtEnqueue !=
+              expectedToken.runtimeProviderGeneration ||
+          _runtimeProviderGenerationFor(expectedAccountHash, providerId) !=
+              runtimeGenerationAtEnqueue) {
+        return false;
+      }
       final previousRaw = _readRaw(key);
       final envelope = _decodeEnvelope(previousRaw);
-      if (!_tokenFor(envelope, providerId).sameAs(expectedToken)) {
+      if (!_tokenFor(expectedAccountHash, envelope, providerId)
+          .sameAs(expectedToken)) {
         return false;
       }
 
@@ -228,6 +276,19 @@ final class TranslationModelProbeCache {
         previousRaw: previousRaw,
         expectedAccountHash: expectedAccountHash,
       );
+      if ((providerId != null &&
+              (_pendingProviderInvalidations[_runtimeProviderKey(
+                          expectedAccountHash, providerId)] ??
+                      0) >
+                  0) ||
+          _runtimeProviderGenerationFor(expectedAccountHash, providerId) !=
+              runtimeGenerationAtEnqueue) {
+        final restored = await _restoreRaw(key, previousRaw);
+        if (!restored) {
+          throw StateError('翻译模型预检缓存跨代写入后旧值回滚未持久化');
+        }
+        return false;
+      }
       return true;
     });
   }
@@ -261,6 +322,38 @@ final class TranslationModelProbeCache {
         envelope,
         previousRaw: previousRaw,
       );
+    });
+  }
+
+  /// 在新的 provider 配置对 UI 可见前同步开启屏障。
+  ///
+  /// 持久失效仍由 [invalidateProviders] 串行执行；屏障期间 lookup fail closed，
+  /// runtime generation 同时让旧 identity/single-flight 立即失效。
+  TranslationModelProbeInvalidationBarrier beginProviderInvalidation({
+    required String accountHash,
+    required Set<String> providerIds,
+  }) {
+    final frozenProviderIds = Set<String>.unmodifiable(providerIds);
+    for (final providerId in frozenProviderIds) {
+      _validateProviderId(providerId);
+    }
+    for (final providerId in frozenProviderIds) {
+      final key = _runtimeProviderKey(accountHash, providerId);
+      _runtimeProviderGenerations[key] =
+          (_runtimeProviderGenerations[key] ?? 0) + 1;
+      _pendingProviderInvalidations[key] =
+          (_pendingProviderInvalidations[key] ?? 0) + 1;
+    }
+    return TranslationModelProbeInvalidationBarrier._(() {
+      for (final providerId in frozenProviderIds) {
+        final key = _runtimeProviderKey(accountHash, providerId);
+        final remaining = (_pendingProviderInvalidations[key] ?? 1) - 1;
+        if (remaining <= 0) {
+          _pendingProviderInvalidations.remove(key);
+        } else {
+          _pendingProviderInvalidations[key] = remaining;
+        }
+      }
     });
   }
 
@@ -301,6 +394,7 @@ final class TranslationModelProbeCache {
   }
 
   TranslationModelProbeCacheToken _tokenFor(
+    String accountHash,
     _ProbeEnvelope envelope,
     String? providerId,
   ) {
@@ -309,6 +403,11 @@ final class TranslationModelProbeCache {
       providerGeneration: providerId == null
           ? 0
           : envelope.providerGenerations[providerId] ?? 0,
+      runtimeProviderGeneration: providerId == null
+          ? 0
+          : _runtimeProviderGenerations[
+                  _runtimeProviderKey(accountHash, providerId)] ??
+              0,
     );
   }
 
@@ -365,6 +464,19 @@ final class TranslationModelProbeCache {
       throw ArgumentError.value(providerId, 'providerId', '不能为空');
     }
   }
+
+  static String _runtimeProviderKey(String accountHash, String providerId) =>
+      '$accountHash\u0000$providerId';
+
+  static int _runtimeProviderGenerationFor(
+    String accountHash,
+    String? providerId,
+  ) =>
+      providerId == null
+          ? 0
+          : _runtimeProviderGenerations[
+                  _runtimeProviderKey(accountHash, providerId)] ??
+              0;
 
   static String _currentAccountHash() => LoginDao.getAccountHash() ?? 'guest';
 

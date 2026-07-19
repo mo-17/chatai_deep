@@ -24,6 +24,7 @@ import 'package:chatgpt_app_core/model/ai_settings.dart';
 import 'package:chatgpt_app_core/model/story_room_model.dart';
 import 'package:chatgpt_app_core/model/story_template_model.dart';
 import 'package:chatgpt_app_core/model/story_template_translation_task_model.dart';
+import 'package:chatgpt_app_core/pages/assistant_list_page.dart';
 import 'package:chatgpt_app_core/widget/translation_settings_dialog.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:flutter/foundation.dart';
@@ -43,8 +44,7 @@ void main() {
       expect(source, isNot(contains('estimatedRunes: jsonEncode')));
       expect(source, isNot(contains('task.sourcePayload.runes.length')));
       expect(source, contains('TranslationModelProbeService.shared'));
-      expect(source, contains('resolveTranslationSettingsHandoff'));
-      expect(source, contains('buildTranslationSettingsEligibilityCheck'));
+      expect(source, contains('runTranslationPreflightStartLoop'));
     }
     expect(assistantPage, isNot(contains('sum + jsonEncode')));
     expect(
@@ -247,9 +247,10 @@ void main() {
       expect(identical(boundary.settings, freshSettings), isTrue);
     });
 
-    test(
-        'fresh cache failure after dialog requires reconfirmation and creates no task',
+    test('Assistant Tavern production preflight 在 fresh cache failure 后重开且零副作用',
         () async {
+      final coordinator = StoryTemplateTranslationCoordinator();
+      await coordinator.initialize(storage, accountHash: 'test');
       final gateway = _BoundaryProbeGateway();
       final settings = AISettings.defaults()
         ..mode = AIMode.backend
@@ -270,31 +271,130 @@ void main() {
         checkedAt: DateTime.utc(2026, 7, 20),
         reasoningControlSuppressed: false,
       );
+      final verified = gateway.record!;
+      final eligibility =
+          const TranslationModelEligibilityEvaluator().evaluateProfile(
+        settings: settings,
+        profile: profile,
+        environment: _allowedEnvironment,
+      );
       final result = TranslationSettingsResult(
         preference: preference,
         profile: profile,
         identity: identity,
+        evidenceSignature: buildTranslationSettingsEvidenceSignature(
+          eligibility: eligibility,
+          identity: identity,
+          record: verified,
+        ),
         warningsAcknowledged: false,
       );
-      gateway.record = TranslationModelProbeRecord(
-        fingerprint: identity.fingerprint,
-        status: TranslationModelProbeStatus.failed,
-        checkedAt: DateTime.utc(2026, 7, 20, 1),
-        safeErrorCode: 'network_unreachable',
-        reasoningControlSuppressed: false,
-      );
+      TranslationSettingsSnapshot readSnapshot() => TranslationSettingsSnapshot(
+            settings: settings.clone(),
+            accountHash: 'test',
+            eligibilityEnvironment: _allowedEnvironment,
+          );
+      var selectionCalls = 0;
+      var coordinatorCalls = 0;
+      var executorCalls = 0;
 
-      final handoff = resolveTranslationSettingsHandoff(
-        result: result,
-        readSnapshot: () => TranslationSettingsSnapshot(
-          settings: settings.clone(),
-          accountHash: 'test',
-          eligibilityEnvironment: _allowedEnvironment,
-        ),
+      final accepted = await runAssistantTranslationPreflightStart(
+        initialValue: preference,
+        select: (initialValue) async {
+          selectionCalls += 1;
+          if (selectionCalls > 1) return null;
+          gateway.record = TranslationModelProbeRecord(
+            fingerprint: identity.fingerprint,
+            status: TranslationModelProbeStatus.failed,
+            checkedAt: DateTime.utc(2026, 7, 20, 1),
+            safeErrorCode: 'network_unreachable',
+            reasoningControlSuppressed: false,
+          );
+          return TranslationSettingsSelection(
+            result: result,
+            readSnapshot: readSnapshot,
+          );
+        },
         probeService: gateway,
+        start: (handoff, checkEligibility) async {
+          coordinatorCalls += 1;
+          await coordinator.startTavernRoomImport(
+            _twoRolePayload().results,
+            sourceTitle: 'drift.zip',
+            initialOpening: '',
+            requestProfile: handoff.profile,
+            checkEligibility: checkEligibility,
+            resolveExecutor: (_) {
+              executorCalls += 1;
+              throw StateError('must not run');
+            },
+          );
+        },
       );
 
-      expect(handoff, isNull);
+      expect(accepted, isNull);
+      expect(selectionCalls, 2);
+      expect(coordinatorCalls, 0);
+      expect(executorCalls, 0);
+      expect(await taskDao.getTasks(), isEmpty);
+      expect(coordinator.tasks, isEmpty);
+    });
+
+    test('Assistant 普通角色卡 production preflight 在 identity 漂移时不创建 import job',
+        () async {
+      final gateway = _BoundaryProbeGateway();
+      final settings = AISettings.defaults()
+        ..mode = AIMode.backend
+        ..backendModel = 'role-card-model';
+      const preference = TranslationModelPreference(
+        mode: TranslationModelPreferenceMode.followGlobal,
+        reasoningPolicy: ChatReasoningPolicy.offIfSupported,
+      );
+      final profile = TranslationModelResolver.snapshot(settings, preference);
+      final identity = gateway.identify(
+        accountHash: 'test',
+        settings: settings,
+        profile: profile,
+      );
+      final result = TranslationSettingsResult(
+        preference: preference,
+        profile: profile,
+        identity: identity,
+        evidenceSignature: buildTranslationSettingsEvidenceSignature(
+          eligibility: const TranslationEligibilityResult(),
+          identity: identity,
+          record: null,
+        ),
+        warningsAcknowledged: true,
+      );
+      TranslationSettingsSnapshot readSnapshot() => TranslationSettingsSnapshot(
+            settings: settings.clone(),
+            accountHash: 'test',
+            eligibilityEnvironment: _allowedEnvironment,
+          );
+      var selectionCalls = 0;
+      var importJobCalls = 0;
+
+      final accepted = await runAssistantTranslationPreflightStart(
+        initialValue: preference,
+        select: (initialValue) async {
+          selectionCalls += 1;
+          if (selectionCalls > 1) return null;
+          settings.backendModel = 'changed-before-role-card-job';
+          return TranslationSettingsSelection(
+            result: result,
+            readSnapshot: readSnapshot,
+          );
+        },
+        probeService: gateway,
+        start: (handoff, checkEligibility) async {
+          importJobCalls += 1;
+        },
+      );
+
+      expect(accepted, isNull);
+      expect(selectionCalls, 2);
+      expect(importJobCalls, 0);
       expect(await taskDao.getTasks(), isEmpty);
     });
 
@@ -326,36 +426,45 @@ void main() {
         preference: preference,
         profile: profile,
         identity: identity,
+        evidenceSignature: buildTranslationSettingsEvidenceSignature(
+          eligibility: const TranslationEligibilityResult(),
+          identity: identity,
+          record: gateway.record,
+        ),
         warningsAcknowledged: false,
       );
-      TranslationSettingsHandoff? handoff;
       TranslationSettingsSnapshot readSnapshot() => TranslationSettingsSnapshot(
             settings: settings.clone(),
             accountHash: 'test',
             eligibilityEnvironment: _allowedEnvironment,
           );
-      handoff = resolveTranslationSettingsHandoff(
-        result: result,
-        readSnapshot: readSnapshot,
-        probeService: gateway,
-      );
-
-      expect(handoff?.profile.reasoningControlSuppressed, isTrue);
-      await coordinator.startTavernRoomImport(
-        _twoRolePayload().results,
-        sourceTitle: 'suppressed.zip',
-        requestProfile: handoff!.profile,
-        checkEligibility: buildTranslationSettingsEligibilityCheck(
-          readSnapshot: readSnapshot,
-          probeService: gateway,
-          result: result,
-          expectedProfile: handoff.profile,
-        ),
-        resolveExecutor: (_) {
-          throw const TranslationModelUnavailableException('测试暂停');
+      var selectionCalls = 0;
+      final accepted = await runAssistantTranslationPreflightStart(
+        initialValue: preference,
+        select: (initialValue) async {
+          selectionCalls += 1;
+          return selectionCalls == 1
+              ? TranslationSettingsSelection(
+                  result: result,
+                  readSnapshot: readSnapshot,
+                )
+              : null;
         },
+        probeService: gateway,
+        start: (handoff, checkEligibility) => coordinator.startTavernRoomImport(
+          _twoRolePayload().results,
+          sourceTitle: 'suppressed.zip',
+          initialOpening: '',
+          requestProfile: handoff.profile,
+          checkEligibility: checkEligibility,
+          resolveExecutor: (_) {
+            throw const TranslationModelUnavailableException('测试暂停');
+          },
+        ),
       );
 
+      expect(accepted, isNotNull);
+      expect(accepted!.handoff.profile.reasoningControlSuppressed, isTrue);
       final stored = (await taskDao.getTasks()).single;
       final storedProfile = TranslationRequestProfile.fromJson(
         Map<String, dynamic>.from(jsonDecode(stored.requestProfile) as Map),
