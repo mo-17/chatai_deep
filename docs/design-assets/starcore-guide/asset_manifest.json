@@ -1,0 +1,25 @@
+{
+  "palette": [
+    "#120D24",
+    "#6D28D9",
+    "#7C3AED",
+    "#BE185D",
+    "#EC4899",
+    "#22D3EE",
+    "#F5F3FF"
+  ],
+  "png": {
+    "app-icon-concept.png": { "width": 1024, "height": 1024, "opaque": true },
+    "assistant-explorer.png": { "width": 512, "height": 512, "opaque": true },
+    "assistant-creator.png": { "width": 512, "height": 512, "opaque": true },
+    "contact-sheet.png": { "width": 2048, "height": 1536, "opaque": true }
+  },
+  "svg": {
+    "nav-chat-default.svg": { "viewBox": "0 0 24 24", "maxColors": 3, "minStrokeWidth": 1.75 },
+    "nav-chat-selected.svg": { "viewBox": "0 0 24 24", "maxColors": 3, "minStrokeWidth": 1.75 },
+    "nav-create-default.svg": { "viewBox": "0 0 24 24", "maxColors": 3, "minStrokeWidth": 1.75 },
+    "nav-create-selected.svg": { "viewBox": "0 0 24 24", "maxColors": 3, "minStrokeWidth": 1.75 },
+    "tool-web-search.svg": { "viewBox": "0 0 24 24", "maxColors": 3, "minStrokeWidth": 1.75 },
+    "tool-knowledge-search.svg": { "viewBox": "0 0 24 24", "maxColors": 3, "minStrokeWidth": 1.75 }
+  }
+}

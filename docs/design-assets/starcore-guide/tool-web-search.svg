@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24">
+  <title>联网搜索</title>
+  <circle cx="10.2" cy="10.2" r="5.7" fill="none" stroke="#6D28D9" stroke-width="1.8"/>
+  <path d="M14.5 14.5L20 20" fill="none" stroke="#BE185D" stroke-width="2" stroke-linecap="round"/>
+  <path d="M10.2 5.9l.75 1.8 1.8.75-1.8.75-.75 1.8-.75-1.8-1.8-.75 1.8-.75z" fill="#22D3EE"/>
+</svg>
