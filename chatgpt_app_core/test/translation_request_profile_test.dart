@@ -114,6 +114,13 @@ void main() {
   });
 
   test('resolver unavailable exception carries stable safe codes', () {
+    const defaultError = TranslationModelUnavailableException('legacy message');
+    expect(defaultError.safeCode, 'model_unavailable');
+    expect(
+      defaultError.toString(),
+      'TranslationModelUnavailableException: legacy message',
+    );
+
     final cases = <({
       String name,
       void Function(AISettings settings) mutate,

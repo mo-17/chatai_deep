@@ -154,6 +154,19 @@ final class TranslationModelEligibilityEvaluator {
     if (profile.mode != TranslationExecutionMode.backend) return const [];
 
     final issues = <TranslationEligibilityIssue>[];
+    final backendUri = Uri.tryParse(
+      '${environment.backendUseHttps ? 'https' : 'http'}://${environment.backendHost.trim()}',
+    );
+    if (!_isValidEndpoint(backendUri) ||
+        backendUri!.path.isNotEmpty ||
+        backendUri.query.isNotEmpty ||
+        backendUri.fragment.isNotEmpty) {
+      issues.add(const TranslationEligibilityIssue(
+        level: TranslationEligibilityLevel.blocked,
+        code: TranslationEligibilityCode.invalidEndpoint,
+        message: '翻译后端地址无效。',
+      ));
+    }
     if (environment.isGuest) {
       issues.add(const TranslationEligibilityIssue(
         level: TranslationEligibilityLevel.blocked,
@@ -178,11 +191,7 @@ final class TranslationModelEligibilityEvaluator {
     TranslationEligibilityEnvironment environment,
   ) {
     final uri = Uri.tryParse(endpoint.trim());
-    if (uri == null ||
-        !uri.hasScheme ||
-        uri.host.isEmpty ||
-        uri.userInfo.isNotEmpty ||
-        (uri.scheme != 'http' && uri.scheme != 'https')) {
+    if (!_isValidEndpoint(uri)) {
       return const [
         TranslationEligibilityIssue(
           level: TranslationEligibilityLevel.blocked,
@@ -191,18 +200,19 @@ final class TranslationModelEligibilityEvaluator {
         ),
       ];
     }
+    final endpointUri = uri!;
 
     final issues = <TranslationEligibilityIssue>[];
     if (environment.platform == TargetPlatform.android &&
         environment.distribution == AppDistribution.store &&
-        uri.scheme == 'http') {
+        endpointUri.scheme == 'http') {
       issues.add(const TranslationEligibilityIssue(
         level: TranslationEligibilityLevel.blocked,
         code: TranslationEligibilityCode.androidStoreCleartext,
         message: 'Android 商店版不能通过 HTTP 访问翻译服务。',
       ));
     }
-    if (_isMobile(environment.platform) && _isLoopback(uri.host)) {
+    if (_isMobile(environment.platform) && _isLoopback(endpointUri.host)) {
       issues.add(const TranslationEligibilityIssue(
         level: TranslationEligibilityLevel.warning,
         code: TranslationEligibilityCode.mobileLoopback,
@@ -248,4 +258,11 @@ final class TranslationModelEligibilityEvaluator {
 
   bool _isLoopback(String host) =>
       host == 'localhost' || host == '127.0.0.1' || host == '::1';
+
+  bool _isValidEndpoint(Uri? uri) =>
+      uri != null &&
+      uri.hasScheme &&
+      uri.host.isNotEmpty &&
+      uri.userInfo.isEmpty &&
+      (uri.scheme == 'http' || uri.scheme == 'https');
 }

@@ -219,6 +219,68 @@ void main() {
     }
   });
 
+  test('invalid backend hosts are blocked before transport creation', () {
+    const invalidHosts = [
+      '',
+      '/relative-backend',
+      'ftp://api.example.com',
+      'https:///missing-host',
+      'user:password@api.example.com',
+    ];
+
+    for (final host in invalidHosts) {
+      final result = evaluator.evaluatePreference(
+        settings: _backendSettings(),
+        preference: _backendPreference(),
+        environment: _environment(backendHost: host),
+      );
+
+      expect(result.level, TranslationEligibilityLevel.blocked, reason: host);
+      expect(
+          result.primaryIssue?.code, TranslationEligibilityCode.invalidEndpoint,
+          reason: host);
+    }
+  });
+
+  test('local HTTP is blocked only for Android store builds', () {
+    final cases = <({
+      AppDistribution distribution,
+      String endpoint,
+      TranslationEligibilityLevel level,
+      TranslationEligibilityCode? code,
+    })>[
+      (
+        distribution: AppDistribution.store,
+        endpoint: 'http://api.example.com',
+        level: TranslationEligibilityLevel.blocked,
+        code: TranslationEligibilityCode.androidStoreCleartext,
+      ),
+      (
+        distribution: AppDistribution.development,
+        endpoint: 'http://api.example.com',
+        level: TranslationEligibilityLevel.allowed,
+        code: null,
+      ),
+      (
+        distribution: AppDistribution.store,
+        endpoint: 'https://api.example.com',
+        level: TranslationEligibilityLevel.allowed,
+        code: null,
+      ),
+    ];
+
+    for (final testCase in cases) {
+      final result = evaluator.evaluatePreference(
+        settings: _localSettings(endpoint: testCase.endpoint),
+        preference: _localPreference(),
+        environment: _environment(distribution: testCase.distribution),
+      );
+
+      expect(result.level, testCase.level, reason: testCase.endpoint);
+      expect(result.primaryIssue?.code, testCase.code);
+    }
+  });
+
   test('blocked issues take priority over loopback warnings', () {
     final result = evaluator.evaluateProfile(
       settings: _localSettings(endpoint: 'https://localhost/v1')
