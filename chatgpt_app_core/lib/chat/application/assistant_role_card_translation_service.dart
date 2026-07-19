@@ -1,9 +1,10 @@
 import 'dart:convert';
 
-import 'package:chatgpt_app_core/chat/application/assistant_role_card_service.dart';
+import 'package:chatgpt_app_core/chat/application/role_card_translation_fields.dart';
 import 'package:chatgpt_app_core/chat/application/translation_chunk_planner.dart';
 import 'package:chatgpt_app_core/chat/application/translation_retry_policy.dart';
 import 'package:chatgpt_app_core/chat/application/translation_stream_executor.dart';
+import 'package:chatgpt_app_core/chat/application/translation_work_estimator.dart';
 import 'package:chatgpt_app_core/model/assistant_model.dart';
 
 typedef RoleCardTranslationCall = Future<String?> Function(String prompt);
@@ -18,16 +19,6 @@ typedef RoleCardChunkCheckpoint = Future<void> Function(
   String field,
   TranslationChunkCheckpoint checkpoint,
 );
-
-final class _TranslationFieldInput {
-  final String source;
-  final String Function(String translated) restore;
-
-  const _TranslationFieldInput({
-    required this.source,
-    required this.restore,
-  });
-}
 
 /// 由上层任务运行器发出的立即停止信号，不能被字段降级逻辑吞掉。
 class RoleCardTranslationCancelled implements Exception {
@@ -59,15 +50,7 @@ class AssistantRoleCardTranslationService {
 
   static const _wholeCardMaxChars = 3000;
   static const _chunkPlanner = TranslationChunkPlanner();
-
-  static const _fields = [
-    'name',
-    'description',
-    'prompt',
-    'openingMessage',
-    'exampleDialogs',
-    'memoryBook',
-  ];
+  static const _workEstimator = TranslationWorkEstimator();
 
   static Future<AssistantModel> translateToSimplifiedChinese(
     AssistantModel assistant, {
@@ -79,13 +62,14 @@ class AssistantRoleCardTranslationService {
     RoleCardChunkCheckpoint? onChunkCheckpoint,
     TranslationRetryPolicy retryPolicy = const TranslationRetryPolicy(),
   }) async {
-    final memoryBookView = AssistantRoleCardService.memoryBookTranslationView(
-      assistant.memoryBook,
+    final memoryBookField = RoleCardTranslationFields.byId(
+      assistant,
+      'memoryBook',
     );
     if (initialTranslatedFields.isNotEmpty ||
         initialChunkCheckpoints.isNotEmpty ||
         onChunkCheckpoint != null ||
-        memoryBookView.hasRawMarker ||
+        memoryBookField.source != assistant.memoryBook ||
         !_shouldUseWholeCardTranslation(assistant)) {
       final translated = await translateFieldsIndividually(
         assistant,
@@ -196,39 +180,39 @@ class AssistantRoleCardTranslationService {
     RoleCardChunkCheckpoint? onChunkCheckpoint,
     TranslationRetryPolicy retryPolicy = const TranslationRetryPolicy(),
   }) async {
-    final memoryBookView = AssistantRoleCardService.memoryBookTranslationView(
-      assistant.memoryBook,
-    );
+    final fields = RoleCardTranslationFields.fromAssistant(assistant);
+    final memoryBookField = fields.last;
+    final hasRawMemoryBookMarker =
+        memoryBookField.source != assistant.memoryBook;
     final translated = <String, dynamic>{
       for (final entry in initialTranslatedFields.entries)
-        if (_fields.contains(entry.key) &&
-            (entry.key != 'memoryBook' || !memoryBookView.hasRawMarker) &&
+        if (RoleCardTranslationFields.ids.contains(entry.key) &&
+            (entry.key != 'memoryBook' || !hasRawMemoryBookMarker) &&
             initialChunkCheckpoints[entry.key]?.matchesSource(
                   entry.key,
-                  _translationFieldInput(assistant, entry.key).source,
+                  RoleCardTranslationFields.byId(assistant, entry.key).source,
                 ) !=
                 true)
           entry.key: entry.value,
     };
-    for (var i = 0; i < _fields.length; i++) {
-      final field = _fields[i];
-      if (translated.containsKey(field)) {
+    for (var i = 0; i < fields.length; i++) {
+      final field = fields[i];
+      if (translated.containsKey(field.id)) {
         onProgress?.call(RoleCardTranslationProgress(
-          field: field,
-          fieldLabel: _fieldLabel(field),
+          field: field.id,
+          fieldLabel: field.label,
           current: i + 1,
-          total: _fields.length,
+          total: fields.length,
           stage: '从检查点恢复字段',
           fieldProgress: 1,
         ));
         continue;
       }
-      final input = _translationFieldInput(assistant, field);
-      final restored = initialChunkCheckpoints[field];
+      final restored = initialChunkCheckpoints[field.id];
       final checkpoint =
-          restored != null && restored.matchesSource(field, input.source)
+          restored != null && restored.matchesSource(field.id, field.source)
               ? restored
-              : _chunkPlanner.plan(field: field, source: input.source);
+              : _chunkPlanner.plan(field: field.id, source: field.source);
       if (checkpoint.chunks.every(
         (state) => state.chunk.sourceText.isEmpty,
       )) {
@@ -248,28 +232,28 @@ class AssistantRoleCardTranslationService {
                   : state,
           ],
         );
-        await onChunkCheckpoint?.call(field, completedEmpty);
+        await onChunkCheckpoint?.call(field.id, completedEmpty);
         final mergedBody = _mergeCheckpoint(completedEmpty);
-        final merged = input.restore(mergedBody);
-        translated[field] = merged;
-        await onFieldCheckpoint?.call(field, merged);
+        final merged = field.restore(mergedBody);
+        translated[field.id] = merged;
+        await onFieldCheckpoint?.call(field.id, merged);
         onProgress?.call(RoleCardTranslationProgress(
-          field: field,
-          fieldLabel: _fieldLabel(field),
+          field: field.id,
+          fieldLabel: field.label,
           current: i + 1,
-          total: _fields.length,
+          total: fields.length,
           stage: '字段为空，已跳过',
           fieldProgress: 1,
         ));
         continue;
       }
       onProgress?.call(RoleCardTranslationProgress(
-        field: field,
-        fieldLabel: _fieldLabel(field),
+        field: field.id,
+        fieldLabel: field.label,
         current: i + 1,
-        total: _fields.length,
+        total: fields.length,
         stage: '准备翻译字段',
-        detail: '${input.source.runes.length} 字',
+        detail: '${field.source.runes.length} 字',
       ));
       final completed = await _translateCheckpoint(
         checkpoint: checkpoint,
@@ -278,13 +262,14 @@ class AssistantRoleCardTranslationService {
         onChunkCheckpoint: onChunkCheckpoint,
         onProgress: onProgress,
         fieldIndex: i + 1,
-        fieldTotal: _fields.length,
+        fieldTotal: fields.length,
+        fieldLabel: field.label,
       );
       final mergedBody = _mergeCheckpoint(completed);
       try {
         _validateProtectedMarkers(
-          field: field,
-          source: input.source,
+          field: field.id,
+          source: field.source,
           translated: mergedBody,
         );
       } on FormatException {
@@ -304,7 +289,7 @@ class AssistantRoleCardTranslationService {
                     ),
           ],
         );
-        await onChunkCheckpoint?.call(field, retryable);
+        await onChunkCheckpoint?.call(field.id, retryable);
         throw const TranslationWorkPaused(
           failure: TranslationRequestFailure(
             kind: TranslationFailureKind.invalidOutput,
@@ -312,17 +297,17 @@ class AssistantRoleCardTranslationService {
           ),
         );
       }
-      final checkpointValue = input.restore(mergedBody);
-      translated[field] = checkpointValue;
-      await onFieldCheckpoint?.call(field, checkpointValue);
+      final checkpointValue = field.restore(mergedBody);
+      translated[field.id] = checkpointValue;
+      await onFieldCheckpoint?.call(field.id, checkpointValue);
       final retainedOriginal = completed.chunks.any(
         (state) => state.status == TranslationChunkStatus.retainedOriginal,
       );
       onProgress?.call(RoleCardTranslationProgress(
-        field: field,
-        fieldLabel: _fieldLabel(field),
+        field: field.id,
+        fieldLabel: field.label,
         current: i + 1,
-        total: _fields.length,
+        total: fields.length,
         stage: retainedOriginal ? '字段部分翻译' : '字段已翻译',
         fieldProgress: 1,
       ));
@@ -336,18 +321,19 @@ class AssistantRoleCardTranslationService {
     RoleCardFieldCheckpoint? checkpoint,
   ) async {
     if (checkpoint == null) return;
-    for (final field in _fields) {
-      final value = translated[field];
+    for (final field in RoleCardTranslationFields.fromAssistant(assistant)) {
+      final value = translated[field.id];
       await checkpoint(
-        field,
-        value is String ? value : _fieldValue(assistant, field),
+        field.id,
+        value is String ? value : field.source,
       );
     }
   }
 
   static String buildPrompt(AssistantModel assistant) {
     final payload = <String, String>{
-      for (final field in _fields) field: _fieldValue(assistant, field),
+      for (final field in RoleCardTranslationFields.fromAssistant(assistant))
+        field.id: field.source,
     };
     return [
       '你是角色卡本地化助手。请将下面 JSON 中的自然语言文本翻译为简体中文。',
@@ -426,85 +412,30 @@ class AssistantRoleCardTranslationService {
     );
   }
 
-  static String _fieldValue(AssistantModel assistant, String field) {
-    switch (field) {
-      case 'name':
-        return assistant.name;
-      case 'description':
-        return assistant.description;
-      case 'prompt':
-        return assistant.prompt;
-      case 'openingMessage':
-        return assistant.openingMessage;
-      case 'exampleDialogs':
-        return assistant.exampleDialogs;
-      case 'memoryBook':
-        return assistant.memoryBook;
-    }
-    return '';
-  }
-
-  static _TranslationFieldInput _translationFieldInput(
-    AssistantModel assistant,
-    String field,
-  ) {
-    final value = _fieldValue(assistant, field);
-    if (field != 'memoryBook') {
-      return _TranslationFieldInput(source: value, restore: (text) => text);
-    }
-    final view = AssistantRoleCardService.memoryBookTranslationView(value);
-    if (!view.hasRawMarker) {
-      return _TranslationFieldInput(source: value, restore: (text) => text);
-    }
-    return _TranslationFieldInput(
-      source: view.translationSource,
-      restore: view.translationSource.isEmpty ? (_) => value : view.restore,
-    );
-  }
-
   static bool _shouldUseWholeCardTranslation(AssistantModel assistant) {
-    if (_fields.any(
+    final fields = RoleCardTranslationFields.fromAssistant(assistant);
+    if (fields.any(
       (field) => !_chunkPlanner.fitsInSingleRequest(
-        field: field,
-        source: _fieldValue(assistant, field),
+        field: field.id,
+        source: field.source,
       ),
     )) {
       return false;
     }
-    final chars = _fields.fold<int>(
+    final chars = fields.fold<int>(
       0,
-      (sum, field) => sum + _fieldValue(assistant, field).trim().length,
+      (sum, field) => sum + field.source.trim().length,
     );
     return chars <= _wholeCardMaxChars;
   }
 
-  static int _wholeCardRuneCount(AssistantModel assistant) => _fields.fold(
-        0,
-        (sum, field) => sum + _fieldValue(assistant, field).runes.length,
-      );
+  static int _wholeCardRuneCount(AssistantModel assistant) =>
+      _workEstimator.totalRunesForAssistant(assistant);
 
   static bool _isTimeoutFailure(TranslationFailureKind kind) =>
       kind == TranslationFailureKind.firstEventTimeout ||
       kind == TranslationFailureKind.idleTimeout ||
       kind == TranslationFailureKind.totalTimeout;
-
-  static String _fieldLabel(String field) {
-    switch (field) {
-      case 'name':
-        return '名称';
-      case 'description':
-        return '简介';
-      case 'prompt':
-        return '人设';
-      case 'openingMessage':
-        return '开场';
-      case 'exampleDialogs':
-        return '示例对话';
-      case 'memoryBook':
-        return '世界书';
-    }
-    return field;
-  }
 
   static Future<TranslationChunkCheckpoint> _translateCheckpoint({
     required TranslationChunkCheckpoint checkpoint,
@@ -514,6 +445,7 @@ class AssistantRoleCardTranslationService {
     required RoleCardTranslationProgressCallback? onProgress,
     required int fieldIndex,
     required int fieldTotal,
+    required String fieldLabel,
   }) async {
     var current = checkpoint;
     var chunkIndex = 0;
@@ -522,7 +454,7 @@ class AssistantRoleCardTranslationService {
       if (state.status != TranslationChunkStatus.pending) {
         onProgress?.call(RoleCardTranslationProgress(
           field: current.field,
-          fieldLabel: _fieldLabel(current.field),
+          fieldLabel: fieldLabel,
           current: fieldIndex,
           total: fieldTotal,
           stage: '从检查点恢复分块',
@@ -548,7 +480,7 @@ class AssistantRoleCardTranslationService {
         await onChunkCheckpoint?.call(current.field, current);
         onProgress?.call(RoleCardTranslationProgress(
           field: current.field,
-          fieldLabel: _fieldLabel(current.field),
+          fieldLabel: fieldLabel,
           current: fieldIndex,
           total: fieldTotal,
           stage: '空分块已跳过',
@@ -612,7 +544,7 @@ class AssistantRoleCardTranslationService {
         await onChunkCheckpoint?.call(current.field, current);
         onProgress?.call(RoleCardTranslationProgress(
           field: current.field,
-          fieldLabel: _fieldLabel(current.field),
+          fieldLabel: fieldLabel,
           current: fieldIndex,
           total: fieldTotal,
           stage: '分块已翻译',
