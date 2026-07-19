@@ -2,6 +2,8 @@ import 'dart:async';
 import 'dart:convert';
 
 import 'package:chatgpt_app_core/ai_readiness/ai_health_state_guard.dart';
+import 'package:chatgpt_app_core/chat/application/translation_model_probe_cache.dart';
+import 'package:chatgpt_app_core/model/ai_provider.dart';
 import 'package:chatgpt_app_core/model/ai_settings.dart';
 import 'package:flutter_hi_cache/flutter_hi_cache.dart';
 import 'package:login_sdk/dao/login_dao.dart';
@@ -773,11 +775,22 @@ class AISettingsDao {
 
     // Provider、备份恢复、游客迁移及未来同步最终都经过这里。用当前已持久化
     // 配置作为基线，页面外的直接 saveFor 也不能携带过期 success。
+    final previousSettings =
+        recoveredHealthBaseline ?? _existingSettingsForHealthComparison(hash);
     final settingsToSave = reconcileAIHealthState(
-      previous:
-          recoveredHealthBaseline ?? _existingSettingsForHealthComparison(hash),
+      previous: previousSettings,
       next: settings,
     );
+    final changedProviderIds = changedProbeProviderIds(
+      previousSettings,
+      settingsToSave,
+    );
+    if (changedProviderIds.isNotEmpty) {
+      await TranslationModelProbeCache.shared.invalidateProviders(
+        accountHash: hash,
+        providerIds: changedProviderIds,
+      );
+    }
 
     if (store == null) {
       await _writePlainSettings(hash, settingsToSave);
@@ -902,6 +915,7 @@ class AISettingsDao {
         // generation 未知时直接重配覆盖残留槽。
       }
     }
+    await TranslationModelProbeCache.shared.clearAccount(hash);
     await _setCacheString(
       keyFor(hash),
       jsonEncode(<String, dynamic>{
@@ -1212,6 +1226,30 @@ class AISettingsDao {
     _saveTails.clear();
     plainWriteOverrideForTest = null;
   }
+}
+
+Set<String> changedProbeProviderIds(
+  AISettings? previous,
+  AISettings next,
+) {
+  final beforeById = <String, AiProvider>{
+    if (previous != null)
+      for (final provider in previous.providers) provider.id: provider,
+  };
+  final afterById = <String, AiProvider>{
+    for (final provider in next.providers) provider.id: provider,
+  };
+  final changed = <String>{};
+  for (final id in {...beforeById.keys, ...afterById.keys}) {
+    final before = beforeById[id];
+    final after = afterById[id];
+    if (before == null ||
+        after == null ||
+        !AIProviderHealthConfiguration.capture(before).matches(after)) {
+      changed.add(id);
+    }
+  }
+  return changed;
 }
 
 bool _hasUniqueCredentialIds(AISettings settings) {

@@ -3,6 +3,10 @@ import 'dart:convert';
 
 import 'package:chatgpt_app_core/ai_readiness/ai_health_state_guard.dart';
 import 'package:chatgpt_app_core/chat/application/mcp/mcp_types.dart';
+import 'package:chatgpt_app_core/chat/application/translation_model_probe_cache.dart';
+import 'package:chatgpt_app_core/chat/application/translation_model_probe_fingerprint.dart';
+import 'package:chatgpt_app_core/chat/domain/chat_request_options.dart';
+import 'package:chatgpt_app_core/chat/domain/translation_request_profile.dart';
 import 'package:chatgpt_app_core/dao/ai_settings_dao.dart';
 import 'package:chatgpt_app_core/model/ai_settings.dart';
 import 'package:chatgpt_app_core/provider/ai_settings_provider.dart';
@@ -739,6 +743,111 @@ void main() {
     expect(loaded.activeProvider.models.first.lastTestStatus, 'unknown');
     expect(loaded.activeProvider.models.first.lastTestAt, isNull);
     expect(loaded.activeProvider.models.first.lastTestError, isNull);
+  });
+
+  test('saveFor 权威边界在 Key 变化时清除不含 Key 的 probe fingerprint', () async {
+    const account = 'guest';
+    final initial = _settingsWithSecrets('probe-key');
+    initial.activeProvider
+      ..apiHost = 'https://private.example/v1'
+      ..enabled = true;
+    await AISettingsDao.saveFor(account, initial);
+    final profile = TranslationRequestProfile(
+      mode: TranslationExecutionMode.local,
+      providerId: initial.activeProvider.id,
+      modelId: initial.activeProvider.effectiveModelId,
+      reasoningPolicy: ChatReasoningPolicy.offIfSupported,
+      reasoningControlSuppressed: false,
+    );
+    final fingerprint = TranslationModelProbeFingerprint.build(
+      settings: initial,
+      profile: profile,
+    );
+    final cache = TranslationModelProbeCache.shared;
+    final oldToken = cache.tokenFor(
+      accountHash: account,
+      providerId: initial.activeProvider.id,
+    );
+    expect(
+      await cache.put(
+        TranslationModelProbeRecord(
+          fingerprint: fingerprint,
+          status: TranslationModelProbeStatus.verified,
+          checkedAt: DateTime.now(),
+          reasoningControlSuppressed: false,
+        ),
+        expectedAccountHash: account,
+        providerId: initial.activeProvider.id,
+        expectedToken: oldToken,
+      ),
+      isTrue,
+    );
+
+    final changed = initial.clone()
+      ..activeProvider.apiKey = 'provider-probe-key-replaced';
+    expect(
+      TranslationModelProbeFingerprint.build(
+        settings: changed,
+        profile: profile,
+      ),
+      fingerprint,
+    );
+    await AISettingsDao.saveFor(account, changed);
+
+    expect(
+        cache.lookup(accountHash: account, fingerprint: fingerprint), isNull);
+    final newToken = cache.tokenFor(
+      accountHash: account,
+      providerId: initial.activeProvider.id,
+    );
+    expect(newToken.accountGeneration, oldToken.accountGeneration);
+    expect(newToken.providerGeneration, oldToken.providerGeneration + 1);
+    expect(
+      await cache.put(
+        TranslationModelProbeRecord(
+          fingerprint: fingerprint,
+          status: TranslationModelProbeStatus.verified,
+          checkedAt: DateTime.now(),
+          reasoningControlSuppressed: false,
+        ),
+        expectedAccountHash: account,
+        providerId: initial.activeProvider.id,
+        expectedToken: oldToken,
+      ),
+      isFalse,
+    );
+  });
+
+  test('clearFor 权威边界递增 probe account generation 并拒绝旧 token', () async {
+    const account = 'guest';
+    final cache = TranslationModelProbeCache.shared;
+    final oldToken = cache.tokenFor(
+      accountHash: account,
+      providerId: 'deepseek',
+    );
+
+    await AISettingsDao.clearFor(account);
+
+    final freshToken = cache.tokenFor(
+      accountHash: account,
+      providerId: 'deepseek',
+    );
+    expect(freshToken.accountGeneration, oldToken.accountGeneration + 1);
+    expect(
+      await cache.put(
+        TranslationModelProbeRecord(
+          fingerprint: 'f' * 64,
+          status: TranslationModelProbeStatus.failed,
+          checkedAt: DateTime.now(),
+          safeErrorCode: 'network_error',
+          reasoningControlSuppressed: false,
+        ),
+        expectedAccountHash: account,
+        providerId: 'deepseek',
+        expectedToken: oldToken,
+      ),
+      isFalse,
+    );
   });
 
   test('Provider 乐观更新立即清除改配置携带的 success，同配置测试结果保留', () async {

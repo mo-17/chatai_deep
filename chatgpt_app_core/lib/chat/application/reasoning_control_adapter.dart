@@ -14,6 +14,8 @@ final class ReasoningControlDecision {
 
 /// 将统一的推理策略转换为已确认兼容的服务商请求参数。
 abstract final class ReasoningControlAdapter {
+  static const policyVersion = 1;
+
   static const _firstPartyProviders = {
     'deepseek',
     'dashscope',
