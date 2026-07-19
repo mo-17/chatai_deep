@@ -239,13 +239,14 @@ final class TranslationModelProbeCache {
       expectedAccountHash,
       providerId,
     );
+    final invalidationPendingAtEnqueue = _providerInvalidationPending(
+      expectedAccountHash,
+      providerId,
+    );
     return _enqueue<bool>(key, () async {
       _ensureCurrentAccount(expectedAccountHash);
-      if (providerId != null &&
-          (_pendingProviderInvalidations[
-                      _runtimeProviderKey(expectedAccountHash, providerId)] ??
-                  0) >
-              0) {
+      if (invalidationPendingAtEnqueue ||
+          _providerInvalidationPending(expectedAccountHash, providerId)) {
         return false;
       }
       if (runtimeGenerationAtEnqueue !=
@@ -276,11 +277,7 @@ final class TranslationModelProbeCache {
         previousRaw: previousRaw,
         expectedAccountHash: expectedAccountHash,
       );
-      if ((providerId != null &&
-              (_pendingProviderInvalidations[_runtimeProviderKey(
-                          expectedAccountHash, providerId)] ??
-                      0) >
-                  0) ||
+      if (_providerInvalidationPending(expectedAccountHash, providerId) ||
           _runtimeProviderGenerationFor(expectedAccountHash, providerId) !=
               runtimeGenerationAtEnqueue) {
         final restored = await _restoreRaw(key, previousRaw);
@@ -477,6 +474,16 @@ final class TranslationModelProbeCache {
           : _runtimeProviderGenerations[
                   _runtimeProviderKey(accountHash, providerId)] ??
               0;
+
+  static bool _providerInvalidationPending(
+    String accountHash,
+    String? providerId,
+  ) =>
+      providerId != null &&
+      (_pendingProviderInvalidations[
+                  _runtimeProviderKey(accountHash, providerId)] ??
+              0) >
+          0;
 
   static String _currentAccountHash() => LoginDao.getAccountHash() ?? 'guest';
 

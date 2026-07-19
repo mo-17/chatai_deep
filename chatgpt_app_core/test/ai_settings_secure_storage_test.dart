@@ -1049,6 +1049,104 @@ void main() {
     expect(provider.settings.activeProvider.apiKey, 'provider-overlap-k0');
   });
 
+  test('Provider K1 保存失败回滚后不会让 pending 期间完成的 probe 污染 K0', () async {
+    final preferencesStore = _BlockingSharedPreferencesStore();
+    SharedPreferencesStorePlatform.instance = preferencesStore;
+    await HiCache.getInstance().prefs!.reload();
+    final secureStore = _MemorySecureStore();
+    AISettingsDao.configureSecretStore(secureStore);
+    final provider = AISettingsProvider();
+    final k0 = provider.settings.clone()
+      ..activeProvider.apiKey = 'provider-probe-rollback-k0'
+      ..activeProvider.apiHost = 'https://probe-rollback.example/v1';
+    await provider.update(k0);
+
+    final cache = TranslationModelProbeCache.shared;
+    final service = TranslationModelProbeService(cache: cache);
+    final profile = TranslationRequestProfile(
+      mode: TranslationExecutionMode.local,
+      providerId: provider.settings.activeProvider.id,
+      modelId: provider.settings.activeProvider.effectiveModelId,
+      reasoningPolicy: ChatReasoningPolicy.offIfSupported,
+      reasoningControlSuppressed: false,
+    );
+    final holderToken = cache.tokenFor(
+      accountHash: 'guest',
+      providerId: null,
+    );
+    final cacheGate = preferencesStore.blockNextSetValue(
+      'flutter.${TranslationModelProbeCache.keyFor('guest')}',
+    );
+    final holder = cache.put(
+      TranslationModelProbeRecord(
+        fingerprint: 'f' * 64,
+        status: TranslationModelProbeStatus.failed,
+        checkedAt: DateTime.now(),
+        safeErrorCode: 'unknown',
+        reasoningControlSuppressed: false,
+      ),
+      expectedAccountHash: 'guest',
+      providerId: null,
+      expectedToken: holderToken,
+    );
+    await cacheGate.started;
+
+    // 强制保存先在 cache invalidation 之前失败；holder 让 probe put 等到
+    // Provider finally 回滚 K0、release barrier 后才真正执行。
+    AISettingsDao.resetSecureStateForTest();
+    secureStore.failReads = true;
+    AISettingsDao.configureSecretStore(secureStore);
+    final k1 = provider.settings.clone()
+      ..activeProvider.apiKey = 'provider-probe-rollback-k1';
+    final failedSave = provider.update(k1);
+    final k1Identity = service.identify(
+      accountHash: 'guest',
+      settings: provider.settings,
+      profile: profile,
+    );
+    final putting = cache.put(
+      TranslationModelProbeRecord(
+        fingerprint: k1Identity.fingerprint,
+        status: TranslationModelProbeStatus.verified,
+        checkedAt: DateTime.now(),
+        reasoningControlSuppressed: true,
+      ),
+      expectedAccountHash: 'guest',
+      providerId: profile.providerId,
+      expectedToken: k1Identity.cacheToken,
+    );
+
+    await expectLater(
+      failedSave,
+      throwsA(isA<AISecretsUnavailableException>()),
+    );
+    expect(
+      provider.settings.activeProvider.apiKey,
+      'provider-probe-rollback-k0',
+    );
+    cacheGate.release();
+    expect(await holder, isTrue);
+    expect(await putting, isFalse);
+    expect(
+      service.lookup(
+        accountHash: 'guest',
+        settings: provider.settings,
+        profile: profile,
+      ),
+      isNull,
+    );
+    expect(
+      service
+          .applyCachedEvidence(
+            accountHash: 'guest',
+            settings: provider.settings,
+            profile: profile,
+          )
+          .reasoningControlSuppressed,
+      isFalse,
+    );
+  });
+
   test('Provider 丢弃测试期间旧配置返回的 success，不覆盖当前配置', () async {
     final secureStore = _MemorySecureStore();
     AISettingsDao.configureSecretStore(secureStore);
@@ -1657,6 +1755,59 @@ class _FailingRemoveSharedPreferencesStore
 
   @override
   Future<bool> setValue(String valueType, String key, Object value) async {
+    values[key] = value is List<String> ? value.toList() : value;
+    return true;
+  }
+}
+
+class _BlockingSharedPreferencesStore extends SharedPreferencesStorePlatform {
+  final Map<String, Object> values = {};
+  String? _blockedKey;
+  Completer<void>? _setStarted;
+  Completer<void>? _setGate;
+
+  ({Future<void> started, void Function() release}) blockNextSetValue(
+    String key,
+  ) {
+    final started = Completer<void>();
+    final gate = Completer<void>();
+    _blockedKey = key;
+    _setStarted = started;
+    _setGate = gate;
+    return (
+      started: started.future,
+      release: () {
+        if (!gate.isCompleted) gate.complete();
+      },
+    );
+  }
+
+  @override
+  Future<bool> clear() async {
+    values.clear();
+    return true;
+  }
+
+  @override
+  Future<Map<String, Object>> getAll() async => Map.of(values);
+
+  @override
+  Future<bool> remove(String key) async {
+    values.remove(key);
+    return true;
+  }
+
+  @override
+  Future<bool> setValue(String valueType, String key, Object value) async {
+    if (key == _blockedKey) {
+      final started = _setStarted;
+      final gate = _setGate;
+      _blockedKey = null;
+      _setStarted = null;
+      _setGate = null;
+      if (started != null && !started.isCompleted) started.complete();
+      if (gate != null) await gate.future;
+    }
     values[key] = value is List<String> ? value.toList() : value;
     return true;
   }

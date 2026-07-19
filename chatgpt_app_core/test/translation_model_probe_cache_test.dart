@@ -612,6 +612,62 @@ void main() {
       }
     });
 
+    test('put 在 pending 屏障内调用时即使 release 后才出队也永久拒绝', () async {
+      final cache = TranslationModelProbeCache(now: () => now);
+      final barrier = cache.beginProviderInvalidation(
+        accountHash: 'guest',
+        providerIds: {'deepseek'},
+      );
+      final freshToken =
+          cache.tokenFor(accountHash: 'guest', providerId: 'deepseek');
+
+      final putting = cache.put(
+        _record(27, now),
+        expectedAccountHash: 'guest',
+        providerId: 'deepseek',
+        expectedToken: freshToken,
+      );
+      barrier.release();
+
+      expect(await putting, isFalse);
+      expect(
+        cache.lookup(
+          accountHash: 'guest',
+          fingerprint: _fingerprint(27),
+          providerId: 'deepseek',
+        ),
+        isNull,
+      );
+    });
+
+    test('put 调用后跨越一次 acquire/release 即使出队时无 pending 也拒绝', () async {
+      final cache = TranslationModelProbeCache(now: () => now);
+      final token =
+          cache.tokenFor(accountHash: 'guest', providerId: 'deepseek');
+      final putting = cache.put(
+        _record(28, now),
+        expectedAccountHash: 'guest',
+        providerId: 'deepseek',
+        expectedToken: token,
+      );
+
+      final barrier = cache.beginProviderInvalidation(
+        accountHash: 'guest',
+        providerIds: {'deepseek'},
+      );
+      barrier.release();
+
+      expect(await putting, isFalse);
+      expect(
+        cache.lookup(
+          accountHash: 'guest',
+          fingerprint: _fingerprint(28),
+          providerId: 'deepseek',
+        ),
+        isNull,
+      );
+    });
+
     test('重叠 provider 屏障按引用计数释放且单个 lease release 幂等', () async {
       final cache = TranslationModelProbeCache(now: () => now);
       final token =
