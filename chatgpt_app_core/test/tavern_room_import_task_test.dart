@@ -6,6 +6,7 @@ import 'package:chatgpt_app_core/chat/application/story_room_role_card_importer.
 import 'package:chatgpt_app_core/chat/application/tavern_room_import_finalizer.dart';
 import 'package:chatgpt_app_core/chat/application/story_template_translation_tasks.dart';
 import 'package:chatgpt_app_core/chat/application/translation_chunk_planner.dart';
+import 'package:chatgpt_app_core/chat/application/translation_model_eligibility.dart';
 import 'package:chatgpt_app_core/chat/application/translation_model_resolver.dart';
 import 'package:chatgpt_app_core/chat/application/translation_stream_executor.dart';
 import 'package:chatgpt_app_core/chat/domain/chat_request_options.dart';
@@ -93,6 +94,7 @@ void main() {
         sourceTitle: 'party.zip',
         initialOpening: 'Selected opening',
         requestProfile: profile,
+        checkEligibility: _allowTranslationProfile,
         resolveExecutor: (_) {
           throw const TranslationModelUnavailableException('测试暂停');
         },
@@ -116,6 +118,42 @@ void main() {
         ).modelId,
         'fast-backend-model',
       );
+    });
+
+    test('blocked Tavern import does not persist a task', () async {
+      final coordinator = StoryTemplateTranslationCoordinator();
+      await coordinator.initialize(storage, accountHash: 'test');
+      final profile = TranslationRequestProfile(
+        mode: TranslationExecutionMode.backend,
+        modelId: 'fast-backend-model',
+        reasoningPolicy: ChatReasoningPolicy.offIfSupported,
+        reasoningControlSuppressed: false,
+      );
+      var executorCalls = 0;
+
+      await expectLater(
+        coordinator.startTavernRoomImport(
+          _twoRolePayload().results,
+          sourceTitle: 'party.zip',
+          requestProfile: profile,
+          checkEligibility: _blockedGuestBackend,
+          resolveExecutor: (_) {
+            executorCalls += 1;
+            throw StateError('executor must not be resolved');
+          },
+        ),
+        throwsA(
+          isA<TranslationModelUnavailableException>().having(
+            (error) => error.safeCode,
+            'safeCode',
+            TranslationEligibilityCode.guestBackend.name,
+          ),
+        ),
+      );
+
+      expect(await taskDao.getTasks(), isEmpty);
+      expect(coordinator.tasks, isEmpty);
+      expect(executorCalls, 0);
     });
 
     test('runner atomically finalizes a translated Tavern room task', () async {
@@ -1071,6 +1109,23 @@ void main() {
     });
   });
 }
+
+TranslationEligibilityResult _blockedGuestBackend(
+  TranslationRequestProfile _,
+) =>
+    TranslationEligibilityResult([
+      const TranslationEligibilityIssue(
+        level: TranslationEligibilityLevel.blocked,
+        code: TranslationEligibilityCode.guestBackend,
+        message: '后端代理需要登录',
+        actionLabel: '去登录',
+      ),
+    ]);
+
+TranslationEligibilityResult _allowTranslationProfile(
+  TranslationRequestProfile _,
+) =>
+    const TranslationEligibilityResult([]);
 
 StoryRoomTemplatePayload _twoRolePayload() => StoryRoomTemplatePayload(
       results: [

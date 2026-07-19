@@ -9,6 +9,7 @@ import 'package:chatgpt_app_core/chat/application/story_template_transfer.dart';
 import 'package:chatgpt_app_core/chat/application/tavern_room_import_preparer.dart';
 import 'package:chatgpt_app_core/chat/application/tavern_room_import_finalizer.dart';
 import 'package:chatgpt_app_core/chat/application/translation_chunk_planner.dart';
+import 'package:chatgpt_app_core/chat/application/translation_model_eligibility.dart';
 import 'package:chatgpt_app_core/chat/application/translation_model_resolver.dart';
 import 'package:chatgpt_app_core/chat/application/translation_retry_policy.dart';
 import 'package:chatgpt_app_core/chat/application/translation_stream_executor.dart';
@@ -24,6 +25,8 @@ import 'package:flutter/foundation.dart';
 typedef TranslationExecutorResolver = TranslationStreamExecutor Function(
   TranslationRequestProfile profile,
 );
+typedef TranslationProfileEligibilityCheck = TranslationEligibilityResult
+    Function(TranslationRequestProfile profile);
 typedef StoryTemplateTranslationCall = Future<String> Function(String prompt);
 typedef LegacyTranslationRequestProfileResolver = TranslationRequestProfile?
     Function();
@@ -32,6 +35,19 @@ typedef _TranslationRunKey = ({
   String accountHash,
   int taskId,
 });
+
+void _requireEligible(
+  TranslationRequestProfile profile,
+  TranslationProfileEligibilityCheck checkEligibility,
+) {
+  final result = checkEligibility(profile);
+  if (result.canStart) return;
+  final issue = result.primaryIssue!;
+  throw TranslationModelUnavailableException(
+    issue.message,
+    safeCode: issue.code.name,
+  );
+}
 
 enum _ClaimStopReason { userCancelled, lifecycleCancelled }
 
@@ -132,6 +148,7 @@ class StoryTemplateTranslationCoordinator extends ChangeNotifier {
   Future<void> start(
     StoryTemplateModel template, {
     required TranslationRequestProfile requestProfile,
+    required TranslationProfileEligibilityCheck checkEligibility,
     required TranslationExecutorResolver resolveExecutor,
   }) async {
     final context = _requireContext();
@@ -139,6 +156,7 @@ class StoryTemplateTranslationCoordinator extends ChangeNotifier {
     if (payload.results.isEmpty) {
       throw const FormatException('酒馆模板至少需要一个角色');
     }
+    _requireEligible(requestProfile, checkEligibility);
     final sourceTitle = template.sourceTitle.trim().isEmpty
         ? template.title
         : template.sourceTitle;
@@ -161,7 +179,7 @@ class StoryTemplateTranslationCoordinator extends ChangeNotifier {
     unawaited(
       StoryTemplateBackgroundScheduler.schedule(context.accountHash),
     );
-    unawaited(_run(context, task, resolveExecutor));
+    unawaited(_run(context, task, checkEligibility, resolveExecutor));
   }
 
   Future<void> startTavernRoomImport(
@@ -169,11 +187,13 @@ class StoryTemplateTranslationCoordinator extends ChangeNotifier {
     required String sourceTitle,
     String initialOpening = '',
     required TranslationRequestProfile requestProfile,
+    required TranslationProfileEligibilityCheck checkEligibility,
     required TranslationExecutorResolver resolveExecutor,
   }) async {
     if (results.isEmpty) {
       throw const FormatException('酒馆房间导入至少需要一个角色');
     }
+    _requireEligible(requestProfile, checkEligibility);
     final context = _requireContext();
     final payload = StoryRoomTemplatePayload(
       results: results,
@@ -199,16 +219,20 @@ class StoryTemplateTranslationCoordinator extends ChangeNotifier {
     unawaited(
       StoryTemplateBackgroundScheduler.schedule(context.accountHash),
     );
-    unawaited(_run(context, task, resolveExecutor));
+    unawaited(_run(context, task, checkEligibility, resolveExecutor));
   }
 
   Future<void> retry(
     StoryTemplateTranslationTaskModel task, {
     TranslationRequestProfile? replacementProfile,
+    required TranslationProfileEligibilityCheck checkEligibility,
     required TranslationExecutorResolver resolveExecutor,
   }) async {
     final context = _contextForTask(task);
     if (context == null || !task.canRetry || task.id == null) return;
+    if (replacementProfile != null) {
+      _requireEligible(replacementProfile, checkEligibility);
+    }
     final expectedStatus = task.status;
     final expectedUpdatedAt = task.updatedAt;
     final updated = _cloneTask(task);
@@ -241,7 +265,7 @@ class StoryTemplateTranslationCoordinator extends ChangeNotifier {
     unawaited(
       StoryTemplateBackgroundScheduler.schedule(context.accountHash),
     );
-    unawaited(_run(context, updated, resolveExecutor));
+    unawaited(_run(context, updated, checkEligibility, resolveExecutor));
   }
 
   Future<void> cancel(StoryTemplateTranslationTaskModel task) async {
@@ -367,6 +391,7 @@ class StoryTemplateTranslationCoordinator extends ChangeNotifier {
   /// 明确失败和用户取消的任务仍留给用户手动决定，避免在网络或配置持续异常时
   /// 自动重复消耗 token。串行执行也避免多个大模板同时占满上游并触发限流。
   Future<int> resumeRecoverable({
+    required TranslationProfileEligibilityCheck checkEligibility,
     TranslationExecutorResolver? resolveExecutor,
     StoryTemplateTranslationCall? complete,
     TranslationRequestProfile? legacyRequestProfile,
@@ -456,6 +481,7 @@ class StoryTemplateTranslationCoordinator extends ChangeNotifier {
       await _run(
         context,
         updated,
+        checkEligibility,
         resolveExecutor,
         legacyComplete: complete,
       );
@@ -527,6 +553,7 @@ class StoryTemplateTranslationCoordinator extends ChangeNotifier {
   Future<void> _run(
     _TranslationBindingContext context,
     StoryTemplateTranslationTaskModel task,
+    TranslationProfileEligibilityCheck checkEligibility,
     TranslationExecutorResolver? resolveExecutor, {
     StoryTemplateTranslationCall? legacyComplete,
   }) async {
@@ -580,6 +607,7 @@ class StoryTemplateTranslationCoordinator extends ChangeNotifier {
           final profile = TranslationRequestProfile.fromJson(
             Map<String, dynamic>.from(decoded),
           );
+          _requireEligible(profile, checkEligibility);
           executor = resolveExecutor(profile);
         } on TranslationModelUnavailableException catch (error) {
           stopReason = _claimStopReason(context, key);
@@ -598,6 +626,7 @@ class StoryTemplateTranslationCoordinator extends ChangeNotifier {
             claimedTask,
             leaseOwner,
             error.message,
+            errorCode: error.safeCode,
           );
           return;
         } on FormatException {
@@ -745,13 +774,14 @@ class StoryTemplateTranslationCoordinator extends ChangeNotifier {
     StoryTemplateTranslationTaskDao taskDao,
     StoryTemplateTranslationTaskModel task,
     String leaseOwner,
-    String message,
-  ) async {
+    String message, {
+    String errorCode = 'model_unavailable',
+  }) async {
     task
       ..status = StoryTemplateTranslationTaskStatus.needsConfiguration
       ..stage = '翻译模型不可用'
       ..detail = StoryTemplateTranslationTaskDao.taskCheckpointDetail(task)
-      ..error = 'model_unavailable';
+      ..error = errorCode;
     task.log = _appendLog(task.log, message);
     await taskDao.saveClaimedTask(
       task,

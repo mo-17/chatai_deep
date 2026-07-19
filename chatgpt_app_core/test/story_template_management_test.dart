@@ -6,6 +6,7 @@ import 'package:chatgpt_app_core/chat/application/story_room_role_card_importer.
 import 'package:chatgpt_app_core/chat/application/story_template_transfer.dart';
 import 'package:chatgpt_app_core/chat/application/story_template_translation_tasks.dart';
 import 'package:chatgpt_app_core/chat/application/translation_chunk_planner.dart';
+import 'package:chatgpt_app_core/chat/application/translation_model_eligibility.dart';
 import 'package:chatgpt_app_core/chat/application/translation_model_resolver.dart';
 import 'package:chatgpt_app_core/chat/application/translation_stream_executor.dart';
 import 'package:chatgpt_app_core/chat/domain/chat_attachments.dart';
@@ -1098,6 +1099,7 @@ void main() {
       await coordinator.initialize(storage, accountHash: 'test');
 
       final resumed = await coordinator.resumeRecoverable(
+        checkEligibility: _allowTranslationProfile,
         complete: (_) async => jsonEncode({
           'name': '爱丽丝',
           'description': '中文简介',
@@ -1158,6 +1160,7 @@ void main() {
       );
       final service = _EchoTranslationChatService();
       final resumed = await coordinator.resumeRecoverable(
+        checkEligibility: _allowTranslationProfile,
         resolveExecutor: (resolved) => TranslationStreamExecutor(
           service: service,
           profile: resolved,
@@ -1224,6 +1227,7 @@ void main() {
       final heldA = _HeldTranslationChatService();
 
       final runningA = coordinator.resumeRecoverable(
+        checkEligibility: _allowTranslationProfile,
         resolveExecutor: (resolved) => TranslationStreamExecutor(
           service: heldA,
           profile: resolved,
@@ -1246,6 +1250,7 @@ void main() {
 
       final serviceB = _EchoTranslationChatService();
       final resumedB = await coordinator.resumeRecoverable(
+        checkEligibility: _allowTranslationProfile,
         resolveExecutor: (resolved) => TranslationStreamExecutor(
           service: serviceB,
           profile: resolved,
@@ -1304,6 +1309,7 @@ void main() {
 
       await coordinator.initialize(storageB, accountHash: 'account-a');
       final resumed = await coordinator.resumeRecoverable(
+        checkEligibility: _allowTranslationProfile,
         resolveExecutor: (resolved) => TranslationStreamExecutor(
           service: _EchoTranslationChatService(),
           profile: resolved,
@@ -1363,6 +1369,7 @@ void main() {
 
       await coordinator.initialize(storageB, accountHash: 'account-a');
       final resumed = await coordinator.resumeRecoverable(
+        checkEligibility: _allowTranslationProfile,
         resolveExecutor: (resolved) => TranslationStreamExecutor(
           service: _EchoTranslationChatService(),
           profile: resolved,
@@ -1487,6 +1494,7 @@ void main() {
       final heldA1 = _HeldTranslationChatService();
       final forbiddenA2 = _EchoTranslationChatService();
       final runningA = coordinator.resumeRecoverable(
+        checkEligibility: _allowTranslationProfile,
         resolveExecutor: (profile) => TranslationStreamExecutor(
           service: profile.modelId == 'held-a1'
               ? heldA1 as ChatService
@@ -1534,6 +1542,7 @@ void main() {
       );
 
       final resumedB = await coordinator.resumeRecoverable(
+        checkEligibility: _allowTranslationProfile,
         resolveExecutor: (profile) => TranslationStreamExecutor(
           service: _EchoTranslationChatService(),
           profile: profile,
@@ -1639,6 +1648,7 @@ void main() {
       await coordinator.cancel(staleTasks[0]);
       await coordinator.retry(
         staleTasks[1],
+        checkEligibility: _allowTranslationProfile,
         resolveExecutor: (_) {
           retryResolverCalls += 1;
           throw const TranslationModelUnavailableException('stale');
@@ -1696,6 +1706,7 @@ void main() {
         final stale = coordinator.tasks.single;
         final held = _HeldTranslationChatService();
         final running = coordinator.resumeRecoverable(
+          checkEligibility: _allowTranslationProfile,
           resolveExecutor: (profile) => TranslationStreamExecutor(
             service: held,
             profile: profile,
@@ -1713,6 +1724,7 @@ void main() {
           case 'retry':
             await coordinator.retry(
               stale,
+              checkEligibility: _allowTranslationProfile,
               resolveExecutor: (profile) => TranslationStreamExecutor(
                 service: _EchoTranslationChatService(),
                 profile: profile,
@@ -1754,6 +1766,7 @@ void main() {
       await staleCoordinator.initialize(storage, accountHash: 'test');
       final held = _HeldTranslationChatService();
       final ownerRun = ownerCoordinator.resumeRecoverable(
+        checkEligibility: _allowTranslationProfile,
         resolveExecutor: (profile) => TranslationStreamExecutor(
           service: held,
           profile: profile,
@@ -1767,6 +1780,7 @@ void main() {
 
       try {
         final resumed = await staleCoordinator.resumeRecoverable(
+          checkEligibility: _allowTranslationProfile,
           resolveExecutor: (profile) {
             staleResolverCalls += 1;
             return TranslationStreamExecutor(
@@ -1834,6 +1848,7 @@ void main() {
         final stale = staleCoordinator.tasks.single;
         final held = _HeldTranslationChatService();
         final ownerRun = ownerCoordinator.resumeRecoverable(
+          checkEligibility: _allowTranslationProfile,
           resolveExecutor: (profile) => TranslationStreamExecutor(
             service: held,
             profile: profile,
@@ -1848,6 +1863,7 @@ void main() {
           if (action == 'retry') {
             await staleCoordinator.retry(
               stale,
+              checkEligibility: _allowTranslationProfile,
               resolveExecutor: (profile) {
                 retryResolverCalls += 1;
                 return TranslationStreamExecutor(
@@ -1904,6 +1920,7 @@ void main() {
       var executorCalls = 0;
 
       final resumed = await coordinator.resumeRecoverable(
+        checkEligibility: _allowTranslationProfile,
         resolveLegacyRequestProfile: () => null,
         resolveExecutor: (profile) {
           executorCalls += 1;
@@ -1950,6 +1967,7 @@ void main() {
           await coordinator.start(
             template,
             requestProfile: profile,
+            checkEligibility: _allowTranslationProfile,
             resolveExecutor: (_) => throw StateError('secret setup detail'),
           );
           await Future<void>.delayed(const Duration(milliseconds: 50));
@@ -2020,6 +2038,7 @@ void main() {
       await coordinator.start(
         template,
         requestProfile: profile,
+        checkEligibility: _allowTranslationProfile,
         resolveExecutor: (resolved) {
           resolvedProfile = resolved;
           throw const TranslationModelUnavailableException('测试暂停');
@@ -2043,6 +2062,158 @@ void main() {
       expect(
           stored.status, StoryTemplateTranslationTaskStatus.needsConfiguration);
       expect(stored.error, 'model_unavailable');
+    });
+
+    test('新任务被 eligibility 拦截时不写入任务行', () async {
+      final coordinator = StoryTemplateTranslationCoordinator();
+      await coordinator.initialize(storage, accountHash: 'test');
+      final profile = TranslationRequestProfile(
+        mode: TranslationExecutionMode.backend,
+        modelId: 'backend-model',
+        reasoningPolicy: ChatReasoningPolicy.providerDefault,
+        reasoningControlSuppressed: false,
+      );
+      final template = StoryRoomTemplatePayload(results: [
+        AssistantRoleCardImportResult(
+          assistant: AssistantModel(name: 'Alice'),
+        ),
+      ]).toTemplate(title: 'Party', sourceTitle: 'party.json');
+      var executorCalls = 0;
+
+      await expectLater(
+        coordinator.start(
+          template,
+          requestProfile: profile,
+          checkEligibility: _blockedGuestBackend,
+          resolveExecutor: (_) {
+            executorCalls += 1;
+            throw StateError('executor must not be resolved');
+          },
+        ),
+        throwsA(
+          isA<TranslationModelUnavailableException>().having(
+            (error) => error.safeCode,
+            'safeCode',
+            TranslationEligibilityCode.guestBackend.name,
+          ),
+        ),
+      );
+
+      expect(await taskDao.getTasks(), isEmpty);
+      expect(coordinator.tasks, isEmpty);
+      expect(executorCalls, 0);
+    });
+
+    test('更换模型重试被 eligibility 拦截时不修改旧任务', () async {
+      final original = _translationTask(
+        'Blocked retry',
+        status: StoryTemplateTranslationTaskStatus.failed,
+        chunkPayload: '{"checkpoint":"kept"}',
+      )
+        ..fieldPayload = '{"field":"kept"}'
+        ..partialPayload = '{"partial":"kept"}'
+        ..stage = '原始失败状态'
+        ..error = 'original_error';
+      await taskDao.saveTask(original);
+      final before = (await taskDao.getTask(original.id!))!;
+      final coordinator = StoryTemplateTranslationCoordinator();
+      await coordinator.initialize(storage, accountHash: 'test');
+      final replacement = TranslationRequestProfile(
+        mode: TranslationExecutionMode.backend,
+        modelId: 'replacement-model',
+        reasoningPolicy: ChatReasoningPolicy.offIfSupported,
+        reasoningControlSuppressed: false,
+      );
+      var executorCalls = 0;
+
+      await expectLater(
+        coordinator.retry(
+          coordinator.tasks.single,
+          replacementProfile: replacement,
+          checkEligibility: _blockedGuestBackend,
+          resolveExecutor: (_) {
+            executorCalls += 1;
+            throw StateError('executor must not be resolved');
+          },
+        ),
+        throwsA(
+          isA<TranslationModelUnavailableException>().having(
+            (error) => error.safeCode,
+            'safeCode',
+            TranslationEligibilityCode.guestBackend.name,
+          ),
+        ),
+      );
+
+      final stored = await taskDao.getTask(original.id!);
+      expect(stored?.toJson(), before.toJson());
+      expect(executorCalls, 0);
+    });
+
+    test('自动恢复被 eligibility 拦截时保留所有检查点', () async {
+      const fieldPayload = '{"field":"byte-identical"}';
+      const chunkPayload = '{"chunk":"byte-identical"}';
+      const partialPayload = '{"partial":"byte-identical"}';
+      final task = _translationTask(
+        'Blocked resume',
+        chunkPayload: chunkPayload,
+      )
+        ..fieldPayload = fieldPayload
+        ..partialPayload = partialPayload;
+      await taskDao.saveTask(task);
+      final coordinator = StoryTemplateTranslationCoordinator();
+      await coordinator.initialize(storage, accountHash: 'test');
+      var executorCalls = 0;
+
+      final resumed = await coordinator.resumeRecoverable(
+        checkEligibility: _blockedGuestBackend,
+        resolveExecutor: (_) {
+          executorCalls += 1;
+          throw StateError('executor must not be resolved');
+        },
+      );
+
+      final stored = await taskDao.getTask(task.id!);
+      expect(resumed, 1);
+      expect(stored?.status,
+          StoryTemplateTranslationTaskStatus.needsConfiguration);
+      expect(stored?.error, TranslationEligibilityCode.guestBackend.name);
+      expect(stored?.fieldPayload, fieldPayload);
+      expect(stored?.chunkPayload, chunkPayload);
+      expect(stored?.partialPayload, partialPayload);
+      expect(executorCalls, 0);
+    });
+
+    test('eligibility 警告不会阻止任务继续执行', () async {
+      final coordinator = StoryTemplateTranslationCoordinator();
+      await coordinator.initialize(storage, accountHash: 'test');
+      final profile = TranslationRequestProfile(
+        mode: TranslationExecutionMode.local,
+        providerId: 'provider-a',
+        modelId: 'model-a',
+        reasoningPolicy: ChatReasoningPolicy.providerDefault,
+        reasoningControlSuppressed: false,
+      );
+      final template = StoryRoomTemplatePayload(results: [
+        AssistantRoleCardImportResult(
+          assistant: AssistantModel(name: 'Alice'),
+        ),
+      ]).toTemplate(title: 'Warning', sourceTitle: 'warning.json');
+      var executorCalls = 0;
+
+      await coordinator.start(
+        template,
+        requestProfile: profile,
+        checkEligibility: _warnMobileLoopback,
+        resolveExecutor: (_) {
+          executorCalls += 1;
+          throw const TranslationModelUnavailableException('测试暂停');
+        },
+      );
+      await _waitUntil(() => executorCalls == 1);
+
+      expect(await taskDao.getTasks(), hasLength(1));
+      expect(executorCalls, 1);
     });
 
     test('更换模型重试保留分块和字段检查点', () async {
@@ -2079,6 +2250,7 @@ void main() {
       await coordinator.retry(
         coordinator.tasks.single,
         replacementProfile: replacement,
+        checkEligibility: _allowTranslationProfile,
         resolveExecutor: (_) {
           throw const TranslationModelUnavailableException('测试暂停');
         },
@@ -2125,6 +2297,7 @@ void main() {
       var calls = 0;
 
       final resumed = await coordinator.resumeRecoverable(
+        checkEligibility: _allowTranslationProfile,
         complete: (_) async {
           calls += 1;
           return '{}';
@@ -2198,6 +2371,7 @@ void main() {
       final executedProfiles = <TranslationRequestProfile>[];
 
       final resumed = await coordinator.resumeRecoverable(
+        checkEligibility: _allowTranslationProfile,
         resolveLegacyRequestProfile: () {
           legacyResolutions += 1;
           return TranslationModelResolver.legacyFallbackOrNull(
@@ -2233,6 +2407,34 @@ void main() {
     });
   });
 }
+
+TranslationEligibilityResult _blockedGuestBackend(
+  TranslationRequestProfile _,
+) =>
+    TranslationEligibilityResult([
+      const TranslationEligibilityIssue(
+        level: TranslationEligibilityLevel.blocked,
+        code: TranslationEligibilityCode.guestBackend,
+        message: '后端代理需要登录',
+        actionLabel: '去登录',
+      ),
+    ]);
+
+TranslationEligibilityResult _allowTranslationProfile(
+  TranslationRequestProfile _,
+) =>
+    const TranslationEligibilityResult([]);
+
+TranslationEligibilityResult _warnMobileLoopback(
+  TranslationRequestProfile _,
+) =>
+    TranslationEligibilityResult([
+      const TranslationEligibilityIssue(
+        level: TranslationEligibilityLevel.warning,
+        code: TranslationEligibilityCode.mobileLoopback,
+        message: '移动设备可能无法访问本机地址',
+      ),
+    ]);
 
 StoryTemplateTranslationTaskModel _translationTask(
   String name, {

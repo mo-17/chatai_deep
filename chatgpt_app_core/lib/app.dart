@@ -6,13 +6,14 @@ import 'package:chatgpt_app_core/diagnostics/flutter_diagnostics_bridge.dart';
 import 'package:chatgpt_app_core/dao/ai_settings_dao.dart';
 import 'package:chatgpt_app_core/chat/application/story_template_translation_tasks.dart';
 import 'package:chatgpt_app_core/chat/application/story_template_background_scheduler.dart';
+import 'package:chatgpt_app_core/chat/application/translation_model_eligibility.dart';
 import 'package:chatgpt_app_core/chat/application/translation_model_preference_store.dart';
 import 'package:chatgpt_app_core/chat/application/translation_model_resolver.dart';
 import 'package:chatgpt_app_core/chat/application/translation_stream_executor.dart';
+import 'package:chatgpt_app_core/chat/domain/translation_request_profile.dart';
 import 'package:chatgpt_app_core/dao/chat/chat_service.dart';
 import 'package:chatgpt_app_core/dao/hi_api_cache.dart';
 import 'package:chatgpt_app_core/db/hi_db_manager.dart';
-import 'package:chatgpt_app_core/model/ai_settings.dart';
 import 'package:chatgpt_app_core/pages/bottom_navigator.dart';
 import 'package:chatgpt_app_core/provider/ai_settings_provider.dart';
 import 'package:chatgpt_app_core/provider/hi_provider.dart';
@@ -231,8 +232,7 @@ class _MyAppState extends State<MyApp> {
 
     // 已登录状态预加载 AI 设置，避免 BottomNavigator 首帧读到默认值
     if (LoginDao.getBoardingPass() != null) {
-      final settings = AISettingsDao.load();
-      unawaited(_resumeStoryTemplateTranslations(settings));
+      unawaited(_resumeStoryTemplateTranslations());
     }
 
     if (!LoginDao.hooksRegistered) {
@@ -250,8 +250,7 @@ class _MyAppState extends State<MyApp> {
         }
       });
       LoginDao.addLogoutReadyHook(() async {
-        await StoryTemplateTranslationCoordinator.instance
-            .detachForLifecycle();
+        await StoryTemplateTranslationCoordinator.instance.detachForLifecycle();
         await HiDBManager.closeAll();
       });
       LoginDao.addLogoutHook(() {
@@ -273,7 +272,7 @@ class _MyAppState extends State<MyApp> {
         AISettingsProvider.reloadInstance();
       });
       LoginDao.addLoginHook(() {
-        unawaited(_resumeStoryTemplateTranslations(AISettingsDao.load()));
+        unawaited(_resumeStoryTemplateTranslations());
       });
       LoginDao.addLoginHook(() {
         CloudSyncCoordinator.syncOnLogin();
@@ -281,13 +280,25 @@ class _MyAppState extends State<MyApp> {
     }
   }
 
-  Future<void> _resumeStoryTemplateTranslations(AISettings settings) async {
+  Future<void> _resumeStoryTemplateTranslations() async {
     try {
       final accountHash = HiDBManager.getAccountHash();
       final storage = await HiDBManager.instance(dbName: accountHash);
       final coordinator = StoryTemplateTranslationCoordinator.instance;
       await coordinator.initialize(storage, accountHash: accountHash);
+      final settings = AISettingsDao.load();
+      final environment = TranslationEligibilityEnvironment.current();
+      const evaluator = TranslationModelEligibilityEvaluator();
+      TranslationEligibilityResult checkEligibility(
+        TranslationRequestProfile profile,
+      ) =>
+          evaluator.evaluateProfile(
+            settings: settings,
+            profile: profile,
+            environment: environment,
+          );
       await coordinator.resumeRecoverable(
+        checkEligibility: checkEligibility,
         resolveLegacyRequestProfile: () =>
             TranslationModelResolver.legacyFallbackOrNull(
           settings,

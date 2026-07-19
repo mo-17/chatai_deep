@@ -8,6 +8,7 @@ import 'package:chatgpt_app_core/chat/application/assistant_role_card_asset_stor
 import 'package:chatgpt_app_core/chat/application/assistant_role_card_translation_service.dart';
 import 'package:chatgpt_app_core/chat/application/story_room_role_card_importer.dart';
 import 'package:chatgpt_app_core/chat/application/story_template_translation_tasks.dart';
+import 'package:chatgpt_app_core/chat/application/translation_model_eligibility.dart';
 import 'package:chatgpt_app_core/chat/application/translation_model_preference_store.dart';
 import 'package:chatgpt_app_core/chat/application/translation_model_resolver.dart';
 import 'package:chatgpt_app_core/chat/application/translation_stream_executor.dart';
@@ -935,12 +936,23 @@ class _AssistantListPageState extends State<AssistantListPage> {
     required String accountHash,
   }) async {
     final settings = context.read<AISettingsProvider>().settings.clone();
+    final environment = TranslationEligibilityEnvironment.current();
+    const evaluator = TranslationModelEligibilityEvaluator();
+    TranslationEligibilityResult checkEligibility(
+      TranslationRequestProfile profile,
+    ) =>
+        evaluator.evaluateProfile(
+          settings: settings,
+          profile: profile,
+          environment: environment,
+        );
     try {
       await _tavernTranslationCoordinator.startTavernRoomImport(
         results,
         sourceTitle: sourceTitle,
         initialOpening: initialOpening,
         requestProfile: profile,
+        checkEligibility: checkEligibility,
         resolveExecutor: _translationExecutorResolver(settings),
       );
       if (!mounted) return;
@@ -1499,17 +1511,41 @@ class _AssistantListPageState extends State<AssistantListPage> {
       await _tavernTranslationCoordinator.cancel(task);
       return;
     }
-    final settings = context.read<AISettingsProvider>().settings.clone();
     if (action == 'retain') {
       await _tavernTranslationCoordinator.completeKeepingOriginalChunks(task);
+      if (!mounted) return;
+      final settings = context.read<AISettingsProvider>().settings.clone();
+      final environment = TranslationEligibilityEnvironment.current();
+      const evaluator = TranslationModelEligibilityEvaluator();
+      TranslationEligibilityResult checkEligibility(
+        TranslationRequestProfile profile,
+      ) =>
+          evaluator.evaluateProfile(
+            settings: settings,
+            profile: profile,
+            environment: environment,
+          );
       await _tavernTranslationCoordinator.resumeRecoverable(
+        checkEligibility: checkEligibility,
         resolveExecutor: _translationExecutorResolver(settings),
       );
       return;
     }
     if (action == 'retry') {
+      final settings = context.read<AISettingsProvider>().settings.clone();
+      final environment = TranslationEligibilityEnvironment.current();
+      const evaluator = TranslationModelEligibilityEvaluator();
+      TranslationEligibilityResult checkEligibility(
+        TranslationRequestProfile profile,
+      ) =>
+          evaluator.evaluateProfile(
+            settings: settings,
+            profile: profile,
+            environment: environment,
+          );
       await _tavernTranslationCoordinator.retry(
         task,
+        checkEligibility: checkEligibility,
         resolveExecutor: _translationExecutorResolver(settings),
       );
       return;
@@ -1520,9 +1556,21 @@ class _AssistantListPageState extends State<AssistantListPage> {
       initialValue: _preferenceFromTask(task),
     );
     if (selected == null || !mounted) return;
+    final settings = context.read<AISettingsProvider>().settings.clone();
+    final environment = TranslationEligibilityEnvironment.current();
+    const evaluator = TranslationModelEligibilityEvaluator();
+    TranslationEligibilityResult checkEligibility(
+      TranslationRequestProfile profile,
+    ) =>
+        evaluator.evaluateProfile(
+          settings: settings,
+          profile: profile,
+          environment: environment,
+        );
     await _tavernTranslationCoordinator.retry(
       task,
       replacementProfile: selected.profile,
+      checkEligibility: checkEligibility,
       resolveExecutor: _translationExecutorResolver(settings),
     );
     await _saveTranslationPreferenceAfterStart(

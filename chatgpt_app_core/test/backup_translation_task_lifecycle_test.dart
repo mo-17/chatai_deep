@@ -6,6 +6,7 @@ import 'package:chatgpt_app_core/backup/backup_service.dart';
 import 'package:chatgpt_app_core/chat/application/assistant_role_card_service.dart';
 import 'package:chatgpt_app_core/chat/application/story_room_role_card_importer.dart';
 import 'package:chatgpt_app_core/chat/application/story_template_translation_tasks.dart';
+import 'package:chatgpt_app_core/chat/application/translation_model_eligibility.dart';
 import 'package:chatgpt_app_core/chat/application/translation_stream_executor.dart';
 import 'package:chatgpt_app_core/chat/domain/chat_attachments.dart';
 import 'package:chatgpt_app_core/chat/domain/chat_request_options.dart';
@@ -77,6 +78,7 @@ void main() {
     await coordinator.initialize(target, accountHash: 'acc1');
     final held = _HeldTranslationChatService();
     final running = coordinator.resumeRecoverable(
+      checkEligibility: _allowTranslationProfile,
       resolveExecutor: (profile) => TranslationStreamExecutor(
         service: held,
         profile: profile,
@@ -173,6 +175,11 @@ void main() {
     await storage.db.close();
   });
 }
+
+TranslationEligibilityResult _allowTranslationProfile(
+  TranslationRequestProfile _,
+) =>
+    const TranslationEligibilityResult([]);
 
 final class _HeldTranslationChatService
     implements ChatService, OptionsAwareChatService {

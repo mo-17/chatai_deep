@@ -12,6 +12,7 @@ import 'package:chatgpt_app_core/chat/application/story_template_translation_tas
 import 'package:chatgpt_app_core/chat/application/story_tavern_chat_transfer.dart';
 import 'package:chatgpt_app_core/chat/application/story_tavern_preset_transfer.dart';
 import 'package:chatgpt_app_core/chat/application/tavern_room_import_preparer.dart';
+import 'package:chatgpt_app_core/chat/application/translation_model_eligibility.dart';
 import 'package:chatgpt_app_core/chat/application/translation_model_preference_store.dart';
 import 'package:chatgpt_app_core/chat/application/translation_model_resolver.dart';
 import 'package:chatgpt_app_core/chat/application/translation_stream_executor.dart';
@@ -989,23 +990,35 @@ class _StoryRoomListPageState extends State<StoryRoomListPage> {
       HiDialog.showSnackBar(context, '单角色模板不需要生成中文副本');
       return;
     }
-    final settings = context.read<AISettingsProvider>().settings.clone();
+    final dialogSettings = context.read<AISettingsProvider>().settings.clone();
     final accountHash =
         LoginDao.getAccountHash() ?? HiDBManager.getAccountHash();
     final preferenceStore = TranslationModelPreferenceStore();
     final selected = await showTranslationSettingsDialog(
       context,
-      settings: settings,
+      settings: dialogSettings,
       initialValue: preferenceStore.read(accountHash),
       estimatedRunes: jsonEncode(payload.toJson()).runes.length,
       title: '生成中文副本',
     );
     if (selected == null || !mounted) return;
     try {
+      final settings = context.read<AISettingsProvider>().settings.clone();
+      final environment = TranslationEligibilityEnvironment.current();
+      const evaluator = TranslationModelEligibilityEvaluator();
+      TranslationEligibilityResult checkEligibility(
+        TranslationRequestProfile profile,
+      ) =>
+          evaluator.evaluateProfile(
+            settings: settings,
+            profile: profile,
+            environment: environment,
+          );
       final profile = TranslationModelResolver.snapshot(settings, selected);
       await _storyTemplateTranslationCoordinator.start(
         template,
         requestProfile: profile,
+        checkEligibility: checkEligibility,
         resolveExecutor: _translationExecutorResolver(settings),
       );
       if (!mounted) return;
@@ -1033,9 +1046,20 @@ class _StoryRoomListPageState extends State<StoryRoomListPage> {
     TranslationRequestProfile? replacementProfile,
   }) async {
     final settings = context.read<AISettingsProvider>().settings.clone();
+    final environment = TranslationEligibilityEnvironment.current();
+    const evaluator = TranslationModelEligibilityEvaluator();
+    TranslationEligibilityResult checkEligibility(
+      TranslationRequestProfile profile,
+    ) =>
+        evaluator.evaluateProfile(
+          settings: settings,
+          profile: profile,
+          environment: environment,
+        );
     await _storyTemplateTranslationCoordinator.retry(
       task,
       replacementProfile: replacementProfile,
+      checkEligibility: checkEligibility,
       resolveExecutor: _translationExecutorResolver(settings),
     );
   }
@@ -1084,11 +1108,23 @@ class _StoryRoomListPageState extends State<StoryRoomListPage> {
       await _storyTemplateTranslationCoordinator.cancel(task);
       return;
     }
-    final settings = context.read<AISettingsProvider>().settings.clone();
     if (action == 'retain') {
       await _storyTemplateTranslationCoordinator
           .completeKeepingOriginalChunks(task);
+      if (!mounted) return;
+      final settings = context.read<AISettingsProvider>().settings.clone();
+      final environment = TranslationEligibilityEnvironment.current();
+      const evaluator = TranslationModelEligibilityEvaluator();
+      TranslationEligibilityResult checkEligibility(
+        TranslationRequestProfile profile,
+      ) =>
+          evaluator.evaluateProfile(
+            settings: settings,
+            profile: profile,
+            environment: environment,
+          );
       await _storyTemplateTranslationCoordinator.resumeRecoverable(
+        checkEligibility: checkEligibility,
         resolveExecutor: _translationExecutorResolver(settings),
       );
       return;
@@ -1096,16 +1132,20 @@ class _StoryRoomListPageState extends State<StoryRoomListPage> {
     final accountHash =
         LoginDao.getAccountHash() ?? HiDBManager.getAccountHash();
     final store = TranslationModelPreferenceStore();
+    final dialogSettings = context.read<AISettingsProvider>().settings.clone();
     final selected = await showTranslationSettingsDialog(
       context,
-      settings: settings,
+      settings: dialogSettings,
       initialValue: _preferenceFromTask(task) ?? store.read(accountHash),
       estimatedRunes: task.sourcePayload.runes.length,
       title: '更换翻译模型',
     );
     if (selected == null || !mounted) return;
     try {
-      final profile = TranslationModelResolver.snapshot(settings, selected);
+      final currentSettings =
+          context.read<AISettingsProvider>().settings.clone();
+      final profile =
+          TranslationModelResolver.snapshot(currentSettings, selected);
       await _retryTemplateTranslation(task, replacementProfile: profile);
     } catch (error) {
       if (mounted) HiDialog.showSnackBar(context, '更换翻译模型失败：$error');

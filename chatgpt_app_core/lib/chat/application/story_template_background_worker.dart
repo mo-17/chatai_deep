@@ -1,7 +1,9 @@
 import 'package:chatgpt_app_core/chat/application/story_template_translation_tasks.dart';
+import 'package:chatgpt_app_core/chat/application/translation_model_eligibility.dart';
 import 'package:chatgpt_app_core/chat/application/translation_model_preference_store.dart';
 import 'package:chatgpt_app_core/chat/application/translation_model_resolver.dart';
 import 'package:chatgpt_app_core/chat/application/translation_stream_executor.dart';
+import 'package:chatgpt_app_core/chat/domain/translation_request_profile.dart';
 import 'package:chatgpt_app_core/dao/ai_settings_dao.dart';
 import 'package:chatgpt_app_core/dao/chat/chat_service.dart';
 import 'package:chatgpt_app_core/db/hi_db_manager.dart';
@@ -42,7 +44,18 @@ Future<bool> runStoryTemplateTranslationBackgroundWork({
   final coordinator = StoryTemplateTranslationCoordinator.instance;
   await coordinator.initialize(storage, accountHash: expectedAccount);
   final settings = await AISettingsDao.loadForBackground(expectedAccount);
+  final environment = TranslationEligibilityEnvironment.current();
+  const evaluator = TranslationModelEligibilityEvaluator();
+  TranslationEligibilityResult checkEligibility(
+    TranslationRequestProfile profile,
+  ) =>
+      evaluator.evaluateProfile(
+        settings: settings,
+        profile: profile,
+        environment: environment,
+      );
   await coordinator.resumeRecoverable(
+    checkEligibility: checkEligibility,
     resolveLegacyRequestProfile: () =>
         TranslationModelResolver.legacyFallbackOrNull(
       settings,
