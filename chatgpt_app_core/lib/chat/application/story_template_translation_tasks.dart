@@ -18,6 +18,7 @@ import 'package:chatgpt_app_core/db/hi_db_manager.dart';
 import 'package:chatgpt_app_core/db/story_template_dao.dart';
 import 'package:chatgpt_app_core/db/story_template_translation_task_dao.dart';
 import 'package:chatgpt_app_core/model/assistant_model.dart';
+import 'package:chatgpt_app_core/model/ai_settings.dart';
 import 'package:chatgpt_app_core/model/story_template_model.dart';
 import 'package:chatgpt_app_core/model/story_template_translation_task_model.dart';
 import 'package:flutter/foundation.dart';
@@ -47,6 +48,46 @@ void _requireEligible(
     issue.message,
     safeCode: issue.code.name,
   );
+}
+
+/// 将一次 UI 边界上的设置快照同时用于偏好解析和可用性校验。
+final class TranslationExecutionBoundary {
+  final AISettings settings;
+  final TranslationEligibilityEnvironment environment;
+  final TranslationModelEligibilityEvaluator _evaluator;
+
+  const TranslationExecutionBoundary({
+    required this.settings,
+    required this.environment,
+    TranslationModelEligibilityEvaluator evaluator =
+        const TranslationModelEligibilityEvaluator(),
+  }) : _evaluator = evaluator;
+
+  TranslationRequestProfile snapshot(TranslationModelPreference preference) =>
+      TranslationModelResolver.snapshot(settings, preference);
+
+  TranslationEligibilityResult checkEligibility(
+    TranslationRequestProfile profile,
+  ) =>
+      _evaluator.evaluateProfile(
+        settings: settings,
+        profile: profile,
+        environment: environment,
+      );
+
+  Future<bool> runGuarded({
+    required Future<void> Function() action,
+    required void Function(TranslationModelUnavailableException error)
+        onUnavailable,
+  }) async {
+    try {
+      await action();
+      return true;
+    } on TranslationModelUnavailableException catch (error) {
+      onUnavailable(error);
+      return false;
+    }
+  }
 }
 
 enum _ClaimStopReason { userCancelled, lifecycleCancelled }

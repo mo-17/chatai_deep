@@ -816,8 +816,6 @@ class _AssistantListPageState extends State<AssistantListPage> {
             title: '翻译并创建酒馆房间',
           );
           if (selected == null || !mounted) return;
-          final configuredChoice =
-              choice.withTranslationProfile(selected.profile);
           final initialOpening =
               await _chooseTavernInitialOpening(importResults.single);
           if (initialOpening == null || !mounted) return;
@@ -826,7 +824,6 @@ class _AssistantListPageState extends State<AssistantListPage> {
             sourceTitle: importResults.single.sourceName ??
                 importResults.single.assistant.name,
             initialOpening: initialOpening,
-            profile: configuredChoice.translationProfile!,
             preference: selected.preference,
             accountHash: selected.accountHash,
           );
@@ -856,8 +853,6 @@ class _AssistantListPageState extends State<AssistantListPage> {
             title: '翻译并创建酒馆房间',
           );
           if (selected == null || !mounted) return;
-          final configuredChoice =
-              choice.withTranslationProfile(selected.profile);
           final initialOpening =
               await _chooseTavernBatchInitialOpening(importResults);
           if (initialOpening == null || !mounted) return;
@@ -865,7 +860,6 @@ class _AssistantListPageState extends State<AssistantListPage> {
             importResults,
             sourceTitle: _stripExtension(_basename(path)),
             initialOpening: initialOpening,
-            profile: configuredChoice.translationProfile!,
             preference: selected.preference,
             accountHash: selected.accountHash,
           );
@@ -931,29 +925,24 @@ class _AssistantListPageState extends State<AssistantListPage> {
     List<AssistantRoleCardImportResult> results, {
     required String sourceTitle,
     required String initialOpening,
-    required TranslationRequestProfile profile,
     required TranslationModelPreference preference,
     required String accountHash,
   }) async {
     final settings = context.read<AISettingsProvider>().settings.clone();
     final environment = TranslationEligibilityEnvironment.current();
-    const evaluator = TranslationModelEligibilityEvaluator();
-    TranslationEligibilityResult checkEligibility(
-      TranslationRequestProfile profile,
-    ) =>
-        evaluator.evaluateProfile(
-          settings: settings,
-          profile: profile,
-          environment: environment,
-        );
+    final boundary = TranslationExecutionBoundary(
+      settings: settings,
+      environment: environment,
+    );
     try {
+      final profile = boundary.snapshot(preference);
       await _tavernTranslationCoordinator.startTavernRoomImport(
         results,
         sourceTitle: sourceTitle,
         initialOpening: initialOpening,
         requestProfile: profile,
-        checkEligibility: checkEligibility,
-        resolveExecutor: _translationExecutorResolver(settings),
+        checkEligibility: boundary.checkEligibility,
+        resolveExecutor: _translationExecutorResolver(boundary.settings),
       );
       if (!mounted) return;
       try {
@@ -1558,24 +1547,29 @@ class _AssistantListPageState extends State<AssistantListPage> {
     if (selected == null || !mounted) return;
     final settings = context.read<AISettingsProvider>().settings.clone();
     final environment = TranslationEligibilityEnvironment.current();
-    const evaluator = TranslationModelEligibilityEvaluator();
-    TranslationEligibilityResult checkEligibility(
-      TranslationRequestProfile profile,
-    ) =>
-        evaluator.evaluateProfile(
-          settings: settings,
-          profile: profile,
-          environment: environment,
-        );
-    await _tavernTranslationCoordinator.retry(
-      task,
-      replacementProfile: selected.profile,
-      checkEligibility: checkEligibility,
-      resolveExecutor: _translationExecutorResolver(settings),
+    final boundary = TranslationExecutionBoundary(
+      settings: settings,
+      environment: environment,
     );
-    await _saveTranslationPreferenceAfterStart(
-      selected.preference,
-      selected.accountHash,
+    await boundary.runGuarded(
+      action: () async {
+        final profile = boundary.snapshot(selected.preference);
+        await _tavernTranslationCoordinator.retry(
+          task,
+          replacementProfile: profile,
+          checkEligibility: boundary.checkEligibility,
+          resolveExecutor: _translationExecutorResolver(boundary.settings),
+        );
+        await _saveTranslationPreferenceAfterStart(
+          selected.preference,
+          selected.accountHash,
+        );
+      },
+      onUnavailable: (error) {
+        if (mounted) {
+          HiDialog.showSnackBar(context, '更换翻译模型失败：${error.message}');
+        }
+      },
     );
   }
 

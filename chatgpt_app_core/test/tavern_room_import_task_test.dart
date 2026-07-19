@@ -11,15 +11,18 @@ import 'package:chatgpt_app_core/chat/application/translation_model_resolver.dar
 import 'package:chatgpt_app_core/chat/application/translation_stream_executor.dart';
 import 'package:chatgpt_app_core/chat/domain/chat_request_options.dart';
 import 'package:chatgpt_app_core/chat/domain/translation_request_profile.dart';
+import 'package:chatgpt_app_core/config/app_distribution.dart';
 import 'package:chatgpt_app_core/db/hi_db_manager.dart';
 import 'package:chatgpt_app_core/db/story_room_dao.dart';
 import 'package:chatgpt_app_core/db/story_template_dao.dart';
 import 'package:chatgpt_app_core/db/story_template_translation_task_dao.dart';
 import 'package:chatgpt_app_core/model/assistant_model.dart';
+import 'package:chatgpt_app_core/model/ai_settings.dart';
 import 'package:chatgpt_app_core/model/story_room_model.dart';
 import 'package:chatgpt_app_core/model/story_template_model.dart';
 import 'package:chatgpt_app_core/model/story_template_translation_task_model.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:flutter/foundation.dart';
 import 'package:sqflite_common_ffi/sqflite_ffi.dart';
 
 void main() {
@@ -154,6 +157,72 @@ void main() {
       expect(await taskDao.getTasks(), isEmpty);
       expect(coordinator.tasks, isEmpty);
       expect(executorCalls, 0);
+    });
+
+    test('Tavern boundary rebuilds followGlobal profile from fresh settings',
+        () {
+      final dialogSettings = AISettings.defaults()
+        ..mode = AIMode.backend
+        ..backendModel = 'dialog-model';
+      final freshSettings = AISettings.defaults()
+        ..mode = AIMode.backend
+        ..backendModel = 'fresh-model';
+      const preference = TranslationModelPreference(
+        mode: TranslationModelPreferenceMode.followGlobal,
+        reasoningPolicy: ChatReasoningPolicy.providerDefault,
+      );
+      final staleProfile =
+          TranslationModelResolver.snapshot(dialogSettings, preference);
+      final boundary = TranslationExecutionBoundary(
+        settings: freshSettings,
+        environment: _allowedEnvironment,
+      );
+
+      final profile = boundary.snapshot(preference);
+
+      expect(staleProfile.modelId, 'dialog-model');
+      expect(profile.modelId, 'fresh-model');
+      expect(boundary.checkEligibility(profile).canStart, isTrue);
+      expect(identical(boundary.settings, freshSettings), isTrue);
+    });
+
+    test('guarded replacement retry reports sync and async unavailable errors',
+        () async {
+      final boundary = TranslationExecutionBoundary(
+        settings: AISettings.defaults(),
+        environment: _allowedEnvironment,
+      );
+      final actions = <Future<void> Function()>[
+        () => throw const TranslationModelUnavailableException(
+              '同步配置已变更',
+              safeCode: 'providerMissing',
+            ),
+        () async {
+          await Future<void>.value();
+          throw const TranslationModelUnavailableException(
+            '异步配置已变更',
+            safeCode: 'modelMissing',
+          );
+        },
+      ];
+      final reported = <TranslationModelUnavailableException>[];
+
+      for (final action in actions) {
+        final completed = await boundary.runGuarded(
+          action: action,
+          onUnavailable: reported.add,
+        );
+        expect(completed, isFalse);
+      }
+
+      expect(
+        reported.map((error) => error.message),
+        ['同步配置已变更', '异步配置已变更'],
+      );
+      expect(
+        reported.map((error) => error.safeCode),
+        ['providerMissing', 'modelMissing'],
+      );
     });
 
     test('runner atomically finalizes a translated Tavern room task', () async {
@@ -1126,6 +1195,14 @@ TranslationEligibilityResult _allowTranslationProfile(
   TranslationRequestProfile _,
 ) =>
     const TranslationEligibilityResult([]);
+
+const _allowedEnvironment = TranslationEligibilityEnvironment(
+  isGuest: false,
+  platform: TargetPlatform.macOS,
+  distribution: AppDistribution.development,
+  backendHost: 'localhost:3000',
+  backendUseHttps: false,
+);
 
 StoryRoomTemplatePayload _twoRolePayload() => StoryRoomTemplatePayload(
       results: [
