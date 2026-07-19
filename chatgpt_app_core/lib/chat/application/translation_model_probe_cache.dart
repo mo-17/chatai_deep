@@ -51,11 +51,7 @@ final class TranslationModelProbeRecord {
     required this.reasoningControlSuppressed,
   }) {
     if (!_isAllowedSafeErrorCode(safeErrorCode)) {
-      throw ArgumentError.value(
-        safeErrorCode,
-        'safeErrorCode',
-        '必须是计划内脱敏错误码',
-      );
+      throw ArgumentError('必须是计划内脱敏错误码', 'safeErrorCode');
     }
   }
 

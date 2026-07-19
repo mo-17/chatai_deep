@@ -151,6 +151,54 @@ void main() {
         );
       }
     });
+
+    test('非法 safe error code 异常不保留或渲染敏感输入', () {
+      const sensitive =
+          'Authorization: Bearer sk-secret https://private.example/v1';
+      Object? constructorError;
+      try {
+        TranslationModelProbeRecord(
+          fingerprint: _fingerprint(5),
+          status: TranslationModelProbeStatus.failed,
+          checkedAt: DateTime.utc(2026, 7, 20),
+          safeErrorCode: sensitive,
+          reasoningControlSuppressed: false,
+        );
+      } catch (error) {
+        constructorError = error;
+      }
+      expect(constructorError, isA<ArgumentError>());
+      expect((constructorError as ArgumentError).invalidValue, isNull);
+
+      final validJson = TranslationModelProbeRecord(
+        fingerprint: _fingerprint(5),
+        status: TranslationModelProbeStatus.failed,
+        checkedAt: DateTime.utc(2026, 7, 20),
+        safeErrorCode: 'unknown',
+        reasoningControlSuppressed: false,
+      ).toJson();
+      Object? jsonError;
+      try {
+        TranslationModelProbeRecord.fromJson({
+          ...validJson,
+          'safeErrorCode': sensitive,
+        });
+      } catch (error) {
+        jsonError = error;
+      }
+      expect(jsonError, isA<FormatException>());
+      expect((jsonError as FormatException).source, isNull);
+
+      for (final rendered in [
+        constructorError.toString(),
+        jsonError.toString(),
+      ]) {
+        expect(rendered, isNot(contains(sensitive)));
+        expect(rendered, isNot(contains('Authorization')));
+        expect(rendered, isNot(contains('sk-secret')));
+        expect(rendered, isNot(contains('https://private.example/v1')));
+      }
+    });
   });
 
   group('TranslationModelProbeCache', () {
