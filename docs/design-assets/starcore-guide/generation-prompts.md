@@ -73,3 +73,27 @@ Color palette: Preserve Image 1; increase #EC4899 emphasis only for the pulse ri
 Constraints: Change only expression and one pulse-ribbon accessory; preserve identity and proportions; opaque image; no text; no watermark.
 Avoid: human or animal features, gender cues, new limbs, clothing, weapon, extra mascot, cropped star, detailed background, translucent glass.
 ```
+
+## Explorer avatar safe-area correction
+
+```text
+Use case: precise-object-edit
+Asset type: 512x512 opaque square assistant avatar for circular crop
+Input images: Image 1 is the edit target.
+Primary request: Change only one variable: uniformly scale the complete existing foreground avatar assembly to exactly 75% of its current linear size, anchored on the exact canvas center. The single assembly includes the top four-point star core, circular spirit body, visor and eyes, both complete light wings, and the Explorer's single cyan scanning-ring accessory.
+Composition/framing: Keep the canvas and circular midnight-violet energy field unchanged. Expose more of the same midnight-violet background around the uniformly smaller centered assembly. On the final 512x512 canvas, every structural or luminous foreground pixel must remain inside x=77..435 and y=77..435 and visually inside the central 70% circular-crop safe area.
+Constraints: Preserve every relative proportion, position, color, line, shading shape, glow, material detail, eye expression, visor outline, wing angle, and scanning-ring detail exactly; move and scale them only as one locked group. Keep the image fully opaque. No crop, rotation, redraw, restyle, recolor, cleanup, simplification, or background change.
+Avoid: any new element, changed identity, changed expression, changed accessory, missing wing segment, cropped star, text, watermark, transparency.
+```
+
+## Creator avatar safe-area correction
+
+```text
+Use case: precise-object-edit
+Asset type: 512x512 opaque square assistant avatar for circular crop
+Input images: Image 1 is the edit target.
+Primary request: Change only one variable: uniformly scale the complete existing foreground avatar assembly to exactly 75% of its current linear size, anchored on the exact canvas center. The single assembly includes the top four-point star core, circular spirit body, visor and eyes, both complete light wings, and the Creator's single magenta pulse-ribbon accessory.
+Composition/framing: Keep the canvas and circular midnight-violet energy field unchanged. Expose more of the same midnight-violet background around the uniformly smaller centered assembly. On the final 512x512 canvas, every structural or luminous foreground pixel must remain inside x=77..435 and y=77..435 and visually inside the central 70% circular-crop safe area.
+Constraints: Preserve every relative proportion, position, color, line, shading shape, glow, material detail, eye expression, visor outline, wing angle, and pulse-ribbon detail exactly; move and scale them only as one locked group. Keep the image fully opaque. No crop, rotation, redraw, restyle, recolor, cleanup, simplification, or background change.
+Avoid: any new element, changed identity, changed expression, changed accessory, missing wing segment, cropped star, text, watermark, transparency.
+```

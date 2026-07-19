@@ -735,3 +735,50 @@ git status --short
 ```
 
 Expected: the five task commits are visible on the isolated branch; unrelated main-worktree changes are absent from the worktree and were never staged. Present `contact-sheet.png` to the user and explicitly state that no App runtime integration has been performed.
+
+---
+
+### Task 6: 2026-07-15 final-review remediation（superseding task）
+
+本任务记录最终全分支审查后的用户批准决议。它在冲突处**明确取代**早期 Task 1 中的 manifest/validator 实现片段与“3 tests”预期，也取代 Task 5 中的 contact-sheet HTML、renderer 片段和最终验收措辞；Task 1/5 原文保留为实施历史，不代表当前合同。书面设计规范优先于早期 exact snippets。
+
+**批准后的边界：**
+
+- App icon 与助手头像至少露出星核、面罩、双翼中的两个；24px 功能 SVG 保持现有 canonical 路径，不增加第二个角色提示。工具图标各带一颗四芒星；导航默认/选中状态对作为品牌单元，选中态带四芒星即可。
+- 六个 SVG 的验收矩阵必须是 DPR 1 下真实 24/32/48 CSS px，并覆盖 `#FFFBFE`、`#FCE7F3`、`#120D24`。
+- 2048×1536 总览只显示标注原生尺寸的栅格缩略图；HTML 缩略图直链 canonical 1024×1024 / 512×512 PNG，供独立 1:1 检查。
+- Renderer 只承诺固定评审机上的确定性；跨机器/CI 字节级 hash 不在首轮范围。仓库提交的 PNG 是 canonical 评审制品。
+- 两张头像前景宽度占画布比例最多相差 5 个百分点；实测 4.883 个百分点。身份骨架与中央 70% 裁切安全要求不因此放宽。
+- 本修复波不修改三张 canonical 栅格角色资产或六个 canonical SVG，也不修改 App runtime；不执行 `git add` / `git commit`。
+
+**Files:**
+
+- Modify: `docs/design-assets/starcore-guide/asset_manifest.json`
+- Modify: `docs/design-assets/starcore-guide/validate_assets.py`
+- Modify: `docs/design-assets/starcore-guide/test_validate_assets.py`
+- Modify: `docs/design-assets/starcore-guide/contact-sheet.html`
+- Modify: `docs/design-assets/starcore-guide/render_contact_sheet.cjs`
+- Regenerate: `docs/design-assets/starcore-guide/contact-sheet.png`
+- Modify: `docs/superpowers/specs/2026-07-13-starcore-icon-system-design.md`
+- Modify: `docs/superpowers/plans/2026-07-13-starcore-icon-concepts.md`
+- Create: `.superpowers/sdd/final-fix-report.md`
+
+- [ ] **Step 1: 先写 validator 回归测试并捕获 RED**
+
+  覆盖 renamed JPEG、palette PNG+tRNS、unknown `only`、style element/attribute、任意 href/xlink:href、可见描边缺少显式宽度、非 allowlist element/attribute/paint、off-palette hex 与 `maxColors`。预期最终 suite 共 **12 tests**；在实现前必须看到新增行为因 validator 缺口失败。
+
+- [ ] **Step 2: 最小实现 validator GREEN**
+
+  顶层唯一 `palette` 字段列出批准的七色；PNG 强制 Pillow `format == "PNG"` 并通过 RGBA alpha 检查不透明；SVG 仅允许 `svg/title/path/circle` 及当前六文件所需属性，拒绝 style/href/未知 paint，并逐个校验可见描边的显式有限数值宽度。保留 `validate(...)` 与 CLI 形状。预期：`Ran 12 tests ... OK`，完整 validator 输出 `starcore assets: OK`。
+
+- [ ] **Step 3: 对齐规范并重建真实验收矩阵**
+
+  更新 spec 状态、品牌锚点规则、尺寸/背景/原图直链、本地渲染边界与头像尺度容差。联系表保留 A–D 概览，并明确展示 6×3×3 共 54 个功能 SVG 样本；缩略图标签含原生栅格尺寸且可直接链接原件。
+
+- [ ] **Step 4: 强化 renderer 并生成 canonical PNG**
+
+  Playwright 解析顺序为 `STARCORE_PLAYWRIGHT_MODULE` → local `playwright` → bundled fallback；viewport 固定 2048×1536、DPR 1。截图前等待 `document.fonts.ready` 与每张图片 `decode()`，破图、零 natural size 或 scroll dimensions 超界均非零退出。固定机器连续渲染两次的 SHA-256 必须一致。
+
+- [ ] **Step 5: Fresh final acceptance**
+
+  运行 12-test suite、完整 validator、六 SVG 的 `xmllint --noout`、双次 render/hash、`sips` 尺寸与 alpha、`view_image(detail: original)`、`git diff --check`、未 staged 与无 App runtime 变更的 scope check。完整 RED/GREEN、hash、视觉结论、修改文件和 concerns 写入 `.superpowers/sdd/final-fix-report.md`。

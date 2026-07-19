@@ -1,4 +1,13 @@
 {
+  "palette": [
+    "#120D24",
+    "#6D28D9",
+    "#7C3AED",
+    "#BE185D",
+    "#EC4899",
+    "#22D3EE",
+    "#F5F3FF"
+  ],
   "png": {
     "app-icon-concept.png": { "width": 1024, "height": 1024, "opaque": true },
     "assistant-explorer.png": { "width": 512, "height": 512, "opaque": true },
