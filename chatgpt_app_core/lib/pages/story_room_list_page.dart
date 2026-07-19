@@ -14,6 +14,7 @@ import 'package:chatgpt_app_core/chat/application/story_tavern_preset_transfer.d
 import 'package:chatgpt_app_core/chat/application/tavern_room_import_preparer.dart';
 import 'package:chatgpt_app_core/chat/application/translation_model_eligibility.dart';
 import 'package:chatgpt_app_core/chat/application/translation_model_preference_store.dart';
+import 'package:chatgpt_app_core/chat/application/translation_model_probe_service.dart';
 import 'package:chatgpt_app_core/chat/application/translation_model_resolver.dart';
 import 'package:chatgpt_app_core/chat/application/translation_stream_executor.dart';
 import 'package:chatgpt_app_core/chat/application/translation_work_estimator.dart';
@@ -992,57 +993,80 @@ class _StoryRoomListPageState extends State<StoryRoomListPage> {
       HiDialog.showSnackBar(context, '单角色模板不需要生成中文副本');
       return;
     }
-    final dialogSettings = context.read<AISettingsProvider>().settings.clone();
-    final accountHash =
-        LoginDao.getAccountHash() ?? HiDBManager.getAccountHash();
-    final preferenceStore = TranslationModelPreferenceStore();
-    final selected = await showTranslationSettingsDialog(
-      context,
-      settings: dialogSettings,
-      initialValue: preferenceStore.read(accountHash),
-      estimatedRunes: _translationWorkEstimator.totalRunesForResults(
-        payload.results,
-        initialOpening: payload.initialOpening,
-      ),
-      title: '生成中文副本',
+    final readSnapshot = _translationSnapshotReader(
+      context.read<AISettingsProvider>(),
     );
-    if (selected == null || !mounted) return;
-    try {
-      final settings = context.read<AISettingsProvider>().settings.clone();
-      final environment = TranslationEligibilityEnvironment.current();
-      const evaluator = TranslationModelEligibilityEvaluator();
-      TranslationEligibilityResult checkEligibility(
-        TranslationRequestProfile profile,
-      ) =>
-          evaluator.evaluateProfile(
-            settings: settings,
-            profile: profile,
-            environment: environment,
-          );
-      final profile = TranslationModelResolver.snapshot(settings, selected);
-      await _storyTemplateTranslationCoordinator.start(
-        template,
-        requestProfile: profile,
-        checkEligibility: checkEligibility,
-        resolveExecutor: _translationExecutorResolver(settings),
-      );
+    final accountHash = readSnapshot().accountHash;
+    final preferenceStore = TranslationModelPreferenceStore();
+    var initialValue = preferenceStore.read(accountHash);
+    while (true) {
       if (!mounted) return;
+      final result = await showTranslationSettingsDialog(
+        context,
+        readSnapshot: readSnapshot,
+        initialValue: initialValue,
+        estimatedRunes: _translationWorkEstimator.totalRunesForResults(
+          payload.results,
+          initialOpening: payload.initialOpening,
+        ),
+        probeService: TranslationModelProbeService.shared,
+        title: '生成中文副本',
+      );
+      if (result == null || !mounted) return;
+      final handoff = resolveTranslationSettingsHandoff(
+        result: result,
+        readSnapshot: readSnapshot,
+        probeService: TranslationModelProbeService.shared,
+      );
+      if (handoff == null) {
+        HiDialog.showSnackBar(context, '翻译配置已变化，请重新确认');
+        initialValue = result.preference;
+        continue;
+      }
+      final checkEligibility = buildTranslationSettingsEligibilityCheck(
+        readSnapshot: readSnapshot,
+        probeService: TranslationModelProbeService.shared,
+        result: result,
+        expectedProfile: handoff.profile,
+      );
       try {
-        await preferenceStore.save(
-          selected,
-          expectedAccountHash: accountHash,
+        await _storyTemplateTranslationCoordinator.start(
+          template,
+          requestProfile: handoff.profile,
+          checkEligibility: checkEligibility,
+          resolveExecutor:
+              _translationExecutorResolver(handoff.snapshot.settings),
         );
-      } catch (_) {
+        if (!mounted) return;
+        try {
+          await preferenceStore.save(
+            result.preference,
+            expectedAccountHash: handoff.snapshot.accountHash,
+          );
+        } catch (_) {
+          if (mounted) {
+            HiDialog.showSnackBar(context, '任务已创建，但翻译模型偏好未能保存');
+          }
+          return;
+        }
         if (mounted) {
-          HiDialog.showSnackBar(context, '任务已创建，但翻译模型偏好未能保存');
+          HiDialog.showSnackBar(context, '已加入后台任务，可在当前页面查看进度');
         }
         return;
+      } on TranslationModelUnavailableException catch (error) {
+        if (!mounted) return;
+        if (error.safeCode ==
+            TranslationEligibilityCode.configurationChanged.name) {
+          HiDialog.showSnackBar(context, '翻译配置已变化，请重新确认');
+          initialValue = result.preference;
+          continue;
+        }
+        HiDialog.showSnackBar(context, '创建翻译任务失败：${error.message}');
+        return;
+      } catch (error) {
+        if (mounted) HiDialog.showSnackBar(context, '创建翻译任务失败：$error');
+        return;
       }
-      if (!mounted) return;
-      HiDialog.showSnackBar(context, '已加入后台任务，可在当前页面查看进度');
-    } catch (error) {
-      if (!mounted) return;
-      HiDialog.showSnackBar(context, '创建翻译任务失败：$error');
     }
   }
 
@@ -1134,36 +1158,85 @@ class _StoryRoomListPageState extends State<StoryRoomListPage> {
       );
       return;
     }
-    final accountHash =
-        LoginDao.getAccountHash() ?? HiDBManager.getAccountHash();
-    final store = TranslationModelPreferenceStore();
-    final dialogSettings = context.read<AISettingsProvider>().settings.clone();
-    final selected = await showTranslationSettingsDialog(
-      context,
-      settings: dialogSettings,
-      initialValue: _preferenceFromTask(task) ?? store.read(accountHash),
-      estimatedRunes: _translationWorkEstimator
-              .tryTotalRunesForTaskSource(task.sourcePayload) ??
-          0,
-      title: '更换翻译模型',
+    final readSnapshot = _translationSnapshotReader(
+      context.read<AISettingsProvider>(),
     );
-    if (selected == null || !mounted) return;
-    try {
-      final currentSettings =
-          context.read<AISettingsProvider>().settings.clone();
-      final profile =
-          TranslationModelResolver.snapshot(currentSettings, selected);
-      await _retryTemplateTranslation(task, replacementProfile: profile);
-    } catch (error) {
-      if (mounted) HiDialog.showSnackBar(context, '更换翻译模型失败：$error');
+    final accountHash = readSnapshot().accountHash;
+    final store = TranslationModelPreferenceStore();
+    var initialValue = _preferenceFromTask(task) ?? store.read(accountHash);
+    while (true) {
+      if (!mounted) return;
+      final result = await showTranslationSettingsDialog(
+        context,
+        readSnapshot: readSnapshot,
+        initialValue: initialValue,
+        estimatedRunes: _translationWorkEstimator
+                .tryTotalRunesForTaskSource(task.sourcePayload) ??
+            0,
+        probeService: TranslationModelProbeService.shared,
+        title: '更换翻译模型',
+      );
+      if (result == null || !mounted) return;
+      final handoff = resolveTranslationSettingsHandoff(
+        result: result,
+        readSnapshot: readSnapshot,
+        probeService: TranslationModelProbeService.shared,
+      );
+      if (handoff == null) {
+        HiDialog.showSnackBar(context, '翻译配置已变化，请重新确认');
+        initialValue = result.preference;
+        continue;
+      }
+      try {
+        await _storyTemplateTranslationCoordinator.retry(
+          task,
+          replacementProfile: handoff.profile,
+          checkEligibility: buildTranslationSettingsEligibilityCheck(
+            readSnapshot: readSnapshot,
+            probeService: TranslationModelProbeService.shared,
+            result: result,
+            expectedProfile: handoff.profile,
+          ),
+          resolveExecutor:
+              _translationExecutorResolver(handoff.snapshot.settings),
+        );
+      } on TranslationModelUnavailableException catch (error) {
+        if (!mounted) return;
+        if (error.safeCode ==
+            TranslationEligibilityCode.configurationChanged.name) {
+          HiDialog.showSnackBar(context, '翻译配置已变化，请重新确认');
+          initialValue = result.preference;
+          continue;
+        }
+        HiDialog.showSnackBar(context, '更换翻译模型失败：${error.message}');
+        return;
+      } catch (error) {
+        if (mounted) HiDialog.showSnackBar(context, '更换翻译模型失败：$error');
+        return;
+      }
+      try {
+        await store.save(
+          result.preference,
+          expectedAccountHash: handoff.snapshot.accountHash,
+        );
+      } catch (_) {
+        if (mounted) {
+          HiDialog.showSnackBar(context, '任务已恢复，但翻译模型偏好未能保存');
+        }
+      }
       return;
     }
-    try {
-      await store.save(selected, expectedAccountHash: accountHash);
-    } catch (_) {
-      if (mounted) HiDialog.showSnackBar(context, '任务已恢复，但翻译模型偏好未能保存');
-    }
   }
+
+  TranslationSettingsSnapshotReader _translationSnapshotReader(
+    AISettingsProvider provider,
+  ) =>
+      () => TranslationSettingsSnapshot(
+            settings: provider.settings.clone(),
+            accountHash:
+                LoginDao.getAccountHash() ?? HiDBManager.getAccountHash(),
+            eligibilityEnvironment: TranslationEligibilityEnvironment.current(),
+          );
 
   TranslationModelPreference? _preferenceFromTask(
     StoryTemplateTranslationTaskModel task,

@@ -1,4 +1,6 @@
 import 'package:chatgpt_app_core/capability/model_picker_presenter.dart';
+import 'package:chatgpt_app_core/chat/application/translation_model_eligibility.dart';
+import 'package:chatgpt_app_core/chat/application/translation_model_probe_cache.dart';
 import 'package:chatgpt_app_core/chat/domain/chat_request_options.dart';
 import 'package:chatgpt_app_core/chat/domain/translation_request_profile.dart';
 import 'package:chatgpt_app_core/model/ai_provider.dart';
@@ -9,6 +11,13 @@ Future<TranslationModelPreference?> showConfiguredAiModelPickerSheet(
   BuildContext context, {
   required AISettings settings,
   required TranslationModelPreference selected,
+  TranslationEligibilityResult Function(
+    TranslationModelPreference preference,
+  )? eligibilityFor,
+  TranslationModelProbeRecord? Function(
+    TranslationModelPreference preference,
+  )? probeFor,
+  bool includeUnavailable = false,
   bool includeFollowGlobal = true,
   TranslationExecutionMode? onlyMode,
 }) =>
@@ -19,6 +28,9 @@ Future<TranslationModelPreference?> showConfiguredAiModelPickerSheet(
       builder: (_) => _ConfiguredAiModelPickerSheet(
         settings: settings,
         selected: selected,
+        eligibilityFor: eligibilityFor,
+        probeFor: probeFor,
+        includeUnavailable: includeUnavailable,
         includeFollowGlobal: includeFollowGlobal,
         onlyMode: onlyMode,
       ),
@@ -27,12 +39,22 @@ Future<TranslationModelPreference?> showConfiguredAiModelPickerSheet(
 class _ConfiguredAiModelPickerSheet extends StatefulWidget {
   final AISettings settings;
   final TranslationModelPreference selected;
+  final TranslationEligibilityResult Function(
+    TranslationModelPreference preference,
+  )? eligibilityFor;
+  final TranslationModelProbeRecord? Function(
+    TranslationModelPreference preference,
+  )? probeFor;
+  final bool includeUnavailable;
   final bool includeFollowGlobal;
   final TranslationExecutionMode? onlyMode;
 
   const _ConfiguredAiModelPickerSheet({
     required this.settings,
     required this.selected,
+    required this.eligibilityFor,
+    required this.probeFor,
+    required this.includeUnavailable,
     required this.includeFollowGlobal,
     required this.onlyMode,
   });
@@ -57,7 +79,7 @@ class _ConfiguredAiModelPickerSheetState
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
     final query = _searchController.text.trim().toLowerCase();
-    final providers = _configuredProviders(widget.settings);
+    final providers = _providers(widget.settings, widget.includeUnavailable);
     final showLocal = widget.onlyMode != TranslationExecutionMode.backend;
     final showBackend = widget.onlyMode != TranslationExecutionMode.local;
     final backendModel = widget.settings.backendModel.trim();
@@ -112,7 +134,15 @@ class _ConfiguredAiModelPickerSheetState
                 key: const ValueKey('configured_model_follow_global'),
                 leading: const Icon(Icons.public),
                 title: const Text('跟随全局设置'),
-                subtitle: Text(widget.settings.effectiveModel),
+                subtitle: _selectionSubtitle(
+                  const TranslationModelPreference(
+                    mode: TranslationModelPreferenceMode.followGlobal,
+                    reasoningPolicy: ChatReasoningPolicy.offIfSupported,
+                  ),
+                  widget.settings.effectiveModel,
+                  providerId: 'follow_global',
+                  modelId: widget.settings.effectiveModel,
+                ),
                 trailing: widget.selected.mode ==
                         TranslationModelPreferenceMode.followGlobal
                     ? const Icon(Icons.check)
@@ -131,7 +161,16 @@ class _ConfiguredAiModelPickerSheetState
                 key: ValueKey('configured_model_backend_$backendModel'),
                 leading: const Icon(Icons.cloud_outlined),
                 title: Text(backendModel),
-                subtitle: const Text('后端代理'),
+                subtitle: _selectionSubtitle(
+                  TranslationModelPreference(
+                    mode: TranslationModelPreferenceMode.backend,
+                    modelId: backendModel,
+                    reasoningPolicy: ChatReasoningPolicy.offIfSupported,
+                  ),
+                  '后端代理',
+                  providerId: 'backend',
+                  modelId: backendModel,
+                ),
                 trailing: _isSelectedBackend(backendModel)
                     ? const Icon(Icons.check)
                     : null,
@@ -197,6 +236,17 @@ class _ConfiguredAiModelPickerSheetState
     final caps = ConversationModelPickerPresenter.capabilities(provider, model);
     final failed = model.lastTestStatus == 'failure';
     final available = model.lastTestStatus == 'success';
+    final preference = TranslationModelPreference(
+      mode: TranslationModelPreferenceMode.local,
+      providerId: provider.id,
+      modelId: model.id,
+      reasoningPolicy: ChatReasoningPolicy.offIfSupported,
+    );
+    final preflight = _preflightBadge(
+      preference,
+      providerId: provider.id,
+      modelId: model.id,
+    );
     return ListTile(
       key: ValueKey('configured_model_${provider.id}_${model.id}'),
       dense: true,
@@ -209,12 +259,13 @@ class _ConfiguredAiModelPickerSheetState
             spacing: 4,
             runSpacing: 2,
             children: [
+              if (preflight != null) preflight,
               if (caps.image) _badge('图片'),
               if (caps.tool) _badge('工具'),
               if (caps.reasoning) _badge('推理'),
               if (caps.pdf) _badge('PDF'),
-              if (available) _badge('可用'),
-              if (failed) _badge('测试失败', error: true),
+              if (preflight == null && available) _badge('可用'),
+              if (preflight == null && failed) _badge('测试失败', error: true),
             ],
           ),
           if (model.lastUsedAt != null)
@@ -232,22 +283,84 @@ class _ConfiguredAiModelPickerSheetState
           : null,
       onTap: () => Navigator.pop(
         context,
-        TranslationModelPreference(
-          mode: TranslationModelPreferenceMode.local,
-          providerId: provider.id,
-          modelId: model.id,
-          reasoningPolicy: ChatReasoningPolicy.offIfSupported,
-        ),
+        preference,
       ),
     );
   }
 
-  Widget _badge(String label, {bool error = false}) {
+  Widget _selectionSubtitle(
+    TranslationModelPreference preference,
+    String label, {
+    required String providerId,
+    required String modelId,
+  }) {
+    final preflight = _preflightBadge(
+      preference,
+      providerId: providerId,
+      modelId: modelId,
+    );
+    if (preflight == null) return Text(label);
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text(label),
+        const SizedBox(height: 2),
+        preflight,
+      ],
+    );
+  }
+
+  Widget? _preflightBadge(
+    TranslationModelPreference preference, {
+    required String providerId,
+    required String modelId,
+  }) {
+    if (widget.eligibilityFor == null && widget.probeFor == null) return null;
+    final eligibility = widget.eligibilityFor?.call(preference) ??
+        const TranslationEligibilityResult();
+    final probe = widget.probeFor?.call(preference);
+    final (label, error, warning) = switch (eligibility.level) {
+      TranslationEligibilityLevel.blocked => ('配置不可用', true, false),
+      TranslationEligibilityLevel.warning => (
+          eligibility.issues.any((issue) =>
+                  issue.code == TranslationEligibilityCode.mobileLoopback)
+              ? '地址警告'
+              : '配置警告',
+          false,
+          true,
+        ),
+      TranslationEligibilityLevel.allowed => switch (probe?.status) {
+          TranslationModelProbeStatus.failed => ('测试失败', true, false),
+          TranslationModelProbeStatus.verified => ('已验证', false, false),
+          null => ('未验证', false, true),
+        },
+    };
+    return _badge(
+      label,
+      key: ValueKey(
+        'translation_preflight_badge_${providerId}_$modelId',
+      ),
+      error: error,
+      warning: warning,
+    );
+  }
+
+  Widget _badge(
+    String label, {
+    Key? key,
+    bool error = false,
+    bool warning = false,
+  }) {
     final colors = Theme.of(context).colorScheme;
     return Container(
+      key: key,
       padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
       decoration: BoxDecoration(
-        color: error ? colors.errorContainer : colors.secondaryContainer,
+        color: error
+            ? colors.errorContainer
+            : warning
+                ? colors.tertiaryContainer
+                : colors.secondaryContainer,
         borderRadius: BorderRadius.circular(6),
       ),
       child: Text(
@@ -255,7 +368,11 @@ class _ConfiguredAiModelPickerSheetState
         style: TextStyle(
           fontSize: 10,
           height: 1,
-          color: error ? colors.onErrorContainer : colors.onSecondaryContainer,
+          color: error
+              ? colors.onErrorContainer
+              : warning
+                  ? colors.onTertiaryContainer
+                  : colors.onSecondaryContainer,
         ),
       ),
     );
@@ -270,10 +387,14 @@ class _ConfiguredAiModelPickerSheetState
       widget.selected.mode == TranslationModelPreferenceMode.backend &&
       widget.selected.modelId == modelId;
 
-  static List<AiProvider> _configuredProviders(AISettings settings) => [
+  static List<AiProvider> _providers(
+    AISettings settings,
+    bool includeUnavailable,
+  ) =>
+      [
         for (final provider in settings.providers)
-          if (provider.enabled &&
-              provider.apiKey.trim().isNotEmpty &&
+          if ((includeUnavailable ||
+                  provider.enabled && provider.apiKey.trim().isNotEmpty) &&
               provider.models.any((model) => model.id.trim().isNotEmpty))
             provider,
       ];

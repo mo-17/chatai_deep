@@ -7,6 +7,8 @@ import 'package:chatgpt_app_core/chat/application/story_template_transfer.dart';
 import 'package:chatgpt_app_core/chat/application/story_template_translation_tasks.dart';
 import 'package:chatgpt_app_core/chat/application/translation_chunk_planner.dart';
 import 'package:chatgpt_app_core/chat/application/translation_model_eligibility.dart';
+import 'package:chatgpt_app_core/chat/application/translation_model_probe_cache.dart';
+import 'package:chatgpt_app_core/chat/application/translation_model_probe_service.dart';
 import 'package:chatgpt_app_core/chat/application/translation_model_resolver.dart';
 import 'package:chatgpt_app_core/chat/application/translation_retry_policy.dart';
 import 'package:chatgpt_app_core/chat/application/translation_stream_executor.dart';
@@ -16,6 +18,7 @@ import 'package:chatgpt_app_core/chat/domain/chat_request_options.dart';
 import 'package:chatgpt_app_core/chat/domain/model_capabilities.dart';
 import 'package:chatgpt_app_core/chat/domain/stream_event.dart';
 import 'package:chatgpt_app_core/chat/domain/translation_request_profile.dart';
+import 'package:chatgpt_app_core/config/app_distribution.dart';
 import 'package:chatgpt_app_core/dao/chat/chat_service.dart';
 import 'package:chatgpt_app_core/db/hi_db_manager.dart';
 import 'package:chatgpt_app_core/db/story_template_dao.dart';
@@ -25,6 +28,8 @@ import 'package:chatgpt_app_core/model/ai_settings.dart';
 import 'package:chatgpt_app_core/model/assistant_model.dart';
 import 'package:chatgpt_app_core/model/story_template_model.dart';
 import 'package:chatgpt_app_core/model/story_template_translation_task_model.dart';
+import 'package:chatgpt_app_core/widget/translation_settings_dialog.dart';
+import 'package:flutter/foundation.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:sqflite_common_ffi/sqflite_ffi.dart';
 
@@ -945,7 +950,7 @@ void main() {
           reason: '每个 durable chunk checkpoint 都必须推动整体进度',
         );
       }
-      final anchor = TranslationProgressAnchor(
+      const anchor = TranslationProgressAnchor(
         totalRunes: 33322,
         anchorResolvedRunes: 0,
         anchorProgress: 0,
@@ -2411,6 +2416,74 @@ void main() {
       expect(executorCalls, 0);
     });
 
+    test('页面 fresh preflight identity 变化时不创建任务行或 executor', () async {
+      final coordinator = StoryTemplateTranslationCoordinator();
+      await coordinator.initialize(storage, accountHash: 'test');
+      final gateway = _BoundaryProbeGateway();
+      final settings = AISettings.defaults()
+        ..mode = AIMode.backend
+        ..backendModel = 'dialog-model';
+      const preference = TranslationModelPreference(
+        mode: TranslationModelPreferenceMode.followGlobal,
+        reasoningPolicy: ChatReasoningPolicy.offIfSupported,
+      );
+      final dialogProfile = TranslationModelResolver.snapshot(
+        settings,
+        preference,
+      );
+      final result = TranslationSettingsResult(
+        preference: preference,
+        profile: dialogProfile,
+        identity: gateway.identify(
+          accountHash: 'test',
+          settings: settings,
+          profile: dialogProfile,
+        ),
+        warningsAcknowledged: true,
+      );
+      settings.backendModel = 'changed-before-start';
+      final handoff = resolveTranslationSettingsHandoff(
+        result: result,
+        readSnapshot: () => TranslationSettingsSnapshot(
+          settings: settings.clone(),
+          accountHash: 'test',
+          eligibilityEnvironment: _allowedEnvironment,
+        ),
+        probeService: gateway,
+      );
+      var executorCalls = 0;
+
+      if (handoff != null) {
+        await coordinator.start(
+          StoryRoomTemplatePayload(results: [
+            AssistantRoleCardImportResult(
+              assistant: AssistantModel(name: 'Alice'),
+            ),
+          ]).toTemplate(title: 'Changed', sourceTitle: 'changed.json'),
+          requestProfile: handoff.profile,
+          checkEligibility: buildTranslationSettingsEligibilityCheck(
+            readSnapshot: () => TranslationSettingsSnapshot(
+              settings: settings.clone(),
+              accountHash: 'test',
+              eligibilityEnvironment: _allowedEnvironment,
+            ),
+            probeService: gateway,
+            result: result,
+            expectedProfile: handoff.profile,
+          ),
+          resolveExecutor: (_) {
+            executorCalls += 1;
+            throw StateError('must not run');
+          },
+        );
+      }
+
+      expect(handoff, isNull);
+      expect(await taskDao.getTasks(), isEmpty);
+      expect(coordinator.tasks, isEmpty);
+      expect(executorCalls, 0);
+    });
+
     test('更换模型重试被 eligibility 拦截时不修改旧任务', () async {
       final original = _translationTask(
         'Blocked retry',
@@ -2720,8 +2793,8 @@ void main() {
 TranslationEligibilityResult _blockedGuestBackend(
   TranslationRequestProfile _,
 ) =>
-    TranslationEligibilityResult([
-      const TranslationEligibilityIssue(
+    const TranslationEligibilityResult([
+      TranslationEligibilityIssue(
         level: TranslationEligibilityLevel.blocked,
         code: TranslationEligibilityCode.guestBackend,
         message: '后端代理需要登录',
@@ -2737,8 +2810,8 @@ TranslationEligibilityResult _allowTranslationProfile(
 TranslationEligibilityResult _warnMobileLoopback(
   TranslationRequestProfile _,
 ) =>
-    TranslationEligibilityResult([
-      const TranslationEligibilityIssue(
+    const TranslationEligibilityResult([
+      TranslationEligibilityIssue(
         level: TranslationEligibilityLevel.warning,
         code: TranslationEligibilityCode.mobileLoopback,
         message: '移动设备可能无法访问本机地址',
@@ -2905,6 +2978,83 @@ final class _HeldTranslationChatService
     _controller.add(StreamEvent.text(jsonEncode(_payload)));
     unawaited(_controller.close());
   }
+}
+
+const _allowedEnvironment = TranslationEligibilityEnvironment(
+  isGuest: false,
+  platform: TargetPlatform.macOS,
+  distribution: AppDistribution.development,
+  backendHost: 'backend.example',
+  backendUseHttps: true,
+);
+
+final class _BoundaryProbeGateway implements TranslationModelProbeGateway {
+  final Map<String, TranslationModelProbeRecord> records = {};
+
+  String _fingerprint(
+    String accountHash,
+    AISettings settings,
+    TranslationRequestProfile profile,
+  ) =>
+      '$accountHash|${profile.mode.name}|${profile.providerId}|'
+      '${profile.modelId}|${settings.backendModel}';
+
+  @override
+  TranslationModelProbeIdentity identify({
+    required String accountHash,
+    required AISettings settings,
+    required TranslationRequestProfile profile,
+  }) =>
+      TranslationModelProbeIdentity(
+        accountHash: accountHash,
+        fingerprint: _fingerprint(accountHash, settings, profile),
+        cacheToken: const TranslationModelProbeCacheToken(
+          accountGeneration: 0,
+          providerGeneration: 0,
+        ),
+      );
+
+  @override
+  bool isIdentityCurrent(
+    TranslationModelProbeIdentity identity, {
+    required String accountHash,
+    required AISettings settings,
+    required TranslationRequestProfile profile,
+  }) =>
+      identity.accountHash == accountHash &&
+      identity.fingerprint == _fingerprint(accountHash, settings, profile);
+
+  @override
+  TranslationModelProbeRecord? lookup({
+    required String accountHash,
+    required AISettings settings,
+    required TranslationRequestProfile profile,
+  }) =>
+      records[_fingerprint(accountHash, settings, profile)];
+
+  @override
+  TranslationRequestProfile applyCachedEvidence({
+    required String accountHash,
+    required AISettings settings,
+    required TranslationRequestProfile profile,
+  }) =>
+      lookup(
+                accountHash: accountHash,
+                settings: settings,
+                profile: profile,
+              )?.reasoningControlSuppressed ==
+              true
+          ? profile.suppressReasoningControl()
+          : profile;
+
+  @override
+  TranslationModelProbeHandle start({
+    required String accountHash,
+    required AISettings settings,
+    required TranslationRequestProfile profile,
+    required bool Function() isConfigurationCurrent,
+  }) =>
+      throw StateError('page boundary test must not start a probe');
 }
 
 Future<void> _waitUntil(

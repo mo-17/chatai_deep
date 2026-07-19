@@ -8,6 +8,8 @@ import 'package:chatgpt_app_core/chat/application/tavern_room_import_finalizer.d
 import 'package:chatgpt_app_core/chat/application/story_template_translation_tasks.dart';
 import 'package:chatgpt_app_core/chat/application/translation_chunk_planner.dart';
 import 'package:chatgpt_app_core/chat/application/translation_model_eligibility.dart';
+import 'package:chatgpt_app_core/chat/application/translation_model_probe_cache.dart';
+import 'package:chatgpt_app_core/chat/application/translation_model_probe_service.dart';
 import 'package:chatgpt_app_core/chat/application/translation_model_resolver.dart';
 import 'package:chatgpt_app_core/chat/application/translation_stream_executor.dart';
 import 'package:chatgpt_app_core/chat/domain/chat_request_options.dart';
@@ -22,6 +24,7 @@ import 'package:chatgpt_app_core/model/ai_settings.dart';
 import 'package:chatgpt_app_core/model/story_room_model.dart';
 import 'package:chatgpt_app_core/model/story_template_model.dart';
 import 'package:chatgpt_app_core/model/story_template_translation_task_model.dart';
+import 'package:chatgpt_app_core/widget/translation_settings_dialog.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:flutter/foundation.dart';
 import 'package:sqflite_common_ffi/sqflite_ffi.dart';
@@ -39,6 +42,9 @@ void main() {
     for (final source in [assistantPage, storyPage]) {
       expect(source, isNot(contains('estimatedRunes: jsonEncode')));
       expect(source, isNot(contains('task.sourcePayload.runes.length')));
+      expect(source, contains('TranslationModelProbeService.shared'));
+      expect(source, contains('resolveTranslationSettingsHandoff'));
+      expect(source, contains('buildTranslationSettingsEligibilityCheck'));
     }
     expect(assistantPage, isNot(contains('sum + jsonEncode')));
     expect(
@@ -239,6 +245,127 @@ void main() {
       expect(profile.modelId, 'fresh-model');
       expect(boundary.checkEligibility(profile).canStart, isTrue);
       expect(identical(boundary.settings, freshSettings), isTrue);
+    });
+
+    test(
+        'fresh cache failure after dialog requires reconfirmation and creates no task',
+        () async {
+      final gateway = _BoundaryProbeGateway();
+      final settings = AISettings.defaults()
+        ..mode = AIMode.backend
+        ..backendModel = 'backend-model';
+      const preference = TranslationModelPreference(
+        mode: TranslationModelPreferenceMode.followGlobal,
+        reasoningPolicy: ChatReasoningPolicy.offIfSupported,
+      );
+      final profile = TranslationModelResolver.snapshot(settings, preference);
+      final identity = gateway.identify(
+        accountHash: 'test',
+        settings: settings,
+        profile: profile,
+      );
+      gateway.record = TranslationModelProbeRecord(
+        fingerprint: identity.fingerprint,
+        status: TranslationModelProbeStatus.verified,
+        checkedAt: DateTime.utc(2026, 7, 20),
+        reasoningControlSuppressed: false,
+      );
+      final result = TranslationSettingsResult(
+        preference: preference,
+        profile: profile,
+        identity: identity,
+        warningsAcknowledged: false,
+      );
+      gateway.record = TranslationModelProbeRecord(
+        fingerprint: identity.fingerprint,
+        status: TranslationModelProbeStatus.failed,
+        checkedAt: DateTime.utc(2026, 7, 20, 1),
+        safeErrorCode: 'network_unreachable',
+        reasoningControlSuppressed: false,
+      );
+
+      final handoff = resolveTranslationSettingsHandoff(
+        result: result,
+        readSnapshot: () => TranslationSettingsSnapshot(
+          settings: settings.clone(),
+          accountHash: 'test',
+          eligibilityEnvironment: _allowedEnvironment,
+        ),
+        probeService: gateway,
+      );
+
+      expect(handoff, isNull);
+      expect(await taskDao.getTasks(), isEmpty);
+    });
+
+    test('unchanged identity reapplies cached suppression into Tavern task',
+        () async {
+      final coordinator = StoryTemplateTranslationCoordinator();
+      await coordinator.initialize(storage, accountHash: 'test');
+      final gateway = _BoundaryProbeGateway();
+      final settings = AISettings.defaults()
+        ..mode = AIMode.backend
+        ..backendModel = 'backend-model';
+      const preference = TranslationModelPreference(
+        mode: TranslationModelPreferenceMode.followGlobal,
+        reasoningPolicy: ChatReasoningPolicy.offIfSupported,
+      );
+      final profile = TranslationModelResolver.snapshot(settings, preference);
+      final identity = gateway.identify(
+        accountHash: 'test',
+        settings: settings,
+        profile: profile,
+      );
+      gateway.record = TranslationModelProbeRecord(
+        fingerprint: identity.fingerprint,
+        status: TranslationModelProbeStatus.verified,
+        checkedAt: DateTime.utc(2026, 7, 20),
+        reasoningControlSuppressed: true,
+      );
+      final result = TranslationSettingsResult(
+        preference: preference,
+        profile: profile,
+        identity: identity,
+        warningsAcknowledged: false,
+      );
+      TranslationSettingsHandoff? handoff;
+      TranslationSettingsSnapshot readSnapshot() => TranslationSettingsSnapshot(
+            settings: settings.clone(),
+            accountHash: 'test',
+            eligibilityEnvironment: _allowedEnvironment,
+          );
+      handoff = resolveTranslationSettingsHandoff(
+        result: result,
+        readSnapshot: readSnapshot,
+        probeService: gateway,
+      );
+
+      expect(handoff?.profile.reasoningControlSuppressed, isTrue);
+      await coordinator.startTavernRoomImport(
+        _twoRolePayload().results,
+        sourceTitle: 'suppressed.zip',
+        requestProfile: handoff!.profile,
+        checkEligibility: buildTranslationSettingsEligibilityCheck(
+          readSnapshot: readSnapshot,
+          probeService: gateway,
+          result: result,
+          expectedProfile: handoff.profile,
+        ),
+        resolveExecutor: (_) {
+          throw const TranslationModelUnavailableException('测试暂停');
+        },
+      );
+
+      final stored = (await taskDao.getTasks()).single;
+      final storedProfile = TranslationRequestProfile.fromJson(
+        Map<String, dynamic>.from(jsonDecode(stored.requestProfile) as Map),
+      );
+      expect(storedProfile.reasoningControlSuppressed, isTrue);
+      await _waitUntil(
+        () =>
+            coordinator.tasks.single.status ==
+            StoryTemplateTranslationTaskStatus.needsConfiguration,
+      );
     });
 
     test('guarded replacement retry reports sync and async unavailable errors',
@@ -1237,8 +1364,8 @@ void main() {
 TranslationEligibilityResult _blockedGuestBackend(
   TranslationRequestProfile _,
 ) =>
-    TranslationEligibilityResult([
-      const TranslationEligibilityIssue(
+    const TranslationEligibilityResult([
+      TranslationEligibilityIssue(
         level: TranslationEligibilityLevel.blocked,
         code: TranslationEligibilityCode.guestBackend,
         message: '后端代理需要登录',
@@ -1258,6 +1385,80 @@ const _allowedEnvironment = TranslationEligibilityEnvironment(
   backendHost: 'localhost:3000',
   backendUseHttps: false,
 );
+
+final class _BoundaryProbeGateway implements TranslationModelProbeGateway {
+  TranslationModelProbeRecord? record;
+
+  String _fingerprint(
+    String accountHash,
+    AISettings settings,
+    TranslationRequestProfile profile,
+  ) =>
+      '$accountHash|${profile.mode.name}|${profile.providerId}|'
+      '${profile.modelId}|${settings.backendModel}';
+
+  @override
+  TranslationModelProbeIdentity identify({
+    required String accountHash,
+    required AISettings settings,
+    required TranslationRequestProfile profile,
+  }) =>
+      TranslationModelProbeIdentity(
+        accountHash: accountHash,
+        fingerprint: _fingerprint(accountHash, settings, profile),
+        cacheToken: const TranslationModelProbeCacheToken(
+          accountGeneration: 0,
+          providerGeneration: 0,
+        ),
+      );
+
+  @override
+  bool isIdentityCurrent(
+    TranslationModelProbeIdentity identity, {
+    required String accountHash,
+    required AISettings settings,
+    required TranslationRequestProfile profile,
+  }) =>
+      identity.accountHash == accountHash &&
+      identity.fingerprint == _fingerprint(accountHash, settings, profile);
+
+  @override
+  TranslationModelProbeRecord? lookup({
+    required String accountHash,
+    required AISettings settings,
+    required TranslationRequestProfile profile,
+  }) {
+    final value = record;
+    return value != null &&
+            value.fingerprint == _fingerprint(accountHash, settings, profile)
+        ? value
+        : null;
+  }
+
+  @override
+  TranslationRequestProfile applyCachedEvidence({
+    required String accountHash,
+    required AISettings settings,
+    required TranslationRequestProfile profile,
+  }) =>
+      lookup(
+                accountHash: accountHash,
+                settings: settings,
+                profile: profile,
+              )?.reasoningControlSuppressed ==
+              true
+          ? profile.suppressReasoningControl()
+          : profile;
+
+  @override
+  TranslationModelProbeHandle start({
+    required String accountHash,
+    required AISettings settings,
+    required TranslationRequestProfile profile,
+    required bool Function() isConfigurationCurrent,
+  }) =>
+      throw StateError('page boundary test must not start a probe');
+}
 
 StoryRoomTemplatePayload _twoRolePayload() => StoryRoomTemplatePayload(
       results: [

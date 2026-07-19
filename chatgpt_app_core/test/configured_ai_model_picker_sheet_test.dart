@@ -1,4 +1,6 @@
 import 'package:chatgpt_app_core/chat/domain/chat_request_options.dart';
+import 'package:chatgpt_app_core/chat/application/translation_model_eligibility.dart';
+import 'package:chatgpt_app_core/chat/application/translation_model_probe_cache.dart';
 import 'package:chatgpt_app_core/chat/domain/translation_request_profile.dart';
 import 'package:chatgpt_app_core/model/ai_provider.dart';
 import 'package:chatgpt_app_core/model/ai_settings.dart';
@@ -7,7 +9,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 void main() {
-  testWidgets('只展示已配置模型，保留失败状态并按最近使用排序', (tester) async {
+  testWidgets('未传预检 readers 时保持已配置列表和旧健康状态', (tester) async {
     final settings = _settings();
     final before = settings.toJson();
     TranslationModelPreference? result;
@@ -66,6 +68,100 @@ void main() {
     expect(settings.toJson(), before);
   });
 
+  testWidgets('预检列表展示全部模型并按 blocked warning failed verified unverified 排序状态',
+      (tester) async {
+    final settings = _preflightSettings();
+    var readerCalls = 0;
+    await tester.pumpWidget(MaterialApp(
+      home: Builder(
+        builder: (context) => Scaffold(
+          body: TextButton(
+            onPressed: () => showConfiguredAiModelPickerSheet(
+              context,
+              settings: settings,
+              selected: const TranslationModelPreference(
+                mode: TranslationModelPreferenceMode.followGlobal,
+                reasoningPolicy: ChatReasoningPolicy.offIfSupported,
+              ),
+              includeUnavailable: true,
+              eligibilityFor: (preference) {
+                readerCalls += 1;
+                if (preference.providerId == 'disabled' ||
+                    preference.providerId == 'missing-key') {
+                  return _eligibility(
+                    TranslationEligibilityLevel.blocked,
+                    TranslationEligibilityCode.providerDisabled,
+                  );
+                }
+                if (preference.modelId == 'warning-model') {
+                  return _eligibility(
+                    TranslationEligibilityLevel.warning,
+                    TranslationEligibilityCode.mobileLoopback,
+                  );
+                }
+                return const TranslationEligibilityResult();
+              },
+              probeFor: (preference) {
+                readerCalls += 1;
+                return switch (preference.modelId) {
+                  'verified-model' => _probe(
+                      TranslationModelProbeStatus.verified,
+                      preference.modelId!,
+                    ),
+                  'failed-model' || 'warning-model' => _probe(
+                      TranslationModelProbeStatus.failed,
+                      preference.modelId!,
+                    ),
+                  _ => null,
+                };
+              },
+            ),
+            child: const Text('打开'),
+          ),
+        ),
+      ),
+    ));
+
+    await tester.tap(find.text('打开'));
+    await tester.pumpAndSettle();
+
+    expect(_primaryBadge(tester, 'ready', 'verified-model'), '已验证');
+    expect(_primaryBadge(tester, 'ready', 'failed-model'), '测试失败');
+    expect(_primaryBadge(tester, 'ready', 'warning-model'), '地址警告');
+    final callsAfterBuild = readerCalls;
+    await tester.enterText(
+      find.byKey(const ValueKey('configured_model_search')),
+      'unverified',
+    );
+    await tester.pump();
+    expect(readerCalls, greaterThan(callsAfterBuild));
+    expect(find.text('Unverified model'), findsOneWidget);
+    await tester.enterText(
+      find.byKey(const ValueKey('configured_model_search')),
+      '',
+    );
+    await tester.pump();
+    await tester.drag(
+      find.byKey(const ValueKey('configured_ai_model_picker')),
+      const Offset(0, -180),
+    );
+    await tester.pumpAndSettle();
+    expect(_primaryBadge(tester, 'ready', 'unverified-model'), '未验证');
+    await tester.drag(
+      find.byKey(const ValueKey('configured_ai_model_picker')),
+      const Offset(0, -280),
+    );
+    await tester.pumpAndSettle();
+    expect(_primaryBadge(tester, 'disabled', 'disabled-model'), '配置不可用');
+    await tester.drag(
+      find.byKey(const ValueKey('configured_ai_model_picker')),
+      const Offset(0, -280),
+    );
+    await tester.pumpAndSettle();
+    expect(_primaryBadge(tester, 'missing-key', 'missing-model'), '配置不可用');
+    expect(readerCalls, greaterThan(0));
+  });
+
   testWidgets('后端行返回当前后端模型且可隐藏跟随全局', (tester) async {
     final settings = _settings();
     TranslationModelPreference? result;
@@ -103,6 +199,83 @@ void main() {
     expect(result?.modelId, 'backend-fast');
   });
 }
+
+String _primaryBadge(
+  WidgetTester tester,
+  String providerId,
+  String modelId,
+) =>
+    tester
+        .widget<Text>(find.descendant(
+          of: find.byKey(ValueKey(
+            'translation_preflight_badge_${providerId}_$modelId',
+          )),
+          matching: find.byType(Text),
+        ))
+        .data!;
+
+TranslationEligibilityResult _eligibility(
+  TranslationEligibilityLevel level,
+  TranslationEligibilityCode code,
+) =>
+    TranslationEligibilityResult([
+      TranslationEligibilityIssue(
+        level: level,
+        code: code,
+        message: code.name,
+      ),
+    ]);
+
+TranslationModelProbeRecord _probe(
+  TranslationModelProbeStatus status,
+  String suffix,
+) =>
+    TranslationModelProbeRecord(
+      fingerprint: suffix.padRight(64, 'a').substring(0, 64),
+      status: status,
+      checkedAt: DateTime.utc(2026, 7, 20),
+      safeErrorCode:
+          status == TranslationModelProbeStatus.failed ? 'unknown' : null,
+      reasoningControlSuppressed: false,
+    );
+
+AISettings _preflightSettings() => AISettings(
+      mode: AIMode.local,
+      providers: [
+        AiProvider(
+          id: 'ready',
+          type: 'openai',
+          name: 'Ready',
+          apiKey: 'key',
+          enabled: true,
+          models: [
+            AiModel(id: 'verified-model', name: 'Verified model'),
+            AiModel(id: 'failed-model', name: 'Failed probe model'),
+            AiModel(id: 'warning-model', name: 'Warning model'),
+            AiModel(id: 'unverified-model', name: 'Unverified model'),
+          ],
+        ),
+        AiProvider(
+          id: 'disabled',
+          type: 'openai',
+          name: 'Disabled',
+          apiKey: 'key',
+          enabled: false,
+          models: [AiModel(id: 'disabled-model', name: 'Disabled model')],
+        ),
+        AiProvider(
+          id: 'missing-key',
+          type: 'openai',
+          name: 'Missing key',
+          enabled: true,
+          models: [AiModel(id: 'missing-model', name: 'Missing key model')],
+        ),
+      ],
+      activeProviderId: 'ready',
+      backendModel: 'backend-fast',
+      streamEnabled: true,
+      resetOnLogout: true,
+    );
 
 AISettings _settings() => AISettings(
       mode: AIMode.local,
