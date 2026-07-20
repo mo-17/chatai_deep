@@ -293,6 +293,79 @@ void main() {
     expect(result.canStart, isFalse);
     expect(result.primaryIssue?.code, TranslationEligibilityCode.apiKeyMissing);
   });
+
+  test('blocked issues expose exact executable repair labels by code and mode',
+      () {
+    void expectLabel(
+      TranslationEligibilityResult result,
+      String label,
+      TranslationEligibilityRepairTarget target,
+    ) {
+      expect(result.canStart, isFalse);
+      expect(result.primaryIssue?.actionLabel, label);
+      expect(result.primaryIssue?.repairTarget, target);
+    }
+
+    expectLabel(
+      evaluator.evaluatePreference(
+        settings: _backendSettings(),
+        preference: _backendPreference(),
+        environment: _environment(isGuest: true),
+      ),
+      '去登录',
+      TranslationEligibilityRepairTarget.login,
+    );
+    for (final settings in [
+      _localSettings()..providers.single.enabled = false,
+      _localSettings()..providers.single.apiKey = '',
+      _localSettings()..providers.single.models.clear(),
+      _localSettings(endpoint: 'not-a-url'),
+    ]) {
+      expectLabel(
+        evaluator.evaluatePreference(
+          settings: settings,
+          preference: _localPreference(),
+          environment: _environment(),
+        ),
+        '配置服务商',
+        TranslationEligibilityRepairTarget.providerSettings,
+      );
+    }
+    expectLabel(
+      evaluator.evaluatePreference(
+        settings: _backendSettings(),
+        preference: _backendPreference(),
+        environment: _environment(backendHost: ''),
+      ),
+      '改用本地直连',
+      TranslationEligibilityRepairTarget.requestModeSettings,
+    );
+    expectLabel(
+      evaluator.evaluatePreference(
+        settings: _backendSettings(),
+        preference: _backendPreference(),
+        environment: _environment(
+          platform: TargetPlatform.android,
+          distribution: AppDistribution.store,
+          backendUseHttps: false,
+        ),
+      ),
+      '改用本地直连',
+      TranslationEligibilityRepairTarget.requestModeSettings,
+    );
+    expectLabel(
+      evaluator.evaluatePreference(
+        settings: _localSettings(endpoint: 'http://api.example.com'),
+        preference: _localPreference(),
+        environment: _environment(
+          platform: TargetPlatform.android,
+          distribution: AppDistribution.store,
+        ),
+      ),
+      '配置服务商',
+      TranslationEligibilityRepairTarget.providerSettings,
+    );
+  });
 }
 
 TranslationEligibilityEnvironment _environment({

@@ -33,6 +33,72 @@ import 'package:sqflite_common_ffi/sqflite_ffi.dart';
 void main() {
   setUpAll(sqfliteFfiInit);
 
+  test('Assistant production repair seam routes local and Android backend HTTP',
+      () async {
+    const evaluator = TranslationModelEligibilityEvaluator();
+    final localSettings = AISettings.defaults()..mode = AIMode.local;
+    final localProvider = localSettings.activeProvider
+      ..apiKey = 'key'
+      ..enabled = false;
+    final localProfile = TranslationRequestProfile(
+      mode: TranslationExecutionMode.local,
+      providerId: localProvider.id,
+      modelId: localProvider.effectiveModelId,
+      reasoningPolicy: ChatReasoningPolicy.offIfSupported,
+      reasoningControlSuppressed: false,
+    );
+    final localIssue = evaluator
+        .evaluateProfile(
+          settings: localSettings,
+          profile: localProfile,
+          environment: const TranslationEligibilityEnvironment(
+            isGuest: false,
+            platform: TargetPlatform.iOS,
+            distribution: AppDistribution.development,
+            backendHost: 'backend.example',
+            backendUseHttps: true,
+          ),
+        )
+        .primaryIssue!;
+    final backendSettings = AISettings.defaults()
+      ..mode = AIMode.backend
+      ..backendModel = 'backend-model';
+    final backendIssue = evaluator
+        .evaluateProfile(
+          settings: backendSettings,
+          profile: TranslationRequestProfile(
+            mode: TranslationExecutionMode.backend,
+            providerId: null,
+            modelId: 'backend-model',
+            reasoningPolicy: ChatReasoningPolicy.offIfSupported,
+            reasoningControlSuppressed: false,
+          ),
+          environment: const TranslationEligibilityEnvironment(
+            isGuest: false,
+            platform: TargetPlatform.android,
+            distribution: AppDistribution.store,
+            backendHost: 'backend.example',
+            backendUseHttps: false,
+          ),
+        )
+        .primaryIssue!;
+    final opened = <String>[];
+
+    Future<void> run(TranslationEligibilityIssue issue) =>
+        runAssistantTranslationIssueRepair(
+          issue: issue,
+          goToLogin: () async => opened.add('login'),
+          openProviderSettings: () async => opened.add('provider'),
+          openRequestModeSettings: () async => opened.add('request-mode'),
+        );
+
+    await run(localIssue);
+    expect(opened, ['provider']);
+    opened.clear();
+    await run(backendIssue);
+    expect(opened, ['request-mode']);
+  });
+
   test('page translation estimates use translatable bodies instead of JSON',
       () async {
     final assistantPage =

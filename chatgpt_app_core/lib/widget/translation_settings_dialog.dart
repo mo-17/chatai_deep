@@ -472,13 +472,15 @@ class _TranslationSettingsDialogState
             ],
             if (!view.eligibility.canStart &&
                 issue != null &&
+                issue.actionLabel != null &&
+                issue.repairTarget != null &&
                 widget.onFixIssue != null) ...[
               const SizedBox(height: 8),
               TextButton.icon(
                 key: const ValueKey('translation_fix_issue'),
                 onPressed: running ? null : () => _fixIssue(issue),
                 icon: const Icon(Icons.settings_outlined),
-                label: Text(issue.actionLabel ?? '修复配置'),
+                label: Text(issue.actionLabel!),
               ),
             ],
             const SizedBox(height: 8),
@@ -803,7 +805,17 @@ class _TranslationSettingsDialogState
   Future<void> _fixIssue(TranslationEligibilityIssue issue) async {
     await widget.onFixIssue?.call(issue);
     if (!mounted) return;
+    final repairedSnapshot = widget.readSnapshot();
     setState(() {
+      if (issue.repairTarget ==
+              TranslationEligibilityRepairTarget.requestModeSettings &&
+          _selected.mode == TranslationModelPreferenceMode.backend &&
+          repairedSnapshot.settings.mode == AIMode.local) {
+        _selected = TranslationModelPreference(
+          mode: TranslationModelPreferenceMode.followGlobal,
+          reasoningPolicy: _selected.reasoningPolicy,
+        );
+      }
       _displayRecord = null;
       _displayRecordIdentity = null;
       _notice = null;

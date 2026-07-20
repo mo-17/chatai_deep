@@ -438,7 +438,12 @@ void main() {
         initialValue: _localPreference(),
         estimatedRunes: 100,
         probeService: gateway,
-        onFixIssue: (issue) async => fixed = issue,
+        onFixIssue: (issue) async {
+          fixed = issue;
+          settings.providers
+              .firstWhere((provider) => provider.id == 'disabled')
+              .enabled = true;
+        },
       ),
     ));
     await tester.tap(find.text('打开'));
@@ -470,9 +475,62 @@ void main() {
           .onPressed,
       isNull,
     );
+    expect(find.text('配置服务商'), findsOneWidget);
+    expect(find.text('修复配置'), findsNothing);
     await tester.tap(find.byKey(const ValueKey('translation_fix_issue')));
-    await tester.pump();
+    await tester.pumpAndSettle();
     expect(fixed?.code, TranslationEligibilityCode.providerDisabled);
+    expect(find.text('配置不可用'), findsNothing);
+    expect(find.text('未验证'), findsOneWidget);
+    expect(
+      find.byKey(const ValueKey('translation_fix_issue')),
+      findsNothing,
+    );
+    expect(gateway.startCalls, 0);
+  });
+
+  testWidgets('explicit backend 修复返回后会采用已切换的本地直连', (tester) async {
+    final settings = _settings()..mode = AIMode.backend;
+    final gateway = _FakeProbeGateway();
+
+    await tester.pumpWidget(_host(
+      onOpen: (context) => showTranslationSettingsDialog(
+        context,
+        readSnapshot: () => _snapshot(settings, backendHost: ''),
+        initialValue: const TranslationModelPreference(
+          mode: TranslationModelPreferenceMode.backend,
+          modelId: 'backend-fast',
+          reasoningPolicy: ChatReasoningPolicy.offIfSupported,
+        ),
+        estimatedRunes: 100,
+        probeService: gateway,
+        onFixIssue: (issue) async {
+          expect(
+            issue.repairTarget,
+            TranslationEligibilityRepairTarget.requestModeSettings,
+          );
+          settings.mode = AIMode.local;
+        },
+      ),
+    ));
+    await tester.tap(find.text('打开'));
+    await tester.pumpAndSettle();
+
+    expect(find.text('改用本地直连'), findsOneWidget);
+    expect(find.text('配置不可用'), findsOneWidget);
+    await tester.tap(find.byKey(const ValueKey('translation_fix_issue')));
+    await tester.pumpAndSettle();
+
+    expect(find.text('配置不可用'), findsNothing);
+    expect(find.text('跟随全局：deepseek-v4-flash'), findsOneWidget);
+    expect(
+      tester
+          .widget<FilledButton>(
+            find.byKey(const ValueKey('translation_settings_confirm')),
+          )
+          .onPressed,
+      isNotNull,
+    );
     expect(gateway.startCalls, 0);
   });
 
@@ -726,6 +784,7 @@ TranslationSettingsSnapshot _snapshot(
   AISettings settings, {
   String accountHash = 'account-a',
   TargetPlatform platform = TargetPlatform.macOS,
+  String backendHost = 'backend.example',
 }) =>
     TranslationSettingsSnapshot(
       settings: settings.clone(),
@@ -734,7 +793,7 @@ TranslationSettingsSnapshot _snapshot(
         isGuest: false,
         platform: platform,
         distribution: AppDistribution.development,
-        backendHost: 'backend.example',
+        backendHost: backendHost,
         backendUseHttps: true,
       ),
     );

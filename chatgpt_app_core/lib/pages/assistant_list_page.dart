@@ -30,12 +30,13 @@ import 'package:chatgpt_app_core/model/assistant_model.dart';
 import 'package:chatgpt_app_core/model/conversation_model.dart';
 import 'package:chatgpt_app_core/model/story_template_model.dart';
 import 'package:chatgpt_app_core/model/story_template_translation_task_model.dart';
+import 'package:chatgpt_app_core/pages/ai_provider_list_page.dart';
+import 'package:chatgpt_app_core/pages/ai_settings_page.dart';
 import 'package:chatgpt_app_core/pages/assistant_edit_page.dart';
 import 'package:chatgpt_app_core/pages/assistant_market_page.dart';
 import 'package:chatgpt_app_core/pages/assistant_memory_page.dart';
 import 'package:chatgpt_app_core/pages/assistant_profile_page.dart';
 import 'package:chatgpt_app_core/pages/assistant_world_book_page.dart';
-import 'package:chatgpt_app_core/pages/ai_settings_page.dart';
 import 'package:chatgpt_app_core/pages/conversation_page.dart';
 import 'package:chatgpt_app_core/pages/story_room_page.dart';
 import 'package:chatgpt_app_core/provider/ai_settings_provider.dart';
@@ -78,6 +79,20 @@ Future<TranslationPreflightAccepted?> runAssistantTranslationPreflightStart({
       probeService: probeService,
       start: start,
       onConfigurationChanged: onConfigurationChanged,
+    );
+
+/// Assistant 页面的翻译配置修复路由，不启动导入任务或执行器。
+Future<void> runAssistantTranslationIssueRepair({
+  required TranslationEligibilityIssue issue,
+  required Future<void> Function() goToLogin,
+  required Future<void> Function() openProviderSettings,
+  required Future<void> Function() openRequestModeSettings,
+}) =>
+    runTranslationEligibilityIssueRepair(
+      issue: issue,
+      goToLogin: goToLogin,
+      openProviderSettings: openProviderSettings,
+      openRequestModeSettings: openRequestModeSettings,
     );
 
 Color _mutedTextColor(BuildContext context) =>
@@ -1064,13 +1079,23 @@ class _AssistantListPageState extends State<AssistantListPage> {
     TranslationEligibilityIssue issue,
   ) async {
     if (!mounted) return;
-    if (issue.code == TranslationEligibilityCode.guestBackend) {
-      await LoginDao.logOut();
-      return;
-    }
-    await Navigator.push<void>(
-      context,
-      MaterialPageRoute(builder: (_) => const AISettingsPage()),
+    await runAssistantTranslationIssueRepair(
+      issue: issue,
+      goToLogin: LoginDao.logOut,
+      openProviderSettings: () async {
+        if (!mounted) return;
+        await Navigator.push<void>(
+          context,
+          MaterialPageRoute(builder: (_) => const AiProviderListPage()),
+        );
+      },
+      openRequestModeSettings: () async {
+        if (!mounted) return;
+        await Navigator.push<void>(
+          context,
+          MaterialPageRoute(builder: (_) => const AISettingsPage()),
+        );
+      },
     );
   }
 

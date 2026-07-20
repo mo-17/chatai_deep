@@ -21,6 +21,12 @@ enum TranslationEligibilityCode {
   configurationChanged,
 }
 
+enum TranslationEligibilityRepairTarget {
+  login,
+  providerSettings,
+  requestModeSettings,
+}
+
 final class TranslationEligibilityEnvironment {
   final bool isGuest;
   final TargetPlatform platform;
@@ -51,13 +57,36 @@ final class TranslationEligibilityIssue {
   final TranslationEligibilityCode code;
   final String message;
   final String? actionLabel;
+  final TranslationEligibilityRepairTarget? repairTarget;
 
   const TranslationEligibilityIssue({
     required this.level,
     required this.code,
     required this.message,
     this.actionLabel,
+    this.repairTarget,
   });
+}
+
+Future<void> runTranslationEligibilityIssueRepair({
+  required TranslationEligibilityIssue issue,
+  required Future<void> Function() goToLogin,
+  required Future<void> Function() openProviderSettings,
+  required Future<void> Function() openRequestModeSettings,
+}) async {
+  switch (issue.repairTarget) {
+    case TranslationEligibilityRepairTarget.login:
+      await goToLogin();
+      return;
+    case TranslationEligibilityRepairTarget.providerSettings:
+      await openProviderSettings();
+      return;
+    case TranslationEligibilityRepairTarget.requestModeSettings:
+      await openRequestModeSettings();
+      return;
+    case null:
+      return;
+  }
 }
 
 final class TranslationEligibilityResult {
@@ -108,9 +137,13 @@ final class TranslationModelEligibilityEvaluator {
         environment: environment,
       );
     } on TranslationModelUnavailableException catch (error) {
-      return TranslationEligibilityResult([_unavailableIssue(error)]);
+      return TranslationEligibilityResult([
+        _unavailableIssue(error, _preferenceMode(settings, preference)),
+      ]);
     } on FormatException {
-      return TranslationEligibilityResult([_configurationChangedIssue()]);
+      return TranslationEligibilityResult([
+        _configurationChangedIssue(_preferenceMode(settings, preference)),
+      ]);
     }
   }
 
@@ -132,7 +165,7 @@ final class TranslationModelEligibilityEvaluator {
         ));
       }
     } on TranslationModelUnavailableException catch (error) {
-      issues.add(_unavailableIssue(error));
+      issues.add(_unavailableIssue(error, profile.mode));
       if (profile.mode == TranslationExecutionMode.local) {
         final provider = _providerFor(settings, profile.providerId);
         if (provider != null) {
@@ -161,26 +194,26 @@ final class TranslationModelEligibilityEvaluator {
         backendUri!.path.isNotEmpty ||
         backendUri.query.isNotEmpty ||
         backendUri.fragment.isNotEmpty) {
-      issues.add(const TranslationEligibilityIssue(
-        level: TranslationEligibilityLevel.blocked,
+      issues.add(_blockedIssue(
         code: TranslationEligibilityCode.invalidEndpoint,
         message: '翻译后端地址无效。',
+        mode: TranslationExecutionMode.backend,
       ));
     }
     if (environment.isGuest) {
-      issues.add(const TranslationEligibilityIssue(
-        level: TranslationEligibilityLevel.blocked,
+      issues.add(_blockedIssue(
         code: TranslationEligibilityCode.guestBackend,
         message: '游客模式不能使用后端翻译。',
+        mode: TranslationExecutionMode.backend,
       ));
     }
     if (environment.platform == TargetPlatform.android &&
         environment.distribution == AppDistribution.store &&
         !environment.backendUseHttps) {
-      issues.add(const TranslationEligibilityIssue(
-        level: TranslationEligibilityLevel.blocked,
+      issues.add(_blockedIssue(
         code: TranslationEligibilityCode.androidStoreCleartext,
         message: 'Android 商店版不能通过 HTTP 使用后端翻译。',
+        mode: TranslationExecutionMode.backend,
       ));
     }
     return issues;
@@ -192,11 +225,11 @@ final class TranslationModelEligibilityEvaluator {
   ) {
     final uri = Uri.tryParse(endpoint.trim());
     if (!_isValidEndpoint(uri)) {
-      return const [
-        TranslationEligibilityIssue(
-          level: TranslationEligibilityLevel.blocked,
+      return [
+        _blockedIssue(
           code: TranslationEligibilityCode.invalidEndpoint,
           message: '翻译服务地址无效。',
+          mode: TranslationExecutionMode.local,
         ),
       ];
     }
@@ -206,10 +239,10 @@ final class TranslationModelEligibilityEvaluator {
     if (environment.platform == TargetPlatform.android &&
         environment.distribution == AppDistribution.store &&
         endpointUri.scheme == 'http') {
-      issues.add(const TranslationEligibilityIssue(
-        level: TranslationEligibilityLevel.blocked,
+      issues.add(_blockedIssue(
         code: TranslationEligibilityCode.androidStoreCleartext,
         message: 'Android 商店版不能通过 HTTP 访问翻译服务。',
+        mode: TranslationExecutionMode.local,
       ));
     }
     if (_isMobile(environment.platform) && _isLoopback(endpointUri.host)) {
@@ -224,6 +257,7 @@ final class TranslationModelEligibilityEvaluator {
 
   TranslationEligibilityIssue _unavailableIssue(
     TranslationModelUnavailableException error,
+    TranslationExecutionMode mode,
   ) {
     final code = switch (error.safeCode) {
       'providerMissing' => TranslationEligibilityCode.providerMissing,
@@ -232,19 +266,76 @@ final class TranslationModelEligibilityEvaluator {
       'apiKeyMissing' => TranslationEligibilityCode.apiKeyMissing,
       _ => TranslationEligibilityCode.configurationChanged,
     };
-    return TranslationEligibilityIssue(
-      level: TranslationEligibilityLevel.blocked,
+    return _blockedIssue(
       code: code,
       message: error.message,
+      mode: mode,
     );
   }
 
-  TranslationEligibilityIssue _configurationChangedIssue() =>
-      const TranslationEligibilityIssue(
-        level: TranslationEligibilityLevel.blocked,
+  TranslationEligibilityIssue _configurationChangedIssue(
+    TranslationExecutionMode mode,
+  ) =>
+      _blockedIssue(
         code: TranslationEligibilityCode.configurationChanged,
         message: '翻译模型配置已变化，请重新选择。',
+        mode: mode,
       );
+
+  TranslationExecutionMode _preferenceMode(
+    AISettings settings,
+    TranslationModelPreference preference,
+  ) =>
+      switch (preference.mode) {
+        TranslationModelPreferenceMode.backend =>
+          TranslationExecutionMode.backend,
+        TranslationModelPreferenceMode.local => TranslationExecutionMode.local,
+        TranslationModelPreferenceMode.followGlobal =>
+          settings.mode == AIMode.backend
+              ? TranslationExecutionMode.backend
+              : TranslationExecutionMode.local,
+      };
+
+  TranslationEligibilityIssue _blockedIssue({
+    required TranslationEligibilityCode code,
+    required String message,
+    required TranslationExecutionMode mode,
+  }) {
+    final repair = _repairFor(code, mode);
+    return TranslationEligibilityIssue(
+      level: TranslationEligibilityLevel.blocked,
+      code: code,
+      message: message,
+      actionLabel: repair.label,
+      repairTarget: repair.target,
+    );
+  }
+
+  ({String label, TranslationEligibilityRepairTarget target}) _repairFor(
+    TranslationEligibilityCode code,
+    TranslationExecutionMode mode,
+  ) {
+    if (code == TranslationEligibilityCode.guestBackend) {
+      return (
+        label: '去登录',
+        target: TranslationEligibilityRepairTarget.login,
+      );
+    }
+    if (mode == TranslationExecutionMode.local) {
+      return (
+        label: '配置服务商',
+        target: TranslationEligibilityRepairTarget.providerSettings,
+      );
+    }
+    return (
+      label: code == TranslationEligibilityCode.modelMissing
+          ? '配置后端模型'
+          : code == TranslationEligibilityCode.configurationChanged
+              ? '检查请求方式'
+              : '改用本地直连',
+      target: TranslationEligibilityRepairTarget.requestModeSettings,
+    );
+  }
 
   AiProvider? _providerFor(AISettings settings, String? providerId) {
     for (final provider in settings.providers) {

@@ -35,6 +35,62 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:sqflite_common_ffi/sqflite_ffi.dart';
 
 void main() {
+  test('Story production repair seam routes guest and backend endpoint',
+      () async {
+    const evaluator = TranslationModelEligibilityEvaluator();
+    final settings = AISettings.defaults()
+      ..mode = AIMode.backend
+      ..backendModel = 'backend-model';
+    final profile = TranslationRequestProfile(
+      mode: TranslationExecutionMode.backend,
+      providerId: null,
+      modelId: 'backend-model',
+      reasoningPolicy: ChatReasoningPolicy.offIfSupported,
+      reasoningControlSuppressed: false,
+    );
+    final guestIssue = evaluator
+        .evaluateProfile(
+          settings: settings,
+          profile: profile,
+          environment: const TranslationEligibilityEnvironment(
+            isGuest: true,
+            platform: TargetPlatform.iOS,
+            distribution: AppDistribution.development,
+            backendHost: 'backend.example',
+            backendUseHttps: true,
+          ),
+        )
+        .primaryIssue!;
+    final backendIssue = evaluator
+        .evaluateProfile(
+          settings: settings,
+          profile: profile,
+          environment: const TranslationEligibilityEnvironment(
+            isGuest: false,
+            platform: TargetPlatform.iOS,
+            distribution: AppDistribution.development,
+            backendHost: '',
+            backendUseHttps: true,
+          ),
+        )
+        .primaryIssue!;
+    final opened = <String>[];
+
+    Future<void> run(TranslationEligibilityIssue issue) =>
+        runStoryTranslationIssueRepair(
+          issue: issue,
+          goToLogin: () async => opened.add('login'),
+          openProviderSettings: () async => opened.add('provider'),
+          openRequestModeSettings: () async => opened.add('request-mode'),
+        );
+
+    await run(guestIssue);
+    expect(opened, ['login']);
+    opened.clear();
+    await run(backendIssue);
+    expect(opened, ['request-mode']);
+  });
+
   group('StoryTemplateTransfer', () {
     test('导出后可导入并保留角色完整编辑字段与头像引用', () {
       final template = StoryRoomTemplatePayload(
