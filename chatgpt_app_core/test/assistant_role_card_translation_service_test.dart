@@ -2,7 +2,6 @@ import 'dart:async';
 import 'dart:convert';
 
 import 'package:chatgpt_app_core/chat/application/assistant_role_card_translation_service.dart';
-import 'package:chatgpt_app_core/chat/application/role_card_translation_fields.dart';
 import 'package:chatgpt_app_core/chat/application/translation_chunk_planner.dart';
 import 'package:chatgpt_app_core/chat/application/translation_retry_policy.dart';
 import 'package:chatgpt_app_core/chat/application/translation_stream_executor.dart';
@@ -1183,11 +1182,17 @@ void main() {
       },
     );
 
-    final completedRunes = progresses
-        .map((progress) => progress.completedRunes)
-        .whereType<int>()
-        .toList();
-    expect(completedRunes, isNotEmpty);
+    expect(progresses, isNotEmpty);
+    expect(
+      progresses.map((progress) => progress.completedRunes),
+      everyElement(isNotNull),
+    );
+    expect(
+      progresses.map((progress) => progress.totalRunes),
+      everyElement(isNotNull),
+    );
+    final completedRunes =
+        progresses.map((progress) => progress.completedRunes!).toList();
     for (var i = 1; i < completedRunes.length; i++) {
       expect(
         completedRunes[i],
@@ -1195,8 +1200,18 @@ void main() {
         reason: '字段切换时 completedRunes 不应重置',
       );
     }
-    final totalSourceRunes = RoleCardTranslationFields.fromAssistant(assistant)
-        .fold<int>(0, (sum, field) => sum + field.source.runes.length);
+    final completedFields = progresses
+        .where((progress) => progress.stage == '字段已翻译')
+        .map((progress) => progress.field)
+        .toList();
+    expect(completedFields, ['name', 'description']);
+    final descriptionStart = progresses.firstWhere(
+      (progress) =>
+          progress.field == 'description' && progress.stage == '准备翻译字段',
+    );
+    expect(descriptionStart.completedRunes, assistant.name.runes.length);
+    final totalSourceRunes =
+        assistant.name.runes.length + assistant.description.runes.length;
     expect(progresses.last.completedRunes, totalSourceRunes);
     expect(progresses.last.totalRunes, totalSourceRunes);
   });
