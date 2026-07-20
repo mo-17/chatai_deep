@@ -632,6 +632,70 @@ void main() {
       expect(await db.query('tb_story_participant'), hasLength(1));
     });
 
+    test('Tavern 房间原子提交前不提前发布完成态', () async {
+      final payload = StoryRoomTemplatePayload(results: [
+        AssistantRoleCardImportResult(
+          assistant: AssistantModel(name: 'Alice', prompt: 'Careful.'),
+        ),
+      ]);
+      final task = StoryTemplateTranslationTaskModel(
+        sourceTitle: 'alice.png',
+        sourcePayload: jsonEncode(payload.toJson()),
+        outputTitle: 'Alice（简中）',
+        taskKind: StoryTemplateTranslationTaskKind.tavernRoomImport,
+      );
+      await taskDao.saveTask(task);
+      const owner = 'runner-tavern-completion-visibility';
+      expect(
+        await taskDao.claimTask(
+          task.id!,
+          leaseOwner: owner,
+          leaseDuration: const Duration(minutes: 5),
+        ),
+        isTrue,
+      );
+      final reachedFinalCommit = Completer<void>();
+      final releaseFinalCommit = Completer<void>();
+
+      final running = StoryTemplateTranslationTaskRunner(
+        taskDao: taskDao,
+        templateDao: await StoryTemplateDao.create(storage),
+        task: task,
+        leaseOwner: owner,
+        complete: (_) async => jsonEncode({
+          'name': '爱丽丝',
+          'description': '',
+          'prompt': '保持警觉。',
+          'openingMessage': '',
+          'exampleDialogs': '',
+          'memoryBook': '',
+        }),
+        isCancelled: () => false,
+        beforeFinalCommit: () async {
+          reachedFinalCommit.complete();
+          await releaseFinalCommit.future;
+        },
+      ).run();
+
+      await reachedFinalCommit.future;
+      try {
+        expect(task.status, StoryTemplateTranslationTaskStatus.running);
+        expect(task.progress, 0.96);
+        final pending = await taskDao.getTask(task.id!);
+        expect(pending?.status, StoryTemplateTranslationTaskStatus.running);
+        expect(pending?.progress, 0.96);
+      } finally {
+        releaseFinalCommit.complete();
+        await running;
+      }
+
+      expect(task.status, StoryTemplateTranslationTaskStatus.completed);
+      expect(task.progress, 1);
+      final completed = await taskDao.getTask(task.id!);
+      expect(completed?.status, StoryTemplateTranslationTaskStatus.completed);
+      expect(completed?.progress, 1);
+    });
+
     test('full-envelope checkpoint is discarded during Tavern task recovery',
         () async {
       const marker = '# [chatai_deep.tavern_raw.v1] LEGACY_SENTINEL';

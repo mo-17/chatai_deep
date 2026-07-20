@@ -1062,6 +1062,8 @@ class StoryTemplateTranslationTaskRunner {
   final bool Function() isCancelled;
   final bool Function() isLifecycleCancelled;
   final VoidCallback? onChanged;
+  @visibleForTesting
+  final Future<void> Function()? beforeFinalCommit;
   Future<void> _writes = Future<void>.value();
   Timer? _heartbeat;
   bool _leaseLost = false;
@@ -1084,6 +1086,7 @@ class StoryTemplateTranslationTaskRunner {
     required this.isCancelled,
     bool Function()? isLifecycleCancelled,
     this.onChanged,
+    this.beforeFinalCommit,
   })  : assert(executor != null || complete != null),
         cancellation = cancellation ?? TranslationCancellationController(),
         useChunkCheckpoints = useChunkCheckpoints ?? executor != null,
@@ -1303,13 +1306,14 @@ class StoryTemplateTranslationTaskRunner {
       );
       final hasRetainedOriginal = _hasRetainedOriginal();
       if (task.taskKind == StoryTemplateTranslationTaskKind.tavernRoomImport) {
-        task
-          ..outputTitle = title
-          ..stage = hasRetainedOriginal ? '已导入房间，部分内容保留原文' : '已导入酒馆房间'
-          ..detail = ''
-          ..progress = 1
-          ..error = '';
-        task.log = _appendLog(task.log, '酒馆房间已保存：$title');
+        final completionTask =
+            StoryTemplateTranslationTaskModel.fromJson(task.toJson())
+              ..outputTitle = title
+              ..stage = hasRetainedOriginal ? '已导入房间，部分内容保留原文' : '已导入酒馆房间'
+              ..detail = ''
+              ..progress = 1
+              ..error = '';
+        completionTask.log = _appendLog(task.log, '酒馆房间已保存：$title');
         final bundle = TavernRoomImportFinalizer.build(
           payload: outputPayload,
           title: title,
@@ -1317,42 +1321,43 @@ class StoryTemplateTranslationTaskRunner {
           translated: true,
           hasRetainedOriginal: hasRetainedOriginal,
         );
+        await beforeFinalCommit?.call();
         final completion = await taskDao.completeWithTavernRoom(
-          task,
+          completionTask,
           bundle: bundle,
           leaseOwner: leaseOwner,
         );
         if (completion == null) {
           throw const _StoryTemplateTranslationLeaseLost();
         }
-        task
-          ..outputTemplateId = completion.outputTemplateId
-          ..outputRoomId = completion.outputRoomId;
+        _publishCompletion(completionTask);
       } else {
         final copy = outputPayload.toTemplate(
           title: title,
           sourceTitle: task.sourceTitle,
           translated: true,
         );
-        task
-          ..outputTitle = title
-          ..status = hasRetainedOriginal
-              ? StoryTemplateTranslationTaskStatus.completedWithWarnings
-              : StoryTemplateTranslationTaskStatus.completed
-          ..stage = hasRetainedOriginal ? '已生成中文副本，部分内容保留原文' : '已生成中文副本'
-          ..detail = ''
-          ..progress = 1
-          ..error = '';
-        task.log = _appendLog(task.log, '中文副本已保存：$title');
+        final completionTask =
+            StoryTemplateTranslationTaskModel.fromJson(task.toJson())
+              ..outputTitle = title
+              ..status = hasRetainedOriginal
+                  ? StoryTemplateTranslationTaskStatus.completedWithWarnings
+                  : StoryTemplateTranslationTaskStatus.completed
+              ..stage = hasRetainedOriginal ? '已生成中文副本，部分内容保留原文' : '已生成中文副本'
+              ..detail = ''
+              ..progress = 1
+              ..error = '';
+        completionTask.log = _appendLog(task.log, '中文副本已保存：$title');
+        await beforeFinalCommit?.call();
         final outputId = await taskDao.completeWithTemplate(
-          task,
+          completionTask,
           outputTemplate: copy,
           leaseOwner: leaseOwner,
         );
         if (outputId == null) {
           throw const _StoryTemplateTranslationLeaseLost();
         }
-        task.outputTemplateId = outputId;
+        _publishCompletion(completionTask);
       }
       onChanged?.call();
     } on TranslationWorkDeferred catch (deferred) {
@@ -1439,6 +1444,24 @@ class StoryTemplateTranslationTaskRunner {
     } finally {
       _heartbeat?.cancel();
     }
+  }
+
+  void _publishCompletion(StoryTemplateTranslationTaskModel completion) {
+    task
+      ..taskKind = completion.taskKind
+      ..outputTitle = completion.outputTitle
+      ..outputTemplateId = completion.outputTemplateId
+      ..outputRoomId = completion.outputRoomId
+      ..status = completion.status
+      ..progress = completion.progress
+      ..stage = completion.stage
+      ..detail = completion.detail
+      ..log = completion.log
+      ..error = completion.error
+      ..leaseOwner = completion.leaseOwner
+      ..leaseUntil = completion.leaseUntil
+      ..nextRunAt = completion.nextRunAt
+      ..updatedAt = completion.updatedAt;
   }
 
   StoryRoomTemplatePayload _sourcePayload() {

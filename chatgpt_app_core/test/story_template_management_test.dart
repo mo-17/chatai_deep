@@ -931,6 +931,73 @@ void main() {
       expect(copyPayload.regexScriptsJson, '{"version":1,"rules":[]}');
     });
 
+    test('模板副本原子提交前不提前发布完成态', () async {
+      final templateDao = await StoryTemplateDao.create(storage);
+      final source = StoryRoomTemplatePayload(
+        results: [
+          AssistantRoleCardImportResult(
+            assistant: AssistantModel(name: 'Alice', prompt: 'Careful.'),
+          ),
+        ],
+      );
+      final task = StoryTemplateTranslationTaskModel(
+        sourceTitle: 'Party',
+        sourcePayload: jsonEncode(source.toJson()),
+        outputTitle: 'Party（简中）',
+        roleTotal: 1,
+      );
+      await taskDao.saveTask(task);
+      const owner = 'runner-completion-visibility';
+      expect(
+        await taskDao.claimTask(
+          task.id!,
+          leaseOwner: owner,
+          leaseDuration: const Duration(minutes: 5),
+        ),
+        isTrue,
+      );
+      final reachedFinalCommit = Completer<void>();
+      final releaseFinalCommit = Completer<void>();
+
+      final running = StoryTemplateTranslationTaskRunner(
+        taskDao: taskDao,
+        templateDao: templateDao,
+        task: task,
+        leaseOwner: owner,
+        complete: (_) async => jsonEncode({
+          'name': '爱丽丝',
+          'description': '',
+          'prompt': '保持警觉。',
+          'openingMessage': '',
+          'exampleDialogs': '',
+          'memoryBook': '',
+        }),
+        isCancelled: () => false,
+        beforeFinalCommit: () async {
+          reachedFinalCommit.complete();
+          await releaseFinalCommit.future;
+        },
+      ).run();
+
+      await reachedFinalCommit.future;
+      try {
+        expect(task.status, StoryTemplateTranslationTaskStatus.running);
+        expect(task.progress, 0.96);
+        final pending = await taskDao.getTask(task.id!);
+        expect(pending?.status, StoryTemplateTranslationTaskStatus.running);
+        expect(pending?.progress, 0.96);
+      } finally {
+        releaseFinalCommit.complete();
+        await running;
+      }
+
+      expect(task.status, StoryTemplateTranslationTaskStatus.completed);
+      expect(task.progress, 1);
+      final completed = await taskDao.getTask(task.id!);
+      expect(completed?.status, StoryTemplateTranslationTaskStatus.completed);
+      expect(completed?.progress, 1);
+    });
+
     test('33,322 字世界书按持久化分块推进且流阶段不覆盖字符进度', () async {
       final templateDao = await StoryTemplateDao.create(storage);
       final worldBook = List.filled(33322, '界').join();
