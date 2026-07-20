@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:convert';
 
 import 'package:chatgpt_app_core/chat/application/assistant_role_card_translation_service.dart';
+import 'package:chatgpt_app_core/chat/application/role_card_translation_fields.dart';
 import 'package:chatgpt_app_core/chat/application/translation_chunk_planner.dart';
 import 'package:chatgpt_app_core/chat/application/translation_retry_policy.dart';
 import 'package:chatgpt_app_core/chat/application/translation_stream_executor.dart';
@@ -1109,6 +1110,95 @@ void main() {
       ),
       isTrue,
     );
+  });
+
+  test('direct success publishes chunk rune progress after checkpoint persists',
+      () async {
+    const source = 'Detective 😀';
+    final checkpointEntered = Completer<void>();
+    final releaseCheckpoint = Completer<void>();
+    final progresses = <RoleCardTranslationProgress>[];
+
+    final translation =
+        AssistantRoleCardTranslationService.translateToSimplifiedChinese(
+      AssistantModel(name: '', description: source),
+      onProgress: progresses.add,
+      onChunkCheckpoint: (field, checkpoint) async {
+        if (field != 'description' ||
+            checkpoint.chunks.single.status !=
+                TranslationChunkStatus.completed) {
+          return;
+        }
+        if (!checkpointEntered.isCompleted) checkpointEntered.complete();
+        await releaseCheckpoint.future;
+      },
+      complete: (_) async => '{"description":"侦探"}',
+    );
+
+    await checkpointEntered.future;
+    final beforePersistence = progresses
+        .where((progress) => progress.field == 'description')
+        .toList();
+    expect(
+      beforePersistence.map((progress) => progress.stage),
+      contains('准备翻译字段'),
+    );
+    expect(
+      beforePersistence.every((progress) => progress.completedRunes == 0),
+      isTrue,
+    );
+    expect(
+      beforePersistence.any((progress) => progress.stage == '分块已翻译'),
+      isFalse,
+    );
+
+    releaseCheckpoint.complete();
+    await translation;
+
+    final persistedProgress = progresses.firstWhere(
+      (progress) =>
+          progress.field == 'description' && progress.stage == '分块已翻译',
+    );
+    expect(persistedProgress.completedRunes, source.runes.length);
+  });
+
+  test(
+      'field translation keeps completed rune progress monotonic across fields',
+      () async {
+    final assistant = AssistantModel(
+      name: 'Alice 😀',
+      description: 'Detective from London.',
+    );
+    final progresses = <RoleCardTranslationProgress>[];
+
+    await AssistantRoleCardTranslationService.translateToSimplifiedChinese(
+      assistant,
+      onProgress: progresses.add,
+      onChunkCheckpoint: (_, __) async {},
+      complete: (prompt) async {
+        final payload =
+            jsonDecode(prompt.split('\n').last) as Map<String, dynamic>;
+        final field = payload.keys.single;
+        return jsonEncode({field: '已翻译:${payload[field]}'});
+      },
+    );
+
+    final completedRunes = progresses
+        .map((progress) => progress.completedRunes)
+        .whereType<int>()
+        .toList();
+    expect(completedRunes, isNotEmpty);
+    for (var i = 1; i < completedRunes.length; i++) {
+      expect(
+        completedRunes[i],
+        greaterThanOrEqualTo(completedRunes[i - 1]),
+        reason: '字段切换时 completedRunes 不应重置',
+      );
+    }
+    final totalSourceRunes = RoleCardTranslationFields.fromAssistant(assistant)
+        .fold<int>(0, (sum, field) => sum + field.source.runes.length);
+    expect(progresses.last.completedRunes, totalSourceRunes);
+    expect(progresses.last.totalRunes, totalSourceRunes);
   });
 
   test('整卡成功以所有字段 rune 总数结束进度', () async {
