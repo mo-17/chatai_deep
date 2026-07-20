@@ -327,8 +327,8 @@ void main() {
       final openingCommitted = _taskFor(
         source,
         partialPayload: jsonEncode({
-          ...StoryRoomTemplatePayload(
-            results: const [],
+          ...const StoryRoomTemplatePayload(
+            results: [],
             initialOpening: '欢迎 😀',
           ).toJson(),
           '_translationOpeningCompleted': true,
@@ -464,7 +464,7 @@ void main() {
   group('TranslationProgressAnchor', () {
     test('advances immediately when legacy progress is above canonical work',
         () {
-      final anchor = TranslationProgressAnchor(
+      const anchor = TranslationProgressAnchor(
         totalRunes: 100,
         anchorResolvedRunes: 50,
         anchorProgress: 0.80,
@@ -476,12 +476,12 @@ void main() {
     });
 
     test('clamps translating progress and invalid rune bounds', () {
-      final anchor = TranslationProgressAnchor(
+      const anchor = TranslationProgressAnchor(
         totalRunes: 100,
         anchorResolvedRunes: 0,
         anchorProgress: 1,
       );
-      final empty = TranslationProgressAnchor(
+      const empty = TranslationProgressAnchor(
         totalRunes: 0,
         anchorResolvedRunes: 0,
         anchorProgress: 0,
@@ -493,7 +493,7 @@ void main() {
     });
 
     test('caps an exhausted anchor at translating maximum', () {
-      final anchor = TranslationProgressAnchor(
+      const anchor = TranslationProgressAnchor(
         totalRunes: 10,
         anchorResolvedRunes: 10,
         anchorProgress: 0.7,
