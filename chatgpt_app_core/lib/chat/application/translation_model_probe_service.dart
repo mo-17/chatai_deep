@@ -9,6 +9,7 @@ import 'package:chatgpt_app_core/chat/application/translation_stream_executor.da
 import 'package:chatgpt_app_core/chat/domain/translation_request_profile.dart';
 import 'package:chatgpt_app_core/dao/chat/chat_service.dart';
 import 'package:chatgpt_app_core/model/ai_settings.dart';
+import 'package:flutter/foundation.dart';
 
 const translationProbePrompt = '''你是翻译接口兼容性测试器。
 把 JSON 中的英文短语翻译为简体中文。
@@ -100,6 +101,31 @@ final class TranslationModelProbeService
         _executorFactory = executorFactory ?? _defaultExecutorFactory,
         _now = now ?? DateTime.now,
         _stopwatchFactory = stopwatchFactory ?? Stopwatch.new;
+
+  @visibleForTesting
+  factory TranslationModelProbeService.withDefaultExecutorForTesting({
+    required ChatService service,
+    TranslationModelProbeCache? cache,
+    DateTime Function()? now,
+    Stopwatch Function()? stopwatchFactory,
+  }) {
+    return TranslationModelProbeService(
+      cache: cache,
+      executorFactory: ({
+        required settings,
+        required profile,
+        required onProfileChanged,
+      }) =>
+          _defaultExecutorFactory(
+        settings: settings,
+        profile: profile,
+        onProfileChanged: onProfileChanged,
+        serviceOverride: service,
+      ),
+      now: now,
+      stopwatchFactory: stopwatchFactory,
+    );
+  }
 
   @override
   TranslationModelProbeIdentity identify({
@@ -439,10 +465,11 @@ TranslationStreamExecutor _defaultExecutorFactory({
   required AISettings settings,
   required TranslationRequestProfile profile,
   required Future<void> Function(TranslationRequestProfile) onProfileChanged,
+  ChatService? serviceOverride,
 }) {
+  final appliedSettings = TranslationModelResolver.apply(settings, profile);
   return TranslationStreamExecutor(
-    service:
-        ChatService.from(TranslationModelResolver.apply(settings, profile)),
+    service: serviceOverride ?? ChatService.from(appliedSettings),
     profile: profile,
     onProfileChanged: onProfileChanged,
     maxOutputTokensOverride: 128,

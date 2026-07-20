@@ -202,7 +202,6 @@ void main() {
     expect(fake.requests.single.history, isEmpty);
     expect(
         fake.requests.single.options.profile, ChatRequestProfile.translation);
-    expect(fake.requests.single.options.maxOutputTokensOverride, 128);
     expect(observedSettings!.mode, AIMode.local);
     expect(observedSettings!.activeProviderId, 'deepseek');
     expect(observedSettings!.effectiveModel, profile.modelId);
@@ -219,6 +218,56 @@ void main() {
     ]) {
       expect(raw, isNot(contains(sensitive)));
     }
+  });
+
+  test(
+      'production probe factory caps output at 128 without changing ordinary defaults',
+      () async {
+    final probeFake = FakeTranslationChatService([
+      (request) {
+        request.addNow(StreamEvent.text('{"translation":"早上好"}'));
+        request.closeNow();
+      },
+    ]);
+    final service = TranslationModelProbeService.withDefaultExecutorForTesting(
+      service: probeFake,
+      cache: TranslationModelProbeCache(now: () => now),
+      now: () => now,
+    );
+
+    await service
+        .start(
+          accountHash: 'guest',
+          settings: _settings(),
+          profile: _profile(),
+          isConfigurationCurrent: () => true,
+        )
+        .result;
+
+    expect(probeFake.requestAttempts, 1);
+    expect(probeFake.requests.single.prompt, translationProbePrompt);
+    expect(probeFake.requests.single.options.maxOutputTokensOverride, 128);
+
+    final ordinaryFake = FakeTranslationChatService([
+      (request) {
+        request.addNow(StreamEvent.text('普通翻译'));
+        request.closeNow();
+      },
+    ]);
+    final output = await TranslationStreamExecutor(
+      service: ordinaryFake,
+      profile: _profile(),
+    ).complete(
+      '翻译此文本',
+      cancellation: TranslationCancellationController(),
+    );
+
+    expect(output, '普通翻译');
+    expect(ordinaryFake.requestAttempts, 1);
+    expect(
+      ordinaryFake.requests.single.options.maxOutputTokensOverride,
+      isNull,
+    );
   });
 
   test('rejects missing, empty and untranslated probe output', () async {
@@ -927,7 +976,6 @@ TranslationStreamExecutor _executor(
     firstEventTimeout: const Duration(seconds: 1),
     idleTimeout: const Duration(seconds: 1),
     totalTimeout: const Duration(seconds: 2),
-    maxOutputTokensOverride: 128,
   );
 }
 
