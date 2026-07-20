@@ -1321,7 +1321,8 @@ class StoryTemplateTranslationTaskRunner {
           translated: true,
           hasRetainedOriginal: hasRetainedOriginal,
         );
-        await beforeFinalCommit?.call();
+        final callback = beforeFinalCommit;
+        if (callback != null) await callback();
         final completion = await taskDao.completeWithTavernRoom(
           completionTask,
           bundle: bundle,
@@ -1348,7 +1349,8 @@ class StoryTemplateTranslationTaskRunner {
               ..progress = 1
               ..error = '';
         completionTask.log = _appendLog(task.log, '中文副本已保存：$title');
-        await beforeFinalCommit?.call();
+        final callback = beforeFinalCommit;
+        if (callback != null) await callback();
         final outputId = await taskDao.completeWithTemplate(
           completionTask,
           outputTemplate: copy,
