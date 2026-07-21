@@ -5,6 +5,7 @@ import io
 import json
 import struct
 from collections import Counter
+from collections.abc import Callable
 from pathlib import Path
 
 from PIL import Image, ImageChops
@@ -63,41 +64,165 @@ EXPECTED_WEB_ICON_RECORDS = [
     },
 ]
 
+IMAGE_INPUT_ERRORS = (
+    OSError,
+    SyntaxError,
+    TypeError,
+    ValueError,
+    Image.DecompressionBombError,
+)
 
-def _same_pixels(actual: Path, expected: Image.Image) -> bool:
+
+def _read_text(path: Path, *, label: str, errors: list[str]) -> str | None:
+    try:
+        return path.read_text(encoding="utf-8")
+    except (OSError, UnicodeError) as error:
+        errors.append(f"unable to read {label}: {path}: {error}")
+        return None
+
+
+def _read_bytes(path: Path, *, label: str, errors: list[str]) -> bytes | None:
+    try:
+        return path.read_bytes()
+    except OSError as error:
+        errors.append(f"unable to read {label}: {path}: {error}")
+        return None
+
+
+def _read_json_object(
+    path: Path,
+    *,
+    label: str,
+    errors: list[str],
+) -> dict[str, object] | None:
+    text = _read_text(path, label=label, errors=errors)
+    if text is None:
+        return None
+    try:
+        value = json.loads(text)
+    except json.JSONDecodeError as error:
+        errors.append(f"unable to parse {label}: {path}: {error}")
+        return None
+    if not isinstance(value, dict):
+        errors.append(f"{label} must be a JSON object: {path}")
+        return None
+    return value
+
+
+def _render_expected(
+    render: Callable[[], Image.Image],
+    *,
+    label: str,
+    source: Path,
+    errors: list[str],
+) -> Image.Image | None:
+    try:
+        return render()
+    except IMAGE_INPUT_ERRORS as error:
+        errors.append(
+            f"unable to render {label} from Starcore master {source}: {error}"
+        )
+        return None
+
+
+def _same_pixels(
+    actual: Path,
+    expected: Image.Image,
+    *,
+    label: str = "image",
+    errors: list[str] | None = None,
+) -> bool:
     if not actual.is_file():
+        if errors is not None:
+            errors.append(f"missing {label}: {actual}")
         return False
-    with Image.open(actual) as loaded:
-        loaded.load()
-        if loaded.size != expected.size or loaded.mode != expected.mode:
-            return False
-        return ImageChops.difference(loaded, expected).getbbox(
-            alpha_only=False,
-        ) is None
+    try:
+        with Image.open(actual) as loaded:
+            loaded.load()
+            if loaded.size != expected.size or loaded.mode != expected.mode:
+                return False
+            return ImageChops.difference(loaded, expected).getbbox(
+                alpha_only=False,
+            ) is None
+    except IMAGE_INPUT_ERRORS as error:
+        if errors is not None:
+            errors.append(f"unable to decode {label}: {actual}: {error}")
+        return False
+
+
+def _check_pixels(
+    actual: Path,
+    expected: Image.Image,
+    *,
+    label: str,
+    mismatch: str,
+    errors: list[str],
+) -> None:
+    error_count = len(errors)
+    if not _same_pixels(actual, expected, label=label, errors=errors):
+        if len(errors) == error_count:
+            errors.append(mismatch)
 
 
 def validate_android(root: Path) -> list[str]:
     errors: list[str] = []
     base = root / "chatgpt_flutter/android/app/src/main/res"
+    master = _master(root)
     for density, size in ANDROID_SIZES.items():
         path = base / density / "ic_launcher.png"
-        if not _same_pixels(path, square_icon(_master(root), size)):
-            errors.append(f"android launcher mismatch: {path}")
+        expected = _render_expected(
+            lambda size=size: square_icon(master, size),
+            label=f"Android {density} launcher",
+            source=master,
+            errors=errors,
+        )
+        if expected is None:
+            break
+        _check_pixels(
+            path,
+            expected,
+            label="Android launcher",
+            mismatch=f"android launcher mismatch: {path}",
+            errors=errors,
+        )
     manifest = root / "chatgpt_flutter/android/app/src/main/AndroidManifest.xml"
-    text = manifest.read_text(encoding="utf-8")
-    if 'android:icon="@mipmap/ic_launcher"' not in text:
-        errors.append("AndroidManifest no longer references @mipmap/ic_launcher")
-    if "android:roundIcon=" in text:
-        errors.append("roundIcon is outside the approved non-adaptive scope")
+    text = _read_text(manifest, label="Android manifest", errors=errors)
+    if text is not None:
+        if 'android:icon="@mipmap/ic_launcher"' not in text:
+            errors.append("AndroidManifest no longer references @mipmap/ic_launcher")
+        if "android:roundIcon=" in text:
+            errors.append("roundIcon is outside the approved non-adaptive scope")
     return errors
 
 
 def validate_ios(root: Path) -> list[str]:
     errors: list[str] = []
     base = root / "chatgpt_flutter/ios/Runner/Assets.xcassets/AppIcon.appiconset"
-    contents = json.loads((base / "Contents.json").read_text(encoding="utf-8"))
-    records = contents["images"]
-    declared = {item["filename"]: item for item in records}
+    catalog_path = base / "Contents.json"
+    contents = _read_json_object(
+        catalog_path,
+        label="iOS icon catalog",
+        errors=errors,
+    )
+    raw_records = contents.get("images") if contents is not None else None
+    if raw_records is not None and not isinstance(raw_records, list):
+        errors.append(f"iOS icon catalog images must be a list: {catalog_path}")
+    records = raw_records if isinstance(raw_records, list) else []
+    declared: dict[str, dict[str, object]] = {}
+    for index, item in enumerate(records):
+        if not isinstance(item, dict):
+            errors.append(
+                f"iOS icon catalog record {index} must be an object: {catalog_path}"
+            )
+            continue
+        filename = item.get("filename")
+        if not isinstance(filename, str) or not filename:
+            errors.append(
+                f"iOS icon catalog record {index} has an invalid filename: "
+                f"{catalog_path}"
+            )
+            continue
+        declared[filename] = item
     if len(records) != len(IOS_FILES):
         errors.append("iOS Contents.json record count differs from IOS_FILES")
     if len(declared) != len(records):
@@ -109,43 +234,122 @@ def validate_ios(root: Path) -> list[str]:
         path = base / filename
         if item is None:
             continue
-        points = float(item["size"].split("x")[0])
-        scale = int(item["scale"].removesuffix("x"))
-        if round(points * scale) != pixels:
-            errors.append(f"iOS catalog size mismatch: {filename}")
+        try:
+            declared_size = item["size"]
+            declared_scale = item["scale"]
+            if not isinstance(declared_size, str) or not isinstance(
+                declared_scale,
+                str,
+            ):
+                raise TypeError("size and scale must be strings")
+            points = float(declared_size.split("x", maxsplit=1)[0])
+            scale = int(declared_scale.removesuffix("x"))
+        except (KeyError, TypeError, ValueError) as error:
+            errors.append(
+                f"iOS catalog record is malformed for {filename}: {error}"
+            )
+        else:
+            if round(points * scale) != pixels:
+                errors.append(f"iOS catalog size mismatch: {filename}")
         if not path.is_file():
             errors.append(f"missing iOS icon: {path}")
             continue
-        with Image.open(path) as actual:
-            if actual.mode != "RGB" or actual.info.get("transparency") is not None:
-                errors.append(f"iOS icon must be RGB without alpha: {path}")
-        if not _same_pixels(path, square_icon(_master(root), pixels)):
-            errors.append(f"iOS icon pixels differ: {path}")
+        try:
+            with Image.open(path) as actual:
+                actual.load()
+                if actual.mode != "RGB" or actual.info.get("transparency") is not None:
+                    errors.append(f"iOS icon must be RGB without alpha: {path}")
+        except IMAGE_INPUT_ERRORS as error:
+            errors.append(f"unable to decode iOS icon: {path}: {error}")
+            continue
+        master = _master(root)
+        expected = _render_expected(
+            lambda pixels=pixels: square_icon(master, pixels),
+            label=f"iOS {filename}",
+            source=master,
+            errors=errors,
+        )
+        if expected is None:
+            break
+        _check_pixels(
+            path,
+            expected,
+            label="iOS icon",
+            mismatch=f"iOS icon pixels differ: {path}",
+            errors=errors,
+        )
     return errors
 
 
 def validate_macos(root: Path) -> list[str]:
     errors: list[str] = []
     base = root / "chatgpt_flutter/macos/Runner/Assets.xcassets/AppIcon.appiconset"
-    contents = json.loads((base / "Contents.json").read_text(encoding="utf-8"))
-    records = contents["images"]
-    actual_records = Counter(
-        (item["filename"], item["size"], item["scale"]) for item in records
+    catalog_path = base / "Contents.json"
+    contents = _read_json_object(
+        catalog_path,
+        label="macOS icon catalog",
+        errors=errors,
     )
+    raw_records = contents.get("images") if contents is not None else None
+    if raw_records is not None and not isinstance(raw_records, list):
+        errors.append(f"macOS icon catalog images must be a list: {catalog_path}")
+    records = raw_records if isinstance(raw_records, list) else []
+    actual_records: Counter[tuple[str, str, str]] = Counter()
+    for index, item in enumerate(records):
+        if not isinstance(item, dict):
+            errors.append(
+                f"macOS icon catalog record {index} must be an object: "
+                f"{catalog_path}"
+            )
+            continue
+        try:
+            filename = item["filename"]
+            declared_size = item["size"]
+            scale = item["scale"]
+            if not all(
+                isinstance(value, str)
+                for value in (filename, declared_size, scale)
+            ):
+                raise TypeError("filename, size, and scale must be strings")
+        except (KeyError, TypeError) as error:
+            errors.append(
+                f"macOS icon catalog record {index} is malformed: {error}"
+            )
+            continue
+        actual_records[(filename, declared_size, scale)] += 1
     if actual_records != EXPECTED_MACOS_RECORDS:
         errors.append("macOS Contents.json records differ from expected catalog")
+    master = _master(root)
     for size in MAC_SIZES:
         path = base / f"app_icon_{size}.png"
         if not path.is_file():
             errors.append(f"missing macOS icon: {path}")
             continue
-        with Image.open(path) as actual:
-            actual.load()
-            if actual.mode != "RGBA" or actual.getpixel((0, 0))[3] != 0:
-                errors.append(f"macOS icon lacks transparent rounded canvas: {path}")
-        expected = rounded_icon(_master(root), size, inset_ratio=0.08)
-        if not _same_pixels(path, expected):
-            errors.append(f"macOS icon pixels differ: {path}")
+        try:
+            with Image.open(path) as actual:
+                actual.load()
+                if actual.mode != "RGBA" or actual.getpixel((0, 0))[3] != 0:
+                    errors.append(
+                        f"macOS icon lacks transparent rounded canvas: {path}"
+                    )
+        except IMAGE_INPUT_ERRORS as error:
+            errors.append(f"unable to decode macOS icon: {path}: {error}")
+            continue
+        expected = _render_expected(
+            lambda size=size: rounded_icon(master, size, inset_ratio=0.08),
+            label=f"macOS {size}px icon",
+            source=master,
+            errors=errors,
+        )
+        if expected is None:
+            break
+        _check_pixels(
+            path,
+            expected,
+            label="macOS icon",
+            mismatch=f"macOS icon pixels differ: {path}",
+            errors=errors,
+        )
     return errors
 
 
@@ -154,10 +358,9 @@ def validate_windows(root: Path) -> list[str]:
     path = root / "chatgpt_flutter/windows/runner/resources/app_icon.ico"
     if not path.is_file():
         return [f"missing Windows ICO: {path}"]
-    try:
-        raw = path.read_bytes()
-    except OSError as error:
-        return [f"unable to read Windows ICO: {path}: {error}"]
+    raw = _read_bytes(path, label="Windows ICO", errors=errors)
+    if raw is None:
+        return errors
     if len(raw) < 6:
         return [f"Windows ICO header is truncated: {path}"]
 
@@ -244,20 +447,16 @@ def validate_windows(root: Path) -> list[str]:
                         alpha_only=False,
                     ) is not None:
                         errors.append(f"Windows ICO pixels differ at {width}px")
-            except (OSError, SyntaxError, ValueError) as error:
+            except IMAGE_INPUT_ERRORS as error:
                 errors.append(
                     f"Windows ICO PNG payload cannot be decoded at entry {index}: {error}"
                 )
         expected_sizes = {(size, size) for size in WINDOWS_ICON_SIZES}
         if set(sizes) != expected_sizes or len(sizes) != len(set(sizes)):
             errors.append(f"Windows ICO frame entries differ: {sizes}")
-    try:
-        rc = (root / "chatgpt_flutter/windows/runner/Runner.rc").read_text(
-            encoding="utf-8",
-        )
-    except OSError as error:
-        errors.append(f"unable to read Runner.rc: {error}")
-    else:
+    rc_path = root / "chatgpt_flutter/windows/runner/Runner.rc"
+    rc = _read_text(rc_path, label="Windows Runner.rc", errors=errors)
+    if rc is not None:
         if 'resources\\\\app_icon.ico' not in rc:
             errors.append("Runner.rc no longer references resources\\\\app_icon.ico")
     return errors
@@ -267,35 +466,62 @@ def validate_web(root: Path) -> list[str]:
     errors: list[str] = []
     base = root / "chatgpt_flutter/web"
     manifest_path = base / "manifest.json"
-    try:
-        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError) as error:
-        return [f"unable to read Web manifest: {manifest_path}: {error}"]
+    manifest = _read_json_object(
+        manifest_path,
+        label="Web manifest",
+        errors=errors,
+    )
+    if manifest is None:
+        manifest = {}
     if manifest.get("icons") != EXPECTED_WEB_ICON_RECORDS:
         errors.append("Web manifest icon records differ from expected records")
+    master = _master(root)
     for item in EXPECTED_WEB_ICON_RECORDS:
         relative = item["src"]
         size = int(item["sizes"].split("x", maxsplit=1)[0])
         is_maskable = item.get("purpose") == "maskable"
-        rendered = (
-            maskable_icon(_master(root), size)
-            if is_maskable
-            else square_icon(_master(root), size)
+        rendered = _render_expected(
+            lambda size=size, is_maskable=is_maskable: (
+                maskable_icon(master, size)
+                if is_maskable
+                else square_icon(master, size)
+            ),
+            label=f"Web {relative}",
+            source=master,
+            errors=errors,
         )
-        if not _same_pixels(base / relative, rendered):
-            errors.append(f"Web icon pixels differ: {relative}")
-    if not _same_pixels(
-        base / "favicon.png",
-        rounded_icon(_master(root), 16, inset_ratio=0.03),
-    ):
-        errors.append("Web favicon pixels differ")
+        if rendered is None:
+            break
+        _check_pixels(
+            base / relative,
+            rendered,
+            label="Web icon",
+            mismatch=f"Web icon pixels differ: {relative}",
+            errors=errors,
+        )
+    favicon = _render_expected(
+        lambda: rounded_icon(master, 16, inset_ratio=0.03),
+        label="Web favicon",
+        source=master,
+        errors=errors,
+    )
+    if favicon is not None:
+        _check_pixels(
+            base / "favicon.png",
+            favicon,
+            label="Web favicon",
+            mismatch="Web favicon pixels differ",
+            errors=errors,
+        )
     if manifest.get("background_color") != "#120D24":
         errors.append("Web background_color is not #120D24")
     if manifest.get("theme_color") != "#6D28D9":
         errors.append("Web theme_color is not #6D28D9")
-    html = (base / "index.html").read_text(encoding="utf-8")
-    if "icons/Icon-192.png" not in html or "favicon.png" not in html:
-        errors.append("Web HTML icon references changed")
+    html_path = base / "index.html"
+    html = _read_text(html_path, label="Web index", errors=errors)
+    if html is not None:
+        if "icons/Icon-192.png" not in html or "favicon.png" not in html:
+            errors.append("Web HTML icon references changed")
     return errors
 
 
@@ -303,24 +529,60 @@ def validate_ohos(root: Path) -> list[str]:
     errors: list[str] = []
     app_scope = root / "chatgpt_flutter_ohos/ohos/AppScope/resources/base/media/app_icon.png"
     entry = root / "chatgpt_flutter_ohos/ohos/entry/src/main/resources/base/media/icon.png"
-    expected = rounded_icon(_master(root), 114, inset_ratio=0.04)
-    for path in (app_scope, entry):
-        if not _same_pixels(path, expected):
-            errors.append(f"HarmonyOS icon pixels differ: {path}")
-    if app_scope.is_file() and entry.is_file() and app_scope.read_bytes() != entry.read_bytes():
-        errors.append("HarmonyOS AppScope and entry icons differ")
-    app_json = (
-        root / "chatgpt_flutter_ohos/ohos/AppScope/app.json5"
-    ).read_text(encoding="utf-8")
-    module_json = (
+    master = _master(root)
+    expected = _render_expected(
+        lambda: rounded_icon(master, 114, inset_ratio=0.04),
+        label="HarmonyOS launcher",
+        source=master,
+        errors=errors,
+    )
+    if expected is not None:
+        for path in (app_scope, entry):
+            _check_pixels(
+                path,
+                expected,
+                label="HarmonyOS icon",
+                mismatch=f"HarmonyOS icon pixels differ: {path}",
+                errors=errors,
+            )
+    if app_scope.is_file() and entry.is_file():
+        app_scope_bytes = _read_bytes(
+            app_scope,
+            label="HarmonyOS AppScope icon",
+            errors=errors,
+        )
+        entry_bytes = _read_bytes(
+            entry,
+            label="HarmonyOS entry icon",
+            errors=errors,
+        )
+        if (
+            app_scope_bytes is not None
+            and entry_bytes is not None
+            and app_scope_bytes != entry_bytes
+        ):
+            errors.append("HarmonyOS AppScope and entry icons differ")
+    app_config_path = root / "chatgpt_flutter_ohos/ohos/AppScope/app.json5"
+    module_config_path = (
         root / "chatgpt_flutter_ohos/ohos/entry/src/main/module.json5"
-    ).read_text(encoding="utf-8")
-    if '"icon": "$media:app_icon"' not in app_json:
+    )
+    app_json = _read_text(
+        app_config_path,
+        label="HarmonyOS AppScope config",
+        errors=errors,
+    )
+    module_json = _read_text(
+        module_config_path,
+        label="HarmonyOS entry config",
+        errors=errors,
+    )
+    if app_json is not None and '"icon": "$media:app_icon"' not in app_json:
         errors.append("AppScope no longer references $media:app_icon")
-    if '"icon": "$media:icon"' not in module_json:
-        errors.append("entry no longer references $media:icon")
-    if '"startWindowIcon": "$media:icon"' not in module_json:
-        errors.append("startWindowIcon no longer references $media:icon")
+    if module_json is not None:
+        if '"icon": "$media:icon"' not in module_json:
+            errors.append("entry no longer references $media:icon")
+        if '"startWindowIcon": "$media:icon"' not in module_json:
+            errors.append("startWindowIcon no longer references $media:icon")
     return errors
 
 
@@ -335,7 +597,23 @@ VALIDATORS = {
 
 
 def validate_platform(root: Path, platform: str) -> list[str]:
-    return VALIDATORS[platform](root)
+    validator = VALIDATORS[platform]
+    try:
+        return validator(root)
+    except (
+        OSError,
+        UnicodeError,
+        json.JSONDecodeError,
+        KeyError,
+        TypeError,
+        ValueError,
+        struct.error,
+        Image.DecompressionBombError,
+    ) as error:
+        return [
+            f"{platform} validator could not inspect repository input under "
+            f"{root}: {type(error).__name__}: {error}"
+        ]
 
 
 def main() -> None:

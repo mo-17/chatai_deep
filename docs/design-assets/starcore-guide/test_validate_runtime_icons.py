@@ -3,6 +3,8 @@ import io
 import json
 import shutil
 import struct
+import subprocess
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -49,6 +51,212 @@ class RuntimeIconRepositoryTest(unittest.TestCase):
                 )
 
             self.assertTrue(validate_platform(root, "ios"))
+
+    def test_android_reports_corrupt_launcher_without_traceback(self):
+        with self._generated_android_root() as root:
+            path = (
+                root
+                / "chatgpt_flutter/android/app/src/main/res/mipmap-mdpi/ic_launcher.png"
+            )
+            path.write_bytes(b"not a PNG")
+
+            errors = validate_platform(root, "android")
+
+            self.assertTrue(
+                any(
+                    "unable to decode Android launcher" in error
+                    and str(path) in error
+                    for error in errors
+                ),
+                errors,
+            )
+
+    def test_cli_returns_nonzero_without_traceback_for_corrupt_input(self):
+        with self._generated_android_root() as root:
+            path = (
+                root
+                / "chatgpt_flutter/android/app/src/main/res/mipmap-mdpi/ic_launcher.png"
+            )
+            path.write_bytes(b"not a PNG")
+
+            result = subprocess.run(
+                [
+                    sys.executable,
+                    str(
+                        ROOT
+                        / "docs/design-assets/starcore-guide/validate_runtime_icons.py"
+                    ),
+                    "--platform",
+                    "android",
+                    "--root",
+                    str(root),
+                ],
+                check=False,
+                capture_output=True,
+                text=True,
+            )
+
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("unable to decode Android launcher", result.stderr)
+            self.assertNotIn("Traceback", result.stderr)
+
+    def test_android_reports_missing_manifest_without_traceback(self):
+        with self._generated_android_root() as root:
+            path = root / "chatgpt_flutter/android/app/src/main/AndroidManifest.xml"
+            path.unlink()
+
+            errors = validate_platform(root, "android")
+
+            self.assertTrue(
+                any(
+                    "unable to read Android manifest" in error
+                    and str(path) in error
+                    for error in errors
+                ),
+                errors,
+            )
+
+    def test_ios_reports_malformed_catalog_json_without_traceback(self):
+        with self._generated_platform_root("ios") as root:
+            path = self._app_icon_base(root, "ios") / "Contents.json"
+            path.write_text("{not-json", encoding="utf-8")
+
+            errors = validate_platform(root, "ios")
+
+            self.assertTrue(
+                any(
+                    "unable to parse iOS icon catalog" in error
+                    and str(path) in error
+                    for error in errors
+                ),
+                errors,
+            )
+
+    def test_ios_reports_malformed_catalog_schema_without_traceback(self):
+        with self._generated_platform_root("ios") as root:
+            path = self._app_icon_base(root, "ios") / "Contents.json"
+            path.write_text(json.dumps({"images": {"filename": "bad.png"}}))
+
+            errors = validate_platform(root, "ios")
+
+            self.assertTrue(
+                any(
+                    "iOS icon catalog images must be a list" in error
+                    for error in errors
+                ),
+                errors,
+            )
+
+    def test_ios_reports_invalid_size_conversion_without_traceback(self):
+        with self._generated_platform_root("ios") as root:
+            path = self._app_icon_base(root, "ios") / "Contents.json"
+            contents = json.loads(path.read_text(encoding="utf-8"))
+            contents["images"][0]["size"] = "not-a-size"
+            path.write_text(json.dumps(contents), encoding="utf-8")
+
+            errors = validate_platform(root, "ios")
+
+            self.assertTrue(
+                any(
+                    "iOS catalog record is malformed" in error
+                    and "icon-20@2x.png" in error
+                    for error in errors
+                ),
+                errors,
+            )
+
+    def test_macos_reports_missing_catalog_without_traceback(self):
+        with self._generated_platform_root("macos") as root:
+            path = self._app_icon_base(root, "macos") / "Contents.json"
+            path.unlink()
+
+            errors = validate_platform(root, "macos")
+
+            self.assertTrue(
+                any(
+                    "unable to read macOS icon catalog" in error
+                    and str(path) in error
+                    for error in errors
+                ),
+                errors,
+            )
+
+    def test_macos_reports_malformed_catalog_record_without_traceback(self):
+        with self._generated_platform_root("macos") as root:
+            path = self._app_icon_base(root, "macos") / "Contents.json"
+            path.write_text(json.dumps({"images": [{"filename": "bad.png"}]}))
+
+            errors = validate_platform(root, "macos")
+
+            self.assertTrue(
+                any(
+                    "macOS icon catalog record 0 is malformed" in error
+                    for error in errors
+                ),
+                errors,
+            )
+
+    def test_web_reports_missing_index_without_traceback(self):
+        with self._generated_web_root() as root:
+            path = root / "chatgpt_flutter/web/index.html"
+            path.unlink()
+
+            errors = validate_platform(root, "web")
+
+            self.assertTrue(
+                any(
+                    "unable to read Web index" in error and str(path) in error
+                    for error in errors
+                ),
+                errors,
+            )
+
+    def test_web_reports_malformed_manifest_schema_without_traceback(self):
+        with self._generated_web_root() as root:
+            path = root / "chatgpt_flutter/web/manifest.json"
+            path.write_text(json.dumps([{"icons": []}]), encoding="utf-8")
+
+            errors = validate_platform(root, "web")
+
+            self.assertTrue(
+                any("Web manifest must be a JSON object" in error for error in errors),
+                errors,
+            )
+
+    def test_ohos_reports_missing_app_config_without_traceback(self):
+        with self._generated_ohos_root() as root:
+            path = root / "chatgpt_flutter_ohos/ohos/AppScope/app.json5"
+            path.unlink()
+
+            errors = validate_platform(root, "ohos")
+
+            self.assertTrue(
+                any(
+                    "unable to read HarmonyOS AppScope config" in error
+                    and str(path) in error
+                    for error in errors
+                ),
+                errors,
+            )
+
+    def test_ohos_reports_malformed_module_text_without_traceback(self):
+        with self._generated_ohos_root() as root:
+            path = (
+                root
+                / "chatgpt_flutter_ohos/ohos/entry/src/main/module.json5"
+            )
+            path.write_bytes(b"\xff\xfe\xfa")
+
+            errors = validate_platform(root, "ohos")
+
+            self.assertTrue(
+                any(
+                    "unable to read HarmonyOS entry config" in error
+                    and str(path) in error
+                    for error in errors
+                ),
+                errors,
+            )
 
     def test_ios_rejects_duplicate_catalog_record(self):
         with self._generated_platform_root("ios") as root:
@@ -111,6 +319,22 @@ class RuntimeIconRepositoryTest(unittest.TestCase):
                 validate_platform(root, "windows"),
             )
 
+    def test_windows_reports_malformed_runner_rc_without_traceback(self):
+        with self._generated_windows_root() as root:
+            path = root / "chatgpt_flutter/windows/runner/Runner.rc"
+            path.write_bytes(b"\xff\xfe\xfa")
+
+            errors = validate_platform(root, "windows")
+
+            self.assertTrue(
+                any(
+                    "unable to read Windows Runner.rc" in error
+                    and str(path) in error
+                    for error in errors
+                ),
+                errors,
+            )
+
     def test_web_rejects_reordered_manifest_records(self):
         with self._generated_web_root() as root:
             manifest_path = root / "chatgpt_flutter/web/manifest.json"
@@ -160,12 +384,24 @@ class RuntimeIconRepositoryTest(unittest.TestCase):
             )
 
     @contextlib.contextmanager
+    def _generated_android_root(self):
+        with tempfile.TemporaryDirectory() as temporary_root:
+            root = Path(temporary_root)
+            self._copy_master(root)
+            manifest = root / "chatgpt_flutter/android/app/src/main/AndroidManifest.xml"
+            manifest.parent.mkdir(parents=True)
+            manifest.write_text(
+                '<application android:icon="@mipmap/ic_launcher" />',
+                encoding="utf-8",
+            )
+            generate_platform(root, "android")
+            yield root
+
+    @contextlib.contextmanager
     def _generated_platform_root(self, platform: str):
         with tempfile.TemporaryDirectory() as temporary_root:
             root = Path(temporary_root)
-            guide = root / "docs/design-assets/starcore-guide"
-            guide.mkdir(parents=True)
-            shutil.copy2(ROOT / "docs/design-assets/starcore-guide/app-icon-concept.png", guide)
+            self._copy_master(root)
             source = self._app_icon_base(ROOT, platform)
             target = self._app_icon_base(root, platform)
             target.mkdir(parents=True)
@@ -177,9 +413,7 @@ class RuntimeIconRepositoryTest(unittest.TestCase):
     def _generated_web_root(self):
         with tempfile.TemporaryDirectory() as temporary_root:
             root = Path(temporary_root)
-            guide = root / "docs/design-assets/starcore-guide"
-            guide.mkdir(parents=True)
-            shutil.copy2(ROOT / "docs/design-assets/starcore-guide/app-icon-concept.png", guide)
+            self._copy_master(root)
             source = ROOT / "chatgpt_flutter/web"
             target = root / "chatgpt_flutter/web"
             target.mkdir(parents=True)
@@ -194,12 +428,30 @@ class RuntimeIconRepositoryTest(unittest.TestCase):
             yield root
 
     @contextlib.contextmanager
+    def _generated_ohos_root(self):
+        with tempfile.TemporaryDirectory() as temporary_root:
+            root = Path(temporary_root)
+            self._copy_master(root)
+            app_config = root / "chatgpt_flutter_ohos/ohos/AppScope/app.json5"
+            app_config.parent.mkdir(parents=True)
+            app_config.write_text('{"icon": "$media:app_icon"}', encoding="utf-8")
+            module_config = (
+                root
+                / "chatgpt_flutter_ohos/ohos/entry/src/main/module.json5"
+            )
+            module_config.parent.mkdir(parents=True)
+            module_config.write_text(
+                '{"icon": "$media:icon", "startWindowIcon": "$media:icon"}',
+                encoding="utf-8",
+            )
+            generate_platform(root, "ohos")
+            yield root
+
+    @contextlib.contextmanager
     def _generated_windows_root(self):
         with tempfile.TemporaryDirectory() as temporary_root:
             root = Path(temporary_root)
-            guide = root / "docs/design-assets/starcore-guide"
-            guide.mkdir(parents=True)
-            shutil.copy2(ROOT / "docs/design-assets/starcore-guide/app-icon-concept.png", guide)
+            self._copy_master(root)
             runner = root / "chatgpt_flutter/windows/runner"
             runner.mkdir(parents=True)
             (runner / "Runner.rc").write_text(
@@ -208,6 +460,15 @@ class RuntimeIconRepositoryTest(unittest.TestCase):
             )
             generate_platform(root, "windows")
             yield root
+
+    @staticmethod
+    def _copy_master(root: Path) -> None:
+        guide = root / "docs/design-assets/starcore-guide"
+        guide.mkdir(parents=True)
+        shutil.copy2(
+            ROOT / "docs/design-assets/starcore-guide/app-icon-concept.png",
+            guide,
+        )
 
     @staticmethod
     def _read_ico_entries(path: Path):
