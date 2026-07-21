@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import argparse
+import io
 import json
+import struct
 from collections import Counter
 from pathlib import Path
 
@@ -33,6 +35,33 @@ EXPECTED_MACOS_RECORDS = Counter(
         ("app_icon_1024.png", "512x512", "2x"),
     ]
 )
+
+WINDOWS_ICON_SIZES = (16, 32, 48, 256)
+
+EXPECTED_WEB_ICON_RECORDS = [
+    {
+        "src": "icons/Icon-192.png",
+        "sizes": "192x192",
+        "type": "image/png",
+    },
+    {
+        "src": "icons/Icon-512.png",
+        "sizes": "512x512",
+        "type": "image/png",
+    },
+    {
+        "src": "icons/Icon-maskable-192.png",
+        "sizes": "192x192",
+        "type": "image/png",
+        "purpose": "maskable",
+    },
+    {
+        "src": "icons/Icon-maskable-512.png",
+        "sizes": "512x512",
+        "type": "image/png",
+        "purpose": "maskable",
+    },
+]
 
 
 def _same_pixels(actual: Path, expected: Image.Image) -> bool:
@@ -123,54 +152,131 @@ def validate_macos(root: Path) -> list[str]:
 def validate_windows(root: Path) -> list[str]:
     errors: list[str] = []
     path = root / "chatgpt_flutter/windows/runner/resources/app_icon.ico"
-    expected_sizes = {(16, 16), (32, 32), (48, 48), (256, 256)}
     if not path.is_file():
         return [f"missing Windows ICO: {path}"]
-    with Image.open(path) as image:
-        sizes = set(image.ico.sizes())
-        if sizes != expected_sizes:
-            errors.append(f"Windows ICO frame set differs: {sizes}")
-        for size in expected_sizes & sizes:
-            actual = image.ico.getimage(size).convert("RGBA")
-            expected = rounded_icon(_master(root), size[0], inset_ratio=0.06)
-            if ImageChops.difference(actual, expected).getbbox(
-                alpha_only=False,
-            ) is not None:
-                errors.append(f"Windows ICO pixels differ at {size[0]}px")
-    rc = (root / "chatgpt_flutter/windows/runner/Runner.rc").read_text(
-        encoding="utf-8",
-    )
-    if 'resources\\\\app_icon.ico' not in rc:
-        errors.append("Runner.rc no longer references resources\\\\app_icon.ico")
+    try:
+        raw = path.read_bytes()
+    except OSError as error:
+        return [f"unable to read Windows ICO: {path}: {error}"]
+    if len(raw) < 6:
+        return [f"Windows ICO header is truncated: {path}"]
+
+    reserved, icon_type, count = struct.unpack_from("<HHH", raw)
+    if reserved != 0:
+        errors.append(f"Windows ICO reserved header field differs: {reserved}")
+    if icon_type != 1:
+        errors.append(f"Windows ICO type differs: {icon_type}")
+    if count != len(WINDOWS_ICON_SIZES):
+        errors.append(f"Windows ICO directory count differs: {count}")
+
+    directory_end = 6 + count * 16
+    if len(raw) < directory_end:
+        errors.append(
+            f"Windows ICO directory is truncated: expected {directory_end} bytes, "
+            f"found {len(raw)}"
+        )
+    else:
+        sizes: list[tuple[int, int]] = []
+        ranges: list[tuple[int, int]] = []
+        for index in range(count):
+            offset = 6 + index * 16
+            (
+                encoded_width,
+                encoded_height,
+                _colors,
+                _entry_reserved,
+                planes,
+                bpp,
+                length,
+                payload_offset,
+            ) = struct.unpack_from("<BBBBHHII", raw, offset)
+            width = encoded_width or 256
+            height = encoded_height or 256
+            size = (width, height)
+            sizes.append(size)
+            if planes != 1 or bpp != 32:
+                errors.append(
+                    f"Windows ICO directory entry {index} must use 1 plane and 32bpp"
+                )
+            payload_end = payload_offset + length
+            if (
+                length == 0
+                or payload_offset < directory_end
+                or payload_offset > len(raw)
+                or payload_end > len(raw)
+            ):
+                errors.append(
+                    f"Windows ICO directory entry {index} has an invalid payload "
+                    f"offset/length"
+                )
+                continue
+            if any(
+                payload_offset < previous_end and start < payload_end
+                for start, previous_end in ranges
+            ):
+                errors.append(
+                    f"Windows ICO directory entry {index} overlaps another payload"
+                )
+                continue
+            ranges.append((payload_offset, payload_end))
+            payload = raw[payload_offset:payload_end]
+            if not payload.startswith(b"\x89PNG\r\n\x1a\n"):
+                errors.append(f"Windows ICO payload is not PNG at {width}px")
+                continue
+            try:
+                with Image.open(io.BytesIO(payload)) as actual:
+                    actual.load()
+                    if actual.mode != "RGBA":
+                        errors.append(
+                            f"Windows ICO PNG payload must be RGBA at {width}px"
+                        )
+                        continue
+                    if actual.size != size:
+                        errors.append(
+                            f"Windows ICO PNG dimensions differ at entry {index}: "
+                            f"{actual.size} != {size}"
+                        )
+                        continue
+                    expected = rounded_icon(
+                        _master(root), width, inset_ratio=0.06
+                    )
+                    if ImageChops.difference(actual, expected).getbbox(
+                        alpha_only=False,
+                    ) is not None:
+                        errors.append(f"Windows ICO pixels differ at {width}px")
+            except (OSError, SyntaxError, ValueError) as error:
+                errors.append(
+                    f"Windows ICO PNG payload cannot be decoded at entry {index}: {error}"
+                )
+        expected_sizes = {(size, size) for size in WINDOWS_ICON_SIZES}
+        if set(sizes) != expected_sizes or len(sizes) != len(set(sizes)):
+            errors.append(f"Windows ICO frame entries differ: {sizes}")
+    try:
+        rc = (root / "chatgpt_flutter/windows/runner/Runner.rc").read_text(
+            encoding="utf-8",
+        )
+    except OSError as error:
+        errors.append(f"unable to read Runner.rc: {error}")
+    else:
+        if 'resources\\\\app_icon.ico' not in rc:
+            errors.append("Runner.rc no longer references resources\\\\app_icon.ico")
     return errors
 
 
 def validate_web(root: Path) -> list[str]:
     errors: list[str] = []
     base = root / "chatgpt_flutter/web"
-    manifest = json.loads((base / "manifest.json").read_text(encoding="utf-8"))
-    expected = {
-        "icons/Icon-192.png": (192, False),
-        "icons/Icon-512.png": (512, False),
-        "icons/Icon-maskable-192.png": (192, True),
-        "icons/Icon-maskable-512.png": (512, True),
-    }
-    manifest_records = manifest["icons"]
-    sources = [item.get("src") for item in manifest_records]
-    if len(manifest_records) != len(expected):
-        errors.append("Web manifest record count differs from expected icons")
-    if len(set(sources)) != len(sources):
-        errors.append("Web manifest has duplicate icon records")
-    if set(sources) != set(expected):
-        errors.append("Web manifest icon records differ from expected icons")
-    records = {item["src"]: item for item in manifest_records}
-    for relative, (size, is_maskable) in expected.items():
-        item = records.get(relative)
-        if item is None or item.get("sizes") != f"{size}x{size}":
-            errors.append(f"Web manifest entry differs: {relative}")
-            continue
-        if is_maskable != (item.get("purpose") == "maskable"):
-            errors.append(f"Web maskable purpose differs: {relative}")
+    manifest_path = base / "manifest.json"
+    try:
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as error:
+        return [f"unable to read Web manifest: {manifest_path}: {error}"]
+    if manifest.get("icons") != EXPECTED_WEB_ICON_RECORDS:
+        errors.append("Web manifest icon records differ from expected records")
+    for item in EXPECTED_WEB_ICON_RECORDS:
+        relative = item["src"]
+        size = int(item["sizes"].split("x", maxsplit=1)[0])
+        is_maskable = item.get("purpose") == "maskable"
         rendered = (
             maskable_icon(_master(root), size)
             if is_maskable
