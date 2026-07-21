@@ -2,6 +2,7 @@ import 'dart:io';
 
 import 'package:chatgpt_app_core/model/assistant_model.dart';
 import 'package:chatgpt_app_core/theme/app_visual_theme.dart';
+import 'package:chatgpt_app_core/theme/starcore_icon_assets.dart';
 import 'package:chatgpt_app_core/util/avatar_asset_service.dart';
 import 'package:flutter/material.dart';
 
@@ -51,6 +52,11 @@ class AssistantAvatar extends StatelessWidget {
       }
       return _imageAvatar(context, File(value));
     }
+    final visual = AppVisualTheme.of(context);
+    if (visual.isAnime && type == AvatarAssetService.assetType) {
+      final asset = StarcoreIconAssets.assistantAssetFor(value);
+      if (asset != null) return _assetAvatar(context, asset);
+    }
     return _emojiAvatar(context);
   }
 
@@ -72,6 +78,52 @@ class AssistantAvatar extends StatelessWidget {
           ),
         ),
       ),
+    );
+  }
+
+  Widget _assetAvatar(BuildContext context, String asset) {
+    final decodeSize =
+        (radius * 2 * MediaQuery.devicePixelRatioOf(context)).round();
+    return _animeFrame(
+      context,
+      ClipOval(
+        child: SizedBox.square(
+          dimension: radius * 2,
+          child: Image.asset(
+            asset,
+            package: StarcoreIconAssets.packageName,
+            fit: BoxFit.cover,
+            cacheWidth: decodeSize,
+            cacheHeight: decodeSize,
+            gaplessPlayback: true,
+            errorBuilder: (_, __, ___) => _assetFallback(context),
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _assetFallback(BuildContext context) {
+    final visual = AppVisualTheme.of(context);
+    final colorScheme = Theme.of(context).colorScheme;
+    final fallback =
+        (emoji.isNotEmpty ? emoji : (assistant?.emoji ?? '')).trim();
+    return CircleAvatar(
+      radius: radius,
+      backgroundColor: visual.isAnime ? colorScheme.secondaryContainer : null,
+      child: fallback.isNotEmpty
+          ? Text(
+              fallback,
+              style: TextStyle(
+                fontSize: radius,
+                color: visual.isAnime ? colorScheme.onSecondaryContainer : null,
+              ),
+            )
+          : Icon(
+              Icons.smart_toy,
+              size: radius,
+              color: visual.isAnime ? colorScheme.onSecondaryContainer : null,
+            ),
     );
   }
 

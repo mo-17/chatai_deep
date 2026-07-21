@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:io';
 
 import 'package:chatgpt_app_core/chat/application/mcp/mcp_tool_source.dart';
@@ -11,21 +12,30 @@ import 'package:chatgpt_app_core/model/assistant_model.dart';
 import 'package:chatgpt_app_core/model/world_book.dart';
 import 'package:chatgpt_app_core/provider/ai_settings_provider.dart';
 import 'package:chatgpt_app_core/theme/app_visual_theme.dart';
+import 'package:chatgpt_app_core/theme/starcore_icon_assets.dart';
 import 'package:chatgpt_app_core/util/avatar_asset_service.dart';
 import 'package:chatgpt_app_core/util/hi_dialog.dart';
 import 'package:chatgpt_app_core/util/model_catalog.dart';
 import 'package:chatgpt_app_core/widget/assistant_avatar.dart';
+import 'package:chatgpt_app_core/widget/assistant_avatar_preset_picker.dart';
 import 'package:flutter/material.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:provider/provider.dart';
 
 ///助手新建 / 编辑页（阶段七）：名称、emoji、系统提示词、可选模型覆盖、工具开关。
 ///对应源项目 `src/screens/assistant/AssistantDetailScreen.tsx` 的精简版。
+typedef AssistantEditSaver = Future<void> Function(AssistantModel assistant);
+
 class AssistantEditPage extends StatefulWidget {
   ///null = 新建。
   final AssistantModel? assistant;
+  final AssistantEditSaver? saveAssistant;
 
-  const AssistantEditPage({super.key, this.assistant});
+  const AssistantEditPage({
+    super.key,
+    this.assistant,
+    this.saveAssistant,
+  });
 
   @override
   State<AssistantEditPage> createState() => _AssistantEditPageState();
@@ -539,8 +549,17 @@ class _AssistantEditPageState extends State<AssistantEditPage> {
   Widget _buildAvatarEditor({bool expanded = false}) {
     final hasImage = _avatarType == AvatarAssetService.imageType &&
         (_avatarValue?.trim().isNotEmpty ?? false);
+    final selectedAssetId = _avatarType == AvatarAssetService.assetType
+        ? _avatarValue?.trim()
+        : null;
+    final visual = AppVisualTheme.of(context);
     final colorScheme = Theme.of(context).colorScheme;
     final emoji = _emojiCtl.text.trim().isEmpty ? '🤖' : _emojiCtl.text.trim();
+    final caption = switch (selectedAssetId) {
+      StarcoreIconAssets.assistantExplorerId => '探索向导',
+      StarcoreIconAssets.assistantCreatorId => '创作搭档',
+      _ => hasImage ? '图片头像' : 'Emoji 头像',
+    };
     return SizedBox(
       width: expanded ? double.infinity : 148,
       child: DecoratedBox(
@@ -597,19 +616,33 @@ class _AssistantEditPageState extends State<AssistantEditPage> {
               ),
               const SizedBox(height: 10),
               Text(
-                hasImage ? '图片头像' : 'Emoji 头像',
+                caption,
                 style: TextStyle(
                   color: colorScheme.onSurface,
                   fontWeight: FontWeight.w600,
                 ),
               ),
+              if (visual.isAnime) ...[
+                const SizedBox(height: 10),
+                AssistantAvatarPresetPicker(
+                  selectedAssetId: selectedAssetId,
+                  onSelected: _selectAvatarPreset,
+                ),
+              ],
               const SizedBox(height: 10),
               TextField(
+                key: const ValueKey('assistant-avatar-emoji-field'),
                 controller: _emojiCtl,
                 textAlign: TextAlign.center,
                 maxLength: 2,
                 textInputAction: TextInputAction.done,
-                onChanged: (_) => setState(() {}),
+                onChanged: (_) {
+                  if (_avatarType == AvatarAssetService.assetType) {
+                    _selectAvatarPreset(null);
+                  } else {
+                    setState(() {});
+                  }
+                },
                 decoration: InputDecoration(
                   labelText: 'Emoji',
                   helperText: hasImage ? '删除图片后显示' : '未上传图片时显示',
@@ -1027,12 +1060,28 @@ class _AssistantEditPageState extends State<AssistantEditPage> {
       ..model = _model.trim()
       ..useTools = _useTools
       ..toolIds = _toolIds.toList();
-    final dbManager =
-        await HiDBManager.instance(dbName: HiDBManager.getAccountHash());
-    final dao = await AssistantDao.create(dbManager);
-    await dao.saveAssistant(model);
+    if (widget.saveAssistant != null) {
+      await widget.saveAssistant!(model);
+    } else {
+      final dbManager =
+          await HiDBManager.instance(dbName: HiDBManager.getAccountHash());
+      final dao = await AssistantDao.create(dbManager);
+      await dao.saveAssistant(model);
+    }
     if (!mounted) return;
     Navigator.pop(context, true);
+  }
+
+  void _selectAvatarPreset(String? assetId) {
+    final oldPath =
+        _avatarType == AvatarAssetService.imageType ? _avatarValue : null;
+    setState(() {
+      _avatarType = assetId == null ? null : AvatarAssetService.assetType;
+      _avatarValue = assetId;
+    });
+    if (oldPath != null) {
+      unawaited(AvatarAssetService.deleteAssistantAvatar(oldPath));
+    }
   }
 
   void _pickAvatarImage() async {
@@ -1049,7 +1098,8 @@ class _AssistantEditPageState extends State<AssistantEditPage> {
       );
       if (!mounted || picked == null) return;
       final name = _nameCtl.text.trim().isEmpty ? 'assistant' : _nameCtl.text;
-      final oldPath = _avatarValue;
+      final oldPath =
+          _avatarType == AvatarAssetService.imageType ? _avatarValue : null;
       final path = await AvatarAssetService.saveAssistantAvatar(
         sourcePath: picked.path,
         assistantName: name,

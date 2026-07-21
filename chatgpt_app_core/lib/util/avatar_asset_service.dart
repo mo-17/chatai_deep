@@ -7,6 +7,7 @@ import 'package:path_provider/path_provider.dart';
 /// 会话头像资源托管：把相册临时路径复制到应用 Documents，避免原路径失效。
 class AvatarAssetService {
   static const imageType = 'image';
+  static const assetType = 'asset';
   static const _rootDirName = 'chat_avatar';
 
   @visibleForTesting
