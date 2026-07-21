@@ -1,4 +1,3 @@
-import 'dart:async';
 import 'dart:io';
 
 import 'package:chatgpt_app_core/chat/application/mcp/mcp_tool_source.dart';
@@ -71,6 +70,7 @@ class _AssistantEditPageState extends State<AssistantEditPage> {
   String _defaultVoiceStyle = '';
   String? _avatarType;
   String? _avatarValue;
+  final Set<String> _obsoleteAvatarPaths = {};
   bool _useTools = true;
   List<UserSherpaOnnxTtsModel> _userVoiceModels = const [];
   final _imagePicker = ImagePicker();
@@ -1080,20 +1080,20 @@ class _AssistantEditPageState extends State<AssistantEditPage> {
       final dao = await AssistantDao.create(dbManager);
       await dao.saveAssistant(model);
     }
+    await _deleteObsoleteAvatarImages(
+      finalAvatarType: model.avatarType,
+      finalAvatarValue: model.avatarValue,
+    );
     if (!mounted) return;
     Navigator.pop(context, true);
   }
 
   void _selectAvatarPreset(String? assetId) {
-    final oldPath =
-        _avatarType == AvatarAssetService.imageType ? _avatarValue : null;
+    _queueCurrentImageForCleanup();
     setState(() {
       _avatarType = assetId == null ? null : AvatarAssetService.assetType;
       _avatarValue = assetId;
     });
-    if (oldPath != null) {
-      unawaited(AvatarAssetService.deleteAssistantAvatar(oldPath));
-    }
   }
 
   void _pickAvatarImage() async {
@@ -1117,7 +1117,7 @@ class _AssistantEditPageState extends State<AssistantEditPage> {
         assistantName: name,
       );
       if (oldPath != path) {
-        await AvatarAssetService.deleteAssistantAvatar(oldPath);
+        _queueManagedImagePath(oldPath);
       }
       if (!mounted) return;
       setState(() {
@@ -1129,13 +1129,37 @@ class _AssistantEditPageState extends State<AssistantEditPage> {
     }
   }
 
-  void _removeAvatarImage() async {
-    final oldPath = _avatarValue;
+  void _removeAvatarImage() {
+    _queueCurrentImageForCleanup();
     setState(() {
       _avatarType = null;
       _avatarValue = null;
     });
-    await AvatarAssetService.deleteAssistantAvatar(oldPath);
+  }
+
+  void _queueCurrentImageForCleanup() {
+    if (_avatarType != AvatarAssetService.imageType) return;
+    _queueManagedImagePath(_avatarValue);
+  }
+
+  void _queueManagedImagePath(String? path) {
+    final value = path?.trim() ?? '';
+    if (value.isEmpty || !AvatarAssetService.isManagedPath(value)) return;
+    _obsoleteAvatarPaths.add(value);
+  }
+
+  Future<void> _deleteObsoleteAvatarImages({
+    required String? finalAvatarType,
+    required String? finalAvatarValue,
+  }) async {
+    final retainedPath = finalAvatarType == AvatarAssetService.imageType
+        ? finalAvatarValue?.trim()
+        : null;
+    for (final path in _obsoleteAvatarPaths) {
+      if (path == retainedPath) continue;
+      await AvatarAssetService.deleteAssistantAvatar(path);
+    }
+    _obsoleteAvatarPaths.clear();
   }
 
   String settingsAwareProviderId() {

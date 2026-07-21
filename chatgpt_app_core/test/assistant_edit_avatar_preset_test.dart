@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:io';
 
 import 'package:chatgpt_app_core/model/assistant_model.dart';
@@ -29,11 +30,35 @@ void main() {
   }
 
   Future<bool> waitForDeletion(File file) async {
-    for (var attempt = 0; attempt < 100; attempt++) {
-      if (!await file.exists()) return true;
+    final timeout = Stopwatch()..start();
+    while (await file.exists()) {
+      if (timeout.elapsed > const Duration(seconds: 2)) return false;
       await Future<void>.delayed(const Duration(milliseconds: 10));
     }
-    return false;
+    return true;
+  }
+
+  Future<bool> pumpUntilDeleted(WidgetTester tester, File file) async {
+    final timeout = Stopwatch()..start();
+    while (file.existsSync()) {
+      if (timeout.elapsed > const Duration(seconds: 2)) return false;
+      await tester.runAsync(file.exists);
+      await tester.pump();
+    }
+    return true;
+  }
+
+  Future<void> pumpUntilFound(WidgetTester tester, Finder finder) async {
+    final timeout = Stopwatch()..start();
+    while (finder.evaluate().isEmpty) {
+      if (timeout.elapsed > const Duration(seconds: 2)) {
+        fail('Timed out waiting for $finder');
+      }
+      await tester.runAsync(
+        () => Future<void>.delayed(Duration.zero),
+      );
+      await tester.pump(const Duration(milliseconds: 10));
+    }
   }
 
   setUp(() async {
@@ -61,11 +86,15 @@ void main() {
       ChangeNotifierProvider<AISettingsProvider>.value(
         value: AISettingsProvider(),
         child: MaterialApp(
-          theme: theme,
-          home: AssistantEditPage(
-            assistant: assistant,
-            saveAssistant: saveAssistant,
-          ),
+          theme: theme.copyWith(splashFactory: NoSplash.splashFactory),
+          initialRoute: '/edit',
+          routes: {
+            '/': (_) => const Scaffold(body: Text('assistant-list')),
+            '/edit': (_) => AssistantEditPage(
+                  assistant: assistant,
+                  saveAssistant: saveAssistant,
+                ),
+          },
         ),
       ),
     );
@@ -199,7 +228,54 @@ void main() {
     expect(saved?.avatarValue, image.path);
   });
 
-  testWidgets('selecting a preset cleans up only the previous managed image',
+  testWidgets(
+      'selecting a preset defers old managed image cleanup until save succeeds',
+      (tester) async {
+    late Directory root;
+    late File image;
+    await tester.runAsync(() async {
+      root = await Directory.systemTemp.createTemp('assistant-avatar-test-');
+      image = await writeManagedAvatar(root);
+    });
+    addTearDown(() async {
+      if (await root.exists()) await root.delete(recursive: true);
+    });
+
+    final persistenceCompleted = Completer<void>();
+    await pumpEditor(
+      tester,
+      theme: AppThemeFactory.anime(),
+      assistant: AssistantModel(
+        id: 11,
+        name: '清理测试',
+        emoji: '🤖',
+        avatarType: AvatarAssetService.imageType,
+        avatarValue: image.path,
+      ),
+      saveAssistant: (_) {
+        expect(image.existsSync(), isTrue);
+        persistenceCompleted.complete();
+        return Future<void>.value();
+      },
+    );
+
+    await tester.tap(
+      find.byKey(const ValueKey('assistant-avatar-preset-explorer')),
+    );
+    await tester.pump();
+    expect(await tester.runAsync(image.exists), isTrue);
+
+    await tester.tap(find.text('保存修改'));
+    await tester.pump();
+    expect(persistenceCompleted.isCompleted, isTrue);
+    expect(await pumpUntilDeleted(tester, image), isTrue);
+    await pumpUntilFound(tester, find.text('assistant-list'));
+
+    expect(find.text('assistant-list'), findsOneWidget);
+    expect(await tester.runAsync(image.exists), isFalse);
+  });
+
+  testWidgets('selecting a preset then going back preserves the old image',
       (tester) async {
     late Directory root;
     late File image;
@@ -215,8 +291,8 @@ void main() {
       tester,
       theme: AppThemeFactory.anime(),
       assistant: AssistantModel(
-        id: 11,
-        name: '清理测试',
+        id: 12,
+        name: '取消测试',
         emoji: '🤖',
         avatarType: AvatarAssetService.imageType,
         avatarValue: image.path,
@@ -227,13 +303,72 @@ void main() {
     final preset = tester.widget<ChoiceChip>(
       find.byKey(const ValueKey('assistant-avatar-preset-explorer')),
     );
-    final deleted = await tester.runAsync(() async {
+    final deletedBeforeCancel = await tester.runAsync(() async {
+      preset.onSelected!(true);
+      return waitForDeletion(image);
+    });
+    await tester.pump();
+    await tester.pageBack();
+    await tester.pumpAndSettle();
+
+    expect(find.text('assistant-list'), findsOneWidget);
+    expect(deletedBeforeCancel, isFalse);
+    expect(await tester.runAsync(image.exists), isTrue);
+  });
+
+  testWidgets('selecting a preset then save failure preserves the old image',
+      (tester) async {
+    late Directory root;
+    late File image;
+    await tester.runAsync(() async {
+      root = await Directory.systemTemp.createTemp('assistant-avatar-test-');
+      image = await writeManagedAvatar(root);
+    });
+    addTearDown(() async {
+      if (await root.exists()) await root.delete(recursive: true);
+    });
+
+    await pumpEditor(
+      tester,
+      theme: AppThemeFactory.anime(),
+      assistant: AssistantModel(
+        id: 13,
+        name: '失败测试',
+        emoji: '🤖',
+        avatarType: AvatarAssetService.imageType,
+        avatarValue: image.path,
+      ),
+      saveAssistant: (_) => Future<void>.error(StateError('save failed')),
+    );
+
+    final preset = tester.widget<ChoiceChip>(
+      find.byKey(const ValueKey('assistant-avatar-preset-explorer')),
+    );
+    final deletedBeforeSave = await tester.runAsync(() async {
       preset.onSelected!(true);
       return waitForDeletion(image);
     });
     await tester.pump();
 
-    expect(deleted, isTrue);
-    expect(find.text('探索向导'), findsNWidgets(2));
+    expect(deletedBeforeSave, isFalse);
+    final saveButton = tester.widget<FilledButton>(
+      find.widgetWithText(FilledButton, '保存修改'),
+    );
+    Object? saveError;
+    await tester.runAsync(() async {
+      final errorObserved = Completer<void>();
+      runZonedGuarded<void>(
+        saveButton.onPressed!,
+        (error, _) {
+          saveError = error;
+          errorObserved.complete();
+        },
+      );
+      await errorObserved.future;
+    });
+    await tester.pump();
+    expect(saveError, isA<StateError>());
+    expect(find.byType(AssistantEditPage), findsOneWidget);
+    expect(await tester.runAsync(image.exists), isTrue);
   });
 }
