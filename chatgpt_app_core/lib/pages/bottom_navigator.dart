@@ -7,6 +7,8 @@ import 'package:chatgpt_app_core/pages/wonderful_page.dart';
 import 'package:chatgpt_app_core/provider/ai_readiness_provider.dart';
 import 'package:chatgpt_app_core/provider/ai_settings_provider.dart';
 import 'package:chatgpt_app_core/provider/theme_provider.dart';
+import 'package:chatgpt_app_core/theme/starcore_icon_assets.dart';
+import 'package:chatgpt_app_core/widget/starcore_svg_icon.dart';
 import 'package:flutter/material.dart';
 import 'package:login_sdk/util/navigator_util.dart';
 import 'package:provider/provider.dart';
@@ -164,8 +166,14 @@ class AppBottomNavigationBar extends StatelessWidget {
         onDestinationSelected: onSelected,
         destinations: const [
           NavigationDestination(
-            icon: Icon(Icons.chat_bubble_outline_rounded),
-            selectedIcon: Icon(Icons.chat_bubble_rounded),
+            icon: StarcoreSvgIcon(
+              assetName: StarcoreIconAssets.navChatDefault,
+              fallback: Icon(Icons.chat_bubble_outline_rounded),
+            ),
+            selectedIcon: StarcoreSvgIcon(
+              assetName: StarcoreIconAssets.navChatSelected,
+              fallback: Icon(Icons.chat_bubble_rounded),
+            ),
             label: '聊天',
           ),
           NavigationDestination(
@@ -174,8 +182,14 @@ class AppBottomNavigationBar extends StatelessWidget {
             label: '精彩',
           ),
           NavigationDestination(
-            icon: Icon(Icons.theater_comedy_outlined),
-            selectedIcon: Icon(Icons.theater_comedy_rounded),
+            icon: StarcoreSvgIcon(
+              assetName: StarcoreIconAssets.navCreateDefault,
+              fallback: Icon(Icons.theater_comedy_outlined),
+            ),
+            selectedIcon: StarcoreSvgIcon(
+              assetName: StarcoreIconAssets.navCreateSelected,
+              fallback: Icon(Icons.theater_comedy_rounded),
+            ),
             label: '创作',
           ),
           NavigationDestination(
