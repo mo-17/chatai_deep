@@ -45,6 +45,7 @@ dependencies:
   sherpa_onnx: ^1.13.3
   audioplayers: ^6.7.1
   crypto: ^3.0.6
+  flutter_svg: ^2.3.0
 
 dev_dependencies:
   flutter_test:
@@ -58,3 +59,4 @@ flutter:
   assets:
     - assets/images/
     - assets/lottie/
+    - assets/icons/starcore/
