@@ -11,6 +11,12 @@ class RuntimeIconRepositoryTest(unittest.TestCase):
     def test_android(self):
         self.assertEqual(validate_platform(ROOT, "android"), [])
 
+    def test_ios(self):
+        self.assertEqual(validate_platform(ROOT, "ios"), [])
+
+    def test_macos(self):
+        self.assertEqual(validate_platform(ROOT, "macos"), [])
+
 
 if __name__ == "__main__":
     unittest.main()
