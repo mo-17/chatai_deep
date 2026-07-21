@@ -8,9 +8,11 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 from PIL import Image, ImageChops
 
+import validate_runtime_icons as runtime_validator
 from generate_runtime_icons import generate_platform
 from validate_runtime_icons import validate_platform
 
@@ -18,7 +20,76 @@ from validate_runtime_icons import validate_platform
 ROOT = Path(__file__).resolve().parents[3]
 
 
+class _TrackedMasterImage:
+    def __init__(self, image):
+        self._image = image
+        self.closed = False
+
+    def __getattr__(self, name):
+        return getattr(self._image, name)
+
+    def close(self):
+        self.closed = True
+        self._image.close()
+
+
 class RuntimeIconRepositoryTest(unittest.TestCase):
+    def test_validate_platform_propagates_programmer_errors(self):
+        for error_type in (TypeError, ValueError, KeyError):
+            with self.subTest(error_type=error_type.__name__):
+                failure = error_type("programmer bug")
+
+                def broken_validator(_root, failure=failure):
+                    raise failure
+
+                with mock.patch.dict(
+                    runtime_validator.VALIDATORS,
+                    {"android": broken_validator},
+                ):
+                    with self.assertRaises(error_type) as raised:
+                        validate_platform(ROOT, "android")
+
+                self.assertIs(raised.exception, failure)
+
+    def test_each_platform_closes_its_single_loaded_master(self):
+        real_assert_master = runtime_validator._assert_master
+        for platform in runtime_validator.VALIDATORS:
+            with self.subTest(platform=platform):
+                masters = []
+
+                def tracked_assert_master(path):
+                    tracked = _TrackedMasterImage(real_assert_master(path))
+                    masters.append(tracked)
+                    return tracked
+
+                with mock.patch.object(
+                    runtime_validator,
+                    "_assert_master",
+                    side_effect=tracked_assert_master,
+                ) as loader:
+                    self.assertEqual(validate_platform(ROOT, platform), [])
+
+                loader.assert_called_once()
+                self.assertEqual(len(masters), 1)
+                self.assertTrue(masters[0].closed)
+
+    def test_android_detects_single_pixel_tampering(self):
+        with self._generated_android_root() as root:
+            path = (
+                root
+                / "chatgpt_flutter/android/app/src/main/res/mipmap-mdpi/ic_launcher.png"
+            )
+            with Image.open(path) as source:
+                altered = source.copy()
+            red, green, blue = altered.getpixel((0, 0))
+            altered.putpixel((0, 0), ((red + 1) % 256, green, blue))
+            altered.save(path, format="PNG")
+
+            self.assertIn(
+                f"android launcher mismatch: {path}",
+                validate_platform(root, "android"),
+            )
+
     def test_android(self):
         self.assertEqual(validate_platform(ROOT, "android"), [])
 
