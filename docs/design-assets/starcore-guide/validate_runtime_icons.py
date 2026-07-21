@@ -3,22 +3,22 @@ from __future__ import annotations
 import argparse
 import io
 import json
+import math
 import struct
 from collections import Counter
-from collections.abc import Callable
 from pathlib import Path
 
-from PIL import Image, ImageChops
+from PIL import Image, ImageChops, ImageDraw
 
 from generate_runtime_icons import (
     ANDROID_SIZES,
     GENERATORS,
     IOS_FILES,
     MAC_SIZES,
+    MIDNIGHT,
+    RESAMPLE,
+    _assert_master,
     _master,
-    maskable_icon,
-    rounded_icon,
-    square_icon,
 )
 
 
@@ -69,14 +69,23 @@ IMAGE_INPUT_ERRORS = (
     SyntaxError,
     TypeError,
     ValueError,
+    MemoryError,
+    OverflowError,
     Image.DecompressionBombError,
+)
+
+JSON_INPUT_ERRORS = (
+    json.JSONDecodeError,
+    RecursionError,
+    MemoryError,
+    OverflowError,
 )
 
 
 def _read_text(path: Path, *, label: str, errors: list[str]) -> str | None:
     try:
         return path.read_text(encoding="utf-8")
-    except (OSError, UnicodeError) as error:
+    except (OSError, UnicodeError, MemoryError, OverflowError) as error:
         errors.append(f"unable to read {label}: {path}: {error}")
         return None
 
@@ -84,7 +93,7 @@ def _read_text(path: Path, *, label: str, errors: list[str]) -> str | None:
 def _read_bytes(path: Path, *, label: str, errors: list[str]) -> bytes | None:
     try:
         return path.read_bytes()
-    except OSError as error:
+    except (OSError, MemoryError, OverflowError) as error:
         errors.append(f"unable to read {label}: {path}: {error}")
         return None
 
@@ -100,8 +109,11 @@ def _read_json_object(
         return None
     try:
         value = json.loads(text)
-    except json.JSONDecodeError as error:
-        errors.append(f"unable to parse {label}: {path}: {error}")
+    except JSON_INPUT_ERRORS as error:
+        errors.append(
+            f"unable to parse {label}: {path}: "
+            f"{type(error).__name__}: {error}"
+        )
         return None
     if not isinstance(value, dict):
         errors.append(f"{label} must be a JSON object: {path}")
@@ -109,20 +121,54 @@ def _read_json_object(
     return value
 
 
-def _render_expected(
-    render: Callable[[], Image.Image],
+def _load_master(
+    root: Path,
     *,
-    label: str,
-    source: Path,
+    platform: str,
     errors: list[str],
 ) -> Image.Image | None:
+    source = _master(root)
     try:
-        return render()
+        return _assert_master(source)
     except IMAGE_INPUT_ERRORS as error:
         errors.append(
-            f"unable to render {label} from Starcore master {source}: {error}"
+            f"unable to load {platform} Starcore master: {source}: {error}"
         )
         return None
+
+
+def _square_icon(master: Image.Image, size: int) -> Image.Image:
+    return master.resize((size, size), RESAMPLE).convert("RGB")
+
+
+def _rounded_icon(
+    master: Image.Image,
+    size: int,
+    *,
+    inset_ratio: float,
+) -> Image.Image:
+    inset = round(size * inset_ratio)
+    inner = size - inset * 2
+    art = master.resize((inner, inner), RESAMPLE).convert("RGBA")
+    mask = Image.new("L", (inner, inner), 0)
+    radius = round(inner * 0.22)
+    ImageDraw.Draw(mask).rounded_rectangle(
+        (0, 0, inner - 1, inner - 1),
+        radius=radius,
+        fill=255,
+    )
+    canvas = Image.new("RGBA", (size, size), (0, 0, 0, 0))
+    canvas.paste(art, (inset, inset), mask)
+    return canvas
+
+
+def _maskable_icon(master: Image.Image, size: int) -> Image.Image:
+    inner = round(size * 0.78)
+    art = master.resize((inner, inner), RESAMPLE)
+    canvas = Image.new("RGB", (size, size), MIDNIGHT)
+    offset = (size - inner) // 2
+    canvas.paste(art, (offset, offset))
+    return canvas
 
 
 def _same_pixels(
@@ -167,24 +213,17 @@ def _check_pixels(
 def validate_android(root: Path) -> list[str]:
     errors: list[str] = []
     base = root / "chatgpt_flutter/android/app/src/main/res"
-    master = _master(root)
-    for density, size in ANDROID_SIZES.items():
-        path = base / density / "ic_launcher.png"
-        expected = _render_expected(
-            lambda size=size: square_icon(master, size),
-            label=f"Android {density} launcher",
-            source=master,
-            errors=errors,
-        )
-        if expected is None:
-            break
-        _check_pixels(
-            path,
-            expected,
-            label="Android launcher",
-            mismatch=f"android launcher mismatch: {path}",
-            errors=errors,
-        )
+    master = _load_master(root, platform="Android", errors=errors)
+    if master is not None:
+        for density, size in ANDROID_SIZES.items():
+            path = base / density / "ic_launcher.png"
+            _check_pixels(
+                path,
+                _square_icon(master, size),
+                label="Android launcher",
+                mismatch=f"android launcher mismatch: {path}",
+                errors=errors,
+            )
     manifest = root / "chatgpt_flutter/android/app/src/main/AndroidManifest.xml"
     text = _read_text(manifest, label="Android manifest", errors=errors)
     if text is not None:
@@ -229,6 +268,7 @@ def validate_ios(root: Path) -> list[str]:
         errors.append("iOS Contents.json has duplicate filenames")
     if set(declared) != set(IOS_FILES):
         errors.append("iOS Contents.json filenames differ from IOS_FILES")
+    master = _load_master(root, platform="iOS", errors=errors)
     for filename, pixels in IOS_FILES.items():
         item = declared.get(filename)
         path = base / filename
@@ -243,10 +283,18 @@ def validate_ios(root: Path) -> list[str]:
             ):
                 raise TypeError("size and scale must be strings")
             points = float(declared_size.split("x", maxsplit=1)[0])
-            scale = int(declared_scale.removesuffix("x"))
-        except (KeyError, TypeError, ValueError) as error:
+            scale_text = declared_scale.removesuffix("x")
+            scale_value = float(scale_text)
+            if not math.isfinite(points) or not math.isfinite(scale_value):
+                raise ValueError("size and scale must be finite")
+            scale = int(scale_text)
+            rendered_pixels = points * scale
+            if not math.isfinite(rendered_pixels):
+                raise ValueError("computed pixel size must be finite")
+        except (KeyError, TypeError, ValueError, OverflowError) as error:
             errors.append(
-                f"iOS catalog record is malformed for {filename}: {error}"
+                f"iOS catalog record is malformed for {filename} in "
+                f"{catalog_path}: {error}"
             )
         else:
             if round(points * scale) != pixels:
@@ -262,22 +310,14 @@ def validate_ios(root: Path) -> list[str]:
         except IMAGE_INPUT_ERRORS as error:
             errors.append(f"unable to decode iOS icon: {path}: {error}")
             continue
-        master = _master(root)
-        expected = _render_expected(
-            lambda pixels=pixels: square_icon(master, pixels),
-            label=f"iOS {filename}",
-            source=master,
-            errors=errors,
-        )
-        if expected is None:
-            break
-        _check_pixels(
-            path,
-            expected,
-            label="iOS icon",
-            mismatch=f"iOS icon pixels differ: {path}",
-            errors=errors,
-        )
+        if master is not None:
+            _check_pixels(
+                path,
+                _square_icon(master, pixels),
+                label="iOS icon",
+                mismatch=f"iOS icon pixels differ: {path}",
+                errors=errors,
+            )
     return errors
 
 
@@ -319,7 +359,7 @@ def validate_macos(root: Path) -> list[str]:
         actual_records[(filename, declared_size, scale)] += 1
     if actual_records != EXPECTED_MACOS_RECORDS:
         errors.append("macOS Contents.json records differ from expected catalog")
-    master = _master(root)
+    master = _load_master(root, platform="macOS", errors=errors)
     for size in MAC_SIZES:
         path = base / f"app_icon_{size}.png"
         if not path.is_file():
@@ -335,21 +375,14 @@ def validate_macos(root: Path) -> list[str]:
         except IMAGE_INPUT_ERRORS as error:
             errors.append(f"unable to decode macOS icon: {path}: {error}")
             continue
-        expected = _render_expected(
-            lambda size=size: rounded_icon(master, size, inset_ratio=0.08),
-            label=f"macOS {size}px icon",
-            source=master,
-            errors=errors,
-        )
-        if expected is None:
-            break
-        _check_pixels(
-            path,
-            expected,
-            label="macOS icon",
-            mismatch=f"macOS icon pixels differ: {path}",
-            errors=errors,
-        )
+        if master is not None:
+            _check_pixels(
+                path,
+                _rounded_icon(master, size, inset_ratio=0.08),
+                label="macOS icon",
+                mismatch=f"macOS icon pixels differ: {path}",
+                errors=errors,
+            )
     return errors
 
 
@@ -363,6 +396,7 @@ def validate_windows(root: Path) -> list[str]:
         return errors
     if len(raw) < 6:
         return [f"Windows ICO header is truncated: {path}"]
+    master = _load_master(root, platform="Windows", errors=errors)
 
     reserved, icon_type, count = struct.unpack_from("<HHH", raw)
     if reserved != 0:
@@ -440,13 +474,16 @@ def validate_windows(root: Path) -> list[str]:
                             f"{actual.size} != {size}"
                         )
                         continue
-                    expected = rounded_icon(
-                        _master(root), width, inset_ratio=0.06
-                    )
-                    if ImageChops.difference(actual, expected).getbbox(
-                        alpha_only=False,
-                    ) is not None:
-                        errors.append(f"Windows ICO pixels differ at {width}px")
+                    if master is not None:
+                        expected = _rounded_icon(
+                            master,
+                            width,
+                            inset_ratio=0.06,
+                        )
+                        if ImageChops.difference(actual, expected).getbbox(
+                            alpha_only=False,
+                        ) is not None:
+                            errors.append(f"Windows ICO pixels differ at {width}px")
             except IMAGE_INPUT_ERRORS as error:
                 errors.append(
                     f"Windows ICO PNG payload cannot be decoded at entry {index}: {error}"
@@ -475,40 +512,27 @@ def validate_web(root: Path) -> list[str]:
         manifest = {}
     if manifest.get("icons") != EXPECTED_WEB_ICON_RECORDS:
         errors.append("Web manifest icon records differ from expected records")
-    master = _master(root)
-    for item in EXPECTED_WEB_ICON_RECORDS:
-        relative = item["src"]
-        size = int(item["sizes"].split("x", maxsplit=1)[0])
-        is_maskable = item.get("purpose") == "maskable"
-        rendered = _render_expected(
-            lambda size=size, is_maskable=is_maskable: (
-                maskable_icon(master, size)
+    master = _load_master(root, platform="Web", errors=errors)
+    if master is not None:
+        for item in EXPECTED_WEB_ICON_RECORDS:
+            relative = item["src"]
+            size = int(item["sizes"].split("x", maxsplit=1)[0])
+            is_maskable = item.get("purpose") == "maskable"
+            rendered = (
+                _maskable_icon(master, size)
                 if is_maskable
-                else square_icon(master, size)
-            ),
-            label=f"Web {relative}",
-            source=master,
-            errors=errors,
-        )
-        if rendered is None:
-            break
-        _check_pixels(
-            base / relative,
-            rendered,
-            label="Web icon",
-            mismatch=f"Web icon pixels differ: {relative}",
-            errors=errors,
-        )
-    favicon = _render_expected(
-        lambda: rounded_icon(master, 16, inset_ratio=0.03),
-        label="Web favicon",
-        source=master,
-        errors=errors,
-    )
-    if favicon is not None:
+                else _square_icon(master, size)
+            )
+            _check_pixels(
+                base / relative,
+                rendered,
+                label="Web icon",
+                mismatch=f"Web icon pixels differ: {relative}",
+                errors=errors,
+            )
         _check_pixels(
             base / "favicon.png",
-            favicon,
+            _rounded_icon(master, 16, inset_ratio=0.03),
             label="Web favicon",
             mismatch="Web favicon pixels differ",
             errors=errors,
@@ -529,14 +553,9 @@ def validate_ohos(root: Path) -> list[str]:
     errors: list[str] = []
     app_scope = root / "chatgpt_flutter_ohos/ohos/AppScope/resources/base/media/app_icon.png"
     entry = root / "chatgpt_flutter_ohos/ohos/entry/src/main/resources/base/media/icon.png"
-    master = _master(root)
-    expected = _render_expected(
-        lambda: rounded_icon(master, 114, inset_ratio=0.04),
-        label="HarmonyOS launcher",
-        source=master,
-        errors=errors,
-    )
-    if expected is not None:
+    master = _load_master(root, platform="HarmonyOS", errors=errors)
+    if master is not None:
+        expected = _rounded_icon(master, 114, inset_ratio=0.04)
         for path in (app_scope, entry):
             _check_pixels(
                 path,
@@ -608,6 +627,9 @@ def validate_platform(root: Path, platform: str) -> list[str]:
         TypeError,
         ValueError,
         struct.error,
+        RecursionError,
+        MemoryError,
+        OverflowError,
         Image.DecompressionBombError,
     ) as error:
         return [

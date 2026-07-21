@@ -79,26 +79,42 @@ class RuntimeIconRepositoryTest(unittest.TestCase):
             )
             path.write_bytes(b"not a PNG")
 
-            result = subprocess.run(
-                [
-                    sys.executable,
-                    str(
-                        ROOT
-                        / "docs/design-assets/starcore-guide/validate_runtime_icons.py"
-                    ),
-                    "--platform",
-                    "android",
-                    "--root",
-                    str(root),
-                ],
-                check=False,
-                capture_output=True,
-                text=True,
-            )
+            result = self._run_validator_cli(root, "android")
 
             self.assertNotEqual(result.returncode, 0)
             self.assertIn("unable to decode Android launcher", result.stderr)
             self.assertNotIn("Traceback", result.stderr)
+
+    def test_ios_cli_rejects_infinite_catalog_size_without_traceback(self):
+        with self._generated_platform_root("ios") as root:
+            path = self._app_icon_base(root, "ios") / "Contents.json"
+            contents = json.loads(path.read_text(encoding="utf-8"))
+            contents["images"][0]["size"] = "Infinity"
+            path.write_text(json.dumps(contents), encoding="utf-8")
+
+            result = self._run_validator_cli(root, "ios")
+            output = result.stdout + result.stderr
+
+            self.assertNotEqual(result.returncode, 0)
+            self.assertEqual(result.stdout, "")
+            self.assertIn("iOS catalog record is malformed", result.stderr)
+            self.assertIn("size and scale must be finite", result.stderr)
+            self.assertIn(str(path), result.stderr)
+            self.assertNotIn("Traceback", output)
+
+    def test_web_cli_rejects_deep_manifest_without_traceback(self):
+        with self._generated_web_root() as root:
+            path = root / "chatgpt_flutter/web/manifest.json"
+            path.write_text("[" * 10_000 + "0" + "]" * 10_000, encoding="utf-8")
+
+            result = self._run_validator_cli(root, "web")
+            output = result.stdout + result.stderr
+
+            self.assertNotEqual(result.returncode, 0)
+            self.assertEqual(result.stdout, "")
+            self.assertIn("unable to parse Web manifest", result.stderr)
+            self.assertIn(str(path), result.stderr)
+            self.assertNotIn("Traceback", output)
 
     def test_android_reports_missing_manifest_without_traceback(self):
         with self._generated_android_root() as root:
@@ -335,6 +351,21 @@ class RuntimeIconRepositoryTest(unittest.TestCase):
                 errors,
             )
 
+    def test_windows_reports_corrupt_master_once_with_correct_attribution(self):
+        with self._generated_windows_root() as root:
+            master = self._master_path(root)
+            master.write_bytes(b"not a PNG")
+
+            errors = validate_platform(root, "windows")
+
+            master_errors = [error for error in errors if "Starcore master" in error]
+            self.assertEqual(len(master_errors), 1, errors)
+            self.assertIn(str(master), master_errors[0])
+            self.assertFalse(
+                any("PNG payload cannot be decoded" in error for error in errors),
+                errors,
+            )
+
     def test_web_rejects_reordered_manifest_records(self):
         with self._generated_web_root() as root:
             manifest_path = root / "chatgpt_flutter/web/manifest.json"
@@ -382,6 +413,17 @@ class RuntimeIconRepositoryTest(unittest.TestCase):
                 "Web manifest icon records differ from expected records",
                 validate_platform(root, "web"),
             )
+
+    def test_web_reports_corrupt_master_once(self):
+        with self._generated_web_root() as root:
+            master = self._master_path(root)
+            master.write_bytes(b"not a PNG")
+
+            errors = validate_platform(root, "web")
+
+            master_errors = [error for error in errors if "Starcore master" in error]
+            self.assertEqual(len(master_errors), 1, errors)
+            self.assertIn(str(master), master_errors[0])
 
     @contextlib.contextmanager
     def _generated_android_root(self):
@@ -468,6 +510,29 @@ class RuntimeIconRepositoryTest(unittest.TestCase):
         shutil.copy2(
             ROOT / "docs/design-assets/starcore-guide/app-icon-concept.png",
             guide,
+        )
+
+    @staticmethod
+    def _master_path(root: Path) -> Path:
+        return root / "docs/design-assets/starcore-guide/app-icon-concept.png"
+
+    @staticmethod
+    def _run_validator_cli(root: Path, platform: str):
+        return subprocess.run(
+            [
+                sys.executable,
+                str(
+                    ROOT
+                    / "docs/design-assets/starcore-guide/validate_runtime_icons.py"
+                ),
+                "--platform",
+                platform,
+                "--root",
+                str(root),
+            ],
+            check=False,
+            capture_output=True,
+            text=True,
         )
 
     @staticmethod
