@@ -22,6 +22,25 @@ void main() {
       StarcoreIconAssets.parseMessageAvatar('asset:starcore_explorer'),
       StarcoreIconAssets.assistantExplorerId,
     );
+    expect(StarcoreIconAssets.parseMessageAvatar('asset:unknown'), isNull);
+  });
+
+  test('Starcore message avatars encode only approved assistant ids', () {
+    expect(
+      StarcoreIconAssets.messageAvatarFor(
+        StarcoreIconAssets.assistantExplorerId,
+      ),
+      'asset:starcore_explorer',
+    );
+    expect(
+      StarcoreIconAssets.messageAvatarFor(
+        StarcoreIconAssets.assistantCreatorId,
+      ),
+      'asset:starcore_creator',
+    );
+    expect(StarcoreIconAssets.messageAvatarFor('unknown'), isNull);
+    expect(StarcoreIconAssets.messageAvatarFor(''), isNull);
+    expect(StarcoreIconAssets.messageAvatarFor('   '), isNull);
   });
 
   testWidgets('approved SVG resolves from the shared-core package',

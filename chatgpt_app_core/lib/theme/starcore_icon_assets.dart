@@ -23,7 +23,12 @@ abstract final class StarcoreIconAssets {
         _ => null,
       };
 
-  static String messageAvatarFor(String id) => '$messageAssetPrefix$id';
+  static String? messageAvatarFor(String? id) {
+    final normalized = id?.trim() ?? '';
+    return assistantAssetFor(normalized) == null
+        ? null
+        : '$messageAssetPrefix$normalized';
+  }
 
   static String? parseMessageAvatar(String? value) {
     final normalized = value?.trim() ?? '';
