@@ -299,12 +299,38 @@ def validate_web(root: Path) -> list[str]:
     return errors
 
 
+def validate_ohos(root: Path) -> list[str]:
+    errors: list[str] = []
+    app_scope = root / "chatgpt_flutter_ohos/ohos/AppScope/resources/base/media/app_icon.png"
+    entry = root / "chatgpt_flutter_ohos/ohos/entry/src/main/resources/base/media/icon.png"
+    expected = rounded_icon(_master(root), 114, inset_ratio=0.04)
+    for path in (app_scope, entry):
+        if not _same_pixels(path, expected):
+            errors.append(f"HarmonyOS icon pixels differ: {path}")
+    if app_scope.is_file() and entry.is_file() and app_scope.read_bytes() != entry.read_bytes():
+        errors.append("HarmonyOS AppScope and entry icons differ")
+    app_json = (
+        root / "chatgpt_flutter_ohos/ohos/AppScope/app.json5"
+    ).read_text(encoding="utf-8")
+    module_json = (
+        root / "chatgpt_flutter_ohos/ohos/entry/src/main/module.json5"
+    ).read_text(encoding="utf-8")
+    if '"icon": "$media:app_icon"' not in app_json:
+        errors.append("AppScope no longer references $media:app_icon")
+    if '"icon": "$media:icon"' not in module_json:
+        errors.append("entry no longer references $media:icon")
+    if '"startWindowIcon": "$media:icon"' not in module_json:
+        errors.append("startWindowIcon no longer references $media:icon")
+    return errors
+
+
 VALIDATORS = {
     "android": validate_android,
     "ios": validate_ios,
     "macos": validate_macos,
     "windows": validate_windows,
     "web": validate_web,
+    "ohos": validate_ohos,
 }
 
 

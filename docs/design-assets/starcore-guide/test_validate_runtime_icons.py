@@ -32,6 +32,9 @@ class RuntimeIconRepositoryTest(unittest.TestCase):
     def test_web(self):
         self.assertEqual(validate_platform(ROOT, "web"), [])
 
+    def test_ohos(self):
+        self.assertEqual(validate_platform(ROOT, "ohos"), [])
+
     def test_ios_rejects_rgb_png_with_trns_transparency(self):
         with self._generated_platform_root("ios") as root:
             path = self._app_icon_base(root, "ios") / "icon-20@2x.png"
