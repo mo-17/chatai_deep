@@ -14,11 +14,33 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:provider/provider.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
+class _FakeImagePickerChannel {
+  final List<String> _results;
+  int callCount = 0;
+
+  _FakeImagePickerChannel(this._results);
+
+  Future<Object?> handle(MethodCall call) async {
+    if (call.method != 'pickImage') {
+      throw PlatformException(
+        code: 'unsupported_test_method',
+        message: call.method,
+      );
+    }
+    final result = _results[callCount];
+    callCount += 1;
+    return result;
+  }
+}
+
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
 
-  Future<File> writeManagedAvatar(Directory root) async {
-    final image = File('${root.path}/chat_avatar/test/avatar.png');
+  Future<File> writeAvatar(
+    Directory root, {
+    required String relativePath,
+  }) async {
+    final image = File('${root.path}/$relativePath');
     await image.parent.create(recursive: true);
     final source = await File(
       StarcoreIconAssets.assistantExplorer,
@@ -28,6 +50,15 @@ void main() {
     );
     return image;
   }
+
+  Future<File> writeManagedAvatar(
+    Directory root, {
+    String filename = 'avatar.png',
+  }) =>
+      writeAvatar(
+        root,
+        relativePath: 'chat_avatar/test/$filename',
+      );
 
   Future<bool> waitForDeletion(File file) async {
     final timeout = Stopwatch()..start();
@@ -61,7 +92,70 @@ void main() {
     }
   }
 
+  Finder saveButtonFinder() => find.ancestor(
+        of: find.text('保存修改'),
+        matching: find.byWidgetPredicate((widget) => widget is FilledButton),
+      );
+
+  String? previewImagePath(WidgetTester tester) {
+    final preview = find.byWidgetPredicate(
+      (widget) => widget is Semantics && widget.properties.label == '助手头像预览',
+    );
+    final imageFinder = find.descendant(
+      of: preview,
+      matching: find.byType(Image),
+    );
+    if (imageFinder.evaluate().length != 1) return null;
+    ImageProvider provider = tester.widget<Image>(imageFinder).image;
+    if (provider is ResizeImage) provider = provider.imageProvider;
+    return provider is FileImage ? provider.file.path : null;
+  }
+
+  Future<String> pumpUntilPreviewChanges(
+    WidgetTester tester, {
+    required bool Function(String path) matches,
+  }) async {
+    final timeout = Stopwatch()..start();
+    while (true) {
+      final path = previewImagePath(tester);
+      if (path != null && matches(path)) return path;
+      if (timeout.elapsed > const Duration(seconds: 2)) {
+        fail('Timed out waiting for assistant avatar preview path');
+      }
+      await tester.runAsync(
+        () => Future<void>.delayed(Duration.zero),
+      );
+      await tester.pump(const Duration(milliseconds: 10));
+    }
+  }
+
+  _FakeImagePickerChannel useImagePicker(
+    WidgetTester tester,
+    List<String> paths,
+  ) {
+    const channel = MethodChannel('plugins.flutter.io/image_picker');
+    final fake = _FakeImagePickerChannel(paths);
+    tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(
+      channel,
+      fake.handle,
+    );
+    addTearDown(() {
+      tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(
+        channel,
+        null,
+      );
+    });
+    return fake;
+  }
+
+  Future<void> tapVisible(WidgetTester tester, Finder finder) async {
+    await tester.ensureVisible(finder);
+    await tester.pumpAndSettle();
+    await tester.tap(finder);
+  }
+
   setUp(() async {
+    AvatarAssetService.debugDocumentsDirectoryResolver = null;
     SharedPreferences.setMockInitialValues({});
     await HiCache.preInit();
     await HiCache.getInstance().prefs?.clear();
@@ -199,7 +293,6 @@ void main() {
       if (await root.exists()) await root.delete(recursive: true);
     });
     AssistantModel? saved;
-
     await pumpEditor(
       tester,
       theme: AppThemeFactory.anime(),
@@ -241,7 +334,8 @@ void main() {
       if (await root.exists()) await root.delete(recursive: true);
     });
 
-    final persistenceCompleted = Completer<void>();
+    final persistenceStarted = Completer<void>();
+    final releasePersistence = Completer<void>();
     await pumpEditor(
       tester,
       theme: AppThemeFactory.anime(),
@@ -252,10 +346,10 @@ void main() {
         avatarType: AvatarAssetService.imageType,
         avatarValue: image.path,
       ),
-      saveAssistant: (_) {
+      saveAssistant: (_) async {
         expect(image.existsSync(), isTrue);
-        persistenceCompleted.complete();
-        return Future<void>.value();
+        persistenceStarted.complete();
+        await releasePersistence.future;
       },
     );
 
@@ -267,7 +361,10 @@ void main() {
 
     await tester.tap(find.text('保存修改'));
     await tester.pump();
-    expect(persistenceCompleted.isCompleted, isTrue);
+    expect(persistenceStarted.isCompleted, isTrue);
+    expect(await tester.runAsync(image.exists), isTrue);
+
+    releasePersistence.complete();
     expect(await pumpUntilDeleted(tester, image), isTrue);
     await pumpUntilFound(tester, find.text('assistant-list'));
 
@@ -286,7 +383,6 @@ void main() {
     addTearDown(() async {
       if (await root.exists()) await root.delete(recursive: true);
     });
-
     await pumpEditor(
       tester,
       theme: AppThemeFactory.anime(),
@@ -328,6 +424,8 @@ void main() {
       if (await root.exists()) await root.delete(recursive: true);
     });
 
+    var saveCalled = false;
+    final expectedError = StateError('save failed');
     await pumpEditor(
       tester,
       theme: AppThemeFactory.anime(),
@@ -338,7 +436,10 @@ void main() {
         avatarType: AvatarAssetService.imageType,
         avatarValue: image.path,
       ),
-      saveAssistant: (_) => Future<void>.error(StateError('save failed')),
+      saveAssistant: (_) {
+        saveCalled = true;
+        return Future<void>.error(expectedError);
+      },
     );
 
     final preset = tester.widget<ChoiceChip>(
@@ -351,9 +452,8 @@ void main() {
     await tester.pump();
 
     expect(deletedBeforeSave, isFalse);
-    final saveButton = tester.widget<FilledButton>(
-      find.widgetWithText(FilledButton, '保存修改'),
-    );
+    expect(saveButtonFinder(), findsOneWidget);
+    final saveButton = tester.widget<FilledButton>(saveButtonFinder());
     Object? saveError;
     await tester.runAsync(() async {
       final errorObserved = Completer<void>();
@@ -367,8 +467,187 @@ void main() {
       await errorObserved.future;
     });
     await tester.pump();
-    expect(saveError, isA<StateError>());
+    expect(saveCalled, isTrue);
+    expect(saveError, same(expectedError));
     expect(find.byType(AssistantEditPage), findsOneWidget);
+    expect(await tester.runAsync(image.exists), isTrue);
+  });
+
+  testWidgets('removing a managed image deletes it only after save succeeds',
+      (tester) async {
+    late Directory root;
+    late File image;
+    await tester.runAsync(() async {
+      root = await Directory.systemTemp.createTemp('assistant-avatar-test-');
+      image = await writeManagedAvatar(root);
+    });
+    addTearDown(() async {
+      if (await root.exists()) await root.delete(recursive: true);
+    });
+    AssistantModel? saved;
+
+    await pumpEditor(
+      tester,
+      theme: AppThemeFactory.anime(),
+      assistant: AssistantModel(
+        id: 14,
+        name: '删除测试',
+        avatarType: AvatarAssetService.imageType,
+        avatarValue: image.path,
+      ),
+      saveAssistant: (assistant) async => saved = assistant,
+    );
+
+    await tapVisible(tester, find.text('删除图片'));
+    await tester.pump();
+    expect(await tester.runAsync(image.exists), isTrue);
+
+    await tester.tap(find.text('保存修改'));
+    await tester.pump();
+    expect(await pumpUntilDeleted(tester, image), isTrue);
+
+    expect(saved?.avatarType, isNull);
+    expect(saved?.avatarValue, isNull);
+  });
+
+  testWidgets('replacing a managed image deletes only the old image after save',
+      (tester) async {
+    late Directory root;
+    late File oldImage;
+    late File sourceImage;
+    await tester.runAsync(() async {
+      root = await Directory.systemTemp.createTemp('assistant-avatar-test-');
+      oldImage = await writeManagedAvatar(root, filename: 'old.png');
+      sourceImage = await writeAvatar(root, relativePath: 'picked/new.png');
+    });
+    AvatarAssetService.debugDocumentsDirectoryResolver = () async => root;
+    addTearDown(() async {
+      AvatarAssetService.debugDocumentsDirectoryResolver = null;
+      if (await root.exists()) await root.delete(recursive: true);
+    });
+    final picker = useImagePicker(tester, [sourceImage.path]);
+    AssistantModel? saved;
+
+    await pumpEditor(
+      tester,
+      theme: AppThemeFactory.anime(),
+      assistant: AssistantModel(
+        id: 15,
+        name: '替换测试',
+        avatarType: AvatarAssetService.imageType,
+        avatarValue: oldImage.path,
+      ),
+      saveAssistant: (assistant) async => saved = assistant,
+    );
+
+    await tapVisible(tester, find.text('更换图片'));
+    final replacementPath = await pumpUntilPreviewChanges(
+      tester,
+      matches: (path) => path != oldImage.path,
+    );
+    expect(picker.callCount, 1);
+    expect(await tester.runAsync(oldImage.exists), isTrue);
+    expect(await tester.runAsync(() => File(replacementPath).exists()), isTrue);
+
+    await tester.tap(find.text('保存修改'));
+    await tester.pump();
+    expect(await pumpUntilDeleted(tester, oldImage), isTrue);
+
+    expect(saved?.avatarType, AvatarAssetService.imageType);
+    expect(saved?.avatarValue, replacementPath);
+    expect(await tester.runAsync(() => File(replacementPath).exists()), isTrue);
+  });
+
+  testWidgets('a queued obsolete path is retained when selected as final image',
+      (tester) async {
+    late Directory root;
+    late File originalImage;
+    late File sourceImage;
+    await tester.runAsync(() async {
+      root = await Directory.systemTemp.createTemp('assistant-avatar-test-');
+      originalImage = await writeManagedAvatar(root, filename: 'original.png');
+      sourceImage = await writeAvatar(root, relativePath: 'picked/new.png');
+    });
+    AvatarAssetService.debugDocumentsDirectoryResolver = () async => root;
+    addTearDown(() async {
+      AvatarAssetService.debugDocumentsDirectoryResolver = null;
+      if (await root.exists()) await root.delete(recursive: true);
+    });
+    final picker = useImagePicker(
+      tester,
+      [sourceImage.path, originalImage.path],
+    );
+    AssistantModel? saved;
+
+    await pumpEditor(
+      tester,
+      theme: AppThemeFactory.anime(),
+      assistant: AssistantModel(
+        id: 16,
+        name: '保留测试',
+        avatarType: AvatarAssetService.imageType,
+        avatarValue: originalImage.path,
+      ),
+      saveAssistant: (assistant) async => saved = assistant,
+    );
+
+    await tapVisible(tester, find.text('更换图片'));
+    final replacementPath = await pumpUntilPreviewChanges(
+      tester,
+      matches: (path) => path != originalImage.path,
+    );
+    await tapVisible(tester, find.text('更换图片'));
+    await pumpUntilPreviewChanges(
+      tester,
+      matches: (path) => path == originalImage.path,
+    );
+    expect(picker.callCount, 2);
+
+    await tester.tap(find.text('保存修改'));
+    await tester.pump();
+    expect(
+      await pumpUntilDeleted(tester, File(replacementPath)),
+      isTrue,
+    );
+
+    expect(saved?.avatarType, AvatarAssetService.imageType);
+    expect(saved?.avatarValue, originalImage.path);
+    expect(await tester.runAsync(originalImage.exists), isTrue);
+  });
+
+  testWidgets('a non-managed image path is never deleted after save',
+      (tester) async {
+    late Directory root;
+    late File image;
+    await tester.runAsync(() async {
+      root = await Directory.systemTemp.createTemp('assistant-avatar-test-');
+      image = await writeAvatar(root, relativePath: 'external/avatar.png');
+    });
+    addTearDown(() async {
+      if (await root.exists()) await root.delete(recursive: true);
+    });
+    AssistantModel? saved;
+
+    await pumpEditor(
+      tester,
+      theme: AppThemeFactory.anime(),
+      assistant: AssistantModel(
+        id: 17,
+        name: '外部路径测试',
+        avatarType: AvatarAssetService.imageType,
+        avatarValue: image.path,
+      ),
+      saveAssistant: (assistant) async => saved = assistant,
+    );
+
+    await tapVisible(tester, find.text('删除图片'));
+    await tester.pump();
+    await tester.tap(find.text('保存修改'));
+    await tester.pump();
+    await pumpUntilFound(tester, find.text('assistant-list'));
+
+    expect(saved?.avatarType, isNull);
+    expect(saved?.avatarValue, isNull);
     expect(await tester.runAsync(image.exists), isTrue);
   });
 }
