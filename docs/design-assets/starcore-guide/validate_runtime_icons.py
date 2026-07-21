@@ -13,6 +13,7 @@ from generate_runtime_icons import (
     IOS_FILES,
     MAC_SIZES,
     _master,
+    maskable_icon,
     rounded_icon,
     square_icon,
 )
@@ -119,10 +120,85 @@ def validate_macos(root: Path) -> list[str]:
     return errors
 
 
+def validate_windows(root: Path) -> list[str]:
+    errors: list[str] = []
+    path = root / "chatgpt_flutter/windows/runner/resources/app_icon.ico"
+    expected_sizes = {(16, 16), (32, 32), (48, 48), (256, 256)}
+    if not path.is_file():
+        return [f"missing Windows ICO: {path}"]
+    with Image.open(path) as image:
+        sizes = set(image.ico.sizes())
+        if sizes != expected_sizes:
+            errors.append(f"Windows ICO frame set differs: {sizes}")
+        for size in expected_sizes & sizes:
+            actual = image.ico.getimage(size).convert("RGBA")
+            expected = rounded_icon(_master(root), size[0], inset_ratio=0.06)
+            if ImageChops.difference(actual, expected).getbbox(
+                alpha_only=False,
+            ) is not None:
+                errors.append(f"Windows ICO pixels differ at {size[0]}px")
+    rc = (root / "chatgpt_flutter/windows/runner/Runner.rc").read_text(
+        encoding="utf-8",
+    )
+    if 'resources\\\\app_icon.ico' not in rc:
+        errors.append("Runner.rc no longer references resources\\\\app_icon.ico")
+    return errors
+
+
+def validate_web(root: Path) -> list[str]:
+    errors: list[str] = []
+    base = root / "chatgpt_flutter/web"
+    manifest = json.loads((base / "manifest.json").read_text(encoding="utf-8"))
+    expected = {
+        "icons/Icon-192.png": (192, False),
+        "icons/Icon-512.png": (512, False),
+        "icons/Icon-maskable-192.png": (192, True),
+        "icons/Icon-maskable-512.png": (512, True),
+    }
+    manifest_records = manifest["icons"]
+    sources = [item.get("src") for item in manifest_records]
+    if len(manifest_records) != len(expected):
+        errors.append("Web manifest record count differs from expected icons")
+    if len(set(sources)) != len(sources):
+        errors.append("Web manifest has duplicate icon records")
+    if set(sources) != set(expected):
+        errors.append("Web manifest icon records differ from expected icons")
+    records = {item["src"]: item for item in manifest_records}
+    for relative, (size, is_maskable) in expected.items():
+        item = records.get(relative)
+        if item is None or item.get("sizes") != f"{size}x{size}":
+            errors.append(f"Web manifest entry differs: {relative}")
+            continue
+        if is_maskable != (item.get("purpose") == "maskable"):
+            errors.append(f"Web maskable purpose differs: {relative}")
+        rendered = (
+            maskable_icon(_master(root), size)
+            if is_maskable
+            else square_icon(_master(root), size)
+        )
+        if not _same_pixels(base / relative, rendered):
+            errors.append(f"Web icon pixels differ: {relative}")
+    if not _same_pixels(
+        base / "favicon.png",
+        rounded_icon(_master(root), 16, inset_ratio=0.03),
+    ):
+        errors.append("Web favicon pixels differ")
+    if manifest.get("background_color") != "#120D24":
+        errors.append("Web background_color is not #120D24")
+    if manifest.get("theme_color") != "#6D28D9":
+        errors.append("Web theme_color is not #6D28D9")
+    html = (base / "index.html").read_text(encoding="utf-8")
+    if "icons/Icon-192.png" not in html or "favicon.png" not in html:
+        errors.append("Web HTML icon references changed")
+    return errors
+
+
 VALIDATORS = {
     "android": validate_android,
     "ios": validate_ios,
     "macos": validate_macos,
+    "windows": validate_windows,
+    "web": validate_web,
 }
 
 

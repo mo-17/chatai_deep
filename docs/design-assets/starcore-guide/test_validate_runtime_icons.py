@@ -24,6 +24,12 @@ class RuntimeIconRepositoryTest(unittest.TestCase):
     def test_macos(self):
         self.assertEqual(validate_platform(ROOT, "macos"), [])
 
+    def test_windows(self):
+        self.assertEqual(validate_platform(ROOT, "windows"), [])
+
+    def test_web(self):
+        self.assertEqual(validate_platform(ROOT, "web"), [])
+
     def test_ios_rejects_rgb_png_with_trns_transparency(self):
         with self._generated_platform_root("ios") as root:
             path = self._app_icon_base(root, "ios") / "icon-20@2x.png"
@@ -65,6 +71,15 @@ class RuntimeIconRepositoryTest(unittest.TestCase):
 
             self.assertTrue(validate_platform(root, "macos"))
 
+    def test_web_rejects_duplicate_manifest_record(self):
+        with self._generated_web_root() as root:
+            manifest_path = root / "chatgpt_flutter/web/manifest.json"
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+            manifest["icons"].append(manifest["icons"][0].copy())
+            manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+
+            self.assertTrue(validate_platform(root, "web"))
+
     @contextlib.contextmanager
     def _generated_platform_root(self, platform: str):
         with tempfile.TemporaryDirectory() as temporary_root:
@@ -77,6 +92,26 @@ class RuntimeIconRepositoryTest(unittest.TestCase):
             target.mkdir(parents=True)
             shutil.copy2(source / "Contents.json", target)
             generate_platform(root, platform)
+            yield root
+
+    @contextlib.contextmanager
+    def _generated_web_root(self):
+        with tempfile.TemporaryDirectory() as temporary_root:
+            root = Path(temporary_root)
+            guide = root / "docs/design-assets/starcore-guide"
+            guide.mkdir(parents=True)
+            shutil.copy2(ROOT / "docs/design-assets/starcore-guide/app-icon-concept.png", guide)
+            source = ROOT / "chatgpt_flutter/web"
+            target = root / "chatgpt_flutter/web"
+            target.mkdir(parents=True)
+            shutil.copy2(source / "manifest.json", target)
+            shutil.copy2(source / "index.html", target)
+            generate_platform(root, "web")
+            manifest_path = target / "manifest.json"
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+            manifest["background_color"] = "#120D24"
+            manifest["theme_color"] = "#6D28D9"
+            manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
             yield root
 
     @staticmethod
