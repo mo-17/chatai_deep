@@ -77,6 +77,7 @@ void main() {
       ),
     ));
     await tester.pump();
-    expect(find.byKey(const ValueKey('forwarded-message-avatar')), findsOneWidget);
+    expect(
+        find.byKey(const ValueKey('forwarded-message-avatar')), findsOneWidget);
   });
 }

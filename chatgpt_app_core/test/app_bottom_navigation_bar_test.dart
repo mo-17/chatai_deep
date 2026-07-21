@@ -53,9 +53,11 @@ void main() {
         find.byKey(const ValueKey('anime_bottom_navigation')), findsOneWidget);
     expect(
         find.byKey(const ValueKey('classic_bottom_navigation')), findsNothing);
-    final destinations = tester.widgetList<NavigationDestination>(
-      find.byType(NavigationDestination),
-    ).toList();
+    final destinations = tester
+        .widgetList<NavigationDestination>(
+          find.byType(NavigationDestination),
+        )
+        .toList();
     expect(destinations, hasLength(4));
     expect(
       (destinations[0].icon as StarcoreSvgIcon).assetName,
