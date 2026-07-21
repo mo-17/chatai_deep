@@ -1,7 +1,9 @@
 import 'package:chatgpt_app_core/chat/domain/message_block.dart';
 import 'package:chatgpt_app_core/chat/ui/block_message_content.dart';
 import 'package:chatgpt_app_core/chat/application/chat_block_store.dart';
+import 'package:chatgpt_app_core/chat/application/tool_registry.dart';
 import 'package:chatgpt_app_core/theme/app_visual_theme.dart';
+import 'package:chatgpt_app_core/widget/starcore_svg_icon.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:provider/provider.dart';
@@ -67,6 +69,103 @@ void main() {
   });
 
   group('图片块 UI 回归', () {
+    testWidgets('anime tool blocks map only successful approved tool names',
+        (tester) async {
+      Future<void> pumpTool(ToolBlock block) async {
+        final store = ChatBlockStore();
+        store.seedMessage(block.messageId, [block]);
+        store.commitSeed();
+        await tester.pumpWidget(
+          MaterialApp(
+            theme: AppThemeFactory.anime(),
+            home: Scaffold(
+              body: ChangeNotifierProvider.value(
+                value: store,
+                child: BlockMessageContent(messageKey: block.messageId),
+              ),
+            ),
+          ),
+        );
+        await tester.pump();
+      }
+
+      await pumpTool(
+        const ToolBlock(
+          id: 'b_tool_web',
+          messageId: 'msg_tool_web',
+          createdAt: 1,
+          status: MessageBlockStatus.success,
+          toolId: 'call_1',
+          toolName: ToolRegistry.webSearchId,
+          arguments: {'query': '测试'},
+        ),
+      );
+      expect(
+        find.byKey(const ValueKey('starcore-svg-tool-web-search')),
+        findsOneWidget,
+      );
+
+      await pumpTool(
+        const ToolBlock(
+          id: 'b_tool_processing',
+          messageId: 'msg_tool_processing',
+          createdAt: 1,
+          status: MessageBlockStatus.processing,
+          toolId: 'call_2',
+          toolName: ToolRegistry.webSearchId,
+        ),
+      );
+      expect(find.byType(CircularProgressIndicator), findsOneWidget);
+      expect(
+        find.byKey(const ValueKey('starcore-svg-tool-web-search')),
+        findsNothing,
+      );
+
+      await pumpTool(
+        const ToolBlock(
+          id: 'b_tool_error',
+          messageId: 'msg_tool_error',
+          createdAt: 1,
+          status: MessageBlockStatus.error,
+          toolId: 'call_3',
+          toolName: ToolRegistry.webSearchId,
+        ),
+      );
+      expect(find.byIcon(Icons.build_outlined), findsOneWidget);
+      expect(find.byType(StarcoreSvgIcon), findsNothing);
+
+      await pumpTool(
+        const ToolBlock(
+          id: 'b_tool_unknown',
+          messageId: 'msg_tool_unknown',
+          createdAt: 1,
+          status: MessageBlockStatus.success,
+          toolId: ToolRegistry.webSearchId,
+          toolName: 'unknown_tool',
+        ),
+      );
+      expect(find.byIcon(Icons.build_outlined), findsOneWidget);
+      expect(find.byType(StarcoreSvgIcon), findsNothing);
+
+      for (final status in [
+        MessageBlockStatus.pending,
+        MessageBlockStatus.paused,
+      ]) {
+        await pumpTool(
+          ToolBlock(
+            id: 'b_tool_${status.name}',
+            messageId: 'msg_tool_${status.name}',
+            createdAt: 1,
+            status: status,
+            toolId: 'call_${status.name}',
+            toolName: ToolRegistry.knowledgeSearchId,
+          ),
+        );
+        expect(find.byIcon(Icons.build_outlined), findsOneWidget);
+        expect(find.byType(StarcoreSvgIcon), findsNothing);
+      }
+    });
+
     testWidgets('anime 正文引用具备 link 语义和 44dp 命中区', (tester) async {
       final store = ChatBlockStore();
       const messageKey = 'msg_citation_anime';

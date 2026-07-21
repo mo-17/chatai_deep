@@ -18,6 +18,7 @@ import 'package:chatgpt_app_core/util/hi_dialog.dart';
 import 'package:chatgpt_app_core/util/model_catalog.dart';
 import 'package:chatgpt_app_core/widget/assistant_avatar.dart';
 import 'package:chatgpt_app_core/widget/assistant_avatar_preset_picker.dart';
+import 'package:chatgpt_app_core/widget/starcore_tool_icon.dart';
 import 'package:flutter/material.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:provider/provider.dart';
@@ -926,13 +927,24 @@ class _AssistantEditPageState extends State<AssistantEditPage> {
   Widget _buildToolTile(ToolDescriptor d, bool available) {
     final selected = _toolIds.contains(d.id);
     final warning = AppStatusPalette.of(context, AppStatusKind.warning);
+    final isStarcoreTool = AppVisualTheme.of(context).isAnime &&
+        (d.id == ToolRegistry.webSearchId ||
+            d.id == ToolRegistry.knowledgeSearchId);
     return CheckboxListTile(
       contentPadding: EdgeInsets.zero,
       controlAffinity: ListTileControlAffinity.leading,
       value: selected,
       title: Row(
         children: [
-          Text(d.label),
+          if (isStarcoreTool) ...[
+            StarcoreToolIcon(
+              toolName: d.id,
+              fallback: Icon(Icons.build_outlined,
+                  size: 18, color: warning.foreground),
+            ),
+            const SizedBox(width: 8),
+          ],
+          Flexible(child: Text(d.label)),
           if (d.sideEffect)
             Padding(
               padding: const EdgeInsets.only(left: 6),

@@ -7,6 +7,7 @@ import 'package:chatgpt_app_core/chat/application/chat_block_store.dart';
 import 'package:chatgpt_app_core/chat/domain/message_block.dart';
 import 'package:chatgpt_app_core/chat/ui/thinking_block_view.dart';
 import 'package:chatgpt_app_core/theme/app_visual_theme.dart';
+import 'package:chatgpt_app_core/widget/starcore_tool_icon.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:provider/provider.dart';
@@ -940,6 +941,16 @@ class _ToolState extends State<_Tool> {
                             strokeWidth: 2,
                             color: accent,
                           ),
+                        )
+                      else if (block.status == MessageBlockStatus.success)
+                        StarcoreToolIcon(
+                          toolName: block.toolName ?? '',
+                          fallback: Icon(
+                            Icons.build_outlined,
+                            size: 18,
+                            color: accent,
+                          ),
+                          size: 18,
                         )
                       else
                         Icon(Icons.build_outlined, size: 18, color: accent),
