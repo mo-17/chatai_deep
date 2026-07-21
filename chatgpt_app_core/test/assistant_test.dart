@@ -8,6 +8,8 @@ import 'package:chatgpt_app_core/db/hi_db_manager.dart';
 import 'package:chatgpt_app_core/model/ai_settings.dart';
 import 'package:chatgpt_app_core/model/assistant_model.dart';
 import 'package:chatgpt_app_core/model/conversation_model.dart';
+import 'package:chatgpt_app_core/theme/starcore_icon_assets.dart';
+import 'package:chatgpt_app_core/util/avatar_asset_service.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:sqflite_common_ffi/sqflite_ffi.dart';
 
@@ -460,6 +462,47 @@ void main() {
         ),
         '钟塔今晚没有准点报时。',
       );
+    });
+
+    test('Starcore asset avatar is copied into a new conversation', () {
+      final assistant = AssistantModel(
+        id: 45,
+        name: '向导',
+        emoji: '🤖',
+        avatarType: AvatarAssetService.assetType,
+        avatarValue: StarcoreIconAssets.assistantExplorerId,
+      );
+
+      final conversation = AssistantConversationFactory.create(
+        cid: 125,
+        icon: '',
+        assistant: assistant,
+      );
+
+      expect(conversation.avatarType, AvatarAssetService.assetType);
+      expect(
+        conversation.avatarValue,
+        StarcoreIconAssets.assistantExplorerId,
+      );
+    });
+
+    test('unknown asset avatar falls back to the assistant emoji', () {
+      final assistant = AssistantModel(
+        id: 46,
+        name: '未知头像',
+        emoji: '🧭',
+        avatarType: AvatarAssetService.assetType,
+        avatarValue: 'unknown_asset',
+      );
+
+      final conversation = AssistantConversationFactory.create(
+        cid: 126,
+        icon: '',
+        assistant: assistant,
+      );
+
+      expect(conversation.avatarType, 'emoji');
+      expect(conversation.avatarValue, '🧭');
     });
   });
 

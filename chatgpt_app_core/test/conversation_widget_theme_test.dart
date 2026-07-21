@@ -1,6 +1,8 @@
 import 'package:chatgpt_app_core/model/conversation_model.dart';
 import 'package:chatgpt_app_core/provider/theme_provider.dart';
 import 'package:chatgpt_app_core/theme/app_visual_theme.dart';
+import 'package:chatgpt_app_core/theme/starcore_icon_assets.dart';
+import 'package:chatgpt_app_core/util/avatar_asset_service.dart';
 import 'package:chatgpt_app_core/widget/conversation_widget.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_hi_cache/flutter_hi_cache.dart';
@@ -23,6 +25,15 @@ void main() {
         stickTime: DateTime(2026, 7, 12).millisecondsSinceEpoch,
         messageCount: 42,
         lastMessage: '今天继续完善这个世界的设定与角色关系。',
+      );
+
+  Finder packageAssetImage(String assetName) => find.byWidgetPredicate(
+        (widget) =>
+            widget is Image &&
+            widget.image is AssetImage &&
+            (widget.image as AssetImage).assetName == assetName &&
+            (widget.image as AssetImage).package ==
+                StarcoreIconAssets.packageName,
       );
 
   testWidgets('二次元会话卡支持大字体、置顶状态和点击', (tester) async {
@@ -82,5 +93,61 @@ void main() {
         findsOneWidget);
     expect(
         find.byKey(const ValueKey('anime_conversation_item_1')), findsNothing);
+  });
+
+  testWidgets('二次元会话卡渲染 allowlisted package asset，经典风格保持旧路径', (tester) async {
+    final provider = ThemeProvider()..setVisualStyle(AppVisualStyle.anime);
+    final assetModel = model()
+      ..avatarType = AvatarAssetService.assetType
+      ..avatarValue = StarcoreIconAssets.assistantExplorerId;
+    Widget app() => ChangeNotifierProvider.value(
+          value: provider,
+          child: MaterialApp(
+            theme: provider.getTheme(),
+            themeAnimationDuration: Duration.zero,
+            home: Scaffold(body: ConversationWidget(model: assetModel)),
+          ),
+        );
+
+    await tester.pumpWidget(app());
+    expect(
+      packageAssetImage(StarcoreIconAssets.assistantExplorer),
+      findsOneWidget,
+    );
+
+    provider.setVisualStyle(AppVisualStyle.classic);
+    await tester.pumpWidget(app());
+    expect(
+      packageAssetImage(StarcoreIconAssets.assistantExplorer),
+      findsNothing,
+    );
+    expect(find.text('AI'), findsOneWidget);
+  });
+
+  testWidgets('二次元空头像回退 explorer package asset，经典风格保持 AI 回退', (tester) async {
+    final provider = ThemeProvider()..setVisualStyle(AppVisualStyle.anime);
+    final noAvatarModel = model();
+    Widget app() => ChangeNotifierProvider.value(
+          value: provider,
+          child: MaterialApp(
+            theme: provider.getTheme(),
+            themeAnimationDuration: Duration.zero,
+            home: Scaffold(body: ConversationWidget(model: noAvatarModel)),
+          ),
+        );
+
+    await tester.pumpWidget(app());
+    expect(
+      packageAssetImage(StarcoreIconAssets.assistantExplorer),
+      findsOneWidget,
+    );
+
+    provider.setVisualStyle(AppVisualStyle.classic);
+    await tester.pumpWidget(app());
+    expect(
+      packageAssetImage(StarcoreIconAssets.assistantExplorer),
+      findsNothing,
+    );
+    expect(find.text('AI'), findsOneWidget);
   });
 }

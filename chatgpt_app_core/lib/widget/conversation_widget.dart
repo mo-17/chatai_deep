@@ -4,6 +4,8 @@ import 'package:cached_network_image/cached_network_image.dart';
 import 'package:chat_message/util/wechat_date_format.dart';
 import 'package:chatgpt_app_core/model/conversation_model.dart';
 import 'package:chatgpt_app_core/theme/app_visual_theme.dart';
+import 'package:chatgpt_app_core/theme/starcore_icon_assets.dart';
+import 'package:chatgpt_app_core/util/avatar_asset_service.dart';
 import 'package:chatgpt_app_core/util/hi_dialog.dart';
 import 'package:flutter/material.dart';
 import 'package:login_sdk/dao/backend_host.dart';
@@ -102,10 +104,17 @@ class ConversationWidget extends StatelessWidget {
       width: 50,
       color: colorScheme.primaryContainer,
       alignment: Alignment.center,
-      child: Icon(
-        Icons.smart_toy_rounded,
-        size: 28,
-        color: colorScheme.primary,
+      child: Image.asset(
+        StarcoreIconAssets.assistantExplorer,
+        package: StarcoreIconAssets.packageName,
+        height: 50,
+        width: 50,
+        fit: BoxFit.cover,
+        errorBuilder: (_, __, ___) => Icon(
+          Icons.smart_toy_rounded,
+          size: 28,
+          color: colorScheme.primary,
+        ),
       ),
     );
   }
@@ -128,6 +137,22 @@ class ConversationWidget extends StatelessWidget {
           errorBuilder: (_, __, ___) => _animeFallback(context),
         ),
       );
+    }
+    if (avatarType == AvatarAssetService.assetType) {
+      final asset = StarcoreIconAssets.assistantAssetFor(avatarValue);
+      if (asset != null) {
+        return ClipRRect(
+          borderRadius: BorderRadius.circular(14),
+          child: Image.asset(
+            asset,
+            package: StarcoreIconAssets.packageName,
+            height: 50,
+            width: 50,
+            fit: BoxFit.cover,
+            errorBuilder: (_, __, ___) => _animeFallback(context),
+          ),
+        );
+      }
     }
     if (!_hasValidIcon) return _animeFallback(context);
     return CachedNetworkImage(

@@ -43,6 +43,7 @@ import 'package:chatgpt_app_core/provider/ai_settings_provider.dart';
 import 'package:chatgpt_app_core/skill/skill_import_service.dart';
 import 'package:chatgpt_app_core/theme/app_visual_theme.dart';
 import 'package:chatgpt_app_core/util/app_events.dart';
+import 'package:chatgpt_app_core/util/assistant_avatar_bytes.dart';
 import 'package:chatgpt_app_core/util/avatar_asset_service.dart';
 import 'package:chatgpt_app_core/util/hi_dialog.dart';
 import 'package:chatgpt_app_core/widget/app_visual_widgets.dart';
@@ -1922,14 +1923,7 @@ class _AssistantListPageState extends State<AssistantListPage> {
   }
 
   Future<List<int>?> _readAssistantAvatarBytes(AssistantModel assistant) async {
-    final avatarType = assistant.avatarType;
-    final avatarValue = assistant.avatarValue?.trim() ?? '';
-    if (avatarType != AvatarAssetService.imageType || avatarValue.isEmpty) {
-      return null;
-    }
-    final file = File(avatarValue);
-    if (!await file.exists()) return null;
-    return file.readAsBytes();
+    return AssistantAvatarBytes.read(assistant);
   }
 
   /// 导入技能 zip（Agent Skill：SKILL.md + references/）：解析成

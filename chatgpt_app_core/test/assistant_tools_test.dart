@@ -5,6 +5,7 @@ import 'package:chatgpt_app_core/db/assistant_dao.dart';
 import 'package:chatgpt_app_core/db/hi_db_manager.dart';
 import 'package:chatgpt_app_core/model/ai_settings.dart';
 import 'package:chatgpt_app_core/model/assistant_model.dart';
+import 'package:chatgpt_app_core/theme/starcore_icon_assets.dart';
 import 'package:chatgpt_app_core/util/avatar_asset_service.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:sqflite_common_ffi/sqflite_ffi.dart';
@@ -159,6 +160,33 @@ void main() {
 
       expect(back!.avatarValue, newPath);
       expect(rows.single['avatarValue'], newPath);
+    });
+
+    test('Starcore asset id round-trips without filesystem relocation',
+        () async {
+      AvatarAssetService.debugDocumentsDirectoryResolver =
+          () async => throw StateError('asset ids must not touch filesystem');
+      addTearDown(() {
+        AvatarAssetService.debugDocumentsDirectoryResolver = null;
+      });
+      db = await databaseFactoryFfi.openDatabase(inMemoryDatabasePath);
+      final dao = await AssistantDao.create(HiDBManager.test(db));
+      final id = await dao.saveAssistant(
+        AssistantModel(
+          name: '星核向导',
+          avatarType: AvatarAssetService.assetType,
+          avatarValue: StarcoreIconAssets.assistantExplorerId,
+        ),
+      );
+
+      final back = await dao.getAssistant(id!);
+      final rows =
+          await db.query('tb_assistant', where: 'id = ?', whereArgs: [id]);
+
+      expect(back!.avatarType, AvatarAssetService.assetType);
+      expect(back.avatarValue, StarcoreIconAssets.assistantExplorerId);
+      expect(
+          rows.single['avatarValue'], StarcoreIconAssets.assistantExplorerId);
     });
 
     test('新表 providerId 缺省为空串', () async {

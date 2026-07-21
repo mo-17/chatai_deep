@@ -1,6 +1,7 @@
 import 'package:chatgpt_app_core/chat/application/assistant_role_card_service.dart';
 import 'package:chatgpt_app_core/model/assistant_model.dart';
 import 'package:chatgpt_app_core/model/conversation_model.dart';
+import 'package:chatgpt_app_core/theme/starcore_icon_assets.dart';
 import 'package:chatgpt_app_core/util/avatar_asset_service.dart';
 
 /// 从助手生成新会话的字段映射，供会话列表、角色卡导入后的启动入口复用。
@@ -64,6 +65,10 @@ class AssistantConversationFactory {
 
   static String? _avatarTypeOf(AssistantModel? assistant) {
     if (assistant == null) return null;
+    if (assistant.avatarType == AvatarAssetService.assetType &&
+        StarcoreIconAssets.assistantAssetFor(assistant.avatarValue) != null) {
+      return AvatarAssetService.assetType;
+    }
     if (assistant.avatarType == AvatarAssetService.imageType &&
         (assistant.avatarValue?.trim().isNotEmpty ?? false)) {
       return AvatarAssetService.imageType;
@@ -73,7 +78,8 @@ class AssistantConversationFactory {
 
   static String? _avatarValueOf(AssistantModel? assistant, String? avatarType) {
     if (assistant == null || avatarType == null) return null;
-    if (avatarType == AvatarAssetService.imageType) {
+    if (avatarType == AvatarAssetService.imageType ||
+        avatarType == AvatarAssetService.assetType) {
       return assistant.avatarValue?.trim();
     }
     return assistant.emoji.trim();

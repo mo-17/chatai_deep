@@ -7,6 +7,8 @@ import 'package:chatgpt_app_core/db/project_dao.dart';
 import 'package:chatgpt_app_core/model/conversation_model.dart';
 import 'package:chatgpt_app_core/model/favorite_model.dart';
 import 'package:chatgpt_app_core/model/project_model.dart';
+import 'package:chatgpt_app_core/theme/starcore_icon_assets.dart';
+import 'package:chatgpt_app_core/util/avatar_asset_service.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:sqflite_common_ffi/sqflite_ffi.dart';
 
@@ -151,6 +153,31 @@ void main() {
     rows = await storage.db.query('tb_conversation_list', where: 'cid = 9');
     expect(rows.single['avatarType'], isNull);
     expect(rows.single['avatarValue'], isNull);
+    await storage.db.close();
+  });
+
+  test('会话 Starcore asset id 原样持久化且不会被当作文件路径', () async {
+    final storage = await newDb();
+    final dao = await ConversationListDao.create(storage);
+    final model = ConversationModel(cid: 91, icon: '')
+      ..title = '星核头像'
+      ..stickTime = 0
+      ..updateAt = 91;
+
+    await dao.saveConversation(model);
+    await dao.updateAvatar(
+      model,
+      AvatarAssetService.assetType,
+      StarcoreIconAssets.assistantExplorerId,
+    );
+    final loaded = (await dao.getConversationList()).single;
+    final rows =
+        await storage.db.query('tb_conversation_list', where: 'cid = 91');
+
+    expect(loaded.avatarType, AvatarAssetService.assetType);
+    expect(loaded.avatarValue, StarcoreIconAssets.assistantExplorerId);
+    expect(rows.single['avatarValue'], StarcoreIconAssets.assistantExplorerId);
+    expect(AvatarAssetService.isManagedPath(loaded.avatarValue), isFalse);
     await storage.db.close();
   });
 

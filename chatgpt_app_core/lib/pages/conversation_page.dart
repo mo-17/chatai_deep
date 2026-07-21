@@ -51,6 +51,7 @@ import 'package:chatgpt_app_core/pages/ai_settings_page.dart';
 import 'package:chatgpt_app_core/provider/ai_readiness_provider.dart';
 import 'package:chatgpt_app_core/provider/ai_settings_provider.dart';
 import 'package:chatgpt_app_core/theme/app_visual_theme.dart';
+import 'package:chatgpt_app_core/theme/starcore_icon_assets.dart';
 import 'package:chatgpt_app_core/util/app_events.dart';
 import 'package:chatgpt_app_core/util/avatar_asset_service.dart';
 import 'package:chatgpt_app_core/util/hi_dialog.dart';
@@ -62,6 +63,7 @@ import 'package:chatgpt_app_core/widget/assistant_picker.dart';
 import 'package:chatgpt_app_core/widget/configured_ai_model_picker_sheet.dart';
 import 'package:chatgpt_app_core/widget/forward_sheet.dart';
 import 'package:chatgpt_app_core/widget/message_input_widget.dart';
+import 'package:chatgpt_app_core/widget/starcore_message_avatar.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:login_sdk/dao/login_dao.dart';
@@ -321,6 +323,7 @@ class _ConversationPageState extends State<ConversationPage> {
             child: ChatList(
               chatController: chatController,
               onBubbleLongPress: _onBubbleLongPress,
+              avatarBuilder: buildStarcoreMessageAvatar,
               receiverBackgroundColor: visualTheme.isAnime
                   ? colorScheme.primaryContainer.withValues(alpha: 0.78)
                   : null,
@@ -2442,6 +2445,11 @@ class _ConversationPageState extends State<ConversationPage> {
   String _assistantAvatarForMessage() {
     final assistant = _assistant;
     if (assistant == null) return '';
+    if (assistant.avatarType == AvatarAssetService.assetType) {
+      final assetAvatar =
+          StarcoreIconAssets.messageAvatarFor(assistant.avatarValue);
+      if (assetAvatar != null) return assetAvatar;
+    }
     if (assistant.avatarType == AvatarAssetService.imageType) {
       final value = assistant.avatarValue?.trim() ?? '';
       if (value.isNotEmpty) return value;
@@ -2561,6 +2569,10 @@ class _ConversationPageState extends State<ConversationPage> {
   (String?, String?) _conversationAvatarForAssistant(
       AssistantModel? assistant) {
     if (assistant == null) return (null, null);
+    if (assistant.avatarType == AvatarAssetService.assetType &&
+        StarcoreIconAssets.assistantAssetFor(assistant.avatarValue) != null) {
+      return (AvatarAssetService.assetType, assistant.avatarValue!.trim());
+    }
     if (assistant.avatarType == AvatarAssetService.imageType &&
         (assistant.avatarValue?.trim().isNotEmpty ?? false)) {
       return (AvatarAssetService.imageType, assistant.avatarValue!.trim());
