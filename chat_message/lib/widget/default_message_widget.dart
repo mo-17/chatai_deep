@@ -6,6 +6,7 @@ import 'package:chat_message/util/wechat_date_format.dart';
 import 'package:flutter/material.dart';
 
 import '../models/message_model.dart';
+import 'message_avatar_builder.dart';
 
 typedef MessageWidgetBuilder = Widget Function(MessageModel message);
 typedef OnBubbleClick = void Function(
@@ -42,6 +43,7 @@ class DefaultMessageWidget extends StatelessWidget {
 
   /// 只替换气泡内部内容（块化渲染）；返回 null 时回退默认渲染。
   final MessageContentBuilder? contentBuilder;
+  final MessageAvatarBuilder? avatarBuilder;
   final OnBubbleClick? onBubbleTap;
   final OnBubbleClick? onBubbleLongPress;
 
@@ -60,6 +62,7 @@ class DefaultMessageWidget extends StatelessWidget {
     this.avatarSize = 40,
     this.messageWidget,
     this.contentBuilder,
+    this.avatarBuilder,
     this.onBubbleTap,
     this.onBubbleLongPress,
   }) : super(key: key);
@@ -110,7 +113,9 @@ class DefaultMessageWidget extends StatelessWidget {
         ),
       );
 
-  Widget get _buildCircleAvatar {
+  Widget _buildCircleAvatar(BuildContext context) {
+    final override = avatarBuilder?.call(context, message, avatarSize);
+    if (override != null) return override;
     final avatar = message.avatar?.trim() ?? '';
     if (avatar.isEmpty) return _initialsAvatar;
     if (avatar.startsWith('emoji:')) {
@@ -167,7 +172,7 @@ class DefaultMessageWidget extends StatelessWidget {
       crossAxisAlignment: CrossAxisAlignment.start,
       mainAxisAlignment: MainAxisAlignment.start,
       children: <Widget>[
-        _buildCircleAvatar,
+        _buildCircleAvatar(context),
         Flexible(
           child: Bubble(
               margin: BubbleEdges.fromLTRB(10, 0, contentMargin, 0),
@@ -200,7 +205,7 @@ class DefaultMessageWidget extends StatelessWidget {
               alignment: Alignment.topRight,
               child: _bubbleChild(TextAlign.left, context)),
         ),
-        _buildCircleAvatar
+        _buildCircleAvatar(context)
       ],
     );
   }

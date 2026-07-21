@@ -1,4 +1,5 @@
 import 'package:chat_message/widget/default_message_widget.dart';
+import 'package:chat_message/widget/message_avatar_builder.dart';
 import 'package:flutter/material.dart';
 import 'package:scrollable_positioned_list/scrollable_positioned_list.dart';
 
@@ -12,6 +13,7 @@ class ChatList extends StatefulWidget {
   final EdgeInsets? padding;
   final OnBubbleClick? onBubbleTap;
   final OnBubbleClick? onBubbleLongPress;
+  final MessageAvatarBuilder? avatarBuilder;
   final Color? receiverBackgroundColor;
   final Color? senderBackgroundColor;
   final Color? receiverAvatarBackgroundColor;
@@ -25,6 +27,7 @@ class ChatList extends StatefulWidget {
     this.padding,
     this.onBubbleTap,
     this.onBubbleLongPress,
+    this.avatarBuilder,
     this.receiverBackgroundColor,
     this.senderBackgroundColor,
     this.receiverAvatarBackgroundColor,
@@ -79,6 +82,7 @@ class _ChatListState extends State<ChatList> {
                     message: model,
                     messageWidget: messageWidgetBuilder,
                     contentBuilder: messageContentBuilder,
+                    avatarBuilder: widget.avatarBuilder,
                     onBubbleTap: widget.onBubbleTap,
                     onBubbleLongPress: widget.onBubbleLongPress,
                     receiverBackgroundColor: widget.receiverBackgroundColor,
