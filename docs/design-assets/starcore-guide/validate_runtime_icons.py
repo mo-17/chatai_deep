@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
+from collections import Counter
 from pathlib import Path
 
 from PIL import Image, ImageChops
@@ -14,6 +15,22 @@ from generate_runtime_icons import (
     _master,
     rounded_icon,
     square_icon,
+)
+
+
+EXPECTED_MACOS_RECORDS = Counter(
+    [
+        ("app_icon_16.png", "16x16", "1x"),
+        ("app_icon_32.png", "16x16", "2x"),
+        ("app_icon_32.png", "32x32", "1x"),
+        ("app_icon_64.png", "32x32", "2x"),
+        ("app_icon_128.png", "128x128", "1x"),
+        ("app_icon_256.png", "128x128", "2x"),
+        ("app_icon_256.png", "256x256", "1x"),
+        ("app_icon_512.png", "256x256", "2x"),
+        ("app_icon_512.png", "512x512", "1x"),
+        ("app_icon_1024.png", "512x512", "2x"),
+    ]
 )
 
 
@@ -49,7 +66,12 @@ def validate_ios(root: Path) -> list[str]:
     errors: list[str] = []
     base = root / "chatgpt_flutter/ios/Runner/Assets.xcassets/AppIcon.appiconset"
     contents = json.loads((base / "Contents.json").read_text(encoding="utf-8"))
-    declared = {item["filename"]: item for item in contents["images"]}
+    records = contents["images"]
+    declared = {item["filename"]: item for item in records}
+    if len(records) != len(IOS_FILES):
+        errors.append("iOS Contents.json record count differs from IOS_FILES")
+    if len(declared) != len(records):
+        errors.append("iOS Contents.json has duplicate filenames")
     if set(declared) != set(IOS_FILES):
         errors.append("iOS Contents.json filenames differ from IOS_FILES")
     for filename, pixels in IOS_FILES.items():
@@ -65,7 +87,7 @@ def validate_ios(root: Path) -> list[str]:
             errors.append(f"missing iOS icon: {path}")
             continue
         with Image.open(path) as actual:
-            if actual.mode != "RGB":
+            if actual.mode != "RGB" or actual.info.get("transparency") is not None:
                 errors.append(f"iOS icon must be RGB without alpha: {path}")
         if not _same_pixels(path, square_icon(_master(root), pixels)):
             errors.append(f"iOS icon pixels differ: {path}")
@@ -77,18 +99,11 @@ def validate_macos(root: Path) -> list[str]:
     base = root / "chatgpt_flutter/macos/Runner/Assets.xcassets/AppIcon.appiconset"
     contents = json.loads((base / "Contents.json").read_text(encoding="utf-8"))
     records = contents["images"]
-    declared = {item["filename"] for item in records}
-    expected_names = {f"app_icon_{size}.png" for size in MAC_SIZES}
-    if declared != expected_names:
-        errors.append("macOS Contents.json filenames differ from MAC_SIZES")
-    for item in records:
-        points = float(item["size"].split("x")[0])
-        scale = int(item["scale"].removesuffix("x"))
-        pixels = round(points * scale)
-        if item["filename"] != f"app_icon_{pixels}.png":
-            errors.append(
-                f"macOS catalog size mismatch: {item['filename']}"
-            )
+    actual_records = Counter(
+        (item["filename"], item["size"], item["scale"]) for item in records
+    )
+    if actual_records != EXPECTED_MACOS_RECORDS:
+        errors.append("macOS Contents.json records differ from expected catalog")
     for size in MAC_SIZES:
         path = base / f"app_icon_{size}.png"
         if not path.is_file():
