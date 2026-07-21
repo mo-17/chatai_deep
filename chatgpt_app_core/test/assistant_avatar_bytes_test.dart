@@ -24,6 +24,13 @@ class TestAssetBundle extends CachingAssetBundle {
   }
 }
 
+class ThrowingAssetBundle extends CachingAssetBundle {
+  @override
+  Future<ByteData> load(String key) async {
+    throw FlutterError('Simulated package asset load failure: $key');
+  }
+}
+
 void main() {
   test('reads approved Starcore asset from the package-qualified bundle key',
       () async {
@@ -82,4 +89,43 @@ void main() {
 
     expect(await AssistantAvatarBytes.read(assistant), isNull);
   });
+
+  test('returns null when an approved package asset fails to load', () async {
+    final assistant = AssistantModel(
+      name: '损坏的内置头像',
+      avatarType: AvatarAssetService.assetType,
+      avatarValue: StarcoreIconAssets.assistantExplorerId,
+    );
+
+    expect(
+      await AssistantAvatarBytes.read(
+        assistant,
+        bundle: ThrowingAssetBundle(),
+      ),
+      isNull,
+    );
+  });
+
+  test('returns null when an existing local avatar cannot be read', () async {
+    final dir =
+        await Directory.systemTemp.createTemp('assistant_avatar_unreadable_');
+    final file = File('${dir.path}/avatar.png');
+    await file.writeAsBytes([1, 2, 3]);
+    final chmod = await Process.run('chmod', ['000', file.path]);
+    expect(chmod.exitCode, 0, reason: chmod.stderr as String?);
+    addTearDown(() async {
+      await Process.run('chmod', ['600', file.path]);
+      if (await dir.exists()) await dir.delete(recursive: true);
+    });
+    final assistant = AssistantModel(
+      name: '不可读本地头像',
+      avatarType: AvatarAssetService.imageType,
+      avatarValue: file.path,
+    );
+
+    expect(await AssistantAvatarBytes.read(assistant), isNull);
+  },
+      skip: Platform.isWindows
+          ? 'chmod-based read failure requires POSIX'
+          : false);
 }

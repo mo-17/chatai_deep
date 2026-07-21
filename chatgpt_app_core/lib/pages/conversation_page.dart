@@ -6,6 +6,7 @@ import 'package:chat_message/widget/chat_list.dart';
 import 'package:chatgpt_app_core/ai_readiness/ai_ready_state.dart';
 import 'package:chatgpt_app_core/ai_readiness/ai_readiness_resolver.dart';
 import 'package:chatgpt_app_core/ai_readiness/ai_send_guard.dart';
+import 'package:chatgpt_app_core/chat/application/assistant_conversation_avatar_resolver.dart';
 import 'package:chatgpt_app_core/chat/application/chat_block_store.dart';
 import 'package:chatgpt_app_core/chat/application/file_processor.dart';
 import 'package:chatgpt_app_core/chat/application/read_aloud_service.dart';
@@ -51,9 +52,7 @@ import 'package:chatgpt_app_core/pages/ai_settings_page.dart';
 import 'package:chatgpt_app_core/provider/ai_readiness_provider.dart';
 import 'package:chatgpt_app_core/provider/ai_settings_provider.dart';
 import 'package:chatgpt_app_core/theme/app_visual_theme.dart';
-import 'package:chatgpt_app_core/theme/starcore_icon_assets.dart';
 import 'package:chatgpt_app_core/util/app_events.dart';
-import 'package:chatgpt_app_core/util/avatar_asset_service.dart';
 import 'package:chatgpt_app_core/util/hi_dialog.dart';
 import 'package:chatgpt_app_core/util/hi_utils.dart';
 import 'package:chatgpt_app_core/util/scroll_jump.dart';
@@ -2368,7 +2367,9 @@ class _ConversationPageState extends State<ConversationPage> {
           : '';
       ownerName = userInfo['userName'];
     } else {
-      avatar = _assistantAvatarForMessage();
+      avatar =
+          AssistantConversationAvatarResolver.nextMessageAvatar(_assistant) ??
+              '';
       ownerName = _aiName;
     }
     // createdAt 同时充当消息身份 + 块仓库/持久化的 key（chatMessageKey）。
@@ -2442,22 +2443,6 @@ class _ConversationPageState extends State<ConversationPage> {
     setState(() {});
   }
 
-  String _assistantAvatarForMessage() {
-    final assistant = _assistant;
-    if (assistant == null) return '';
-    if (assistant.avatarType == AvatarAssetService.assetType) {
-      final assetAvatar =
-          StarcoreIconAssets.messageAvatarFor(assistant.avatarValue);
-      if (assetAvatar != null) return assetAvatar;
-    }
-    if (assistant.avatarType == AvatarAssetService.imageType) {
-      final value = assistant.avatarValue?.trim() ?? '';
-      if (value.isNotEmpty) return value;
-    }
-    final emoji = assistant.emoji.trim();
-    return emoji.isEmpty ? '' : 'emoji:${Uri.encodeComponent(emoji)}';
-  }
-
   /// 会话内切换助手（阶段七）：弹选择器 + 确认，从下一轮开始使用新助手。
   /// 历史消息的 ownerName/avatar 已经随消息落库，不随当前会话助手变化。
   void _openAssistantProfile() async {
@@ -2516,14 +2501,10 @@ class _ConversationPageState extends State<ConversationPage> {
     if (!confirmed || !mounted) return;
     setState(() {
       _assistant = assistant;
-      widget.conversationModel.assistantId = assistant?.id;
-      final avatar = _conversationAvatarForAssistant(assistant);
-      widget.conversationModel.avatarType = avatar.$1;
-      widget.conversationModel.avatarValue = avatar.$2;
-      final assistantVoice = assistant?.defaultVoiceStyle.trim() ?? '';
-      if (assistantVoice.isNotEmpty) {
-        widget.conversationModel.voiceStyle = assistantVoice;
-      }
+      AssistantConversationAvatarResolver.applySwitch(
+        widget.conversationModel,
+        assistant,
+      );
     });
     final message = assistant == null ? '已取消助手绑定' : '已切换助手：${assistant.name}';
     await _loadAssistantMemories();
@@ -2564,22 +2545,6 @@ class _ConversationPageState extends State<ConversationPage> {
       ),
     );
     return result == true;
-  }
-
-  (String?, String?) _conversationAvatarForAssistant(
-      AssistantModel? assistant) {
-    if (assistant == null) return (null, null);
-    if (assistant.avatarType == AvatarAssetService.assetType &&
-        StarcoreIconAssets.assistantAssetFor(assistant.avatarValue) != null) {
-      return (AvatarAssetService.assetType, assistant.avatarValue!.trim());
-    }
-    if (assistant.avatarType == AvatarAssetService.imageType &&
-        (assistant.avatarValue?.trim().isNotEmpty ?? false)) {
-      return (AvatarAssetService.imageType, assistant.avatarValue!.trim());
-    }
-    final emoji = assistant.emoji.trim();
-    if (emoji.isNotEmpty) return ('emoji', emoji);
-    return (null, null);
   }
 
   void _switchModel() async {
@@ -2784,7 +2749,9 @@ class _ConversationPageState extends State<ConversationPage> {
       ownerType: OwnerType.receiver,
       content: opening,
       createdAt: -widget.conversationModel.cid,
-      avatar: _assistantAvatarForMessage(),
+      avatar:
+          AssistantConversationAvatarResolver.nextMessageAvatar(_assistant) ??
+              '',
       ownerName: assistant?.name ?? _aiName,
     ));
   }

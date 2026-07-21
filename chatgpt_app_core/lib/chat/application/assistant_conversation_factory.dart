@@ -1,8 +1,7 @@
+import 'package:chatgpt_app_core/chat/application/assistant_conversation_avatar_resolver.dart';
 import 'package:chatgpt_app_core/chat/application/assistant_role_card_service.dart';
 import 'package:chatgpt_app_core/model/assistant_model.dart';
 import 'package:chatgpt_app_core/model/conversation_model.dart';
-import 'package:chatgpt_app_core/theme/starcore_icon_assets.dart';
-import 'package:chatgpt_app_core/util/avatar_asset_service.dart';
 
 /// 从助手生成新会话的字段映射，供会话列表、角色卡导入后的启动入口复用。
 class AssistantConversationFactory {
@@ -17,14 +16,14 @@ class AssistantConversationFactory {
     List<String>? toolIds,
   }) {
     final voiceStyle = assistant?.defaultVoiceStyle.trim();
-    final avatarType = _avatarTypeOf(assistant);
-    final avatarValue = _avatarValueOf(assistant, avatarType);
+    final avatar =
+        AssistantConversationAvatarResolver.conversationAvatar(assistant);
     return ConversationModel(
       cid: cid,
       icon: icon,
       assistantId: assistant?.id,
-      avatarType: avatarType,
-      avatarValue: avatarValue,
+      avatarType: avatar.$1,
+      avatarValue: avatar.$2,
       projectId: projectId,
       modelProviderId: modelProviderId,
       modelId: modelId,
@@ -61,27 +60,5 @@ class AssistantConversationFactory {
       add(greeting);
     }
     return candidates;
-  }
-
-  static String? _avatarTypeOf(AssistantModel? assistant) {
-    if (assistant == null) return null;
-    if (assistant.avatarType == AvatarAssetService.assetType &&
-        StarcoreIconAssets.assistantAssetFor(assistant.avatarValue) != null) {
-      return AvatarAssetService.assetType;
-    }
-    if (assistant.avatarType == AvatarAssetService.imageType &&
-        (assistant.avatarValue?.trim().isNotEmpty ?? false)) {
-      return AvatarAssetService.imageType;
-    }
-    return assistant.emoji.trim().isEmpty ? null : 'emoji';
-  }
-
-  static String? _avatarValueOf(AssistantModel? assistant, String? avatarType) {
-    if (assistant == null || avatarType == null) return null;
-    if (avatarType == AvatarAssetService.imageType ||
-        avatarType == AvatarAssetService.assetType) {
-      return assistant.avatarValue?.trim();
-    }
-    return assistant.emoji.trim();
   }
 }
