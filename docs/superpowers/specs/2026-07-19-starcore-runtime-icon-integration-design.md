@@ -1,18 +1,18 @@
 # 星核向导运行时图标接入设计
 
 - 日期：2026-07-19
-- 状态：设计与书面规范已批准；尚未实施
+- 状态：已实施并完成本轮验证；Web、HarmonyOS HAP 与 Windows runner 的构建缺口见第 14 节
 - 适用项目：`chatai_deep` Flutter 客户端
 - 上游视觉规范：`docs/superpowers/specs/2026-07-13-starcore-icon-system-design.md`
 - 视觉母版：`docs/design-assets/starcore-guide/`
 
 ## 1. 背景与目标
 
-「星核向导」首轮图标系统已经完成 A–D 四类视觉资产与小尺寸验收，但当前文件仍只存在于设计文档目录，没有进入 Flutter asset bundle，也没有替换各平台启动图标。
+「星核向导」首轮图标系统已经完成 A–D 四类视觉资产与小尺寸验收；本轮又将批准资产接入 Flutter asset bundle 与正式目标平台资源。具体验证证据，以及 Web、HarmonyOS HAP 与 Windows runner 的构建缺口，见第 14 节。
 
-本轮目标是把已经通过视觉验收的资产接入真实 App，同时保持现有经典主题可逆、用户自定义头像兼容，并避免让 UI 资源侵入工具执行等应用层逻辑。
+本轮已按以下目标把通过视觉验收的资产接入真实 App，同时保持现有经典主题可逆、用户自定义头像兼容，并避免让 UI 资源侵入工具执行等应用层逻辑。
 
-完成后应达到以下结果：
+本轮实现结果如下：
 
 1. Android、iOS、macOS、Windows、Web PWA 与 HarmonyOS 使用统一的星核向导启动图标。
 2. 二次元主题下，「聊天」与「创作」底部导航使用已确认的默认/选中 SVG；经典主题保持现有 Material 图标。
@@ -40,7 +40,7 @@
 - 各平台启动图标由 1024×1024 母版生成并提交到平台资源目录，平台启动时不依赖 Flutter asset bundle。
 - 不把 SVG 路径改写成 `CustomPainter`，也不为每种 Flutter DPR 维护多套功能图标 PNG。
 
-当前三份 Flutter 锁文件已经锁定 `flutter_svg 2.3.0`，但它目前只是传递依赖。实施时必须在 `chatgpt_app_core/pubspec.yaml` 中声明为直接依赖，使 shared core 对自身 import 负责。`flutter_svg` 为 Dart/Flutter 渲染依赖，不增加 Android、iOS 或 HarmonyOS 原生插件注册。
+`flutter_svg ^2.3.0` 已在 `chatgpt_app_core/pubspec.yaml` 中声明为直接依赖，使 shared core 对自身 import 负责；两个 App shell 的锁文件当前均解析到 `flutter_svg 2.3.0`。`chatgpt_app_core` 是 library package，按其 `.gitignore` 约定不提交 `pubspec.lock`。`flutter_svg` 为 Dart/Flutter 渲染依赖，不增加 Android、iOS 或 HarmonyOS 原生插件注册。
 
 ## 3. 范围与非目标
 
@@ -50,7 +50,7 @@
 - 替换真实目标平台已经配置的启动/应用图标资源。
 - 接入二次元主题导航、默认 AI 头像、助手头像预设和两种工具图标。
 - 增加资源合同、主题分支、回退行为和平台尺寸测试。
-- 更新相关设计文档中的「尚未接入」状态。
+- 同步相关设计文档的接入状态。
 
 ### 3.2 本轮不做
 
@@ -59,7 +59,7 @@
 - 不批量修改现有助手的 emoji、图片或数据库行。
 - 不修改 `ToolDescriptor` 的业务元数据结构来承载 Flutter Widget、asset path 或 `IconData`。
 - 不改后台、管理端、模型能力或工具执行逻辑。
-- 不扩展 Story room 自己的 persona/avatar schema；普通会话的助手头像链路会完整贯通，Story room 保持现有 image/emoji 回退。
+- 不扩展 Story room 自己的 persona/avatar schema；普通会话的助手头像链路已完整贯通，Story room 保持现有 image/emoji 回退。
 - 不为当前没有正式图标打包配置的 Linux runner 新建发布链。
 - 不替换 `chatgpt_flutter_ohos` 中与 HarmonyOS 构建无关的 Android/iOS/macOS/Windows/Web 脚手架资源。
 
@@ -329,7 +329,7 @@ Story room 使用独立 persona/speaker avatar 链路，本轮不把新的 asset
 
 ## 14. 实施验证记录
 
-验证日期：2026-07-22。以下结果均来自 `codex/starcore-runtime-icons` 工作树的本轮新鲜命令；文档头部状态保持不变，未把未通过的平台构建写成完成。
+验证日期：2026-07-22。以下结果均来自 `codex/starcore-runtime-icons` 工作树的本轮新鲜命令；文档头部状态已与实施结果同步，未把未通过的平台构建写成完成。
 
 - Launcher 资源生成与静态合同：`/Users/huangzhibin/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3 -m unittest discover -s docs/design-assets/starcore-guide -p 'test_*runtime_icons.py' -v` 通过 **19/19**；`validate_runtime_icons.py --platform android|ios|macos|windows|web|ohos` 六个独立 CLI 均打印 `OK`。iOS/macOS 两份 `Contents.json` 通过 `python3 -m json.tool`，Android `AndroidManifest.xml` 通过 `xmllint --noout`，`git diff --check` 通过。
 - Flutter runtime UI：母版资源 validator 通过 **12/12**，合同命令打印 `starcore assets: OK`，六个运行时 SVG 均通过 `xmllint`；`chat_message` 聚焦回归通过 **16/16** 且 analyze 无问题；17 文件 Core 聚焦回归通过 **196/196**；Core 全量测试通过 **1606/1606**。Core 全量 analyze 仅保留 `lib/widget/message_input_widget.dart:260:9` 的既有 `localeId` deprecated warning；该文件不在 Starcore 分支改动范围内，因此不把它表述为本分支引入。
