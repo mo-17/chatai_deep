@@ -309,6 +309,21 @@ void main() {
     );
 
     expect(find.text('图片头像'), findsOneWidget);
+    expect(
+      await pumpUntilPreviewChanges(
+        tester,
+        matches: (path) => path == image.path,
+      ),
+      image.path,
+    );
+    expect(
+      tester
+          .widget<ChoiceChip>(
+            find.byKey(const ValueKey('assistant-avatar-preset-emoji')),
+          )
+          .selected,
+      isFalse,
+    );
     await tester.enterText(
       find.byKey(const ValueKey('assistant-avatar-emoji-field')),
       '🚀',
@@ -319,6 +334,56 @@ void main() {
     expect(await tester.runAsync(image.exists), isTrue);
     expect(saved?.avatarType, AvatarAssetService.imageType);
     expect(saved?.avatarValue, image.path);
+  });
+
+  testWidgets('default avatar mode selects the Emoji preset', (tester) async {
+    await pumpEditor(
+      tester,
+      theme: AppThemeFactory.anime(),
+      assistant: AssistantModel(id: 18, name: '默认头像', emoji: '🤖'),
+      saveAssistant: (_) async {},
+    );
+
+    expect(
+      tester
+          .widget<ChoiceChip>(
+            find.byKey(const ValueKey('assistant-avatar-preset-emoji')),
+          )
+          .selected,
+      isTrue,
+    );
+  });
+
+  testWidgets('asset avatar mode selects its matching preset', (tester) async {
+    await pumpEditor(
+      tester,
+      theme: AppThemeFactory.anime(),
+      assistant: AssistantModel(
+        id: 19,
+        name: '创作头像',
+        emoji: '🤖',
+        avatarType: AvatarAssetService.assetType,
+        avatarValue: StarcoreIconAssets.assistantCreatorId,
+      ),
+      saveAssistant: (_) async {},
+    );
+
+    expect(
+      tester
+          .widget<ChoiceChip>(
+            find.byKey(const ValueKey('assistant-avatar-preset-emoji')),
+          )
+          .selected,
+      isFalse,
+    );
+    expect(
+      tester
+          .widget<ChoiceChip>(
+            find.byKey(const ValueKey('assistant-avatar-preset-creator')),
+          )
+          .selected,
+      isTrue,
+    );
   });
 
   testWidgets(

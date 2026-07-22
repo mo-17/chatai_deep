@@ -553,6 +553,8 @@ class _AssistantEditPageState extends State<AssistantEditPage> {
     final selectedAssetId = _avatarType == AvatarAssetService.assetType
         ? _avatarValue?.trim()
         : null;
+    final emojiSelected =
+        _avatarType != AvatarAssetService.assetType && !hasImage;
     final visual = AppVisualTheme.of(context);
     final colorScheme = Theme.of(context).colorScheme;
     final emoji = _emojiCtl.text.trim().isEmpty ? '🤖' : _emojiCtl.text.trim();
@@ -627,6 +629,7 @@ class _AssistantEditPageState extends State<AssistantEditPage> {
                 const SizedBox(height: 10),
                 AssistantAvatarPresetPicker(
                   selectedAssetId: selectedAssetId,
+                  emojiSelected: emojiSelected,
                   onSelected: _selectAvatarPreset,
                 ),
               ],

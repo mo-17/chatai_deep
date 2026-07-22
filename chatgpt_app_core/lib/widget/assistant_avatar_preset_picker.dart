@@ -3,11 +3,13 @@ import 'package:flutter/material.dart';
 
 class AssistantAvatarPresetPicker extends StatelessWidget {
   final String? selectedAssetId;
+  final bool emojiSelected;
   final ValueChanged<String?> onSelected;
 
   const AssistantAvatarPresetPicker({
     super.key,
     required this.selectedAssetId,
+    required this.emojiSelected,
     required this.onSelected,
   });
 
@@ -19,7 +21,7 @@ class AssistantAvatarPresetPicker extends StatelessWidget {
           ChoiceChip(
             key: const ValueKey('assistant-avatar-preset-emoji'),
             label: const Text('Emoji'),
-            selected: selectedAssetId == null,
+            selected: emojiSelected,
             onSelected: (_) => onSelected(null),
           ),
           ChoiceChip(
