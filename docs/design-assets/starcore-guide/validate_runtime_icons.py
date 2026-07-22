@@ -27,37 +27,37 @@ from generate_runtime_icons import (
 
 EXPECTED_MACOS_RECORDS = Counter(
     [
-        ("app_icon_16.png", "16x16", "1x"),
-        ("app_icon_32.png", "16x16", "2x"),
-        ("app_icon_32.png", "32x32", "1x"),
-        ("app_icon_64.png", "32x32", "2x"),
-        ("app_icon_128.png", "128x128", "1x"),
-        ("app_icon_256.png", "128x128", "2x"),
-        ("app_icon_256.png", "256x256", "1x"),
-        ("app_icon_512.png", "256x256", "2x"),
-        ("app_icon_512.png", "512x512", "1x"),
-        ("app_icon_1024.png", "512x512", "2x"),
+        ("app_icon_16.png", "16x16", "1x", "mac"),
+        ("app_icon_32.png", "16x16", "2x", "mac"),
+        ("app_icon_32.png", "32x32", "1x", "mac"),
+        ("app_icon_64.png", "32x32", "2x", "mac"),
+        ("app_icon_128.png", "128x128", "1x", "mac"),
+        ("app_icon_256.png", "128x128", "2x", "mac"),
+        ("app_icon_256.png", "256x256", "1x", "mac"),
+        ("app_icon_512.png", "256x256", "2x", "mac"),
+        ("app_icon_512.png", "512x512", "1x", "mac"),
+        ("app_icon_1024.png", "512x512", "2x", "mac"),
     ]
 )
 
 EXPECTED_IOS_RECORDS = Counter(
     [
-        ("icon-20@2x.png", "20x20", "2x"),
-        ("icon-20@3x.png", "20x20", "3x"),
-        ("icon-29@2x.png", "29x29", "2x"),
-        ("icon-29@3x.png", "29x29", "3x"),
-        ("icon-38@2x.png", "38x38", "2x"),
-        ("icon-38@3x.png", "38x38", "3x"),
-        ("icon-40@2x.png", "40x40", "2x"),
-        ("icon-40@3x.png", "40x40", "3x"),
-        ("icon-60@2x.png", "60x60", "2x"),
-        ("icon-60@3x.png", "60x60", "3x"),
-        ("icon-64@2x.png", "64x64", "2x"),
-        ("icon-64@3x.png", "64x64", "3x"),
-        ("icon-68@2x.png", "68x68", "2x"),
-        ("icon-76@2x.png", "76x76", "2x"),
-        ("icon-83.5@2x.png", "83.5x83.5", "2x"),
-        ("icon-1024.png", "1024x1024", "1x"),
+        ("icon-20@2x.png", "20x20", "2x", "universal", "ios"),
+        ("icon-20@3x.png", "20x20", "3x", "universal", "ios"),
+        ("icon-29@2x.png", "29x29", "2x", "universal", "ios"),
+        ("icon-29@3x.png", "29x29", "3x", "universal", "ios"),
+        ("icon-38@2x.png", "38x38", "2x", "universal", "ios"),
+        ("icon-38@3x.png", "38x38", "3x", "universal", "ios"),
+        ("icon-40@2x.png", "40x40", "2x", "universal", "ios"),
+        ("icon-40@3x.png", "40x40", "3x", "universal", "ios"),
+        ("icon-60@2x.png", "60x60", "2x", "universal", "ios"),
+        ("icon-60@3x.png", "60x60", "3x", "universal", "ios"),
+        ("icon-64@2x.png", "64x64", "2x", "universal", "ios"),
+        ("icon-64@3x.png", "64x64", "3x", "universal", "ios"),
+        ("icon-68@2x.png", "68x68", "2x", "universal", "ios"),
+        ("icon-76@2x.png", "76x76", "2x", "universal", "ios"),
+        ("icon-83.5@2x.png", "83.5x83.5", "2x", "universal", "ios"),
+        ("icon-1024.png", "1024x1024", "1x", "universal", "ios"),
     ]
 )
 
@@ -332,7 +332,7 @@ def validate_ios(root: Path) -> list[str]:
         errors.append(f"iOS icon catalog images must be a list: {catalog_path}")
     records = raw_records if isinstance(raw_records, list) else []
     declared: dict[str, dict[str, object]] = {}
-    actual_records: Counter[tuple[str, str, str]] = Counter()
+    actual_records: Counter[tuple[str, str, str, str, str]] = Counter()
     for index, item in enumerate(records):
         if not isinstance(item, dict):
             errors.append(
@@ -348,8 +348,15 @@ def validate_ios(root: Path) -> list[str]:
             continue
         declared_size = item.get("size")
         declared_scale = item.get("scale")
-        if isinstance(declared_size, str) and isinstance(declared_scale, str):
-            actual_records[(filename, declared_size, declared_scale)] += 1
+        idiom = item.get("idiom")
+        platform = item.get("platform")
+        if all(
+            isinstance(value, str)
+            for value in (declared_size, declared_scale, idiom, platform)
+        ):
+            actual_records[
+                (filename, declared_size, declared_scale, idiom, platform)
+            ] += 1
         declared[filename] = item
     if len(records) != len(IOS_FILES):
         errors.append("iOS Contents.json record count differs from IOS_FILES")
@@ -358,7 +365,10 @@ def validate_ios(root: Path) -> list[str]:
     if set(declared) != set(IOS_FILES):
         errors.append("iOS Contents.json filenames differ from IOS_FILES")
     if actual_records != EXPECTED_IOS_RECORDS:
-        errors.append("iOS Contents.json records differ from expected catalog")
+        errors.append(
+            f"iOS Contents.json records differ from expected catalog: "
+            f"{catalog_path}"
+        )
     expected_icons = _render_from_master(
         root,
         platform="iOS",
@@ -454,7 +464,7 @@ def validate_macos(root: Path) -> list[str]:
     if raw_records is not None and not isinstance(raw_records, list):
         errors.append(f"macOS icon catalog images must be a list: {catalog_path}")
     records = raw_records if isinstance(raw_records, list) else []
-    actual_records: Counter[tuple[str, str, str]] = Counter()
+    actual_records: Counter[tuple[str, str, str, str]] = Counter()
     for index, item in enumerate(records):
         if not isinstance(item, dict):
             errors.append(
@@ -466,19 +476,26 @@ def validate_macos(root: Path) -> list[str]:
             filename = item["filename"]
             declared_size = item["size"]
             scale = item["scale"]
+            idiom = item["idiom"]
             if not all(
                 isinstance(value, str)
-                for value in (filename, declared_size, scale)
+                for value in (filename, declared_size, scale, idiom)
             ):
-                raise TypeError("filename, size, and scale must be strings")
+                raise TypeError(
+                    "filename, size, scale, and idiom must be strings"
+                )
         except (KeyError, TypeError) as error:
             errors.append(
-                f"macOS icon catalog record {index} is malformed: {error}"
+                f"macOS icon catalog record {index} is malformed in "
+                f"{catalog_path}: {error}"
             )
             continue
-        actual_records[(filename, declared_size, scale)] += 1
+        actual_records[(filename, declared_size, scale, idiom)] += 1
     if actual_records != EXPECTED_MACOS_RECORDS:
-        errors.append("macOS Contents.json records differ from expected catalog")
+        errors.append(
+            f"macOS Contents.json records differ from expected catalog: "
+            f"{catalog_path}"
+        )
     expected_icons = _render_from_master(
         root,
         platform="macOS",

@@ -338,8 +338,13 @@ class RuntimeIconRepositoryTest(unittest.TestCase):
 
                     errors = validate_platform(root, "ios")
 
-                    self.assertIn(
-                        "iOS Contents.json records differ from expected catalog",
+                    self.assertTrue(
+                        any(
+                            "iOS Contents.json records differ from expected catalog"
+                            in error
+                            and str(path) in error
+                            for error in errors
+                        ),
                         errors,
                     )
 
@@ -355,6 +360,56 @@ class RuntimeIconRepositoryTest(unittest.TestCase):
             self.assertEqual(record["size"], "83.5x83.5")
             self.assertEqual(record["scale"], "2x")
             self.assertEqual(validate_platform(root, "ios"), [])
+
+    def test_ios_cli_rejects_wrong_platform_target_without_traceback(self):
+        with self._generated_platform_root("ios") as root:
+            path = self._app_icon_base(root, "ios") / "Contents.json"
+            contents = json.loads(path.read_text(encoding="utf-8"))
+            contents["images"][0]["platform"] = "macos"
+            path.write_text(json.dumps(contents), encoding="utf-8")
+
+            result = self._run_validator_cli(root, "ios")
+            output = result.stdout + result.stderr
+
+            self.assertNotEqual(result.returncode, 0)
+            self.assertEqual(result.stdout, "")
+            self.assertIn(
+                "iOS Contents.json records differ from expected catalog",
+                result.stderr,
+            )
+            self.assertIn(str(path), result.stderr)
+            self.assertNotIn("Traceback", output)
+
+    def test_ios_rejects_wrong_missing_and_typed_target_metadata(self):
+        cases = (
+            ("idiom", "mac", False),
+            ("idiom", None, True),
+            ("platform", None, True),
+            ("idiom", 7, False),
+            ("platform", ["ios"], False),
+        )
+        for field, value, remove in cases:
+            with self.subTest(field=field, value=value, remove=remove):
+                with self._generated_platform_root("ios") as root:
+                    path = self._app_icon_base(root, "ios") / "Contents.json"
+                    contents = json.loads(path.read_text(encoding="utf-8"))
+                    if remove:
+                        del contents["images"][0][field]
+                    else:
+                        contents["images"][0][field] = value
+                    path.write_text(json.dumps(contents), encoding="utf-8")
+
+                    errors = validate_platform(root, "ios")
+
+                    self.assertTrue(
+                        any(
+                            "iOS Contents.json records differ from expected catalog"
+                            in error
+                            and str(path) in error
+                            for error in errors
+                        ),
+                        errors,
+                    )
 
     def test_macos_reports_missing_catalog_without_traceback(self):
         with self._generated_platform_root("macos") as root:
@@ -386,6 +441,35 @@ class RuntimeIconRepositoryTest(unittest.TestCase):
                 ),
                 errors,
             )
+
+    def test_macos_rejects_wrong_missing_and_typed_idiom(self):
+        cases = (
+            ("iphone", False),
+            (None, True),
+            (42, False),
+        )
+        for value, remove in cases:
+            with self.subTest(value=value, remove=remove):
+                with self._generated_platform_root("macos") as root:
+                    path = self._app_icon_base(root, "macos") / "Contents.json"
+                    contents = json.loads(path.read_text(encoding="utf-8"))
+                    if remove:
+                        del contents["images"][0]["idiom"]
+                    else:
+                        contents["images"][0]["idiom"] = value
+                    path.write_text(json.dumps(contents), encoding="utf-8")
+
+                    errors = validate_platform(root, "macos")
+
+                    self.assertTrue(
+                        any(
+                            "macOS Contents.json records differ from expected catalog"
+                            in error
+                            and str(path) in error
+                            for error in errors
+                        ),
+                        errors,
+                    )
 
     def test_web_reports_missing_index_without_traceback(self):
         with self._generated_web_root() as root:
@@ -456,9 +540,14 @@ class RuntimeIconRepositoryTest(unittest.TestCase):
             contents["images"].append(contents["images"][0].copy())
             contents_path.write_text(json.dumps(contents), encoding="utf-8")
 
-            self.assertIn(
-                "iOS Contents.json records differ from expected catalog",
-                validate_platform(root, "ios"),
+            errors = validate_platform(root, "ios")
+            self.assertTrue(
+                any(
+                    "iOS Contents.json records differ from expected catalog" in error
+                    and str(contents_path) in error
+                    for error in errors
+                ),
+                errors,
             )
 
     def test_ios_rejects_missing_catalog_record(self):
@@ -468,9 +557,14 @@ class RuntimeIconRepositoryTest(unittest.TestCase):
             contents["images"].pop()
             contents_path.write_text(json.dumps(contents), encoding="utf-8")
 
-            self.assertIn(
-                "iOS Contents.json records differ from expected catalog",
-                validate_platform(root, "ios"),
+            errors = validate_platform(root, "ios")
+            self.assertTrue(
+                any(
+                    "iOS Contents.json records differ from expected catalog" in error
+                    and str(contents_path) in error
+                    for error in errors
+                ),
+                errors,
             )
 
     def test_macos_rejects_missing_shared_filename_representation(self):
