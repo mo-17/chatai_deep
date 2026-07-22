@@ -97,8 +97,15 @@ class ConversationWidget extends StatelessWidget {
     );
   }
 
+  int _animeAvatarCacheSize(BuildContext context) {
+    final physicalPixels =
+        (50 * MediaQuery.devicePixelRatioOf(context)).round();
+    return physicalPixels < 1 ? 1 : physicalPixels;
+  }
+
   Widget _animeFallback(BuildContext context) {
     final colorScheme = Theme.of(context).colorScheme;
+    final cacheSize = _animeAvatarCacheSize(context);
     return Container(
       height: 50,
       width: 50,
@@ -109,6 +116,8 @@ class ConversationWidget extends StatelessWidget {
         package: StarcoreIconAssets.packageName,
         height: 50,
         width: 50,
+        cacheWidth: cacheSize,
+        cacheHeight: cacheSize,
         fit: BoxFit.cover,
         errorBuilder: (_, __, ___) => Icon(
           Icons.smart_toy_rounded,
@@ -141,6 +150,7 @@ class ConversationWidget extends StatelessWidget {
     if (avatarType == AvatarAssetService.assetType) {
       final asset = StarcoreIconAssets.assistantAssetFor(avatarValue);
       if (asset != null) {
+        final cacheSize = _animeAvatarCacheSize(context);
         return ClipRRect(
           borderRadius: BorderRadius.circular(14),
           child: Image.asset(
@@ -148,6 +158,8 @@ class ConversationWidget extends StatelessWidget {
             package: StarcoreIconAssets.packageName,
             height: 50,
             width: 50,
+            cacheWidth: cacheSize,
+            cacheHeight: cacheSize,
             fit: BoxFit.cover,
             errorBuilder: (_, __, ___) => _animeFallback(context),
           ),

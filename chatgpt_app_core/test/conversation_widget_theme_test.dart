@@ -27,13 +27,18 @@ void main() {
         lastMessage: '今天继续完善这个世界的设定与角色关系。',
       );
 
+  AssetImage? packageAssetProvider(ImageProvider<Object> provider) {
+    final source = provider is ResizeImage ? provider.imageProvider : provider;
+    return source is AssetImage ? source : null;
+  }
+
   Finder packageAssetImage(String assetName) => find.byWidgetPredicate(
-        (widget) =>
-            widget is Image &&
-            widget.image is AssetImage &&
-            (widget.image as AssetImage).assetName == assetName &&
-            (widget.image as AssetImage).package ==
-                StarcoreIconAssets.packageName,
+        (widget) {
+          if (widget is! Image) return false;
+          final provider = packageAssetProvider(widget.image);
+          return provider?.assetName == assetName &&
+              provider?.package == StarcoreIconAssets.packageName;
+        },
       );
 
   testWidgets('二次元会话卡支持大字体、置顶状态和点击', (tester) async {
@@ -96,6 +101,8 @@ void main() {
   });
 
   testWidgets('二次元会话卡渲染 allowlisted package asset，经典风格保持旧路径', (tester) async {
+    tester.view.devicePixelRatio = 2;
+    addTearDown(tester.view.resetDevicePixelRatio);
     final provider = ThemeProvider()..setVisualStyle(AppVisualStyle.anime);
     final assetModel = model()
       ..avatarType = AvatarAssetService.assetType
@@ -114,6 +121,13 @@ void main() {
       packageAssetImage(StarcoreIconAssets.assistantExplorer),
       findsOneWidget,
     );
+    final image = tester.widget<Image>(
+      packageAssetImage(StarcoreIconAssets.assistantExplorer),
+    );
+    expect(image.image, isA<ResizeImage>());
+    final resized = image.image as ResizeImage;
+    expect(resized.width, 100);
+    expect(resized.height, 100);
 
     provider.setVisualStyle(AppVisualStyle.classic);
     await tester.pumpWidget(app());
@@ -125,6 +139,8 @@ void main() {
   });
 
   testWidgets('二次元空头像回退 explorer package asset，经典风格保持 AI 回退', (tester) async {
+    tester.view.devicePixelRatio = 2;
+    addTearDown(tester.view.resetDevicePixelRatio);
     final provider = ThemeProvider()..setVisualStyle(AppVisualStyle.anime);
     final noAvatarModel = model();
     Widget app() => ChangeNotifierProvider.value(
@@ -141,6 +157,13 @@ void main() {
       packageAssetImage(StarcoreIconAssets.assistantExplorer),
       findsOneWidget,
     );
+    final image = tester.widget<Image>(
+      packageAssetImage(StarcoreIconAssets.assistantExplorer),
+    );
+    expect(image.image, isA<ResizeImage>());
+    final resized = image.image as ResizeImage;
+    expect(resized.width, 100);
+    expect(resized.height, 100);
 
     provider.setVisualStyle(AppVisualStyle.classic);
     await tester.pumpWidget(app());

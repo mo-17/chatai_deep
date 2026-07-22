@@ -1,9 +1,47 @@
+import 'dart:io';
+
 import 'package:chatgpt_app_core/theme/starcore_icon_assets.dart';
 import 'package:chatgpt_app_core/widget/starcore_svg_icon.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 void main() {
+  test('runtime package assets exactly match the eight approved masters', () {
+    const approvedAssetPaths = <String>[
+      StarcoreIconAssets.navChatDefault,
+      StarcoreIconAssets.navChatSelected,
+      StarcoreIconAssets.navCreateDefault,
+      StarcoreIconAssets.navCreateSelected,
+      StarcoreIconAssets.toolWebSearch,
+      StarcoreIconAssets.toolKnowledgeSearch,
+      StarcoreIconAssets.assistantExplorer,
+      StarcoreIconAssets.assistantCreator,
+    ];
+
+    for (final runtimePath in approvedAssetPaths) {
+      final fileName = runtimePath.split('/').last;
+      final runtimeFile = File(runtimePath);
+      final approvedMaster = File(
+        '../docs/design-assets/starcore-guide/$fileName',
+      );
+      expect(
+        runtimeFile.existsSync(),
+        isTrue,
+        reason: 'Missing runtime package asset: ${runtimeFile.path}',
+      );
+      expect(
+        approvedMaster.existsSync(),
+        isTrue,
+        reason: 'Missing approved Starcore master: ${approvedMaster.path}',
+      );
+      expect(
+        runtimeFile.readAsBytesSync(),
+        orderedEquals(approvedMaster.readAsBytesSync()),
+        reason: '$fileName differs from its approved Starcore master',
+      );
+    }
+  });
+
   test('Starcore assistant ids map only to approved package assets', () {
     expect(
       StarcoreIconAssets.assistantAssetFor(
