@@ -4,6 +4,7 @@ import argparse
 import io
 import json
 import math
+import re
 import struct
 from collections import Counter
 from collections.abc import Callable
@@ -38,6 +39,33 @@ EXPECTED_MACOS_RECORDS = Counter(
         ("app_icon_1024.png", "512x512", "2x"),
     ]
 )
+
+EXPECTED_IOS_RECORDS = Counter(
+    [
+        ("icon-20@2x.png", "20x20", "2x"),
+        ("icon-20@3x.png", "20x20", "3x"),
+        ("icon-29@2x.png", "29x29", "2x"),
+        ("icon-29@3x.png", "29x29", "3x"),
+        ("icon-38@2x.png", "38x38", "2x"),
+        ("icon-38@3x.png", "38x38", "3x"),
+        ("icon-40@2x.png", "40x40", "2x"),
+        ("icon-40@3x.png", "40x40", "3x"),
+        ("icon-60@2x.png", "60x60", "2x"),
+        ("icon-60@3x.png", "60x60", "3x"),
+        ("icon-64@2x.png", "64x64", "2x"),
+        ("icon-64@3x.png", "64x64", "3x"),
+        ("icon-68@2x.png", "68x68", "2x"),
+        ("icon-76@2x.png", "76x76", "2x"),
+        ("icon-83.5@2x.png", "83.5x83.5", "2x"),
+        ("icon-1024.png", "1024x1024", "1x"),
+    ]
+)
+
+IOS_POINT_COMPONENT = r"(?:0|[1-9]\d*)(?:\.\d+)?"
+IOS_SIZE_PATTERN = re.compile(
+    rf"(?P<width>{IOS_POINT_COMPONENT})x(?P<height>{IOS_POINT_COMPONENT})"
+)
+IOS_SCALE_PATTERN = re.compile(r"(?P<scale>[1-9]\d*)x")
 
 WINDOWS_ICON_SIZES = (16, 32, 48, 256)
 
@@ -193,6 +221,29 @@ def _web_expected_icons(master: Image.Image) -> dict[str, Image.Image]:
     return rendered
 
 
+def _decode_image(
+    source: Path | io.BytesIO,
+    *,
+    error_prefix: str,
+    errors: list[str] | None,
+) -> Image.Image | None:
+    decoded: Image.Image | None = None
+    try:
+        decoded = Image.open(source)
+        decoded.load()
+        return decoded
+    except IMAGE_INPUT_ERRORS as error:
+        if decoded is not None:
+            decoded.close()
+        if errors is not None:
+            errors.append(f"{error_prefix}: {error}")
+        return None
+    except BaseException:
+        if decoded is not None:
+            decoded.close()
+        raise
+
+
 def _same_pixels(
     actual: Path,
     expected: Image.Image,
@@ -204,18 +255,21 @@ def _same_pixels(
         if errors is not None:
             errors.append(f"missing {label}: {actual}")
         return False
-    try:
-        with Image.open(actual) as loaded:
-            loaded.load()
-            if loaded.size != expected.size or loaded.mode != expected.mode:
-                return False
-            return ImageChops.difference(loaded, expected).getbbox(
-                alpha_only=False,
-            ) is None
-    except IMAGE_INPUT_ERRORS as error:
-        if errors is not None:
-            errors.append(f"unable to decode {label}: {actual}: {error}")
+    loaded = _decode_image(
+        actual,
+        error_prefix=f"unable to decode {label}: {actual}",
+        errors=errors,
+    )
+    if loaded is None:
         return False
+    try:
+        if loaded.size != expected.size or loaded.mode != expected.mode:
+            return False
+        return ImageChops.difference(loaded, expected).getbbox(
+            alpha_only=False,
+        ) is None
+    finally:
+        loaded.close()
 
 
 def _check_pixels(
@@ -278,6 +332,7 @@ def validate_ios(root: Path) -> list[str]:
         errors.append(f"iOS icon catalog images must be a list: {catalog_path}")
     records = raw_records if isinstance(raw_records, list) else []
     declared: dict[str, dict[str, object]] = {}
+    actual_records: Counter[tuple[str, str, str]] = Counter()
     for index, item in enumerate(records):
         if not isinstance(item, dict):
             errors.append(
@@ -291,6 +346,10 @@ def validate_ios(root: Path) -> list[str]:
                 f"{catalog_path}"
             )
             continue
+        declared_size = item.get("size")
+        declared_scale = item.get("scale")
+        if isinstance(declared_size, str) and isinstance(declared_scale, str):
+            actual_records[(filename, declared_size, declared_scale)] += 1
         declared[filename] = item
     if len(records) != len(IOS_FILES):
         errors.append("iOS Contents.json record count differs from IOS_FILES")
@@ -298,6 +357,8 @@ def validate_ios(root: Path) -> list[str]:
         errors.append("iOS Contents.json has duplicate filenames")
     if set(declared) != set(IOS_FILES):
         errors.append("iOS Contents.json filenames differ from IOS_FILES")
+    if actual_records != EXPECTED_IOS_RECORDS:
+        errors.append("iOS Contents.json records differ from expected catalog")
     expected_icons = _render_from_master(
         root,
         platform="iOS",
@@ -320,12 +381,29 @@ def validate_ios(root: Path) -> list[str]:
                 str,
             ):
                 raise TypeError("size and scale must be strings")
-            points = float(declared_size.split("x", maxsplit=1)[0])
-            scale_text = declared_scale.removesuffix("x")
-            scale_value = float(scale_text)
-            if not math.isfinite(points) or not math.isfinite(scale_value):
-                raise ValueError("size and scale must be finite")
-            scale = int(scale_text)
+            size_match = IOS_SIZE_PATTERN.fullmatch(declared_size)
+            if size_match is None:
+                raise ValueError(
+                    "size and scale must be finite; size must use "
+                    "<positive finite>x<same positive finite>"
+                )
+            width = float(size_match.group("width"))
+            height = float(size_match.group("height"))
+            if (
+                not math.isfinite(width)
+                or not math.isfinite(height)
+                or width <= 0
+                or height <= 0
+                or width != height
+            ):
+                raise ValueError(
+                    "size must use equal positive finite dimensions"
+                )
+            scale_match = IOS_SCALE_PATTERN.fullmatch(declared_scale)
+            if scale_match is None:
+                raise ValueError("scale must use <positive integer>x")
+            scale = int(scale_match.group("scale"))
+            points = width
             rendered_pixels = points * scale
             if not math.isfinite(rendered_pixels):
                 raise ValueError("computed pixel size must be finite")
@@ -340,14 +418,18 @@ def validate_ios(root: Path) -> list[str]:
         if not path.is_file():
             errors.append(f"missing iOS icon: {path}")
             continue
-        try:
-            with Image.open(path) as actual:
-                actual.load()
-                if actual.mode != "RGB" or actual.info.get("transparency") is not None:
-                    errors.append(f"iOS icon must be RGB without alpha: {path}")
-        except IMAGE_INPUT_ERRORS as error:
-            errors.append(f"unable to decode iOS icon: {path}: {error}")
+        actual = _decode_image(
+            path,
+            error_prefix=f"unable to decode iOS icon: {path}",
+            errors=errors,
+        )
+        if actual is None:
             continue
+        try:
+            if actual.mode != "RGB" or actual.info.get("transparency") is not None:
+                errors.append(f"iOS icon must be RGB without alpha: {path}")
+        finally:
+            actual.close()
         if expected_icons is not None:
             _check_pixels(
                 path,
@@ -411,16 +493,20 @@ def validate_macos(root: Path) -> list[str]:
         if not path.is_file():
             errors.append(f"missing macOS icon: {path}")
             continue
-        try:
-            with Image.open(path) as actual:
-                actual.load()
-                if actual.mode != "RGBA" or actual.getpixel((0, 0))[3] != 0:
-                    errors.append(
-                        f"macOS icon lacks transparent rounded canvas: {path}"
-                    )
-        except IMAGE_INPUT_ERRORS as error:
-            errors.append(f"unable to decode macOS icon: {path}: {error}")
+        actual = _decode_image(
+            path,
+            error_prefix=f"unable to decode macOS icon: {path}",
+            errors=errors,
+        )
+        if actual is None:
             continue
+        try:
+            if actual.mode != "RGBA" or actual.getpixel((0, 0))[3] != 0:
+                errors.append(
+                    f"macOS icon lacks transparent rounded canvas: {path}"
+                )
+        finally:
+            actual.close()
         if expected_icons is not None:
             _check_pixels(
                 path,
@@ -514,30 +600,35 @@ def validate_windows(root: Path) -> list[str]:
             if not payload.startswith(b"\x89PNG\r\n\x1a\n"):
                 errors.append(f"Windows ICO payload is not PNG at {width}px")
                 continue
+            actual = _decode_image(
+                io.BytesIO(payload),
+                error_prefix=(
+                    f"Windows ICO PNG payload cannot be decoded at entry {index}"
+                ),
+                errors=errors,
+            )
+            if actual is None:
+                continue
             try:
-                with Image.open(io.BytesIO(payload)) as actual:
-                    actual.load()
-                    if actual.mode != "RGBA":
-                        errors.append(
-                            f"Windows ICO PNG payload must be RGBA at {width}px"
-                        )
-                        continue
-                    if actual.size != size:
-                        errors.append(
-                            f"Windows ICO PNG dimensions differ at entry {index}: "
-                            f"{actual.size} != {size}"
-                        )
-                        continue
-                    if expected_icons is not None and width in expected_icons:
-                        expected = expected_icons[width]
-                        if ImageChops.difference(actual, expected).getbbox(
-                            alpha_only=False,
-                        ) is not None:
-                            errors.append(f"Windows ICO pixels differ at {width}px")
-            except IMAGE_INPUT_ERRORS as error:
-                errors.append(
-                    f"Windows ICO PNG payload cannot be decoded at entry {index}: {error}"
-                )
+                if actual.mode != "RGBA":
+                    errors.append(
+                        f"Windows ICO PNG payload must be RGBA at {width}px"
+                    )
+                    continue
+                if actual.size != size:
+                    errors.append(
+                        f"Windows ICO PNG dimensions differ at entry {index}: "
+                        f"{actual.size} != {size}"
+                    )
+                    continue
+                if expected_icons is not None and width in expected_icons:
+                    expected = expected_icons[width]
+                    if ImageChops.difference(actual, expected).getbbox(
+                        alpha_only=False,
+                    ) is not None:
+                        errors.append(f"Windows ICO pixels differ at {width}px")
+            finally:
+                actual.close()
         expected_sizes = {(size, size) for size in WINDOWS_ICON_SIZES}
         if set(sizes) != expected_sizes or len(sizes) != len(set(sizes)):
             errors.append(f"Windows ICO frame entries differ: {sizes}")

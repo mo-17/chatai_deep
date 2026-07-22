@@ -23,14 +23,24 @@ ROOT = Path(__file__).resolve().parents[3]
 class _TrackedMasterImage:
     def __init__(self, image):
         self._image = image
-        self.closed = False
+        self.close_count = 0
+
+    @property
+    def closed(self):
+        return self.close_count > 0
 
     def __getattr__(self, name):
         return getattr(self._image, name)
 
     def close(self):
-        self.closed = True
+        self.close_count += 1
         self._image.close()
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, _error_type, _error, _traceback):
+        self.close()
 
 
 class RuntimeIconRepositoryTest(unittest.TestCase):
@@ -89,6 +99,58 @@ class RuntimeIconRepositoryTest(unittest.TestCase):
                 f"android launcher mismatch: {path}",
                 validate_platform(root, "android"),
             )
+
+    def test_pixel_comparison_programmer_errors_propagate_and_images_close(self):
+        real_assert_master = runtime_validator._assert_master
+        real_image_open = runtime_validator.Image.open
+        roots = {
+            "android": self._generated_android_root,
+            "windows": self._generated_windows_root,
+        }
+        for platform, root_factory in roots.items():
+            with root_factory() as root:
+                for error_type in (TypeError, ValueError, KeyError):
+                    with self.subTest(
+                        platform=platform,
+                        error_type=error_type.__name__,
+                    ):
+                        failure = error_type("comparison programmer bug")
+                        master = _TrackedMasterImage(
+                            real_assert_master(self._master_path(root))
+                        )
+                        current_images = []
+
+                        def tracked_open(source, *args, **kwargs):
+                            current = _TrackedMasterImage(
+                                real_image_open(source, *args, **kwargs)
+                            )
+                            current_images.append(current)
+                            return current
+
+                        with mock.patch.object(
+                            runtime_validator,
+                            "_assert_master",
+                            return_value=master,
+                        ) as master_loader, mock.patch.object(
+                            runtime_validator.Image,
+                            "open",
+                            side_effect=tracked_open,
+                        ), mock.patch.object(
+                            runtime_validator.ImageChops,
+                            "difference",
+                            side_effect=failure,
+                        ):
+                            with self.assertRaises(error_type) as raised:
+                                validate_platform(root, platform)
+
+                        self.assertIs(raised.exception, failure)
+                        master_loader.assert_called_once()
+                        self.assertEqual(master.close_count, 1)
+                        self.assertTrue(current_images)
+                        self.assertTrue(
+                            all(image.close_count == 1 for image in current_images),
+                            [image.close_count for image in current_images],
+                        )
 
     def test_android(self):
         self.assertEqual(validate_platform(ROOT, "android"), [])
@@ -252,6 +314,48 @@ class RuntimeIconRepositoryTest(unittest.TestCase):
                 errors,
             )
 
+    def test_ios_rejects_noncanonical_size_and_scale_formats(self):
+        cases = (
+            ("size", "20x999"),
+            ("size", "20"),
+            ("scale", "2"),
+            ("size", "NaNxNaN"),
+            ("size", "InfinityxInfinity"),
+            ("size", "0x0"),
+            ("size", "-20x-20"),
+            ("size", "20x20extra"),
+            ("scale", "0x"),
+            ("scale", "-2x"),
+            ("scale", "2xx"),
+        )
+        for field, value in cases:
+            with self.subTest(field=field, value=value):
+                with self._generated_platform_root("ios") as root:
+                    path = self._app_icon_base(root, "ios") / "Contents.json"
+                    contents = json.loads(path.read_text(encoding="utf-8"))
+                    contents["images"][0][field] = value
+                    path.write_text(json.dumps(contents), encoding="utf-8")
+
+                    errors = validate_platform(root, "ios")
+
+                    self.assertIn(
+                        "iOS Contents.json records differ from expected catalog",
+                        errors,
+                    )
+
+    def test_ios_accepts_valid_full_metadata_record(self):
+        with self._generated_platform_root("ios") as root:
+            path = self._app_icon_base(root, "ios") / "Contents.json"
+            contents = json.loads(path.read_text(encoding="utf-8"))
+            record = next(
+                item
+                for item in contents["images"]
+                if item["filename"] == "icon-83.5@2x.png"
+            )
+            self.assertEqual(record["size"], "83.5x83.5")
+            self.assertEqual(record["scale"], "2x")
+            self.assertEqual(validate_platform(root, "ios"), [])
+
     def test_macos_reports_missing_catalog_without_traceback(self):
         with self._generated_platform_root("macos") as root:
             path = self._app_icon_base(root, "macos") / "Contents.json"
@@ -352,7 +456,22 @@ class RuntimeIconRepositoryTest(unittest.TestCase):
             contents["images"].append(contents["images"][0].copy())
             contents_path.write_text(json.dumps(contents), encoding="utf-8")
 
-            self.assertTrue(validate_platform(root, "ios"))
+            self.assertIn(
+                "iOS Contents.json records differ from expected catalog",
+                validate_platform(root, "ios"),
+            )
+
+    def test_ios_rejects_missing_catalog_record(self):
+        with self._generated_platform_root("ios") as root:
+            contents_path = self._app_icon_base(root, "ios") / "Contents.json"
+            contents = json.loads(contents_path.read_text(encoding="utf-8"))
+            contents["images"].pop()
+            contents_path.write_text(json.dumps(contents), encoding="utf-8")
+
+            self.assertIn(
+                "iOS Contents.json records differ from expected catalog",
+                validate_platform(root, "ios"),
+            )
 
     def test_macos_rejects_missing_shared_filename_representation(self):
         with self._generated_platform_root("macos") as root:
