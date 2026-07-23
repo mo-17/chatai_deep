@@ -35,18 +35,20 @@ CODE_FONT_CANDIDATES = (
     ("AipuCodeMenlo", MENLO_PATH, 0, "Menlo Regular"),
 )
 
+DARK_NAVY = HexColor("#0D263E")
 NAVY = HexColor("#163A5F")
 BLUE = HexColor("#2F6FED")
-DANGER = HexColor("#B42318")
-SUCCESS = HexColor("#027A48")
+SKY = HexColor("#62ADFF")
 INK = HexColor("#172B3A")
 MUTED = HexColor("#536575")
 LINE = HexColor("#D6DEE6")
-PALE_BLUE = HexColor("#EEF4FF")
-RISK_FILL = HexColor("#FEF3F2")
-SCORE_FILL = HexColor("#ECFDF3")
 PAPER = HexColor("#FFFFFF")
 SOFT = HexColor("#F6F8FA")
+INFO_FILL = HexColor("#EEF4FF")
+RISK = HexColor("#B42318")
+RISK_FILL = HexColor("#FEF3F2")
+SCORE = HexColor("#1D4ED8")
+SCORE_FILL = HexColor("#EFF6FF")
 
 
 @dataclass(frozen=True)
@@ -91,7 +93,12 @@ class StyleSet:
     primary: Color
     accent: Color
     danger: Color
-    success: Color
+    dark_navy: Color
+    sky: Color
+    score: Color
+    paper: Color
+    soft: Color
+    info_fill: Color
     line: Color
     risk_fill: Color
     scoring_fill: Color
@@ -259,7 +266,7 @@ def build_styles(fonts: FontSet) -> StyleSet:
         fontSize=10.2,
         leading=16,
         textColor=NAVY,
-        backColor=PALE_BLUE,
+        backColor=INFO_FILL,
         borderColor=BLUE,
         borderWidth=0.8,
         borderPadding=(7, 8, 7, 8),
@@ -270,7 +277,7 @@ def build_styles(fonts: FontSet) -> StyleSet:
         fontSize=8.5,
         leading=13,
         textColor=MUTED,
-        backColor=PALE_BLUE,
+        backColor=INFO_FILL,
         borderColor=BLUE,
         borderWidth=0.6,
         borderPadding=(5, 7, 5, 7),
@@ -296,26 +303,26 @@ def build_styles(fonts: FontSet) -> StyleSet:
     risk_label = ParagraphStyle(
         "RiskLabel",
         parent=field_label,
-        textColor=DANGER,
+        textColor=RISK,
     )
     risk_body = ParagraphStyle(
         "RiskBody",
         parent=field_body,
         textColor=HexColor("#7A271A"),
         backColor=RISK_FILL,
-        borderColor=DANGER,
+        borderColor=RISK,
     )
     scoring_label = ParagraphStyle(
         "ScoringLabel",
         parent=field_label,
-        textColor=SUCCESS,
+        textColor=SCORE,
     )
     scoring_body = ParagraphStyle(
         "ScoringBody",
         parent=field_body,
-        textColor=HexColor("#05603A"),
-        backColor=SCORE_FILL,
-        borderColor=SUCCESS,
+        textColor=SCORE,
+        backColor=None,
+        borderColor=SCORE,
     )
     notes = style(
         "InterviewerNotes",
@@ -370,8 +377,13 @@ def build_styles(fonts: FontSet) -> StyleSet:
         form_body=form_body,
         primary=NAVY,
         accent=BLUE,
-        danger=DANGER,
-        success=SUCCESS,
+        danger=RISK,
+        dark_navy=DARK_NAVY,
+        sky=SKY,
+        score=SCORE,
+        paper=PAPER,
+        soft=SOFT,
+        info_fill=INFO_FILL,
         line=LINE,
         risk_fill=RISK_FILL,
         scoring_fill=SCORE_FILL,

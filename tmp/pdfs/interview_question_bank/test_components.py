@@ -23,7 +23,17 @@ from interview_question_bank.components import (
 )
 import interview_question_bank.components as component_module
 from interview_question_bank.parser import CodeBlock, Question, TableBlock
-from interview_question_bank.styles import build_styles, register_fonts, safe_inline
+from interview_question_bank.styles import (
+    BLUE,
+    DARK_NAVY,
+    NAVY,
+    SCORE,
+    SCORE_FILL,
+    SKY,
+    build_styles,
+    register_fonts,
+    safe_inline,
+)
 import interview_question_bank.styles as style_tokens
 
 
@@ -76,6 +86,36 @@ def flowable_text(flowable) -> str:
 
 def wrap_flowable(flowable) -> tuple[float, float]:
     return flowable.wrapOn(Canvas(BytesIO(), pagesize=A4), BODY_WIDTH, A4[1])
+
+
+class BlueprintStyleContractTest(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.fonts = register_fonts()
+
+    def test_approved_blueprint_tokens(self) -> None:
+        self.assertEqual(DARK_NAVY, HexColor("#0D263E"))
+        self.assertEqual(NAVY, HexColor("#163A5F"))
+        self.assertEqual(BLUE, HexColor("#2F6FED"))
+        self.assertEqual(SKY, HexColor("#62ADFF"))
+        self.assertEqual(SCORE, HexColor("#1D4ED8"))
+        self.assertEqual(SCORE_FILL, HexColor("#EFF6FF"))
+
+    def test_score_styles_are_blue_not_green(self) -> None:
+        styles = build_styles(self.fonts)
+        self.assertEqual(styles.scoring_label.textColor, SCORE)
+        self.assertEqual(styles.scoring_body.textColor, SCORE)
+        self.assertEqual(styles.scoring_fill, SCORE_FILL)
+        self.assertIsNone(styles.scoring_body.backColor)
+
+    def test_reading_sizes_are_not_reduced(self) -> None:
+        styles = build_styles(self.fonts)
+        self.assertEqual(styles.question_heading.fontSize, 15)
+        self.assertEqual(styles.question_heading.leading, 20)
+        self.assertEqual(styles.prompt.fontSize, 10.2)
+        self.assertEqual(styles.prompt.leading, 16)
+        self.assertGreaterEqual(styles.field_body.fontSize, 9.2)
+        self.assertGreaterEqual(styles.table_body.fontSize, 7.8)
 
 
 class ComponentTest(unittest.TestCase):
@@ -241,7 +281,7 @@ class ComponentTest(unittest.TestCase):
         risk = next(p for p in paragraphs if "只讲 happy path" in p.getPlainText())
         scoring = next(p for p in paragraphs if "1 分" in p.getPlainText())
         self.assertEqual(HexColor("#FEF3F2"), risk.style.backColor)
-        self.assertEqual(HexColor("#ECFDF3"), scoring.style.backColor)
+        self.assertIsNone(scoring.style.backColor)
         self.assertNotEqual(risk.style.backColor, scoring.style.backColor)
 
     def test_blind_material_uses_a_blue_information_panel(self) -> None:
