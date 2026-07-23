@@ -1,6 +1,6 @@
 # 艾普项目高级岗位面试题库 PDF 重设计规范
 
-- 状态：设计方向已批准 / 书面规格待用户复核
+- 状态：设计方向与书面规格已批准
 - 批准日期：2026-07-23
 - 源文档：`docs/project-interview-question-bank.md`
 - 目标文件：`output/pdf/aipu-senior-role-interview-question-bank.pdf`
