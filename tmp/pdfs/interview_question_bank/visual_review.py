@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import argparse
 import json
 from hashlib import sha256
 from pathlib import Path
@@ -171,14 +172,20 @@ def _validate_render_set(
 
 def _prepare_empty_directory(path: Path) -> Path:
     path = Path(path)
-    if path.exists():
-        if not path.is_dir():
-            raise ValueError(f"output path is not a directory: {path}")
-        if any(path.iterdir()):
-            raise ValueError(f"output directory must be empty: {path}")
-    else:
+    _require_empty_or_missing_directory(path)
+    if not path.exists():
         path.mkdir(parents=True)
     return path
+
+
+def _require_empty_or_missing_directory(path: Path) -> None:
+    path = Path(path)
+    if not path.exists():
+        return
+    if not path.is_dir():
+        raise ValueError(f"output path is not a directory: {path}")
+    if any(path.iterdir()):
+        raise ValueError(f"output directory must be empty: {path}")
 
 
 def _normalized_text(value: str) -> str:
@@ -498,3 +505,62 @@ def screen_rendered_pages(
         encoding="utf-8",
     )
     return report
+
+
+def main(argv: Sequence[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("pdf", type=Path)
+    parser.add_argument("--render-dir", required=True, type=Path)
+    parser.add_argument("--contact-dir", required=True, type=Path)
+    parser.add_argument("--grayscale-dir", required=True, type=Path)
+    parser.add_argument("--screening-report", required=True, type=Path)
+    parser.add_argument("--dpi", default=144, type=int)
+    args = parser.parse_args(argv)
+
+    for evidence_directory in (
+        args.render_dir,
+        args.contact_dir,
+        args.grayscale_dir,
+    ):
+        _require_empty_or_missing_directory(evidence_directory)
+    if args.screening_report.exists():
+        raise ValueError(
+            f"screening report must not already exist: {args.screening_report}"
+        )
+
+    pages = render_pages_with_poppler(
+        args.pdf,
+        args.render_dir,
+        dpi=args.dpi,
+    )
+    contact_sheets = build_contact_sheets(
+        pages,
+        args.contact_dir,
+        pages_per_sheet=12,
+    )
+    grayscale_samples = build_grayscale_samples(
+        args.pdf,
+        pages,
+        args.grayscale_dir,
+    )
+    screening = screen_rendered_pages(
+        pages,
+        report_path=args.screening_report,
+    )
+    identity = screening["render_identity"]
+    summary = {
+        "source_pdf": identity["source_pdf"],
+        "pdf_sha256": identity["pdf_sha256"],
+        "page_count": identity["page_count"],
+        "rendered_pages": len(pages),
+        "contact_sheets": len(contact_sheets),
+        "grayscale_samples": sorted(grayscale_samples),
+        "screening_report": str(args.screening_report.resolve()),
+        "suspicious_pages": screening["suspicious_pages"],
+    }
+    print(json.dumps(summary, ensure_ascii=False, sort_keys=True))
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

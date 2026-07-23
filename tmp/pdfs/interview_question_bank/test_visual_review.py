@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import json
 from hashlib import sha256
+import os
 from pathlib import Path
 import subprocess
+import sys
 from tempfile import TemporaryDirectory
 import unittest
 from unittest.mock import patch
@@ -20,6 +22,9 @@ from interview_question_bank.visual_review import (
     render_pages_with_poppler,
     screen_rendered_pages,
 )
+
+
+ROOT = Path(__file__).resolve().parents[3]
 
 
 class VisualReviewPipelineTest(unittest.TestCase):
@@ -69,6 +74,191 @@ class VisualReviewPipelineTest(unittest.TestCase):
             if page_number < page_count:
                 canvas.showPage()
         canvas.save()
+
+    @staticmethod
+    def _build_cli_fixture(path: Path) -> None:
+        font = register_fonts().body
+        canvas = Canvas(str(path), pagesize=A4)
+        canvas.setFont(font, 12)
+        canvas.drawString(72, 760, "CLI COVER · UNIFIED SCORE · 0—4")
+        canvas.showPage()
+        canvas.setFont(font, 9)
+        for index in range(18):
+            canvas.drawString(72, 760 - index * 20, f"CLI DENSE BODY {index} " * 8)
+        canvas.save()
+
+    def _run_visual_cli(
+        self,
+        pdf_path: Path,
+        *,
+        render_dir: Path,
+        contact_dir: Path,
+        grayscale_dir: Path,
+        screening_report: Path,
+    ) -> subprocess.CompletedProcess[str]:
+        environment = os.environ.copy()
+        environment["PYTHONPATH"] = str(ROOT / "tmp" / "pdfs")
+        return subprocess.run(
+            [
+                sys.executable,
+                "-m",
+                "interview_question_bank.visual_review",
+                str(pdf_path),
+                "--render-dir",
+                str(render_dir),
+                "--contact-dir",
+                str(contact_dir),
+                "--grayscale-dir",
+                str(grayscale_dir),
+                "--screening-report",
+                str(screening_report),
+                "--dpi",
+                "144",
+            ],
+            cwd=ROOT,
+            env=environment,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+
+    def test_cli_builds_complete_identity_bound_evidence(self) -> None:
+        pdf_path = self.root / "cli-fixture.pdf"
+        self._build_cli_fixture(pdf_path)
+        render_dir = self.root / "cli-render"
+        contact_dir = self.root / "cli-contact"
+        grayscale_dir = self.root / "cli-grayscale"
+        screening_report = self.root / "cli-screening.json"
+
+        completed = self._run_visual_cli(
+            pdf_path,
+            render_dir=render_dir,
+            contact_dir=contact_dir,
+            grayscale_dir=grayscale_dir,
+            screening_report=screening_report,
+        )
+
+        self.assertEqual(0, completed.returncode, completed.stderr)
+        self.assertEqual(
+            ["page-1.png", "page-2.png"],
+            [path.name for path in sorted(render_dir.glob("page-*.png"))],
+        )
+        render_manifest = json.loads(
+            (render_dir / "render-manifest.json").read_text(encoding="utf-8")
+        )
+        contact_manifest = json.loads(
+            (contact_dir / "manifest.json").read_text(encoding="utf-8")
+        )
+        grayscale_manifest = json.loads(
+            (grayscale_dir / "manifest.json").read_text(encoding="utf-8")
+        )
+        screening = json.loads(screening_report.read_text(encoding="utf-8"))
+        summary = json.loads(completed.stdout)
+        identity_sha = render_manifest["pdf_sha256"]
+
+        self.assertEqual([1, 2], render_manifest["page_numbers"])
+        self.assertEqual([[1, 2]], [
+            sheet["pages"] for sheet in contact_manifest["sheets"]
+        ])
+        self.assertEqual(
+            {"cover.png", "chapter.png", "dense-body.png"},
+            {path.name for path in grayscale_dir.glob("*.png")},
+        )
+        self.assertEqual(
+            {
+                identity_sha,
+                contact_manifest["render_identity"]["pdf_sha256"],
+                grayscale_manifest["render_identity"]["pdf_sha256"],
+                screening["render_identity"]["pdf_sha256"],
+                summary["pdf_sha256"],
+            },
+            {identity_sha},
+        )
+        self.assertEqual(2, summary["page_count"])
+        self.assertEqual(2, summary["rendered_pages"])
+        self.assertEqual(1, summary["contact_sheets"])
+        self.assertEqual(
+            ["chapter", "cover", "dense-body"],
+            summary["grayscale_samples"],
+        )
+        self.assertEqual(str(screening_report.resolve()), summary["screening_report"])
+
+    def test_cli_rejects_non_empty_evidence_directory_without_overwrite(
+        self,
+    ) -> None:
+        pdf_path = self.root / "cli-fixture.pdf"
+        self._build_cli_fixture(pdf_path)
+        render_dir = self.root / "existing-render"
+        render_dir.mkdir()
+        stale = render_dir / "stale.txt"
+        stale.write_text("preserve me", encoding="utf-8")
+        contact_dir = self.root / "unused-contact"
+        grayscale_dir = self.root / "unused-grayscale"
+        screening_report = self.root / "unused-screening.json"
+
+        completed = self._run_visual_cli(
+            pdf_path,
+            render_dir=render_dir,
+            contact_dir=contact_dir,
+            grayscale_dir=grayscale_dir,
+            screening_report=screening_report,
+        )
+
+        self.assertNotEqual(0, completed.returncode)
+        self.assertIn("output directory must be empty", completed.stderr)
+        self.assertEqual("preserve me", stale.read_text(encoding="utf-8"))
+        self.assertFalse(contact_dir.exists())
+        self.assertFalse(grayscale_dir.exists())
+        self.assertFalse(screening_report.exists())
+
+    def test_cli_preflights_later_evidence_directories_before_rendering(
+        self,
+    ) -> None:
+        pdf_path = self.root / "cli-fixture.pdf"
+        self._build_cli_fixture(pdf_path)
+        render_dir = self.root / "must-not-render"
+        contact_dir = self.root / "existing-contact"
+        contact_dir.mkdir()
+        stale = contact_dir / "contact-001-002.png"
+        stale.write_bytes(b"old contact evidence")
+
+        completed = self._run_visual_cli(
+            pdf_path,
+            render_dir=render_dir,
+            contact_dir=contact_dir,
+            grayscale_dir=self.root / "must-not-grayscale",
+            screening_report=self.root / "must-not-screen.json",
+        )
+
+        self.assertNotEqual(0, completed.returncode)
+        self.assertIn("output directory must be empty", completed.stderr)
+        self.assertEqual(b"old contact evidence", stale.read_bytes())
+        self.assertFalse(render_dir.exists())
+
+    def test_cli_rejects_existing_screening_report_without_overwrite(
+        self,
+    ) -> None:
+        pdf_path = self.root / "cli-fixture.pdf"
+        self._build_cli_fixture(pdf_path)
+        screening_report = self.root / "existing-screening.json"
+        screening_report.write_text('{"preserve": true}\n', encoding="utf-8")
+        render_dir = self.root / "must-not-render"
+
+        completed = self._run_visual_cli(
+            pdf_path,
+            render_dir=render_dir,
+            contact_dir=self.root / "must-not-contact",
+            grayscale_dir=self.root / "must-not-grayscale",
+            screening_report=screening_report,
+        )
+
+        self.assertNotEqual(0, completed.returncode)
+        self.assertIn("screening report must not already exist", completed.stderr)
+        self.assertEqual(
+            '{"preserve": true}\n',
+            screening_report.read_text(encoding="utf-8"),
+        )
+        self.assertFalse(render_dir.exists())
 
     def test_poppler_render_count_matches_pdf_pages(self) -> None:
         render_dir = self.root / "render"
