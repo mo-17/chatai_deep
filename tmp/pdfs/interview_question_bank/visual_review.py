@@ -188,11 +188,35 @@ def _require_empty_or_missing_directory(path: Path) -> None:
         raise ValueError(f"output directory must be empty: {path}")
 
 
-def _paths_overlap(left: Path, right: Path) -> bool:
+def _filesystem_path_key(path: Path) -> tuple[str, ...]:
+    """Return a conservative alias key without changing the path used for I/O.
+
+    NFC joins canonically equivalent spellings while preserving compatibility-
+    distinct filename characters. Casefolding each component also rejects
+    aliases on case-insensitive filesystems, independent of the current host.
+    """
+    return tuple(
+        unicodedata.normalize("NFC", component).casefold()
+        for component in path.parts
+    )
+
+
+def _path_key_is_prefix(
+    ancestor: tuple[str, ...],
+    descendant: tuple[str, ...],
+) -> bool:
     return (
-        left == right
-        or left in right.parents
-        or right in left.parents
+        len(ancestor) <= len(descendant)
+        and ancestor == descendant[:len(ancestor)]
+    )
+
+
+def _paths_overlap(left: Path, right: Path) -> bool:
+    left_key = _filesystem_path_key(left)
+    right_key = _filesystem_path_key(right)
+    return (
+        _path_key_is_prefix(left_key, right_key)
+        or _path_key_is_prefix(right_key, left_key)
     )
 
 

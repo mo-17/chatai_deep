@@ -332,6 +332,100 @@ class VisualReviewPipelineTest(unittest.TestCase):
                 )
                 self.assertFalse(case_root.exists())
 
+    def test_cli_rejects_casefolded_equal_evidence_directories_before_rendering(
+        self,
+    ) -> None:
+        pdf_path = self.root / "cli-fixture.pdf"
+        self._build_cli_fixture(pdf_path)
+        case_root = self.root / "casefold-equal"
+        screening_report = self.root / "casefold-equal-screening.json"
+
+        completed = self._run_visual_cli(
+            pdf_path,
+            render_dir=case_root / "Evidence",
+            contact_dir=case_root / "evidence",
+            grayscale_dir=case_root / "grayscale",
+            screening_report=screening_report,
+        )
+
+        self.assertNotEqual(0, completed.returncode)
+        self.assertIn(
+            "evidence directories must be disjoint",
+            completed.stderr,
+        )
+        self.assertFalse(case_root.exists())
+        self.assertFalse(screening_report.exists())
+
+    def test_cli_rejects_casefolded_nested_evidence_directories_before_rendering(
+        self,
+    ) -> None:
+        pdf_path = self.root / "cli-fixture.pdf"
+        self._build_cli_fixture(pdf_path)
+        case_root = self.root / "casefold-nested"
+        screening_report = self.root / "casefold-nested-screening.json"
+
+        completed = self._run_visual_cli(
+            pdf_path,
+            render_dir=case_root / "Evidence",
+            contact_dir=case_root / "eViDeNcE" / "contact",
+            grayscale_dir=case_root / "grayscale",
+            screening_report=screening_report,
+        )
+
+        self.assertNotEqual(0, completed.returncode)
+        self.assertIn(
+            "evidence directories must be disjoint",
+            completed.stderr,
+        )
+        self.assertFalse(case_root.exists())
+        self.assertFalse(screening_report.exists())
+
+    def test_cli_rejects_screening_report_inside_casefolded_evidence_alias(
+        self,
+    ) -> None:
+        pdf_path = self.root / "cli-fixture.pdf"
+        self._build_cli_fixture(pdf_path)
+        case_root = self.root / "casefold-report"
+
+        completed = self._run_visual_cli(
+            pdf_path,
+            render_dir=case_root / "Evidence",
+            contact_dir=case_root / "contact",
+            grayscale_dir=case_root / "grayscale",
+            screening_report=case_root / "evidence" / "screening.json",
+        )
+
+        self.assertNotEqual(0, completed.returncode)
+        self.assertIn(
+            "screening report must be outside evidence directories",
+            completed.stderr,
+        )
+        self.assertFalse(case_root.exists())
+
+    def test_cli_rejects_nfc_nfd_equivalent_evidence_directories_before_rendering(
+        self,
+    ) -> None:
+        pdf_path = self.root / "cli-fixture.pdf"
+        self._build_cli_fixture(pdf_path)
+        case_root = self.root / "unicode-equivalent"
+        screening_report = self.root / "unicode-equivalent-screening.json"
+
+        completed = self._run_visual_cli(
+            pdf_path,
+            render_dir=case_root / "Caf\u00e9",
+            contact_dir=case_root / "Cafe\u0301",
+            grayscale_dir=case_root / "grayscale",
+            screening_report=screening_report,
+        )
+
+        self.assertNotEqual(0, completed.returncode)
+        self.assertIn(
+            "evidence directories must be disjoint",
+            completed.stderr,
+        )
+        self.assertFalse(case_root.exists())
+        self.assertFalse(screening_report.exists())
+
     def test_cli_rejects_any_preexisting_empty_evidence_directory(
         self,
     ) -> None:
