@@ -10,6 +10,7 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 from types import SimpleNamespace
 import unittest
+from unittest.mock import Mock, patch
 
 import pdfplumber
 from pypdf import PdfReader, PdfWriter
@@ -246,6 +247,390 @@ class VerificationContractTest(unittest.TestCase):
                 "证明远端从未收到调用。"
             ),
             verify_module.source_last_sentence(bank),
+        )
+
+
+class AtomicBuildReleaseTest(unittest.TestCase):
+    def setUp(self) -> None:
+        self.temporary = TemporaryDirectory()
+        self.root = Path(self.temporary.name)
+        self.output_directory = self.root / "output"
+        self.receipt_directory = self.root / "receipts"
+        self.output_directory.mkdir()
+        self.receipt_directory.mkdir()
+        self.source = self.root / "source.md"
+        self.output = self.output_directory / "formal.pdf"
+        self.receipt = self.receipt_directory / "receipt.json"
+        self.source.write_text("# source\n", encoding="utf-8")
+        self.old_pdf = b"old-formal-pdf"
+        self.old_receipt = b'{"release":"old"}\n'
+        self.output.write_bytes(self.old_pdf)
+        self.receipt.write_bytes(self.old_receipt)
+        os.chmod(self.output, 0o644)
+        os.chmod(self.receipt, 0o644)
+
+    def tearDown(self) -> None:
+        self.temporary.cleanup()
+
+    @staticmethod
+    def _candidate_receipt() -> dict[str, object]:
+        return {
+            "source_sha256": "source-sha",
+            "sha256": "candidate-sha",
+            "page_count": 97,
+            "question_ids": ["C1", "C2"],
+            "bookmark_titles": ["1. 使用方式"],
+            "font_names": ["body", "heading", "code"],
+            "font_roles": {},
+            "generated_at": "2026-07-23T00:00:00+00:00",
+            "release": "candidate",
+        }
+
+    def _builder(self):
+        builder = getattr(build_module, "build_and_publish", None)
+        self.assertTrue(
+            callable(builder),
+            "build_and_publish must orchestrate verified atomic release",
+        )
+        return builder
+
+    def _assert_only_formal_files_remain(self) -> None:
+        self.assertEqual(
+            [self.output.name],
+            sorted(path.name for path in self.output_directory.iterdir()),
+        )
+        self.assertEqual(
+            [self.receipt.name],
+            sorted(path.name for path in self.receipt_directory.iterdir()),
+        )
+
+    def test_failed_candidate_verification_preserves_old_release_pair(
+        self,
+    ) -> None:
+        builder = self._builder()
+        old_pdf_sha = sha256(self.output.read_bytes()).hexdigest()
+        old_receipt_sha = sha256(self.receipt.read_bytes()).hexdigest()
+        candidates: dict[str, Path] = {}
+        failed_report = Mock()
+        failed_report.require_passed.side_effect = (
+            verify_module.VerificationError("candidate verification failed")
+        )
+
+        def fake_build(source: Path, destination: Path):
+            self.assertEqual(self.source, Path(source))
+            candidates["pdf"] = Path(destination)
+            candidates["pdf"].write_bytes(b"unverified-candidate-pdf")
+            return self._candidate_receipt()
+
+        def fake_verify(
+            source: Path,
+            pdf: Path,
+            *,
+            receipt_path: Path,
+        ):
+            self.assertEqual(self.source, Path(source))
+            candidates["receipt"] = Path(receipt_path)
+            self.assertEqual(self.output.parent, Path(pdf).parent)
+            self.assertEqual(self.receipt.parent, Path(receipt_path).parent)
+            self.assertNotEqual(self.output, Path(pdf))
+            self.assertNotEqual(self.receipt, Path(receipt_path))
+            self.assertTrue(Path(pdf).is_file())
+            self.assertTrue(Path(receipt_path).is_file())
+            return failed_report
+
+        with (
+            patch.object(build_module, "build_pdf", side_effect=fake_build),
+            patch.object(
+                build_module,
+                "verify_pdf",
+                side_effect=fake_verify,
+                create=True,
+            ),
+        ):
+            with self.assertRaisesRegex(
+                verify_module.VerificationError,
+                "candidate verification failed",
+            ):
+                builder(
+                    self.source,
+                    self.output,
+                    receipt_path=self.receipt,
+                )
+
+        self.assertEqual(self.old_pdf, self.output.read_bytes())
+        self.assertEqual(self.old_receipt, self.receipt.read_bytes())
+        self.assertEqual(
+            old_pdf_sha,
+            sha256(self.output.read_bytes()).hexdigest(),
+        )
+        self.assertEqual(
+            old_receipt_sha,
+            sha256(self.receipt.read_bytes()).hexdigest(),
+        )
+        self.assertFalse(candidates["pdf"].exists())
+        self.assertFalse(candidates["receipt"].exists())
+        self._assert_only_formal_files_remain()
+
+    def test_passing_candidate_is_verified_then_publishes_both_files(
+        self,
+    ) -> None:
+        builder = self._builder()
+        candidates: dict[str, Path] = {}
+        report = Mock()
+        report.require_passed.return_value = report
+
+        def fake_build(source: Path, destination: Path):
+            self.assertEqual(self.source, Path(source))
+            candidates["pdf"] = Path(destination)
+            candidates["pdf"].write_bytes(b"verified-candidate-pdf")
+            return self._candidate_receipt()
+
+        def fake_verify(
+            source: Path,
+            pdf: Path,
+            *,
+            receipt_path: Path,
+        ):
+            candidates["receipt"] = Path(receipt_path)
+            self.assertEqual(self.source, Path(source))
+            self.assertEqual(candidates["pdf"], Path(pdf))
+            self.assertEqual(self.output.parent, Path(pdf).parent)
+            self.assertEqual(self.receipt.parent, Path(receipt_path).parent)
+            self.assertNotEqual(self.output, Path(pdf))
+            self.assertNotEqual(self.receipt, Path(receipt_path))
+            self.assertEqual(0o644, Path(pdf).stat().st_mode & 0o777)
+            self.assertEqual(
+                0o644,
+                Path(receipt_path).stat().st_mode & 0o777,
+            )
+            return report
+
+        with (
+            patch.object(build_module, "build_pdf", side_effect=fake_build),
+            patch.object(
+                build_module,
+                "verify_pdf",
+                side_effect=fake_verify,
+                create=True,
+            ),
+        ):
+            payload = builder(
+                self.source,
+                self.output,
+                receipt_path=self.receipt,
+            )
+
+        self.assertEqual(b"verified-candidate-pdf", self.output.read_bytes())
+        self.assertEqual("candidate", payload["release"])
+        self.assertEqual(
+            payload,
+            json.loads(self.receipt.read_text(encoding="utf-8")),
+        )
+        self.assertEqual(0o644, self.output.stat().st_mode & 0o777)
+        self.assertEqual(0o644, self.receipt.stat().st_mode & 0o777)
+        report.require_passed.assert_called_once_with()
+        self.assertFalse(candidates["pdf"].exists())
+        self.assertFalse(candidates["receipt"].exists())
+        self._assert_only_formal_files_remain()
+
+    def test_pdf_replace_failure_rolls_back_already_published_receipt(
+        self,
+    ) -> None:
+        builder = self._builder()
+        candidates: dict[str, Path] = {}
+        report = Mock()
+        report.require_passed.return_value = report
+
+        def fake_build(source: Path, destination: Path):
+            candidates["pdf"] = Path(destination)
+            candidates["pdf"].write_bytes(b"candidate-pdf")
+            return self._candidate_receipt()
+
+        def fake_verify(
+            source: Path,
+            pdf: Path,
+            *,
+            receipt_path: Path,
+        ):
+            candidates["receipt"] = Path(receipt_path)
+            return report
+
+        real_replace = os.replace
+        did_fail = False
+
+        def fail_pdf_publish_once(source: Path, destination: Path) -> None:
+            nonlocal did_fail
+            source_path = Path(source)
+            destination_path = Path(destination)
+            if (
+                not did_fail
+                and source_path == candidates["pdf"]
+                and destination_path == self.output
+            ):
+                did_fail = True
+                raise OSError("simulated PDF publish failure")
+            real_replace(source, destination)
+
+        with (
+            patch.object(build_module, "build_pdf", side_effect=fake_build),
+            patch.object(
+                build_module,
+                "verify_pdf",
+                side_effect=fake_verify,
+                create=True,
+            ),
+            patch.object(
+                build_module.os,
+                "replace",
+                side_effect=fail_pdf_publish_once,
+            ),
+        ):
+            with self.assertRaisesRegex(
+                OSError,
+                "simulated PDF publish failure",
+            ):
+                builder(
+                    self.source,
+                    self.output,
+                    receipt_path=self.receipt,
+                )
+
+        self.assertTrue(did_fail)
+        self.assertEqual(self.old_pdf, self.output.read_bytes())
+        self.assertEqual(self.old_receipt, self.receipt.read_bytes())
+        self.assertFalse(candidates["pdf"].exists())
+        self.assertFalse(candidates["receipt"].exists())
+        self._assert_only_formal_files_remain()
+
+    def test_candidate_receipt_allocation_failure_cleans_candidate_pdf(
+        self,
+    ) -> None:
+        builder = self._builder()
+        real_temporary_path = build_module._temporary_release_path
+        allocated: list[Path] = []
+
+        def fail_second_allocation(
+            destination: Path,
+            suffix: str,
+        ) -> Path:
+            if allocated:
+                raise OSError("simulated receipt candidate allocation failure")
+            candidate = real_temporary_path(destination, suffix)
+            allocated.append(candidate)
+            return candidate
+
+        with patch.object(
+            build_module,
+            "_temporary_release_path",
+            side_effect=fail_second_allocation,
+        ):
+            with self.assertRaisesRegex(
+                OSError,
+                "simulated receipt candidate allocation failure",
+            ):
+                builder(
+                    self.source,
+                    self.output,
+                    receipt_path=self.receipt,
+                )
+
+        self.assertEqual(1, len(allocated))
+        self.assertFalse(allocated[0].exists())
+        self.assertEqual(self.old_pdf, self.output.read_bytes())
+        self.assertEqual(self.old_receipt, self.receipt.read_bytes())
+        self._assert_only_formal_files_remain()
+
+    def test_failed_receipt_rollback_preserves_recovery_backup(
+        self,
+    ) -> None:
+        builder = self._builder()
+        candidates: dict[str, Path] = {}
+        recovery: dict[str, Path] = {}
+        report = Mock()
+        report.require_passed.return_value = report
+
+        def fake_build(source: Path, destination: Path):
+            candidates["pdf"] = Path(destination)
+            candidates["pdf"].write_bytes(b"candidate-pdf")
+            return self._candidate_receipt()
+
+        def fake_verify(
+            source: Path,
+            pdf: Path,
+            *,
+            receipt_path: Path,
+        ):
+            candidates["receipt"] = Path(receipt_path)
+            return report
+
+        real_replace = os.replace
+        pdf_publish_failed = False
+
+        def fail_publish_and_receipt_rollback(
+            source: Path,
+            destination: Path,
+        ) -> None:
+            nonlocal pdf_publish_failed
+            source_path = Path(source)
+            destination_path = Path(destination)
+            if (
+                not pdf_publish_failed
+                and source_path == candidates["pdf"]
+                and destination_path == self.output
+            ):
+                pdf_publish_failed = True
+                raise OSError("simulated PDF publish failure")
+            if (
+                pdf_publish_failed
+                and destination_path == self.receipt
+                and source_path.suffix == ".backup"
+            ):
+                recovery["receipt"] = source_path
+                raise OSError("simulated receipt rollback failure")
+            real_replace(source, destination)
+
+        with (
+            patch.object(build_module, "build_pdf", side_effect=fake_build),
+            patch.object(
+                build_module,
+                "verify_pdf",
+                side_effect=fake_verify,
+            ),
+            patch.object(
+                build_module.os,
+                "replace",
+                side_effect=fail_publish_and_receipt_rollback,
+            ),
+        ):
+            with self.assertRaisesRegex(
+                RuntimeError,
+                "rollback was incomplete",
+            ) as caught:
+                builder(
+                    self.source,
+                    self.output,
+                    receipt_path=self.receipt,
+                )
+
+        self.assertTrue(pdf_publish_failed)
+        self.assertEqual(self.old_pdf, self.output.read_bytes())
+        self.assertEqual(
+            "candidate",
+            json.loads(self.receipt.read_text(encoding="utf-8"))["release"],
+        )
+        self.assertIn("receipt", recovery)
+        self.assertTrue(recovery["receipt"].is_file())
+        self.assertEqual(self.old_receipt, recovery["receipt"].read_bytes())
+        self.assertIn(str(recovery["receipt"]), str(caught.exception))
+        self.assertFalse(candidates["pdf"].exists())
+        self.assertFalse(candidates["receipt"].exists())
+        self.assertEqual(
+            [self.output.name],
+            sorted(path.name for path in self.output_directory.iterdir()),
+        )
+        self.assertEqual(
+            sorted([self.receipt.name, recovery["receipt"].name]),
+            sorted(path.name for path in self.receipt_directory.iterdir()),
         )
 
 
