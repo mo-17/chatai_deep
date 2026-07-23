@@ -154,7 +154,10 @@ class VisualReviewPipelineTest(unittest.TestCase):
         )
         screening = json.loads(screening_report.read_text(encoding="utf-8"))
         summary = json.loads(completed.stdout)
-        identity_sha = render_manifest["pdf_sha256"]
+        render_identity = {
+            key: render_manifest[key]
+            for key in contact_manifest["render_identity"]
+        }
 
         self.assertEqual([1, 2], render_manifest["page_numbers"])
         self.assertEqual([[1, 2]], [
@@ -165,14 +168,20 @@ class VisualReviewPipelineTest(unittest.TestCase):
             {path.name for path in grayscale_dir.glob("*.png")},
         )
         self.assertEqual(
-            {
-                identity_sha,
-                contact_manifest["render_identity"]["pdf_sha256"],
-                grayscale_manifest["render_identity"]["pdf_sha256"],
-                screening["render_identity"]["pdf_sha256"],
-                summary["pdf_sha256"],
-            },
-            {identity_sha},
+            render_identity,
+            contact_manifest["render_identity"],
+        )
+        self.assertEqual(
+            render_identity,
+            grayscale_manifest["render_identity"],
+        )
+        self.assertEqual(
+            render_identity,
+            screening["render_identity"],
+        )
+        self.assertEqual(
+            render_identity,
+            summary["render_identity"],
         )
         self.assertEqual(2, summary["page_count"])
         self.assertEqual(2, summary["rendered_pages"])
@@ -205,7 +214,10 @@ class VisualReviewPipelineTest(unittest.TestCase):
         )
 
         self.assertNotEqual(0, completed.returncode)
-        self.assertIn("output directory must be empty", completed.stderr)
+        self.assertIn(
+            "evidence directory must not already exist",
+            completed.stderr,
+        )
         self.assertEqual("preserve me", stale.read_text(encoding="utf-8"))
         self.assertFalse(contact_dir.exists())
         self.assertFalse(grayscale_dir.exists())
@@ -231,9 +243,131 @@ class VisualReviewPipelineTest(unittest.TestCase):
         )
 
         self.assertNotEqual(0, completed.returncode)
-        self.assertIn("output directory must be empty", completed.stderr)
+        self.assertIn(
+            "evidence directory must not already exist",
+            completed.stderr,
+        )
         self.assertEqual(b"old contact evidence", stale.read_bytes())
         self.assertFalse(render_dir.exists())
+
+    def test_cli_rejects_screening_report_inside_any_evidence_directory(
+        self,
+    ) -> None:
+        pdf_path = self.root / "cli-fixture.pdf"
+        self._build_cli_fixture(pdf_path)
+        for report_parent_name in ("render", "contact", "grayscale"):
+            with self.subTest(report_parent=report_parent_name):
+                case_root = self.root / f"report-in-{report_parent_name}"
+                directories = {
+                    name: case_root / name
+                    for name in ("render", "contact", "grayscale")
+                }
+                report_name = (
+                    "manifest.json"
+                    if report_parent_name == "contact"
+                    else "screening.json"
+                )
+                screening_report = (
+                    directories[report_parent_name] / report_name
+                )
+
+                completed = self._run_visual_cli(
+                    pdf_path,
+                    render_dir=directories["render"],
+                    contact_dir=directories["contact"],
+                    grayscale_dir=directories["grayscale"],
+                    screening_report=screening_report,
+                )
+
+                self.assertNotEqual(0, completed.returncode)
+                self.assertIn(
+                    "screening report must be outside evidence directories",
+                    completed.stderr,
+                )
+                self.assertFalse(case_root.exists())
+
+    def test_cli_rejects_equal_or_nested_evidence_directories_before_rendering(
+        self,
+    ) -> None:
+        pdf_path = self.root / "cli-fixture.pdf"
+        self._build_cli_fixture(pdf_path)
+        cases = {
+            "all-same": ("evidence", "evidence", "evidence"),
+            "render-parent": (
+                "evidence",
+                "evidence/contact",
+                "grayscale",
+            ),
+            "contact-parent": (
+                "evidence/render",
+                "evidence",
+                "grayscale",
+            ),
+            "grayscale-parent": (
+                "render",
+                "evidence/grayscale",
+                "evidence",
+            ),
+        }
+        for case_name, relative_paths in cases.items():
+            with self.subTest(case=case_name):
+                case_root = self.root / f"overlap-{case_name}"
+                render_dir, contact_dir, grayscale_dir = (
+                    case_root / relative_path
+                    for relative_path in relative_paths
+                )
+
+                completed = self._run_visual_cli(
+                    pdf_path,
+                    render_dir=render_dir,
+                    contact_dir=contact_dir,
+                    grayscale_dir=grayscale_dir,
+                    screening_report=self.root / f"{case_name}-screening.json",
+                )
+
+                self.assertNotEqual(0, completed.returncode)
+                self.assertIn(
+                    "evidence directories must be disjoint",
+                    completed.stderr,
+                )
+                self.assertFalse(case_root.exists())
+
+    def test_cli_rejects_any_preexisting_empty_evidence_directory(
+        self,
+    ) -> None:
+        pdf_path = self.root / "cli-fixture.pdf"
+        self._build_cli_fixture(pdf_path)
+        for existing_name in ("render", "contact", "grayscale"):
+            with self.subTest(existing=existing_name):
+                case_root = self.root / f"empty-{existing_name}"
+                directories = {
+                    name: case_root / name
+                    for name in ("render", "contact", "grayscale")
+                }
+                directories[existing_name].mkdir(parents=True)
+
+                completed = self._run_visual_cli(
+                    pdf_path,
+                    render_dir=directories["render"],
+                    contact_dir=directories["contact"],
+                    grayscale_dir=directories["grayscale"],
+                    screening_report=case_root / "screening.json",
+                )
+
+                self.assertNotEqual(0, completed.returncode)
+                self.assertIn(
+                    "evidence directory must not already exist",
+                    completed.stderr,
+                )
+                self.assertTrue(directories[existing_name].is_dir())
+                self.assertEqual([], list(directories[existing_name].iterdir()))
+                self.assertFalse(
+                    any(
+                        path.exists()
+                        for name, path in directories.items()
+                        if name != existing_name
+                    )
+                )
 
     def test_cli_rejects_existing_screening_report_without_overwrite(
         self,
@@ -484,6 +618,26 @@ class VisualReviewPipelineTest(unittest.TestCase):
         self.assertEqual(
             sha256(self.pdf_path.read_bytes()).hexdigest(),
             report["render_identity"]["pdf_sha256"],
+        )
+
+    def test_screening_rejects_existing_report_without_overwrite(self) -> None:
+        pages = render_pages_with_poppler(
+            self.pdf_path,
+            self.root / "exclusive-screening-render",
+            dpi=72,
+        )
+        report_path = self.root / "existing-api-screening.json"
+        report_path.write_text('{"preserve": true}\n', encoding="utf-8")
+
+        with self.assertRaisesRegex(
+            ValueError,
+            "screening report must not already exist",
+        ):
+            screen_rendered_pages(pages, report_path=report_path)
+
+        self.assertEqual(
+            '{"preserve": true}\n',
+            report_path.read_text(encoding="utf-8"),
         )
 
     def test_screening_rejects_inconsistent_rendered_page_size(self) -> None:

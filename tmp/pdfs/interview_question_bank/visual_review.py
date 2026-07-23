@@ -188,6 +188,66 @@ def _require_empty_or_missing_directory(path: Path) -> None:
         raise ValueError(f"output directory must be empty: {path}")
 
 
+def _paths_overlap(left: Path, right: Path) -> bool:
+    return (
+        left == right
+        or left in right.parents
+        or right in left.parents
+    )
+
+
+def _preflight_cli_evidence_paths(
+    render_dir: Path,
+    contact_dir: Path,
+    grayscale_dir: Path,
+    screening_report: Path,
+) -> tuple[Path, Path, Path, Path]:
+    raw_directories = tuple(
+        Path(path)
+        for path in (render_dir, contact_dir, grayscale_dir)
+    )
+    directories = tuple(
+        path.resolve(strict=False)
+        for path in raw_directories
+    )
+    report_path = Path(screening_report)
+    canonical_report = report_path.resolve(strict=False)
+    for index, left in enumerate(directories):
+        for right in directories[index + 1:]:
+            if _paths_overlap(left, right):
+                raise ValueError(
+                    "evidence directories must be disjoint: "
+                    f"{left} and {right}"
+                )
+    if any(
+        _paths_overlap(canonical_report, directory)
+        for directory in directories
+    ):
+        raise ValueError(
+            "screening report must be outside evidence directories: "
+            f"{canonical_report}"
+        )
+    for raw_path, canonical_path in zip(raw_directories, directories):
+        if (
+            raw_path.exists()
+            or raw_path.is_symlink()
+            or canonical_path.exists()
+        ):
+            raise ValueError(
+                "evidence directory must not already exist: "
+                f"{canonical_path}"
+            )
+    if (
+        report_path.exists()
+        or report_path.is_symlink()
+        or canonical_report.exists()
+    ):
+        raise ValueError(
+            f"screening report must not already exist: {canonical_report}"
+        )
+    return (*directories, canonical_report)
+
+
 def _normalized_text(value: str) -> str:
     return re.sub(r"\s+", "", unicodedata.normalize("NFKC", value))
 
@@ -431,6 +491,11 @@ def screen_rendered_pages(
     report_path: Path = SCREENING_REPORT_PATH,
 ) -> dict[str, object]:
     """Write conservative advisory metrics; human review remains mandatory."""
+    report_path = Path(report_path)
+    if report_path.exists() or report_path.is_symlink():
+        raise ValueError(
+            f"screening report must not already exist: {report_path}"
+        )
     pages, render_manifest = _validate_render_set(page_paths)
     dimensions: list[dict[str, int]] = []
     near_white_ratio: list[dict[str, float | int]] = []
@@ -498,12 +563,16 @@ def screen_rendered_pages(
             "inspection."
         ),
     }
-    report_path = Path(report_path)
     report_path.parent.mkdir(parents=True, exist_ok=True)
-    report_path.write_text(
-        json.dumps(report, ensure_ascii=False, indent=2) + "\n",
-        encoding="utf-8",
-    )
+    try:
+        with report_path.open("x", encoding="utf-8") as handle:
+            handle.write(
+                json.dumps(report, ensure_ascii=False, indent=2) + "\n"
+            )
+    except FileExistsError as error:
+        raise ValueError(
+            f"screening report must not already exist: {report_path}"
+        ) from error
     return report
 
 
@@ -517,35 +586,36 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--dpi", default=144, type=int)
     args = parser.parse_args(argv)
 
-    for evidence_directory in (
+    (
+        render_dir,
+        contact_dir,
+        grayscale_dir,
+        screening_report,
+    ) = _preflight_cli_evidence_paths(
         args.render_dir,
         args.contact_dir,
         args.grayscale_dir,
-    ):
-        _require_empty_or_missing_directory(evidence_directory)
-    if args.screening_report.exists():
-        raise ValueError(
-            f"screening report must not already exist: {args.screening_report}"
-        )
+        args.screening_report,
+    )
 
     pages = render_pages_with_poppler(
         args.pdf,
-        args.render_dir,
+        render_dir,
         dpi=args.dpi,
     )
     contact_sheets = build_contact_sheets(
         pages,
-        args.contact_dir,
+        contact_dir,
         pages_per_sheet=12,
     )
     grayscale_samples = build_grayscale_samples(
         args.pdf,
         pages,
-        args.grayscale_dir,
+        grayscale_dir,
     )
     screening = screen_rendered_pages(
         pages,
-        report_path=args.screening_report,
+        report_path=screening_report,
     )
     identity = screening["render_identity"]
     summary = {
@@ -555,8 +625,9 @@ def main(argv: Sequence[str] | None = None) -> int:
         "rendered_pages": len(pages),
         "contact_sheets": len(contact_sheets),
         "grayscale_samples": sorted(grayscale_samples),
-        "screening_report": str(args.screening_report.resolve()),
+        "screening_report": str(screening_report),
         "suspicious_pages": screening["suspicious_pages"],
+        "render_identity": identity,
     }
     print(json.dumps(summary, ensure_ascii=False, sort_keys=True))
     return 0
