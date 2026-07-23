@@ -95,7 +95,7 @@ class VerificationContractTest(unittest.TestCase):
 
         self.assertTrue(report.passed, report.to_dict())
         self.assertEqual(80, report.pdf_question_count)
-        self.assertEqual(80, len(set(report.question_pages)))
+        self.assertEqual(80, len(set(report.question_pages.values())))
         self.assertEqual(12, report.section_count)
         self.assertEqual("0644", report.file_mode)
         self.assertIsNone(report.longest_answer_tail_issue)
@@ -119,8 +119,16 @@ class VerificationContractTest(unittest.TestCase):
             self.directory / "wrong-metadata-receipt.json",
         )
 
-        with self.assertRaisesRegex(verify_module.VerificationError, "metadata"):
-            self._verify_or_raise(pdf=tampered, receipt=receipt)
+        report = verify_pdf(SOURCE, tampered, receipt_path=receipt)
+
+        self.assertFalse(report.passed)
+        self.assertEqual(
+            {
+                "expected": verify_module.EXPECTED_METADATA["title"],
+                "actual": "Wrong title",
+            },
+            report.metadata_mismatches["title"],
+        )
 
     def test_rejects_missing_source_sha(self) -> None:
         receipt = json.loads(self.receipt_path.read_text(encoding="utf-8"))
@@ -128,18 +136,23 @@ class VerificationContractTest(unittest.TestCase):
         missing_sha = self.directory / "missing-source-sha.json"
         missing_sha.write_text(json.dumps(receipt), encoding="utf-8")
 
-        with self.assertRaisesRegex(verify_module.VerificationError, "source_sha256"):
-            self._verify_or_raise(receipt=missing_sha)
+        report = verify_pdf(SOURCE, self.pdf, receipt_path=missing_sha)
 
-    def test_rejects_unormalized_reference_path(self) -> None:
+        self.assertFalse(report.passed)
+        self.assertEqual(
+            {"expected": report.source_sha256, "actual": None},
+            report.receipt_mismatches["source_sha256"],
+        )
+
+    def test_rejects_path_middle_traversal_on_non_reference_page(self) -> None:
         packet = BytesIO()
         canvas = Canvas(packet, pagesize=A4)
         canvas.setFont(register_fonts().body, 10)
-        canvas.drawString(72, 300, "../chatgpt_app_core/lib/app.dart")
+        canvas.drawString(72, 300, "foo/../bar")
         canvas.save()
         packet.seek(0)
         writer = PdfWriter(clone_from=self.pdf)
-        writer.pages[7].merge_page(PdfReader(packet).pages[0])
+        writer.pages[0].merge_page(PdfReader(packet).pages[0])
         tampered = self.directory / "relative-reference.pdf"
         writer.write(tampered)
         os.chmod(tampered, 0o644)
@@ -148,8 +161,14 @@ class VerificationContractTest(unittest.TestCase):
             self.directory / "relative-reference-receipt.json",
         )
 
-        with self.assertRaisesRegex(verify_module.VerificationError, "reference"):
-            self._verify_or_raise(pdf=tampered, receipt=receipt)
+        report = verify_pdf(SOURCE, tampered, receipt_path=receipt)
+
+        self.assertFalse(report.passed)
+        self.assertIn("../", report.forbidden_tokens)
+        self.assertEqual(
+            ("reference path leakage: ../",),
+            report.reference_entry_issues["document"],
+        )
 
     def test_rejects_missing_longest_answer_tail(self) -> None:
         source_text = SOURCE.read_text(encoding="utf-8")
@@ -169,8 +188,29 @@ class VerificationContractTest(unittest.TestCase):
         mutated_receipt = self.directory / "mutated-source-receipt.json"
         mutated_receipt.write_text(json.dumps(receipt), encoding="utf-8")
 
-        with self.assertRaisesRegex(verify_module.VerificationError, "longest answer"):
-            self._verify_or_raise(source=mutated_source, receipt=mutated_receipt)
+        report = verify_pdf(
+            mutated_source,
+            self.pdf,
+            receipt_path=mutated_receipt,
+        )
+
+        self.assertFalse(report.passed)
+        self.assertEqual(
+            "longest answer tail missing from extracted PDF text",
+            report.longest_answer_tail_issue,
+        )
+
+    def test_require_passed_raises_for_a_failed_report(self) -> None:
+        report = verify_pdf(SOURCE, self.pdf, receipt_path=self.receipt_path)
+        failed = replace(
+            report,
+            metadata_mismatches={
+                "title": {"expected": "Expected", "actual": "Actual"}
+            },
+        )
+
+        with self.assertRaises(verify_module.VerificationError):
+            failed.require_passed()
 
     def test_rejects_non_0644_release_mode(self) -> None:
         wrong_mode = self.directory / "wrong-mode.pdf"
@@ -306,6 +346,44 @@ class VerificationLogicTest(unittest.TestCase):
             ),
         )
 
+    def test_question_openings_reject_two_questions_on_one_physical_page(
+        self,
+    ) -> None:
+        analyzer = getattr(verify_module, "analyze_question_openings", None)
+        self.assertTrue(callable(analyzer))
+
+        issues = analyzer(
+            ("C1", "C2", "C3"),
+            (("C1", 8), ("C2", 8), ("C3", 9)),
+        )
+
+        self.assertEqual(
+            {"expected": 3, "actual": 2},
+            issues["question_opening_unique_pages"],
+        )
+        self.assertEqual(
+            {"expected": "strictly increasing", "actual": [8, 8, 9]},
+            issues["question_opening_page_order"],
+        )
+
+    def test_question_openings_reject_swapped_source_order(self) -> None:
+        analyzer = getattr(verify_module, "analyze_question_openings", None)
+        self.assertTrue(callable(analyzer))
+
+        issues = analyzer(
+            ("C1", "C2", "C3"),
+            (("C1", 8), ("C3", 9), ("C2", 10)),
+        )
+
+        self.assertEqual(
+            {
+                "expected": ["C1", "C2", "C3"],
+                "actual": ["C1", "C3", "C2"],
+            },
+            issues["pdf_question_order"],
+        )
+        self.assertNotIn("question_opening_page_order", issues)
+
     def test_expected_furniture_distinguishes_opening_and_continued_headers(
         self,
     ) -> None:
@@ -368,6 +446,12 @@ class VerificationLogicTest(unittest.TestCase):
             ),
             find_forbidden_tokens(text),
         )
+
+    def test_forbidden_token_scan_rejects_path_middle_traversal_globally(self) -> None:
+        self.assertEqual(("../",), find_forbidden_tokens("prefix foo/../bar suffix"))
+
+    def test_forbidden_token_scan_does_not_flag_ordinary_ellipsis(self) -> None:
+        self.assertEqual((), find_forbidden_tokens("等待... 然后继续。"))
 
     def test_optional_label_expectations_are_derived_from_source(self) -> None:
         expectations = question_label_expectations(self.bank.questions)
@@ -614,6 +698,52 @@ class VerificationLogicTest(unittest.TestCase):
         physical[4] = [physical[6].pop()]
 
         self.assertIn("table_3", self._table_issues(physical))
+
+    def test_extra_physical_table_on_a_table_section_page_is_reported(self) -> None:
+        physical = self._physical_table_fixture(self.bank)
+        physical[3].append(
+            [
+                ["unexpected", "table"],
+                ["must", "fail"],
+            ]
+        )
+
+        self.assertEqual(
+            ("page 3 table 3",),
+            self._table_issues(physical)["unexpected_physical_tables"],
+        )
+
+    def test_section_outline_rejects_an_extra_artifact_section(self) -> None:
+        analyzer = getattr(verify_module, "analyze_section_outline_structure", None)
+        self.assertTrue(callable(analyzer))
+        expected = tuple(section.title for section in self.bank.level2_sections)
+        entries = tuple(
+            (1, SimpleNamespace(title=title))
+            for title in (*expected, "13. 额外章节")
+        )
+
+        issues = analyzer(expected, entries)
+
+        self.assertEqual(
+            {
+                "expected": list(expected),
+                "actual": [*expected, "13. 额外章节"],
+            },
+            issues["section_outline_sequence"],
+        )
+
+    def test_section_outline_rejects_artifact_section_order_drift(self) -> None:
+        analyzer = getattr(verify_module, "analyze_section_outline_structure", None)
+        self.assertTrue(callable(analyzer))
+        expected = tuple(section.title for section in self.bank.level2_sections)
+        swapped = (expected[1], expected[0], *expected[2:])
+
+        issues = analyzer(
+            expected,
+            tuple((1, SimpleNamespace(title=title)) for title in swapped),
+        )
+
+        self.assertEqual(list(swapped), issues["section_outline_sequence"]["actual"])
 
     def test_receipt_hash_mismatch_fails_verification(self) -> None:
         with TemporaryDirectory() as directory:

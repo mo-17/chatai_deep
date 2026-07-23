@@ -243,7 +243,7 @@ def find_forbidden_tokens(text: str) -> tuple[str, ...]:
     patterns = (
         re.compile(r"</?\s*(?:details|summary)\b[^>]*>", re.IGNORECASE),
         re.compile(r"file://", re.IGNORECASE),
-        re.compile(r"(?<![\w/])\.\./"),
+        re.compile(r"\.\./"),
         re.compile(r"\b(?:TODO|TBD|FIXME|XXX)\b", re.IGNORECASE),
         re.compile(r"&(?:#[xX][0-9A-Fa-f]+|#\d+|[A-Za-z][A-Za-z0-9]+);"),
         re.compile(r"\{\{[^{}\n]+\}\}"),
@@ -271,6 +271,36 @@ def question_label_expectations(
         )
         for question in questions
     }
+
+
+def analyze_question_openings(
+    expected_question_ids: Sequence[str],
+    opening_records: Sequence[tuple[str, int]],
+) -> dict[str, Mapping[str, object]]:
+    """Require exact source order and one strictly ordered opening page per question."""
+    expected_ids = tuple(expected_question_ids)
+    actual_ids = tuple(question_id for question_id, _ in opening_records)
+    opening_pages = tuple(page_number for _, page_number in opening_records)
+    issues: dict[str, Mapping[str, object]] = {}
+    if actual_ids != expected_ids:
+        issues["pdf_question_order"] = _mismatch(
+            list(expected_ids),
+            list(actual_ids),
+        )
+    if len(set(opening_pages)) != len(expected_ids):
+        issues["question_opening_unique_pages"] = _mismatch(
+            len(expected_ids),
+            len(set(opening_pages)),
+        )
+    if any(
+        current_page >= next_page
+        for current_page, next_page in zip(opening_pages, opening_pages[1:])
+    ):
+        issues["question_opening_page_order"] = _mismatch(
+            "strictly increasing",
+            list(opening_pages),
+        )
+    return issues
 
 
 def _question_blocks(extracted_text: str) -> dict[str, str]:
@@ -772,6 +802,8 @@ def analyze_table_contracts(
         if rows
     )
     issues: dict[str, tuple[str, ...]] = {}
+    consumed_tables: set[tuple[int, int]] = set()
+    matched_logical_tables = 0
     for logical_index, table in enumerate(source_tables, start=1):
         key = f"table_{logical_index}"
         table_issues: list[str] = []
@@ -813,8 +845,29 @@ def analyze_table_contracts(
                     table_issues.append(
                         f"{part} placement expected page {expected_page} actual {list(actual_pages)}"
                     )
+                elif len(exact) == 1:
+                    consumed_tables.add(exact[0])
         if table_issues:
             issues[key] = tuple(table_issues)
+        else:
+            matched_logical_tables += 1
+    if matched_logical_tables != len(source_tables):
+        issues["matched_logical_tables"] = (
+            f"expected {len(source_tables)} actual {matched_logical_tables}",
+        )
+    expected_table_pages = {
+        page
+        for title in table_section_titles
+        if (page := section_pages.get(title)) is not None
+    }
+    unexpected = tuple(
+        f"page {page_number} table {table_index + 1}"
+        for page_number, table_index, _ in actual_tables
+        if page_number in expected_table_pages
+        and (page_number, table_index) not in consumed_tables
+    )
+    if unexpected:
+        issues["unexpected_physical_tables"] = unexpected
     return issues
 
 
@@ -960,6 +1013,27 @@ def _flatten_outline(items, depth: int = 0):
             yield from _flatten_outline(item, depth + 1)
         elif getattr(item, "title", None):
             yield depth, item
+
+
+def analyze_section_outline_structure(
+    expected_section_titles: Sequence[str],
+    outline_entries: Sequence[tuple[int, object]],
+) -> dict[str, Mapping[str, object]]:
+    """Require the artifact's level-two section bookmarks in exact source order."""
+    expected = tuple(expected_section_titles)
+    actual = tuple(
+        str(item.title)
+        for depth, item in outline_entries
+        if depth == 1
+    )
+    if actual == expected:
+        return {}
+    return {
+        "section_outline_sequence": _mismatch(
+            list(expected),
+            list(actual),
+        )
+    }
 
 
 def _metadata(reader: PdfReader) -> dict[str, str | None]:
@@ -1153,7 +1227,15 @@ def verify_pdf(
     extracted_text = "\n".join(page_texts)
     normalized_extracted = _normalized(extracted_text)
 
-    pdf_question_ids = tuple(match.group(1) for match in QUESTION_HEADING_RE.finditer(extracted_text))
+    question_opening_records = tuple(
+        (match.group(1), page_number)
+        for page_number, text in enumerate(page_texts, start=1)
+        for match in QUESTION_HEADING_RE.finditer(text)
+    )
+    pdf_question_ids = tuple(
+        question_id
+        for question_id, _ in question_opening_records
+    )
     source_id_set = set(expected_question_ids)
     pdf_id_set = set(pdf_question_ids)
     missing_question_ids = tuple(qid for qid in expected_question_ids if qid not in pdf_id_set)
@@ -1163,9 +1245,8 @@ def verify_pdf(
     )
     section_pages = _section_pages(page_texts, bank)
     question_pages: dict[str, int] = {}
-    for page_number, text in enumerate(page_texts, start=1):
-        for match in QUESTION_HEADING_RE.finditer(text):
-            question_pages[match.group(1)] = page_number
+    for question_id, page_number in question_opening_records:
+        question_pages.setdefault(question_id, page_number)
 
     metadata = _metadata(reader)
     metadata_mismatches = {
@@ -1331,6 +1412,18 @@ def verify_pdf(
     for key in expected_structure.keys() - {"page_range"}:
         if actual_structure[key] != expected_structure[key]:
             structural_mismatches[key] = _mismatch(expected_structure[key], actual_structure[key])
+    structural_mismatches.update(
+        analyze_question_openings(
+            expected_question_ids,
+            question_opening_records,
+        )
+    )
+    structural_mismatches.update(
+        analyze_section_outline_structure(
+            section_titles,
+            outline_entries,
+        )
+    )
 
     question_label_issues = {
         qid: missing

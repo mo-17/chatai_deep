@@ -3,11 +3,12 @@
 from __future__ import annotations
 
 import json
+from hashlib import sha256
 from pathlib import Path
 import re
 import subprocess
 import unicodedata
-from typing import Iterable, Sequence
+from typing import Iterable, Mapping, Sequence
 
 import pdfplumber
 from PIL import Image, ImageDraw
@@ -26,12 +27,146 @@ def _page_number(path: Path) -> int:
     return int(match.group(1))
 
 
-def _sorted_pages(page_paths: Iterable[Path]) -> list[Path]:
+def _sorted_pages(
+    page_paths: Iterable[Path],
+    *,
+    expected_count: int | None = None,
+) -> list[Path]:
     pages = sorted((Path(path) for path in page_paths), key=_page_number)
     numbers = [_page_number(path) for path in pages]
     if len(numbers) != len(set(numbers)):
         raise ValueError("rendered page numbers must be unique")
+    count = len(pages) if expected_count is None else expected_count
+    if numbers != list(range(1, count + 1)):
+        raise ValueError(
+            "rendered page numbers must be contiguous from 1 through "
+            f"{count}: actual {numbers}"
+        )
     return pages
+
+
+def _file_sha256(path: Path) -> str:
+    digest = sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _manifest_identity(manifest: Mapping[str, object]) -> dict[str, object]:
+    return {
+        key: manifest[key]
+        for key in (
+            "source_pdf",
+            "pdf_sha256",
+            "page_count",
+            "dpi",
+            "dimensions",
+            "page_files",
+            "page_numbers",
+        )
+    }
+
+
+def _validate_render_set(
+    page_paths: Sequence[Path],
+    *,
+    pdf_path: Path | None = None,
+) -> tuple[list[Path], dict[str, object]]:
+    pages = _sorted_pages(page_paths)
+    if not pages:
+        raise ValueError("rendered page set must not be empty")
+    parent = pages[0].parent
+    if any(path.parent != parent for path in pages):
+        raise ValueError("rendered pages must share one directory")
+    manifest_path = parent / "render-manifest.json"
+    if not manifest_path.is_file():
+        raise ValueError(f"render manifest is required: {manifest_path}")
+    try:
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as error:
+        raise ValueError(f"render manifest must be valid JSON: {manifest_path}") from error
+    if not isinstance(manifest, dict):
+        raise ValueError("render manifest must be a JSON object")
+
+    source_value = manifest.get("source_pdf")
+    if not isinstance(source_value, str) or not source_value:
+        raise ValueError("render manifest source_pdf must be an absolute canonical path")
+    source_pdf = Path(source_value)
+    if not source_pdf.is_absolute():
+        raise ValueError("render manifest source_pdf must be an absolute canonical path")
+    try:
+        canonical_source = source_pdf.resolve(strict=True)
+    except OSError as error:
+        raise ValueError(f"render manifest source PDF is unavailable: {source_pdf}") from error
+    if canonical_source != source_pdf:
+        raise ValueError("render manifest source_pdf must be an absolute canonical path")
+    if pdf_path is not None and Path(pdf_path).resolve(strict=True) != canonical_source:
+        raise ValueError("render manifest source PDF does not match the requested PDF")
+
+    expected_sha = manifest.get("pdf_sha256")
+    actual_sha = _file_sha256(canonical_source)
+    if expected_sha != actual_sha:
+        raise ValueError(
+            f"render manifest PDF SHA256 mismatch: {expected_sha!r} != {actual_sha!r}"
+        )
+    try:
+        actual_pdf_page_count = len(PdfReader(canonical_source).pages)
+    except Exception as error:
+        raise ValueError(f"render manifest source PDF is unreadable: {canonical_source}") from error
+    page_count = manifest.get("page_count")
+    if (
+        not isinstance(page_count, int)
+        or isinstance(page_count, bool)
+        or page_count <= 0
+        or page_count != actual_pdf_page_count
+    ):
+        raise ValueError(
+            "render manifest page_count does not match the source PDF: "
+            f"{page_count!r} != {actual_pdf_page_count}"
+        )
+    pages = _sorted_pages(pages, expected_count=page_count)
+    directory_pages = _sorted_pages(
+        parent.glob("page-*.png"),
+        expected_count=page_count,
+    )
+    if [path.name for path in directory_pages] != [path.name for path in pages]:
+        raise ValueError("passed rendered pages do not match the render directory")
+    page_numbers = [_page_number(path) for path in pages]
+    page_files = [path.name for path in pages]
+    if manifest.get("page_numbers") != page_numbers:
+        raise ValueError("render manifest page_numbers do not match passed PNGs")
+    if manifest.get("page_files") != page_files:
+        raise ValueError("render manifest page_files do not match passed PNGs")
+    dpi = manifest.get("dpi")
+    if not isinstance(dpi, int) or isinstance(dpi, bool) or dpi <= 0:
+        raise ValueError("render manifest dpi must be a positive integer")
+    dimensions_value = manifest.get("dimensions")
+    if (
+        not isinstance(dimensions_value, list)
+        or len(dimensions_value) != 2
+        or any(
+            not isinstance(value, int)
+            or isinstance(value, bool)
+            or value <= 0
+            for value in dimensions_value
+        )
+    ):
+        raise ValueError("render manifest dimensions must contain two positive integers")
+    expected_dimensions = tuple(dimensions_value)
+    for path in pages:
+        try:
+            with Image.open(path) as image:
+                image.load()
+                actual_dimensions = image.size
+        except Exception as error:
+            raise ValueError(f"unreadable rendered page: {path}") from error
+        if actual_dimensions != expected_dimensions:
+            raise ValueError(
+                "rendered page dimensions do not match render manifest: "
+                f"{path.name} {actual_dimensions} != {expected_dimensions}"
+            )
+    return pages, manifest
 
 
 def _prepare_empty_directory(path: Path) -> Path:
@@ -56,30 +191,34 @@ def render_pages_with_poppler(
     dpi: int = 144,
 ) -> list[Path]:
     """Render one readable, consistently sized PNG per PDF page."""
-    pdf_path = Path(pdf_path)
+    pdf_path = Path(pdf_path).resolve(strict=True)
     output_dir = _prepare_empty_directory(Path(output_dir))
     if dpi <= 0:
         raise ValueError("dpi must be positive")
-    subprocess.run(
-        [
-            "pdftoppm",
-            "-png",
-            "-r",
-            str(dpi),
-            str(pdf_path),
-            str(output_dir / "page"),
-        ],
-        check=True,
-        capture_output=True,
-        text=True,
-    )
-    pages = _sorted_pages(output_dir.glob("page-*.png"))
     expected_page_count = len(PdfReader(pdf_path).pages)
-    if len(pages) != expected_page_count:
-        raise ValueError(
-            "Poppler PNG count does not match PDF page count: "
-            f"{len(pages)} != {expected_page_count}"
+    try:
+        subprocess.run(
+            [
+                "pdftoppm",
+                "-png",
+                "-r",
+                str(dpi),
+                str(pdf_path),
+                str(output_dir / "page"),
+            ],
+            check=True,
+            capture_output=True,
+            text=True,
         )
+    except FileNotFoundError as error:
+        raise RuntimeError("Poppler pdftoppm executable is unavailable") from error
+    except subprocess.CalledProcessError as error:
+        detail = (error.stderr or error.stdout or str(error)).strip()
+        raise RuntimeError(f"Poppler rendering failed: {detail}") from error
+    pages = _sorted_pages(
+        output_dir.glob("page-*.png"),
+        expected_count=expected_page_count,
+    )
     expected_size: tuple[int, int] | None = None
     for path in pages:
         try:
@@ -95,10 +234,13 @@ def render_pages_with_poppler(
                 f"inconsistent rendered page size: {path.name} {size} != {expected_size}"
             )
     manifest = {
+        "schema_version": 1,
         "source_pdf": str(pdf_path.resolve()),
+        "pdf_sha256": _file_sha256(pdf_path),
         "dpi": dpi,
         "page_count": expected_page_count,
-        "pages": [path.name for path in pages],
+        "page_files": [path.name for path in pages],
+        "page_numbers": [_page_number(path) for path in pages],
         "dimensions": list(expected_size or (0, 0)),
     }
     (output_dir / "render-manifest.json").write_text(
@@ -116,9 +258,7 @@ def build_contact_sheets(
     """Build fixed 3 x 4 labeled sheets and an exhaustive page manifest."""
     if pages_per_sheet != 12:
         raise ValueError("contact sheets are fixed at 12 pages (3 x 4)")
-    pages = _sorted_pages(page_paths)
-    if not pages:
-        raise ValueError("contact sheets require at least one rendered page")
+    pages, render_manifest = _validate_render_set(page_paths)
     output_dir = _prepare_empty_directory(Path(output_dir))
     columns, rows = 3, 4
     cell_width, cell_height = 360, 480
@@ -163,6 +303,7 @@ def build_contact_sheets(
         manifest_sheets.append({"file": filename, "pages": numbers})
     manifest = {
         "pages_per_sheet": pages_per_sheet,
+        "render_identity": _manifest_identity(render_manifest),
         "sheets": manifest_sheets,
     }
     (output_dir / "manifest.json").write_text(
@@ -186,25 +327,25 @@ def build_grayscale_samples(
     output_dir: Path,
 ) -> dict[str, Path]:
     """Write exact cover, first chapter, and densest Body grayscale samples."""
-    pages = _sorted_pages(page_paths)
-    with pdfplumber.open(pdf_path) as opened:
-        texts = tuple(page.extract_text() or "" for page in opened.pages)
-    if len(pages) != len(texts):
-        raise ValueError("rendered page count does not match PDF for grayscale samples")
-    chapter_index = next(
-        (
-            index
-            for index, text in enumerate(texts)
-            if _normalized_text("UNIFIED SCORE · 0—4") in _normalized_text(text)
-        ),
-        None,
+    pages, render_manifest = _validate_render_set(
+        page_paths,
+        pdf_path=Path(pdf_path),
     )
-    if chapter_index is None:
+    source_pdf = Path(str(render_manifest["source_pdf"]))
+    with pdfplumber.open(source_pdf) as opened:
+        texts = tuple(page.extract_text() or "" for page in opened.pages)
+    chapter_indices = tuple(
+        index
+        for index, text in enumerate(texts)
+        if _normalized_text("UNIFIED SCORE · 0—4") in _normalized_text(text)
+    )
+    if not chapter_indices:
         raise ValueError("chapter marker UNIFIED SCORE · 0—4 was not found")
+    chapter_index = chapter_indices[0]
     candidates = [
         index
         for index in range(len(pages))
-        if index not in {0, chapter_index}
+        if index != 0 and index not in chapter_indices
     ]
     if not candidates:
         raise ValueError("dense Body sample requires a non-cover, non-chapter page")
@@ -221,6 +362,17 @@ def build_grayscale_samples(
         with Image.open(pages[index]) as source:
             source.convert("L").save(destination)
         results[name] = destination
+    manifest = {
+        "render_identity": _manifest_identity(render_manifest),
+        "selections": {
+            name: index + 1
+            for name, index in selections.items()
+        },
+    }
+    (output_dir / "manifest.json").write_text(
+        json.dumps(manifest, ensure_ascii=False, indent=2) + "\n",
+        encoding="utf-8",
+    )
     return results
 
 
@@ -272,9 +424,7 @@ def screen_rendered_pages(
     report_path: Path = SCREENING_REPORT_PATH,
 ) -> dict[str, object]:
     """Write conservative advisory metrics; human review remains mandatory."""
-    pages = _sorted_pages(page_paths)
-    if not pages:
-        raise ValueError("screening requires at least one rendered page")
+    pages, render_manifest = _validate_render_set(page_paths)
     dimensions: list[dict[str, int]] = []
     near_white_ratio: list[dict[str, float | int]] = []
     near_black_ratio: list[dict[str, float | int]] = []
@@ -307,22 +457,17 @@ def screen_rendered_pages(
         if crosses_footer:
             footer_crossing_candidates.append(page_number)
 
-    low_text_pages: list[int] = []
-    render_manifest = pages[0].parent / "render-manifest.json"
-    if render_manifest.is_file():
-        manifest = json.loads(render_manifest.read_text(encoding="utf-8"))
-        source_pdf = Path(str(manifest.get("source_pdf", "")))
-        if source_pdf.is_file():
-            with pdfplumber.open(source_pdf) as opened:
-                text_counts = [
-                    len(_normalized_text(page.extract_text() or ""))
-                    for page in opened.pages
-                ]
-            low_text_pages = [
-                page_number
-                for page_number, count in enumerate(text_counts, start=1)
-                if count < 100
-            ]
+    source_pdf = Path(str(render_manifest["source_pdf"]))
+    with pdfplumber.open(source_pdf) as opened:
+        text_counts = [
+            len(_normalized_text(page.extract_text() or ""))
+            for page in opened.pages
+        ]
+    low_text_pages = [
+        page_number
+        for page_number, count in enumerate(text_counts, start=1)
+        if count < 100
+    ]
 
     suspicious_pages = sorted(
         set(
@@ -333,6 +478,7 @@ def screen_rendered_pages(
     )
     report: dict[str, object] = {
         "page_count": len(pages),
+        "render_identity": _manifest_identity(render_manifest),
         "dimensions": dimensions,
         "near_white_ratio": near_white_ratio,
         "near_black_ratio": near_black_ratio,

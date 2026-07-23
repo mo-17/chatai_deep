@@ -1,9 +1,12 @@
 from __future__ import annotations
 
 import json
+from hashlib import sha256
 from pathlib import Path
+import subprocess
 from tempfile import TemporaryDirectory
 import unittest
+from unittest.mock import patch
 
 from PIL import Image, ImageChops
 from reportlab.lib.pagesizes import A4
@@ -47,6 +50,24 @@ class VisualReviewPipelineTest(unittest.TestCase):
         canvas.setFont(font, 9)
         for index in range(18):
             canvas.drawString(72, 760 - index * 20, f"DENSE BODY {index} " * 8)
+        canvas.showPage()
+        canvas.setFont(font, 8)
+        canvas.drawString(72, 800, "UNIFIED SCORE · 0—4")
+        for index in range(30):
+            canvas.drawString(
+                40,
+                770 - index * 18,
+                f"SECOND CHAPTER MUST NEVER BE DENSE BODY {index} " * 8,
+            )
+        canvas.save()
+
+    @staticmethod
+    def _build_numbered_fixture(path: Path, page_count: int) -> None:
+        canvas = Canvas(str(path), pagesize=A4)
+        for page_number in range(1, page_count + 1):
+            canvas.drawString(72, 760, f"PAGE {page_number}")
+            if page_number < page_count:
+                canvas.showPage()
         canvas.save()
 
     def test_poppler_render_count_matches_pdf_pages(self) -> None:
@@ -54,13 +75,28 @@ class VisualReviewPipelineTest(unittest.TestCase):
 
         pages = render_pages_with_poppler(self.pdf_path, render_dir, dpi=144)
 
-        self.assertEqual(len(pages), 4)
+        self.assertEqual(len(pages), 5)
         self.assertTrue(all(path.parent == render_dir for path in pages))
         self.assertEqual(
-            ["page-1.png", "page-2.png", "page-3.png", "page-4.png"],
+            [
+                "page-1.png",
+                "page-2.png",
+                "page-3.png",
+                "page-4.png",
+                "page-5.png",
+            ],
             [path.name for path in pages],
         )
-        self.assertTrue((render_dir / "render-manifest.json").is_file())
+        manifest = json.loads(
+            (render_dir / "render-manifest.json").read_text(encoding="utf-8")
+        )
+        self.assertEqual(str(self.pdf_path.resolve()), manifest["source_pdf"])
+        self.assertEqual(sha256(self.pdf_path.read_bytes()).hexdigest(), manifest["pdf_sha256"])
+        self.assertEqual(5, manifest["page_count"])
+        self.assertEqual(144, manifest["dpi"])
+        self.assertEqual([1, 2, 3, 4, 5], manifest["page_numbers"])
+        self.assertEqual([path.name for path in pages], manifest["page_files"])
+        self.assertEqual(2, len(manifest["dimensions"]))
 
     def test_poppler_render_rejects_non_empty_output_directory(self) -> None:
         render_dir = self.root / "render"
@@ -69,6 +105,26 @@ class VisualReviewPipelineTest(unittest.TestCase):
 
         with self.assertRaisesRegex(ValueError, "empty"):
             render_pages_with_poppler(self.pdf_path, render_dir)
+
+    def test_poppler_render_rejects_gapped_output_sequence(self) -> None:
+        render_dir = self.root / "gapped-poppler"
+
+        def write_gapped_pages(command, **_kwargs):
+            prefix = Path(command[-1])
+            Image.new("RGB", (120, 160), "white").save(
+                prefix.parent / f"{prefix.name}-1.png"
+            )
+            Image.new("RGB", (120, 160), "white").save(
+                prefix.parent / f"{prefix.name}-3.png"
+            )
+            return subprocess.CompletedProcess(command, 0, "", "")
+
+        with patch(
+            "interview_question_bank.visual_review.subprocess.run",
+            side_effect=write_gapped_pages,
+        ):
+            with self.assertRaisesRegex(ValueError, "contiguous"):
+                render_pages_with_poppler(self.pdf_path, render_dir, dpi=72)
 
     def test_contact_sheets_cover_every_page_once(self) -> None:
         pages = render_pages_with_poppler(
@@ -88,19 +144,23 @@ class VisualReviewPipelineTest(unittest.TestCase):
             for page_number in sheet["pages"]
         ]
 
-        self.assertEqual(covered, [1, 2, 3, 4])
+        self.assertEqual(covered, [1, 2, 3, 4, 5])
         self.assertEqual(len(sheets), 1)
-        self.assertEqual("contact-001-004.png", sheets[0].name)
+        self.assertEqual("contact-001-005.png", sheets[0].name)
         self.assertEqual(12, manifest["pages_per_sheet"])
+        self.assertEqual(
+            sha256(self.pdf_path.read_bytes()).hexdigest(),
+            manifest["render_identity"]["pdf_sha256"],
+        )
 
     def test_contact_sheet_last_sheet_does_not_drop_page(self) -> None:
-        page_dir = self.root / "fake-pages"
-        page_dir.mkdir()
-        pages = []
-        for page_number in range(1, 14):
-            path = page_dir / f"page-{page_number}.png"
-            Image.new("RGB", (120, 160), "white").save(path)
-            pages.append(path)
+        numbered_pdf = self.root / "numbered-13.pdf"
+        self._build_numbered_fixture(numbered_pdf, 13)
+        pages = render_pages_with_poppler(
+            numbered_pdf,
+            self.root / "numbered-render",
+            dpi=72,
+        )
 
         contact_dir = self.root / "contact"
         sheets = build_contact_sheets(pages, contact_dir)
@@ -116,6 +176,56 @@ class VisualReviewPipelineTest(unittest.TestCase):
         self.assertEqual(list(range(1, 14)), covered)
         self.assertEqual(2, len(sheets))
         self.assertEqual([13], manifest["sheets"][-1]["pages"])
+        self.assertIn(10, manifest["sheets"][0]["pages"])
+
+    def test_contact_sheets_reject_gapped_page_suffixes(self) -> None:
+        page_dir = self.root / "gapped"
+        page_dir.mkdir()
+        first = page_dir / "page-1.png"
+        third = page_dir / "page-3.png"
+        Image.new("RGB", (120, 160), "white").save(first)
+        Image.new("RGB", (120, 160), "white").save(third)
+
+        with self.assertRaisesRegex(ValueError, "contiguous"):
+            build_contact_sheets([third, first], self.root / "gapped-contact")
+
+    def test_contact_sheets_reject_duplicate_page_suffixes(self) -> None:
+        page_dir = self.root / "duplicate"
+        page_dir.mkdir()
+        first = page_dir / "page-1.png"
+        Image.new("RGB", (120, 160), "white").save(first)
+
+        with self.assertRaisesRegex(ValueError, "unique"):
+            build_contact_sheets([first, first], self.root / "duplicate-contact")
+
+    def test_contact_sheets_reject_non_numeric_page_suffix(self) -> None:
+        page_dir = self.root / "wrong-suffix"
+        page_dir.mkdir()
+        page = page_dir / "page-final.png"
+        Image.new("RGB", (120, 160), "white").save(page)
+
+        with self.assertRaisesRegex(ValueError, "numeric suffix"):
+            build_contact_sheets([page], self.root / "wrong-suffix-contact")
+
+    def test_contact_sheets_require_render_manifest(self) -> None:
+        page_dir = self.root / "manifestless"
+        page_dir.mkdir()
+        first = page_dir / "page-1.png"
+        Image.new("RGB", (120, 160), "white").save(first)
+
+        with self.assertRaisesRegex(ValueError, "render manifest"):
+            build_contact_sheets([first], self.root / "manifestless-contact")
+
+    def test_contact_sheets_reject_pdf_replaced_after_render(self) -> None:
+        pages = render_pages_with_poppler(
+            self.pdf_path,
+            self.root / "bound-render",
+            dpi=72,
+        )
+        self._build_numbered_fixture(self.pdf_path, 1)
+
+        with self.assertRaisesRegex(ValueError, "SHA256"):
+            build_contact_sheets(pages, self.root / "replaced-contact")
 
     def test_grayscale_samples_select_cover_chapter_and_dense_body(self) -> None:
         pages = render_pages_with_poppler(
@@ -139,6 +249,23 @@ class VisualReviewPipelineTest(unittest.TestCase):
             self.assertIsNone(ImageChops.difference(chapter.convert("L"), sample).getbbox())
         with Image.open(pages[3]) as dense, Image.open(samples["dense-body"]) as sample:
             self.assertIsNone(ImageChops.difference(dense.convert("L"), sample).getbbox())
+        with Image.open(pages[4]) as second_chapter, Image.open(
+            samples["dense-body"]
+        ) as sample:
+            self.assertIsNotNone(
+                ImageChops.difference(second_chapter.convert("L"), sample).getbbox()
+            )
+        manifest = json.loads(
+            (output_dir / "manifest.json").read_text(encoding="utf-8")
+        )
+        self.assertEqual(
+            sha256(self.pdf_path.read_bytes()).hexdigest(),
+            manifest["render_identity"]["pdf_sha256"],
+        )
+        self.assertEqual(
+            {"cover": 1, "chapter": 3, "dense-body": 4},
+            manifest["selections"],
+        )
 
     def test_screening_reports_advisory_metrics_and_sorted_suspicious_pages(
         self,
@@ -152,10 +279,10 @@ class VisualReviewPipelineTest(unittest.TestCase):
 
         report = screen_rendered_pages(pages, report_path=report_path)
 
-        self.assertEqual(4, report["page_count"])
-        self.assertEqual(4, len(report["dimensions"]))
-        self.assertEqual(4, len(report["near_white_ratio"]))
-        self.assertEqual(4, len(report["near_black_ratio"]))
+        self.assertEqual(5, report["page_count"])
+        self.assertEqual(5, len(report["dimensions"]))
+        self.assertEqual(5, len(report["near_white_ratio"]))
+        self.assertEqual(5, len(report["near_black_ratio"]))
         self.assertIn(2, report["footer_crossing_candidates"])
         self.assertIn(1, report["low_text_pages"])
         self.assertEqual(
@@ -164,22 +291,122 @@ class VisualReviewPipelineTest(unittest.TestCase):
         )
         self.assertEqual(report, json.loads(report_path.read_text(encoding="utf-8")))
         self.assertIn("advisory", report["note"].lower())
-
-    def test_screening_reports_dimension_mismatch(self) -> None:
-        page_dir = self.root / "mixed"
-        page_dir.mkdir()
-        first = page_dir / "page-1.png"
-        second = page_dir / "page-2.png"
-        Image.new("RGB", (120, 160), "white").save(first)
-        Image.new("RGB", (121, 160), "white").save(second)
-
-        report = screen_rendered_pages(
-            [second, first],
-            report_path=self.root / "mixed-screening.json",
+        self.assertEqual(
+            sha256(self.pdf_path.read_bytes()).hexdigest(),
+            report["render_identity"]["pdf_sha256"],
         )
 
-        self.assertEqual([2], report["dimension_mismatch_pages"])
-        self.assertEqual(sorted(report["suspicious_pages"]), report["suspicious_pages"])
+    def test_screening_rejects_inconsistent_rendered_page_size(self) -> None:
+        pages = render_pages_with_poppler(
+            self.pdf_path,
+            self.root / "mixed-render",
+            dpi=72,
+        )
+        with Image.open(pages[1]) as source:
+            source.resize((source.width + 1, source.height)).save(pages[1])
+
+        with self.assertRaisesRegex(ValueError, "dimensions"):
+            screen_rendered_pages(
+                pages,
+                report_path=self.root / "mixed-screening.json",
+            )
+
+    def test_screening_rejects_corrupt_png(self) -> None:
+        pages = render_pages_with_poppler(
+            self.pdf_path,
+            self.root / "corrupt-render",
+            dpi=72,
+        )
+        pages[1].write_bytes(b"not a PNG")
+
+        with self.assertRaisesRegex(ValueError, "unreadable rendered page"):
+            screen_rendered_pages(
+                pages,
+                report_path=self.root / "corrupt-screening.json",
+            )
+
+    def test_screening_requires_render_manifest(self) -> None:
+        pages = render_pages_with_poppler(
+            self.pdf_path,
+            self.root / "manifestless-render",
+            dpi=72,
+        )
+        (pages[0].parent / "render-manifest.json").unlink()
+
+        with self.assertRaisesRegex(ValueError, "render manifest"):
+            screen_rendered_pages(
+                pages,
+                report_path=self.root / "manifestless-screening.json",
+            )
+
+    def test_screening_rejects_forged_manifest_page_count(self) -> None:
+        pages = render_pages_with_poppler(
+            self.pdf_path,
+            self.root / "forged-count-render",
+            dpi=72,
+        )
+        manifest_path = pages[0].parent / "render-manifest.json"
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        manifest["page_count"] = 1
+        manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+
+        with self.assertRaisesRegex(ValueError, "page_count"):
+            screen_rendered_pages(
+                pages,
+                report_path=self.root / "forged-count-screening.json",
+            )
+
+    def test_grayscale_rejects_forged_manifest_sha(self) -> None:
+        pages = render_pages_with_poppler(
+            self.pdf_path,
+            self.root / "forged-sha-render",
+            dpi=72,
+        )
+        manifest_path = pages[0].parent / "render-manifest.json"
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        manifest["pdf_sha256"] = "0" * 64
+        manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+
+        with self.assertRaisesRegex(ValueError, "SHA256"):
+            build_grayscale_samples(
+                self.pdf_path,
+                pages,
+                self.root / "forged-sha-grayscale",
+            )
+
+    def test_grayscale_rejects_an_unrelated_pdf_with_same_page_count(self) -> None:
+        pages = render_pages_with_poppler(
+            self.pdf_path,
+            self.root / "wrong-pdf-render",
+            dpi=72,
+        )
+        other_pdf = self.root / "unrelated.pdf"
+        self._build_numbered_fixture(other_pdf, len(pages))
+
+        with self.assertRaisesRegex(ValueError, "requested PDF"):
+            build_grayscale_samples(
+                other_pdf,
+                pages,
+                self.root / "wrong-pdf-grayscale",
+            )
+
+    def test_poppler_failure_is_reported_explicitly(self) -> None:
+        error = subprocess.CalledProcessError(
+            2,
+            ["pdftoppm"],
+            stderr="synthetic poppler failure",
+        )
+
+        with patch(
+            "interview_question_bank.visual_review.subprocess.run",
+            side_effect=error,
+        ):
+            with self.assertRaisesRegex(RuntimeError, "Poppler.*synthetic"):
+                render_pages_with_poppler(
+                    self.pdf_path,
+                    self.root / "failed-render",
+                    dpi=72,
+                )
 
 
 if __name__ == "__main__":
