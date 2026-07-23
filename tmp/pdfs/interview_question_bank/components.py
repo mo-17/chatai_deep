@@ -234,7 +234,7 @@ class FieldPanel(Table):
         super().__init__(
             [[label_paragraph], [body_story]],
             colWidths=[width],
-            splitByRow=1,
+            splitByRow=0,
             splitInRow=1,
             hAlign="LEFT",
             style=TableStyle(

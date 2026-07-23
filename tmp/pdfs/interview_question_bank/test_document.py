@@ -289,6 +289,15 @@ class DocumentTest(unittest.TestCase):
                     float(panel["top"]),
                     float(labels[label]["bottom"]) + 3,
                 )
+        for panel, next_label in zip(
+            panels[:3],
+            ("适用范围", "使用要求", "保密要求"),
+        ):
+            with self.subTest(next_label=next_label):
+                self.assertGreaterEqual(
+                    float(labels[next_label]["top"]),
+                    float(panel["bottom"]) + 3,
+                )
 
     def test_control_page_routes_all_fields_through_external_blocks(self) -> None:
         block_type = getattr(component_module, "ExternalFieldBlock", None)

@@ -492,6 +492,29 @@ class FieldPanelGeometryTest(unittest.TestCase):
         )
         self.assertGreaterEqual(panel.minimum_start_height, expected_floor)
 
+    def test_real_table_split_keeps_label_with_first_two_body_lines(self) -> None:
+        make_field_panel = self._component("make_field_panel")
+        panel = make_field_panel(
+            "答案要点",
+            [
+                "FIRST-TOKEN<br/>SECOND-LINE<br/>"
+                + ("跨页正文。" * 500)
+                + " SPLIT-END"
+            ],
+            self.styles,
+            BODY_WIDTH,
+        )
+        fragments = panel.split(
+            BODY_WIDTH,
+            panel.minimum_start_height + 10,
+        )
+
+        self.assertGreater(len(fragments), 1)
+        first_fragment_text = flowable_text(fragments[0])
+        self.assertIn("答案要点", first_fragment_text)
+        self.assertIn("FIRST-TOKEN", first_fragment_text)
+        self.assertIn("SECOND-LINE", first_fragment_text)
+
     def test_all_question_fields_use_split_safe_panels(self) -> None:
         panel_type = self._component("FieldPanel")
         flows = question_flowables(sample_question(), self.styles)
