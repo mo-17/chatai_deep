@@ -308,7 +308,7 @@ def build_styles(fonts: FontSet) -> StyleSet:
     risk_body = ParagraphStyle(
         "RiskBody",
         parent=field_body,
-        textColor=HexColor("#7A271A"),
+        textColor=RISK,
         backColor=RISK_FILL,
         borderColor=RISK,
     )

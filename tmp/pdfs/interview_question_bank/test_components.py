@@ -27,6 +27,7 @@ from interview_question_bank.styles import (
     BLUE,
     DARK_NAVY,
     NAVY,
+    RISK,
     SCORE,
     SCORE_FILL,
     SKY,
@@ -100,6 +101,7 @@ class BlueprintStyleContractTest(unittest.TestCase):
         self.assertEqual(SKY, HexColor("#62ADFF"))
         self.assertEqual(SCORE, HexColor("#1D4ED8"))
         self.assertEqual(SCORE_FILL, HexColor("#EFF6FF"))
+        self.assertEqual(build_styles(self.fonts).risk_body.textColor, RISK)
 
     def test_score_styles_are_blue_not_green(self) -> None:
         styles = build_styles(self.fonts)
