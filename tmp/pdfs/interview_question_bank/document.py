@@ -69,7 +69,7 @@ AUTHOR = "Aipu Project"
 KEYWORDS = "interview, engineering, internal"
 DOCUMENT_SHORT_TITLE = "艾普项目面试题库"
 FOOTER_LEFT = "面试官版 / 内部使用"
-FOOTER_CENTER = "内容快照 2026-07-23"
+FOOTER_CENTER = "2026-07-23"
 QUESTION_PREFIXES = ("C", "FE", "AI", "BE", "SEC", "PM", "QA", "OPS")
 FRAME_WIDTH = A4[0] - 40 * mm
 BLUEPRINT_GRID_STEP = 12 * mm
@@ -273,6 +273,9 @@ class InterviewDocTemplate(BaseDocTemplate):
         self.canv.setSubject(SUBJECT)
         self.canv.setAuthor(AUTHOR)
         self.canv.setKeywords(KEYWORDS)
+        self._current_section = "文档控制"
+        self._current_question = None
+        self._question_opening_pages: dict[str, int] = {}
 
     def _draw_body(self, canvas, doc) -> None:
         """Draw dynamic furniture after page content has established context."""
@@ -288,7 +291,13 @@ class InterviewDocTemplate(BaseDocTemplate):
             A4[1] - 10.5 * mm,
             self._current_section,
         )
-        header_right = self._current_question or DOCUMENT_SHORT_TITLE
+        header_right = DOCUMENT_SHORT_TITLE
+        if self._current_question:
+            opening_page = self._question_opening_pages.get(self._current_question)
+            if opening_page == self.page:
+                header_right = self._current_question
+            else:
+                header_right = f"{self._current_question} · CONTINUED"
         canvas.setFont(
             self.styles.fonts.code if self._current_question else self.styles.fonts.body,
             7.3,
@@ -315,6 +324,12 @@ class InterviewDocTemplate(BaseDocTemplate):
             self._current_section = flowable.section_title
             self._current_question = flowable.question_id
             return
+        if isinstance(flowable, QuestionHeadingFlowable):
+            self._current_question = flowable.question_id
+            self._question_opening_pages.setdefault(
+                flowable.question_id,
+                self.page,
+            )
         if isinstance(flowable, ChapterDividerFlowable):
             if flowable.anchor is None:
                 return
@@ -625,6 +640,22 @@ def _group_ability_keywords(bank: QuestionBank) -> dict[str, str]:
     return mapping
 
 
+def append_question_pages(
+    story: list[Flowable],
+    group: Section,
+    questions: Sequence[Question],
+    styles: StyleSet,
+) -> None:
+    """Append exactly one explicit opening break before every question."""
+    for question in questions:
+        story.append(PageBreak())
+        story.append(UnitMarker("question"))
+        story.append(PageContextMarker(group.title, question.question_id))
+        story.extend(
+            question_flowables(_question_for_document(question), styles)
+        )
+
+
 def build_story(
     bank: QuestionBank,
     styles: StyleSet,
@@ -773,13 +804,7 @@ def build_story(
                 NextPageTemplate("Body"),
             ]
         )
-        for question in questions:
-            story.append(PageBreak())
-            story.append(UnitMarker("question"))
-            story.append(PageContextMarker(group.title, question.question_id))
-            story.extend(
-                question_flowables(_question_for_document(question), styles)
-            )
+        append_question_pages(story, group, questions, styles)
 
     assessment = bank.level2_sections[10]
     story.extend(

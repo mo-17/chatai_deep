@@ -35,12 +35,13 @@ from interview_question_bank.document import (
     InterviewDocTemplate,
     PageContextMarker,
     _document_styles,
+    append_question_pages,
     build_pdf,
     build_story,
     story_metrics,
 )
 import interview_question_bank.document as document_module
-from interview_question_bank.parser import Question, parse_question_bank
+from interview_question_bank.parser import Question, Section, parse_question_bank
 from interview_question_bank.styles import build_styles, register_fonts
 
 
@@ -133,6 +134,98 @@ def region_text(page, *, header: bool) -> str:
     else:
         box = (0, float(page.height) - height, float(page.width), float(page.height))
     return page.crop(box).extract_text() or ""
+
+
+def synthetic_question(
+    question_id: str,
+    *,
+    answer_repetitions: int = 1,
+) -> Question:
+    answer = " ".join(["分页合同必须稳定、可抽取且不越过页脚安全区。"] * answer_repetitions)
+    if answer_repetitions > 1:
+        answer += " LONG-ANSWER-END"
+    return Question(
+        question_id=question_id,
+        title=f"{question_id} synthetic pagination contract",
+        prompt="请解释逐题起页、续页页眉与安全页脚合同。",
+        preface=(),
+        answer_fields=MappingProxyType(
+            {
+                "考察点": ("分页状态与页面模板。",),
+                "答案要点": (answer,),
+                "追问": ("切换到下一题时如何避免状态泄漏？",),
+                "风险信号": ("依赖隐式分页或复用上一题状态。",),
+                "评分锚点": ("0 分无合同；4 分有可重复的真实 PDF 验证。",),
+            }
+        ),
+    )
+
+
+def synthetic_question_story(
+    questions: list[Question],
+    styles,
+):
+    document_styles = _document_styles(styles)
+    group = Section(2, "90. 分页合同", ())
+    story = [
+        HeadingFlowable(
+            TITLE,
+            document_styles["cover_title"],
+            anchor="synthetic-title",
+            outline_level=0,
+            toc_level=None,
+        ),
+        NextPageTemplate("Chapter"),
+        PageBreak(),
+        PageContextMarker(group.title, None),
+        ChapterDividerFlowable(
+            section_number="90",
+            section_title=group.title,
+            group_name="分页合同",
+            question_range="S1 - S2",
+            ability_keywords="逐题起页、续页状态、安全页脚",
+            styles=styles,
+            anchor="synthetic-pagination-contract",
+        ),
+        NextPageTemplate("Body"),
+    ]
+    append_question_pages(story, group, questions, styles)
+    return story
+
+
+def build_synthetic_question_pdf(
+    questions: list[Question],
+    styles,
+) -> bytes:
+    preview = BytesIO()
+    InterviewDocTemplate(preview, styles).multiBuild(
+        synthetic_question_story(questions, styles)
+    )
+    total_pages = len(PdfReader(BytesIO(preview.getvalue())).pages)
+
+    final = BytesIO()
+    InterviewDocTemplate(
+        final,
+        styles,
+        total_pages=total_pages,
+    ).multiBuild(synthetic_question_story(questions, styles))
+    return final.getvalue()
+
+
+def locate_question_heading_pages(
+    pdf_bytes: bytes,
+    question_ids: list[str],
+) -> dict[str, int]:
+    reader = PdfReader(BytesIO(pdf_bytes))
+    pages = [page.extract_text() or "" for page in reader.pages]
+    return {
+        question_id: next(
+            page_index
+            for page_index, text in enumerate(pages)
+            if re.search(rf"(?m)^{re.escape(question_id)}\s*·\s+", text)
+        )
+        for question_id in question_ids
+    }
 
 
 class _RecordingCanvas:
@@ -230,6 +323,17 @@ class BlueprintPageTemplateTest(unittest.TestCase):
                 for left, right in zip(self.story, self.story[1:])
             )
         )
+        question_markers = [
+            index
+            for index, flowable in enumerate(self.story)
+            if getattr(flowable, "kind", None) == "question"
+        ]
+        self.assertEqual(80, len(question_markers))
+        for index in question_markers:
+            self.assertIsInstance(self.story[index - 1], PageBreak)
+            self.assertFalse(
+                index >= 2 and isinstance(self.story[index - 2], PageBreak)
+            )
 
     def test_chapter_pages_are_dedicated_full_pages_without_body_furniture(self) -> None:
         self.assertEqual(8, len(self.chapter_page_indexes))
@@ -328,6 +432,99 @@ class BlueprintPageTemplateTest(unittest.TestCase):
         cover_style = _document_styles(self.styles)["cover_title"]
         self.assertEqual(29, cover_style.fontSize)
         self.assertEqual(39, cover_style.leading)
+
+
+class QuestionPaginationContractTest(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.styles = build_styles(register_fonts())
+
+    def test_long_question_continuation_header_and_next_question_new_page(self) -> None:
+        pdf_bytes = build_synthetic_question_pdf(
+            [
+                synthetic_question("Q900", answer_repetitions=900),
+                synthetic_question("Q901"),
+            ],
+            self.styles,
+        )
+        reader = PdfReader(BytesIO(pdf_bytes))
+        pages = [page.extract_text() or "" for page in reader.pages]
+        q900_pages = [index for index, text in enumerate(pages) if "Q900" in text]
+        q901_pages = [index for index, text in enumerate(pages) if "Q901" in text]
+
+        self.assertGreaterEqual(len(q900_pages), 2)
+        self.assertNotIn("Q900 · CONTINUED", pages[q900_pages[0]])
+        for page_index in q900_pages[1:]:
+            self.assertIn("Q900 · CONTINUED", pages[page_index])
+        self.assertGreater(q901_pages[0], q900_pages[-1])
+        self.assertNotIn("Q900 · CONTINUED", pages[q901_pages[0]])
+        self.assertIn("LONG-ANSWER-END", "\n".join(pages))
+
+    def test_before_document_resets_all_pagination_state(self) -> None:
+        with TemporaryDirectory() as directory:
+            doc = InterviewDocTemplate(
+                str(Path(directory) / "state-reset.pdf"),
+                self.styles,
+            )
+        doc.canv = _RecordingCanvas()
+        doc._current_section = "stale section"
+        doc._current_question = "Q999"
+        doc._question_opening_pages = {"Q999": 99}
+
+        doc.beforeDocument()
+
+        self.assertEqual("文档控制", doc._current_section)
+        self.assertIsNone(doc._current_question)
+        self.assertEqual({}, doc._question_opening_pages)
+
+    def test_every_question_heading_has_a_distinct_opening_page(self) -> None:
+        question_ids = ["Q910", "Q911", "Q912"]
+        pdf_bytes = build_synthetic_question_pdf(
+            [synthetic_question(question_id) for question_id in question_ids],
+            self.styles,
+        )
+        opening_pages = locate_question_heading_pages(pdf_bytes, question_ids)
+        self.assertEqual(len(set(opening_pages.values())), 3)
+
+        reader = PdfReader(BytesIO(pdf_bytes))
+        pages = [page.extract_text() or "" for page in reader.pages]
+        for question_id, opening_page in opening_pages.items():
+            with self.subTest(question=question_id):
+                self.assertIn(question_id, pages[opening_page])
+                self.assertGreater(len(normalized(pages[opening_page])), len(question_id))
+        self.assertFalse(
+            any(not normalized(text) for text in pages),
+            "synthetic pagination introduced an empty page",
+        )
+
+    def test_body_spans_do_not_enter_footer_safe_zone(self) -> None:
+        pdf_bytes = build_synthetic_question_pdf(
+            [synthetic_question("Q920", answer_repetitions=900)],
+            self.styles,
+        )
+        safe_zone_top = A4[1] - 17 * mm
+        with pdfplumber.open(BytesIO(pdf_bytes)) as pdf:
+            total_pages = len(pdf.pages)
+            body_pages = [
+                page
+                for page in pdf.pages
+                if "CAPABILITY BLUEPRINT" not in (page.extract_text() or "")
+                and (page.page_number != 1)
+            ]
+            for page in body_pages:
+                footer_text = page.crop(
+                    (0, safe_zone_top, float(page.width), float(page.height))
+                ).extract_text() or ""
+                expected_footer = (
+                    "面试官版 / 内部使用"
+                    "2026-07-23"
+                    f"第 {page.page_number} / {total_pages} 页"
+                )
+                with self.subTest(page=page.page_number):
+                    self.assertEqual(
+                        normalized(expected_footer),
+                        normalized(footer_text),
+                    )
 
 
 class DocumentTest(unittest.TestCase):
@@ -627,7 +824,7 @@ class DocumentTest(unittest.TestCase):
             self.assertIn(normalized(left), header)
             self.assertIn(normalized(right), header)
             self.assertIn(normalized("面试官版 / 内部使用"), footer)
-            self.assertIn(normalized("内容快照 2026-07-23"), footer)
+            self.assertIn(normalized("2026-07-23"), footer)
             self.assertIn(normalized(f"第 {page_number} / {total} 页"), footer)
 
         self.assertNotIn(normalized("面试官版 / 内部使用"), normalized(footers[0]))
