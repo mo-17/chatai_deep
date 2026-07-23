@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+from collections import Counter
 from dataclasses import asdict, dataclass
 from hashlib import sha256
 import json
@@ -57,6 +58,11 @@ QUESTION_HEADING_RE = re.compile(
 QUESTION_OUTLINE_RE = re.compile(rf"^({QUESTION_ID_PATTERN})\.\s+")
 MARKDOWN_QUESTION_RE = re.compile(rf"^###\s+({QUESTION_ID_PATTERN})\.\s+", re.MULTILINE)
 PDF_SECTION_HEADING_RE = re.compile(r"(?m)^(?:[1-9]|1[0-2])\.\s+\S.*$")
+ARTIFACT_SECTION_HEADING_RE = re.compile(r"^([1-9]\d*)\.\s+(\S.*)$")
+BLUEPRINT_SECTION_MARKER_RE = re.compile(
+    r"^CAPABILITY\s+BLUEPRINT\s*/\s*SECTION\s+(\d{2})$",
+    re.IGNORECASE,
+)
 FORBIDDEN_LITERAL_TOKENS = (
     "<details>",
     "</details>",
@@ -788,11 +794,161 @@ def _expected_physical_tables(
     return (_normalized_table(rows),)
 
 
+def _expected_question_layout_tables(
+    questions: Sequence[Question],
+    question_pages: Mapping[str, int],
+) -> Counter[tuple[int, tuple[tuple[str, ...], ...]]]:
+    expected: Counter[
+        tuple[int, tuple[tuple[str, ...], ...]]
+    ] = Counter()
+    for question in questions:
+        expected_page = question_pages.get(question.question_id)
+        if expected_page is None:
+            continue
+        fields = dict(question.answer_fields)
+        preface = [
+            item
+            for item in question.preface
+            if item != "参考答案、追问与评分"
+        ]
+        for label in tuple(fields):
+            if label.startswith("题前材料"):
+                preface.extend(fields.pop(label))
+        panels: list[tuple[str, Sequence[str]]] = []
+        if preface:
+            panels.append(("题前材料（盲面提供）", tuple(preface)))
+        panels.append(("问题", (question.prompt,)))
+        panels.extend(fields.items())
+        for label, values in panels:
+            body = "".join(
+                printable_inline_text(
+                    value.replace("<br/>", "\n").replace("<br>", "\n")
+                )
+                for value in values
+            )
+            expected[
+                (
+                    expected_page,
+                    _normalized_table(
+                        (
+                            (label,),
+                            (body or "—",),
+                        )
+                    ),
+                )
+            ] += 1
+    return expected
+
+
+def _generated_layout_table_counts(
+    questions: Sequence[Question],
+    question_pages: Mapping[str, int],
+    printable_form_page: int | None,
+) -> Counter[tuple[int, tuple[tuple[str, ...], ...]]]:
+    interviewer_record = _normalized_table(
+        (
+            ("面试官记录", ""),
+            ("证据", ""),
+            ("风险", ""),
+            ("评分", "□ 0　□ 1　□ 2　□ 3　□ 4"),
+        )
+    )
+    printable_form = _normalized_table(
+        (
+            ("候选人：", "____________________________________________"),
+            ("目标岗位：", "____________________________________________"),
+            ("面试时长：", "____________________________________________"),
+            ("抽取题号：", "____________________________________________"),
+            ("", ""),
+            ("最强证据：", "____________________________________________"),
+            ("", "____________________________________________"),
+            ("", ""),
+            ("主要风险：", "____________________________________________"),
+            ("", "____________________________________________"),
+            ("", ""),
+            ("安全专项：", "□ 通过　□ 需复核　□ 不通过"),
+            ("可靠性专项：", "□ 通过　□ 需复核　□ 不通过"),
+            ("沟通与权衡：", "□ 通过　□ 需复核　□ 不通过"),
+            ("", ""),
+            ("题目平均分（0～4）：", "____________________________________________"),
+            ("换算分（平均分 × 25）：", "____________________________________________"),
+            ("建议：", "□ 推进　□ 补充面试　□ 暂缓"),
+            ("建议下一轮重点：", "____________________________________________"),
+        )
+    )
+    expected: Counter[
+        tuple[int, tuple[tuple[str, ...], ...]]
+    ] = Counter()
+    for question in questions:
+        expected_page = question_pages.get(question.question_id)
+        if expected_page is not None:
+            expected[(expected_page, interviewer_record)] += 1
+    if printable_form_page is not None:
+        expected[(printable_form_page, printable_form)] += 1
+    return expected
+
+
+def _decorative_layout_kind(
+    rows: tuple[tuple[str, ...], ...],
+) -> str | None:
+    row_count = len(rows)
+    column_count = max((len(row) for row in rows), default=0)
+    flattened = _normalized(
+        "".join(cell for row in rows for cell in row)
+    )
+    if (
+        row_count == 25
+        and column_count == 18
+        and _normalized("ENGINEERING INTERVIEW HANDBOOK") in flattened
+    ):
+        return "cover"
+    if not (
+        row_count == 27
+        and column_count == 19
+        and _normalized("CAPABILITY BLUEPRINT / SECTION") in flattened
+        and _normalized("UNIFIED SCORE · 0—4") in flattened
+    ):
+        return None
+    marker = re.search(
+        rf"{re.escape(_normalized('CAPABILITY BLUEPRINT / SECTION'))}(\d{{2}})",
+        flattened,
+    )
+    return f"blueprint:{marker.group(1)}" if marker else None
+
+
+def _expected_decorative_layout_tables(
+    section_pages: Mapping[str, int],
+) -> Counter[tuple[int, str]]:
+    expected: Counter[tuple[int, str]] = Counter({(1, "cover"): 1})
+    for title, page_number in section_pages.items():
+        match = ARTIFACT_SECTION_HEADING_RE.fullmatch(title)
+        if match and 3 <= int(match.group(1)) <= 10:
+            expected[(page_number, f"blueprint:{int(match.group(1)):02d}")] += 1
+    return expected
+
+
+def _layout_table_label(rows: tuple[tuple[str, ...], ...]) -> str:
+    return next(
+        (
+            cell
+            for row in rows
+            for cell in row
+            if cell
+        ),
+        "layout table",
+    )
+
+
 def analyze_table_contracts(
     source_tables: Sequence[TableBlock],
     table_section_titles: Sequence[str],
     section_pages: Mapping[str, int],
     physical_tables_by_page: Mapping[int, Sequence[Sequence[Sequence[str | None]]]],
+    *,
+    questions: Sequence[Question] = (),
+    question_pages: Mapping[str, int] | None = None,
+    printable_form_page: int | None = None,
+    require_complete_layout: bool = False,
 ) -> dict[str, tuple[str, ...]]:
     """Validate logical table structure, multiplicity and placement."""
     actual_tables = tuple(
@@ -855,19 +1011,54 @@ def analyze_table_contracts(
         issues["matched_logical_tables"] = (
             f"expected {len(source_tables)} actual {matched_logical_tables}",
         )
-    expected_table_pages = {
-        page
-        for title in table_section_titles
-        if (page := section_pages.get(title)) is not None
-    }
-    unexpected = tuple(
-        f"page {page_number} table {table_index + 1}"
-        for page_number, table_index, _ in actual_tables
-        if page_number in expected_table_pages
-        and (page_number, table_index) not in consumed_tables
+    expected_question_pages = question_pages or {}
+    allowed_layout_tables = _expected_question_layout_tables(
+        questions,
+        expected_question_pages,
     )
+    allowed_layout_tables.update(
+        _generated_layout_table_counts(
+            questions,
+            expected_question_pages,
+            printable_form_page,
+        )
+    )
+    allowed_decorative_tables = _expected_decorative_layout_tables(
+        section_pages
+    )
+    unexpected_tables: list[str] = []
+    for page_number, table_index, rows in actual_tables:
+        if (page_number, table_index) in consumed_tables:
+            continue
+        decorative_kind = _decorative_layout_kind(rows)
+        if decorative_kind is not None:
+            decorative_key = (page_number, decorative_kind)
+            if allowed_decorative_tables[decorative_key] > 0:
+                allowed_decorative_tables[decorative_key] -= 1
+                continue
+        layout_key = (page_number, rows)
+        if allowed_layout_tables[layout_key] > 0:
+            allowed_layout_tables[layout_key] -= 1
+            continue
+        unexpected_tables.append(
+            f"page {page_number} table {table_index + 1}"
+        )
+    unexpected = tuple(unexpected_tables)
     if unexpected:
         issues["unexpected_physical_tables"] = unexpected
+    if require_complete_layout:
+        missing_layout_tables = [
+            f"page {page_number} {_layout_table_label(rows)} x{count}"
+            for (page_number, rows), count in allowed_layout_tables.items()
+            if count > 0
+        ]
+        missing_layout_tables.extend(
+            f"page {page_number} {kind} x{count}"
+            for (page_number, kind), count in allowed_decorative_tables.items()
+            if count > 0
+        )
+        if missing_layout_tables:
+            issues["missing_layout_tables"] = tuple(missing_layout_tables)
     return issues
 
 
@@ -1013,6 +1204,135 @@ def _flatten_outline(items, depth: int = 0):
             yield from _flatten_outline(item, depth + 1)
         elif getattr(item, "title", None):
             yield depth, item
+
+
+def _line_max_font_size(line: Mapping[str, object]) -> float:
+    return max(
+        (
+            float(char.get("size", 0.0))
+            for char in (line.get("chars") or ())
+            if isinstance(char, Mapping)
+        ),
+        default=0.0,
+    )
+
+
+def _line_uses_font(
+    line: Mapping[str, object],
+    postscript_name: str,
+) -> bool:
+    return any(
+        postscript_name in str(char.get("fontname", ""))
+        for char in (line.get("chars") or ())
+        if isinstance(char, Mapping)
+    )
+
+
+def _line_is_at_content_left(line: Mapping[str, object]) -> bool:
+    try:
+        x0 = float(line.get("x0", -1.0))
+    except (TypeError, ValueError):
+        return False
+    return 18 * mm <= x0 <= 22 * mm
+
+
+def extract_artifact_section_titles(
+    text_lines_by_page: Mapping[
+        int,
+        Sequence[Mapping[str, object]],
+    ],
+    fonts: FontSet,
+) -> tuple[str, ...]:
+    """Recover section-like headings from PDF text, font and geometry evidence."""
+    candidates: list[tuple[int, float, str]] = []
+    for page_number in sorted(text_lines_by_page):
+        lines = text_lines_by_page[page_number]
+        for line in lines:
+            text = str(line.get("text", "")).strip()
+            match = ARTIFACT_SECTION_HEADING_RE.fullmatch(text)
+            try:
+                top = float(line.get("top", -1.0))
+            except (TypeError, ValueError):
+                top = -1.0
+            if (
+                match
+                and _line_uses_font(line, fonts.heading_postscript_name)
+                and 18.0 <= _line_max_font_size(line) <= 24.0
+            ):
+                candidates.append(
+                    (
+                        page_number,
+                        top,
+                        f"{int(match.group(1))}. {match.group(2)}",
+                    )
+                )
+
+        marker_numbers = tuple(
+            match.group(1)
+            for line in lines
+            if (
+                match := BLUEPRINT_SECTION_MARKER_RE.fullmatch(
+                    str(line.get("text", "")).strip()
+                )
+            )
+        )
+        if len(marker_numbers) != 1:
+            continue
+        marker_number = marker_numbers[0]
+        has_large_number = any(
+            str(line.get("text", "")).strip() == marker_number
+            and _line_max_font_size(line) >= 60.0
+            and _line_is_at_content_left(line)
+            for line in lines
+        )
+        has_score_marker = any(
+            _normalized("UNIFIED SCORE · 0—4")
+            in _normalized(str(line.get("text", "")))
+            for line in lines
+        )
+        divider_titles = tuple(
+            line
+            for line in lines
+            if (
+                _line_uses_font(line, fonts.heading_postscript_name)
+                and 22.0 <= _line_max_font_size(line) <= 30.0
+                and _line_is_at_content_left(line)
+                and 220.0 <= float(line.get("top", -1.0)) <= 330.0
+            )
+        )
+        if has_large_number and has_score_marker and len(divider_titles) == 1:
+            title_line = divider_titles[0]
+            candidates.append(
+                (
+                    page_number,
+                    float(title_line.get("top", 0.0)),
+                    (
+                        f"{int(marker_number)}. "
+                        f"{str(title_line.get('text', '')).strip()}"
+                    ),
+                )
+            )
+    return tuple(
+        title
+        for _, _, title in sorted(candidates)
+    )
+
+
+def analyze_artifact_section_structure(
+    expected_section_titles: Sequence[str],
+    artifact_section_titles: Sequence[str],
+) -> dict[str, Mapping[str, object]]:
+    """Require exact section title order and multiplicity in the PDF artifact."""
+    expected = tuple(expected_section_titles)
+    actual = tuple(artifact_section_titles)
+    if actual == expected:
+        return {}
+    return {
+        "artifact_section_sequence": _mismatch(
+            list(expected),
+            list(actual),
+        )
+    }
 
 
 def analyze_section_outline_structure(
@@ -1185,9 +1505,16 @@ def verify_pdf(
             int,
             Sequence[Sequence[Sequence[str | None]]],
         ] = {}
+        text_lines_by_page: dict[
+            int,
+            Sequence[Mapping[str, object]],
+        ] = {}
         for page_number, page in enumerate(opened_pdf.pages, start=1):
             full_text = page.extract_text() or ""
             page_texts_list.append(full_text)
+            text_lines_by_page[page_number] = tuple(
+                page.extract_text_lines(return_chars=True)
+            )
             page_sizes_list.append((page.width, page.height))
             midpoint = float(page.width) / 2
             page_text_variants[page_number] = (
@@ -1424,6 +1751,15 @@ def verify_pdf(
             outline_entries,
         )
     )
+    structural_mismatches.update(
+        analyze_artifact_section_structure(
+            section_titles,
+            extract_artifact_section_titles(
+                text_lines_by_page,
+                fonts,
+            ),
+        )
+    )
 
     question_label_issues = {
         qid: missing
@@ -1497,6 +1833,13 @@ def verify_pdf(
         source_table_section_titles(source_text),
         section_pages,
         physical_tables_by_page,
+        questions=bank.questions,
+        question_pages=question_pages,
+        printable_form_page=_heading_pages(
+            page_texts,
+            ("面试记录模板",),
+        ).get("面试记录模板"),
+        require_complete_layout=True,
     )
     maintenance_rules = tuple(
         item

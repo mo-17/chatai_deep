@@ -16,6 +16,7 @@ import pdfplumber
 from pypdf import PdfReader, PdfWriter
 from pypdf.generic import NameObject
 from reportlab.lib.pagesizes import A4
+from reportlab.lib.units import mm
 from reportlab.pdfgen.canvas import Canvas
 
 import interview_question_bank.build as build_module
@@ -1064,6 +1065,53 @@ class VerificationLogicTest(unittest.TestCase):
                 "11. 面试官综合评估表": 95,
             },
             physical_tables,
+            questions=self.bank.questions,
+        )
+
+    def _complete_formal_table_fixture(self):
+        page_texts: list[str] = []
+        physical: dict[int, list[list[list[str | None]]]] = {}
+        with pdfplumber.open(FRESH_PDF) as opened_pdf:
+            for page_number, page in enumerate(opened_pdf.pages, start=1):
+                page_texts.append(page.extract_text() or "")
+                tables = page.extract_tables()
+                if tables:
+                    physical[page_number] = tables
+        section_pages = verify_module._section_pages(
+            tuple(page_texts),
+            self.bank,
+        )
+        question_pages: dict[str, int] = {}
+        for page_number, text in enumerate(page_texts, start=1):
+            for match in verify_module.QUESTION_HEADING_RE.finditer(text):
+                question_pages.setdefault(match.group(1), page_number)
+        printable_form_page = verify_module._heading_pages(
+            tuple(page_texts),
+            ("面试记录模板",),
+        )["面试记录模板"]
+        return (
+            physical,
+            section_pages,
+            question_pages,
+            printable_form_page,
+        )
+
+    def _complete_formal_table_issues(
+        self,
+        physical,
+        section_pages,
+        question_pages,
+        printable_form_page,
+    ):
+        return analyze_table_contracts(
+            self.bank.tables,
+            source_table_section_titles(self.source_text),
+            section_pages,
+            physical,
+            questions=self.bank.questions,
+            question_pages=question_pages,
+            printable_form_page=printable_form_page,
+            require_complete_layout=True,
         )
 
     def test_missing_table_row_is_reported(self) -> None:
@@ -1098,6 +1146,156 @@ class VerificationLogicTest(unittest.TestCase):
             self._table_issues(physical)["unexpected_physical_tables"],
         )
 
+    def test_known_field_record_form_and_decorative_tables_are_accepted(
+        self,
+    ) -> None:
+        physical, section_pages, question_pages, printable_form_page = (
+            self._complete_formal_table_fixture()
+        )
+
+        self.assertEqual(
+            {},
+            self._complete_formal_table_issues(
+                physical,
+                section_pages,
+                question_pages,
+                printable_form_page,
+            ),
+        )
+
+    def test_missing_known_layout_table_is_reported(self) -> None:
+        physical, section_pages, question_pages, printable_form_page = (
+            self._complete_formal_table_fixture()
+        )
+        del physical[8][0]
+
+        issues = self._complete_formal_table_issues(
+            physical,
+            section_pages,
+            question_pages,
+            printable_form_page,
+        )
+
+        self.assertIn("missing_layout_tables", issues)
+        self.assertTrue(
+            any("问题" in issue for issue in issues["missing_layout_tables"])
+        )
+
+    def test_relocated_known_layout_table_is_reported(self) -> None:
+        physical, section_pages, question_pages, printable_form_page = (
+            self._complete_formal_table_fixture()
+        )
+        relocated = physical[8].pop(0)
+        physical[4] = [relocated]
+
+        issues = self._complete_formal_table_issues(
+            physical,
+            section_pages,
+            question_pages,
+            printable_form_page,
+        )
+
+        self.assertEqual(
+            ("page 4 table 1",),
+            issues["unexpected_physical_tables"],
+        )
+        self.assertTrue(
+            any("问题" in issue for issue in issues["missing_layout_tables"])
+        )
+
+    def test_relocated_interviewer_record_table_is_reported(self) -> None:
+        physical, section_pages, question_pages, printable_form_page = (
+            self._complete_formal_table_fixture()
+        )
+        record_index = next(
+            index
+            for index, table in enumerate(physical[8])
+            if len(table) == 4
+            and max((len(row) for row in table), default=0) == 2
+        )
+        relocated = physical[8].pop(record_index)
+        physical[4] = [relocated]
+
+        issues = self._complete_formal_table_issues(
+            physical,
+            section_pages,
+            question_pages,
+            printable_form_page,
+        )
+
+        self.assertEqual(
+            ("page 4 table 1",),
+            issues["unexpected_physical_tables"],
+        )
+        self.assertTrue(
+            any(
+                "面试官记录" in issue
+                for issue in issues["missing_layout_tables"]
+            )
+        )
+
+    def test_relocated_printable_form_table_is_reported(self) -> None:
+        physical, section_pages, question_pages, printable_form_page = (
+            self._complete_formal_table_fixture()
+        )
+        physical[4] = [physical[96].pop()]
+
+        issues = self._complete_formal_table_issues(
+            physical,
+            section_pages,
+            question_pages,
+            printable_form_page,
+        )
+
+        self.assertEqual(
+            ("page 4 table 1",),
+            issues["unexpected_physical_tables"],
+        )
+        self.assertTrue(
+            any(
+                "候选人:" in issue
+                for issue in issues["missing_layout_tables"]
+            )
+        )
+
+    def test_missing_decorative_table_is_reported(self) -> None:
+        physical, section_pages, question_pages, printable_form_page = (
+            self._complete_formal_table_fixture()
+        )
+        physical[1].clear()
+
+        issues = self._complete_formal_table_issues(
+            physical,
+            section_pages,
+            question_pages,
+            printable_form_page,
+        )
+
+        self.assertIn(
+            "page 1 cover x1",
+            issues["missing_layout_tables"],
+        )
+
+    def test_duplicate_decorative_table_on_another_page_is_reported(
+        self,
+    ) -> None:
+        physical, section_pages, question_pages, printable_form_page = (
+            self._complete_formal_table_fixture()
+        )
+        physical[2] = [physical[1][0]]
+
+        issues = self._complete_formal_table_issues(
+            physical,
+            section_pages,
+            question_pages,
+            printable_form_page,
+        )
+
+        self.assertEqual(
+            ("page 2 table 1",),
+            issues["unexpected_physical_tables"],
+        )
+
     def test_section_outline_rejects_an_extra_artifact_section(self) -> None:
         analyzer = getattr(verify_module, "analyze_section_outline_structure", None)
         self.assertTrue(callable(analyzer))
@@ -1129,6 +1327,44 @@ class VerificationLogicTest(unittest.TestCase):
         )
 
         self.assertEqual(list(swapped), issues["section_outline_sequence"]["actual"])
+
+    def test_artifact_section_extraction_ignores_small_numbered_body_lines(
+        self,
+    ) -> None:
+        extractor = getattr(verify_module, "extract_artifact_section_titles", None)
+        self.assertTrue(callable(extractor))
+        fonts = register_fonts()
+        text_lines = {
+            1: (
+                {
+                    "text": "13. ordinary numbered answer",
+                    "x0": 20 * mm,
+                    "top": 53.8,
+                    "chars": (
+                        {
+                            "fontname": "AAAAAA+STHeitiSC-Light-1",
+                            "size": 10.0,
+                        },
+                    ),
+                },
+                {
+                    "text": "1. 使用方式",
+                    "x0": 20 * mm,
+                    "top": 53.8,
+                    "chars": (
+                        {
+                            "fontname": f"AAAAAA+{fonts.heading_postscript_name}",
+                            "size": 20.0,
+                        },
+                    ),
+                },
+            ),
+        }
+
+        self.assertEqual(
+            ("1. 使用方式",),
+            extractor(text_lines, fonts),
+        )
 
     def test_receipt_hash_mismatch_fails_verification(self) -> None:
         with TemporaryDirectory() as directory:
@@ -1166,6 +1402,195 @@ class FormalArtifactVerificationTest(unittest.TestCase):
         receipt["sha256"] = sha256(pdf.read_bytes()).hexdigest()
         destination.write_text(json.dumps(receipt, ensure_ascii=False), encoding="utf-8")
         return destination
+
+    @staticmethod
+    def _write_heading_overlay(
+        destination: Path,
+        *,
+        page_index: int,
+        heading: str,
+        x: float = 20 * mm,
+        baseline_from_top: float = 25 * mm,
+    ) -> None:
+        packet = BytesIO()
+        canvas = Canvas(packet, pagesize=A4)
+        canvas.setFont(register_fonts().heading, 20)
+        canvas.drawString(x, A4[1] - baseline_from_top, heading)
+        canvas.save()
+        packet.seek(0)
+        writer = PdfWriter(clone_from=FRESH_PDF)
+        writer.pages[page_index].merge_page(PdfReader(packet).pages[0])
+        writer.write(destination)
+        os.chmod(destination, 0o644)
+
+    @staticmethod
+    def _write_table_overlay(
+        destination: Path,
+        *,
+        page_index: int,
+    ) -> None:
+        packet = BytesIO()
+        canvas = Canvas(packet, pagesize=A4)
+        left = 105 * mm
+        bottom = 115 * mm
+        cell_width = 28 * mm
+        cell_height = 11 * mm
+        for column in range(3):
+            x = left + column * cell_width
+            canvas.line(x, bottom, x, bottom + 2 * cell_height)
+        for row in range(3):
+            y = bottom + row * cell_height
+            canvas.line(left, y, left + 2 * cell_width, y)
+        canvas.setFont("Helvetica", 8)
+        for row, values in enumerate((("alpha", "beta"), ("gamma", "delta"))):
+            for column, value in enumerate(values):
+                canvas.drawString(
+                    left + column * cell_width + 2 * mm,
+                    bottom + (1 - row) * cell_height + 3 * mm,
+                    value,
+                )
+        canvas.save()
+        packet.seek(0)
+        writer = PdfWriter(clone_from=FRESH_PDF)
+        writer.pages[page_index].merge_page(PdfReader(packet).pages[0])
+        writer.write(destination)
+        os.chmod(destination, 0o644)
+
+    def test_unbookmarked_section_like_heading_fails_artifact_sequence(
+        self,
+    ) -> None:
+        with TemporaryDirectory() as directory:
+            expected = tuple(
+                section.title
+                for section in parse_question_bank(
+                    SOURCE.read_text(encoding="utf-8")
+                ).level2_sections
+            )
+            tampered_pdf = Path(directory) / "unbookmarked-extra-section.pdf"
+            self._write_heading_overlay(
+                tampered_pdf,
+                page_index=0,
+                heading="13. EXTRA ARTIFACT SECTION",
+            )
+            receipt = self._write_matching_receipt(
+                tampered_pdf,
+                Path(directory) / "receipt.json",
+            )
+
+            report = verify_pdf(SOURCE, tampered_pdf, receipt_path=receipt)
+
+        self.assertEqual(
+            {
+                "expected": list(expected),
+                "actual": ["13. EXTRA ARTIFACT SECTION", *expected],
+            },
+            report.structural_mismatches.get("artifact_section_sequence"),
+        )
+        self.assertFalse(report.passed)
+        self.assertEqual({}, report.receipt_mismatches)
+
+    def test_unknown_section_heading_is_not_hidden_by_number_or_geometry(
+        self,
+    ) -> None:
+        expected = tuple(
+            section.title
+            for section in parse_question_bank(
+                SOURCE.read_text(encoding="utf-8")
+            ).level2_sections
+        )
+        cases = (
+            ("mid-page", "13. MID PAGE EXTRA", 20 * mm, 120 * mm),
+            ("offset-x", "14. OFFSET EXTRA", 35 * mm, 25 * mm),
+            ("three-digit", "100. EXTRA SECTION", 20 * mm, 25 * mm),
+        )
+        for case_name, heading, x, baseline_from_top in cases:
+            with self.subTest(case=case_name), TemporaryDirectory() as directory:
+                tampered_pdf = Path(directory) / f"{case_name}.pdf"
+                self._write_heading_overlay(
+                    tampered_pdf,
+                    page_index=0,
+                    heading=heading,
+                    x=x,
+                    baseline_from_top=baseline_from_top,
+                )
+                receipt = self._write_matching_receipt(
+                    tampered_pdf,
+                    Path(directory) / "receipt.json",
+                )
+
+                report = verify_pdf(
+                    SOURCE,
+                    tampered_pdf,
+                    receipt_path=receipt,
+                )
+
+            self.assertEqual(
+                {
+                    "expected": list(expected),
+                    "actual": [heading, *expected],
+                },
+                report.structural_mismatches.get(
+                    "artifact_section_sequence"
+                ),
+            )
+            self.assertFalse(report.passed)
+            self.assertEqual({}, report.receipt_mismatches)
+
+    def test_extra_physical_table_on_non_source_page_fails_contract(
+        self,
+    ) -> None:
+        with TemporaryDirectory() as directory:
+            tampered_pdf = Path(directory) / "off-page-extra-table.pdf"
+            self._write_table_overlay(
+                tampered_pdf,
+                page_index=3,
+            )
+            receipt = self._write_matching_receipt(
+                tampered_pdf,
+                Path(directory) / "receipt.json",
+            )
+
+            report = verify_pdf(SOURCE, tampered_pdf, receipt_path=receipt)
+
+        self.assertEqual(
+            ("page 4 table 1",),
+            report.table_contract_issues.get("unexpected_physical_tables"),
+        )
+        self.assertFalse(report.passed)
+        self.assertEqual({}, report.receipt_mismatches)
+
+    def test_duplicate_unbookmarked_section_heading_fails_artifact_sequence(
+        self,
+    ) -> None:
+        with TemporaryDirectory() as directory:
+            expected = tuple(
+                section.title
+                for section in parse_question_bank(
+                    SOURCE.read_text(encoding="utf-8")
+                ).level2_sections
+            )
+            tampered_pdf = Path(directory) / "duplicate-section-heading.pdf"
+            self._write_heading_overlay(
+                tampered_pdf,
+                page_index=0,
+                heading=expected[0],
+            )
+            receipt = self._write_matching_receipt(
+                tampered_pdf,
+                Path(directory) / "receipt.json",
+            )
+
+            report = verify_pdf(SOURCE, tampered_pdf, receipt_path=receipt)
+
+        self.assertEqual(
+            {
+                "expected": list(expected),
+                "actual": [expected[0], expected[0], *expected[1:]],
+            },
+            report.structural_mismatches.get("artifact_section_sequence"),
+        )
+        self.assertFalse(report.passed)
+        self.assertEqual({}, report.receipt_mismatches)
 
     def test_wrong_but_valid_outline_targets_fail_report(self) -> None:
         with TemporaryDirectory() as directory:
@@ -1260,6 +1685,7 @@ class FormalArtifactVerificationTest(unittest.TestCase):
         self.assertEqual({}, report.toc_link_issues)
         self.assertEqual((), report.maintenance_rule_issues)
         self.assertEqual({}, report.table_contract_issues)
+        self.assertEqual({}, report.structural_mismatches)
         self.assertEqual((), report.missing_record_fields)
         self.assertEqual((), report.forbidden_tokens)
 
