@@ -266,39 +266,27 @@ def build_styles(fonts: FontSet) -> StyleSet:
         fontSize=10.2,
         leading=16,
         textColor=NAVY,
-        backColor=INFO_FILL,
-        borderColor=BLUE,
-        borderWidth=0.8,
-        borderPadding=(7, 8, 7, 8),
-        spaceAfter=7,
+        spaceAfter=0,
     )
     preface = style(
         "Preface",
         fontSize=8.5,
         leading=13,
         textColor=MUTED,
-        backColor=INFO_FILL,
-        borderColor=BLUE,
-        borderWidth=0.6,
-        borderPadding=(5, 7, 5, 7),
-        spaceAfter=5,
+        spaceAfter=0,
     )
     field_label = style(
         "FieldLabel",
         fontSize=9.4,
         leading=13,
         textColor=NAVY,
-        spaceBefore=5,
-        spaceAfter=2,
+        spaceBefore=0,
+        spaceAfter=0,
         keepWithNext=False,
     )
     field_body = style(
         "FieldBody",
-        backColor=SOFT,
-        borderColor=LINE,
-        borderWidth=0.45,
-        borderPadding=(6, 7, 6, 7),
-        spaceAfter=4,
+        spaceAfter=0,
     )
     risk_label = ParagraphStyle(
         "RiskLabel",
@@ -309,8 +297,6 @@ def build_styles(fonts: FontSet) -> StyleSet:
         "RiskBody",
         parent=field_body,
         textColor=RISK,
-        backColor=RISK_FILL,
-        borderColor=RISK,
     )
     scoring_label = ParagraphStyle(
         "ScoringLabel",
@@ -321,8 +307,6 @@ def build_styles(fonts: FontSet) -> StyleSet:
         "ScoringBody",
         parent=field_body,
         textColor=SCORE,
-        backColor=None,
-        borderColor=SCORE,
     )
     notes = style(
         "InterviewerNotes",

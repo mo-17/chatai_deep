@@ -25,6 +25,7 @@ from interview_question_bank.components import (
     question_flowables,
     table_flowable,
 )
+import interview_question_bank.components as component_module
 from interview_question_bank.document import (
     TITLE,
     HeadingFlowable,
@@ -286,8 +287,21 @@ class DocumentTest(unittest.TestCase):
             with self.subTest(label=label):
                 self.assertGreaterEqual(
                     float(panel["top"]),
-                    float(labels[label]["bottom"]) + 2,
+                    float(labels[label]["bottom"]) + 3,
                 )
+
+    def test_control_page_routes_all_fields_through_external_blocks(self) -> None:
+        block_type = getattr(component_module, "ExternalFieldBlock", None)
+        self.assertIsNotNone(block_type)
+        blocks = [
+            flowable
+            for flowable in build_story(self.bank, self.styles)
+            if isinstance(flowable, block_type)
+        ]
+        self.assertEqual(
+            ["文档性质", "适用范围", "使用要求", "保密要求"],
+            [block.label for block in blocks],
+        )
 
     def test_task3_assessment_tables_and_record_fit_170mm_frame(self) -> None:
         self.assertIn("available_width", inspect.signature(table_flowable).parameters)

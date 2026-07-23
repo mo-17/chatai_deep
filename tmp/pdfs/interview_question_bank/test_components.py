@@ -13,10 +13,15 @@ from reportlab.lib.pagesizes import A4
 from reportlab.lib.units import mm
 from reportlab.pdfbase import pdfmetrics
 from reportlab.pdfgen.canvas import Canvas
-from reportlab.platypus import KeepTogether, Paragraph, SimpleDocTemplate, Spacer, Table
+from reportlab.platypus import (
+    KeepTogether,
+    Paragraph,
+    SimpleDocTemplate,
+    Spacer,
+    Table,
+)
 
 from interview_question_bank.components import (
-    FIELD_START_HEIGHT,
     interview_record_flowable,
     question_flowables,
     table_flowable,
@@ -64,12 +69,22 @@ def sample_question(*, long_answer: bool = False) -> Question:
 
 def nested_flowables(flowable):
     yield flowable
+    if isinstance(flowable, Table):
+        for row in flowable._cellvalues:
+            for cell in row:
+                if isinstance(cell, (list, tuple)):
+                    for child in cell:
+                        yield from nested_flowables(child)
+                elif not isinstance(cell, str):
+                    yield from nested_flowables(cell)
     for attribute in ("_content", "_flowables"):
         for child in getattr(flowable, attribute, ()):
             yield from nested_flowables(child)
 
 
 def flowable_text(flowable) -> str:
+    if isinstance(flowable, (list, tuple)):
+        return "\n".join(flowable_text(child) for child in flowable)
     if isinstance(flowable, Paragraph):
         return flowable.getPlainText()
     if isinstance(flowable, Table):
@@ -87,6 +102,20 @@ def flowable_text(flowable) -> str:
 
 def wrap_flowable(flowable) -> tuple[float, float]:
     return flowable.wrapOn(Canvas(BytesIO(), pagesize=A4), BODY_WIDTH, A4[1])
+
+
+def build_component_pdf(flowables) -> bytes:
+    target = BytesIO()
+    doc = SimpleDocTemplate(
+        target,
+        pagesize=A4,
+        leftMargin=20 * mm,
+        rightMargin=20 * mm,
+        topMargin=18 * mm,
+        bottomMargin=17 * mm,
+    )
+    doc.build(flowables)
+    return target.getvalue()
 
 
 class BlueprintStyleContractTest(unittest.TestCase):
@@ -190,7 +219,7 @@ class ComponentTest(unittest.TestCase):
             self.assertIn(label, text)
         self.assertIsInstance(flows[0], KeepTogether)
         self.assertIn("C1", flowable_text(flows[0]))
-        self.assertIn("如何把", flowable_text(flows[0]))
+        self.assertIn("如何把", text)
 
     def test_question_panel_has_structured_evidence_risk_and_score_choices(self) -> None:
         flows = question_flowables(sample_question(), self.styles)
@@ -273,35 +302,40 @@ class ComponentTest(unittest.TestCase):
         self.assertLessEqual(width, BODY_WIDTH + 0.01)
         self.assertGreaterEqual(height, 70 * mm)
 
-    def test_risk_and_scoring_panels_use_distinct_backgrounds(self) -> None:
-        paragraphs = [
+    def test_risk_and_scoring_panels_use_distinct_container_backgrounds(self) -> None:
+        panel_type = getattr(component_module, "FieldPanel", None)
+        self.assertIsNotNone(panel_type)
+        panels = [
             item
             for flow in question_flowables(sample_question(), self.styles)
             for item in nested_flowables(flow)
-            if isinstance(item, Paragraph)
+            if isinstance(item, panel_type)
         ]
-        risk = next(p for p in paragraphs if "只讲 happy path" in p.getPlainText())
-        scoring = next(p for p in paragraphs if "1 分" in p.getPlainText())
-        self.assertEqual(HexColor("#FEF3F2"), risk.style.backColor)
-        self.assertIsNone(scoring.style.backColor)
-        self.assertNotEqual(risk.style.backColor, scoring.style.backColor)
+        risk = next(panel for panel in panels if panel.label == "风险信号")
+        scoring = next(panel for panel in panels if panel.label == "评分锚点")
+        self.assertIsNone(risk.body_style.backColor)
+        self.assertIsNone(scoring.body_style.backColor)
+        self.assertEqual(self.styles.risk_fill, risk.fill_color)
+        self.assertEqual(self.styles.scoring_fill, scoring.fill_color)
+        self.assertNotEqual(risk.fill_color, scoring.fill_color)
 
-    def test_blind_material_uses_a_blue_information_panel(self) -> None:
-        paragraphs = [
-            item
+    def test_blind_material_uses_a_blue_information_container(self) -> None:
+        panel_type = getattr(component_module, "FieldPanel", None)
+        self.assertIsNotNone(panel_type)
+        panels = [
+            flow
             for flow in question_flowables(sample_question(), self.styles)
-            for item in nested_flowables(flow)
-            if isinstance(item, Paragraph)
+            if isinstance(flow, panel_type)
         ]
         preface = next(
-            paragraph
-            for paragraph in paragraphs
-            if paragraph.style.name == "Preface"
+            panel
+            for panel in panels
+            if panel.label == "题前材料（盲面提供）"
         )
 
-        self.assertEqual(HexColor("#EEF4FF"), preface.style.backColor)
-        self.assertEqual(HexColor("#2F6FED"), preface.style.borderColor)
-        self.assertGreater(preface.style.borderWidth, 0)
+        self.assertIsNone(preface.body_style.backColor)
+        self.assertEqual(self.styles.info_fill, preface.fill_color)
+        self.assertEqual(self.styles.accent, preface.border_color)
 
     def test_question_flowables_wrap_within_a4_body_width(self) -> None:
         for flow in question_flowables(sample_question(), self.styles):
@@ -352,7 +386,18 @@ class ComponentTest(unittest.TestCase):
                 bottomMargin=18 * mm,
             )
             field_flows = question_flowables(sample_question(), self.styles)[1:]
-            doc.build([Spacer(1, doc.height - FIELD_START_HEIGHT + 1), *field_flows])
+            panel_type = getattr(component_module, "FieldPanel")
+            first_panel = next(
+                flowable
+                for flowable in field_flows
+                if isinstance(flowable, panel_type)
+            )
+            doc.build(
+                [
+                    Spacer(1, doc.height - first_panel.minimum_start_height + 1),
+                    *field_flows,
+                ]
+            )
             pages = PdfReader(target).pages
             self.assertGreater(len(pages), 1)
             self.assertNotIn("考察点", pages[0].extract_text() or "")
@@ -395,6 +440,143 @@ class ComponentTest(unittest.TestCase):
         self.assertIn("________________", text)
         width, _ = wrap_flowable(rendered)
         self.assertLessEqual(width, BODY_WIDTH + 0.01)
+
+
+class FieldPanelGeometryTest(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.fonts = register_fonts()
+        cls.styles = build_styles(cls.fonts)
+
+    def _component(self, name: str):
+        value = getattr(component_module, name, None)
+        self.assertIsNotNone(value, f"{name} must be implemented")
+        return value
+
+    def test_label_and_body_share_boundary_without_overlap(self) -> None:
+        make_field_panel = self._component("make_field_panel")
+        panel = make_field_panel(
+            "答案要点",
+            ["第一行答案。", "第二行答案。"],
+            self.styles,
+            BODY_WIDTH,
+        )
+        panel.wrap(BODY_WIDTH, A4[1])
+        self.assertEqual(panel.metrics.boundary_overlap, 0)
+        self.assertEqual(panel.metrics.label_bottom, panel.metrics.body_top)
+
+    def test_adjacent_field_gap_is_at_least_four_points(self) -> None:
+        field_panel_flowables = self._component("field_panel_flowables")
+        flowables = field_panel_flowables(
+            "考察点",
+            ["系统设计与证据链。"],
+            self.styles,
+            BODY_WIDTH,
+        )
+        self.assertIsInstance(flowables[-1], Spacer)
+        self.assertGreaterEqual(flowables[-1].height, 4)
+
+    def test_keep_block_includes_label_and_two_body_lines(self) -> None:
+        make_field_panel = self._component("make_field_panel")
+        panel = make_field_panel(
+            "答案要点",
+            ["第一行。<br/>第二行。<br/>第三行。"],
+            self.styles,
+            BODY_WIDTH,
+        )
+        panel.wrap(BODY_WIDTH, A4[1])
+        expected_floor = (
+            panel.metrics.label_height
+            + 2 * self.styles.field_body.leading
+            + panel.body_vertical_padding
+        )
+        self.assertGreaterEqual(panel.minimum_start_height, expected_floor)
+
+    def test_all_question_fields_use_split_safe_panels(self) -> None:
+        panel_type = self._component("FieldPanel")
+        flows = question_flowables(sample_question(), self.styles)
+        panels = [flow for flow in flows if isinstance(flow, panel_type)]
+        labels = [panel.label for panel in panels]
+        self.assertEqual(
+            [
+                "题前材料（盲面提供）",
+                "问题",
+                "考察点",
+                "答案要点",
+                "评分锚点",
+            ],
+            labels,
+        )
+        pair = next(
+            flow
+            for flow in flows
+            if getattr(flow, "_compact_pair", False)
+        )
+        self.assertEqual(
+            ["追问", "风险信号"],
+            [pair.left_panel.label, pair.right_panel.label],
+        )
+
+    def test_short_followup_and_risk_have_real_eight_point_gap(self) -> None:
+        compact_pair_flowables = self._component("compact_pair_flowables")
+        flowables = compact_pair_flowables(
+            ("追问", ["请给出验证证据。"]),
+            ("风险信号", ["只给结论，不给证据。"]),
+            self.styles,
+            BODY_WIDTH,
+        )
+        pair = flowables[1]
+        self.assertTrue(getattr(pair, "_compact_pair", False))
+        pair.wrap(BODY_WIDTH, A4[1])
+        column_width = (BODY_WIDTH - 8) / 2
+        self.assertEqual(3, len(pair._colWidths))
+        self.assertAlmostEqual(column_width, pair._colWidths[0])
+        self.assertAlmostEqual(8, pair._colWidths[1])
+        self.assertAlmostEqual(column_width, pair._colWidths[2])
+
+    def test_long_compact_candidate_falls_back_to_full_width_stack(self) -> None:
+        compact_pair_flowables = self._component("compact_pair_flowables")
+        long_risk = "风险描述。" * 180
+        flowables = compact_pair_flowables(
+            ("追问", ["请给出验证证据。"]),
+            ("风险信号", [long_risk]),
+            self.styles,
+            BODY_WIDTH,
+        )
+        self.assertFalse(
+            any(getattr(flowable, "_compact_pair", False) for flowable in flowables)
+        )
+
+    def test_external_field_has_three_point_gaps_in_both_directions(self) -> None:
+        block_type = self._component("ExternalFieldBlock")
+        block = block_type(
+            "文档性质",
+            "内部面试材料，仅用于高级岗位能力评估。",
+            self.styles.field_label,
+            self.styles.field_body,
+            self.styles.soft,
+            self.styles.line,
+            BODY_WIDTH,
+        )
+        block.wrap(BODY_WIDTH, A4[1])
+        self.assertGreaterEqual(block.metrics.label_to_panel_gap, 3)
+        self.assertGreaterEqual(block.metrics.panel_to_next_label_gap, 3)
+
+    def test_long_field_splits_without_losing_end_sentinel(self) -> None:
+        field_panel_flowables = self._component("field_panel_flowables")
+        long_answer = ("跨页答案内容。" * 900) + " LONG-ANSWER-END"
+        pdf_bytes = build_component_pdf(
+            field_panel_flowables(
+                "答案要点",
+                [long_answer],
+                self.styles,
+                BODY_WIDTH,
+            )
+        )
+        reader = PdfReader(BytesIO(pdf_bytes))
+        extracted = "\n".join(page.extract_text() or "" for page in reader.pages)
+        self.assertGreater(len(reader.pages), 1)
+        self.assertEqual(extracted.count("LONG-ANSWER-END"), 1)
 
 
 if __name__ == "__main__":
