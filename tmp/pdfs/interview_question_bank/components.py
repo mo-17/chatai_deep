@@ -777,7 +777,7 @@ def interview_record_flowable(
             )
         else:
             rows.append(list(_record_row(line, styles)))
-    label_width = min(36 * mm, available_width * 0.3)
+    label_width = min(42 * mm, available_width * 0.3)
     table = Table(
         rows,
         colWidths=[label_width, available_width - label_width],

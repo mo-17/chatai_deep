@@ -441,6 +441,23 @@ class ComponentTest(unittest.TestCase):
         width, _ = wrap_flowable(rendered)
         self.assertLessEqual(width, BODY_WIDTH + 0.01)
 
+    def test_printable_form_keeps_long_score_labels_on_one_line(self) -> None:
+        code = CodeBlock(
+            "text",
+            "题目平均分（0～4）：____\n换算分（平均分 × 25）：____",
+        )
+        rendered = interview_record_flowable(code, self.styles)
+        label_content_width = rendered._argW[0] - 14
+
+        for row in rendered._cellvalues:
+            label = row[0]
+            _, height = label.wrap(label_content_width, A4[1])
+            self.assertLessEqual(
+                height,
+                self.styles.form_label.leading,
+                label.getPlainText(),
+            )
+
 
 class FieldPanelGeometryTest(unittest.TestCase):
     @classmethod
