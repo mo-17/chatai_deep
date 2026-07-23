@@ -228,6 +228,98 @@ def locate_question_heading_pages(
     }
 
 
+def footer_safe_zone_geometry_issues(
+    page,
+    *,
+    total_pages: int,
+    tolerance: float = 0.5,
+) -> dict[str, list[dict]]:
+    """Return extractable or painted non-furniture objects below the Body frame."""
+    safe_zone_top = A4[1] - 17 * mm
+    footer_band_top = A4[1] - 10 * mm
+    expected_footer = normalized(
+        "面试官版 / 内部使用"
+        "2026-07-23"
+        f"第 {page.page_number} / {total_pages} 页"
+    )
+    words = page.extract_words()
+    footer_words = [
+        word
+        for word in words
+        if float(word["top"]) >= footer_band_top - tolerance
+    ]
+    if normalized(" ".join(word["text"] for word in footer_words)) != expected_footer:
+        footer_words = []
+
+    def inside_footer_word(item: dict) -> bool:
+        return any(
+            float(item["x0"]) >= float(word["x0"]) - tolerance
+            and float(item["x1"]) <= float(word["x1"]) + tolerance
+            and float(item["top"]) >= float(word["top"]) - tolerance
+            and float(item["bottom"]) <= float(word["bottom"]) + tolerance
+            for word in footer_words
+        )
+
+    unsafe_chars = [
+        char
+        for char in page.chars
+        if char["text"].strip()
+        and float(char["bottom"]) > safe_zone_top + tolerance
+        and not inside_footer_word(char)
+    ]
+    unsafe_words = [
+        word
+        for word in words
+        if float(word["bottom"]) > safe_zone_top + tolerance
+        and word not in footer_words
+    ]
+    unsafe_rects = [
+        rect
+        for rect in page.rects
+        if (rect.get("fill") or rect.get("stroke"))
+        and float(rect["bottom"]) > safe_zone_top + tolerance
+    ]
+
+    footer_rule_top = A4[1] - 12 * mm
+
+    def is_footer_rule(line: dict) -> bool:
+        return (
+            abs(float(line["x0"]) - 20 * mm) <= tolerance
+            and abs(float(line["x1"]) - (A4[0] - 20 * mm)) <= tolerance
+            and abs(float(line["top"]) - footer_rule_top) <= tolerance
+            and abs(float(line["bottom"]) - footer_rule_top) <= tolerance
+            and abs(float(line.get("linewidth") or 0) - 0.45) <= tolerance
+        )
+
+    unsafe_lines = [
+        line
+        for line in page.lines
+        if float(line["bottom"]) > safe_zone_top + tolerance
+        and not is_footer_rule(line)
+    ]
+    return {
+        "chars": unsafe_chars,
+        "words": unsafe_words,
+        "rects": unsafe_rects,
+        "lines": unsafe_lines,
+    }
+
+
+def build_unsafe_footer_geometry_pdf() -> bytes:
+    buffer = BytesIO()
+    canvas = Canvas(buffer, pagesize=A4)
+    safe_height = 17 * mm
+    canvas.setFont("Helvetica", 12)
+    canvas.drawString(24 * mm, safe_height, "BODY-CROSSES-SAFE-LINE")
+    canvas.setFillColorRGB(0.85, 0.88, 0.92)
+    canvas.setStrokeColorRGB(0.1, 0.2, 0.3)
+    canvas.rect(70 * mm, 14 * mm, 42 * mm, 6 * mm, stroke=1, fill=1)
+    canvas.line(120 * mm, 20 * mm, 160 * mm, 14 * mm)
+    canvas.showPage()
+    canvas.save()
+    return buffer.getvalue()
+
+
 class _RecordingCanvas:
     def __init__(self) -> None:
         self.rectangles: list[tuple[float, float, float, float]] = []
@@ -512,6 +604,10 @@ class QuestionPaginationContractTest(unittest.TestCase):
                 and (page.page_number != 1)
             ]
             for page in body_pages:
+                geometry_issues = footer_safe_zone_geometry_issues(
+                    page,
+                    total_pages=total_pages,
+                )
                 footer_text = page.crop(
                     (0, safe_zone_top, float(page.width), float(page.height))
                 ).extract_text() or ""
@@ -522,9 +618,34 @@ class QuestionPaginationContractTest(unittest.TestCase):
                 )
                 with self.subTest(page=page.page_number):
                     self.assertEqual(
+                        {"chars": [], "words": [], "rects": [], "lines": []},
+                        geometry_issues,
+                    )
+                    self.assertEqual(
                         normalized(expected_footer),
                         normalized(footer_text),
                     )
+
+    def test_geometry_audit_rejects_crossing_character_panel_and_line(self) -> None:
+        pdf_bytes = build_unsafe_footer_geometry_pdf()
+        safe_zone_top = A4[1] - 17 * mm
+        with pdfplumber.open(BytesIO(pdf_bytes)) as pdf:
+            issues = footer_safe_zone_geometry_issues(
+                pdf.pages[0],
+                total_pages=1,
+            )
+
+        self.assertTrue(issues["chars"], "crossing character was not detected")
+        self.assertTrue(issues["words"], "crossing word was not detected")
+        self.assertTrue(issues["rects"], "crossing panel was not detected")
+        self.assertTrue(issues["lines"], "crossing border line was not detected")
+        self.assertTrue(
+            any(
+                float(char["top"]) < safe_zone_top < float(char["bottom"])
+                for char in issues["chars"]
+            ),
+            "the negative fixture must include an explicitly crossing character",
+        )
 
 
 class DocumentTest(unittest.TestCase):
