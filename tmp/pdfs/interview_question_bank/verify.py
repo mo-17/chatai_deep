@@ -51,7 +51,9 @@ REQUIRED_RECORD_FIELDS = (
     "建议下一轮重点：",
 )
 QUESTION_ID_PATTERN = r"(?:C|FE|AI|BE|SEC|PM|QA|OPS)\d+"
-QUESTION_HEADING_RE = re.compile(rf"(?m)^({QUESTION_ID_PATTERN})\s*·\s+")
+QUESTION_HEADING_RE = re.compile(
+    rf"(?m)^({QUESTION_ID_PATTERN})\s*·\s+(?!CONTINUED(?:\s|$))"
+)
 QUESTION_OUTLINE_RE = re.compile(rf"^({QUESTION_ID_PATTERN})\.\s+")
 MARKDOWN_QUESTION_RE = re.compile(rf"^###\s+({QUESTION_ID_PATTERN})\.\s+", re.MULTILINE)
 PDF_SECTION_HEADING_RE = re.compile(r"(?m)^(?:[1-9]|1[0-2])\.\s+\S.*$")
@@ -66,6 +68,10 @@ FORBIDDEN_LITERAL_TOKENS = (
     "XXX",
     "&#8226;",
 )
+
+
+class VerificationError(RuntimeError):
+    """Raised by callers that require a passing release-verification report."""
 
 
 @dataclass(frozen=True)
@@ -118,6 +124,9 @@ class VerificationReport:
     near_blank_pages: tuple[int, ...]
     unexpected_near_blank_pages: tuple[int, ...]
     question_pages: Mapping[str, int]
+    file_mode: str
+    file_mode_issue: str | None
+    longest_answer_tail_issue: str | None
 
     @property
     def passed(self) -> bool:
@@ -151,6 +160,8 @@ class VerificationReport:
             self.forbidden_tokens,
             self.page_size_issues,
             self.unexpected_near_blank_pages,
+            self.file_mode_issue,
+            self.longest_answer_tail_issue,
         )
         return not any(issue_collections)
 
@@ -159,6 +170,13 @@ class VerificationReport:
         payload["passed"] = self.passed
         return payload
 
+    def require_passed(self) -> "VerificationReport":
+        if not self.passed:
+            raise VerificationError(
+                json.dumps(self.to_dict(), ensure_ascii=False, sort_keys=True)
+            )
+        return self
+
 
 def _file_sha256(path: Path) -> str:
     digest = sha256()
@@ -166,6 +184,42 @@ def _file_sha256(path: Path) -> str:
         for chunk in iter(lambda: handle.read(1024 * 1024), b""):
             digest.update(chunk)
     return digest.hexdigest()
+
+
+def normalize_for_match(value: str) -> str:
+    """Normalize compatibility forms and ignore only whitespace."""
+    return re.sub(r"\s+", "", unicodedata.normalize("NFKC", value))
+
+
+def last_normalized_sentence(value: str) -> str:
+    sentences = [
+        part.strip()
+        for part in re.split(r"(?<=[。！？.!?])", value)
+        if part.strip()
+    ]
+    if not sentences:
+        return normalize_for_match(value)
+    return normalize_for_match(sentences[-1])
+
+
+def _question_field_values(question: Question) -> Iterable[str]:
+    yield question.title
+    yield question.prompt
+    yield from question.preface
+    for values in question.answer_fields.values():
+        yield from values
+
+
+def source_last_sentence(question_bank) -> str:
+    """Return the last sentence of the longest normalized production field."""
+    values = (
+        value
+        for question in question_bank.questions
+        for value in _question_field_values(question)
+        if value.strip()
+    )
+    longest = max(values, key=lambda value: len(normalize_for_match(value)))
+    return last_normalized_sentence(printable_inline_text(longest))
 
 
 def _normalized(text: str) -> str:
@@ -188,6 +242,8 @@ def find_forbidden_tokens(text: str) -> tuple[str, ...]:
     """Return leaked markup, entities and unfinished-work placeholders."""
     patterns = (
         re.compile(r"</?\s*(?:details|summary)\b[^>]*>", re.IGNORECASE),
+        re.compile(r"file://", re.IGNORECASE),
+        re.compile(r"(?<![\w/])\.\./"),
         re.compile(r"\b(?:TODO|TBD|FIXME|XXX)\b", re.IGNORECASE),
         re.compile(r"&(?:#[xX][0-9A-Fa-f]+|#\d+|[A-Za-z][A-Za-z0-9]+);"),
         re.compile(r"\{\{[^{}\n]+\}\}"),
@@ -243,27 +299,36 @@ def analyze_question_fields(
         question_id = expected.question_id if isinstance(expected, Question) else expected
         block = blocks.get(question_id, "")
         expected_labels = expectations.get(question_id, REQUIRED_QUESTION_LABELS)
-        normalized_lines = tuple(_normalized(line) for line in block.splitlines())
         invalid_counts = tuple(
             label
             for label in expected_labels
-            if sum(
-                line.startswith(_normalized(label))
-                for line in normalized_lines
-            )
-            != 1
+            if len(_exact_label_positions(block, label)) != 1
         )
         issues[question_id] = invalid_counts
     return issues
 
 
-def _exact_label_indices(block: str, label: str) -> tuple[int, ...]:
+def _exact_label_positions(block: str, label: str) -> tuple[tuple[int, int], ...]:
     expected = _normalized(label)
-    return tuple(
-        index
-        for index, line in enumerate(block.splitlines())
-        if _normalized(line) == expected
-    )
+    structured_pair = tuple(_normalized(item) for item in ("追问", "风险信号"))
+    combined_pair = "".join(structured_pair)
+    positions: list[tuple[int, int]] = []
+    for index, line in enumerate(block.splitlines()):
+        normalized_line = _normalized(line)
+        if normalized_line == expected:
+            positions.append((index, 0))
+        elif label in ("追问", "风险信号") and normalized_line == combined_pair:
+            positions.append(
+                (
+                    index,
+                    0 if expected == structured_pair[0] else len(structured_pair[0]),
+                )
+            )
+    return tuple(positions)
+
+
+def _exact_label_indices(block: str, label: str) -> tuple[int, ...]:
+    return tuple(index for index, _ in _exact_label_positions(block, label))
 
 
 def _record_label_indices(block: str, label: str) -> tuple[int, ...]:
@@ -338,16 +403,16 @@ def analyze_question_order(
     for question in questions:
         block = blocks.get(question.question_id, "")
         labels = _desired_question_labels(question)
-        positions: list[tuple[str, int]] = []
+        positions: list[tuple[str, tuple[int, int]]] = []
         question_issues: list[str] = []
         for label in labels:
-            indices = _exact_label_indices(block, label)
-            if len(indices) != 1:
+            label_positions = _exact_label_positions(block, label)
+            if len(label_positions) != 1:
                 question_issues.append(
-                    f"{label} order unavailable: expected one label, found {len(indices)}"
+                    f"{label} order unavailable: expected one label, found {len(label_positions)}"
                 )
             else:
-                positions.append((label, indices[0]))
+                positions.append((label, label_positions[0]))
         for (left_label, left), (right_label, right) in zip(
             positions,
             positions[1:],
@@ -412,26 +477,27 @@ def analyze_page_furniture(
                 _normalized(token) in _normalized(header + "\n" + footer)
                 for token in (
                     "面试官版 / 内部使用",
-                    "内容快照 2026-07-23",
                     f"第 {page_number} / {total_pages} 页",
                 )
             ):
-                page_issues.append("cover contains ordinary furniture")
+                page_issues.append("full-page template contains Body furniture")
         else:
             expected_left, expected_right = expected
-            if _normalized(expected_left) not in _normalized(header):
+            expected_header = _normalized(expected_left + expected_right)
+            if _normalized(header) != expected_header:
                 page_issues.append(f"header left mismatch: {expected_left}")
-            if _normalized(expected_right) not in _normalized(header):
                 page_issues.append(f"header right mismatch: {expected_right}")
             footer_contract = (
                 "面试官版 / 内部使用",
-                "内容快照 2026-07-23",
+                "2026-07-23",
                 f"第 {page_number} / {total_pages} 页",
             )
-            footer_names = ("footer left", "内容快照", "footer page")
-            for name, expected_footer in zip(footer_names, footer_contract):
-                if _normalized(expected_footer) not in _normalized(footer):
-                    page_issues.append(f"{name} mismatch: {expected_footer}")
+            expected_footer = _normalized("".join(footer_contract))
+            if _normalized(footer) != expected_footer:
+                page_issues.append(
+                    "footer exact mismatch: "
+                    + " | ".join(footer_contract)
+                )
         if page_issues:
             issues[page_number] = tuple(page_issues)
     return issues
@@ -468,9 +534,20 @@ def _expected_page_headers(
             default=len(page_texts) + 1,
         )
         for page_number in range(start, min(next_question, next_section)):
-            question_context[page_number] = question_id
+            question_context[page_number] = (
+                question_id
+                if page_number == start
+                else f"{question_id} · CONTINUED"
+            )
 
     for page_number in range(2, len(page_texts) + 1):
+        page_text = page_texts[page_number - 1]
+        if (
+            _normalized("CAPABILITY BLUEPRINT / SECTION") in _normalized(page_text)
+            and _normalized("UNIFIED SCORE · 0—4") in _normalized(page_text)
+        ):
+            expected.append(None)
+            continue
         if page_number == 2:
             section = "文档控制"
         elif any(
@@ -528,21 +605,37 @@ def analyze_divider_contracts(
             if not expected or _normalized(expected) not in _normalized(text):
                 divider_issues.append(f"{name} mismatch: {expected}")
         if page_rects is not None:
-            strong = any(
-                float(rect.get("width", 0)) >= 50 * mm
-                and float(rect.get("height", 0)) >= 30 * mm
-                and tuple(
-                    round(float(value), 3)
-                    for value in (rect.get("non_stroking_color") or ())
+            rects = page_rects.get(page_number, ())
+            full_page_navy = any(
+                float(rect.get("width", 0)) >= A4[0] - 0.5
+                and float(rect.get("height", 0)) >= A4[1] - 0.5
+                and isinstance(rect.get("non_stroking_color"), (list, tuple))
+                and len(rect.get("non_stroking_color") or ()) == 3
+                and all(
+                    abs(float(actual) - expected) <= 0.002
+                    for actual, expected in zip(
+                        rect.get("non_stroking_color") or (),
+                        (0.05098, 0.14902, 0.243137),
+                    )
                 )
-                in {
-                    (0.086, 0.227, 0.373),
-                    (0.184, 0.435, 0.929),
-                }
-                for rect in page_rects.get(page_number, ())
+                for rect in rects
             )
-            if not strong:
-                divider_issues.append("strong navy/blue color block missing")
+            full_height_accent = any(
+                10 * mm <= float(rect.get("width", 0)) <= 12 * mm
+                and float(rect.get("height", 0)) >= A4[1] - 0.5
+                and isinstance(rect.get("non_stroking_color"), (list, tuple))
+                and len(rect.get("non_stroking_color") or ()) == 3
+                and all(
+                    abs(float(actual) - expected) <= 0.002
+                    for actual, expected in zip(
+                        rect.get("non_stroking_color") or (),
+                        (0.184314, 0.435294, 0.929412),
+                    )
+                )
+                for rect in rects
+            )
+            if not (full_page_navy and full_height_accent):
+                divider_issues.append("Blueprint full-page evidence missing")
         if divider_issues:
             issues[group.title] = tuple(divider_issues)
     return issues
@@ -745,6 +838,28 @@ def _heading_pages(
     return pages
 
 
+def _section_pages(
+    page_texts: Sequence[str],
+    bank,
+) -> dict[str, int]:
+    """Resolve Body headings and strict Blueprint chapter markers."""
+    titles = tuple(section.title for section in bank.level2_sections)
+    pages = _heading_pages(page_texts, titles)
+    for group in bank.question_groups:
+        section_number, _, group_name = group.title.partition(".")
+        marker = f"CAPABILITY BLUEPRINT / SECTION {section_number.zfill(2)}"
+        matches = tuple(
+            page_number
+            for page_number, text in enumerate(page_texts, start=1)
+            if _normalized(marker) in _normalized(text)
+            and _normalized(group_name.strip()) in _normalized(text)
+            and _normalized("UNIFIED SCORE · 0—4") in _normalized(text)
+        )
+        if len(matches) == 1:
+            pages[group.title] = matches[0]
+    return pages
+
+
 def _destination_page(reader: PdfReader, destination: object) -> int | None:
     try:
         return reader.get_destination_page_number(destination) + 1
@@ -772,15 +887,55 @@ def _link_destination_page(reader: PdfReader, annotation: object) -> int | None:
 def _question_content_issues(
     extracted_text: str,
     questions: Sequence[Question],
+    *,
+    question_pages: Mapping[str, int] | None = None,
+    page_text_variants: Mapping[int, Sequence[str]] | None = None,
 ) -> dict[str, tuple[str, ...]]:
     blocks = _question_blocks(extracted_text)
     issues: dict[str, tuple[str, ...]] = {}
+    ordered_starts = sorted(
+        (
+            question_pages[question.question_id],
+            question.question_id,
+        )
+        for question in questions
+        if question_pages and question.question_id in question_pages
+    )
+    page_ranges = {
+        question_id: (
+            start,
+            (
+                ordered_starts[index + 1][0] - 1
+                if index + 1 < len(ordered_starts)
+                else max(page_text_variants or {start: ()})
+            ),
+        )
+        for index, (start, question_id) in enumerate(ordered_starts)
+    }
     for question in questions:
-        normalized_block = _normalized(blocks.get(question.question_id, ""))
+        variants = [blocks.get(question.question_id, "")]
+        if page_text_variants and question.question_id in page_ranges:
+            start, end = page_ranges[question.question_id]
+            variant_count = max(
+                (
+                    len(page_text_variants.get(page_number, ()))
+                    for page_number in range(start, end + 1)
+                ),
+                default=0,
+            )
+            variants.extend(
+                "\n".join(
+                    page_text_variants.get(page_number, ())[variant_index]
+                    for page_number in range(start, end + 1)
+                    if variant_index < len(page_text_variants.get(page_number, ()))
+                )
+                for variant_index in range(variant_count)
+            )
+        normalized_variants = tuple(_normalized(value) for value in variants)
         missing: list[str] = []
-        if _normalized(question.title) not in normalized_block:
+        if not any(_normalized(question.title) in value for value in normalized_variants):
             missing.append("title")
-        if _normalized(question.prompt) not in normalized_block:
+        if not any(_normalized(question.prompt) in value for value in normalized_variants):
             missing.append("prompt")
         for label, values in question.answer_fields.items():
             for index, value in enumerate(values):
@@ -789,7 +944,10 @@ def _question_content_issues(
                     if label == "参考入口"
                     else value
                 )
-                if _normalized(expected_value) not in normalized_block:
+                if not any(
+                    _normalized(expected_value) in variant
+                    for variant in normalized_variants
+                ):
                     missing.append(f"{label}[{index}]")
         if missing:
             issues[question.question_id] = tuple(missing)
@@ -840,6 +998,8 @@ def _receipt_mismatches(
         "page_count": page_count,
         "question_ids": list(question_ids),
         "bookmark_titles": list(section_titles),
+        "question_count": len(question_ids),
+        "section_count": len(section_titles),
     }
     receipt_keys = {
         "source_sha256": "source_sha256",
@@ -847,6 +1007,8 @@ def _receipt_mismatches(
         "page_count": "page_count",
         "question_ids": "question_ids",
         "bookmark_titles": "bookmark_titles",
+        "question_count": "question_count",
+        "section_count": "section_count",
     }
     issues: dict[str, Mapping[str, object]] = {}
     for report_key, receipt_key in receipt_keys.items():
@@ -912,7 +1074,11 @@ def _table_cells(bank) -> tuple[str, ...]:
 def _expected_low_density_page(text: str, page_number: int) -> bool:
     if page_number == 1:
         return True
-    return bool(re.search(r"题号\s+(?:C|FE|AI|BE|SEC|PM|QA|OPS)1\s*-\s*\w+10\s*\|\s*共\s*10\s*道", text))
+    normalized = _normalized(text)
+    return (
+        _normalized("UNIFIED SCORE · 0—4") in normalized
+        and _normalized("CAPABILITY BLUEPRINT / SECTION") in normalized
+    ) or _normalized("可打印面试记录表") in normalized
 
 
 def verify_pdf(
@@ -940,13 +1106,27 @@ def verify_pdf(
         header_texts_list: list[str] = []
         footer_texts_list: list[str] = []
         page_rects: dict[int, Sequence[Mapping[str, object]]] = {}
+        page_text_variants: dict[int, tuple[str, ...]] = {}
         physical_tables_by_page: dict[
             int,
             Sequence[Sequence[Sequence[str | None]]],
         ] = {}
         for page_number, page in enumerate(opened_pdf.pages, start=1):
-            page_texts_list.append(page.extract_text() or "")
+            full_text = page.extract_text() or ""
+            page_texts_list.append(full_text)
             page_sizes_list.append((page.width, page.height))
+            midpoint = float(page.width) / 2
+            page_text_variants[page_number] = (
+                full_text,
+                page.crop(
+                    (20 * mm, 0, midpoint - 2 * mm, float(page.height))
+                ).extract_text()
+                or "",
+                page.crop(
+                    (midpoint + 2 * mm, 0, float(page.width) - 20 * mm, float(page.height))
+                ).extract_text()
+                or "",
+            )
             header_texts_list.append(
                 page.crop((0, 0, float(page.width), 16 * mm)).extract_text()
                 or ""
@@ -981,7 +1161,7 @@ def verify_pdf(
     duplicate_question_ids = _ordered_unique(
         qid for qid in pdf_question_ids if pdf_question_ids.count(qid) > 1
     )
-    section_pages = _heading_pages(page_texts, section_titles)
+    section_pages = _section_pages(page_texts, bank)
     question_pages: dict[str, int] = {}
     for page_number, text in enumerate(page_texts, start=1):
         for match in QUESTION_HEADING_RE.finditer(text):
@@ -1121,9 +1301,12 @@ def verify_pdf(
     expected_structure = {
         "page_range": "80-140",
         "source_question_count": 80,
+        "source_unique_question_count": 80,
         "pdf_question_count": 80,
+        "pdf_unique_question_count": 80,
         "reference_entry_count": expected_reference_entry_count,
         "section_count": 12,
+        "source_table_count": 4,
         "outline_count": 93,
         "question_outline_count": 80,
         "link_count": 24,
@@ -1132,9 +1315,12 @@ def verify_pdf(
     actual_structure = {
         "page_range": len(reader.pages),
         "source_question_count": len(expected_question_ids),
+        "source_unique_question_count": len(set(expected_question_ids)),
         "pdf_question_count": len(pdf_question_ids),
+        "pdf_unique_question_count": len(set(pdf_question_ids)),
         "reference_entry_count": reference_entry_count,
         "section_count": len(section_titles),
+        "source_table_count": len(bank.tables),
         "outline_count": len(outline_entries),
         "question_outline_count": len(question_outline_records),
         "link_count": len(link_records),
@@ -1163,6 +1349,17 @@ def verify_pdf(
         extracted_text,
         bank.questions,
     )
+    forbidden_tokens = find_forbidden_tokens(extracted_text)
+    leaked_reference_tokens = tuple(
+        token
+        for token in forbidden_tokens
+        if token.lower().startswith("file://") or token == "../"
+    )
+    if leaked_reference_tokens:
+        reference_entry_issues["document"] = tuple(
+            f"reference path leakage: {token}"
+            for token in leaked_reference_tokens
+        )
     if uri_link_records:
         reference_entry_issues["pdf_annotations"] = tuple(
             f"unexpected URI link on page {page}: {uri}"
@@ -1187,7 +1384,12 @@ def verify_pdf(
         page_rects,
     )
     font_role_issues = analyze_font_roles(reader, fonts, question_pages)
-    question_content_issues = _question_content_issues(extracted_text, bank.questions)
+    question_content_issues = _question_content_issues(
+        extracted_text,
+        bank.questions,
+        question_pages=question_pages,
+        page_text_variants=page_text_variants,
+    )
     missing_sections = tuple(title for title in section_titles if _normalized(title) not in normalized_extracted)
     missing_non_question_headings = tuple(
         title
@@ -1243,6 +1445,20 @@ def verify_pdf(
         section_titles=section_titles,
         fonts=fonts,
     )
+    file_mode_value = pdf.stat().st_mode & 0o777
+    file_mode = f"{file_mode_value:04o}"
+    file_mode_issue = (
+        None
+        if file_mode_value == 0o644
+        else f"expected release mode 0644, actual {file_mode}"
+    )
+    expected_tail = source_last_sentence(bank)
+    longest_answer_tail_issue = (
+        None
+        if expected_tail
+        and expected_tail in normalize_for_match(extracted_text)
+        else "longest answer tail missing from extracted PDF text"
+    )
 
     return VerificationReport(
         source_path=str(source.resolve()),
@@ -1287,12 +1503,15 @@ def verify_pdf(
         table_contract_issues=table_contract_issues,
         maintenance_rule_issues=maintenance_rule_issues,
         missing_record_fields=missing_record_fields,
-        forbidden_tokens=find_forbidden_tokens(extracted_text),
+        forbidden_tokens=forbidden_tokens,
         page_size_issues=page_size_issues,
         page_text_char_counts=page_text_char_counts,
         near_blank_pages=near_blank_pages,
         unexpected_near_blank_pages=unexpected_near_blank_pages,
         question_pages=question_pages,
+        file_mode=file_mode,
+        file_mode_issue=file_mode_issue,
+        longest_answer_tail_issue=longest_answer_tail_issue,
     )
 
 

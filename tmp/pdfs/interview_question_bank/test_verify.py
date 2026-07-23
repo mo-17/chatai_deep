@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 import json
+import os
+import shutil
+from io import BytesIO
 from dataclasses import replace
 from hashlib import sha256
 from pathlib import Path
@@ -11,7 +14,11 @@ import unittest
 import pdfplumber
 from pypdf import PdfReader, PdfWriter
 from pypdf.generic import NameObject
+from reportlab.lib.pagesizes import A4
+from reportlab.pdfgen.canvas import Canvas
 
+import interview_question_bank.build as build_module
+from interview_question_bank.document import build_pdf
 from interview_question_bank.parser import parse_question_bank
 from interview_question_bank.styles import register_fonts
 import interview_question_bank.verify as verify_module
@@ -29,8 +36,177 @@ from interview_question_bank.verify import (
 
 ROOT = Path(__file__).resolve().parents[3]
 SOURCE = ROOT / "docs" / "project-interview-question-bank.md"
-PDF = ROOT / "output" / "pdf" / "aipu-senior-role-interview-question-bank.pdf"
-RECEIPT = ROOT / "tmp" / "pdfs" / "build-receipt.json"
+_FRESH_TEMPORARY: TemporaryDirectory[str] | None = None
+FRESH_PDF: Path
+FRESH_RECEIPT: Path
+
+
+def setUpModule() -> None:
+    global _FRESH_TEMPORARY, FRESH_PDF, FRESH_RECEIPT
+    _FRESH_TEMPORARY = TemporaryDirectory()
+    directory = Path(_FRESH_TEMPORARY.name)
+    FRESH_PDF = directory / "fresh.pdf"
+    FRESH_RECEIPT = directory / "receipt.json"
+    build_module.write_build_receipt(
+        build_pdf(SOURCE, FRESH_PDF),
+        FRESH_RECEIPT,
+    )
+
+
+def tearDownModule() -> None:
+    if _FRESH_TEMPORARY is not None:
+        _FRESH_TEMPORARY.cleanup()
+
+
+class VerificationContractTest(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.directory = FRESH_PDF.parent
+        cls.pdf = FRESH_PDF
+        cls.receipt_path = FRESH_RECEIPT
+
+    def _matching_receipt(self, pdf: Path, destination: Path) -> Path:
+        receipt = json.loads(self.receipt_path.read_text(encoding="utf-8"))
+        receipt["sha256"] = sha256(pdf.read_bytes()).hexdigest()
+        destination.write_text(
+            json.dumps(receipt, ensure_ascii=False),
+            encoding="utf-8",
+        )
+        return destination
+
+    def _verify_or_raise(
+        self,
+        *,
+        source: Path = SOURCE,
+        pdf: Path | None = None,
+        receipt: Path | None = None,
+    ):
+        report = verify_pdf(
+            source,
+            pdf or self.pdf,
+            receipt_path=receipt or self.receipt_path,
+        )
+        if report.passed:
+            return report
+        return report.require_passed()
+
+    def test_freshly_built_pdf_and_matching_receipt_pass(self) -> None:
+        report = verify_pdf(SOURCE, self.pdf, receipt_path=self.receipt_path)
+
+        self.assertTrue(report.passed, report.to_dict())
+        self.assertEqual(80, report.pdf_question_count)
+        self.assertEqual(80, len(set(report.question_pages)))
+        self.assertEqual(12, report.section_count)
+        self.assertEqual("0644", report.file_mode)
+        self.assertIsNone(report.longest_answer_tail_issue)
+
+    def test_rejects_wrong_metadata(self) -> None:
+        reader = PdfReader(self.pdf)
+        writer = PdfWriter()
+        writer.clone_document_from_reader(reader)
+        metadata = {
+            str(key): str(value)
+            for key, value in (reader.metadata or {}).items()
+            if value is not None
+        }
+        metadata["/Title"] = "Wrong title"
+        writer.add_metadata(metadata)
+        tampered = self.directory / "wrong-metadata.pdf"
+        writer.write(tampered)
+        os.chmod(tampered, 0o644)
+        receipt = self._matching_receipt(
+            tampered,
+            self.directory / "wrong-metadata-receipt.json",
+        )
+
+        with self.assertRaisesRegex(verify_module.VerificationError, "metadata"):
+            self._verify_or_raise(pdf=tampered, receipt=receipt)
+
+    def test_rejects_missing_source_sha(self) -> None:
+        receipt = json.loads(self.receipt_path.read_text(encoding="utf-8"))
+        receipt.pop("source_sha256")
+        missing_sha = self.directory / "missing-source-sha.json"
+        missing_sha.write_text(json.dumps(receipt), encoding="utf-8")
+
+        with self.assertRaisesRegex(verify_module.VerificationError, "source_sha256"):
+            self._verify_or_raise(receipt=missing_sha)
+
+    def test_rejects_unormalized_reference_path(self) -> None:
+        packet = BytesIO()
+        canvas = Canvas(packet, pagesize=A4)
+        canvas.setFont(register_fonts().body, 10)
+        canvas.drawString(72, 300, "../chatgpt_app_core/lib/app.dart")
+        canvas.save()
+        packet.seek(0)
+        writer = PdfWriter(clone_from=self.pdf)
+        writer.pages[7].merge_page(PdfReader(packet).pages[0])
+        tampered = self.directory / "relative-reference.pdf"
+        writer.write(tampered)
+        os.chmod(tampered, 0o644)
+        receipt = self._matching_receipt(
+            tampered,
+            self.directory / "relative-reference-receipt.json",
+        )
+
+        with self.assertRaisesRegex(verify_module.VerificationError, "reference"):
+            self._verify_or_raise(pdf=tampered, receipt=receipt)
+
+    def test_rejects_missing_longest_answer_tail(self) -> None:
+        source_text = SOURCE.read_text(encoding="utf-8")
+        mutated_source = self.directory / "mutated-source.md"
+        mutated_source.write_text(
+            source_text.replace(
+                "证明远端从未收到调用。",
+                "证明远端从未收到调用，并保留唯一负向尾句。",
+                1,
+            ),
+            encoding="utf-8",
+        )
+        receipt = json.loads(self.receipt_path.read_text(encoding="utf-8"))
+        receipt["source_sha256"] = sha256(
+            mutated_source.read_bytes()
+        ).hexdigest()
+        mutated_receipt = self.directory / "mutated-source-receipt.json"
+        mutated_receipt.write_text(json.dumps(receipt), encoding="utf-8")
+
+        with self.assertRaisesRegex(verify_module.VerificationError, "longest answer"):
+            self._verify_or_raise(source=mutated_source, receipt=mutated_receipt)
+
+    def test_rejects_non_0644_release_mode(self) -> None:
+        wrong_mode = self.directory / "wrong-mode.pdf"
+        shutil.copyfile(self.pdf, wrong_mode)
+        os.chmod(wrong_mode, 0o600)
+        receipt = self._matching_receipt(
+            wrong_mode,
+            self.directory / "wrong-mode-receipt.json",
+        )
+
+        with self.assertRaisesRegex(verify_module.VerificationError, "0644"):
+            self._verify_or_raise(pdf=wrong_mode, receipt=receipt)
+
+    def test_receipt_exposes_summary_counts(self) -> None:
+        receipt = json.loads(self.receipt_path.read_text(encoding="utf-8"))
+        self.assertEqual(80, receipt["question_count"])
+        self.assertEqual(12, receipt["section_count"])
+
+    def test_normalization_is_nfkc_whitespace_insensitive_and_punctuation_safe(
+        self,
+    ) -> None:
+        normalize = getattr(verify_module, "normalize_for_match", None)
+        self.assertTrue(callable(normalize), "normalize_for_match must be public")
+        self.assertEqual("A。!", normalize("Ａ \n。 !"))
+        self.assertNotEqual(normalize("。"), normalize("."))
+
+    def test_source_last_sentence_uses_the_longest_production_field(self) -> None:
+        bank = parse_question_bank(SOURCE.read_text(encoding="utf-8"))
+
+        self.assertEqual(
+            (
+                "负向e2e要直接构造未发现的mcp__server__rawName,"
+                "证明远端从未收到调用。"
+            ),
+            verify_module.source_last_sentence(bank),
+        )
 
 
 class VerificationLogicTest(unittest.TestCase):
@@ -62,6 +238,97 @@ class VerificationLogicTest(unittest.TestCase):
 
         self.assertEqual((), issues["C1"])
         self.assertEqual(("风险信号",), issues["C2"])
+
+    def test_structured_pair_labels_are_counted_once_and_keep_source_order(
+        self,
+    ) -> None:
+        question = self.bank.questions[0]
+        text = "\n".join(
+            [
+                f"{question.question_id} · {question.title}",
+                "问题",
+                "考察点",
+                "答案要点",
+                "追问 风险信号",
+                "评分锚点",
+                "参考入口",
+                "面试官记录",
+            ]
+        )
+
+        self.assertEqual(
+            (),
+            analyze_question_fields(text, (question,))[question.question_id],
+        )
+        self.assertEqual(
+            {},
+            verify_module.analyze_question_order(text, (question,)),
+        )
+
+    def test_swapped_structured_pair_labels_are_rejected(self) -> None:
+        question = self.bank.questions[0]
+        text = "\n".join(
+            [
+                f"{question.question_id} · {question.title}",
+                "问题",
+                "考察点",
+                "答案要点",
+                "风险信号 追问",
+                "评分锚点",
+                "参考入口",
+                "面试官记录",
+            ]
+        )
+
+        field_issues = analyze_question_fields(text, (question,))
+        order_issues = verify_module.analyze_question_order(text, (question,))
+
+        self.assertIn("追问", field_issues[question.question_id])
+        self.assertIn("风险信号", field_issues[question.question_id])
+        self.assertIn(question.question_id, order_issues)
+
+    def test_continued_header_is_not_counted_as_a_second_question_opening(
+        self,
+    ) -> None:
+        text = "\n".join(
+            [
+                "C1 · First question",
+                "C1 · CONTINUED",
+                "C2 · Second question",
+            ]
+        )
+
+        self.assertEqual(
+            ("C1", "C2"),
+            tuple(
+                match.group(1)
+                for match in verify_module.QUESTION_HEADING_RE.finditer(text)
+            ),
+        )
+
+    def test_expected_furniture_distinguishes_opening_and_continued_headers(
+        self,
+    ) -> None:
+        question = self.bank.questions[0]
+        page_texts = (
+            "cover",
+            "CAPABILITY BLUEPRINT / SECTION 03\nUNIFIED SCORE · 0—4",
+            f"{question.question_id} · {question.title}",
+            "continued body",
+        )
+
+        expected = verify_module._expected_page_headers(
+            page_texts,
+            ("3. 共享核心题",),
+            {"3. 共享核心题": 2},
+            (question,),
+            {question.question_id: 3},
+        )
+
+        self.assertIsNone(expected[0])
+        self.assertIsNone(expected[1])
+        self.assertEqual(("3. 共享核心题", "C1"), expected[2])
+        self.assertEqual(("3. 共享核心题", "C1 · CONTINUED"), expected[3])
 
     def test_forbidden_token_scan_covers_markup_entities_and_placeholders(self) -> None:
         text = "<details><summary>答案</summary>TODO &#8226; {{placeholder}}"
@@ -237,15 +504,15 @@ class VerificationLogicTest(unittest.TestCase):
         )
         footers = (
             "",
-            "面试官版 / 内部使用 内容快照 2026-07-23 第 2 / 3 页",
-            "面试官版 / 内部使用 内容快照 2026-07-22 第 3 / 3 页",
+            "面试官版 / 内部使用 2026-07-23 第 2 / 3 页",
+            "面试官版 / 内部使用 2026-07-22 第 3 / 3 页",
         )
 
         issues = analyzer(headers, footers, expected_headers)
 
         self.assertIn(3, issues)
         self.assertTrue(any("header right" in issue for issue in issues[3]))
-        self.assertTrue(any("内容快照" in issue for issue in issues[3]))
+        self.assertTrue(any("footer exact" in issue for issue in issues[3]))
 
     def test_divider_analysis_rejects_missing_source_ability_keywords(self) -> None:
         analyzer = getattr(verify_module, "analyze_divider_contracts", None)
@@ -283,7 +550,7 @@ class VerificationLogicTest(unittest.TestCase):
     def test_font_role_analysis_rejects_missing_or_non_distinct_resources(self) -> None:
         analyzer = getattr(verify_module, "analyze_font_roles", None)
         self.assertTrue(callable(analyzer))
-        reader = PdfReader(PDF)
+        reader = PdfReader(FRESH_PDF)
         fake_roles = SimpleNamespace(
             body_postscript_name="MissingBody",
             heading_postscript_name="MissingBody",
@@ -350,7 +617,7 @@ class VerificationLogicTest(unittest.TestCase):
 
     def test_receipt_hash_mismatch_fails_verification(self) -> None:
         with TemporaryDirectory() as directory:
-            receipt = json.loads(RECEIPT.read_text(encoding="utf-8"))
+            receipt = json.loads(FRESH_RECEIPT.read_text(encoding="utf-8"))
             receipt["sha256"] = "0" * 64
             tampered_receipt = Path(directory) / "receipt.json"
             tampered_receipt.write_text(
@@ -358,7 +625,7 @@ class VerificationLogicTest(unittest.TestCase):
                 encoding="utf-8",
             )
 
-            report = verify_pdf(SOURCE, PDF, receipt_path=tampered_receipt)
+            report = verify_pdf(SOURCE, FRESH_PDF, receipt_path=tampered_receipt)
 
         self.assertFalse(report.passed)
         self.assertIn("pdf_sha256", report.receipt_mismatches)
@@ -380,14 +647,14 @@ class FormalArtifactVerificationTest(unittest.TestCase):
 
     @staticmethod
     def _write_matching_receipt(pdf: Path, destination: Path) -> Path:
-        receipt = json.loads(RECEIPT.read_text(encoding="utf-8"))
+        receipt = json.loads(FRESH_RECEIPT.read_text(encoding="utf-8"))
         receipt["sha256"] = sha256(pdf.read_bytes()).hexdigest()
         destination.write_text(json.dumps(receipt, ensure_ascii=False), encoding="utf-8")
         return destination
 
     def test_wrong_but_valid_outline_targets_fail_report(self) -> None:
         with TemporaryDirectory() as directory:
-            reader = PdfReader(PDF)
+            reader = PdfReader(FRESH_PDF)
             nodes = list(self._raw_outline_nodes(reader))
             section = next(node for node in nodes if node.get("/Title") == "3. 共享核心题")
             question = next(node for node in nodes if str(node.get("/Title", "")).startswith("C1."))
@@ -411,7 +678,7 @@ class FormalArtifactVerificationTest(unittest.TestCase):
 
     def test_wrong_but_valid_toc_target_fails_report(self) -> None:
         with TemporaryDirectory() as directory:
-            reader = PdfReader(PDF)
+            reader = PdfReader(FRESH_PDF)
             first_toc_link = reader.pages[4]["/Annots"][0].get_object()
             first_toc_link[NameObject("/Dest")][0] = reader.pages[3].indirect_reference
             tampered_pdf = Path(directory) / "wrong-toc-link.pdf"
@@ -430,7 +697,7 @@ class FormalArtifactVerificationTest(unittest.TestCase):
         self.assertEqual({}, report.receipt_mismatches)
 
     def test_passed_property_includes_every_final_review_issue_collection(self) -> None:
-        report = verify_pdf(SOURCE, PDF)
+        report = verify_pdf(SOURCE, FRESH_PDF, receipt_path=FRESH_RECEIPT)
         self.assertTrue(report.passed, report.to_dict())
         cases = {
             "question_record_issues": {"C1": ("missing 评分",)},
@@ -450,8 +717,8 @@ class FormalArtifactVerificationTest(unittest.TestCase):
                 self.assertFalse(mutated.passed)
 
     def test_formal_pdf_passes_exhaustive_machine_contract(self) -> None:
-        report = verify_pdf(SOURCE, PDF)
-        receipt = json.loads(RECEIPT.read_text(encoding="utf-8"))
+        report = verify_pdf(SOURCE, FRESH_PDF, receipt_path=FRESH_RECEIPT)
+        receipt = json.loads(FRESH_RECEIPT.read_text(encoding="utf-8"))
 
         self.assertTrue(report.passed, report.to_dict())
         self.assertEqual(receipt["page_count"], report.page_count)
