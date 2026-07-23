@@ -14,7 +14,14 @@ from unittest.mock import Mock, patch
 
 import pdfplumber
 from pypdf import PdfReader, PdfWriter
-from pypdf.generic import NameObject
+from pypdf.generic import (
+    ArrayObject,
+    DecodedStreamObject,
+    DictionaryObject,
+    NameObject,
+    NullObject,
+    NumberObject,
+)
 from reportlab.lib.pagesizes import A4
 from reportlab.lib.units import mm
 from reportlab.pdfgen.canvas import Canvas
@@ -41,6 +48,188 @@ SOURCE = ROOT / "docs" / "project-interview-question-bank.md"
 _FRESH_TEMPORARY: TemporaryDirectory[str] | None = None
 FRESH_PDF: Path
 FRESH_RECEIPT: Path
+
+
+def synthetic_font_state_reader(kind: str) -> PdfReader:
+    writer = PdfWriter()
+    page = writer.add_blank_page(width=A4[0], height=A4[1])
+
+    font_file = DecodedStreamObject()
+    font_file.set_data(b"embedded font fixture")
+    font_file_ref = writer._add_object(font_file)
+    descriptor = DictionaryObject(
+        {
+            NameObject("/Type"): NameObject("/FontDescriptor"),
+            NameObject("/FontName"): NameObject("/EmbeddedFixture"),
+            NameObject("/FontFile2"): font_file_ref,
+        }
+    )
+    descriptor_ref = writer._add_object(descriptor)
+    embedded_font = DictionaryObject(
+        {
+            NameObject("/Type"): NameObject("/Font"),
+            NameObject("/Subtype"): NameObject("/TrueType"),
+            NameObject("/BaseFont"): NameObject("/EmbeddedFixture"),
+            NameObject("/FontDescriptor"): descriptor_ref,
+        }
+    )
+    embedded_font_ref = writer._add_object(embedded_font)
+    helvetica = DictionaryObject(
+        {
+            NameObject("/Type"): NameObject("/Font"),
+            NameObject("/Subtype"): NameObject("/Type1"),
+            NameObject("/BaseFont"): NameObject("/Helvetica"),
+            NameObject("/Encoding"): NameObject("/WinAnsiEncoding"),
+        }
+    )
+    helvetica_ref = writer._add_object(helvetica)
+    resources = DictionaryObject(
+        {
+            NameObject("/Font"): DictionaryObject(
+                {
+                    NameObject("/FEmbedded"): embedded_font_ref,
+                    NameObject("/FHelvetica"): helvetica_ref,
+                }
+            )
+        }
+    )
+
+    if kind == "reused_form":
+        form = DecodedStreamObject()
+        form.set_data(b"BT (X) Tj ET")
+        form.update(
+            {
+                NameObject("/Type"): NameObject("/XObject"),
+                NameObject("/Subtype"): NameObject("/Form"),
+                NameObject("/BBox"): ArrayObject(
+                    [NumberObject(0), NumberObject(0), NumberObject(20), NumberObject(20)]
+                ),
+                NameObject("/Resources"): DictionaryObject(),
+            }
+        )
+        resources[NameObject("/XObject")] = DictionaryObject(
+            {NameObject("/Fixture"): writer._add_object(form)}
+        )
+        content_bytes = (
+            b"BT /FEmbedded 12 Tf ET /Fixture Do "
+            b"BT /FHelvetica 12 Tf ET /Fixture Do"
+        )
+    elif kind == "ext_gstate":
+        ext_gstate = DictionaryObject(
+            {
+                NameObject("/Type"): NameObject("/ExtGState"),
+                NameObject("/Font"): ArrayObject(
+                    [helvetica_ref, NumberObject(12)]
+                ),
+            }
+        )
+        resources[NameObject("/ExtGState")] = DictionaryObject(
+            {NameObject("/GSBad"): writer._add_object(ext_gstate)}
+        )
+        content_bytes = b"/GSBad gs BT (X) Tj ET"
+    elif kind == "type0_null":
+        bad_descriptor = DictionaryObject(
+            {
+                NameObject("/Type"): NameObject("/FontDescriptor"),
+                NameObject("/FontName"): NameObject("/BrokenCIDFixture"),
+                NameObject("/FontFile2"): NullObject(),
+            }
+        )
+        descendant = DictionaryObject(
+            {
+                NameObject("/Type"): NameObject("/Font"),
+                NameObject("/Subtype"): NameObject("/CIDFontType2"),
+                NameObject("/BaseFont"): NameObject("/BrokenCIDFixture"),
+                NameObject("/FontDescriptor"): writer._add_object(bad_descriptor),
+            }
+        )
+        type0_font = DictionaryObject(
+            {
+                NameObject("/Type"): NameObject("/Font"),
+                NameObject("/Subtype"): NameObject("/Type0"),
+                NameObject("/BaseFont"): NameObject("/BrokenCIDFixture"),
+                NameObject("/DescendantFonts"): ArrayObject(
+                    [writer._add_object(descendant)]
+                ),
+            }
+        )
+        resources[NameObject("/Font")] = DictionaryObject(
+            {NameObject("/FBad"): writer._add_object(type0_font)}
+        )
+        content_bytes = b"BT /FBad 12 Tf (X) Tj ET"
+    elif kind == "type0_fake_top_descriptor":
+        fake_descriptor = DictionaryObject(
+            {
+                NameObject("/Type"): NameObject("/FontDescriptor"),
+                NameObject("/FontName"): NameObject("/FakeTopDescriptor"),
+                NameObject("/FontFile2"): font_file_ref,
+            }
+        )
+        descendant = DictionaryObject(
+            {
+                NameObject("/Type"): NameObject("/Font"),
+                NameObject("/Subtype"): NameObject("/CIDFontType2"),
+                NameObject("/BaseFont"): NameObject("/MissingCIDDescriptor"),
+            }
+        )
+        type0_font = DictionaryObject(
+            {
+                NameObject("/Type"): NameObject("/Font"),
+                NameObject("/Subtype"): NameObject("/Type0"),
+                NameObject("/BaseFont"): NameObject("/FakeTopDescriptor"),
+                NameObject("/FontDescriptor"): writer._add_object(fake_descriptor),
+                NameObject("/DescendantFonts"): ArrayObject(
+                    [writer._add_object(descendant)]
+                ),
+            }
+        )
+        resources[NameObject("/Font")] = DictionaryObject(
+            {NameObject("/FBad"): writer._add_object(type0_font)}
+        )
+        content_bytes = b"BT /FBad 12 Tf (X) Tj ET"
+    elif kind == "type3_null_charproc":
+        type3_font = DictionaryObject(
+            {
+                NameObject("/Type"): NameObject("/Font"),
+                NameObject("/Subtype"): NameObject("/Type3"),
+                NameObject("/BaseFont"): NameObject("/BrokenType3Fixture"),
+                NameObject("/CharProcs"): DictionaryObject(
+                    {NameObject("/A"): NullObject()}
+                ),
+            }
+        )
+        resources[NameObject("/Font")] = DictionaryObject(
+            {NameObject("/FBad"): writer._add_object(type3_font)}
+        )
+        content_bytes = b"BT /FBad 12 Tf (A) Tj ET"
+    elif kind == "missing_resource":
+        content_bytes = b"BT /FMissing 12 Tf (X) Tj ET"
+    elif kind == "no_active_font":
+        content_bytes = b"BT (X) Tj ET"
+    elif kind == "text_Tj":
+        content_bytes = b"BT /FHelvetica 12 Tf (A) Tj ET"
+    elif kind == "text_TJ":
+        content_bytes = b"BT /FHelvetica 12 Tf [(A) 20 (B)] TJ ET"
+    elif kind == "text_quote":
+        content_bytes = b"BT /FHelvetica 12 Tf (C) ' ET"
+    elif kind == "text_double_quote":
+        content_bytes = b'BT /FHelvetica 12 Tf 0 0 (D) " ET'
+    elif kind == "q_restore":
+        content_bytes = (
+            b"BT /FEmbedded 12 Tf ET "
+            b"q BT /FHelvetica 12 Tf ET Q "
+            b"BT (X) Tj ET"
+        )
+    else:
+        raise ValueError(f"unknown synthetic font fixture: {kind}")
+
+    content = DecodedStreamObject()
+    content.set_data(content_bytes)
+    page[NameObject("/Resources")] = resources
+    page[NameObject("/Contents")] = writer._add_object(content)
+    buffer = BytesIO()
+    writer.write(buffer)
+    return PdfReader(BytesIO(buffer.getvalue()))
 
 
 def setUpModule() -> None:
@@ -1033,6 +1222,161 @@ class VerificationLogicTest(unittest.TestCase):
         self.assertIn("distinct_roles", issues)
         self.assertIn("body", issues)
         self.assertIn("code", issues)
+
+    def test_font_role_analysis_rejects_an_unembedded_extra_resource(self) -> None:
+        analyzer = getattr(verify_module, "analyze_font_roles", None)
+        self.assertTrue(callable(analyzer))
+        buffer = BytesIO()
+        canvas = Canvas(buffer, pagesize=A4)
+        canvas.setFont("Helvetica", 8)
+        canvas.drawString(20 * mm, A4[1] - 20 * mm, "visible base-font text")
+        canvas.save()
+        reader = PdfReader(BytesIO(buffer.getvalue()))
+        fonts = register_fonts()
+
+        issues = analyzer(reader, fonts, {})
+
+        self.assertIn("unembedded_resources", issues)
+        self.assertTrue(
+            any(
+                "Helvetica" in issue
+                for issue in issues["unembedded_resources"]
+            )
+        )
+
+    def test_font_role_analysis_checks_every_reused_form_font_state(self) -> None:
+        reader = synthetic_font_state_reader("reused_form")
+        fonts = register_fonts()
+
+        issues = verify_module.analyze_font_roles(reader, fonts, {})
+
+        self.assertIn("unembedded_resources", issues)
+        self.assertTrue(
+            any("Helvetica" in issue for issue in issues["unembedded_resources"])
+        )
+
+    def test_font_role_analysis_honors_ext_gstate_font_selection(self) -> None:
+        reader = synthetic_font_state_reader("ext_gstate")
+        fonts = register_fonts()
+
+        issues = verify_module.analyze_font_roles(reader, fonts, {})
+
+        self.assertIn("unembedded_resources", issues)
+        self.assertTrue(
+            any("Helvetica" in issue for issue in issues["unembedded_resources"])
+        )
+
+    def test_font_role_analysis_fails_closed_when_content_cannot_be_parsed(self) -> None:
+        reader = PdfReader(FRESH_PDF)
+        fonts = register_fonts()
+
+        with patch.object(
+            verify_module,
+            "ContentStream",
+            side_effect=ValueError("corrupt content fixture"),
+        ):
+            issues = verify_module.analyze_font_roles(reader, fonts, {"C1": 8})
+
+        self.assertIn("content_streams", issues)
+
+    def test_font_role_analysis_rejects_null_type0_font_stream(self) -> None:
+        reader = synthetic_font_state_reader("type0_null")
+        fonts = register_fonts()
+
+        issues = verify_module.analyze_font_roles(reader, fonts, {})
+
+        self.assertIn("unembedded_resources", issues)
+        self.assertTrue(
+            any(
+                "BrokenCIDFixture" in issue
+                for issue in issues["unembedded_resources"]
+            )
+        )
+
+    def test_font_role_analysis_ignores_fake_type0_top_descriptor(self) -> None:
+        reader = synthetic_font_state_reader("type0_fake_top_descriptor")
+        fonts = register_fonts()
+
+        issues = verify_module.analyze_font_roles(reader, fonts, {})
+
+        self.assertIn("unembedded_resources", issues)
+        self.assertTrue(
+            any(
+                "FakeTopDescriptor" in issue
+                for issue in issues["unembedded_resources"]
+            )
+        )
+
+    def test_font_role_analysis_rejects_null_type3_charproc(self) -> None:
+        reader = synthetic_font_state_reader("type3_null_charproc")
+        fonts = register_fonts()
+
+        issues = verify_module.analyze_font_roles(reader, fonts, {})
+
+        self.assertIn("unembedded_resources", issues)
+        self.assertTrue(
+            any(
+                "BrokenType3Fixture" in issue
+                for issue in issues["unembedded_resources"]
+            )
+        )
+
+    def test_font_role_analysis_rejects_unresolved_visible_font(self) -> None:
+        reader = synthetic_font_state_reader("missing_resource")
+        fonts = register_fonts()
+
+        issues = verify_module.analyze_font_roles(reader, fonts, {})
+
+        self.assertIn("unresolved_fonts", issues)
+        self.assertTrue(
+            any("/FMissing" in issue for issue in issues["unresolved_fonts"])
+        )
+
+    def test_font_role_analysis_rejects_visible_text_without_an_active_font(self) -> None:
+        reader = synthetic_font_state_reader("no_active_font")
+        fonts = register_fonts()
+
+        issues = verify_module.analyze_font_roles(reader, fonts, {})
+
+        self.assertIn("unresolved_fonts", issues)
+        self.assertTrue(
+            any("no active font" in issue for issue in issues["unresolved_fonts"])
+        )
+
+    def test_font_role_analysis_covers_all_pdf_text_show_operators(self) -> None:
+        fonts = register_fonts()
+
+        for kind in ("text_Tj", "text_TJ", "text_quote", "text_double_quote"):
+            with self.subTest(kind=kind):
+                reader = synthetic_font_state_reader(kind)
+                issues = verify_module.analyze_font_roles(reader, fonts, {})
+
+                self.assertIn("unembedded_resources", issues)
+                self.assertTrue(
+                    any(
+                        "Helvetica" in issue
+                        for issue in issues["unembedded_resources"]
+                    )
+                )
+
+    def test_font_role_analysis_restores_font_across_q_and_Q(self) -> None:
+        reader = synthetic_font_state_reader("q_restore")
+        fonts = SimpleNamespace(
+            body_postscript_name="EmbeddedFixture",
+            heading_postscript_name="MissingHeading",
+            code_postscript_name="MissingCode",
+            code_embedded=True,
+        )
+
+        issues = verify_module.analyze_font_roles(reader, fonts, {})
+
+        self.assertNotIn("body", issues)
+        self.assertFalse(
+            any(
+                "Helvetica" in issue
+                for issue in issues.get("unembedded_resources", ())
+            )
+        )
 
     def test_missing_maintenance_rule_on_maintenance_page_is_reported(self) -> None:
         rules = tuple(self.bank.maintenance_rules[0].blocks[0].items)

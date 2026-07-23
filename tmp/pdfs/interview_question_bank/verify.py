@@ -14,6 +14,7 @@ import unicodedata
 
 import pdfplumber
 from pypdf import PdfReader
+from pypdf.generic import ContentStream
 from reportlab.lib.pagesizes import A4
 from reportlab.lib.units import mm
 
@@ -682,21 +683,155 @@ def analyze_font_roles(
     fonts: FontSet,
     question_pages: Mapping[str, int],
 ) -> dict[str, tuple[str, ...]]:
-    """Inspect actual PDF font resources for distinct embedded semantic roles."""
+    """Inspect fonts that actually draw text in PDF content streams."""
     by_page: dict[int, tuple[tuple[str, bool], ...]] = {}
+    content_stream_issues: list[str] = []
+    unresolved_font_issues: set[str] = set()
     for page_number, page in enumerate(reader.pages, start=1):
-        records: list[tuple[str, bool]] = []
-        for reference in (page["/Resources"].get("/Font") or {}).values():
-            font = reference.get_object()
+        records: set[tuple[str, bool]] = set()
+        visited_forms: set[
+            tuple[
+                tuple[int, int] | int,
+                tuple[str, bool] | None,
+                tuple[int, int] | int,
+            ]
+        ] = set()
+
+        def resolve(value):
+            return value.get_object() if hasattr(value, "get_object") else value
+
+        def object_identity(value) -> tuple[int, int] | int:
+            if hasattr(value, "idnum"):
+                return value.idnum, value.generation
+            resolved = resolve(value)
+            reference = getattr(resolved, "indirect_reference", None)
+            if reference is not None and hasattr(reference, "idnum"):
+                return reference.idnum, reference.generation
+            return id(resolved)
+
+        def font_record(reference) -> tuple[str, bool]:
+            font = resolve(reference)
             base = str(font.get("/BaseFont", ""))
-            descriptor = font.get("/FontDescriptor")
-            descriptor = descriptor.get_object() if descriptor else {}
-            embedded = any(
-                descriptor.get(key) is not None
-                for key in ("/FontFile", "/FontFile2", "/FontFile3")
-            )
-            records.append((base, embedded))
-        by_page[page_number] = tuple(records)
+            subtype = str(font.get("/Subtype", ""))
+
+            def descriptor_has_font_stream(descriptor) -> bool:
+                descriptor = resolve(descriptor)
+                if not hasattr(descriptor, "get"):
+                    return False
+                return any(
+                    hasattr(resolve(descriptor.get(key)), "get_data")
+                    for key in ("/FontFile", "/FontFile2", "/FontFile3")
+                    if descriptor.get(key) is not None
+                )
+
+            if subtype == "/Type0":
+                descendants = tuple(
+                    resolve(descendant)
+                    for descendant in resolve(font.get("/DescendantFonts") or ())
+                )
+                embedded = bool(descendants) and all(
+                    descriptor_has_font_stream(
+                        descendant.get("/FontDescriptor")
+                    )
+                    for descendant in descendants
+                )
+            elif subtype == "/Type3":
+                char_procs = resolve(font.get("/CharProcs") or {})
+                embedded = bool(char_procs) and all(
+                    hasattr(resolve(char_proc), "get_data")
+                    for char_proc in char_procs.values()
+                )
+            else:
+                embedded = descriptor_has_font_stream(
+                    font.get("/FontDescriptor")
+                )
+            return base, embedded
+
+        def has_text_operand(operands) -> bool:
+            for operand in operands:
+                if isinstance(operand, (str, bytes, bytearray)) and operand:
+                    return True
+                if isinstance(operand, (list, tuple)) and has_text_operand(operand):
+                    return True
+            return False
+
+        def collect_used_fonts(content, resources, inherited_font=None) -> None:
+            if content is None:
+                return
+            resources = resolve(resources or {})
+            try:
+                operations = ContentStream(resolve(content), reader).operations
+            except Exception as error:
+                content_stream_issues.append(
+                    f"page {page_number}: {type(error).__name__}: {error}"
+                )
+                return
+            current_font = inherited_font
+            font_stack = []
+            for operands, operator in operations:
+                if operator == b"Tf" and operands:
+                    font_resources = resolve(resources.get("/Font") or {})
+                    reference = font_resources.get(operands[0])
+                    current_font = (
+                        font_record(reference)
+                        if reference is not None
+                        else (f"<unresolved font resource {operands[0]}>", False)
+                    )
+                    continue
+                if operator == b"q":
+                    font_stack.append(current_font)
+                    continue
+                if operator == b"Q":
+                    current_font = font_stack.pop() if font_stack else inherited_font
+                    continue
+                if operator == b"gs" and operands:
+                    ext_gstates = resolve(resources.get("/ExtGState") or {})
+                    reference = ext_gstates.get(operands[0])
+                    ext_gstate = resolve(reference) if reference is not None else {}
+                    font_entry = resolve(ext_gstate.get("/Font")) if ext_gstate else None
+                    if font_entry:
+                        current_font = font_record(font_entry[0])
+                    continue
+                if operator in {b"Tj", b"TJ", b"'", b'"'} and has_text_operand(operands):
+                    visible_font = current_font or (
+                        "<unresolved: no active font>",
+                        False,
+                    )
+                    records.add(visible_font)
+                    if visible_font[0].startswith("<unresolved"):
+                        unresolved_font_issues.add(
+                            f"{visible_font[0]} on page {page_number}"
+                        )
+                    continue
+                if operator != b"Do" or not operands:
+                    continue
+                xobjects = resolve(resources.get("/XObject") or {})
+                reference = xobjects.get(operands[0])
+                if reference is None:
+                    continue
+                form = resolve(reference)
+                if str(form.get("/Subtype", "")) != "/Form":
+                    continue
+                identity = object_identity(reference)
+                form_resources = form.get("/Resources")
+                if form_resources is None:
+                    form_resources = resources
+                visit_key = (
+                    identity,
+                    current_font,
+                    object_identity(form_resources),
+                )
+                if visit_key in visited_forms:
+                    continue
+                visited_forms.add(visit_key)
+                collect_used_fonts(
+                    form,
+                    form_resources,
+                    current_font,
+                )
+
+        collect_used_fonts(page.get_contents(), page.get("/Resources"))
+        by_page[page_number] = tuple(sorted(records))
 
     role_names = {
         "body": fonts.body_postscript_name,
@@ -704,9 +839,23 @@ def analyze_font_roles(
         "code": fonts.code_postscript_name,
     }
     issues: dict[str, tuple[str, ...]] = {}
+    if content_stream_issues:
+        issues["content_streams"] = tuple(content_stream_issues)
+    if unresolved_font_issues:
+        issues["unresolved_fonts"] = tuple(sorted(unresolved_font_issues))
     if len(set(role_names.values())) != 3:
         issues["distinct_roles"] = ("body, heading and code faces must differ",)
     all_records = tuple(record for records in by_page.values() for record in records)
+    unembedded_pages: dict[str, set[int]] = {}
+    for page_number, records in by_page.items():
+        for base, embedded in records:
+            if not embedded:
+                unembedded_pages.setdefault(base, set()).add(page_number)
+    if unembedded_pages:
+        issues["unembedded_resources"] = tuple(
+            f"{base} on pages {', '.join(str(page) for page in sorted(pages))}"
+            for base, pages in sorted(unembedded_pages.items())
+        )
     for role, postscript_name in role_names.items():
         matches = tuple(
             embedded

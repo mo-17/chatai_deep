@@ -43,6 +43,7 @@ from interview_question_bank.document import (
 import interview_question_bank.document as document_module
 from interview_question_bank.parser import Question, Section, parse_question_bank
 from interview_question_bank.styles import build_styles, register_fonts
+from interview_question_bank.verify import analyze_font_roles
 
 
 ROOT = Path(__file__).resolve().parents[3]
@@ -1118,31 +1119,10 @@ class DocumentTest(unittest.TestCase):
         }
         self.assertTrue(all(expected.values()))
         self.assertEqual(3, len(set(expected.values())))
-        resources: dict[str, list[tuple[str, bool]]] = {}
-        for page_number, page in enumerate(reader.pages, start=1):
-            for reference in (page["/Resources"].get("/Font") or {}).values():
-                font = reference.get_object()
-                base = str(font.get("/BaseFont", ""))
-                descriptor = font.get("/FontDescriptor")
-                descriptor = descriptor.get_object() if descriptor else {}
-                embedded = any(
-                    descriptor.get(key) is not None
-                    for key in ("/FontFile", "/FontFile2", "/FontFile3")
-                )
-                resources.setdefault(base, []).append((str(page_number), embedded))
-        for role, postscript_name in expected.items():
-            matches = [
-                records
-                for base, records in resources.items()
-                if postscript_name in base
-            ]
-            self.assertTrue(
-                matches,
-                f"missing {role} PDF font resource {postscript_name}",
-            )
-            self.assertTrue(
-                all(embedded for records in matches for _, embedded in records)
-            )
+        self.assertEqual(
+            {},
+            analyze_font_roles(reader, self.fonts, {"C1": 8}),
+        )
 
     def test_failed_formal_render_preserves_previous_valid_output(self) -> None:
         with TemporaryDirectory() as directory:

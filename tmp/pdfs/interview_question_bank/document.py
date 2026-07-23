@@ -214,6 +214,7 @@ class InterviewDocTemplate(BaseDocTemplate):
             title=TITLE,
             author=AUTHOR,
             subject=SUBJECT,
+            initialFontName=styles.fonts.body,
         )
         body_frame = Frame(
             20 * mm,
@@ -459,6 +460,8 @@ def _document_styles(styles: StyleSet) -> dict[str, ParagraphStyle]:
         "bullet": ParagraphStyle(
             "DocumentBullet",
             parent=body,
+            bulletFontName=styles.fonts.body,
+            bulletFontSize=body.fontSize,
             leftIndent=12,
             firstLineIndent=-8,
             bulletIndent=0,
