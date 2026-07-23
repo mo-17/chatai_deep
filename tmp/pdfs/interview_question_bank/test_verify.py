@@ -1,0 +1,486 @@
+from __future__ import annotations
+
+import json
+from dataclasses import replace
+from hashlib import sha256
+from pathlib import Path
+from tempfile import TemporaryDirectory
+from types import SimpleNamespace
+import unittest
+
+import pdfplumber
+from pypdf import PdfReader, PdfWriter
+from pypdf.generic import NameObject
+
+from interview_question_bank.parser import parse_question_bank
+from interview_question_bank.styles import register_fonts
+import interview_question_bank.verify as verify_module
+from interview_question_bank.verify import (
+    REQUIRED_QUESTION_LABELS,
+    analyze_maintenance_rules,
+    analyze_question_fields,
+    analyze_table_contracts,
+    find_forbidden_tokens,
+    question_label_expectations,
+    source_table_section_titles,
+    verify_pdf,
+)
+
+
+ROOT = Path(__file__).resolve().parents[3]
+SOURCE = ROOT / "docs" / "project-interview-question-bank.md"
+PDF = ROOT / "output" / "pdf" / "aipu-senior-role-interview-question-bank.pdf"
+RECEIPT = ROOT / "tmp" / "pdfs" / "build-receipt.json"
+
+
+class VerificationLogicTest(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.source_text = SOURCE.read_text(encoding="utf-8")
+        cls.bank = parse_question_bank(cls.source_text)
+
+    def test_question_field_analysis_reports_only_the_missing_label(self) -> None:
+        complete = "\n".join(
+            ["C1 · 示例题", "问题", *REQUIRED_QUESTION_LABELS]
+        )
+        incomplete = "\n".join(
+            [
+                "C2 · 另一题",
+                "问题",
+                *(
+                    label
+                    for label in REQUIRED_QUESTION_LABELS
+                    if label != "风险信号"
+                ),
+            ]
+        )
+
+        issues = analyze_question_fields(
+            complete + "\n" + incomplete,
+            ("C1", "C2"),
+        )
+
+        self.assertEqual((), issues["C1"])
+        self.assertEqual(("风险信号",), issues["C2"])
+
+    def test_forbidden_token_scan_covers_markup_entities_and_placeholders(self) -> None:
+        text = "<details><summary>答案</summary>TODO &#8226; {{placeholder}}"
+
+        self.assertEqual(
+            (
+                "<details>",
+                "<summary>",
+                "</summary>",
+                "TODO",
+                "&#8226;",
+                "{{placeholder}}",
+            ),
+            find_forbidden_tokens(text),
+        )
+
+    def test_forbidden_token_scan_is_case_insensitive_and_covers_all_entities(self) -> None:
+        text = (
+            '<DeTaIlS open><SUMMARY class="x">答案</sUmMaRy></DETAILS> '
+            "todo tBd FiXmE xxx &copy; &#169; &#xA9; {{ unresolved_name }}"
+        )
+
+        self.assertEqual(
+            (
+                '<DeTaIlS open>',
+                '<SUMMARY class="x">',
+                "</sUmMaRy>",
+                "</DETAILS>",
+                "todo",
+                "tBd",
+                "FiXmE",
+                "xxx",
+                "&copy;",
+                "&#169;",
+                "&#xA9;",
+                "{{ unresolved_name }}",
+            ),
+            find_forbidden_tokens(text),
+        )
+
+    def test_optional_label_expectations_are_derived_from_source(self) -> None:
+        expectations = question_label_expectations(self.bank.questions)
+
+        self.assertEqual(
+            21,
+            sum("题前材料（盲面提供）" in labels for labels in expectations.values()),
+        )
+        self.assertEqual(
+            33,
+            sum("参考入口" in labels for labels in expectations.values()),
+        )
+        self.assertEqual(
+            1,
+            sum("项目情景" in labels for labels in expectations.values()),
+        )
+
+    def test_deleting_optional_labels_but_keeping_bodies_is_reported(self) -> None:
+        expectations = question_label_expectations(self.bank.questions)
+        cases = (
+            ("AI2", "题前材料（盲面提供）"),
+            ("C1", "参考入口"),
+            ("C8", "项目情景"),
+        )
+        for question_id, deleted_label in cases:
+            with self.subTest(question_id=question_id, label=deleted_label):
+                question = next(q for q in self.bank.questions if q.question_id == question_id)
+                block_lines = [f"{question_id} · {question.title}", question.prompt]
+                for label in expectations[question_id]:
+                    values = question.answer_fields.get(label, (f"{label} body",))
+                    block_lines.append(f"{label}：{' '.join(values)}")
+                complete_block = "\n".join(block_lines)
+                mutated_block = complete_block.replace(f"{deleted_label}：", "", 1)
+
+                issues = analyze_question_fields(mutated_block, (question,))
+
+                self.assertIn(deleted_label, issues[question_id])
+                for value in question.answer_fields[deleted_label]:
+                    self.assertIn(value, mutated_block)
+
+    def test_interviewer_record_analysis_rejects_an_incomplete_structured_panel(self) -> None:
+        analyzer = getattr(verify_module, "analyze_interviewer_records", None)
+        self.assertTrue(callable(analyzer))
+        question = self.bank.questions[0]
+        complete = "\n".join(
+            [
+                f"{question.question_id} · {question.title}",
+                "问题",
+                *REQUIRED_QUESTION_LABELS,
+                "面试官记录",
+                "证据",
+                "风险",
+                "评分 0 1 2 3 4",
+            ]
+        )
+        mutated = complete.replace("评分 0 1 2 3 4", "评分 0 1 2 4")
+
+        issues = analyzer(mutated, (question,))
+
+        self.assertIn(question.question_id, issues)
+        self.assertTrue(
+            any("0 1 2 3 4" in issue for issue in issues[question.question_id])
+        )
+
+    def test_optional_field_order_analysis_rejects_c8_project_context_drift(self) -> None:
+        analyzer = getattr(verify_module, "analyze_question_order", None)
+        self.assertTrue(callable(analyzer))
+        question = next(q for q in self.bank.questions if q.question_id == "C8")
+        complete = "\n".join(
+            [
+                f"C8 · {question.title}",
+                "问题",
+                "项目情景",
+                "考察点",
+                "答案要点",
+                "追问",
+                "风险信号",
+                "评分锚点",
+                "面试官记录",
+                "证据",
+                "风险",
+                "评分 0 1 2 3 4",
+            ]
+        )
+        mutated = complete.replace(
+            "项目情景\n考察点",
+            "考察点\n项目情景",
+        )
+
+        issues = analyzer(mutated, (question,))
+
+        self.assertIn("C8", issues)
+        self.assertTrue(any("项目情景" in issue for issue in issues["C8"]))
+
+    def test_reference_entry_analysis_rejects_markdown_and_relative_url_leakage(self) -> None:
+        analyzer = getattr(verify_module, "analyze_reference_entries", None)
+        self.assertTrue(callable(analyzer))
+        question = self.bank.questions[0]
+        complete = "\n".join(
+            [
+                f"C1 · {question.title}",
+                "参考入口",
+                (
+                    "chatgpt_app_core/lib/app.dart · chatgpt_app_core/lib/app.dart、"
+                    "pnpm-workspace.yaml · pnpm-workspace.yaml。"
+                ),
+                "面试官记录",
+            ]
+        )
+        mutated = complete.replace(
+            "chatgpt_app_core/lib/app.dart · chatgpt_app_core/lib/app.dart",
+            "[chatgpt_app_core/lib/app.dart](../chatgpt_app_core/lib/app.dart)",
+        )
+
+        issues = analyzer(mutated, (question,))
+
+        self.assertIn("C1", issues)
+        self.assertTrue(
+            any("Markdown" in issue or "relative" in issue for issue in issues["C1"])
+        )
+
+    def test_page_furniture_analysis_rejects_wrong_dynamic_header_and_footer(self) -> None:
+        analyzer = getattr(verify_module, "analyze_page_furniture", None)
+        self.assertTrue(callable(analyzer))
+        expected_headers = (
+            None,
+            ("文档控制", "艾普项目面试题库"),
+            ("3. 共享核心题", "C1"),
+        )
+        headers = (
+            "",
+            "文档控制 艾普项目面试题库",
+            "3. 共享核心题 C2",
+        )
+        footers = (
+            "",
+            "面试官版 / 内部使用 内容快照 2026-07-23 第 2 / 3 页",
+            "面试官版 / 内部使用 内容快照 2026-07-22 第 3 / 3 页",
+        )
+
+        issues = analyzer(headers, footers, expected_headers)
+
+        self.assertIn(3, issues)
+        self.assertTrue(any("header right" in issue for issue in issues[3]))
+        self.assertTrue(any("内容快照" in issue for issue in issues[3]))
+
+    def test_divider_analysis_rejects_missing_source_ability_keywords(self) -> None:
+        analyzer = getattr(verify_module, "analyze_divider_contracts", None)
+        self.assertTrue(callable(analyzer))
+        capabilities = {
+            row[0].replace(chr(96), ""): row[2]
+            for row in self.bank.tables[0].rows[1:]
+        }
+        prefixes = ("C", "FE", "AI", "BE", "SEC", "PM", "QA", "OPS")
+        page_texts = tuple(
+            "\n".join(
+                [
+                    group.title.partition(".")[0].zfill(2),
+                    group.title,
+                    f"{prefix}1 - {prefix}10",
+                    capabilities[prefix],
+                ]
+            )
+            for group, prefix in zip(self.bank.question_groups, prefixes)
+        )
+        section_pages = {
+            group.title: index
+            for index, group in enumerate(self.bank.question_groups, start=1)
+        }
+        mutated = list(page_texts)
+        mutated[4] = mutated[4].replace(capabilities["SEC"], "")
+
+        issues = analyzer(tuple(mutated), self.bank, section_pages)
+
+        self.assertIn(self.bank.question_groups[4].title, issues)
+        self.assertTrue(
+            any("keywords" in issue for issue in issues[self.bank.question_groups[4].title])
+        )
+
+    def test_font_role_analysis_rejects_missing_or_non_distinct_resources(self) -> None:
+        analyzer = getattr(verify_module, "analyze_font_roles", None)
+        self.assertTrue(callable(analyzer))
+        reader = PdfReader(PDF)
+        fake_roles = SimpleNamespace(
+            body_postscript_name="MissingBody",
+            heading_postscript_name="MissingBody",
+            code_postscript_name="MissingCodeMono",
+            code_embedded=True,
+        )
+
+        issues = analyzer(reader, fake_roles, {"C1": 8})
+
+        self.assertIn("distinct_roles", issues)
+        self.assertIn("body", issues)
+        self.assertIn("code", issues)
+
+    def test_missing_maintenance_rule_on_maintenance_page_is_reported(self) -> None:
+        rules = tuple(self.bank.maintenance_rules[0].blocks[0].items)
+        page_texts = ("其他页面", "\n".join(rules))
+        mutated = (page_texts[0], page_texts[1].replace(rules[2], "", 1))
+
+        issues = analyze_maintenance_rules(mutated, rules, maintenance_page=2)
+
+        self.assertEqual((rules[2],), issues)
+
+    @staticmethod
+    def _physical_table_fixture(bank) -> dict[int, list[list[list[str]]]]:
+        logical = [[list(row) for row in table.rows] for table in bank.tables]
+        role_weights = logical[3]
+        split_left = [row[:5] for row in role_weights]
+        split_right = [[row[0], *row[5:]] for row in role_weights]
+        return {
+            3: [logical[0], logical[1]],
+            6: [logical[2]],
+            95: [split_left, split_right],
+        }
+
+    def _table_issues(self, physical_tables):
+        return analyze_table_contracts(
+            self.bank.tables,
+            source_table_section_titles(self.source_text),
+            {
+                "1. 使用方式": 3,
+                "2. 七个岗位的抽题路线": 6,
+                "11. 面试官综合评估表": 95,
+            },
+            physical_tables,
+        )
+
+    def test_missing_table_row_is_reported(self) -> None:
+        physical = self._physical_table_fixture(self.bank)
+        del physical[3][0][2]
+
+        self.assertIn("table_1", self._table_issues(physical))
+
+    def test_duplicated_table_row_is_reported(self) -> None:
+        physical = self._physical_table_fixture(self.bank)
+        physical[3][1].append(list(physical[3][1][1]))
+
+        self.assertIn("table_2", self._table_issues(physical))
+
+    def test_misplaced_table_is_reported(self) -> None:
+        physical = self._physical_table_fixture(self.bank)
+        physical[4] = [physical[6].pop()]
+
+        self.assertIn("table_3", self._table_issues(physical))
+
+    def test_receipt_hash_mismatch_fails_verification(self) -> None:
+        with TemporaryDirectory() as directory:
+            receipt = json.loads(RECEIPT.read_text(encoding="utf-8"))
+            receipt["sha256"] = "0" * 64
+            tampered_receipt = Path(directory) / "receipt.json"
+            tampered_receipt.write_text(
+                json.dumps(receipt, ensure_ascii=False),
+                encoding="utf-8",
+            )
+
+            report = verify_pdf(SOURCE, PDF, receipt_path=tampered_receipt)
+
+        self.assertFalse(report.passed)
+        self.assertIn("pdf_sha256", report.receipt_mismatches)
+
+
+class FormalArtifactVerificationTest(unittest.TestCase):
+    @staticmethod
+    def _raw_outline_nodes(reader: PdfReader):
+        def walk(reference):
+            current = reference
+            while current:
+                node = current.get_object()
+                yield node
+                if node.get("/First"):
+                    yield from walk(node["/First"])
+                current = node.get("/Next")
+
+        yield from walk(reader.trailer["/Root"]["/Outlines"]["/First"])
+
+    @staticmethod
+    def _write_matching_receipt(pdf: Path, destination: Path) -> Path:
+        receipt = json.loads(RECEIPT.read_text(encoding="utf-8"))
+        receipt["sha256"] = sha256(pdf.read_bytes()).hexdigest()
+        destination.write_text(json.dumps(receipt, ensure_ascii=False), encoding="utf-8")
+        return destination
+
+    def test_wrong_but_valid_outline_targets_fail_report(self) -> None:
+        with TemporaryDirectory() as directory:
+            reader = PdfReader(PDF)
+            nodes = list(self._raw_outline_nodes(reader))
+            section = next(node for node in nodes if node.get("/Title") == "3. 共享核心题")
+            question = next(node for node in nodes if str(node.get("/Title", "")).startswith("C1."))
+            section[NameObject("/Dest")][0] = reader.pages[8].indirect_reference
+            question[NameObject("/Dest")][0] = reader.pages[9].indirect_reference
+            tampered_pdf = Path(directory) / "wrong-outline.pdf"
+            writer = PdfWriter()
+            writer.clone_document_from_reader(reader)
+            writer.write(tampered_pdf)
+            receipt = self._write_matching_receipt(
+                tampered_pdf,
+                Path(directory) / "receipt.json",
+            )
+
+            report = verify_pdf(SOURCE, tampered_pdf, receipt_path=receipt)
+
+        self.assertFalse(report.passed)
+        self.assertIn("3. 共享核心题", report.outline_destination_issues)
+        self.assertIn("C1", report.outline_destination_issues)
+        self.assertEqual({}, report.receipt_mismatches)
+
+    def test_wrong_but_valid_toc_target_fails_report(self) -> None:
+        with TemporaryDirectory() as directory:
+            reader = PdfReader(PDF)
+            first_toc_link = reader.pages[4]["/Annots"][0].get_object()
+            first_toc_link[NameObject("/Dest")][0] = reader.pages[3].indirect_reference
+            tampered_pdf = Path(directory) / "wrong-toc-link.pdf"
+            writer = PdfWriter()
+            writer.clone_document_from_reader(reader)
+            writer.write(tampered_pdf)
+            receipt = self._write_matching_receipt(
+                tampered_pdf,
+                Path(directory) / "receipt.json",
+            )
+
+            report = verify_pdf(SOURCE, tampered_pdf, receipt_path=receipt)
+
+        self.assertFalse(report.passed)
+        self.assertIn("1. 使用方式", report.toc_link_issues)
+        self.assertEqual({}, report.receipt_mismatches)
+
+    def test_passed_property_includes_every_final_review_issue_collection(self) -> None:
+        report = verify_pdf(SOURCE, PDF)
+        self.assertTrue(report.passed, report.to_dict())
+        cases = {
+            "question_record_issues": {"C1": ("missing 评分",)},
+            "question_order_issues": {"C8": ("项目情景 order",)},
+            "reference_entry_issues": {"C1": ("Markdown leakage",)},
+            "page_furniture_issues": {2: ("footer mismatch",)},
+            "divider_contract_issues": {"3. 共享核心题": ("keywords",)},
+            "font_role_issues": {"body": ("missing",)},
+        }
+        self.assertTrue(
+            all(hasattr(report, field_name) for field_name in cases),
+            "VerificationReport must expose every final-review issue collection",
+        )
+        for field_name, value in cases.items():
+            with self.subTest(field=field_name):
+                mutated = replace(report, **{field_name: value})
+                self.assertFalse(mutated.passed)
+
+    def test_formal_pdf_passes_exhaustive_machine_contract(self) -> None:
+        report = verify_pdf(SOURCE, PDF)
+        receipt = json.loads(RECEIPT.read_text(encoding="utf-8"))
+
+        self.assertTrue(report.passed, report.to_dict())
+        self.assertEqual(receipt["page_count"], report.page_count)
+        self.assertEqual(80, report.source_question_count)
+        self.assertEqual(80, report.pdf_question_count)
+        self.assertEqual(33, report.reference_entry_count)
+        self.assertEqual(12, report.section_count)
+        self.assertEqual(93, report.outline_count)
+        self.assertEqual(80, report.question_outline_count)
+        self.assertEqual(24, report.link_count)
+        self.assertEqual(24, report.toc_link_count)
+        self.assertEqual(0, len(report.page_size_issues))
+        self.assertEqual(0, len(report.unexpected_near_blank_pages))
+        self.assertEqual({}, report.metadata_mismatches)
+        self.assertEqual({}, report.receipt_mismatches)
+        self.assertEqual({}, report.question_label_issues)
+        self.assertEqual({}, report.question_record_issues)
+        self.assertEqual({}, report.question_order_issues)
+        self.assertEqual({}, report.reference_entry_issues)
+        self.assertEqual({}, report.page_furniture_issues)
+        self.assertEqual({}, report.divider_contract_issues)
+        self.assertEqual({}, report.font_role_issues)
+        self.assertEqual({}, report.outline_destination_issues)
+        self.assertEqual({}, report.toc_link_issues)
+        self.assertEqual((), report.maintenance_rule_issues)
+        self.assertEqual({}, report.table_contract_issues)
+        self.assertEqual((), report.missing_record_fields)
+        self.assertEqual((), report.forbidden_tokens)
+
+
+if __name__ == "__main__":
+    unittest.main()
