@@ -18,6 +18,7 @@ from reportlab.lib.enums import TA_CENTER, TA_LEFT, TA_RIGHT
 from reportlab.lib.pagesizes import A4
 from reportlab.lib.styles import ParagraphStyle
 from reportlab.lib.units import mm
+from reportlab.pdfgen.canvas import Canvas
 from reportlab.platypus import (
     BaseDocTemplate,
     Flowable,
@@ -51,7 +52,15 @@ from interview_question_bank.parser import (
     build_sections,
     parse_question_bank,
 )
-from interview_question_bank.styles import StyleSet, build_styles, register_fonts, safe_inline
+from interview_question_bank.styles import (
+    BLUE,
+    DARK_NAVY,
+    SKY,
+    StyleSet,
+    build_styles,
+    register_fonts,
+    safe_inline,
+)
 
 
 TITLE = "艾普项目高级岗位面试题库"
@@ -63,6 +72,33 @@ FOOTER_LEFT = "面试官版 / 内部使用"
 FOOTER_CENTER = "内容快照 2026-07-23"
 QUESTION_PREFIXES = ("C", "FE", "AI", "BE", "SEC", "PM", "QA", "OPS")
 FRAME_WIDTH = A4[0] - 40 * mm
+BLUEPRINT_GRID_STEP = 12 * mm
+BLUEPRINT_GRID_ALPHA = 0.10
+BLUEPRINT_ACCENT_WIDTH = 11 * mm
+
+
+def draw_blueprint_background(canvas: Canvas, doc: BaseDocTemplate) -> None:
+    """Paint the shared full-page cover and chapter blueprint."""
+    page_width, page_height = A4
+    canvas.saveState()
+    canvas.setFillColor(DARK_NAVY)
+    canvas.rect(0, 0, page_width, page_height, stroke=0, fill=1)
+    canvas.setFillColor(BLUE)
+    canvas.rect(0, 0, BLUEPRINT_ACCENT_WIDTH, page_height, stroke=0, fill=1)
+
+    canvas.setStrokeColor(SKY)
+    canvas.setLineWidth(0.35)
+    canvas.setStrokeAlpha(BLUEPRINT_GRID_ALPHA)
+    x = BLUEPRINT_ACCENT_WIDTH
+    while x <= page_width:
+        canvas.line(x, 0, x, page_height)
+        x += BLUEPRINT_GRID_STEP
+    y = 0.0
+    while y <= page_height:
+        canvas.line(BLUEPRINT_ACCENT_WIDTH, y, page_width, y)
+        y += BLUEPRINT_GRID_STEP
+    canvas.setStrokeAlpha(1.0)
+    canvas.restoreState()
 
 
 @dataclass(frozen=True)
@@ -152,7 +188,7 @@ def _slug(text: str) -> str:
 
 
 class InterviewDocTemplate(BaseDocTemplate):
-    """A4 handbook template with a furniture-free cover and body furniture."""
+    """A4 handbook with blueprint cover/chapter pages and white body pages."""
 
     def __init__(
         self,
@@ -165,7 +201,6 @@ class InterviewDocTemplate(BaseDocTemplate):
         self.total_pages = total_pages
         self._current_section = "文档控制"
         self._current_question: str | None = None
-        width, height = A4
         left = right = 20 * mm
         top = 18 * mm
         bottom = 17 * mm
@@ -180,22 +215,55 @@ class InterviewDocTemplate(BaseDocTemplate):
             author=AUTHOR,
             subject=SUBJECT,
         )
-        frame = Frame(
-            left,
-            bottom,
-            width - left - right,
-            height - top - bottom,
+        body_frame = Frame(
+            20 * mm,
+            17 * mm,
+            A4[0] - 40 * mm,
+            A4[1] - 35 * mm,
             leftPadding=0,
             rightPadding=0,
+            topPadding=0,
+            bottomPadding=0,
             id="body-frame",
+        )
+        cover_frame = Frame(
+            20 * mm,
+            20 * mm,
+            A4[0] - 40 * mm,
+            A4[1] - 40 * mm,
+            leftPadding=0,
+            rightPadding=0,
+            topPadding=0,
+            bottomPadding=0,
+            id="cover-frame",
+        )
+        chapter_frame = Frame(
+            20 * mm,
+            20 * mm,
+            A4[0] - 40 * mm,
+            A4[1] - 40 * mm,
+            leftPadding=0,
+            rightPadding=0,
+            topPadding=0,
+            bottomPadding=0,
+            id="chapter-frame",
         )
         self.addPageTemplates(
             [
-                PageTemplate(id="Cover", frames=[frame], onPage=self._draw_cover),
+                PageTemplate(
+                    id="Cover",
+                    frames=[cover_frame],
+                    onPage=draw_blueprint_background,
+                ),
                 PageTemplate(
                     id="Body",
-                    frames=[frame],
+                    frames=[body_frame],
                     onPageEnd=self._draw_body,
+                ),
+                PageTemplate(
+                    id="Chapter",
+                    frames=[chapter_frame],
+                    onPage=draw_blueprint_background,
                 ),
             ]
         )
@@ -205,14 +273,6 @@ class InterviewDocTemplate(BaseDocTemplate):
         self.canv.setSubject(SUBJECT)
         self.canv.setAuthor(AUTHOR)
         self.canv.setKeywords(KEYWORDS)
-
-    def _draw_cover(self, canvas, doc) -> None:
-        canvas.saveState()
-        canvas.setFillColor(self.styles.primary)
-        canvas.rect(0, 0, A4[0], A4[1], stroke=0, fill=1)
-        canvas.setFillColor(HexColor("#2F6FED"))
-        canvas.rect(0, 0, 11 * mm, A4[1], stroke=0, fill=1)
-        canvas.restoreState()
 
     def _draw_body(self, canvas, doc) -> None:
         """Draw dynamic furniture after page content has established context."""
@@ -319,6 +379,15 @@ def _document_styles(styles: StyleSet) -> dict[str, ParagraphStyle]:
             alignment=TA_LEFT,
             spaceAfter=10,
         ),
+        "cover_kicker": ParagraphStyle(
+            "CoverKicker",
+            parent=body,
+            fontName=styles.fonts.code,
+            fontSize=9,
+            leading=13,
+            textColor=SKY,
+            spaceAfter=8,
+        ),
         "cover_subtitle": ParagraphStyle(
             "CoverSubtitle",
             parent=body,
@@ -330,7 +399,23 @@ def _document_styles(styles: StyleSet) -> dict[str, ParagraphStyle]:
         "cover_meta": ParagraphStyle(
             "CoverMeta",
             parent=body,
-            fontSize=9,
+            fontName=styles.fonts.code,
+            fontSize=9.5,
+            leading=16,
+            textColor=HexColor("#DCE8FF"),
+        ),
+        "cover_metric": ParagraphStyle(
+            "CoverMetric",
+            parent=body,
+            fontName=styles.fonts.code,
+            fontSize=12,
+            leading=19,
+            textColor=styles.paper,
+        ),
+        "cover_classification": ParagraphStyle(
+            "CoverClassification",
+            parent=body,
+            fontSize=9.5,
             leading=16,
             textColor=HexColor("#DCE8FF"),
         ),
@@ -554,7 +639,9 @@ def build_story(
     story.extend(
         [
             UnitMarker("cover"),
-            Spacer(1, 48 * mm),
+            Spacer(1, 22 * mm),
+            Paragraph("ENGINEERING INTERVIEW HANDBOOK", ds["cover_kicker"]),
+            Spacer(1, 7 * mm),
             HeadingFlowable(
                 TITLE,
                 ds["cover_title"],
@@ -563,10 +650,19 @@ def build_story(
                 toc_level=None,
             ),
             Paragraph(SUBJECT, ds["cover_subtitle"]),
-            Spacer(1, 18 * mm),
-            Paragraph("内部资料 | INTERNAL USE ONLY", ds["cover_meta"]),
-            Paragraph("内容快照：2026-07-23", ds["cover_meta"]),
-            Paragraph("版本：1.0 | 责任团队：Aipu Project", ds["cover_meta"]),
+            Spacer(1, 16 * mm),
+            Paragraph("80 QUESTIONS", ds["cover_metric"]),
+            Paragraph("7 ROLE ROUTES", ds["cover_metric"]),
+            Paragraph("0—4 UNIFIED SCORE", ds["cover_metric"]),
+            Paragraph("A4 INTERVIEWER EDITION", ds["cover_metric"]),
+            Spacer(1, 13 * mm),
+            Paragraph("v1.0", ds["cover_meta"]),
+            Paragraph("2026-07-23", ds["cover_meta"]),
+            Spacer(1, 7 * mm),
+            Paragraph(
+                "面试官版 / 内部使用 / 禁止外传",
+                ds["cover_classification"],
+            ),
             NextPageTemplate("Body"),
             PageBreak(),
             UnitMarker("control_page"),
@@ -646,7 +742,6 @@ def build_story(
     )
     for block in routes.blocks:
         story.extend(_block_flowables(block, styles, ds))
-    story.append(PageBreak())
 
     questions_by_prefix = {
         prefix: [question for question in bank.questions if question.question_id.startswith(prefix)]
@@ -656,13 +751,13 @@ def build_story(
     for group_index, group in enumerate(bank.question_groups):
         prefix = QUESTION_PREFIXES[group_index]
         questions = questions_by_prefix[prefix]
-        if group_index:
-            story.append(PageBreak())
         story.extend(
             [
+                NextPageTemplate("Chapter"),
+                PageBreak(),
                 UnitMarker("level2_section"),
                 UnitMarker("question_group_divider"),
-                PageContextMarker(group.title),
+                PageContextMarker(group.title, None),
                 ChapterDividerFlowable(
                     section_number=group.title.partition(".")[0].zfill(2),
                     section_title=group.title,
@@ -675,16 +770,16 @@ def build_story(
                     styles=styles,
                     anchor=_slug(group.title),
                 ),
-                PageBreak(),
+                NextPageTemplate("Body"),
             ]
         )
-        for question_index, question in enumerate(questions):
-            if question_index:
-                story.append(PageBreak())
+        for question in questions:
+            story.append(PageBreak())
             story.append(UnitMarker("question"))
             story.append(PageContextMarker(group.title, question.question_id))
-            flows = question_flowables(_question_for_document(question), styles)
-            story.extend(flows)
+            story.extend(
+                question_flowables(_question_for_document(question), styles)
+            )
 
     assessment = bank.level2_sections[10]
     story.extend(

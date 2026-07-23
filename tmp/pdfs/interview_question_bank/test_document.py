@@ -14,13 +14,16 @@ from unittest.mock import patch
 import unicodedata
 
 import pdfplumber
+import pypdfium2 as pdfium
 from pypdf import PdfReader
+from reportlab.pdfbase import pdfmetrics
 from reportlab.lib.pagesizes import A4
 from reportlab.lib.units import mm
 from reportlab.pdfgen.canvas import Canvas
 from reportlab.platypus import NextPageTemplate, PageBreak, Table
 
 from interview_question_bank.components import (
+    ChapterDividerFlowable,
     interview_record_flowable,
     question_flowables,
     table_flowable,
@@ -130,6 +133,201 @@ def region_text(page, *, header: bool) -> str:
     else:
         box = (0, float(page.height) - height, float(page.width), float(page.height))
     return page.crop(box).extract_text() or ""
+
+
+class _RecordingCanvas:
+    def __init__(self) -> None:
+        self.rectangles: list[tuple[float, float, float, float]] = []
+
+    def rect(
+        self,
+        x: float,
+        y: float,
+        width: float,
+        height: float,
+        *,
+        stroke: int,
+        fill: int,
+    ) -> None:
+        self.rectangles.append((x, y, width, height))
+
+    @staticmethod
+    def stringWidth(text: str, font_name: str, font_size: float) -> float:
+        return pdfmetrics.stringWidth(text, font_name, font_size)
+
+    def __getattr__(self, name: str):
+        return lambda *args, **kwargs: None
+
+
+class BlueprintPageTemplateTest(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.source_text = SOURCE.read_text(encoding="utf-8")
+        cls.bank = parse_question_bank(cls.source_text)
+        cls.fonts = register_fonts()
+        cls.styles = build_styles(cls.fonts)
+        cls.story = build_story(cls.bank, cls.styles)
+        cls._directory = TemporaryDirectory()
+        cls.pdf_path = Path(cls._directory.name) / "blueprint-pages.pdf"
+        build_pdf(SOURCE, cls.pdf_path)
+        cls.reader = PdfReader(cls.pdf_path)
+        cls.page_texts = [page.extract_text() or "" for page in cls.reader.pages]
+        cls.chapter_page_indexes = [
+            index
+            for index, text in enumerate(cls.page_texts)
+            if "UNIFIED SCORE · 0—4" in text
+        ]
+
+    @classmethod
+    def tearDownClass(cls) -> None:
+        cls._directory.cleanup()
+
+    @classmethod
+    def render_page_at_72_dpi(cls, page_index: int):
+        pdf = pdfium.PdfDocument(str(cls.pdf_path))
+        page = pdf[page_index]
+        try:
+            return page.render(scale=1).to_pil()
+        finally:
+            page.close()
+            pdf.close()
+
+    def test_document_registers_cover_body_and_chapter_templates(self) -> None:
+        with TemporaryDirectory() as directory:
+            doc = InterviewDocTemplate(
+                str(Path(directory) / "templates.pdf"),
+                self.styles,
+            )
+        self.assertEqual(
+            ["Cover", "Body", "Chapter"],
+            [template.id for template in doc.pageTemplates],
+        )
+
+    def test_story_switches_chapter_and_body_templates_without_double_breaks(self) -> None:
+        dividers = [
+            index
+            for index, flowable in enumerate(self.story)
+            if isinstance(flowable, ChapterDividerFlowable)
+        ]
+        self.assertEqual(8, len(dividers))
+        for index in dividers:
+            with self.subTest(section=self.story[index].section_title):
+                self.assertIsInstance(self.story[index - 5], NextPageTemplate)
+                self.assertEqual(
+                    ("nextPageTemplate", "Chapter"),
+                    self.story[index - 5].action,
+                )
+                self.assertIsInstance(self.story[index - 4], PageBreak)
+                self.assertIsInstance(self.story[index + 1], NextPageTemplate)
+                self.assertEqual(
+                    ("nextPageTemplate", "Body"),
+                    self.story[index + 1].action,
+                )
+                self.assertIsInstance(self.story[index + 2], PageBreak)
+        self.assertFalse(
+            any(
+                isinstance(left, PageBreak) and isinstance(right, PageBreak)
+                for left, right in zip(self.story, self.story[1:])
+            )
+        )
+
+    def test_chapter_pages_are_dedicated_full_pages_without_body_furniture(self) -> None:
+        self.assertEqual(8, len(self.chapter_page_indexes))
+        for page_index in self.chapter_page_indexes:
+            text = self.page_texts[page_index]
+            with self.subTest(page=page_index + 1):
+                self.assertIn("CAPABILITY BLUEPRINT", text)
+                self.assertIn("10 QUESTIONS", text)
+                self.assertNotIn("答案要点", text)
+                self.assertNotIn("面试官版 / 内部使用", text)
+                self.assertNotRegex(text, r"第 \d+ / \d+ 页")
+                self.assertLess(page_index + 1, len(self.page_texts))
+                self.assertRegex(
+                    self.page_texts[page_index + 1],
+                    r"(?m)^(?:C|FE|AI|BE|SEC|PM|QA|OPS)1\s*·\s+",
+                )
+
+    def test_cover_and_chapter_pages_use_blueprint_colors_while_body_stays_white(self) -> None:
+        self.assertEqual(8, len(self.chapter_page_indexes))
+        accent_expected = (47, 111, 237)
+        navy_expected = (13, 38, 62)
+        accent_width = int(
+            getattr(document_module, "BLUEPRINT_ACCENT_WIDTH", 11 * mm)
+        )
+        for page_index in [0, *self.chapter_page_indexes]:
+            image = self.render_page_at_72_dpi(page_index)
+            with self.subTest(page=page_index + 1, layer="accent"):
+                actual = image.getpixel((8, 8))[:3]
+                self.assertLessEqual(
+                    max(abs(a - b) for a, b in zip(actual, accent_expected)),
+                    4,
+                )
+            for point in (
+                (accent_width + 8, 8),
+                (image.width - 8, 8),
+            ):
+                with self.subTest(page=page_index + 1, point=point):
+                    actual = image.getpixel(point)[:3]
+                    self.assertLessEqual(
+                        max(abs(a - b) for a, b in zip(actual, navy_expected)),
+                        4,
+                    )
+
+        body_index = next(
+            index
+            for index, text in enumerate(self.page_texts)
+            if "文档控制" in text
+        )
+        body_image = self.render_page_at_72_dpi(body_index)
+        for point in ((8, 8), (body_image.width - 8, 8)):
+            with self.subTest(body_page=body_index + 1, point=point):
+                actual = body_image.getpixel(point)[:3]
+                self.assertLessEqual(
+                    max(abs(channel - 255) for channel in actual),
+                    2,
+                )
+
+    def test_chapter_content_layer_exposes_safe_geometry_and_no_large_fill(self) -> None:
+        divider = ChapterDividerFlowable(
+            section_number="03",
+            section_title="3. 共享核心题",
+            group_name="共享核心题",
+            question_range="C1 - C10",
+            ability_keywords="系统边界、跨模块理解、工程取舍",
+            styles=self.styles,
+        )
+        divider.wrap(FRAME_WIDTH, A4[1])
+        recording_canvas = _RecordingCanvas()
+        divider.canv = recording_canvas
+        divider.draw()
+
+        self.assertIsNotNone(getattr(divider, "metrics_rect", None))
+        self.assertIsNotNone(getattr(divider, "decoration_rect", None))
+        self.assertGreaterEqual(divider.decoration_clearance, 8)
+        self.assertFalse(
+            any(height >= 90 * mm for _, _, _, height in recording_canvas.rectangles)
+        )
+
+    def test_cover_text_is_extractable_and_uses_approved_title_size(self) -> None:
+        cover_text = self.page_texts[0]
+        for required in (
+            "艾普项目高级岗位面试题库",
+            "高级岗位内部面试与评分手册",
+            "ENGINEERING INTERVIEW HANDBOOK",
+            "80 QUESTIONS",
+            "7 ROLE ROUTES",
+            "0—4 UNIFIED SCORE",
+            "A4 INTERVIEWER EDITION",
+            "v1.0",
+            "2026-07-23",
+            "面试官版 / 内部使用 / 禁止外传",
+        ):
+            with self.subTest(required=required):
+                self.assertIn(required, cover_text)
+        self.assertNotIn("第 1 /", cover_text)
+        cover_style = _document_styles(self.styles)["cover_title"]
+        self.assertEqual(29, cover_style.fontSize)
+        self.assertEqual(39, cover_style.leading)
 
 
 class DocumentTest(unittest.TestCase):
@@ -337,6 +535,10 @@ class DocumentTest(unittest.TestCase):
             reader = PdfReader(output)
             for page_number, page in enumerate(reader.pages[1:], start=2):
                 text = page.extract_text() or ""
+                if "UNIFIED SCORE · 0—4" in text:
+                    self.assertNotIn("面试官版 / 内部使用", text)
+                    self.assertNotRegex(text, r"第 \d+ / \d+ 页")
+                    continue
                 self.assertIn(f"第 {page_number} / {receipt.page_count} 页", text)
 
     def test_all_questions_have_structured_record_panels_inside_body_bounds(self) -> None:
@@ -553,8 +755,10 @@ class DocumentTest(unittest.TestCase):
                 page = next(
                     page
                     for page in pages
-                    if any(
-                        normalized(line) == normalized(group.title)
+                    if "UNIFIED SCORE · 0—4" in (page.extract_text() or "")
+                    and any(
+                        normalized(line)
+                        == normalized(group.title.partition(".")[2].strip())
                         for line in (page.extract_text() or "").splitlines()
                     )
                 )
@@ -577,6 +781,7 @@ class DocumentTest(unittest.TestCase):
                         for value in (rect.get("non_stroking_color") or ())
                     )
                     in {
+                        (0.051, 0.149, 0.243),
                         (0.086, 0.227, 0.373),
                         (0.184, 0.435, 0.929),
                     }

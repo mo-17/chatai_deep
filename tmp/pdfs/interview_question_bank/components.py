@@ -45,7 +45,7 @@ class QuestionHeadingFlowable(Paragraph):
 
 
 class ChapterDividerFlowable(Flowable):
-    """Large, extractable blue chapter anchor derived from source metadata."""
+    """Transparent chapter content layer drawn over the page blueprint."""
 
     def __init__(
         self,
@@ -72,53 +72,114 @@ class ChapterDividerFlowable(Flowable):
         self.outline_level = outline_level
         self.toc_level = toc_level
         self.width = BODY_WIDTH
-        self.height = 92 * mm
+        self.height = A4[1] - 40 * mm
+        range_numbers = [int(value) for value in re.findall(r"\d+", question_range)]
+        self.question_count = (
+            range_numbers[-1] - range_numbers[-2] + 1
+            if len(range_numbers) >= 2
+            else 0
+        )
+        self.metrics_rect = (0.0, 0.0, self.width, 0.0)
+        self.decoration_rect = (0.0, 0.0, self.width, 0.0)
+        self._update_geometry()
+
+    def _update_geometry(self) -> None:
+        metrics_bottom = self.height - 160 * mm
+        self.metrics_rect = (
+            0.0,
+            metrics_bottom,
+            self.width,
+            20 * mm,
+        )
+        decoration_top = metrics_bottom - 12.0
+        self.decoration_rect = (
+            0.0,
+            decoration_top - 24 * mm,
+            self.width,
+            24 * mm,
+        )
+
+    @property
+    def metrics_bottom(self) -> float:
+        return self.metrics_rect[1]
+
+    @property
+    def decoration_top(self) -> float:
+        return self.decoration_rect[1] + self.decoration_rect[3]
+
+    @property
+    def decoration_clearance(self) -> float:
+        return self.metrics_bottom - self.decoration_top
 
     def wrap(self, available_width: float, available_height: float) -> tuple[float, float]:
         self.width = min(BODY_WIDTH, available_width)
+        self.height = min(A4[1] - 40 * mm, available_height)
+        self._update_geometry()
         return self.width, self.height
 
     def draw(self) -> None:
         canvas = self.canv
         canvas.saveState()
-        canvas.setFillColor(self.styles.primary)
-        canvas.rect(0, 0, self.width, self.height, stroke=0, fill=1)
-        canvas.setFillColor(self.styles.accent)
-        canvas.rect(0, 0, 10 * mm, self.height, stroke=0, fill=1)
-
-        left = 20 * mm
-        canvas.setFillColor(HexColor("#DCE8FF"))
-        canvas.setFont(self.styles.fonts.body, 8.5)
-        canvas.drawString(left, self.height - 14 * mm, self.section_title)
-
-        canvas.setFillColor(HexColor("#FFFFFF"))
-        canvas.setFont(self.styles.fonts.heading, 44)
-        canvas.drawString(left, self.height - 38 * mm, self.section_number)
-        canvas.setFont(self.styles.fonts.heading, 21)
-        canvas.drawString(left, self.height - 53 * mm, self.group_name)
-
-        canvas.setFillColor(HexColor("#DCE8FF"))
-        range_y = self.height - 65 * mm
-        canvas.setFont(self.styles.fonts.body, 10)
-        canvas.drawString(left, range_y, "题号")
-        range_x = left + canvas.stringWidth("题号", self.styles.fonts.body, 10) + 5
-        canvas.setFont(self.styles.fonts.code, 10)
-        canvas.drawString(range_x, range_y, self.question_range)
-        suffix_x = (
-            range_x
-            + canvas.stringWidth(
-                self.question_range,
-                self.styles.fonts.code,
-                10,
-            )
-            + 5
+        canvas.setFillColor(self.styles.sky)
+        canvas.setFont(self.styles.fonts.code, 9)
+        canvas.drawString(
+            0,
+            self.height - 17 * mm,
+            f"CAPABILITY BLUEPRINT / SECTION {self.section_number}",
         )
-        canvas.setFont(self.styles.fonts.body, 10)
-        canvas.drawString(suffix_x, range_y, "| 共 10 道")
+        canvas.setFont(self.styles.fonts.code, 68)
+        canvas.drawString(0, self.height - 48 * mm, self.section_number)
+
+        canvas.setFillColor(self.styles.paper)
+        canvas.setFont(self.styles.fonts.heading, 24)
+        canvas.drawString(0, self.height - 76 * mm, self.group_name)
+
+        canvas.setFillColor(HexColor("#DCE8FF"))
         canvas.setFont(self.styles.fonts.body, 8.8)
-        canvas.drawString(left, self.height - 75 * mm, "能力关键词")
-        canvas.setFont(self.styles.fonts.body, 9.5)
-        canvas.drawString(left, self.height - 83 * mm, self.ability_keywords)
+        canvas.drawString(0, self.height - 102 * mm, "能力关键词")
+        canvas.setFont(self.styles.fonts.body, 10)
+        canvas.drawString(0, self.height - 113 * mm, self.ability_keywords)
+
+        metrics_y = self.metrics_rect[1] + self.metrics_rect[3] - 10
+        canvas.setFillColor(self.styles.sky)
+        canvas.setFont(self.styles.fonts.code, 10)
+        canvas.drawString(
+            0,
+            metrics_y,
+            f"{self.question_range} · {self.question_count} QUESTIONS",
+        )
+        canvas.drawRightString(
+            self.width,
+            metrics_y,
+            "UNIFIED SCORE · 0—4",
+        )
+
+        decoration_x, decoration_y, decoration_width, decoration_height = (
+            self.decoration_rect
+        )
+        canvas.setStrokeColor(self.styles.sky)
+        canvas.setLineWidth(0.8)
+        canvas.setStrokeAlpha(0.55)
+        canvas.line(
+            decoration_x,
+            decoration_y + decoration_height,
+            decoration_x + decoration_width,
+            decoration_y + decoration_height,
+        )
+        canvas.setLineWidth(0.35)
+        canvas.line(
+            decoration_x,
+            decoration_y + decoration_height * 0.45,
+            decoration_x + decoration_width * 0.72,
+            decoration_y + decoration_height * 0.45,
+        )
+        canvas.line(
+            decoration_x + decoration_width * 0.82,
+            decoration_y,
+            decoration_x + decoration_width * 0.82,
+            decoration_y + decoration_height,
+        )
+        canvas.setStrokeAlpha(1.0)
         canvas.restoreState()
 
 
