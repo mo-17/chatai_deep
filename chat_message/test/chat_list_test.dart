@@ -1,15 +1,19 @@
 import 'package:chat_message/core/chat_controller.dart';
 import 'package:chat_message/models/message_model.dart';
 import 'package:chat_message/widget/chat_list.dart';
+import 'package:chat_message/widget/default_message_widget.dart';
 import 'package:bubble/bubble.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 
-ChatController _controller(List<MessageModel> msgs) => ChatController(
+ChatController _controller(List<MessageModel> msgs,
+        {MessageContentBuilder? contentBuilder}) =>
+    ChatController(
       initialMessageList: msgs,
       itemScrollController: ItemScrollController(),
       itemPositionsListener: ItemPositionsListener.create(),
       timePellet: 60,
+      messageContentBuilder: contentBuilder,
     );
 
 Widget _host(ChatController c) => MaterialApp(
@@ -70,6 +74,94 @@ void main() {
     final visible =
         c.itemPositionsListener.itemPositions.value.map((p) => p.index);
     expect(visible, contains(0));
+  });
+
+  for (final delay in [Duration.zero, const Duration(milliseconds: 16)]) {
+    testWidgets('首轮连续插入用户消息和流式占位后立即可见（$delay）', (tester) async {
+      final c = _controller([]);
+      await tester.pumpWidget(_host(c));
+      await tester.pump();
+      c.loadMoreData([]);
+      await tester.pump();
+
+      c.addMessage(MessageModel(
+          ownerType: OwnerType.sender, content: '首轮提问', createdAt: 3000));
+      if (delay != Duration.zero) await tester.pump(delay);
+      final reply = MessageModel(
+          ownerType: OwnerType.receiver, content: '', createdAt: 3001);
+      c.addMessage(reply);
+      await tester.pump();
+      c.updateMessage(reply.copyWith(content: '首轮流式回复'));
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 300));
+
+      expect(tester.takeException(), isNull);
+      expect(find.text('首轮提问').hitTestable(), findsOneWidget);
+      expect(find.text('首轮流式回复').hitTestable(), findsOneWidget);
+      expect(c.itemPositionsListener.itemPositions.value.map((p) => p.index),
+          contains(0));
+    });
+  }
+
+  testWidgets('首轮回复独立流式更新时双方消息保持可见', (tester) async {
+    final replyText = ValueNotifier('');
+    final c = _controller([], contentBuilder: (_, message) {
+      if (message.ownerType != OwnerType.receiver) return null;
+      return ValueListenableBuilder<String>(
+        valueListenable: replyText,
+        builder: (_, text, __) => Text(text.isEmpty ? '正在回复' : text),
+      );
+    });
+    await tester.pumpWidget(_host(c));
+    await tester.pump();
+    c.loadMoreData([]);
+    await tester.pump();
+
+    c.addMessage(MessageModel(
+        ownerType: OwnerType.sender, content: '流式提问', createdAt: 4000));
+    await tester.pump(const Duration(milliseconds: 16));
+    final reply = MessageModel(
+        ownerType: OwnerType.receiver, content: '', createdAt: 4001);
+    c.addMessage(reply);
+    await tester.pump();
+    for (final text in ['第一段', '第一段\n第二段', '第一段\n第二段\n第三段']) {
+      // 复刻块渲染：token 只刷新气泡内部，列表消息仍为空占位。
+      replyText.value = text;
+      await tester.pump(const Duration(milliseconds: 16));
+      expect(find.text(text).hitTestable(), findsOneWidget);
+      expect(find.text('流式提问').hitTestable(), findsOneWidget);
+      expect(tester.takeException(), isNull);
+    }
+    c.updateMessage(reply.copyWith(content: replyText.value));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 300));
+    expect(find.text(replyText.value).hitTestable(), findsOneWidget);
+    expect(find.text('流式提问').hitTestable(), findsOneWidget);
+    expect(tester.takeException(), isNull);
+    await tester.pumpWidget(const SizedBox.shrink());
+    replyText.dispose();
+  });
+
+  testWidgets('删空消息后再次发送首轮无需重进页面', (tester) async {
+    final old = MessageModel(
+        ownerType: OwnerType.sender, content: '待删除', createdAt: 5000);
+    final c = _controller([old]);
+    await tester.pumpWidget(_host(c));
+    await tester.pumpAndSettle();
+    c.deleteMessage(old);
+    await tester.pump();
+    await tester.pump();
+    expect(find.text('待删除'), findsNothing);
+
+    c.addMessage(MessageModel(
+        ownerType: OwnerType.sender, content: '重新提问', createdAt: 5001));
+    c.addMessage(MessageModel(
+        ownerType: OwnerType.receiver, content: '重新回复', createdAt: 5002));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 300));
+    expect(find.text('重新提问').hitTestable(), findsOneWidget);
+    expect(find.text('重新回复').hitTestable(), findsOneWidget);
+    expect(tester.takeException(), isNull);
   });
 
   testWidgets('自定义风格参数会传递到双方气泡与头像', (tester) async {

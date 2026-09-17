@@ -30,19 +30,20 @@ class ChatController implements IChatController {
   final int timePellet;
   List<int> pelletShow = [];
 
-  ChatController({required this.initialMessageList,
-    required this.itemScrollController,
-    required this.itemPositionsListener,
-    required this.timePellet,
-    this.messageWidgetBuilder,
-    this.messageContentBuilder}) {
+  ChatController(
+      {required this.initialMessageList,
+      required this.itemScrollController,
+      required this.itemPositionsListener,
+      required this.timePellet,
+      this.messageWidgetBuilder,
+      this.messageContentBuilder}) {
     for (var message in initialMessageList.reversed) {
       inflateMessage(message);
     }
   }
 
   StreamController<List<MessageModel>> messageStreamController =
-  StreamController();
+      StreamController();
 
   /// Used to dispose stream.
   /// 注：ItemScrollController / ItemPositionsListener 无需手动 dispose。
@@ -72,7 +73,8 @@ class ChatController implements IChatController {
   @override
   void updateMessage(MessageModel model) {
     if (messageStreamController.isClosed) return;
-    final idx = initialMessageList.indexWhere((m) => m.createdAt == model.createdAt);
+    final idx =
+        initialMessageList.indexWhere((m) => m.createdAt == model.createdAt);
     if (idx != -1) {
       initialMessageList[idx] = model;
       messageStreamController.sink.add(initialMessageList);
@@ -108,15 +110,29 @@ class ChatController implements IChatController {
     messageStreamController.sink.add(initialMessageList);
   }
 
+  bool _scrollScheduled = false;
+
   void scrollToLastMessage() {
+    // 用户消息和 AI 占位常在同一帧插入，只安排一次滚动。
+    if (_scrollScheduled || messageStreamController.isClosed) return;
+    _scrollScheduled = true;
     // 延后到下一帧再滚：addMessage 里 sink.add 触发的列表重建是异步的，
     // 若此刻同步 scrollTo，SPL 仍按旧 itemCount（新建会话时为 0）定位，
     // 锚点 positionedIndex 落到 -1，列表滚到空白、首条消息不渲染
     // （要靠目录跳转 / 退出重进才恢复）。等新数据完成布局后再滚，
     // index 0（最新，reverse:true 下在最底部）才是有效锚点。
     WidgetsBinding.instance.addPostFrameCallback((_) {
+      _scrollScheduled = false;
       //fix controller not attached to any scroll views.
-      if (!itemScrollController.isAttached || initialMessageList.isEmpty) {
+      if (messageStreamController.isClosed ||
+          !itemScrollController.isAttached ||
+          initialMessageList.isEmpty) {
+        return;
+      }
+      // 首次布局的位置通知也在帧尾发布，可能晚于当前回调。
+      // 此时直接定位，避免 SPL 启动双列表过渡并重复挂载气泡的 GlobalKey。
+      if (itemPositionsListener.itemPositions.value.isEmpty) {
+        itemScrollController.jumpTo(index: 0);
         return;
       }
       itemScrollController.scrollTo(

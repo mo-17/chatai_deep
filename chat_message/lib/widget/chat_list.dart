@@ -59,6 +59,11 @@ class _ChatListState extends State<ChatList> {
       stream: chatController.messageStreamController.stream,
       builder:
           (BuildContext context, AsyncSnapshot<List<MessageModel>> snapshot) {
+        // 空会话不挂载定位列表，避免首条消息到达前滚动到无效的 -1 锚点。
+        if (snapshot.connectionState == ConnectionState.active &&
+            (snapshot.data?.isEmpty ?? true)) {
+          return const SizedBox.shrink();
+        }
         return snapshot.connectionState == ConnectionState.active
             ? ScrollablePositionedList.builder(
                 shrinkWrap: true,
