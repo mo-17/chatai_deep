@@ -4,7 +4,7 @@ import 'dart:typed_data';
 
 import 'package:chatgpt_app_core/util/bounded_file_reader.dart';
 import 'package:crypto/crypto.dart';
-import 'package:flutter/foundation.dart';
+import 'package:flutter/foundation.dart' show visibleForTesting;
 
 /// FileBlock 可持久化路径的唯一可信根。备份导出只读取这里的普通文件，归档
 /// 元数据或旧数据库中的任意绝对路径都不会再成为文件系统读取能力。
