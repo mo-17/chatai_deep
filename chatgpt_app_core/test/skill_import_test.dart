@@ -43,9 +43,10 @@ description: >-
 > 想了解套路读 references/web-novel-tropes.md。
 ''';
     final archive = Archive()
+      ..addFile(
+          ArchiveFile.bytes('novel-writing/SKILL.md', utf8.encode(skillMd)))
       ..addFile(ArchiveFile.bytes(
-          'novel-writing/SKILL.md', utf8.encode(skillMd)))
-      ..addFile(ArchiveFile.bytes('novel-writing/references/web-novel-tropes.md',
+          'novel-writing/references/web-novel-tropes.md',
           utf8.encode('# 套路库\n\n金手指：系统流、重生流。')))
       ..addFile(ArchiveFile.bytes('novel-writing/references/story-structure.md',
           utf8.encode('# 结构模板\n\n黄金三章定生死。')))
@@ -55,8 +56,7 @@ description: >-
     return ZipEncoder().encodeBytes(archive);
   }
 
-  test('解析：frontmatter 折叠 description + 正文 + references（排除 evals/隐藏文件）',
-      () {
+  test('解析：frontmatter 折叠 description + 正文 + references（排除 evals/隐藏文件）', () {
     final pkg = SkillImportService.parseArchive(buildSkillZip());
 
     expect(pkg.name, 'novel-writing');
@@ -73,8 +73,7 @@ description: >-
     expect(titles, {'web-novel-tropes', 'story-structure'});
   });
 
-  test('落库：新建助手（正文进提示词 + 桥接说明 + 绑定知识库检索）+ 资料进知识库',
-      () async {
+  test('落库：新建助手（正文进提示词 + 桥接说明 + 绑定知识库检索）+ 资料进知识库', () async {
     final storage = await newDb();
     final assistantDao = await AssistantDao.create(storage);
     final kbDao = await KnowledgeDao.create(storage);
@@ -115,8 +114,7 @@ description: >-
 
     final archive = Archive()
       ..addFile(ArchiveFile.bytes(
-          'SKILL.md',
-          utf8.encode('---\nname: pure-prompt\n---\n你是一个助手。')));
+          'SKILL.md', utf8.encode('---\nname: pure-prompt\n---\n你是一个助手。')));
     final pkg =
         SkillImportService.parseArchive(ZipEncoder().encodeBytes(archive));
     expect(pkg.references, isEmpty);
@@ -140,5 +138,30 @@ description: >-
   test('坏 zip 字节：抛 FormatException', () {
     expect(() => SkillImportService.parseArchive([1, 2, 3, 4]),
         throwsA(isA<FormatException>()));
+  });
+
+  test('ZIP bomb entry 在解压前按中央目录预算拒绝', () {
+    final archive = Archive()
+      ..addFile(ArchiveFile.bytes(
+          'SKILL.md', utf8.encode('---\nname: bounded\n---\n合法正文')))
+      ..addFile(ArchiveFile.bytes(
+        'references/bomb.txt',
+        List<int>.filled(
+          SkillImportService.importArchiveLimits.maxEntryUncompressedBytes + 1,
+          0x41,
+        ),
+      ));
+    final bytes = ZipEncoder().encodeBytes(archive);
+
+    expect(
+      () => SkillImportService.parseArchive(bytes),
+      throwsA(
+        isA<FormatException>().having(
+          (error) => error.message,
+          'message',
+          contains('资源超限'),
+        ),
+      ),
+    );
   });
 }

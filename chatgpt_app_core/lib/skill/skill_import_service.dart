@@ -1,12 +1,14 @@
 import 'dart:convert';
 
 import 'package:archive/archive.dart';
+import 'package:chatgpt_app_core/backup/backup_archive_limits.dart';
 import 'package:chatgpt_app_core/db/assistant_dao.dart';
 import 'package:chatgpt_app_core/db/knowledge_dao.dart';
 import 'package:chatgpt_app_core/db/skill_script_dao.dart';
 import 'package:chatgpt_app_core/model/assistant_model.dart';
 import 'package:chatgpt_app_core/model/skill_script.dart';
 import 'package:chatgpt_app_core/skill/skill_script_auditor.dart';
+import 'package:chatgpt_app_core/skill/js_runtime_service.dart';
 import 'package:openai_flutter/utils/ai_logger.dart';
 
 /// 技能包里的一篇参考资料（`references/*.md` 等）。导入后进知识库。
@@ -78,6 +80,16 @@ class SkillImportResult {
 /// 「助手 + 知识库文档」并落库。纯 Dart（archive 包无平台通道），
 /// 可用 sqflite_common_ffi 内存库做 round-trip 单测。
 class SkillImportService {
+  static const int maxImportBytes = 8 * 1024 * 1024;
+  static const int maxTextChars = 1024 * 1024;
+  static const int maxTotalTextChars = 4 * 1024 * 1024;
+  static const importArchiveLimits = BackupArchiveLimits(
+    maxCompressedBytes: maxImportBytes,
+    maxEntries: 256,
+    maxEntryUncompressedBytes: 2 * 1024 * 1024,
+    maxTotalUncompressedBytes: 16 * 1024 * 1024,
+  );
+
   /// 文本类参考资料的扩展名（其余文件忽略）。
   static const _textExt = {'md', 'markdown', 'txt'};
 
@@ -86,10 +98,20 @@ class SkillImportService {
   /// 解析一个技能 zip。找不到 SKILL.md / 无 name 时抛 [FormatException]，
   /// 不触碰任何数据。[fallbackName] 通常传所选文件名（去扩展名）。
   static SkillPackage parseArchive(List<int> zipBytes, {String? fallbackName}) {
+    if (zipBytes.length > maxImportBytes) {
+      throw const FormatException('技能包过大（最多 8 MiB）');
+    }
     final Archive archive;
     try {
-      archive = ZipDecoder().decodeBytes(zipBytes);
-    } catch (e) {
+      archive = decodeBoundedZipArchive(
+        zipBytes,
+        limits: importArchiveLimits,
+        invalidArchiveMessage: '不是有效的技能包（zip 解析失败）',
+      );
+    } on FormatException catch (error) {
+      if (error.message == '不是有效的技能包（zip 解析失败）') rethrow;
+      throw FormatException('技能包资源超限或结构不安全：${error.message}');
+    } catch (_) {
       throw const FormatException('不是有效的技能包（zip 解析失败）');
     }
 
@@ -107,9 +129,10 @@ class SkillImportService {
     }
 
     final raw = _decode(skillFile);
+    _validateTextLength(raw, 'SKILL.md');
     final parsed = _parseSkillMd(raw);
-    final name = (parsed.name.isNotEmpty ? parsed.name : (fallbackName ?? ''))
-        .trim();
+    final name =
+        (parsed.name.isNotEmpty ? parsed.name : (fallbackName ?? '')).trim();
     if (name.isEmpty) {
       throw const FormatException('SKILL.md 缺少 name，且无法从文件名推断');
     }
@@ -117,6 +140,7 @@ class SkillImportService {
     // 参考资料：与 SKILL.md 同前缀、文本类、且不在 evals/ 下的文件。
     final prefix = _dirOf(skillFile.name);
     final refs = <SkillReference>[];
+    var totalTextChars = raw.length;
     for (final f in archive.files) {
       if (!f.isFile) continue;
       final n = f.name;
@@ -130,6 +154,11 @@ class SkillImportService {
       if (!_textExt.contains(ext)) continue;
       final text = _decode(f).trim();
       if (text.isEmpty) continue;
+      _validateTextLength(text, f.name);
+      totalTextChars += text.length;
+      if (totalTextChars > maxTotalTextChars) {
+        throw const FormatException('技能包文本总量过大（最多 4 MiB 字符）');
+      }
       refs.add(SkillReference(title: _stripExt(base), text: text));
     }
 
@@ -145,6 +174,13 @@ class SkillImportService {
       if (_extOf(base) != 'js') continue;
       final code = _decode(f).trim();
       if (code.isEmpty) continue;
+      if (code.length > JsRuntimeService.defaultMaxCodeChars) {
+        throw FormatException('技能脚本过大：$n');
+      }
+      totalTextChars += code.length;
+      if (totalTextChars > maxTotalTextChars) {
+        throw const FormatException('技能包文本总量过大（最多 4 MiB 字符）');
+      }
       scripts.add(SkillScript(assistantId: 0, name: base, code: code));
     }
 
@@ -156,6 +192,12 @@ class SkillImportService {
       references: refs,
       scripts: scripts,
     );
+  }
+
+  static void _validateTextLength(String value, String name) {
+    if (value.length > maxTextChars) {
+      throw FormatException('技能文本过大：$name');
+    }
   }
 
   // ---------------------------------------------------------------- 导入
@@ -380,8 +422,7 @@ class SkillImportService {
     return idx < 0 ? '' : path.substring(0, idx + 1);
   }
 
-  static int _depth(String path) =>
-      RegExp(r'[/\\]').allMatches(path).length;
+  static int _depth(String path) => RegExp(r'[/\\]').allMatches(path).length;
 
   static String _extOf(String base) {
     final idx = base.lastIndexOf('.');
