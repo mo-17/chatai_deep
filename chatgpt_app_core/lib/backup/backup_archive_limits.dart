@@ -73,6 +73,20 @@ final class BackupArchiveEntryInfo {
   });
 }
 
+/// 尚未解压的 ZIP 中央目录与逐 entry 安全元数据。
+///
+/// [directory] 内的压缩 slice 仍引用调用方传入的 [InputStream]；文件流调用方
+/// 必须在消费完所有 entry 后再关闭它。
+final class BackupArchivePreflight {
+  final ZipDirectory directory;
+  final List<BackupArchiveEntryInfo> entries;
+
+  const BackupArchivePreflight({
+    required this.directory,
+    required this.entries,
+  });
+}
+
 /// ZIP entry 实际解压输出的共享预算。
 ///
 /// header 只用于快速 preflight；真正解压时每次写入都通过此预算，同时限制
@@ -182,6 +196,140 @@ final class BackupArchiveOutputSink extends OutputStream {
 
   @override
   Uint8List getBytes() => _bytes.toBytes();
+
+  /// 把当前 entry 所有权移交给调用方并释放本 sink 的预算/缓冲。
+  ///
+  /// 适用于逐 entry 落盘的导入器；archive 总大小仍由解压前的中央目录汇总
+  /// 校验约束，且调用方必须核对实际长度与 CRC。
+  Uint8List takeBytes() {
+    final bytes = _bytes.takeBytes();
+    _budget._remove(bytes.length);
+    return bytes;
+  }
+}
+
+/// 只读取 ZIP 中央目录与本地 header，不解压 entry 内容。
+BackupArchivePreflight preflightBoundedZip(
+  InputStream input, {
+  required int compressedInputBytes,
+  BackupArchiveLimits limits = BackupArchiveLimits.standard,
+}) {
+  validateBackupCompressedSize(compressedInputBytes, limits: limits);
+  final directory = ZipDirectory()..read(input);
+  validateBackupEntryCount(directory.totalCentralDirectoryEntries,
+      limits: limits);
+  validateBackupEntryCount(directory.fileHeaders.length, limits: limits);
+  if (directory.numberOfThisDisk != 0 ||
+      directory.diskWithTheStartOfTheCentralDirectory != 0 ||
+      directory.totalCentralDirectoryEntriesOnThisDisk !=
+          directory.totalCentralDirectoryEntries ||
+      directory.totalCentralDirectoryEntries != directory.fileHeaders.length) {
+    throw const FormatException('备份不支持分卷或截断的 ZIP 中央目录');
+  }
+
+  final names = <BackupArchiveEntryName>[];
+  final entries = <BackupArchiveEntryInfo>[];
+  for (final header in directory.fileHeaders) {
+    final localFile = header.file;
+    if (localFile == null || localFile.filename != header.filename) {
+      throw const FormatException('备份 ZIP 本地 header 与中央目录不一致');
+    }
+    final isDirectory =
+        header.filename.endsWith('/') || header.filename.endsWith('\\');
+    final entryMode = header.externalFileAttributes >> 16;
+    final isEncrypted = (header.generalPurposeBitFlag & 0x1) != 0 ||
+        (localFile.flags & 0x1) != 0;
+    // `ZipFile.length` 会复制整个压缩 entry；预检只读 raw stream
+    // 的已夹紧 length，保持 InputFileStream 的流式边界。
+    final rawContentBytes =
+        isEncrypted ? -1 : localFile.getStream(decompress: false).length;
+    names.add(BackupArchiveEntryName(
+      name: header.filename,
+      isDirectory: isDirectory,
+    ));
+    entries.add(BackupArchiveEntryInfo(
+      name: header.filename,
+      isDirectory: isDirectory,
+      isSymbolicLink:
+          (header.versionMadeBy >> 8) == 3 && (entryMode & 0xf000) == 0xa000,
+      isEncrypted: isEncrypted,
+      hasRawContent: rawContentBytes == header.compressedSize,
+      uncompressedBytes: header.uncompressedSize,
+      compressedBytes: header.compressedSize,
+    ));
+  }
+  validateBackupArchiveEntries(
+    entries,
+    rawEntryNames: names,
+    compressedInputBytes: compressedInputBytes,
+    limits: limits,
+  );
+  return BackupArchivePreflight(
+    directory: directory,
+    entries: List.unmodifiable(entries),
+  );
+}
+
+/// 在实际输出预算下解压 ZIP。角色卡、技能等导入器共享这条边界，避免直接
+/// 调用 `ZipDecoder.decodeBytes` 在检查 entry 数量/大小前分配攻击者声明的内容。
+Archive decodeBoundedZipArchive(
+  List<int> zipBytes, {
+  BackupArchiveLimits limits = BackupArchiveLimits.standard,
+  String invalidArchiveMessage = '不是有效的备份文件（zip 解析失败）',
+}) {
+  try {
+    final preflight = preflightBoundedZip(
+      InputMemoryStream(zipBytes),
+      compressedInputBytes: zipBytes.length,
+      limits: limits,
+    );
+    final outputBudget = BackupArchiveOutputBudget(limits: limits);
+    final archive = Archive();
+    for (var index = 0;
+        index < preflight.directory.fileHeaders.length;
+        index++) {
+      final header = preflight.directory.fileHeaders[index];
+      final localFile = header.file!;
+      final metadata = preflight.entries[index];
+      if (localFile.flags != header.generalPurposeBitFlag ||
+          localFile.compressedSize != header.compressedSize ||
+          localFile.uncompressedSize != header.uncompressedSize) {
+        throw const FormatException('备份 ZIP 本地 header 与中央目录大小不一致');
+      }
+      if (metadata.isDirectory) {
+        if (header.uncompressedSize != 0) {
+          throw const FormatException('备份目录 entry 大小不合法');
+        }
+        archive.addFile(
+          ArchiveFile.directory(header.filename)
+            ..mode = header.externalFileAttributes >> 16,
+        );
+        continue;
+      }
+
+      final sink = outputBudget.newEntry(header.filename);
+      localFile.decompress(sink);
+      final bytes = sink.getBytes();
+      if (bytes.length != header.uncompressedSize) {
+        throw FormatException('备份 entry 实际解压大小与 header 不一致：${header.filename}');
+      }
+      if (getCrc32(bytes) != header.crc32) {
+        throw FormatException('备份 entry CRC 校验失败：${header.filename}');
+      }
+      archive.addFile(
+        ArchiveFile.bytes(header.filename, bytes)
+          ..mode = header.externalFileAttributes >> 16
+          ..crc32 = header.crc32
+          ..lastModTime =
+              header.lastModifiedFileDate << 16 | header.lastModifiedFileTime,
+      );
+    }
+    return archive;
+  } on FormatException {
+    rethrow;
+  } catch (_) {
+    throw FormatException(invalidArchiveMessage);
+  }
 }
 
 /// 在把压缩数据交给 ZipDecoder 前调用，避免超大输入先占用解析资源。

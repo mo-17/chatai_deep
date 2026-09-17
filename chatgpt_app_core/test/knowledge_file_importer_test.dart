@@ -1,5 +1,6 @@
 import 'dart:io';
 
+import 'package:chatgpt_app_core/chat/application/file_processor.dart';
 import 'package:chatgpt_app_core/chat/application/knowledge_file_importer.dart';
 import 'package:chatgpt_app_core/db/hi_db_manager.dart';
 import 'package:chatgpt_app_core/db/knowledge_dao.dart';
@@ -62,5 +63,25 @@ void main() {
     final docs = await dao.getDocuments();
     expect(docs, hasLength(1));
     expect(docs.single.title, 'ok');
+  });
+
+  test('超限文本在读取/解析前被拒绝，同行合法文件仍可导入', () async {
+    final dir = await Directory.systemTemp.createTemp('kb_importer_limit_');
+    addTearDown(() async => dir.delete(recursive: true));
+    final oversized = File('${dir.path}/oversized.txt')
+      ..writeAsBytesSync(
+        List<int>.filled(FileProcessor.maxTextFileBytes + 1, 0x41),
+      );
+    final legal = File('${dir.path}/legal.txt')
+      ..writeAsStringSync('bounded legal text');
+    final dao = await newDao();
+
+    final result = await KnowledgeFileImporter(dao)
+        .importPaths([oversized.path, legal.path]);
+
+    expect(result.imported, 1);
+    expect(result.failedItems.single.name, 'oversized.txt');
+    expect(result.failedItems.single.reason, contains('文件过大'));
+    expect((await dao.getDocuments()).single.title, 'legal');
   });
 }

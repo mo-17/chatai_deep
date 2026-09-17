@@ -356,6 +356,7 @@ class _MessageInputWidgetState extends State<MessageInputWidget> {
         type: FileType.custom,
         allowedExtensions: FileProcessor.pickerExtensions,
         allowMultiple: true,
+        withData: false,
       );
       if (result == null || !mounted) return;
       // 去重：跳过已在待发送列表里的、以及本批内重复的路径。

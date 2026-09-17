@@ -4,6 +4,8 @@ import 'dart:io';
 import 'package:chatgpt_app_core/chat/domain/chat_attachments.dart';
 import 'package:chatgpt_app_core/chat/domain/message_block.dart';
 import 'package:chatgpt_app_core/chat/domain/model_capabilities.dart';
+import 'package:chatgpt_app_core/util/bounded_file_reader.dart';
+import 'package:chatgpt_app_core/util/managed_attachment_store.dart';
 import 'package:syncfusion_flutter_pdf/pdf.dart';
 
 /// 附件处理器。直译源项目 `prepareParams/fileProcessor.ts` 的策略：
@@ -29,18 +31,63 @@ class FileProcessor {
 
   /// 无能力位 / 无限制配置时的 PDF 原生发送兜底上限（与 OpenAI 32MB 对齐）。
   static const int defaultPdfLimit = 32 * 1024 * 1024;
+  static const int maxImageBytes = 20 * 1024 * 1024;
+  static const int maxTextFileBytes = 2 * 1024 * 1024;
 
   /// 文件选择器允许的扩展名（图片走 image_picker，不在此列）。
   static const List<String> pickerExtensions = [
-    'pdf', 'txt', 'md', 'markdown', 'json', 'csv', 'log', 'xml',
-    'yaml', 'yml', 'html', 'css', 'sql', 'sh',
-    'dart', 'js', 'ts', 'py', 'java', 'kt', 'c', 'cpp', 'h', 'swift', 'go',
+    'pdf',
+    'txt',
+    'md',
+    'markdown',
+    'json',
+    'csv',
+    'log',
+    'xml',
+    'yaml',
+    'yml',
+    'html',
+    'css',
+    'sql',
+    'sh',
+    'dart',
+    'js',
+    'ts',
+    'py',
+    'java',
+    'kt',
+    'c',
+    'cpp',
+    'h',
+    'swift',
+    'go',
   ];
 
   static const Set<String> _textExts = {
-    'txt', 'md', 'markdown', 'json', 'csv', 'log', 'xml',
-    'yaml', 'yml', 'html', 'css', 'sql', 'sh',
-    'dart', 'js', 'ts', 'py', 'java', 'kt', 'c', 'cpp', 'h', 'swift', 'go',
+    'txt',
+    'md',
+    'markdown',
+    'json',
+    'csv',
+    'log',
+    'xml',
+    'yaml',
+    'yml',
+    'html',
+    'css',
+    'sql',
+    'sh',
+    'dart',
+    'js',
+    'ts',
+    'py',
+    'java',
+    'kt',
+    'c',
+    'cpp',
+    'h',
+    'swift',
+    'go',
   };
 
   /// 按扩展名推断图片 MIME，并做修正收敛：`jpg -> jpeg`（Anthropic 等上游
@@ -65,7 +112,11 @@ class FileProcessor {
 
   /// 把本地图片编码为 base64 data URI（MIME 已修正）。
   static Future<String> encodeImage(String path) async {
-    final bytes = await File(path).readAsBytes();
+    final bytes = await readFileBytesBounded(
+      File(path),
+      maxBytes: maxImageBytes,
+      label: '图片附件',
+    );
     return 'data:${imageMimeFor(path)};base64,${base64Encode(bytes)}';
   }
 
@@ -85,24 +136,36 @@ class FileProcessor {
       final name = path.split(Platform.pathSeparator).last;
       final ext = name.split('.').last.toLowerCase();
       final size = await file.length();
+      final managedPath = await ManagedAttachmentStore.importFile(
+        file,
+        maxBytes: ext == 'pdf' ? defaultPdfLimit : maxTextFileBytes,
+      );
 
       if (ext == 'pdf') {
         final limit = caps.fileSizeLimitFor('pdf') ?? defaultPdfLimit;
-        if (caps.pdf && size <= limit) {
+        final nativeLimit = limit < defaultPdfLimit ? limit : defaultPdfLimit;
+        if (caps.pdf && size <= nativeLimit) {
           // 原生路径：整个 PDF base64 直发（无降级文本，故 extractedText 为 null）。
-          final bytes = await file.readAsBytes();
+          final bytes = await readFileBytesBounded(
+            file,
+            maxBytes: nativeLimit,
+            label: 'PDF 附件',
+          );
           nativeFiles.add(NativeFilePart(
             filename: name,
             dataUri: 'data:application/pdf;base64,${base64Encode(bytes)}',
           ));
           metas.add(FileMetadata(
-              name: name, path: path, mime: 'application/pdf', size: size));
+              name: name,
+              path: managedPath,
+              mime: 'application/pdf',
+              size: size));
         } else {
           // 降级路径：syncfusion 抽文本（限页），文本随 meta 落库（遗留项 6）。
           final text = _wrapFileText(name, await _extractPdfText(file));
           metas.add(FileMetadata(
               name: name,
-              path: path,
+              path: managedPath,
               mime: 'application/pdf',
               size: size,
               extractedText: text));
@@ -114,7 +177,7 @@ class FileProcessor {
         final text = _wrapFileText(name, await _readTextFile(file));
         metas.add(FileMetadata(
             name: name,
-            path: path,
+            path: managedPath,
             mime: 'text/plain',
             size: size,
             extractedText: text));
@@ -124,7 +187,7 @@ class FileProcessor {
       // 不可解析的类型（理论上被 pickerExtensions 挡掉，这里兜底）。
       metas.add(FileMetadata(
           name: name,
-          path: path,
+          path: managedPath,
           size: size,
           extractedText: '[附件 $name 的格式暂不支持解析，内容未提供]'));
     }
@@ -143,7 +206,13 @@ class FileProcessor {
   /// 保证一个坏文件不中断整次发送。
   static Future<String> _extractPdfText(File file) async {
     try {
-      final document = PdfDocument(inputBytes: await file.readAsBytes());
+      final document = PdfDocument(
+        inputBytes: await readFileBytesBounded(
+          file,
+          maxBytes: defaultPdfLimit,
+          label: 'PDF 文件',
+        ),
+      );
       try {
         final pageCount = document.pages.count;
         final endIndex =
@@ -166,7 +235,12 @@ class FileProcessor {
   /// 读取文本文件（截断到 [maxTextChars]）。非 UTF-8 等读取失败时降级提示。
   static Future<String> _readTextFile(File file) async {
     try {
-      final text = await file.readAsString();
+      final bytes = await readFileBytesBounded(
+        file,
+        maxBytes: maxTextFileBytes,
+        label: '文本文件',
+      );
+      final text = utf8.decode(bytes);
       if (text.length <= maxTextChars) return text;
       return '${text.substring(0, maxTextChars)}\n\n[注：内容过长，已截断]';
     } catch (e) {
@@ -185,6 +259,22 @@ class FileProcessor {
     if (ext == 'pdf') return _extractPdfText(File(path));
     if (_textExts.contains(ext)) return _readTextFile(File(path));
     return null;
+  }
+
+  /// OCR/文本/PDF 共用的知识库导入预检；必须在原生解析器或 OCR 插件接收
+  /// 路径前调用，避免它们在 Dart 侧预算建立前分配整个攻击者文件。
+  static Future<void> validateKnowledgeImportFile(String path) async {
+    final file = File(path);
+    final ext = path.split('.').last.toLowerCase();
+    final maxBytes = ext == 'pdf'
+        ? defaultPdfLimit
+        : _textExts.contains(ext)
+            ? maxTextFileBytes
+            : maxImageBytes;
+    if (!await file.exists()) throw const FormatException('导入文件不存在');
+    if (await file.length() > maxBytes) {
+      throw FormatException('导入文件过大（最多 ${maxBytes ~/ (1024 * 1024)} MiB）');
+    }
   }
 }
 

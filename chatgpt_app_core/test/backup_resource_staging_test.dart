@@ -14,6 +14,7 @@ import 'package:chatgpt_app_core/model/ai_settings.dart';
 import 'package:chatgpt_app_core/model/assistant_model.dart';
 import 'package:chatgpt_app_core/util/account_resource_scope.dart';
 import 'package:chatgpt_app_core/util/avatar_asset_service.dart';
+import 'package:chatgpt_app_core/util/managed_attachment_store.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:sqflite_common_ffi/sqflite_ffi.dart';
 
@@ -76,6 +77,7 @@ void main() {
     );
     await roleAsset.parent.create(recursive: true);
     await roleAsset.writeAsBytes([7, 8, 9]);
+    final managedPath = await ManagedAttachmentStore.importFile(attachment);
 
     final source = await newDb();
     await ConversationListDao.create(source);
@@ -103,7 +105,7 @@ void main() {
           status: MessageBlockStatus.success,
           file: FileMetadata(
             name: 'resource.txt',
-            path: attachment.path,
+            path: managedPath,
             mime: 'text/plain',
             size: await attachment.length(),
           ),
@@ -251,11 +253,13 @@ void main() {
       sourceFiles =
           await Directory.systemTemp.createTemp('backup-stage-files-');
       attachmentTarget =
-          Directory('${Directory.systemTemp.path}/chatai_restored_files');
+          Directory('${targetDocuments.path}/managed-attachments');
+      ManagedAttachmentStore.debugRootDirectory = attachmentTarget;
       await attachmentTarget.create(recursive: true);
     });
 
     tearDown(() async {
+      ManagedAttachmentStore.debugRootDirectory = null;
       BackupService.debugGeneratedImageDirectoryResolver = null;
       BackupService.debugRoleCardAssetsDirectoryResolver = null;
       BackupService.debugImportFailureInjector = null;

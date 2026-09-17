@@ -398,4 +398,119 @@ void main() {
     );
     expect(merged.mcpServers.single.headers, isEmpty);
   });
+
+  test('备份即使携带完整 secrets 也不能授予 MCP 信任', () {
+    final local = AISettings.defaults()
+      ..mcpBackendEnabled = false
+      ..mcpBackendTrusted = false
+      ..mcpServers = const [];
+    final incoming = AISettings.defaults()
+      ..mcpBackendEnabled = true
+      ..mcpBackendTrusted = true
+      ..mcpServers = const [
+        McpServerConfig(
+          id: 'crafted',
+          name: 'Crafted server',
+          url: 'http://127.0.0.1:8080/mcp',
+          enabled: true,
+          trusted: true,
+          permission: McpToolPermission.confirmWrite,
+          headers: {},
+        ),
+      ];
+
+    final merged = mergeImportedSettingsSecrets(
+      incoming,
+      local,
+      incomingIncludesSecrets: true,
+    );
+
+    expect(merged.mcpBackendEnabled, isFalse);
+    expect(merged.mcpBackendTrusted, isFalse);
+    expect(merged.mcpServers.single.enabled, isFalse);
+    expect(merged.mcpServers.single.trusted, isFalse);
+    expect(merged.mcpServers.single.permission, McpToolPermission.readOnly);
+    expect(merged.mcpServers.single.headers, isEmpty);
+  });
+
+  test('相同且唯一的 MCP endpoint 继续沿用本地已授予的信任', () {
+    final local = AISettings.defaults()
+      ..mcpBackendEnabled = true
+      ..mcpBackendTrusted = true
+      ..mcpServers = const [
+        McpServerConfig(
+          id: 'remote',
+          name: 'Local',
+          url: 'https://MCP.EXAMPLE.com:443/mcp/',
+          enabled: true,
+          trusted: true,
+          permission: McpToolPermission.confirmWrite,
+          enabledProjectIds: [7],
+        ),
+      ];
+    final incoming = AISettings.defaults()
+      ..mcpBackendTrusted = false
+      ..mcpServers = const [
+        McpServerConfig(
+          id: 'remote',
+          name: 'Imported',
+          url: 'https://mcp.example.com/mcp',
+          trusted: false,
+        ),
+      ];
+
+    final merged = mergeImportedSettingsSecrets(incoming, local);
+
+    expect(merged.mcpBackendTrusted, isTrue);
+    expect(merged.mcpBackendEnabled, isTrue);
+    expect(merged.mcpServers.single.enabled, isTrue);
+    expect(merged.mcpServers.single.trusted, isTrue);
+    expect(merged.mcpServers.single.permission, McpToolPermission.confirmWrite);
+    expect(merged.mcpServers.single.enabledProjectIds, [7]);
+  });
+
+  test('MCP 改址或本地匹配歧义时不继承信任', () {
+    final local = AISettings.defaults()
+      ..mcpServers = const [
+        McpServerConfig(
+          id: 'remote',
+          name: 'Local 1',
+          url: 'https://mcp.example/mcp',
+          trusted: true,
+        ),
+        McpServerConfig(
+          id: 'remote',
+          name: 'Local 2',
+          url: 'https://mcp.example/mcp/',
+          trusted: true,
+        ),
+      ];
+    final ambiguous = AISettings.defaults()
+      ..mcpServers = const [
+        McpServerConfig(
+          id: 'remote',
+          name: 'Imported',
+          url: 'https://mcp.example/mcp',
+          trusted: true,
+        ),
+      ];
+    final moved = AISettings.defaults()
+      ..mcpServers = const [
+        McpServerConfig(
+          id: 'remote',
+          name: 'Imported',
+          url: 'https://other.example/mcp',
+          trusted: true,
+        ),
+      ];
+
+    expect(
+      mergeImportedSettingsSecrets(ambiguous, local).mcpServers.single.trusted,
+      isFalse,
+    );
+    expect(
+      mergeImportedSettingsSecrets(moved, local).mcpServers.single.trusted,
+      isFalse,
+    );
+  });
 }

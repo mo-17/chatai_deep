@@ -1,9 +1,32 @@
+import 'dart:typed_data';
+
+import 'package:chatgpt_app_core/backup/backup_archive_limits.dart';
 import 'package:chatgpt_app_core/backup/backup_service.dart';
 import 'package:chatgpt_app_core/pages/backup_restore_page.dart';
+import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 void main() {
+  test('备份选择器在读取 path 前拒绝声明超限文件，并保留合法内存输入', () async {
+    final oversized = PlatformFile(
+      name: 'crafted.zip',
+      size: BackupArchiveLimits.standard.maxCompressedBytes + 1,
+      path: '/path-must-not-be-read/crafted.zip',
+    );
+    final legal = PlatformFile(
+      name: 'legal.zip',
+      size: 4,
+      bytes: Uint8List.fromList([0x50, 0x4b, 0x05, 0x06]),
+    );
+
+    await expectLater(
+      readBackupImportFile(oversized),
+      throwsA(isA<FormatException>()),
+    );
+    expect(await readBackupImportFile(legal), legal.bytes);
+  });
+
   Future<void> useLargeSurface(WidgetTester tester) async {
     tester.view.physicalSize = const Size(1000, 1200);
     tester.view.devicePixelRatio = 1;

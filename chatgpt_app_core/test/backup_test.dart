@@ -7,6 +7,7 @@ import 'package:chatgpt_app_core/backup/backup_service.dart';
 import 'package:chatgpt_app_core/capability/generated_image_save_service.dart';
 import 'package:chatgpt_app_core/chat/application/assistant_role_card_asset_store.dart';
 import 'package:chatgpt_app_core/chat/application/assistant_role_card_service.dart';
+import 'package:chatgpt_app_core/chat/application/mcp/mcp_types.dart';
 import 'package:chatgpt_app_core/chat/application/story_room_role_card_importer.dart';
 import 'package:chatgpt_app_core/chat/domain/message_block.dart';
 import 'package:chatgpt_app_core/db/assistant_dao.dart';
@@ -34,6 +35,7 @@ import 'package:chatgpt_app_core/model/story_template_model.dart';
 import 'package:chatgpt_app_core/model/story_template_translation_task_model.dart';
 import 'package:chatgpt_app_core/util/account_resource_scope.dart';
 import 'package:chatgpt_app_core/util/avatar_asset_service.dart';
+import 'package:chatgpt_app_core/util/managed_attachment_store.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:sqflite_common_ffi/sqflite_ffi.dart';
 
@@ -49,12 +51,15 @@ void main() {
   setUp(() async {
     defaultGeneratedImageRoot =
         await Directory.systemTemp.createTemp('backup-test-images-');
+    ManagedAttachmentStore.debugRootDirectory =
+        Directory('${defaultGeneratedImageRoot.path}/managed-attachments');
     BackupService.debugGeneratedImageDirectoryResolver =
         () async => defaultGeneratedImageRoot;
     BackupService.debugRoleCardAssetsDirectoryResolver =
         () async => defaultGeneratedImageRoot;
   });
   tearDown(() async {
+    ManagedAttachmentStore.debugRootDirectory = null;
     BackupService.debugGeneratedImageDirectoryResolver = null;
     BackupService.debugRoleCardAssetsDirectoryResolver = null;
     if (await defaultGeneratedImageRoot.exists()) {
@@ -2256,6 +2261,7 @@ void main() {
       });
       final sourceFile = File('${dir.path}/project-note.txt');
       await sourceFile.writeAsString('project attachment');
+      final managedPath = await ManagedAttachmentStore.importFile(sourceFile);
 
       final src = await newDb();
       await AssistantDao.create(src);
@@ -2287,7 +2293,7 @@ void main() {
         status: MessageBlockStatus.success,
         file: FileMetadata(
           name: 'project-note.txt',
-          path: sourceFile.path,
+          path: managedPath,
           mime: 'text/plain',
           size: await sourceFile.length(),
           extractedText: 'project extracted text',
@@ -2367,6 +2373,11 @@ void main() {
           MessageBlock.decodeList(rows.single['blocks'] as String).single
               as FileBlock;
       expect(restoredBlock.file.path, isNot(sourceFile.path));
+      expect(
+        restoredBlock.file.path!.split(Platform.pathSeparator).last,
+        matches(RegExp(r'^[a-f0-9]{64}\.txt$')),
+        reason: '旧设备长路径只能作为归档 key，不得直接变为磁盘文件名',
+      );
       expect(await File(restoredBlock.file.path!).readAsString(),
           'project attachment');
       expect(restoredBlock.file.extractedText, 'project extracted text');
@@ -2575,6 +2586,42 @@ void main() {
       await dst.db.close();
     });
 
+    test('共享备份解析边界移除 keyless crafted MCP 运行授权', () async {
+      final crafted = AISettings.defaults()
+        ..mcpBackendEnabled = true
+        ..mcpBackendTrusted = true
+        ..mcpServers = const [
+          McpServerConfig(
+            id: 'crafted',
+            name: 'Crafted loopback',
+            url: 'http://127.0.0.1:8080/mcp',
+            enabled: true,
+            trusted: true,
+            permission: McpToolPermission.confirmWrite,
+            enabledProjectIds: [7],
+            headers: {},
+          ),
+        ];
+      final bytes = zipOf(officialLegacyFiles(
+        10,
+        overrides: {'settings.json': crafted.toJson()},
+      ));
+      final dst = await newDb();
+
+      final result =
+          await BackupService(dst).importArchive(bytes, accountHash: 'acc1');
+      final restored = result.settings!;
+
+      expect(restored.mcpBackendEnabled, isFalse);
+      expect(restored.mcpBackendTrusted, isFalse);
+      expect(restored.mcpServers.single.enabled, isFalse);
+      expect(restored.mcpServers.single.trusted, isFalse);
+      expect(restored.mcpServers.single.permission, McpToolPermission.readOnly);
+      expect(restored.mcpServers.single.enabledProjectIds, isEmpty);
+      expect(restored.mcpServers.single.headers, isEmpty);
+      await dst.db.close();
+    });
+
     test('账号不一致时导入成功但带告警', () async {
       final src = await newDb();
       final bytes = await BackupService(src)
@@ -2629,6 +2676,7 @@ void main() {
       });
       final sourceFile = File('${dir.path}/note.txt');
       await sourceFile.writeAsString('attachment body');
+      final managedPath = await ManagedAttachmentStore.importFile(sourceFile);
 
       final src = await newDb();
       await MessageDao.create(src, cid: 3001);
@@ -2639,7 +2687,7 @@ void main() {
         status: MessageBlockStatus.success,
         file: FileMetadata(
           name: 'note.txt',
-          path: sourceFile.path,
+          path: managedPath,
           mime: 'text/plain',
           size: await sourceFile.length(),
           extractedText: 'wrapped text',
@@ -2675,6 +2723,132 @@ void main() {
           'attachment body');
       expect(restoredBlock.file.extractedText, 'wrapped text');
       await dst.db.close();
+    });
+
+    test('导入缺失附件资产时清除归档提供的本地路径且后续导出不会读取它', () async {
+      final dir =
+          await Directory.systemTemp.createTemp('backup-crafted-file-path-');
+      addTearDown(() async {
+        if (dir.existsSync()) await dir.delete(recursive: true);
+      });
+      final sentinel = File('${dir.path}/device-secret.txt');
+      const sentinelBody = 'device-local-secret-that-must-not-be-exported';
+      await sentinel.writeAsString(sentinelBody);
+      final craftedBlock = FileBlock(
+        id: 'crafted_file',
+        messageId: 'crafted_message',
+        createdAt: 555,
+        status: MessageBlockStatus.success,
+        file: FileMetadata(
+          name: 'innocent.txt',
+          path: sentinel.path,
+          mime: 'text/plain',
+          size: await sentinel.length(),
+          extractedText: 'safe metadata only',
+        ),
+      );
+      final craftedArchive = zipOf(officialLegacyFiles(2, overrides: {
+        'conversations.json': [
+          {
+            'cid': 9001,
+            'icon': '',
+            'title': 'crafted',
+            'stickTime': 0,
+            'updateAt': 1,
+          },
+        ],
+        'messages.json': [
+          {
+            'cid': 9001,
+            'content': 'attachment',
+            'createdAt': 555,
+            'ownerName': 'user',
+            'ownerType': 'sender',
+            'blocks': MessageBlock.encodeList([craftedBlock]),
+          },
+        ],
+      }));
+
+      final dst = await newDb();
+      final result = await BackupService(dst)
+          .importArchive(craftedArchive, accountHash: 'acc1');
+      expect(result.warnings, contains(contains('已移除归档携带的本地路径')));
+      final imported = MessageBlock.decodeList(
+        (await dst.db.query('tb_messages')).single['blocks'] as String,
+      ).single as FileBlock;
+      expect(imported.file.path, isNull);
+
+      final exported = await BackupService(dst)
+          .exportArchive(settings: AISettings.defaults(), accountHash: 'acc1');
+      final decoded = ZipDecoder().decodeBytes(exported);
+      expect(
+        decoded.files.any((file) => file.name.startsWith('assets/files/')),
+        isFalse,
+      );
+      for (final file in decoded.files.where((entry) => entry.isFile)) {
+        final content = List<int>.from(file.content as List<int>);
+        expect(
+          utf8.decode(content, allowMalformed: true),
+          isNot(contains(sentinelBody)),
+          reason: file.name,
+        );
+      }
+      await dst.db.close();
+    });
+
+    test('备份导出拒绝 managed root 内指向外部文件的符号链接', () async {
+      if (Platform.isWindows) return;
+      final dir =
+          await Directory.systemTemp.createTemp('backup-attachment-link-');
+      addTearDown(() async {
+        if (dir.existsSync()) await dir.delete(recursive: true);
+      });
+      final sentinel = File('${dir.path}/outside-secret.txt');
+      await sentinel.writeAsString('outside-managed-root-secret');
+      final managedRoot = ManagedAttachmentStore.rootDirectory;
+      await managedRoot.create(recursive: true);
+      final link = Link(
+        '${managedRoot.path}/crafted-${DateTime.now().microsecondsSinceEpoch}.txt',
+      );
+      await link.create(sentinel.path);
+      addTearDown(() async {
+        if (await link.exists()) await link.delete();
+      });
+
+      final db = await newDb();
+      await MessageDao.create(db, cid: 9002);
+      await db.db.insert('tb_messages', {
+        'cid': 9002,
+        'content': 'crafted link',
+        'createdAt': 556,
+        'ownerName': 'user',
+        'ownerType': 'sender',
+        'blocks': MessageBlock.encodeList([
+          FileBlock(
+            id: 'link',
+            messageId: 'link-message',
+            createdAt: 556,
+            status: MessageBlockStatus.success,
+            file: FileMetadata(
+              name: 'crafted.txt',
+              path: link.path,
+              mime: 'text/plain',
+              size: await sentinel.length(),
+            ),
+          ),
+        ]),
+      });
+
+      final exported = await BackupService(db)
+          .exportArchive(settings: AISettings.defaults(), accountHash: 'acc1');
+      expect(
+        ZipDecoder()
+            .decodeBytes(exported)
+            .files
+            .any((file) => file.name.startsWith('assets/files/')),
+        isFalse,
+      );
+      await db.db.close();
     });
 
     test('v2 备份包含会话头像资源，并在导入后重写 avatarValue', () async {

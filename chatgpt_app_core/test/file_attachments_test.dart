@@ -7,6 +7,8 @@ import 'package:chatgpt_app_core/chat/application/stream_dispatcher.dart';
 import 'package:chatgpt_app_core/chat/domain/chat_attachments.dart';
 import 'package:chatgpt_app_core/chat/domain/message_block.dart';
 import 'package:chatgpt_app_core/chat/domain/model_capabilities.dart';
+import 'package:chatgpt_app_core/util/managed_attachment_store.dart';
+import 'package:crypto/crypto.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:syncfusion_flutter_pdf/pdf.dart';
 
@@ -23,17 +25,22 @@ void main() {
 
   setUp(() async {
     tmpDir = await Directory.systemTemp.createTemp('phase4_test');
+    ManagedAttachmentStore.debugRootDirectory =
+        Directory('${tmpDir.path}/managed');
   });
 
   tearDown(() async {
+    ManagedAttachmentStore.debugRootDirectory = null;
     await tmpDir.delete(recursive: true);
   });
 
   /// 用 syncfusion 生成一个含已知文本的真实 PDF 文件。
   Future<File> createPdf(String text, {String name = 'doc.pdf'}) async {
     final doc = PdfDocument();
-    doc.pages.add().graphics.drawString(
-        text, PdfStandardFont(PdfFontFamily.helvetica, 12));
+    doc.pages
+        .add()
+        .graphics
+        .drawString(text, PdfStandardFont(PdfFontFamily.helvetica, 12));
     final bytes = await doc.save();
     doc.dispose();
     final f = File('${tmpDir.path}/$name');
@@ -105,6 +112,9 @@ void main() {
       // 遗留项 6：降级文本随 meta 落库，且与当前轮 extraText 同一份。
       expect(r.metas.single.extractedText, contains('plain note content'));
       expect(r.metas.single.extractedText, r.extraText);
+      final managedRoot = await ManagedAttachmentStore.ensureRootDirectory();
+      expect(r.metas.single.path,
+          startsWith('${managedRoot.path}${Platform.pathSeparator}'));
     });
 
     test('超长文本截断并加提示', () async {
@@ -115,6 +125,50 @@ void main() {
       expect(r.extraText, contains('已截断'));
       expect(r.extraText.length,
           lessThan(FileProcessor.maxTextChars + 200)); // 没把全文塞进去
+    });
+
+    test('managed attachment 读取拒绝超限文件与符号链接来源', () async {
+      final source = File('${tmpDir.path}/bounded.txt');
+      await source.writeAsString('12345');
+      final managed = await ManagedAttachmentStore.importFile(source);
+
+      expect(await ManagedAttachmentStore.readManagedBytes(managed),
+          utf8.encode('12345'));
+      expect(
+        await ManagedAttachmentStore.readManagedBytes(managed, maxBytes: 4),
+        isNull,
+      );
+      if (!Platform.isWindows) {
+        final link = Link('${tmpDir.path}/source-link.txt');
+        await link.create(source.path);
+        await expectLater(
+          ManagedAttachmentStore.importFile(File(link.path)),
+          throwsA(isA<FormatException>()),
+        );
+      }
+    });
+
+    test('managed attachment 不沿目标目录项中的符号链接写文件', () async {
+      if (Platform.isWindows) return;
+      final source = File('${tmpDir.path}/unique-target.txt');
+      final bytes = utf8.encode(
+        'target-${DateTime.now().microsecondsSinceEpoch}',
+      );
+      await source.writeAsBytes(bytes);
+      final sentinel = File('${tmpDir.path}/write-sentinel.txt');
+      await sentinel.writeAsString('unchanged');
+      final root = await ManagedAttachmentStore.ensureRootDirectory();
+      final target = Link('${root.path}/${sha256.convert(bytes)}.txt');
+      await target.create(sentinel.path);
+      addTearDown(() async {
+        if (await target.exists()) await target.delete();
+      });
+
+      await expectLater(
+        ManagedAttachmentStore.importFile(source),
+        throwsA(isA<FormatException>()),
+      );
+      expect(await sentinel.readAsString(), 'unchanged');
     });
   });
 
@@ -143,8 +197,10 @@ void main() {
       expect(img['image_url'], {'url': 'data:image/jpeg;base64,AAA'});
       final file = content[2] as Map<String, dynamic>;
       expect(file['type'], 'file');
-      expect(file['file'],
-          {'filename': 'a.pdf', 'file_data': 'data:application/pdf;base64,BBB'});
+      expect(file['file'], {
+        'filename': 'a.pdf',
+        'file_data': 'data:application/pdf;base64,BBB'
+      });
     });
   });
 

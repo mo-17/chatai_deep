@@ -166,6 +166,7 @@ class _KnowledgeBasePageState extends State<KnowledgeBasePage> {
       final result = await FilePicker.pickFiles(
         type: FileType.custom,
         allowMultiple: true,
+        withData: false,
         allowedExtensions: [
           ...FileProcessor.pickerExtensions,
           ...OcrService.imageExtensions,

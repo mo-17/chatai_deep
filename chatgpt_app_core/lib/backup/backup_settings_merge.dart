@@ -1,3 +1,4 @@
+import 'package:chatgpt_app_core/chat/application/mcp/mcp_types.dart';
 import 'package:chatgpt_app_core/model/ai_settings.dart';
 
 /// 合并备份与当前账号的敏感 AI 设置。
@@ -10,6 +11,30 @@ AISettings mergeImportedSettingsSecrets(
   AISettings local, {
   bool incomingIncludesSecrets = false,
 }) {
+  // “信任”是当前设备上的执行授权，不是可迁移的数据。备份只能继续沿用
+  // 本地已经授予、且 id + endpoint 唯一匹配的 MCP 信任；新增/改址/歧义
+  // server 一律按不信任导入。后端 MCP 的信任同样只保留当前设备状态。
+  stripImportedMcpAuthorizations(incoming);
+  incoming
+    ..mcpBackendEnabled = local.mcpBackendEnabled
+    ..mcpBackendTrusted = local.mcpBackendTrusted;
+  incoming.mcpServers = incoming.mcpServers.map((server) {
+    final matches = local.mcpServers
+        .where(
+          (entry) =>
+              entry.id == server.id &&
+              _hasSameEndpointIdentity(entry.url, server.url),
+        )
+        .toList();
+    final localGrant = matches.length == 1 ? matches.single : null;
+    return server.copyWith(
+      enabled: localGrant?.enabled ?? false,
+      trusted: localGrant?.trusted ?? false,
+      permission: localGrant?.permission ?? McpToolPermission.readOnly,
+      enabledProjectIds: localGrant?.enabledProjectIds ?? const [],
+    );
+  }).toList();
+
   // manifest 显式声明“包含 API Key”时，备份的凭据状态是完整快照：
   // 空值也有意义，表示用户导出时该凭据未配置，应清除本地旧值。
   if (incomingIncludesSecrets) return incoming;
@@ -48,6 +73,27 @@ AISettings mergeImportedSettingsSecrets(
     if (matches.length != 1 || matches.single.headers.isEmpty) return server;
     return server.copyWith(headers: matches.single.headers);
   }).toList();
+  return incoming;
+}
+
+/// 把 settings.json 中的 MCP 运行授权视为不可迁移数据。
+///
+/// BackupService 在返回 [AISettings] 给任何调用方前先调用此边界；UI
+/// 随后只能通过 [mergeImportedSettingsSecrets] 恢复当前设备已授予的状态。
+AISettings stripImportedMcpAuthorizations(AISettings incoming) {
+  incoming
+    ..mcpBackendEnabled = false
+    ..mcpBackendTrusted = false
+    ..mcpServers = incoming.mcpServers
+        .map(
+          (server) => server.copyWith(
+            enabled: false,
+            trusted: false,
+            permission: McpToolPermission.readOnly,
+            enabledProjectIds: const [],
+          ),
+        )
+        .toList();
   return incoming;
 }
 

@@ -1,5 +1,7 @@
 import 'dart:io';
+import 'dart:typed_data';
 
+import 'package:chatgpt_app_core/backup/backup_archive_limits.dart';
 import 'package:chatgpt_app_core/backup/backup_service.dart';
 import 'package:chatgpt_app_core/backup/backup_settings_merge.dart';
 import 'package:chatgpt_app_core/chat/application/story_template_translation_tasks.dart';
@@ -8,6 +10,7 @@ import 'package:chatgpt_app_core/model/ai_settings.dart';
 import 'package:chatgpt_app_core/provider/ai_settings_provider.dart';
 import 'package:chatgpt_app_core/theme/app_visual_theme.dart';
 import 'package:chatgpt_app_core/util/hi_dialog.dart';
+import 'package:chatgpt_app_core/util/bounded_file_reader.dart';
 import 'package:chatgpt_app_core/widget/app_visual_widgets.dart';
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
@@ -32,6 +35,24 @@ Future<T> runBackupImportWithTranslationTaskRebind<T>({
       await coordinator.initialize(storage, accountHash: accountHash);
     }
   }
+}
+
+/// FilePicker 关闭 `withData` 后的有界读取边界。服务层仍会重新校验 ZIP
+/// 元数据；这里负责在把本地不受信任文件整体搬进内存前拒绝超限输入。
+Future<Uint8List?> readBackupImportFile(PlatformFile file) async {
+  validateBackupCompressedSize(file.size);
+  final inMemory = file.bytes;
+  if (inMemory != null) {
+    validateBackupCompressedSize(inMemory.length);
+    return inMemory;
+  }
+  final path = file.path;
+  if (path == null || path.isEmpty) return null;
+  return readFileBytesBounded(
+    File(path),
+    maxBytes: BackupArchiveLimits.standard.maxCompressedBytes,
+    label: '备份文件',
+  );
 }
 
 ///备份与恢复页（阶段八）：导出 zip / 导入恢复。
@@ -489,16 +510,27 @@ class _BackupRestorePageState extends State<BackupRestorePage> {
       dialogTitle: '选择备份文件',
       type: FileType.custom,
       allowedExtensions: const ['zip'],
-      withData: true,
+      withData: false,
     );
     final file = picked?.files.firstOrNull;
     if (file == null || !mounted) return; // 用户取消
-    final bytes = file.bytes ??
-        (file.path != null ? await File(file.path!).readAsBytes() : null);
+    Uint8List? bytes;
+    try {
+      bytes = await readBackupImportFile(file);
+    } catch (error) {
+      if (mounted) {
+        HiDialog.showSnackBar(
+          context,
+          error is FormatException ? error.message : '读取备份文件失败：$error',
+        );
+      }
+      return;
+    }
     if (bytes == null) {
       if (mounted) HiDialog.showSnackBar(context, '读取备份文件失败');
       return;
     }
+    final archiveBytes = bytes;
     if (!mounted) return;
     final String accountHash;
     try {
@@ -516,7 +548,7 @@ class _BackupRestorePageState extends State<BackupRestorePage> {
           _assertStableAccount(accountHash);
           final service = await _service(accountHash: accountHash);
           final result = await service.previewArchive(
-            bytes,
+            archiveBytes,
             accountHash: accountHash,
           );
           _assertStableAccount(accountHash);
@@ -557,7 +589,7 @@ class _BackupRestorePageState extends State<BackupRestorePage> {
           Future<void> accountGuard() async =>
               _assertStableAccount(accountHash);
           Future<BackupRestoreResult> importAction() => service.importArchive(
-                bytes,
+                archiveBytes,
                 accountHash: accountHash,
                 mode: mode,
                 accountGuard: accountGuard,

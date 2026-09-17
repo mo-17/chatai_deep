@@ -73,6 +73,7 @@ class KnowledgeFileImporter {
     }
 
     try {
+      await FileProcessor.validateKnowledgeImportFile(path);
       final ext = _extOf(name);
       final isImage = OcrService.imageExtensions.contains(ext);
       String? text;

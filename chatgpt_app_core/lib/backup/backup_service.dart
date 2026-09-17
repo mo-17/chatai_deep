@@ -6,6 +6,7 @@ import 'dart:io';
 import 'package:archive/archive.dart';
 import 'package:chatgpt_app_core/backup/backup_archive_limits.dart';
 import 'package:chatgpt_app_core/backup/backup_integrity.dart';
+import 'package:chatgpt_app_core/backup/backup_settings_merge.dart';
 import 'package:chatgpt_app_core/capability/generated_image_save_service.dart';
 import 'package:chatgpt_app_core/chat/application/assistant_role_card_asset_store.dart';
 import 'package:chatgpt_app_core/chat/application/story_tavern_preset_transfer.dart';
@@ -31,6 +32,7 @@ import 'package:chatgpt_app_core/model/assistant_memory_model.dart';
 import 'package:chatgpt_app_core/model/story_template_translation_task_model.dart';
 import 'package:chatgpt_app_core/util/account_resource_scope.dart';
 import 'package:chatgpt_app_core/util/avatar_asset_service.dart';
+import 'package:chatgpt_app_core/util/managed_attachment_store.dart';
 import 'package:chatgpt_app_core/util/uuid_v4.dart';
 import 'package:crypto/crypto.dart';
 import 'package:flutter/foundation.dart';
@@ -2220,104 +2222,7 @@ class BackupService {
   }
 
   static Archive _decodeArchive(List<int> zipBytes) {
-    validateBackupCompressedSize(zipBytes.length);
-    try {
-      // ZipDecoder 会在 callback 前读取 Unix symlink 内容。先直接读取中央目录
-      // 元数据（只持有压缩 slice，不解压），确保 symlink 与 ZIP bomb 在此前拒绝。
-      final directory = ZipDirectory()..read(InputMemoryStream(zipBytes));
-      validateBackupEntryCount(directory.totalCentralDirectoryEntries);
-      validateBackupEntryCount(directory.fileHeaders.length);
-      if (directory.numberOfThisDisk != 0 ||
-          directory.diskWithTheStartOfTheCentralDirectory != 0 ||
-          directory.totalCentralDirectoryEntriesOnThisDisk !=
-              directory.totalCentralDirectoryEntries ||
-          directory.totalCentralDirectoryEntries !=
-              directory.fileHeaders.length) {
-        throw const FormatException('备份不支持分卷或截断的 ZIP 中央目录');
-      }
-      final preflightNames = <BackupArchiveEntryName>[];
-      final preflightEntries = <BackupArchiveEntryInfo>[];
-      for (final header in directory.fileHeaders) {
-        final localFile = header.file;
-        if (localFile == null || localFile.filename != header.filename) {
-          throw const FormatException('备份 ZIP 本地 header 与中央目录不一致');
-        }
-        final isDirectory =
-            header.filename.endsWith('/') || header.filename.endsWith('\\');
-        final entryMode = header.externalFileAttributes >> 16;
-        preflightNames.add(
-          BackupArchiveEntryName(
-            name: header.filename,
-            isDirectory: isDirectory,
-          ),
-        );
-        preflightEntries.add(
-          BackupArchiveEntryInfo(
-            name: header.filename,
-            isDirectory: isDirectory,
-            isSymbolicLink: (header.versionMadeBy >> 8) == 3 &&
-                (entryMode & 0xf000) == 0xa000,
-            isEncrypted: (header.generalPurposeBitFlag & 0x1) != 0 ||
-                (localFile.flags & 0x1) != 0,
-            hasRawContent: localFile.length == header.compressedSize,
-            uncompressedBytes: header.uncompressedSize,
-            compressedBytes: header.compressedSize,
-          ),
-        );
-      }
-      validateBackupArchiveEntries(
-        preflightEntries,
-        rawEntryNames: preflightNames,
-        compressedInputBytes: zipBytes.length,
-      );
-
-      final outputBudget = BackupArchiveOutputBudget();
-      final archive = Archive();
-      for (var index = 0; index < directory.fileHeaders.length; index++) {
-        final header = directory.fileHeaders[index];
-        final localFile = header.file!;
-        final metadata = preflightEntries[index];
-        if (localFile.flags != header.generalPurposeBitFlag ||
-            localFile.compressedSize != header.compressedSize ||
-            localFile.uncompressedSize != header.uncompressedSize) {
-          throw const FormatException('备份 ZIP 本地 header 与中央目录大小不一致');
-        }
-        if (metadata.isDirectory) {
-          if (header.uncompressedSize != 0) {
-            throw const FormatException('备份目录 entry 大小不合法');
-          }
-          archive.addFile(
-            ArchiveFile.directory(header.filename)
-              ..mode = header.externalFileAttributes >> 16,
-          );
-          continue;
-        }
-
-        final sink = outputBudget.newEntry(header.filename);
-        localFile.decompress(sink);
-        final bytes = sink.getBytes();
-        if (bytes.length != header.uncompressedSize) {
-          throw FormatException(
-            '备份 entry 实际解压大小与 header 不一致：${header.filename}',
-          );
-        }
-        if (getCrc32(bytes) != header.crc32) {
-          throw FormatException('备份 entry CRC 校验失败：${header.filename}');
-        }
-        archive.addFile(
-          ArchiveFile.bytes(header.filename, bytes)
-            ..mode = header.externalFileAttributes >> 16
-            ..crc32 = header.crc32
-            ..lastModTime =
-                header.lastModifiedFileDate << 16 | header.lastModifiedFileTime,
-        );
-      }
-      return archive;
-    } on FormatException {
-      rethrow;
-    } catch (_) {
-      throw const FormatException('不是有效的备份文件（zip 解析失败）');
-    }
+    return decodeBoundedZipArchive(zipBytes);
   }
 
   static bool _verifyArchiveIntegrity(
@@ -2453,7 +2358,7 @@ class BackupService {
         Map<String, dynamic>.from(settingsJson),
       );
       AISettingsDao.validateSettings(settings);
-      return settings;
+      return stripImportedMcpAuthorizations(settings);
     } catch (error) {
       throw FormatException('AI 设置格式不合法：$error');
     }
@@ -3478,9 +3383,9 @@ class BackupService {
         final path = block.file.path;
         if (path == null || path.isEmpty) continue;
         try {
-          final file = File(path);
-          if (!await file.exists()) continue;
-          files[_attachmentAssetName(block.file)] = await file.readAsBytes();
+          final bytes = await ManagedAttachmentStore.readManagedBytes(path);
+          if (bytes == null) continue;
+          files[_attachmentAssetName(block.file)] = bytes;
         } catch (_) {
           // 附件原始文件缺失不阻塞备份；FileBlock 元数据仍会随消息保留。
         }
@@ -3581,13 +3486,9 @@ class BackupService {
         if (file.isFile && file.name.startsWith(_kFilePrefix))
           _basename(file.name): file,
     };
-    if (fileAssets.isEmpty) return;
 
-    final dir = Directory('${Directory.systemTemp.path}/chatai_restored_files');
-    final stageDir = await resources.stageDirectory(
-      dir,
-      preserveExisting: true,
-    );
+    final dir = await ManagedAttachmentStore.ensureRootDirectory();
+    Directory? stageDir;
     var missing = 0;
     for (final row in messages) {
       final blocks = MessageBlock.decodeList(row['blocks'] as String?);
@@ -3601,37 +3502,61 @@ class BackupService {
         }
         final assetName = _attachmentAssetName(block.file);
         final asset = fileAssets[assetName];
-        if (asset == null) {
-          missing++;
-          restored.add(block);
+        if (asset == null ||
+            asset.size > ManagedAttachmentStore.maxAttachmentBytes) {
+          // 备份中的 FileMetadata.path 来自归档，不得在当前设备继续被解释为
+          // 可读本地路径。只有归档实际携带的附件资产才能重建 managed path。
+          if (block.file.path != null) {
+            missing++;
+            restored.add(_fileBlockWithPath(block, null));
+            changed = true;
+          } else {
+            restored.add(block);
+          }
           continue;
         }
-        final stagedTarget = File('${stageDir.path}/$assetName');
+        stageDir ??= await resources.stageDirectory(
+          dir,
+          preserveExisting: true,
+        );
+        // 归档 key 包含旧设备完整路径，可能超过宿主文件系统的单文件名上限。
+        // 保留归档 key 的兼容性，只把恢复后的磁盘文件名映射为固定长度。
+        final extension = RegExp(r'\.[A-Za-z0-9]{1,10}$')
+                .firstMatch(block.file.name)
+                ?.group(0)
+                ?.toLowerCase() ??
+            '';
+        final targetName =
+            '${sha256.convert(utf8.encode(assetName))}$extension';
+        final stagedTarget = File('${stageDir.path}/$targetName');
         await stagedTarget.writeAsBytes(asset.content as List<int>,
             flush: true);
-        restored.add(FileBlock(
-          id: block.id,
-          messageId: block.messageId,
-          createdAt: block.createdAt,
-          updatedAt: block.updatedAt,
-          status: block.status,
-          modelId: block.modelId,
-          file: FileMetadata(
-            name: block.file.name,
-            path: '${dir.path}/$assetName',
-            mime: block.file.mime,
-            size: block.file.size,
-            extractedText: block.file.extractedText,
-          ),
-        ));
+        restored.add(_fileBlockWithPath(block, '${dir.path}/$targetName'));
         changed = true;
       }
       if (changed) row['blocks'] = MessageBlock.encodeList(restored);
     }
     if (missing > 0) {
-      warnings.add('$missing 个附件原始文件不在备份中，仅保留附件元数据');
+      warnings.add('$missing 个附件原始文件不在备份中，已移除归档携带的本地路径');
     }
   }
+
+  static FileBlock _fileBlockWithPath(FileBlock block, String? path) =>
+      FileBlock(
+        id: block.id,
+        messageId: block.messageId,
+        createdAt: block.createdAt,
+        updatedAt: block.updatedAt,
+        status: block.status,
+        modelId: block.modelId,
+        file: FileMetadata(
+          name: block.file.name,
+          path: path,
+          mime: block.file.mime,
+          size: block.file.size,
+          extractedText: block.file.extractedText,
+        ),
+      );
 
   static Future<int> _restoreGeneratedImageAssets(
     Archive archive,
