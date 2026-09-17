@@ -5,6 +5,33 @@ import { Usage } from '../chat/usage.entity';
 import { User } from '../user/user.entity';
 import { toInt } from '../util/num';
 
+type CsvCell = string | number | boolean | bigint | Date | null | undefined;
+
+function hasSpreadsheetFormulaPrefix(text: string): boolean {
+  // Spreadsheet importers may ignore BOM, Unicode whitespace and C0/C1
+  // controls before deciding whether a cell is a formula.
+  let index = 0;
+  while (index < text.length) {
+    const code = text.charCodeAt(index);
+    const control = code <= 0x1f || (code >= 0x7f && code <= 0x9f);
+    if (!control && text[index].trim().length !== 0) break;
+    index += 1;
+  }
+  return ['=', '+', '-', '@'].includes(text[index] ?? '');
+}
+
+/** 所有导出单元格都走同一边界：公式中和、引号转义、完整引用。 */
+export function sanitizeCsvCell(value: CsvCell): string {
+  let text: string;
+  if (value instanceof Date) text = value.toISOString();
+  else if (value === null || value === undefined) text = '';
+  else text = String(value);
+  if (hasSpreadsheetFormulaPrefix(text)) {
+    text = `'${text}`;
+  }
+  return `"${text.replace(/"/g, '""')}"`;
+}
+
 @Injectable()
 export class AdminUsageService {
   constructor(
@@ -251,20 +278,33 @@ export class AdminUsageService {
     const userMap = new Map(users.map((u) => [u.id, u.userName]));
 
     const BOM = '﻿';
-    const header =
-      'id,userId,userName,provider,model,promptTokens,completionTokens,totalTokens,createdAt';
+    const header = [
+      'id',
+      'userId',
+      'userName',
+      'provider',
+      'model',
+      'promptTokens',
+      'completionTokens',
+      'totalTokens',
+      'createdAt',
+    ]
+      .map(sanitizeCsvCell)
+      .join(',');
     const csvRows = rows.map((r) =>
       [
         r.id,
         r.userId,
-        `"${userMap.get(r.userId) || '未知'}"`,
+        userMap.get(r.userId) || '未知',
         r.provider,
         r.model,
         r.promptTokens,
         r.completionTokens,
         r.totalTokens,
-        r.createdAt instanceof Date ? r.createdAt.toISOString() : r.createdAt,
-      ].join(','),
+        r.createdAt,
+      ]
+        .map(sanitizeCsvCell)
+        .join(','),
     );
     return BOM + [header, ...csvRows].join('\n');
   }
