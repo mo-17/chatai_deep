@@ -18,6 +18,10 @@ export type {
 export type { IUserResolver } from './contracts/user-resolver.interface';
 export type { IJwtSigner } from './contracts/jwt-signer.interface';
 export type { IAuditLogger } from './contracts/audit-logger.interface';
+export type {
+  AuthenticatedPrincipal,
+  IAccessTokenVerifier,
+} from './contracts/access-token-verifier.interface';
 
 // Services
 export { AuthSettingsService } from './settings/auth-settings.service';
@@ -39,6 +43,11 @@ export { ThirdPartyController } from './controllers/third-party.controller';
 // Third-party services
 export { HuaweiService } from './third-party/huawei/huawei.service';
 export { AppleService } from './third-party/apple/apple.service';
+export {
+  AuthKitJwtGuard,
+  AuthKitAdminGuard,
+} from './guards/auth-kit-auth.guard';
+export { requireAppSecretKey } from './security/app-secret';
 export {
   ThirdPartyEnabledGuard,
   ThirdParty,

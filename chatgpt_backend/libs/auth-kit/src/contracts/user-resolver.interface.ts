@@ -67,6 +67,21 @@ export interface IUserResolver {
     },
   ): Promise<AuthUser>;
 
+  /**
+   * 原子消费第三方待绑定账号并绑定已验证标识。
+   * 实现必须锁定用户行，并拒绝已绑定或 provider 不匹配的待绑定账号。
+   */
+  bindPendingThirdPartyIdentifier(
+    userId: number,
+    provider: ThirdPartyProvider,
+    params: {
+      channel: AuthChannel;
+      email?: string;
+      countryCode?: string;
+      phoneNumber?: string;
+    },
+  ): Promise<AuthUser>;
+
   /** 解绑第三方 */
   unbindThirdParty(userId: number, provider: ThirdPartyProvider): Promise<void>;
 

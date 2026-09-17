@@ -92,9 +92,13 @@ export class AdminUserService {
   ) {
     const user = await this.userRepo.findOne({ where: { id } });
     if (!user) throw new NotFoundException('用户不存在');
+    const securityStateChanged =
+      (body.role !== undefined && body.role !== user.role) ||
+      (body.banned !== undefined && body.banned !== user.banned);
     if (body.avatar !== undefined) user.avatar = body.avatar;
     if (body.role !== undefined) user.role = body.role;
     if (body.banned !== undefined) user.banned = body.banned;
+    if (securityStateChanged) user.tokenVersion = (user.tokenVersion ?? 0) + 1;
     await this.userRepo.save(user);
     const { password: _password, ...rest } = user;
     return rest;
@@ -104,6 +108,7 @@ export class AdminUserService {
     const user = await this.userRepo.findOne({ where: { id } });
     if (!user) throw new NotFoundException('用户不存在');
     user.password = await bcrypt.hash(password, BCRYPT_ROUNDS);
+    user.tokenVersion = (user.tokenVersion ?? 0) + 1;
     await this.userRepo.save(user);
     return null;
   }
@@ -124,6 +129,7 @@ export class AdminUserService {
     if (!user) throw new NotFoundException('用户不存在');
     user.email = null;
     user.emailVerifiedAt = null;
+    user.tokenVersion = (user.tokenVersion ?? 0) + 1;
     await this.userRepo.save(user);
     return null;
   }
@@ -134,6 +140,7 @@ export class AdminUserService {
     user.countryCode = null;
     user.phoneNumber = null;
     user.phoneVerifiedAt = null;
+    user.tokenVersion = (user.tokenVersion ?? 0) + 1;
     await this.userRepo.save(user);
     return null;
   }
@@ -143,6 +150,7 @@ export class AdminUserService {
     if (!user) throw new NotFoundException('用户不存在');
     user.huaweiUnionId = null;
     user.huaweiOpenId = null;
+    user.tokenVersion = (user.tokenVersion ?? 0) + 1;
     await this.userRepo.save(user);
     return null;
   }
@@ -152,6 +160,7 @@ export class AdminUserService {
     if (!user) throw new NotFoundException('用户不存在');
     user.appleSubject = null;
     user.appleEmailRelay = null;
+    user.tokenVersion = (user.tokenVersion ?? 0) + 1;
     await this.userRepo.save(user);
     return null;
   }

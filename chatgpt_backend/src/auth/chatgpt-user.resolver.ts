@@ -26,6 +26,7 @@ function toAuthUser(user: User): AuthUser {
     password: user.password,
     role: user.role,
     banned: user.banned,
+    tokenVersion: user.tokenVersion,
   };
 }
 
@@ -154,37 +155,135 @@ export class ChatGptUserResolver implements IUserResolver {
     return toAuthUser(user);
   }
 
+  async bindPendingThirdPartyIdentifier(
+    userId: number,
+    provider: ThirdPartyProvider,
+    params: {
+      channel: AuthChannel;
+      email?: string;
+      countryCode?: string;
+      phoneNumber?: string;
+    },
+  ): Promise<AuthUser> {
+    return this.userRepo.manager.transaction(async (manager) => {
+      const repo = manager.getRepository(User);
+      const user = await repo.findOne({
+        where: { id: userId },
+        lock: { mode: 'pessimistic_write' },
+      });
+      if (!user || user.banned) {
+        throw new BadRequestException('bindTicket 无效或已过期，请重新登录');
+      }
+
+      const providerMatches =
+        provider === 'huawei' ? !!user.huaweiUnionId : !!user.appleSubject;
+      if (
+        !providerMatches ||
+        user.email !== null ||
+        user.phoneNumber !== null
+      ) {
+        throw new BadRequestException('bindTicket 已使用或与登录方式不匹配');
+      }
+
+      if (params.channel === 'email') {
+        if (!params.email) throw new BadRequestException('邮箱不能为空');
+        const existing = await repo.findOne({
+          where: { email: params.email },
+        });
+        if (existing && existing.id !== userId) {
+          throw new BadRequestException('该邮箱已被其他账号绑定');
+        }
+        user.email = params.email;
+        user.emailVerifiedAt = new Date();
+      } else {
+        if (!params.countryCode || !params.phoneNumber) {
+          throw new BadRequestException('手机号不能为空');
+        }
+        const existing = await repo.findOne({
+          where: {
+            countryCode: params.countryCode,
+            phoneNumber: params.phoneNumber,
+          },
+        });
+        if (existing && existing.id !== userId) {
+          throw new BadRequestException('该手机号已被其他账号绑定');
+        }
+        user.countryCode = params.countryCode;
+        user.phoneNumber = params.phoneNumber;
+        user.phoneVerifiedAt = new Date();
+      }
+
+      await repo.save(user);
+      return toAuthUser(user);
+    });
+  }
+
   async unbindThirdParty(
     userId: number,
     provider: ThirdPartyProvider,
   ): Promise<void> {
     if (provider === 'huawei') {
-      await this.userRepo.update(userId, {
-        huaweiUnionId: null,
-        huaweiOpenId: null,
-      });
+      await this.userRepo
+        .createQueryBuilder()
+        .update(User)
+        .set({
+          huaweiUnionId: null,
+          huaweiOpenId: null,
+          tokenVersion: () => '"tokenVersion" + 1',
+        })
+        .where('id = :userId', { userId })
+        .execute();
     } else {
-      await this.userRepo.update(userId, {
-        appleSubject: null,
-        appleEmailRelay: null,
-      });
+      await this.userRepo
+        .createQueryBuilder()
+        .update(User)
+        .set({
+          appleSubject: null,
+          appleEmailRelay: null,
+          tokenVersion: () => '"tokenVersion" + 1',
+        })
+        .where('id = :userId', { userId })
+        .execute();
     }
   }
 
   async unbindEmail(userId: number): Promise<void> {
-    await this.userRepo.update(userId, { email: null, emailVerifiedAt: null });
+    await this.userRepo
+      .createQueryBuilder()
+      .update(User)
+      .set({
+        email: null,
+        emailVerifiedAt: null,
+        tokenVersion: () => '"tokenVersion" + 1',
+      })
+      .where('id = :userId', { userId })
+      .execute();
   }
 
   async unbindPhone(userId: number): Promise<void> {
-    await this.userRepo.update(userId, {
-      countryCode: null,
-      phoneNumber: null,
-      phoneVerifiedAt: null,
-    });
+    await this.userRepo
+      .createQueryBuilder()
+      .update(User)
+      .set({
+        countryCode: null,
+        phoneNumber: null,
+        phoneVerifiedAt: null,
+        tokenVersion: () => '"tokenVersion" + 1',
+      })
+      .where('id = :userId', { userId })
+      .execute();
   }
 
   async updatePassword(userId: number, newPasswordHash: string): Promise<void> {
-    await this.userRepo.update(userId, { password: newPasswordHash });
+    await this.userRepo
+      .createQueryBuilder()
+      .update(User)
+      .set({
+        password: newPasswordHash,
+        tokenVersion: () => '"tokenVersion" + 1',
+      })
+      .where('id = :userId', { userId })
+      .execute();
   }
 
   async markEmailVerified(userId: number): Promise<void> {

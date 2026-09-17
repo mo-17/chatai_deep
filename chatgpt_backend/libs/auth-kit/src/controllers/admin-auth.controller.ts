@@ -9,6 +9,7 @@ import {
   HttpCode,
   NotFoundException,
   Inject,
+  UseGuards,
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository, Like, FindOptionsWhere } from 'typeorm';
@@ -22,6 +23,7 @@ import { EmailSmtpSender } from '../verification/senders/email-smtp.sender';
 import { AUTH_KIT_OPTIONS } from '../auth-kit.tokens';
 import type { AuthKitModuleOptions } from '../auth-kit.module';
 import * as crypto from 'crypto';
+import { AuthKitAdminGuard } from '../guards/auth-kit-auth.guard';
 
 type SmtpProviderKey = SmtpProvider['key'];
 
@@ -52,6 +54,7 @@ function decrypt(encrypted: string, secret: Buffer): string {
 }
 
 @Controller('uapi/admin/auth')
+@UseGuards(AuthKitAdminGuard)
 export class AdminAuthController {
   private readonly appSecret: Buffer;
 

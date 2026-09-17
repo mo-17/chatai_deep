@@ -15,6 +15,7 @@ export interface AuthUser {
   avatar?: string | null;
   role: string;
   banned: boolean;
+  tokenVersion: number;
 }
 
 export interface CreateUserInput {

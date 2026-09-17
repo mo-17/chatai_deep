@@ -7,6 +7,7 @@ import { EmailSmtpSender } from './email-smtp.sender';
 import { EmailAliyunSender } from './email-aliyun.sender';
 import { EmailTencentSender } from './email-tencent.sender';
 import * as crypto from 'crypto';
+import { requireAppSecretKey } from '../../security/app-secret';
 
 /** 启动时为 ak_smtp_providers 预置的 3 个 slot（仅当对应 key 不存在时插入）。 */
 const PROVIDER_SEEDS: Array<
@@ -49,11 +50,7 @@ export class EmailSenderManager implements OnModuleInit {
     @InjectRepository(SmtpProvider)
     private readonly smtpRepo: Repository<SmtpProvider>,
   ) {
-    const appSecretKey =
-      process.env.APP_SECRET_KEY ?? 'CHANGE_ME_CHANGE_ME_CHANGE_ME_32B';
-    if (!appSecretKey || appSecretKey.length < 16) {
-      throw new Error('APP_SECRET_KEY 必须配置且 ≥ 16 字符');
-    }
+    const appSecretKey = requireAppSecretKey(process.env.APP_SECRET_KEY);
     this.appSecret = crypto.createHash('sha256').update(appSecretKey).digest();
   }
 

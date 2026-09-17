@@ -1,15 +1,13 @@
 import { ISmsSender } from './sms-sender.interface';
-import { Logger } from '@nestjs/common';
+import { ServiceUnavailableException } from '@nestjs/common';
 
 /**
- * SMS Mock 发送器 — 仅 console.log 验证码。
- * 正式接入阿里云/腾讯云后替换此实现即可。
+ * SMS 尚未配置真实服务商时 fail-closed，绝不输出或接受明文验证码。
  */
 export class SmsMockSender implements ISmsSender {
-  private readonly logger = new Logger('SmsMock');
-
-  send(phoneNumber: string, code: string): Promise<void> {
-    this.logger.warn(`[MOCK SMS] 收件人: ${phoneNumber} | 验证码: ${code}`);
-    return Promise.resolve();
+  send(_phoneNumber: string, _code: string): Promise<void> {
+    return Promise.reject(
+      new ServiceUnavailableException('短信验证码服务尚未配置'),
+    );
   }
 }

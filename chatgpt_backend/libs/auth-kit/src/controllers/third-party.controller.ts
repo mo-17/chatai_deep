@@ -20,6 +20,8 @@ import {
   ThirdPartyEnabledGuard,
 } from '../third-party/third-party-enabled.guard';
 import * as jwt from 'jsonwebtoken';
+import { randomUUID } from 'crypto';
+import { requireAppSecretKey } from '../security/app-secret';
 
 /**
  * 第三方登录 DTOs
@@ -44,15 +46,44 @@ interface AppleLoginBody {
 }
 
 /** 将 userId 编码为 bindTicket（短期有效 JWT） */
-function encodeBindTicket(userId: number, salt: string): string {
-  const payload = { sub: userId, iat: Math.floor(Date.now() / 1000) };
-  return jwt.sign(payload, salt, { expiresIn: '10m' });
+function encodeBindTicket(
+  userId: number,
+  provider: 'huawei' | 'apple',
+  salt: string,
+): string {
+  return jwt.sign({ purpose: 'third_party_bind', provider }, salt, {
+    algorithm: 'HS256',
+    audience: 'auth-kit:third-party-bind',
+    issuer: 'auth-kit',
+    subject: String(userId),
+    jwtid: randomUUID(),
+    expiresIn: '10m',
+  });
 }
 
 /** 解码 bindTicket 得到 userId */
-function decodeBindTicket(ticket: string, salt: string): number {
-  const payload = jwt.verify(ticket, salt) as unknown as { sub: number };
-  return payload.sub;
+function decodeBindTicket(
+  ticket: string,
+  provider: 'huawei' | 'apple',
+  salt: string,
+): number {
+  const payload = jwt.verify(ticket, salt, {
+    algorithms: ['HS256'],
+    audience: 'auth-kit:third-party-bind',
+    issuer: 'auth-kit',
+  }) as jwt.JwtPayload & {
+    purpose?: string;
+    provider?: string;
+  };
+  if (
+    payload.purpose !== 'third_party_bind' ||
+    payload.provider !== provider ||
+    typeof payload.sub !== 'string' ||
+    !/^[1-9]\d*$/.test(payload.sub)
+  ) {
+    throw new Error('bindTicket claims invalid');
+  }
+  return Number(payload.sub);
 }
 
 /** E.164 解析 */
@@ -80,7 +111,7 @@ export class ThirdPartyController {
   ) {
     this.userResolver = options.userResolver;
     this.jwtSigner = options.jwtSigner;
-    this.bindSalt = options.appSecretKey;
+    this.bindSalt = requireAppSecretKey(options.appSecretKey);
   }
 
   private maskUser(user: AuthUser) {
@@ -122,6 +153,7 @@ export class ThirdPartyController {
         userId: user.id,
         userName: user.userName,
         role: user.role,
+        tokenVersion: user.tokenVersion,
       });
       return { code: 0, data: token, extra: this.maskUser(user) };
     }
@@ -132,16 +164,25 @@ export class ThirdPartyController {
       unionId: userInfo.unionId,
       openId: userInfo.openId,
     });
-    const bindTicket = encodeBindTicket(pending.id, this.bindSalt);
+    const bindTicket = encodeBindTicket(pending.id, 'huawei', this.bindSalt);
     return { code: 0, data: { needBinding: true, bindTicket }, extra: {} };
   }
 
   @Post('huawei/bind-and-login')
   @HttpCode(200)
+  @ThirdParty('huawei')
+  @UseGuards(ThirdPartyEnabledGuard)
   async huaweiBindAndLogin(@Body() body: ThirdPartyBindBody) {
     const { bindTicket, channel, identifier, code } = body;
 
-    // 验证验证码
+    // 解码 bindTicket 得到待绑定用户 ID
+    let userId: number;
+    try {
+      userId = decodeBindTicket(bindTicket, 'huawei', this.bindSalt);
+    } catch {
+      throw new BadRequestException('bindTicket 无效或已过期，请重新登录');
+    }
+
     await this.verificationService.verifyCode(
       channel,
       identifier,
@@ -149,50 +190,21 @@ export class ThirdPartyController {
       code,
     );
 
-    // 解码 bindTicket 得到待绑定用户 ID
-    let userId: number;
-    try {
-      userId = decodeBindTicket(bindTicket, this.bindSalt);
-    } catch {
-      throw new BadRequestException('bindTicket 无效或已过期，请重新登录');
-    }
-
-    // 校验该标识未被占用
     const resolved = resolveIdentifier(channel, identifier);
-    if (channel === 'email') {
-      const existing = await this.userResolver.findByEmail(resolved.email!);
-      if (existing && existing.id !== userId) {
-        throw new BadRequestException('该邮箱已被其他账号绑定');
-      }
-    } else {
-      const existing = await this.userResolver.findByPhone(
-        resolved.countryCode!,
-        resolved.phoneNumber!,
-      );
-      if (existing && existing.id !== userId) {
-        throw new BadRequestException('该手机号已被其他账号绑定');
-      }
-    }
-
-    // 绑定通道
-    await this.userResolver.bindIdentifier(userId, {
-      channel,
-      ...resolved,
-    });
-    if (channel === 'email') {
-      await this.userResolver.markEmailVerified(userId);
-    } else {
-      await this.userResolver.markPhoneVerified(userId);
-    }
-
-    const user = await this.userResolver.findById(userId);
-    if (!user) throw new BadRequestException('用户不存在');
-    if (user.banned) throw new BadRequestException('账号已被封禁');
+    const user = await this.userResolver.bindPendingThirdPartyIdentifier(
+      userId,
+      'huawei',
+      {
+        channel,
+        ...resolved,
+      },
+    );
 
     const token = this.jwtSigner.sign({
       userId: user.id,
       userName: user.userName,
       role: user.role,
+      tokenVersion: user.tokenVersion,
     });
     return { code: 0, data: token, extra: this.maskUser(user) };
   }
@@ -218,6 +230,7 @@ export class ThirdPartyController {
         userId: user.id,
         userName: user.userName,
         role: user.role,
+        tokenVersion: user.tokenVersion,
       });
       return { code: 0, data: token, extra: this.maskUser(user) };
     }
@@ -228,14 +241,23 @@ export class ThirdPartyController {
       subject: appleInfo.subject,
       emailRelay: appleInfo.email,
     });
-    const bindTicket = encodeBindTicket(pending.id, this.bindSalt);
+    const bindTicket = encodeBindTicket(pending.id, 'apple', this.bindSalt);
     return { code: 0, data: { needBinding: true, bindTicket }, extra: {} };
   }
 
   @Post('apple/bind-and-login')
   @HttpCode(200)
+  @ThirdParty('apple')
+  @UseGuards(ThirdPartyEnabledGuard)
   async appleBindAndLogin(@Body() body: ThirdPartyBindBody) {
     const { bindTicket, channel, identifier, code } = body;
+
+    let userId: number;
+    try {
+      userId = decodeBindTicket(bindTicket, 'apple', this.bindSalt);
+    } catch {
+      throw new BadRequestException('bindTicket 无效或已过期，请重新登录');
+    }
 
     await this.verificationService.verifyCode(
       channel,
@@ -244,47 +266,21 @@ export class ThirdPartyController {
       code,
     );
 
-    let userId: number;
-    try {
-      userId = decodeBindTicket(bindTicket, this.bindSalt);
-    } catch {
-      throw new BadRequestException('bindTicket 无效或已过期，请重新登录');
-    }
-
     const resolved = resolveIdentifier(channel, identifier);
-    if (channel === 'email') {
-      const existing = await this.userResolver.findByEmail(resolved.email!);
-      if (existing && existing.id !== userId) {
-        throw new BadRequestException('该邮箱已被其他账号绑定');
-      }
-    } else {
-      const existing = await this.userResolver.findByPhone(
-        resolved.countryCode!,
-        resolved.phoneNumber!,
-      );
-      if (existing && existing.id !== userId) {
-        throw new BadRequestException('该手机号已被其他账号绑定');
-      }
-    }
-
-    await this.userResolver.bindIdentifier(userId, {
-      channel,
-      ...resolved,
-    });
-    if (channel === 'email') {
-      await this.userResolver.markEmailVerified(userId);
-    } else {
-      await this.userResolver.markPhoneVerified(userId);
-    }
-
-    const user = await this.userResolver.findById(userId);
-    if (!user) throw new BadRequestException('账号不存在');
-    if (user.banned) throw new BadRequestException('账号已被封禁');
+    const user = await this.userResolver.bindPendingThirdPartyIdentifier(
+      userId,
+      'apple',
+      {
+        channel,
+        ...resolved,
+      },
+    );
 
     const token = this.jwtSigner.sign({
       userId: user.id,
       userName: user.userName,
       role: user.role,
+      tokenVersion: user.tokenVersion,
     });
     return { code: 0, data: token, extra: this.maskUser(user) };
   }

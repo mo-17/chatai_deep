@@ -46,7 +46,12 @@ export class AdminAuthController {
       throw new BadRequestException('账号或密码错误');
     }
     const token = jwt.sign(
-      { userId: user.id, userName: user.userName, role: user.role },
+      {
+        userId: user.id,
+        userName: user.userName,
+        role: user.role,
+        tokenVersion: user.tokenVersion,
+      },
       JWT_SECRET,
       { expiresIn: '7d' },
     );
@@ -92,6 +97,7 @@ export class AdminAuthController {
       throw new BadRequestException('旧密码错误');
     }
     user.password = await bcrypt.hash(newPassword, BCRYPT_ROUNDS);
+    user.tokenVersion = (user.tokenVersion ?? 0) + 1;
     await this.userRepo.save(user);
     return { code: 0, data: null };
   }

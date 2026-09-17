@@ -9,12 +9,18 @@ import type { IJwtSigner } from '@auth-kit';
  */
 @Injectable()
 export class ChatGptJwtSigner implements IJwtSigner {
-  sign(user: { userId: number; userName: string; role?: string }): string {
+  sign(user: {
+    userId: number;
+    userName: string;
+    role?: string;
+    tokenVersion?: number;
+  }): string {
     return jwt.sign(
       {
         userId: user.userId,
         userName: user.userName,
         role: user.role ?? 'user',
+        tokenVersion: user.tokenVersion ?? 0,
       },
       JWT_SECRET,
       user.role === 'admin' ? { expiresIn: '7d' } : { expiresIn: '30d' },

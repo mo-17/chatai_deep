@@ -25,6 +25,19 @@ export class AppleService {
   async verifyIdentityToken(identityToken: string): Promise<AppleUserInfo> {
     if (!identityToken) throw new BadRequestException('identityToken 不能为空');
 
+    const audiences = [
+      process.env.APPLE_BUNDLE_ID?.trim(),
+      process.env.APPLE_SERVICE_ID?.trim(),
+    ].filter((value): value is string => !!value);
+    const allowedAudiences = [...new Set(audiences)];
+    if (allowedAudiences.length === 0) {
+      throw new BadRequestException('Apple 登录尚未配置 audience');
+    }
+    const audience =
+      allowedAudiences.length === 1
+        ? allowedAudiences[0]
+        : (allowedAudiences as [string, ...string[]]);
+
     // 先解码 header 获取 kid
     const decoded = jwt.decode(identityToken, { complete: true });
     if (!decoded || typeof decoded === 'string') {
@@ -40,16 +53,19 @@ export class AppleService {
       const payload = jwt.verify(identityToken, publicKey, {
         algorithms: ['RS256'],
         issuer: 'https://appleid.apple.com',
-        // audience 应为 app bundle ID，由环境变量提供
-        // audience: process.env.APPLE_CLIENT_ID,
+        audience,
       }) as jwt.JwtPayload & {
         email?: string;
         email_verified?: string | boolean;
         is_private_email?: string | boolean;
       };
 
+      if (typeof payload.sub !== 'string' || payload.sub.length === 0) {
+        throw new Error('identityToken 缺少有效 sub');
+      }
+
       return {
-        subject: payload.sub!,
+        subject: payload.sub,
         email: payload.email,
         emailVerified:
           payload.email_verified === 'true' || payload.email_verified === true,

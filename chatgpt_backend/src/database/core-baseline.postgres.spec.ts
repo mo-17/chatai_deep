@@ -3,6 +3,7 @@ import { DataSource } from 'typeorm';
 import { AddAppVersionSha2561784020000000 } from '../migrations/1784020000000-AddAppVersionSha256';
 import { CreateCoreBaseline1783990000000 } from '../migrations/1783990000000-CreateCoreBaseline';
 import { CreateSyncV21784000000000 } from '../migrations/1784000000000-CreateSyncV2';
+import { AddUserTokenVersion1784030000000 } from '../migrations/1784030000000-AddUserTokenVersion';
 import { buildPostgresOptions } from './postgres-options';
 import {
   MIGRATION_ADVISORY_LOCK_KEYS,
@@ -41,6 +42,7 @@ describePostgres('Core baseline PostgreSQL migration', () => {
         CreateCoreBaseline1783990000000,
         CreateSyncV21784000000000,
         AddAppVersionSha2561784020000000,
+        AddUserTokenVersion1784030000000,
       ],
     });
     try {
@@ -70,6 +72,7 @@ describePostgres('Core baseline PostgreSQL migration', () => {
         'CreateCoreBaseline1783990000000',
         'CreateSyncV21784000000000',
         'AddAppVersionSha2561784020000000',
+        'AddUserTokenVersion1784030000000',
       ]);
       expect(secondRun).toHaveLength(0);
       expect(tables.map((row) => row.tablename)).toEqual(
@@ -99,6 +102,7 @@ describePostgres('Core baseline PostgreSQL migration', () => {
           CreateCoreBaseline1783990000000,
           CreateSyncV21784000000000,
           AddAppVersionSha2561784020000000,
+          AddUserTokenVersion1784030000000,
         ],
       });
       await right.initialize();
@@ -109,11 +113,11 @@ describePostgres('Core baseline PostgreSQL migration', () => {
           runMigrationsWithAdvisoryLock(right),
         ]);
 
-        expect(results.map((rows) => rows.length).sort()).toEqual([0, 3]);
+        expect(results.map((rows) => rows.length).sort()).toEqual([0, 4]);
         const ledger = await left.query<Array<{ count: number }>>(
           'SELECT count(*)::int AS count FROM "migrations"',
         );
-        expect(ledger[0].count).toBe(3);
+        expect(ledger[0].count).toBe(4);
       } finally {
         if (right.isInitialized) await right.destroy();
       }
@@ -129,6 +133,7 @@ describePostgres('Core baseline PostgreSQL migration', () => {
           CreateCoreBaseline1783990000000,
           CreateSyncV21784000000000,
           AddAppVersionSha2561784020000000,
+          AddUserTokenVersion1784030000000,
         ],
       });
       await runnerSource.initialize();
@@ -152,7 +157,7 @@ describePostgres('Core baseline PostgreSQL migration', () => {
           undefined,
           { lockTimeoutMs: 1000 },
         );
-        expect(migrations).toHaveLength(3);
+        expect(migrations).toHaveLength(4);
       } finally {
         if (blocker.isTransactionActive) await blocker.rollbackTransaction();
         await blocker.release();
@@ -241,8 +246,12 @@ describePostgres('Core baseline PostgreSQL migration', () => {
           userName: string;
           password: string;
           email: string | null;
+          tokenVersion: number;
         }>
-      >(`SELECT "userName", "password", "email" FROM "users" WHERE "id"=1`);
+      >(
+        `SELECT "userName", "password", "email", "tokenVersion"
+         FROM "users" WHERE "id"=1`,
+      );
       const [model] = await dataSource.query<Array<Record<string, unknown>>>(
         `SELECT "modelId", "supportsVision", "supportsTool",
                 "supportsReasoning", "supportsPdf"
@@ -267,6 +276,7 @@ describePostgres('Core baseline PostgreSQL migration', () => {
         userName: 'legacy-user',
         password: 'legacy-hash',
         email: null,
+        tokenVersion: 0,
       });
       expect(model).toMatchObject({
         modelId: 'legacy-model',
@@ -328,6 +338,7 @@ describePostgres('Core baseline PostgreSQL migration', () => {
         migrations: [
           CreateSyncV21784000000000,
           AddAppVersionSha2561784020000000,
+          AddUserTokenVersion1784030000000,
         ],
       });
       await newerOnly.initialize();
@@ -341,6 +352,7 @@ describePostgres('Core baseline PostgreSQL migration', () => {
           CreateCoreBaseline1783990000000,
           CreateSyncV21784000000000,
           AddAppVersionSha2561784020000000,
+          AddUserTokenVersion1784030000000,
         ],
       });
       await full.initialize();
@@ -364,6 +376,7 @@ describePostgres('Core baseline PostgreSQL migration', () => {
         'CreateCoreBaseline1783990000000',
         'CreateSyncV21784000000000',
         'AddAppVersionSha2561784020000000',
+        'AddUserTokenVersion1784030000000',
       ]);
     });
   });

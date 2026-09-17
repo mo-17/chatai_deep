@@ -16,10 +16,17 @@ import { HuaweiService } from './third-party/huawei/huawei.service';
 import { AppleService } from './third-party/apple/apple.service';
 import { ThirdPartyEnabledGuard } from './third-party/third-party-enabled.guard';
 import { AUTH_KIT_OPTIONS } from './auth-kit.tokens';
+import type { IAccessTokenVerifier } from './contracts/access-token-verifier.interface';
+import {
+  AuthKitAdminGuard,
+  AuthKitJwtGuard,
+} from './guards/auth-kit-auth.guard';
+import { requireAppSecretKey } from './security/app-secret';
 
 export interface AuthKitModuleOptions {
   userResolver: IUserResolver;
   jwtSigner: IJwtSigner;
+  accessTokenVerifier: IAccessTokenVerifier;
   auditLogger?: IAuditLogger;
   /** 凭据加密主密钥，用于加密 smtp_providers.passwordEncrypted */
   appSecretKey: string;
@@ -44,7 +51,13 @@ export class AuthKitModule {
     const optionsProvider: Provider = {
       provide: AUTH_KIT_OPTIONS,
       inject: asyncOptions.inject ?? [],
-      useFactory: asyncOptions.useFactory,
+      useFactory: async (...args: unknown[]) => {
+        const options = await asyncOptions.useFactory(...args);
+        return {
+          ...options,
+          appSecretKey: requireAppSecretKey(options.appSecretKey),
+        };
+      },
     };
 
     return {
@@ -65,6 +78,8 @@ export class AuthKitModule {
         HuaweiService,
         AppleService,
         ThirdPartyEnabledGuard,
+        AuthKitJwtGuard,
+        AuthKitAdminGuard,
       ],
       exports: [VerificationModule, TypeOrmModule, AUTH_KIT_OPTIONS],
     };

@@ -33,7 +33,7 @@ jobs:
         run: |
           set -o pipefail
           pnpm --filter chatgpt_backend migration:run:prod | tee /tmp/migration-prod.log
-          grep -Fq 'Applied 3 migration(s)' /tmp/migration-prod.log
+          grep -Fq 'Applied 4 migration(s)' /tmp/migration-prod.log
         env:
           DB_HOST: localhost
           DB_PORT: '5432'
@@ -144,6 +144,9 @@ jobs:
           DB_PASSWORD: ''
           DB_NAME: chatgpt_flutter
       - run: pnpm --filter chatgpt_backend exec jest --runInBand
+        env:
+          JWT_SECRET: ci-test-jwt-secret-0123456789-abcdefghijklmnopqrstuvwxyz
+          APP_SECRET_KEY: ci-test-app-key-0123456789-abcdefghijklmnopqrstuvwxyz
       - run: pnpm --filter chatgpt_admin run typecheck
       - run: pnpm --filter chatgpt_admin run build
         env:

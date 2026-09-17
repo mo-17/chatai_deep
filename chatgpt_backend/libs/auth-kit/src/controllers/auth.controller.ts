@@ -7,6 +7,7 @@ import {
   HttpCode,
   BadRequestException,
   Inject,
+  UseGuards,
 } from '@nestjs/common';
 import type { Request } from 'express';
 import * as bcrypt from 'bcryptjs';
@@ -27,6 +28,7 @@ import type {
   AuthChannel,
   CreateUserInput,
 } from '../contracts/auth-user.types';
+import { AuthKitJwtGuard } from '../guards/auth-kit-auth.guard';
 
 const BCRYPT_ROUNDS = 10;
 
@@ -143,6 +145,7 @@ export class AuthController {
       userId: user.id,
       userName: user.userName,
       role: user.role,
+      tokenVersion: user.tokenVersion,
     });
     return { code: 0, data: token, extra: this.maskUser(user) };
   }
@@ -175,6 +178,7 @@ export class AuthController {
       userId: user.id,
       userName: user.userName,
       role: user.role,
+      tokenVersion: user.tokenVersion,
     });
     return { code: 0, data: token, extra: this.maskUser(user) };
   }
@@ -235,6 +239,7 @@ export class AuthController {
       userId: user.id,
       userName: user.userName,
       role: user.role,
+      tokenVersion: user.tokenVersion,
     });
     return { code: 0, data: token, extra: this.maskUser(user) };
   }
@@ -243,6 +248,7 @@ export class AuthController {
 
   @Post('bind')
   @HttpCode(200)
+  @UseGuards(AuthKitJwtGuard)
   async bind(
     @Body() body: BindDto,
     @Req() req: Request & { user?: { userId: number } },

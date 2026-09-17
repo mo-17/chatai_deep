@@ -20,4 +20,5 @@ export interface JwtPayload {
   userId: number;
   userName: string;
   role?: string;
+  tokenVersion?: number;
 }

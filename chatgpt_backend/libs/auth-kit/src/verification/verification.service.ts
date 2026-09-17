@@ -1,4 +1,9 @@
-import { Injectable, BadRequestException, Logger } from '@nestjs/common';
+import {
+  Injectable,
+  BadRequestException,
+  Logger,
+  ServiceUnavailableException,
+} from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository, MoreThan, IsNull } from 'typeorm';
 import * as bcrypt from 'bcryptjs';
@@ -94,21 +99,27 @@ export class VerificationService {
     });
     await this.codeRepo.save(record);
 
-    // 6. 发送
-    if (channel === 'email') {
-      const { subject, html } = renderCodeEmail({
-        code,
-        purposeLabel: PURPOSE_LABELS[purpose],
-        ttlMinutes: Math.ceil(ttlSeconds / 60),
-      });
-      try {
+    // 6. 发送；发送失败必须删除刚创建的记录，避免未送达的 code 仍可使用。
+    try {
+      if (channel === 'email') {
+        const { subject, html } = renderCodeEmail({
+          code,
+          purposeLabel: PURPOSE_LABELS[purpose],
+          ttlMinutes: Math.ceil(ttlSeconds / 60),
+        });
         await this.emailManager.send(identifier, subject, html);
-      } catch (err) {
-        this.logger.error(`邮件发送失败: ${(err as Error).message}`);
-        throw new BadRequestException('邮件发送失败，请稍后重试');
+      } else {
+        await this.smsMock.send(identifier, code);
       }
-    } else {
-      await this.smsMock.send(identifier, code);
+    } catch (err) {
+      try {
+        await this.codeRepo.delete(record.id);
+      } catch {
+        this.logger.error('验证码发送失败后的记录清理也失败');
+      }
+      if (err instanceof ServiceUnavailableException) throw err;
+      this.logger.error('邮件发送失败');
+      throw new BadRequestException('邮件发送失败，请稍后重试');
     }
   }
 
@@ -121,57 +132,57 @@ export class VerificationService {
   ): Promise<boolean> {
     const settings = await this.settingsService.get();
 
-    // 查找最新未消费记录
-    const record = await this.codeRepo.findOne({
-      where: { channel, identifier, purpose, consumedAt: IsNull() },
-      order: { createdAt: 'DESC' },
-    });
-    if (!record) {
-      throw new BadRequestException('验证码无效或已过期');
-    }
+    const result: { ok: true } | { ok: false; message: string } =
+      await this.codeRepo.manager.transaction(async (manager) => {
+        const repo = manager.getRepository(VerificationCode);
+        // 行锁把读取、尝试计数和消费合成一个状态迁移。
+        const record = await repo.findOne({
+          where: { channel, identifier, purpose, consumedAt: IsNull() },
+          order: { createdAt: 'DESC' },
+          lock: { mode: 'pessimistic_write' },
+        });
+        if (!record) {
+          return { ok: false, message: '验证码无效或已过期' };
+        }
 
-    // 检查过期
-    if (Date.now() > record.expiresAt.getTime()) {
-      throw new BadRequestException('验证码已过期，请重新获取');
-    }
+        if (Date.now() > record.expiresAt.getTime()) {
+          record.consumedAt = new Date();
+          await repo.save(record);
+          return { ok: false, message: '验证码已过期，请重新获取' };
+        }
 
-    // 检查尝试次数
-    if (record.attempts >= settings.codeMaxAttempts) {
-      record.consumedAt = new Date(); // 锁定
-      await this.codeRepo.save(record);
-      throw new BadRequestException('验证码错误次数过多，已锁定，请重新获取');
-    }
+        if (record.attempts >= settings.codeMaxAttempts) {
+          record.consumedAt = new Date();
+          await repo.save(record);
+          return {
+            ok: false,
+            message: '验证码错误次数过多，已锁定，请重新获取',
+          };
+        }
 
-    const valid = await bcrypt.compare(code, record.codeHash);
-    if (!valid) {
-      record.attempts += 1;
-      await this.codeRepo.save(record);
-      const remaining = settings.codeMaxAttempts - record.attempts;
-      if (remaining <= 0) {
+        const valid = await bcrypt.compare(code, record.codeHash);
+        if (!valid) {
+          record.attempts += 1;
+          const remaining = settings.codeMaxAttempts - record.attempts;
+          if (remaining <= 0) record.consumedAt = new Date();
+          await repo.save(record);
+          return {
+            ok: false,
+            message:
+              remaining <= 0
+                ? '验证码错误次数过多，已锁定，请重新获取'
+                : `验证码错误，剩余 ${remaining} 次尝试`,
+          };
+        }
+
         record.consumedAt = new Date();
-        await this.codeRepo.save(record);
-        throw new BadRequestException('验证码错误次数过多，已锁定，请重新获取');
-      }
-      throw new BadRequestException(`验证码错误，剩余 ${remaining} 次尝试`);
-    }
+        await repo.save(record);
+        return { ok: true };
+      });
 
-    // 成功 —— 标记消费
-    record.consumedAt = new Date();
-    await this.codeRepo.save(record);
+    // 在 transaction 提交后再抛错，确保失败计数和锁定状态不会回滚。
+    if (!result.ok) throw new BadRequestException(result.message);
     return true;
-  }
-
-  /** 检查记录是否已通过（复用场景用，不重复消费） */
-  async isVerified(
-    channel: 'email' | 'sms',
-    identifier: string,
-    purpose: 'login' | 'register' | 'bind' | 'reset_password',
-  ): Promise<boolean> {
-    const record = await this.codeRepo.findOne({
-      where: { channel, identifier, purpose },
-      order: { createdAt: 'DESC' },
-    });
-    return !!record?.consumedAt;
   }
 
   // ---- IP 限频 ----

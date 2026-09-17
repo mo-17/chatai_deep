@@ -12,11 +12,13 @@ test('container env 保持 production/port 默认值并过滤空变量', () => {
   );
 });
 
-test('只显式转发持久化、同步 canary 与数据库配置', () => {
+test('只显式转发持久化、同步 canary、身份与数据库配置', () => {
   const values = buildContainerEnv({
     NODE_ENV: 'production',
     DB_HOST: 'postgres.internal',
     MIGRATION_LOCK_TIMEOUT_MS: '60000',
+    APPLE_BUNDLE_ID: 'com.example.chatai',
+    APPLE_SERVICE_ID: 'com.example.chatai.web',
     REQUIRE_PRODUCTION_MODE: 'true',
     REQUIRE_PERSISTENT_UPLOADS: 'true',
     SYNC_V2_SHADOW_ENABLED: 'true',
@@ -28,6 +30,8 @@ test('只显式转发持久化、同步 canary 与数据库配置', () => {
     NODE_ENV: 'production',
     DB_HOST: 'postgres.internal',
     MIGRATION_LOCK_TIMEOUT_MS: '60000',
+    APPLE_BUNDLE_ID: 'com.example.chatai',
+    APPLE_SERVICE_ID: 'com.example.chatai.web',
     REQUIRE_PRODUCTION_MODE: 'true',
     REQUIRE_PERSISTENT_UPLOADS: 'true',
     SYNC_V2_SHADOW_ENABLED: 'true',

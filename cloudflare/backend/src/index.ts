@@ -21,6 +21,8 @@ declare global {
       MIGRATION_LOCK_TIMEOUT_MS?: string;
       JWT_SECRET?: string;
       APP_SECRET_KEY?: string;
+      APPLE_BUNDLE_ID?: string;
+      APPLE_SERVICE_ID?: string;
       ADMIN_DEFAULT_USERNAME?: string;
       ADMIN_DEFAULT_PASSWORD?: string;
       BCRYPT_ROUNDS?: string;

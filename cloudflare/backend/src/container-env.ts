@@ -15,6 +15,8 @@ export interface ContainerBindings {
   MIGRATION_LOCK_TIMEOUT_MS?: string;
   JWT_SECRET?: string;
   APP_SECRET_KEY?: string;
+  APPLE_BUNDLE_ID?: string;
+  APPLE_SERVICE_ID?: string;
   ADMIN_DEFAULT_USERNAME?: string;
   ADMIN_DEFAULT_PASSWORD?: string;
   BCRYPT_ROUNDS?: string;
@@ -61,6 +63,8 @@ export function buildContainerEnv(bindings: ContainerBindings) {
     MIGRATION_LOCK_TIMEOUT_MS: bindings.MIGRATION_LOCK_TIMEOUT_MS,
     JWT_SECRET: bindings.JWT_SECRET,
     APP_SECRET_KEY: bindings.APP_SECRET_KEY,
+    APPLE_BUNDLE_ID: bindings.APPLE_BUNDLE_ID,
+    APPLE_SERVICE_ID: bindings.APPLE_SERVICE_ID,
     ADMIN_DEFAULT_USERNAME: bindings.ADMIN_DEFAULT_USERNAME,
     ADMIN_DEFAULT_PASSWORD: bindings.ADMIN_DEFAULT_PASSWORD,
     BCRYPT_ROUNDS: bindings.BCRYPT_ROUNDS,

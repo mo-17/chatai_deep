@@ -28,6 +28,10 @@ export class User {
   @Column({ default: false })
   banned: boolean;
 
+  /** 安全状态版本；密码/角色/封禁变化时递增，使旧 JWT 立即失效。 */
+  @Column({ default: 0 })
+  tokenVersion: number;
+
   // ---- 多通道登录新增字段 ----
 
   @Column({ type: 'varchar', unique: true, nullable: true })
