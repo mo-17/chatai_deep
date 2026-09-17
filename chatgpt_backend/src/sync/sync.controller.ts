@@ -21,7 +21,6 @@ export class SyncController {
 
   @Post('push')
   @HttpCode(200)
-  @Throttle({ default: { limit: 120, ttl: 60_000 } })
   async push(@Req() req: AuthenticatedRequest, @Body() body: PushSyncDto) {
     const data = await this.svc.push(
       req.user!.userId,

@@ -1,8 +1,9 @@
 import { BadRequestException, Injectable } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { MoreThan, Repository } from 'typeorm';
+import { EntityManager, MoreThan, Repository } from 'typeorm';
 import { SyncChangeDto } from './dto/sync.dto';
 import { SyncChangeEntity } from './sync-change.entity';
+import { LEGACY_SYNC_LIMITS } from './sync.constants';
 
 export interface SyncConflict {
   entity: string;
@@ -12,29 +13,98 @@ export interface SyncConflict {
   remote: SyncChangeEntity;
 }
 
+interface PreparedChange {
+  change: SyncChangeDto;
+  payloadBytes: number;
+}
+
+interface StorageUsage {
+  recordCount: number;
+  payloadBytes: number;
+}
+
 @Injectable()
 export class SyncService {
-  private static readonly maxPullPayloadBytes = 4 * 1024 * 1024;
-
   constructor(
     @InjectRepository(SyncChangeEntity)
     private readonly repo: Repository<SyncChangeEntity>,
   ) {}
 
   async push(userId: number, changes: SyncChangeDto[], deviceId?: string) {
+    if (!Number.isSafeInteger(userId) || userId <= 0) {
+      throw new BadRequestException('userId 不合法');
+    }
     if (!Array.isArray(changes)) {
       throw new BadRequestException('changes 必须是数组');
     }
-    if (changes.length > 500) {
-      throw new BadRequestException('单次同步最多提交 500 条变更');
+    if (changes.length > LEGACY_SYNC_LIMITS.maxChanges) {
+      throw new BadRequestException(
+        `单次同步最多提交 ${LEGACY_SYNC_LIMITS.maxChanges} 条变更`,
+      );
+    }
+    this.validateDeviceId(deviceId);
+
+    let envelopeNodes = 0;
+    const prepared: PreparedChange[] = changes.map((change) => {
+      const inspected = this.validateChange(change);
+      envelopeNodes += inspected.nodes;
+      if (envelopeNodes > LEGACY_SYNC_LIMITS.maxEnvelopeNodes) {
+        throw new BadRequestException('同步请求包含过多 JSON 节点');
+      }
+      return {
+        change,
+        // jsonb::text 会为分隔符增加少量空白；按节点数预留上界，避免同一事务低估。
+        payloadBytes:
+          change.op === 'delete' ? 0 : inspected.bytes + inspected.nodes * 2,
+      };
+    });
+
+    let envelopeBytes: number;
+    try {
+      envelopeBytes = Buffer.byteLength(
+        JSON.stringify({ deviceId: deviceId ?? null, changes }),
+        'utf8',
+      );
+    } catch {
+      throw new BadRequestException('同步请求体不是有效 JSON');
+    }
+    if (envelopeBytes > LEGACY_SYNC_LIMITS.maxEnvelopeBytes) {
+      throw new BadRequestException('同步请求体超过大小限制');
     }
 
+    return this.repo.manager.transaction(async (manager) => {
+      // 同一用户的并发 push 必须串行计费，否则多个请求可同时越过累计配额。
+      await manager.query('SELECT pg_advisory_xact_lock($1::bigint)', [userId]);
+      const repo = manager.getRepository(SyncChangeEntity);
+      const storage = await this.getStorageUsage(manager, userId);
+      const result = await this.pushPrepared(
+        repo,
+        userId,
+        prepared,
+        deviceId,
+        storage,
+      );
+      // PostgreSQL jsonb 可能规范化数值表示；提交前以数据库实际文本体积复核。
+      this.assertStorageWithinBudget(
+        await this.getStorageUsage(manager, userId),
+      );
+      return result;
+    });
+  }
+
+  private async pushPrepared(
+    repo: Repository<SyncChangeEntity>,
+    userId: number,
+    prepared: PreparedChange[],
+    deviceId: string | undefined,
+    storage: StorageUsage,
+  ) {
     const accepted: SyncChangeEntity[] = [];
     const conflicts: SyncConflict[] = [];
 
-    for (const change of changes) {
-      this.validateChange(change);
+    for (const { change, payloadBytes } of prepared) {
       const latest = await this.latestOf(
+        repo,
         userId,
         change.entity,
         change.entityId,
@@ -73,8 +143,9 @@ export class SyncService {
         continue;
       }
 
-      const saved = await this.repo.save(
-        this.repo.create({
+      this.assertStorageBudget(storage, payloadBytes);
+      const saved = await repo.save(
+        repo.create({
           userId,
           entity: change.entity,
           entityId: change.entityId,
@@ -85,6 +156,8 @@ export class SyncService {
         }),
       );
       accepted.push(saved);
+      storage.recordCount += 1;
+      storage.payloadBytes += payloadBytes;
     }
 
     return {
@@ -116,7 +189,7 @@ export class SyncService {
       const bytes = Buffer.byteLength(JSON.stringify(change), 'utf8');
       if (
         changes.length > 0 &&
-        payloadBytes + bytes > SyncService.maxPullPayloadBytes
+        payloadBytes + bytes > LEGACY_SYNC_LIMITS.maxPullResponseBytes
       ) {
         break;
       }
@@ -133,18 +206,94 @@ export class SyncService {
     };
   }
 
-  private async latestOf(userId: number, entity: string, entityId: string) {
-    return this.repo.findOne({
+  private async latestOf(
+    repo: Repository<SyncChangeEntity>,
+    userId: number,
+    entity: string,
+    entityId: string,
+  ) {
+    return repo.findOne({
       where: { userId, entity, entityId },
       order: { id: 'DESC' },
     });
   }
 
-  private validateChange(change: SyncChangeDto) {
-    if (!change.entity?.trim())
+  private async getStorageUsage(
+    manager: EntityManager,
+    userId: number,
+  ): Promise<StorageUsage> {
+    const rawRows: unknown = await manager.query(
+      `SELECT COUNT(*) AS "recordCount",
+              COALESCE(SUM(octet_length(COALESCE("payload"::text, ''))), 0) AS "payloadBytes"
+         FROM "sync_changes"
+        WHERE "userId" = $1`,
+      [userId],
+    );
+    const firstRow: unknown = Array.isArray(rawRows) ? rawRows[0] : undefined;
+    if (!this.isPlainObject(firstRow)) {
+      throw new BadRequestException('无法计算同步存储配额');
+    }
+    const recordCount = Number(firstRow.recordCount ?? 0);
+    const payloadBytes = Number(firstRow.payloadBytes ?? 0);
+    if (
+      !Number.isSafeInteger(recordCount) ||
+      !Number.isSafeInteger(payloadBytes)
+    ) {
+      throw new BadRequestException('无法计算同步存储配额');
+    }
+    return { recordCount, payloadBytes };
+  }
+
+  private assertStorageBudget(storage: StorageUsage, payloadBytes: number) {
+    if (storage.recordCount + 1 > LEGACY_SYNC_LIMITS.maxStoredChangesPerUser) {
+      throw new BadRequestException('同步记录数量已达到存储上限');
+    }
+    if (
+      storage.payloadBytes + payloadBytes >
+      LEGACY_SYNC_LIMITS.maxStoredPayloadBytesPerUser
+    ) {
+      throw new BadRequestException('同步 payload 已达到存储上限');
+    }
+  }
+
+  private assertStorageWithinBudget(storage: StorageUsage) {
+    if (storage.recordCount > LEGACY_SYNC_LIMITS.maxStoredChangesPerUser) {
+      throw new BadRequestException('同步记录数量已达到存储上限');
+    }
+    if (
+      storage.payloadBytes > LEGACY_SYNC_LIMITS.maxStoredPayloadBytesPerUser
+    ) {
+      throw new BadRequestException('同步 payload 已达到存储上限');
+    }
+  }
+
+  private validateDeviceId(deviceId?: string) {
+    if (
+      deviceId !== undefined &&
+      (typeof deviceId !== 'string' ||
+        deviceId.length > LEGACY_SYNC_LIMITS.maxDeviceIdLength)
+    ) {
+      throw new BadRequestException('deviceId 超过长度限制');
+    }
+  }
+
+  private validateChange(change: SyncChangeDto): {
+    bytes: number;
+    nodes: number;
+  } {
+    if (!change || typeof change !== 'object' || Array.isArray(change)) {
+      throw new BadRequestException('变更不能为空');
+    }
+    if (typeof change.entity !== 'string' || !change.entity.trim())
       throw new BadRequestException('entity 不能为空');
-    if (!change.entityId?.trim()) {
+    if (change.entity.length > LEGACY_SYNC_LIMITS.maxEntityLength) {
+      throw new BadRequestException('entity 超过长度限制');
+    }
+    if (typeof change.entityId !== 'string' || !change.entityId.trim()) {
       throw new BadRequestException('entityId 不能为空');
+    }
+    if (change.entityId.length > LEGACY_SYNC_LIMITS.maxEntityIdLength) {
+      throw new BadRequestException('entityId 超过长度限制');
     }
     if (change.op !== 'upsert' && change.op !== 'delete') {
       throw new BadRequestException('op 仅支持 upsert/delete');
@@ -152,9 +301,91 @@ export class SyncService {
     if (!Number.isFinite(change.updatedAt) || change.updatedAt < 0) {
       throw new BadRequestException('updatedAt 必须是毫秒时间戳');
     }
+    this.validateDeviceId(change.deviceId);
+
+    let inspected = { bytes: 0, nodes: 0 };
+    if (change.payload !== undefined && change.payload !== null) {
+      if (!this.isPlainObject(change.payload)) {
+        throw new BadRequestException('payload 必须是对象');
+      }
+      inspected = this.inspectJson(change.payload);
+      if (inspected.bytes > LEGACY_SYNC_LIMITS.maxPayloadBytes) {
+        throw new BadRequestException('单条同步 payload 超过大小限制');
+      }
+    }
     if (change.entity === 'assistant_role_asset_chunk') {
       this.validateRoleAssetChunk(change);
     }
+    return inspected;
+  }
+
+  private inspectJson(value: unknown): { bytes: number; nodes: number } {
+    const stack: Array<{ value: unknown; depth: number }> = [
+      { value, depth: 1 },
+    ];
+    let nodes = 1;
+    while (stack.length > 0) {
+      const current = stack.pop()!;
+
+      const item = current.value;
+      if (
+        item === null ||
+        typeof item === 'string' ||
+        typeof item === 'boolean'
+      ) {
+        continue;
+      }
+      if (typeof item === 'number') {
+        if (!Number.isFinite(item)) {
+          throw new BadRequestException('payload 包含非法数值');
+        }
+        continue;
+      }
+      if (current.depth > LEGACY_SYNC_LIMITS.maxJsonDepth) {
+        throw new BadRequestException('payload 嵌套层级超过限制');
+      }
+      if (Array.isArray(item)) {
+        for (const child of item) {
+          nodes += 1;
+          if (nodes > LEGACY_SYNC_LIMITS.maxPayloadNodes) {
+            throw new BadRequestException(
+              '单条同步 payload 包含过多 JSON 节点',
+            );
+          }
+          stack.push({ value: child, depth: current.depth + 1 });
+        }
+        continue;
+      }
+      if (!this.isPlainObject(item)) {
+        throw new BadRequestException('payload 只能包含 JSON 值');
+      }
+      for (const [key, child] of Object.entries(item)) {
+        nodes += 1;
+        if (nodes > LEGACY_SYNC_LIMITS.maxPayloadNodes) {
+          throw new BadRequestException('单条同步 payload 包含过多 JSON 节点');
+        }
+        if (key.length > LEGACY_SYNC_LIMITS.maxJsonKeyLength) {
+          throw new BadRequestException('payload 字段名超过长度限制');
+        }
+        stack.push({ value: child, depth: current.depth + 1 });
+      }
+    }
+
+    let encoded: string;
+    try {
+      encoded = JSON.stringify(value);
+    } catch {
+      throw new BadRequestException('payload 不是有效 JSON');
+    }
+    return { bytes: Buffer.byteLength(encoded, 'utf8'), nodes };
+  }
+
+  private isPlainObject(value: unknown): value is Record<string, unknown> {
+    if (value === null || typeof value !== 'object' || Array.isArray(value)) {
+      return false;
+    }
+    const prototype: unknown = Object.getPrototypeOf(value);
+    return prototype === Object.prototype || prototype === null;
   }
 
   private validateRoleAssetChunk(change: SyncChangeDto) {
@@ -204,6 +435,13 @@ export class SyncService {
     const remotePayload =
       remote.op === 'delete' ? null : (remote.payload ?? null);
     const localPayload = local.op === 'delete' ? null : (local.payload ?? null);
+    try {
+      if (remotePayload !== null) this.inspectJson(remotePayload);
+      if (localPayload !== null) this.inspectJson(localPayload);
+    } catch {
+      // 历史脏数据不能重新触发无界递归；按内容不同走冲突分支。
+      return false;
+    }
     return (
       this.stableStringify(remotePayload) === this.stableStringify(localPayload)
     );

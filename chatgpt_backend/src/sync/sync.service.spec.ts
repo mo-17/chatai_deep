@@ -1,11 +1,69 @@
 import { SyncService } from './sync.service';
 import { SyncChangeEntity } from './sync-change.entity';
+import { LEGACY_SYNC_LIMITS } from './sync.constants';
 
 type Where = Partial<Pick<SyncChangeEntity, 'userId' | 'entity' | 'entityId'>>;
 
 class FakeSyncRepo {
   rows: SyncChangeEntity[] = [];
   nextId = 1;
+  storageUsageOverride?: { recordCount: number; payloadBytes: number };
+  storageUsageResponses: Array<{ recordCount: number; payloadBytes: number }> =
+    [];
+  manager: {
+    transaction: <T>(callback: (manager: never) => Promise<T>) => Promise<T>;
+    query: jest.Mock;
+    getRepository: () => FakeSyncRepo;
+  };
+
+  constructor() {
+    this.manager = {
+      transaction: async <T>(callback: (manager: never) => Promise<T>) => {
+        const rows = this.rows.map((row) => ({ ...row }));
+        const nextId = this.nextId;
+        try {
+          return await callback(this.manager as never);
+        } catch (error) {
+          this.rows = rows;
+          this.nextId = nextId;
+          throw error;
+        }
+      },
+      query: jest.fn((sql: string, params: unknown[] = []) => {
+        if (sql.includes('pg_advisory_xact_lock')) return [];
+        const queuedUsage = this.storageUsageResponses.shift();
+        if (queuedUsage) {
+          return [
+            {
+              recordCount: String(queuedUsage.recordCount),
+              payloadBytes: String(queuedUsage.payloadBytes),
+            },
+          ];
+        }
+        if (this.storageUsageOverride) {
+          return [
+            {
+              recordCount: String(this.storageUsageOverride.recordCount),
+              payloadBytes: String(this.storageUsageOverride.payloadBytes),
+            },
+          ];
+        }
+        const userId = Number(params[0]);
+        const rows = this.rows.filter((row) => row.userId === userId);
+        const payloadBytes = rows.reduce((sum, row) => {
+          if (row.payload === null) return sum;
+          return sum + Buffer.byteLength(JSON.stringify(row.payload), 'utf8');
+        }, 0);
+        return [
+          {
+            recordCount: String(rows.length),
+            payloadBytes: String(payloadBytes),
+          },
+        ];
+      }),
+      getRepository: () => this,
+    };
+  }
 
   create(data: Partial<SyncChangeEntity>) {
     return data as SyncChangeEntity;
@@ -296,5 +354,182 @@ describe('SyncService', () => {
 
     const second = await service.pull(7, first.cursor, 200);
     expect(second.changes[0].id).toBe(first.cursor + 1);
+  });
+
+  it('拒绝超过 v2 复用预算的变更数、单记录和整请求', async () => {
+    const repo = new FakeSyncRepo();
+    const service = new SyncService(repo as never);
+    const validChange = {
+      entity: 'message',
+      entityId: 'm1',
+      op: 'upsert' as const,
+      updatedAt: 1000,
+      payload: { text: 'ok' },
+    };
+
+    await expect(
+      service.push(
+        7,
+        Array.from(
+          { length: LEGACY_SYNC_LIMITS.maxChanges + 1 },
+          (_, index) => ({ ...validChange, entityId: `m${index}` }),
+        ),
+      ),
+    ).rejects.toThrow('单次同步最多提交');
+
+    await expect(
+      service.push(7, [
+        {
+          ...validChange,
+          payload: { text: 'x'.repeat(LEGACY_SYNC_LIMITS.maxPayloadBytes) },
+        },
+      ]),
+    ).rejects.toThrow('单条同步 payload 超过大小限制');
+
+    await expect(
+      service.push(
+        7,
+        Array.from({ length: 9 }, (_, index) => ({
+          ...validChange,
+          entityId: `large-${index}`,
+          payload: { text: 'x'.repeat(500_000) },
+        })),
+      ),
+    ).rejects.toThrow('同步请求体超过大小限制');
+    expect(repo.rows).toEqual([]);
+  });
+
+  it('拒绝超长字段、过深 JSON 和过多 JSON 节点', async () => {
+    const repo = new FakeSyncRepo();
+    const service = new SyncService(repo as never);
+    const base = {
+      entity: 'message',
+      entityId: 'm1',
+      op: 'upsert' as const,
+      updatedAt: 1000,
+    };
+
+    await expect(
+      service.push(7, [
+        {
+          ...base,
+          entity: 'x'.repeat(LEGACY_SYNC_LIMITS.maxEntityLength + 1),
+          payload: { text: 'ok' },
+        },
+      ]),
+    ).rejects.toThrow('entity 超过长度限制');
+    await expect(
+      service.push(
+        7,
+        [{ ...base, payload: { text: 'ok' } }],
+        'd'.repeat(LEGACY_SYNC_LIMITS.maxDeviceIdLength + 1),
+      ),
+    ).rejects.toThrow('deviceId 超过长度限制');
+
+    let nested: Record<string, unknown> = { value: 'ok' };
+    for (let depth = 0; depth < LEGACY_SYNC_LIMITS.maxJsonDepth; depth += 1) {
+      nested = { child: nested };
+    }
+    await expect(
+      service.push(7, [{ ...base, payload: nested }]),
+    ).rejects.toThrow('payload 嵌套层级超过限制');
+    await expect(
+      service.push(7, [
+        {
+          ...base,
+          payload: {
+            items: Array.from(
+              { length: LEGACY_SYNC_LIMITS.maxPayloadNodes },
+              () => 0,
+            ),
+          },
+        },
+      ]),
+    ).rejects.toThrow('payload 包含过多 JSON 节点');
+    expect(repo.rows).toEqual([]);
+  });
+
+  it('事务内按用户累计记录数和 payload 字节实施存储配额', async () => {
+    const repo = new FakeSyncRepo();
+    const service = new SyncService(repo as never);
+    const change = {
+      entity: 'message',
+      entityId: 'm1',
+      op: 'upsert' as const,
+      updatedAt: 1000,
+      payload: { text: 'ok' },
+    };
+
+    repo.storageUsageOverride = {
+      recordCount: LEGACY_SYNC_LIMITS.maxStoredChangesPerUser,
+      payloadBytes: 0,
+    };
+    await expect(service.push(7, [change])).rejects.toThrow(
+      '同步记录数量已达到存储上限',
+    );
+
+    repo.storageUsageOverride = {
+      recordCount: 0,
+      payloadBytes: LEGACY_SYNC_LIMITS.maxStoredPayloadBytesPerUser,
+    };
+    await expect(service.push(7, [change])).rejects.toThrow(
+      '同步 payload 已达到存储上限',
+    );
+    expect(repo.rows).toEqual([]);
+    expect(repo.manager.query).toHaveBeenCalledWith(
+      'SELECT pg_advisory_xact_lock($1::bigint)',
+      [7],
+    );
+  });
+
+  it('数据库实际 jsonb 体积越界时回滚整次 push', async () => {
+    const repo = new FakeSyncRepo();
+    const service = new SyncService(repo as never);
+    repo.storageUsageResponses.push(
+      {
+        recordCount: 0,
+        payloadBytes: LEGACY_SYNC_LIMITS.maxStoredPayloadBytesPerUser - 100_000,
+      },
+      {
+        recordCount: 1,
+        payloadBytes: LEGACY_SYNC_LIMITS.maxStoredPayloadBytesPerUser + 1,
+      },
+    );
+
+    await expect(
+      service.push(7, [
+        {
+          entity: 'message',
+          entityId: 'numeric-normalization',
+          op: 'upsert',
+          updatedAt: 1000,
+          payload: { value: 1e300 },
+        },
+      ]),
+    ).rejects.toThrow('同步 payload 已达到存储上限');
+    expect(repo.rows).toEqual([]);
+  });
+
+  it('合法字段和合理嵌套仍可写入', async () => {
+    const repo = new FakeSyncRepo();
+    const service = new SyncService(repo as never);
+    const result = await service.push(
+      7,
+      [
+        {
+          entity: 'message',
+          entityId: 'm-safe',
+          op: 'upsert',
+          updatedAt: 1000,
+          payload: { blocks: [{ type: 'text', data: { text: '你好' } }] },
+        },
+      ],
+      'device-safe',
+    );
+
+    expect(result.accepted).toHaveLength(1);
+    expect(repo.rows[0].payload).toEqual({
+      blocks: [{ type: 'text', data: { text: '你好' } }],
+    });
   });
 });
