@@ -1284,7 +1284,7 @@ class _StoryRoomPageState extends State<StoryRoomPage> {
       HiDialog.showSnackBar(context, '这个角色已经在房间中');
       return;
     }
-    final participant = _participantFromAssistant(assistant);
+    final participant = await _participantFromAssistant(assistant);
     await dao.saveParticipant(participant);
     await _load();
   }
@@ -2128,7 +2128,7 @@ class _StoryRoomPageState extends State<StoryRoomPage> {
     final avatar = _avatarFromAssistant(assistant);
     participant
       ..name = assistant.name
-      ..prompt = assistant.systemPromptFor('')
+      ..prompt = await assistant.systemPromptForSafely('')
       ..avatarType = avatar.$1
       ..avatarValue = avatar.$2
       ..modelProviderId = assistant.providerId.trim().isEmpty
@@ -2187,14 +2187,15 @@ class _StoryRoomPageState extends State<StoryRoomPage> {
     await _load();
   }
 
-  StoryParticipantModel _participantFromAssistant(AssistantModel assistant) {
+  Future<StoryParticipantModel> _participantFromAssistant(
+      AssistantModel assistant) async {
     final avatar = _avatarFromAssistant(assistant);
     return StoryParticipantModel(
       roomId: widget.room.id!,
       assistantId: assistant.id,
       role: StoryParticipantRole.assistant,
       name: assistant.name,
-      prompt: assistant.systemPromptFor(''),
+      prompt: await assistant.systemPromptForSafely(''),
       avatarType: avatar.$1,
       avatarValue: avatar.$2,
       voiceStyle: assistant.defaultVoiceStyle.trim().isEmpty
@@ -3304,7 +3305,7 @@ class _StoryRoomPageState extends State<StoryRoomPage> {
       }
     }
     _lastGeneratedCompletionTokens = 0;
-    final contextResult = StoryContextBuilder.buildSystemPrompt(
+    final contextResult = await StoryContextBuilder.buildSystemPromptSafely(
       room: widget.room,
       participants: _participants,
       speaker: speaker,
@@ -3312,6 +3313,7 @@ class _StoryRoomPageState extends State<StoryRoomPage> {
       latestInput: input,
       recentMessages: historyMessages,
     );
+    if (!mounted || _stopRequested) return null;
     final history = contextResult.applyToHistory(
       StoryContextBuilder.history(
         historyMessages,

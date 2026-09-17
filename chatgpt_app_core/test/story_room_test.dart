@@ -1983,6 +1983,52 @@ void main() {
       expect(system, contains('镜子在最近一轮内会触发'));
     });
 
+    test('酒馆安全异步生成保留正则及递归世界书命中', () async {
+      final room = StoryRoomModel(
+        id: 1,
+        title: '镜厅',
+        mode: StoryRoomMode.tavern,
+        publicContext: [
+          '【Tavern 原卡信息】',
+          '递归扫描：开启',
+          '',
+          '【关键词记忆 / 世界书】',
+          r'[re] 第[一二三]幕 => 镜子背后藏着暗门。',
+          r'[re] 暗[门窗] => 暗门后通向地下书库。',
+          r'[re] 沙漠\d+ => 这条不应注入。',
+        ].join('\n'),
+      );
+      final speaker = StoryParticipantModel(
+        id: 1,
+        roomId: 1,
+        role: StoryParticipantRole.assistant,
+        name: 'Fuka',
+        prompt: '安静观察。',
+      );
+      final result = await StoryContextBuilder.buildSystemPromptSafely(
+        room: room,
+        participants: [speaker],
+        speaker: speaker,
+        latestInput: '现在进入第二幕。',
+      );
+
+      expect(result.prompt, contains('镜子背后藏着暗门'));
+      expect(result.prompt, contains('暗门后通向地下书库'));
+      expect(result.prompt, isNot(contains('这条不应注入')));
+      expect(result.worldBookHits, hasLength(2));
+      expect(result.applyToHistory([]).toString(), contains('地下书库'));
+      expect(
+        StoryContextBuilder.buildSystemPrompt(
+          room: room,
+          participants: [speaker],
+          speaker: speaker,
+          latestInput: '现在进入第二幕。',
+        ).worldBookHits,
+        isEmpty,
+        reason: '同步兼容入口继续 fail closed，不回退到主 isolate 正则',
+      );
+    });
+
     test('酒馆原卡递归扫描会用已命中世界书继续触发相关条目', () {
       final room = StoryRoomModel(
         title: '镜厅',

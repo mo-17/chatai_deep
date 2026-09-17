@@ -32,6 +32,9 @@ class _AssistantWorldBookPageState extends State<AssistantWorldBookPage> {
   late final TextEditingController _searchCtl;
   late final TextEditingController _probeCtl;
   AssistantWorldBookSaver? _save;
+  List<AssistantMemoryEntryPreview> _probeHits = const [];
+  int _probeRequest = 0;
+  bool _probing = false;
 
   @override
   void initState() {
@@ -178,10 +181,7 @@ class _AssistantWorldBookPageState extends State<AssistantWorldBookPage> {
   }
 
   Widget get _probePreview {
-    final hits = AssistantRoleCardService.matchMemoryEntries(
-      widget.assistant.memoryBook,
-      _probeCtl.text,
-    );
+    final hits = _probeHits;
     final hasHits = hits.isNotEmpty;
     final palette = AppStatusPalette.of(
       context,
@@ -206,9 +206,11 @@ class _AssistantWorldBookPageState extends State<AssistantWorldBookPage> {
                 children: [
                   Expanded(
                     child: Text(
-                      hasHits
-                          ? AssistantRoleCardService.memoryHitSummary(hits)
-                          : '本句不会注入世界书',
+                      _probing
+                          ? '正在匹配世界书…'
+                          : hasHits
+                              ? AssistantRoleCardService.memoryHitSummary(hits)
+                              : '本句不会注入世界书',
                       style: TextStyle(
                         fontSize: 12,
                         fontWeight: FontWeight.w600,
@@ -328,7 +330,28 @@ class _AssistantWorldBookPageState extends State<AssistantWorldBookPage> {
 
   void _onSearchChanged() => setState(() {});
 
-  void _onProbeChanged() => setState(() {});
+  Future<void> _onProbeChanged() async {
+    final request = ++_probeRequest;
+    final input = _probeCtl.text;
+    setState(() {
+      _probeHits = const [];
+      _probing = input.trim().isNotEmpty;
+    });
+    if (!_probing) return;
+    final hits = await AssistantRoleCardService.matchMemoryEntriesSafely(
+      widget.assistant.memoryBook,
+      input,
+      structuredJson: widget.assistant.worldBookJson,
+      characterName: widget.assistant.name,
+      characterDescription: widget.assistant.prompt,
+      creatorNotes: widget.assistant.description,
+    );
+    if (!mounted || request != _probeRequest) return;
+    setState(() {
+      _probeHits = hits;
+      _probing = false;
+    });
+  }
 
   Future<void> _copyProbeHits(List<AssistantMemoryEntryPreview> hits) async {
     final text = AssistantRoleCardService.memoryHitCopyText(hits);
@@ -362,6 +385,7 @@ class _AssistantWorldBookPageState extends State<AssistantWorldBookPage> {
       widget.assistant.memoryBook = _normalizedMemoryBook();
       _syncStructuredWorldBook();
     });
+    _onProbeChanged();
     await _saveAssistant(entry == null ? '已新增世界书设定' : '已更新世界书设定');
   }
 
@@ -388,6 +412,7 @@ class _AssistantWorldBookPageState extends State<AssistantWorldBookPage> {
       widget.assistant.memoryBook = _normalizedMemoryBook();
       _syncStructuredWorldBook();
     });
+    _onProbeChanged();
     await _saveAssistant('已删除世界书设定');
   }
 

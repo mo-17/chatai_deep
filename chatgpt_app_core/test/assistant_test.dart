@@ -116,19 +116,19 @@ void main() {
       expect(a.systemPromptFor('其他角色'), '你是严谨的小说助手');
     });
 
-    test('systemPromptFor 支持正则世界书触发', () {
+    test('systemPromptForSafely 支持正则世界书触发', () async {
       final a = AssistantModel(
         name: '小说角色',
         prompt: '你是严谨的小说助手',
         memoryBook: r'[re] 第[一二三]幕 || Act\s+\d+ => 按幕次切换叙事节奏',
       );
 
-      final prompt = a.systemPromptFor('现在进入第二幕。');
+      final prompt = await a.systemPromptForSafely('现在进入第二幕。');
 
       expect(prompt, startsWith('你是严谨的小说助手'));
       expect(prompt, contains('[当前命中的角色记忆]'));
       expect(prompt, contains('按幕次切换叙事节奏'));
-      expect(a.systemPromptFor('普通闲聊'), '你是严谨的小说助手');
+      expect(await a.systemPromptForSafely('普通闲聊'), '你是严谨的小说助手');
     });
 
     test('systemPromptFor 支持 selective 二级关键词触发', () {

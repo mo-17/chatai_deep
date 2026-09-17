@@ -209,6 +209,28 @@ class AssistantModel {
     return parts.join('\n\n');
   }
 
+  /// 实际生成路径使用的异步版本：world-book regex 只在可终止 isolate 中匹配。
+  Future<String> systemPromptForSafely(String userText) async {
+    final base = prompt.trim();
+    final examples = _exampleDialogContext();
+    final memory = await AssistantMemoryBook.buildContextSafely(
+      memoryBook,
+      userText,
+      structuredJson: worldBookJson,
+      characterName: name,
+      characterDescription: _promptSection('角色设定'),
+      characterPersonality: _promptSection('性格'),
+      characterDepthPrompt: _promptSection('系统提示'),
+      scenario: _promptSection('场景'),
+      creatorNotes: description,
+    );
+    return [
+      if (base.isNotEmpty) base,
+      if (examples.isNotEmpty) examples,
+      if (memory.isNotEmpty) memory,
+    ].join('\n\n');
+  }
+
   String _exampleDialogContext() {
     final examples = AssistantExampleDialogs.promptText(exampleDialogs);
     if (examples.isEmpty) return '';
@@ -259,6 +281,81 @@ class AssistantMemoryBook {
       creatorNotes: creatorNotes,
     );
     return budget.context;
+  }
+
+  static Future<String> buildContextSafely(
+    String raw,
+    String userText, {
+    int maxEntries = 6,
+    int maxContextChars = defaultMaxContextChars,
+    String structuredJson = '',
+    String characterName = '',
+    String personaDescription = '',
+    String characterDescription = '',
+    String characterPersonality = '',
+    String characterDepthPrompt = '',
+    String scenario = '',
+    String creatorNotes = '',
+  }) async =>
+      (await budgetContextSafely(
+        raw,
+        userText,
+        maxEntries: maxEntries,
+        maxContextChars: maxContextChars,
+        structuredJson: structuredJson,
+        characterName: characterName,
+        personaDescription: personaDescription,
+        characterDescription: characterDescription,
+        characterPersonality: characterPersonality,
+        characterDepthPrompt: characterDepthPrompt,
+        scenario: scenario,
+        creatorNotes: creatorNotes,
+      ))
+          .context;
+
+  static Future<AssistantMemoryContextBudget> budgetContextSafely(
+    String raw,
+    String userText, {
+    int maxEntries = 6,
+    int maxContextChars = defaultMaxContextChars,
+    String structuredJson = '',
+    String characterName = '',
+    String personaDescription = '',
+    String characterDescription = '',
+    String characterPersonality = '',
+    String characterDepthPrompt = '',
+    String scenario = '',
+    String creatorNotes = '',
+  }) async {
+    final entries = await matchSafely(
+      raw,
+      userText,
+      maxEntries: maxEntries,
+      structuredJson: structuredJson,
+      characterName: characterName,
+      personaDescription: personaDescription,
+      characterDescription: characterDescription,
+      characterPersonality: characterPersonality,
+      characterDepthPrompt: characterDepthPrompt,
+      scenario: scenario,
+      creatorNotes: creatorNotes,
+    );
+    if (entries.isEmpty) {
+      return AssistantMemoryContextBudget.empty(
+        maxContextChars: maxContextChars,
+      );
+    }
+    final lines = _budgetedLines(entries, maxContextChars: maxContextChars);
+    final context = lines.isEmpty ? '' : '[当前命中的角色记忆]\n${lines.join('\n')}';
+    return AssistantMemoryContextBudget(
+      context: context,
+      matchedCount: entries.length,
+      includedCount: lines.length,
+      skippedCount: entries.length - lines.length,
+      truncated: lines.any((line) => line.endsWith('...')),
+      maxContextChars: maxContextChars,
+      usedChars: context.length,
+    );
   }
 
   static AssistantMemoryContextBudget budgetContext(
@@ -336,6 +433,40 @@ class AssistantMemoryBook {
         ),
         maxEntries: maxEntries.clamp(1, 50),
       ).entries.map((entry) => entry.content).toList();
+
+  static Future<List<String>> matchSafely(
+    String raw,
+    String userText, {
+    int maxEntries = 6,
+    String structuredJson = '',
+    String characterName = '',
+    String personaDescription = '',
+    String characterDescription = '',
+    String characterPersonality = '',
+    String characterDepthPrompt = '',
+    String scenario = '',
+    String creatorNotes = '',
+  }) async =>
+      (await WorldBookMatcher.matchSafely(
+        WorldBookCodec.decode(
+          structuredJson: structuredJson,
+          legacyText: raw,
+        ),
+        WorldBookMatchContext(
+          input: userText,
+          characterName: characterName,
+          personaDescription: personaDescription,
+          characterDescription: characterDescription,
+          characterPersonality: characterPersonality,
+          characterDepthPrompt: characterDepthPrompt,
+          scenario: scenario,
+          creatorNotes: creatorNotes,
+        ),
+        maxEntries: maxEntries.clamp(1, 50),
+      ))
+          .entries
+          .map((entry) => entry.content)
+          .toList();
 
   static List<String> _budgetedLines(
     List<String> entries, {
@@ -532,16 +663,8 @@ class _MemoryEntry {
             lowerUserText,
           ));
     }
-    for (final keyword in candidates) {
-      try {
-        final source = wholeWords ? _wholeWordPattern(keyword) : keyword;
-        if (RegExp(source, caseSensitive: caseSensitive).hasMatch(userText)) {
-          return true;
-        }
-      } catch (_) {
-        continue;
-      }
-    }
+    // 旧同步 parser 保留仅为格式兼容；不可在主 isolate 执行
+    // 导入的 regex。实际运行路径统一走 WorldBookMatcher.matchSafely。
     return false;
   }
 

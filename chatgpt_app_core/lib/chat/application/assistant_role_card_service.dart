@@ -3,11 +3,21 @@ import 'dart:io' show ZLibDecoder;
 import 'dart:typed_data';
 
 import 'package:archive/archive.dart' as archive;
+import 'package:chatgpt_app_core/backup/backup_archive_limits.dart';
 import 'package:chatgpt_app_core/chat/application/assistant_example_dialogs.dart';
 import 'package:chatgpt_app_core/model/assistant_model.dart';
 import 'package:chatgpt_app_core/model/world_book.dart';
 
 class AssistantRoleCardService {
+  static const int maxImportBytes = 32 * 1024 * 1024;
+  static const int maxPngMetadataBytes = 2 * 1024 * 1024;
+  static const importArchiveLimits = BackupArchiveLimits(
+    maxCompressedBytes: maxImportBytes,
+    maxEntries: 512,
+    maxEntryUncompressedBytes: 16 * 1024 * 1024,
+    maxTotalUncompressedBytes: 64 * 1024 * 1024,
+  );
+
   static const format = 'chatai_deep_assistant_card';
   static const version = 1;
   static const fullExportLabel = '完整角色卡';
@@ -179,6 +189,7 @@ class AssistantRoleCardService {
 
   static AssistantRoleCardImportResult importPackageBytes(List<int> bytes,
       {String? filename}) {
+    _validateImportSize(bytes);
     if (_isZip(bytes, filename: filename)) {
       return _isCharx(bytes, filename: filename)
           ? _importCharx(bytes, filename: filename)
@@ -266,7 +277,14 @@ class AssistantRoleCardService {
 
   static archive.Archive _decodeRoleArchive(List<int> bytes) {
     try {
-      return archive.ZipDecoder().decodeBytes(bytes);
+      return decodeBoundedZipArchive(
+        bytes,
+        limits: importArchiveLimits,
+        invalidArchiveMessage: '无法解析角色卡 ZIP',
+      );
+    } on FormatException catch (error) {
+      if (error.message == '无法解析角色卡 ZIP') rethrow;
+      throw FormatException('无法解析角色卡 ZIP：${error.message}');
     } catch (_) {
       throw const FormatException('无法解析角色卡 ZIP');
     }
@@ -577,6 +595,7 @@ class AssistantRoleCardService {
   static AssistantRoleCardImportBatchResult importPackageBatchBytes(
       List<int> bytes,
       {String? filename}) {
+    _validateImportSize(bytes);
     if (_isZip(bytes, filename: filename)) {
       if (_isCharx(bytes, filename: filename)) {
         return AssistantRoleCardImportBatchResult(
@@ -661,6 +680,12 @@ class AssistantRoleCardService {
       return false;
     }
     return false;
+  }
+
+  static void _validateImportSize(List<int> bytes) {
+    if (bytes.length > maxImportBytes) {
+      throw const FormatException('角色卡文件过大（最多 32 MiB）');
+    }
   }
 
   static AssistantModel importJson(String source) {
@@ -938,6 +963,83 @@ class AssistantRoleCardService {
         ),
         maxEntries: maxEntries.clamp(1, 50),
       );
+
+  static Future<WorldBookMatchResult> matchWorldBookEntriesSafely(
+    String raw,
+    String userText, {
+    int maxEntries = 6,
+    List<String> recentTexts = const [],
+    String structuredJson = '',
+    String characterName = '',
+    String personaDescription = '',
+    String characterDescription = '',
+    String characterPersonality = '',
+    String characterDepthPrompt = '',
+    String scenario = '',
+    String creatorNotes = '',
+    int messageCount = 0,
+    int generationSeed = 0,
+    Map<String, WorldBookActivation> activations = const {},
+  }) =>
+      WorldBookMatcher.matchSafely(
+        WorldBookCodec.decode(
+          structuredJson: structuredJson,
+          legacyText: raw,
+        ),
+        WorldBookMatchContext(
+          input: userText,
+          recentTexts: recentTexts,
+          characterName: characterName,
+          personaDescription: personaDescription,
+          characterDescription: characterDescription,
+          characterPersonality: characterPersonality,
+          characterDepthPrompt: characterDepthPrompt,
+          scenario: scenario,
+          creatorNotes: creatorNotes,
+          messageCount: messageCount,
+          generationSeed: generationSeed,
+          activations: activations,
+        ),
+        maxEntries: maxEntries.clamp(1, 50),
+      );
+
+  static Future<List<AssistantMemoryEntryPreview>> matchMemoryEntriesSafely(
+    String raw,
+    String userText, {
+    int maxEntries = 6,
+    List<String> recentTexts = const [],
+    String structuredJson = '',
+    String characterName = '',
+    String personaDescription = '',
+    String characterDescription = '',
+    String characterPersonality = '',
+    String characterDepthPrompt = '',
+    String scenario = '',
+    String creatorNotes = '',
+    int messageCount = 0,
+    int generationSeed = 0,
+    Map<String, WorldBookActivation> activations = const {},
+  }) async =>
+      (await matchWorldBookEntriesSafely(
+        raw,
+        userText,
+        maxEntries: maxEntries,
+        recentTexts: recentTexts,
+        structuredJson: structuredJson,
+        characterName: characterName,
+        personaDescription: personaDescription,
+        characterDescription: characterDescription,
+        characterPersonality: characterPersonality,
+        characterDepthPrompt: characterDepthPrompt,
+        scenario: scenario,
+        creatorNotes: creatorNotes,
+        messageCount: messageCount,
+        generationSeed: generationSeed,
+        activations: activations,
+      ))
+          .entries
+          .map(AssistantMemoryEntryPreview.fromWorldBook)
+          .toList();
 
   static String memoryHitSummary(List<AssistantMemoryEntryPreview> hits) {
     if (hits.isEmpty) return '未命中角色记忆';
@@ -1345,12 +1447,8 @@ class AssistantRoleCardService {
     bool caseSensitive = false,
     bool wholeWords = false,
   }) {
-    try {
-      final source = wholeWords ? _wholeWordPattern(pattern) : pattern;
-      return RegExp(source, caseSensitive: caseSensitive).hasMatch(userText);
-    } catch (_) {
-      return false;
-    }
+    // 旧同步 helper 不执行导入正则；runtime 统一走可杀 isolate。
+    return false;
   }
 
   static bool _plainKeywordHit(
@@ -1676,7 +1774,6 @@ class AssistantRoleCardService {
   static String _extractPngRoleCardJson(List<int> bytes) {
     final data = bytes is Uint8List ? bytes : Uint8List.fromList(bytes);
     var offset = 8;
-    final candidates = <String>[];
     while (offset + 12 <= data.length) {
       final length = _uint32(data, offset);
       offset += 4;
@@ -1685,22 +1782,20 @@ class AssistantRoleCardService {
       offset += 4;
       final chunk = data.sublist(offset, offset + length);
       offset += length + 4; // skip data + crc
+      String? candidate;
       if (type == 'tEXt') {
-        final text = _parseTextChunk(chunk);
-        if (text != null) candidates.add(text);
+        candidate = _parseTextChunk(chunk);
       } else if (type == 'iTXt') {
-        final text = _parseInternationalTextChunk(chunk);
-        if (text != null) candidates.add(text);
+        candidate = _parseInternationalTextChunk(chunk);
       } else if (type == 'zTXt') {
-        final text = _parseCompressedTextChunk(chunk);
-        if (text != null) candidates.add(text);
+        candidate = _parseCompressedTextChunk(chunk);
       } else if (type == 'IEND') {
         break;
       }
-    }
-    for (final candidate in candidates) {
-      final json = _decodeRoleCardText(candidate);
-      if (json != null) return json;
+      if (candidate != null) {
+        final json = _decodeRoleCardText(candidate);
+        if (json != null) return json;
+      }
     }
     throw const FormatException('PNG 中没有找到可识别的角色卡元数据');
   }
@@ -1713,6 +1808,7 @@ class AssistantRoleCardService {
     if (nul <= 0 || nul >= chunk.length - 1) return null;
     final keyword = latin1.decode(chunk.sublist(0, nul)).trim().toLowerCase();
     if (!_isRoleCardTextKey(keyword)) return null;
+    if (chunk.length - nul - 1 > maxPngMetadataBytes) return null;
     return latin1.decode(chunk.sublist(nul + 1)).trim();
   }
 
@@ -1724,9 +1820,7 @@ class AssistantRoleCardService {
     final method = chunk[nul + 1];
     if (method != 0) return null;
     try {
-      return utf8.decode(
-        ZLibDecoder().convert(chunk.sublist(nul + 2)),
-      );
+      return utf8.decode(_inflatePngMetadata(chunk.sublist(nul + 2)));
     } catch (_) {
       return null;
     }
@@ -1751,13 +1845,29 @@ class AssistantRoleCardService {
     final textBytes = chunk.sublist(offset);
     try {
       if (compressionFlag == 1 && compressionMethod == 0) {
-        return utf8.decode(ZLibDecoder().convert(textBytes));
+        return utf8.decode(_inflatePngMetadata(textBytes));
       }
-      if (compressionFlag == 0) return utf8.decode(textBytes);
+      if (compressionFlag == 0 && textBytes.length <= maxPngMetadataBytes) {
+        return utf8.decode(textBytes);
+      }
     } catch (_) {
       return null;
     }
     return null;
+  }
+
+  static Uint8List _inflatePngMetadata(List<int> compressed) {
+    final output = _LimitedRoleCardBytes(maxPngMetadataBytes);
+    final decoder = ZLibDecoder().startChunkedConversion(output);
+    const chunkSize = 32 * 1024;
+    for (var offset = 0; offset < compressed.length; offset += chunkSize) {
+      final end = offset + chunkSize < compressed.length
+          ? offset + chunkSize
+          : compressed.length;
+      decoder.add(compressed.sublist(offset, end));
+    }
+    decoder.close();
+    return output.takeBytes();
   }
 
   static int _indexOfZero(Uint8List data, int start) {
@@ -3177,6 +3287,26 @@ class AssistantRoleCardService {
     }
     return null;
   }
+}
+
+final class _LimitedRoleCardBytes implements Sink<List<int>> {
+  final int maxBytes;
+  final BytesBuilder _bytes = BytesBuilder(copy: false);
+
+  _LimitedRoleCardBytes(this.maxBytes);
+
+  @override
+  void add(List<int> data) {
+    if (_bytes.length + data.length > maxBytes) {
+      throw const FormatException('PNG 角色卡元数据解压后过大');
+    }
+    _bytes.add(data);
+  }
+
+  @override
+  void close() {}
+
+  Uint8List takeBytes() => _bytes.takeBytes();
 }
 
 class AssistantMemoryBookTranslationView {

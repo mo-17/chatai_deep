@@ -45,6 +45,7 @@ import 'package:chatgpt_app_core/theme/app_visual_theme.dart';
 import 'package:chatgpt_app_core/util/app_events.dart';
 import 'package:chatgpt_app_core/util/assistant_avatar_bytes.dart';
 import 'package:chatgpt_app_core/util/avatar_asset_service.dart';
+import 'package:chatgpt_app_core/util/bounded_file_reader.dart';
 import 'package:chatgpt_app_core/util/hi_dialog.dart';
 import 'package:chatgpt_app_core/widget/app_visual_widgets.dart';
 import 'package:chatgpt_app_core/widget/assistant_avatar.dart';
@@ -814,6 +815,7 @@ class _AssistantListPageState extends State<AssistantListPage> {
       final result = await FilePicker.pickFiles(
         type: FileType.custom,
         allowedExtensions: const ['json', 'png', 'zip'],
+        withData: false,
       );
       path = result?.files.single.path;
     } catch (e) {
@@ -824,7 +826,11 @@ class _AssistantListPageState extends State<AssistantListPage> {
 
     AssistantRoleCardImportBatchResult importBatch;
     try {
-      final pickedBytes = await File(path).readAsBytes();
+      final pickedBytes = await readFileBytesBounded(
+        File(path),
+        maxBytes: AssistantRoleCardService.maxImportBytes,
+        label: '角色卡文件',
+      );
       importBatch = AssistantRoleCardService.importPackageBatchBytes(
         pickedBytes,
         filename: path,
@@ -1937,6 +1943,7 @@ class _AssistantListPageState extends State<AssistantListPage> {
       final result = await FilePicker.pickFiles(
         type: FileType.custom,
         allowedExtensions: const ['zip'],
+        withData: false,
       );
       path = result?.files.single.path;
       pickedName = result?.files.single.name;
@@ -1949,7 +1956,11 @@ class _AssistantListPageState extends State<AssistantListPage> {
     // 解析。
     SkillPackage pkg;
     try {
-      final bytes = await File(path).readAsBytes();
+      final bytes = await readFileBytesBounded(
+        File(path),
+        maxBytes: SkillImportService.maxImportBytes,
+        label: '技能包',
+      );
       final fallback = (pickedName != null && pickedName.contains('.'))
           ? pickedName.substring(0, pickedName.lastIndexOf('.'))
           : pickedName;

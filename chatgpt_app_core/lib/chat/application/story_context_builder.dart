@@ -63,6 +63,7 @@ class StoryContextBuilder {
         recentMessages: recentMessages,
       ).prompt;
 
+  /// 兼容同步调用；正则世界书只在异步入口参与匹配。
   static StoryContextBuildResult buildSystemPrompt({
     required StoryRoomModel room,
     required List<StoryParticipantModel> participants,
@@ -70,6 +71,56 @@ class StoryContextBuilder {
     StoryPersonaModel? persona,
     String latestInput = '',
     List<StoryMessageModel> recentMessages = const [],
+  }) =>
+      _buildSystemPrompt(
+        room: room,
+        participants: participants,
+        speaker: speaker,
+        persona: persona,
+        latestInput: latestInput,
+        recentMessages: recentMessages,
+        worldBookMatch: _worldBookScan(
+          room,
+          speaker,
+          persona,
+          latestInput,
+          recentMessages,
+        ).run(),
+      );
+
+  /// 实际生成路径：包括递归命中在内的正则都在可终止 isolate 中运行。
+  static Future<StoryContextBuildResult> buildSystemPromptSafely({
+    required StoryRoomModel room,
+    required List<StoryParticipantModel> participants,
+    required StoryParticipantModel speaker,
+    StoryPersonaModel? persona,
+    String latestInput = '',
+    List<StoryMessageModel> recentMessages = const [],
+  }) async =>
+      _buildSystemPrompt(
+        room: room,
+        participants: participants,
+        speaker: speaker,
+        persona: persona,
+        latestInput: latestInput,
+        recentMessages: recentMessages,
+        worldBookMatch: await _worldBookScan(
+          room,
+          speaker,
+          persona,
+          latestInput,
+          recentMessages,
+        ).runSafely(),
+      );
+
+  static StoryContextBuildResult _buildSystemPrompt({
+    required StoryRoomModel room,
+    required List<StoryParticipantModel> participants,
+    required StoryParticipantModel speaker,
+    StoryPersonaModel? persona,
+    String latestInput = '',
+    List<StoryMessageModel> recentMessages = const [],
+    required _WorldBookMatchBundle worldBookMatch,
   }) {
     final isTavern = room.mode == StoryRoomMode.tavern;
     final contextWindow = StoryContextWindow.fromMessages(recentMessages);
@@ -90,7 +141,6 @@ class StoryContextBuilder {
         ..writeln('- 如果当前发言者是旁白，负责场景、动作、氛围和转场。')
         ..writeln('- 如果当前发言者是作者，负责续写、改写、剧情推进和创作建议。');
     }
-    final worldBook = _worldBookSection(room.publicContext);
     final publicContext = _withoutWorldBookSection(room.publicContext).trim();
     final roomSection = StringBuffer()..writeln('当前房间：${room.title}');
     if (publicContext.isNotEmpty) {
@@ -111,33 +161,6 @@ class StoryContextBuilder {
     final continuitySummary = contextWindow.summary();
     final continuitySection =
         continuitySummary.isEmpty ? '' : '【长期剧情记忆】\n$continuitySummary';
-    final maxEntries = _worldBookHitLimit(room);
-    final recentTexts = _recentMatchTexts(
-      contextWindow.recentMessages,
-      maxDepth: _worldBookScanDepth(room),
-    );
-    final previousWorldBookState = _decodeWorldBookState(room.worldBookState);
-    final worldBookEnabled = modules.any((module) =>
-        module.enabled &&
-        (module.builtInSlot == StoryPromptBuiltInSlot.worldBookBefore ||
-            module.builtInSlot == StoryPromptBuiltInSlot.worldBookAfter));
-    final worldBookMatch = worldBook.isEmpty || !worldBookEnabled
-        ? _WorldBookMatchBundle(
-            const [],
-            previousWorldBookState,
-          )
-        : _matchWorldBookHits(
-            worldBook,
-            latestInput: latestInput,
-            maxEntries: maxEntries,
-            recentTexts: recentTexts,
-            recursive: _worldBookRecursiveScanning(room),
-            room: room,
-            speaker: speaker,
-            persona: persona,
-            messageCount: recentMessages.length + 1,
-            previousState: previousWorldBookState,
-          );
     final worldBookHits = worldBookMatch.hits;
     final budgetedWorldBookHits = _budgetWorldBookHits(
       worldBookHits,
@@ -471,66 +494,43 @@ class StoryContextBuilder {
     return value == '开启' || value == 'true' || value == 'yes' || value == '1';
   }
 
-  static _WorldBookMatchBundle _matchWorldBookHits(
-    String worldBook, {
-    required String latestInput,
-    required int maxEntries,
-    required List<String> recentTexts,
-    required bool recursive,
-    required StoryRoomModel room,
-    required StoryParticipantModel speaker,
+  static _StoryWorldBookScan _worldBookScan(
+    StoryRoomModel room,
+    StoryParticipantModel speaker,
     StoryPersonaModel? persona,
-    required int messageCount,
-    required WorldBookRuntimeState previousState,
-  }) {
+    String latestInput,
+    List<StoryMessageModel> recentMessages,
+  ) {
+    final modules = _withRequiredPromptRules(
+      StoryPromptConfigCodec.decode(room.promptConfigJson).modules,
+    );
+    final enabled = modules.any((module) =>
+        module.enabled &&
+        (module.builtInSlot == StoryPromptBuiltInSlot.worldBookBefore ||
+            module.builtInSlot == StoryPromptBuiltInSlot.worldBookAfter));
+    final worldBook = _worldBookSection(room.publicContext);
     final normalized =
         StoryRoomRoleCardImporter.normalizeMemoryBookForMatching(worldBook);
+    final recentTexts = _recentMatchTexts(
+      StoryContextWindow.fromMessages(recentMessages).recentMessages,
+      maxDepth: _worldBookScanDepth(room),
+    );
+    final previousState = _decodeWorldBookState(room.worldBookState);
+    final messageCount = recentMessages.length + 1;
     final depthPrompt = _tavernDepthPrompt(
       room.publicContext,
       speakerName: speaker.name,
     );
-    final first = AssistantRoleCardService.matchWorldBookEntries(
-      normalized,
-      latestInput,
-      maxEntries: maxEntries,
+    return _StoryWorldBookScan(
+      enabled: enabled && worldBook.isNotEmpty,
+      entries: enabled ? WorldBookCodec.decode(legacyText: normalized) : [],
+      latestInput: latestInput,
       recentTexts: recentTexts,
-      characterName: speaker.name,
-      personaDescription: persona?.description ?? '',
-      characterDescription:
-          _promptSection(speaker.prompt, '角色设定', fallback: speaker.prompt),
-      characterPersonality: _promptSection(speaker.prompt, '性格'),
-      characterDepthPrompt: depthPrompt?.content ?? '',
-      scenario: _promptSection(speaker.prompt, '场景'),
-      creatorNotes: _tavernMetaValue(
-        room.publicContext,
-        speakerName: speaker.name,
-        label: '作者备注：',
-      ),
-      messageCount: messageCount,
-      generationSeed: WorldBookMatcher.stableSeed(
-        '${room.id}|${speaker.id}|$messageCount|$latestInput',
-      ),
-      activations: previousState.activations,
-    );
-    final hits =
-        first.entries.map(AssistantMemoryEntryPreview.fromWorldBook).toList();
-    if (!recursive || hits.isEmpty || hits.length >= maxEntries) {
-      return _WorldBookMatchBundle(hits, first.state);
-    }
-
-    final all = <AssistantMemoryEntryPreview>[...hits];
-    final seen = {for (final hit in hits) hit.content};
-    for (var round = 0; round < 2 && all.length < maxEntries; round++) {
-      final recursiveInput = [
-        latestInput,
-        ...recentTexts,
-        for (final hit in all)
-          if (!hit.excludeFromRecursion) hit.content,
-      ].join('\n');
-      final nextHits = AssistantRoleCardService.matchMemoryEntries(
-        normalized,
-        recursiveInput,
-        maxEntries: maxEntries,
+      maxEntries: _worldBookHitLimit(room),
+      recursive: _worldBookRecursiveScanning(room),
+      previousState: previousState,
+      contextFor: (input) => WorldBookMatchContext(
+        input: input,
         recentTexts: recentTexts,
         characterName: speaker.name,
         personaDescription: persona?.description ?? '',
@@ -546,30 +546,10 @@ class StoryContextBuilder {
         ),
         messageCount: messageCount,
         generationSeed: WorldBookMatcher.stableSeed(
-          '${room.id}|${speaker.id}|$messageCount|$recursiveInput',
+          '${room.id}|${speaker.id}|$messageCount|$input',
         ),
         activations: previousState.activations,
-      ).where((hit) => seen.add(hit.content)).toList();
-      if (nextHits.isEmpty) break;
-      all.addAll(nextHits);
-    }
-    final selected = all.take(maxEntries).toList();
-    final activations = Map<String, WorldBookActivation>.from(
-      first.state.activations,
-    );
-    for (final hit in selected) {
-      final key = hit.id;
-      if (key.isEmpty || activations.containsKey(key)) continue;
-      activations[key] = WorldBookActivation(
-        entryKey: key,
-        activatedAtMessage: messageCount,
-        stickyUntilMessage: messageCount + hit.sticky,
-        cooldownUntilMessage: messageCount + hit.sticky + hit.cooldown,
-      );
-    }
-    return _WorldBookMatchBundle(
-      selected,
-      WorldBookRuntimeState(activations),
+      ),
     );
   }
 
@@ -779,4 +759,98 @@ class _WorldBookMatchBundle {
   final WorldBookRuntimeState state;
 
   const _WorldBookMatchBundle(this.hits, this.state);
+}
+
+/// 同步兼容入口和异步生成入口共享递归选择、去重与 timed effects 状态。
+class _StoryWorldBookScan {
+  final bool enabled;
+  final List<WorldBookEntry> entries;
+  final String latestInput;
+  final List<String> recentTexts;
+  final int maxEntries;
+  final bool recursive;
+  final WorldBookRuntimeState previousState;
+  final WorldBookMatchContext Function(String) contextFor;
+  final List<AssistantMemoryEntryPreview> _hits = [];
+  final Set<String> _seen = {};
+  WorldBookRuntimeState? _firstState;
+
+  _StoryWorldBookScan({
+    required this.enabled,
+    required this.entries,
+    required this.latestInput,
+    required this.recentTexts,
+    required this.maxEntries,
+    required this.recursive,
+    required this.previousState,
+    required this.contextFor,
+  });
+
+  _WorldBookMatchBundle run() {
+    if (!enabled) return _WorldBookMatchBundle([], previousState);
+    for (var round = 0; round < 3; round++) {
+      if (!_accept(WorldBookMatcher.match(
+        entries,
+        contextFor(_input),
+        maxEntries: maxEntries,
+      ))) {
+        break;
+      }
+    }
+    return _result;
+  }
+
+  Future<_WorldBookMatchBundle> runSafely() async {
+    if (!enabled) return _WorldBookMatchBundle([], previousState);
+    for (var round = 0; round < 3; round++) {
+      if (!_accept(await WorldBookMatcher.matchSafely(
+        entries,
+        contextFor(_input),
+        maxEntries: maxEntries,
+      ))) {
+        break;
+      }
+    }
+    return _result;
+  }
+
+  String get _input => _firstState == null
+      ? latestInput
+      : [
+          latestInput,
+          ...recentTexts,
+          for (final hit in _hits)
+            if (!hit.excludeFromRecursion) hit.content,
+        ].join('\n');
+
+  bool _accept(WorldBookMatchResult match) {
+    final first = _firstState == null;
+    _firstState ??= match.state;
+    final next = match.entries
+        .map(AssistantMemoryEntryPreview.fromWorldBook)
+        .where((hit) => first || _seen.add(hit.content))
+        .toList();
+    _seen.addAll(next.map((hit) => hit.content));
+    _hits.addAll(next);
+    return recursive && next.isNotEmpty && _hits.length < maxEntries;
+  }
+
+  _WorldBookMatchBundle get _result {
+    final selected = _hits.take(maxEntries).toList();
+    final activations = Map<String, WorldBookActivation>.from(
+      _firstState!.activations,
+    );
+    final messageCount = contextFor(latestInput).messageCount;
+    for (final hit in selected) {
+      final key = hit.id;
+      if (key.isEmpty || activations.containsKey(key)) continue;
+      activations[key] = WorldBookActivation(
+        entryKey: key,
+        activatedAtMessage: messageCount,
+        stickyUntilMessage: messageCount + hit.sticky,
+        cooldownUntilMessage: messageCount + hit.sticky + hit.cooldown,
+      );
+    }
+    return _WorldBookMatchBundle(selected, WorldBookRuntimeState(activations));
+  }
 }

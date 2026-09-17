@@ -928,8 +928,9 @@ class _AssistantProfilePageState extends State<AssistantProfilePage> {
     return value.trim().replaceAll(RegExp(r'\s+'), ' ');
   }
 
-  String _buildContextPreview(String userInput) {
-    final base = widget.assistant.systemPromptFor(userInput).trim();
+  Future<String> _buildContextPreview(String userInput) async {
+    final base =
+        (await widget.assistant.systemPromptForSafely(userInput)).trim();
     final roleState = ConversationModel(
       cid: widget.conversation?.cid ?? 0,
       icon: widget.conversation?.icon ?? '',
@@ -946,13 +947,17 @@ class _AssistantProfilePageState extends State<AssistantProfilePage> {
     return parts.isEmpty ? '暂无可注入上下文' : parts.join('\n\n');
   }
 
-  String _buildContextMatchSummary(String userInput) {
+  Future<String> _buildContextMatchSummary(String userInput) async {
     final summary = AssistantRoleCardService.summarize(widget.assistant);
     if (summary.memoryCount == 0) return '世界书未配置';
-    final matched = AssistantRoleCardService.matchMemoryEntries(
+    final matched = await AssistantRoleCardService.matchMemoryEntriesSafely(
       widget.assistant.memoryBook,
       userInput,
       maxEntries: 50,
+      structuredJson: widget.assistant.worldBookJson,
+      characterName: widget.assistant.name,
+      characterDescription: widget.assistant.prompt,
+      creatorNotes: widget.assistant.description,
     );
     if (matched.isEmpty) return '当前输入未命中世界书';
     final previewLines = matched.take(3).map((entry) {
@@ -964,11 +969,15 @@ class _AssistantProfilePageState extends State<AssistantProfilePage> {
     return '$hitSummary\n命中：$previewLines$remaining';
   }
 
-  String _buildMatchedWorldBookText(String userInput) {
-    final matched = AssistantRoleCardService.matchMemoryEntries(
+  Future<String> _buildMatchedWorldBookText(String userInput) async {
+    final matched = await AssistantRoleCardService.matchMemoryEntriesSafely(
       widget.assistant.memoryBook,
       userInput,
       maxEntries: 50,
+      structuredJson: widget.assistant.worldBookJson,
+      characterName: widget.assistant.name,
+      characterDescription: widget.assistant.prompt,
+      creatorNotes: widget.assistant.description,
     );
     if (matched.isEmpty) return '';
     final name = widget.assistant.name.trim().isEmpty
@@ -1140,9 +1149,9 @@ class _RoleStateDialogState extends State<_RoleStateDialog> {
 }
 
 class _ContextPreviewSheet extends StatefulWidget {
-  final String Function(String userInput) buildPreview;
-  final String Function(String userInput) buildMatchSummary;
-  final String Function(String userInput) buildMatchedWorldBook;
+  final Future<String> Function(String userInput) buildPreview;
+  final Future<String> Function(String userInput) buildMatchSummary;
+  final Future<String> Function(String userInput) buildMatchedWorldBook;
 
   const _ContextPreviewSheet({
     required this.buildPreview,
@@ -1156,12 +1165,17 @@ class _ContextPreviewSheet extends StatefulWidget {
 
 class _ContextPreviewSheetState extends State<_ContextPreviewSheet> {
   late final TextEditingController _inputCtl;
+  int _previewRequest = 0;
+  String _preview = '';
+  String _matchSummary = '正在匹配世界书…';
+  String _matchedWorldBook = '';
 
   @override
   void initState() {
     super.initState();
     _inputCtl = TextEditingController();
     _inputCtl.addListener(_onInputChanged);
+    _onInputChanged();
   }
 
   @override
@@ -1172,14 +1186,33 @@ class _ContextPreviewSheetState extends State<_ContextPreviewSheet> {
     super.dispose();
   }
 
-  void _onInputChanged() => setState(() {});
+  Future<void> _onInputChanged() async {
+    final request = ++_previewRequest;
+    final input = _inputCtl.text;
+    setState(() {
+      _preview = '';
+      _matchedWorldBook = '';
+      _matchSummary = '正在匹配世界书…';
+    });
+    final results = await Future.wait([
+      widget.buildPreview(input),
+      widget.buildMatchSummary(input),
+      widget.buildMatchedWorldBook(input),
+    ]);
+    if (!mounted || request != _previewRequest) return;
+    setState(() {
+      _preview = results[0];
+      _matchSummary = results[1];
+      _matchedWorldBook = results[2];
+    });
+  }
 
   @override
   Widget build(BuildContext context) {
     final bottom = MediaQuery.of(context).viewInsets.bottom;
-    final preview = widget.buildPreview(_inputCtl.text);
-    final matchSummary = widget.buildMatchSummary(_inputCtl.text);
-    final matchedWorldBook = widget.buildMatchedWorldBook(_inputCtl.text);
+    final preview = _preview;
+    final matchSummary = _matchSummary;
+    final matchedWorldBook = _matchedWorldBook;
     return SafeArea(
       child: Padding(
         padding: EdgeInsets.fromLTRB(16, 12, 16, bottom + 16),

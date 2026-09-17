@@ -35,6 +35,18 @@ class StoryRegexExecutionResult {
   });
 }
 
+class KillableRegexMatchResult {
+  final bool matched;
+  final bool timedOut;
+  final String? error;
+
+  const KillableRegexMatchResult({
+    this.matched = false,
+    this.timedOut = false,
+    this.error,
+  });
+}
+
 /// Runs one rule per isolate so a pathological Dart [RegExp] can be killed.
 /// This layer accepts declarative strings only; it never evaluates JS or shell
 /// commands. The timeout covers the complete stage rather than each rule.
@@ -42,6 +54,43 @@ class StoryRegexExecutor {
   const StoryRegexExecutor._();
 
   static const defaultStageTimeout = Duration(milliseconds: 800);
+
+  /// World-book 等只需 `hasMatch` 的调用方复用同一可终止 isolate 边界。
+  static Future<KillableRegexMatchResult> hasMatch({
+    required String pattern,
+    required String input,
+    bool caseSensitive = true,
+    Duration timeout = const Duration(milliseconds: 100),
+  }) async {
+    final port = ReceivePort();
+    Isolate? isolate;
+    try {
+      isolate = await Isolate.spawn<_RegexMatchIsolateRequest>(
+        _executeRegexMatchInIsolate,
+        _RegexMatchIsolateRequest(
+          sendPort: port.sendPort,
+          pattern: pattern,
+          input: input,
+          caseSensitive: caseSensitive,
+        ),
+        onError: port.sendPort,
+        onExit: port.sendPort,
+        errorsAreFatal: true,
+      );
+      final raw = await port.first.timeout(timeout);
+      if (raw is Map && raw['ok'] == true && raw['matched'] is bool) {
+        return KillableRegexMatchResult(matched: raw['matched'] as bool);
+      }
+      return KillableRegexMatchResult(error: _isolateError(raw));
+    } on TimeoutException {
+      return const KillableRegexMatchResult(timedOut: true);
+    } catch (error) {
+      return KillableRegexMatchResult(error: '$error');
+    } finally {
+      isolate?.kill(priority: Isolate.immediate);
+      port.close();
+    }
+  }
 
   static Future<StoryRegexExecutionResult> execute({
     required StoryRegexScripts scripts,
@@ -143,6 +192,32 @@ class StoryRegexExecutor {
         elapsed: elapsed,
         error: 'stage timeout',
       );
+}
+
+class _RegexMatchIsolateRequest {
+  final SendPort sendPort;
+  final String pattern;
+  final String input;
+  final bool caseSensitive;
+
+  const _RegexMatchIsolateRequest({
+    required this.sendPort,
+    required this.pattern,
+    required this.input,
+    required this.caseSensitive,
+  });
+}
+
+void _executeRegexMatchInIsolate(_RegexMatchIsolateRequest request) {
+  try {
+    final matched = RegExp(
+      request.pattern,
+      caseSensitive: request.caseSensitive,
+    ).hasMatch(request.input);
+    request.sendPort.send({'ok': true, 'matched': matched});
+  } catch (error) {
+    request.sendPort.send({'ok': false, 'error': '$error'});
+  }
 }
 
 class _RuleRunResult {

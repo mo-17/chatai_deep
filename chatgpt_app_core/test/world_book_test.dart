@@ -154,7 +154,7 @@ void main() {
 
   test(
       'supports field scanning, depth, regex, whole word and character filters',
-      () {
+      () async {
     final entries = [
       WorldBookEntry(
           id: 'field',
@@ -210,7 +210,7 @@ void main() {
           characterFilterExclude: true,
           content: 'excluded'),
     ];
-    final result = WorldBookMatcher.match(
+    final result = await WorldBookMatcher.matchSafely(
       entries,
       context(
         input: 'Bell 42 bellhop 钟声',
@@ -241,6 +241,60 @@ void main() {
         result.entries.map((item) => item.content), isNot(contains('whole')));
     expect(result.entries.map((item) => item.content),
         isNot(contains('excluded')));
+  });
+
+  test('灾难性 world-book regex 不在主 isolate 执行并受总预算约束', () async {
+    const entries = [
+      WorldBookEntry(
+        id: 'catastrophic',
+        keywords: [r'^(a+)+$'],
+        regex: true,
+        content: 'must-not-hit',
+      ),
+    ];
+    final attack = context(input: '${'a' * 12000}!');
+
+    final syncClock = Stopwatch()..start();
+    final sync = WorldBookMatcher.match(entries, attack);
+    syncClock.stop();
+    expect(sync.entries, isEmpty);
+    expect(syncClock.elapsed, lessThan(const Duration(milliseconds: 100)));
+
+    final safeClock = Stopwatch()..start();
+    final safe = await WorldBookMatcher.matchSafely(
+      entries,
+      attack,
+      timeout: const Duration(milliseconds: 80),
+    );
+    safeClock.stop();
+    expect(safe.entries, isEmpty);
+    expect(safeClock.elapsed, lessThan(const Duration(seconds: 2)));
+  });
+
+  test('world-book 匹配限制 entry 与单项 keyword 数量', () async {
+    final entries = List<WorldBookEntry>.generate(
+      WorldBookMatcher.maxScannedEntries + 20,
+      (index) => WorldBookEntry(
+        id: 'entry-$index',
+        keywords: index == WorldBookMatcher.maxScannedEntries
+            ? const ['entry-limit-hit']
+            : List<String>.generate(
+                WorldBookMatcher.maxKeywordsPerEntry + 20,
+                (keyword) =>
+                    keyword == WorldBookMatcher.maxKeywordsPerEntry + 10
+                        ? 'late-hit'
+                        : 'miss-$keyword',
+              ),
+        content: 'content-$index',
+      ),
+    );
+
+    final result = await WorldBookMatcher.matchSafely(
+      entries,
+      WorldBookMatchContext(input: 'late-hit entry-limit-hit'),
+      maxEntries: 10,
+    );
+    expect(result.entries, isEmpty);
   });
 
   test('delay sticky cooldown and activation state are message-count based',

@@ -3,6 +3,8 @@ library;
 
 import 'dart:convert';
 
+import 'package:chatgpt_app_core/chat/application/story_regex_executor.dart';
+
 class WorldBookCodec {
   const WorldBookCodec._();
 
@@ -537,16 +539,93 @@ class WorldBookMatchResult {
 class WorldBookMatcher {
   const WorldBookMatcher._();
 
+  static const maxRegexPatternChars = 4096;
+  static const maxRegexInputChars = 32000;
+  static const maxScannedEntries = 512;
+  static const maxKeywordsPerEntry = 64;
+  static const maxRegexQueries = 256;
+  static const regexStageTimeout = Duration(milliseconds: 800);
+
+  /// 同步调用永不在当前 isolate 执行不受信任正则；regex entry 会 fail closed。
+  /// 需要保留 regex 语义的运行路径应调用 [matchSafely]。
   static WorldBookMatchResult match(
     Iterable<WorldBookEntry> entries,
     WorldBookMatchContext context, {
     int maxEntries = 6,
+  }) =>
+      _match(entries, context, maxEntries: maxEntries, regexMatches: const {});
+
+  /// 在共享的可杀 isolate 内预计算所有 regex `hasMatch`，再复用同步状态机。
+  static Future<WorldBookMatchResult> matchSafely(
+    Iterable<WorldBookEntry> entries,
+    WorldBookMatchContext context, {
+    int maxEntries = 6,
+    Duration timeout = regexStageTimeout,
+  }) async {
+    final entryList = entries.take(maxScannedEntries).toList(growable: false);
+    final matches = <_WorldBookRegexQuery, bool>{};
+    final clock = Stopwatch()..start();
+    var queryCount = 0;
+    for (final entry in entryList.where((item) => item.enabled && item.regex)) {
+      final scan = _scanText(entry, context);
+      final boundedScan = scan.length <= maxRegexInputChars
+          ? scan
+          : scan.substring(0, maxRegexInputChars);
+      for (final keywords in [
+        entry.keywords,
+        entry.secondaryKeywords,
+        entry.excludeKeywords,
+      ]) {
+        for (final keyword in keywords.take(maxKeywordsPerEntry)) {
+          if (keyword.isEmpty) continue;
+          if (queryCount >= maxRegexQueries) break;
+          final pattern = _boundedRegexPattern(entry, keyword);
+          if (pattern == null) continue;
+          final query = (
+            pattern: pattern,
+            scan: boundedScan,
+            caseSensitive: entry.caseSensitive,
+          );
+          if (matches.containsKey(query)) continue;
+          queryCount++;
+          final remaining = timeout - clock.elapsed;
+          if (remaining <= Duration.zero) break;
+          final perMatch = remaining < const Duration(milliseconds: 100)
+              ? remaining
+              : const Duration(milliseconds: 100);
+          final result = await StoryRegexExecutor.hasMatch(
+            pattern: pattern,
+            input: boundedScan,
+            caseSensitive: entry.caseSensitive,
+            timeout: perMatch,
+          );
+          matches[query] =
+              !result.timedOut && result.error == null ? result.matched : false;
+        }
+        if (clock.elapsed >= timeout || queryCount >= maxRegexQueries) break;
+      }
+      if (clock.elapsed >= timeout || queryCount >= maxRegexQueries) break;
+    }
+    return _match(
+      entryList,
+      context,
+      maxEntries: maxEntries,
+      regexMatches: matches,
+    );
+  }
+
+  static WorldBookMatchResult _match(
+    Iterable<WorldBookEntry> entries,
+    WorldBookMatchContext context, {
+    required int maxEntries,
+    required Map<_WorldBookRegexQuery, bool> regexMatches,
   }) {
     final next = Map<String, WorldBookActivation>.from(context.activations);
     final candidates = <_MatchCandidate>[];
     final seenContent = <String>{};
     var index = 0;
     for (final entry in entries) {
+      if (index >= maxScannedEntries) break;
       final key =
           entry.id.isNotEmpty ? entry.id : '${entry.activationKey}|$index';
       index++;
@@ -569,10 +648,13 @@ class WorldBookMatcher {
       }
       if (previous != null) next.remove(key);
       final scanText = _scanText(entry, context);
-      if (!_keywordsMatch(entry.keywords, scanText, entry)) continue;
-      if (!_secondaryMatch(entry, scanText)) continue;
+      if (!_keywordsMatch(entry.keywords, scanText, entry, regexMatches)) {
+        continue;
+      }
+      if (!_secondaryMatch(entry, scanText, regexMatches)) continue;
       if (entry.excludeKeywords.isNotEmpty &&
-          _keywordsMatch(entry.excludeKeywords, scanText, entry)) {
+          _keywordsMatch(
+              entry.excludeKeywords, scanText, entry, regexMatches)) {
         continue;
       }
       if (entry.probabilityEnabled &&
@@ -581,8 +663,8 @@ class WorldBookMatcher {
         continue;
       }
       if (!seenContent.add(entry.content)) continue;
-      candidates
-          .add(_MatchCandidate(entry, key, _score(entry, scanText), false));
+      candidates.add(_MatchCandidate(
+          entry, key, _score(entry, scanText, regexMatches), false));
     }
 
     final selected = _resolveGroups(candidates, context)
@@ -691,6 +773,7 @@ class WorldBookMatcher {
   static bool _characterAllowed(WorldBookEntry entry, String name) {
     if (entry.characterFilterNames.isEmpty) return true;
     final hit = entry.characterFilterNames
+        .take(maxKeywordsPerEntry)
         .any((item) => item.toLowerCase() == name.trim().toLowerCase());
     return entry.characterFilterExclude ? !hit : hit;
   }
@@ -703,22 +786,42 @@ class WorldBookMatcher {
             : context.recentTexts.skip(context.recentTexts.length > entry.depth!
                 ? context.recentTexts.length - entry.depth!
                 : 0);
-    return [
-      context.input,
-      ...recent,
-      if (entry.matchPersonaDescription) context.personaDescription,
-      if (entry.matchCharacterDescription) context.characterDescription,
-      if (entry.matchCharacterPersonality) context.characterPersonality,
-      if (entry.matchCharacterDepthPrompt) context.characterDepthPrompt,
-      if (entry.matchScenario) context.scenario,
-      if (entry.matchCreatorNotes) context.creatorNotes,
-    ].where((item) => item.isNotEmpty).join('\n');
+    final output = StringBuffer();
+    void append(String value) {
+      if (value.isEmpty || output.length >= maxRegexInputChars) return;
+      if (output.isNotEmpty) output.write('\n');
+      final remaining = maxRegexInputChars - output.length;
+      if (remaining <= 0) return;
+      output.write(
+          value.length <= remaining ? value : value.substring(0, remaining));
+    }
+
+    append(context.input);
+    for (final text in recent) {
+      append(text);
+      if (output.length >= maxRegexInputChars) break;
+    }
+    if (entry.matchPersonaDescription) append(context.personaDescription);
+    if (entry.matchCharacterDescription) {
+      append(context.characterDescription);
+    }
+    if (entry.matchCharacterPersonality) {
+      append(context.characterPersonality);
+    }
+    if (entry.matchCharacterDepthPrompt) {
+      append(context.characterDepthPrompt);
+    }
+    if (entry.matchScenario) append(context.scenario);
+    if (entry.matchCreatorNotes) append(context.creatorNotes);
+    return output.toString();
   }
 
-  static bool _secondaryMatch(WorldBookEntry entry, String scan) {
-    final keys = entry.secondaryKeywords;
+  static bool _secondaryMatch(WorldBookEntry entry, String scan,
+      Map<_WorldBookRegexQuery, bool> regexMatches) {
+    final keys = entry.secondaryKeywords.take(maxKeywordsPerEntry).toList();
     if (keys.isEmpty) return true;
-    final hits = keys.map((key) => _keywordHit(key, scan, entry)).toList();
+    final hits =
+        keys.map((key) => _keywordHit(key, scan, entry, regexMatches)).toList();
     switch (entry.selectiveLogic) {
       case WorldBookSelectiveLogic.andAny:
         return hits.any((item) => item);
@@ -731,30 +834,45 @@ class WorldBookMatcher {
     }
   }
 
-  static bool _keywordsMatch(
-      List<String> keywords, String scan, WorldBookEntry entry) {
+  static bool _keywordsMatch(List<String> keywords, String scan,
+      WorldBookEntry entry, Map<_WorldBookRegexQuery, bool> regexMatches) {
     if (keywords.isEmpty) return true;
-    return keywords.any((key) => _keywordHit(key, scan, entry));
+    return keywords
+        .take(maxKeywordsPerEntry)
+        .any((key) => _keywordHit(key, scan, entry, regexMatches));
   }
 
-  static bool _keywordHit(String keyword, String scan, WorldBookEntry entry) {
+  static bool _keywordHit(String keyword, String scan, WorldBookEntry entry,
+      Map<_WorldBookRegexQuery, bool> regexMatches) {
     if (keyword.isEmpty) return false;
     if (entry.regex) {
-      try {
-        final pattern = entry.wholeWords
-            ? '(^|[^A-Za-z0-9_])(?:$keyword)([^A-Za-z0-9_]|\$)'
-            : keyword;
-        return RegExp(pattern, caseSensitive: entry.caseSensitive)
-            .hasMatch(scan);
-      } on FormatException {
-        return false;
-      }
+      final pattern = _boundedRegexPattern(entry, keyword);
+      if (pattern == null) return false;
+      final boundedScan = scan.length <= maxRegexInputChars
+          ? scan
+          : scan.substring(0, maxRegexInputChars);
+      return regexMatches[(
+            pattern: pattern,
+            scan: boundedScan,
+            caseSensitive: entry.caseSensitive,
+          )] ??
+          false;
     }
     final source = entry.caseSensitive ? scan : scan.toLowerCase();
     final needle = entry.caseSensitive ? keyword : keyword.toLowerCase();
     if (!entry.wholeWords) return source.contains(needle);
-    return RegExp('(^|\\W)${RegExp.escape(needle)}(?=\\W|' r'$)')
-        .hasMatch(source);
+    return _literalWholeWordHit(source, needle);
+  }
+
+  static String? _boundedRegexPattern(
+    WorldBookEntry entry,
+    String keyword,
+  ) {
+    const prefix = '(^|[^A-Za-z0-9_])(?:';
+    const suffix = r')([^A-Za-z0-9_]|$)';
+    final overhead = entry.wholeWords ? prefix.length + suffix.length : 0;
+    if (keyword.length > maxRegexPatternChars - overhead) return null;
+    return entry.wholeWords ? '$prefix$keyword$suffix' : keyword;
   }
 
   static bool _probabilityHit(
@@ -768,10 +886,39 @@ class WorldBookMatcher {
         probability;
   }
 
-  static int _score(WorldBookEntry entry, String scan) => [
-        ...entry.keywords,
-        ...entry.secondaryKeywords,
-      ].where((item) => _keywordHit(item, scan, entry)).length;
+  static bool _literalWholeWordHit(String source, String needle) {
+    if (needle.isEmpty || needle.length > source.length) return false;
+    var offset = 0;
+    while (offset <= source.length - needle.length) {
+      final index = source.indexOf(needle, offset);
+      if (index < 0) return false;
+      final end = index + needle.length;
+      final beforeBoundary =
+          index == 0 || !_isAsciiWord(source.codeUnitAt(index - 1));
+      final afterBoundary =
+          end == source.length || !_isAsciiWord(source.codeUnitAt(end));
+      if (beforeBoundary && afterBoundary) return true;
+      offset = index + 1;
+    }
+    return false;
+  }
+
+  static bool _isAsciiWord(int codeUnit) =>
+      (codeUnit >= 0x30 && codeUnit <= 0x39) ||
+      (codeUnit >= 0x41 && codeUnit <= 0x5a) ||
+      (codeUnit >= 0x61 && codeUnit <= 0x7a) ||
+      codeUnit == 0x5f;
+
+  static int _score(WorldBookEntry entry, String scan,
+      Map<_WorldBookRegexQuery, bool> regexMatches) {
+    var score = 0;
+    for (final items in [entry.keywords, entry.secondaryKeywords]) {
+      for (final item in items.take(maxKeywordsPerEntry)) {
+        if (_keywordHit(item, scan, entry, regexMatches)) score++;
+      }
+    }
+    return score;
+  }
 
   static int _stickyScore(WorldBookEntry entry) => 100000 + entry.priority;
 
@@ -786,6 +933,12 @@ class WorldBookMatcher {
 
   static int stableSeed(String value) => _stableHash(value);
 }
+
+typedef _WorldBookRegexQuery = ({
+  String pattern,
+  String scan,
+  bool caseSensitive,
+});
 
 class _MatchCandidate {
   final WorldBookEntry entry;

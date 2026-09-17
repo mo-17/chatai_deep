@@ -5,6 +5,32 @@ import 'package:chatgpt_app_core/model/conversation_model.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 void main() {
+  test('安全上下文预览和摘要保留正则世界书命中', () async {
+    final assistant = AssistantModel(
+      name: '艾琳',
+      prompt: '保持克制',
+      memoryBook: r'[re] 第[一二三]幕 => 银钥匙可以打开钟塔暗门',
+    );
+    final preview = await ConversationRoleContextPreview.buildSafely(
+      assistant: assistant,
+      userInput: '进入第二幕',
+    );
+    final summary = await ConversationRoleContextPreview.summarySafely(
+      assistant: assistant,
+      userInput: '进入第二幕',
+    );
+    expect(preview, contains('银钥匙可以打开钟塔暗门'));
+    expect(summary, contains('世界书：本轮命中 1 条'));
+    expect(summary, contains('银钥匙可以打开钟塔暗门'));
+    expect(
+      await ConversationRoleContextPreview.summarySafely(
+        assistant: assistant,
+        userInput: '普通闲聊',
+      ),
+      contains('世界书：本轮未命中'),
+    );
+  });
+
   test('世界书扫描文本包含最近消息和当前输入，并限制历史条数', () {
     final scanText = ConversationRoleContextPreview.scanText(
       userInput: '打开门',

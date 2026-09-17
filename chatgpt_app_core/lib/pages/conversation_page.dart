@@ -237,9 +237,9 @@ class _ConversationPageState extends State<ConversationPage> {
     return next;
   }
 
-  String? _assistantSystemPromptFor(String inputMessage) {
+  Future<String?> _assistantSystemPromptForSafely(String inputMessage) async {
     final scanText = _roleMemoryScanText(inputMessage);
-    final preview = ConversationRoleContextPreview.build(
+    final preview = await ConversationRoleContextPreview.buildSafely(
       assistant: _assistant,
       userInput: scanText,
       conversation: widget.conversationModel,
@@ -1483,7 +1483,8 @@ class _ConversationPageState extends State<ConversationPage> {
     // 仅在 settings / 助手变更时重建 CompletionDao，避免每次发送都新建实例。
     // CompletionDao 用「应用助手模型覆盖后」的设置 + 助手系统提示词（阶段七）。
     final rawSettings = context.read<AISettingsProvider>().settings;
-    final assistantSystemPrompt = _assistantSystemPromptFor(inputMessage);
+    final assistantSystemPrompt =
+        await _assistantSystemPromptForSafely(inputMessage);
     final modelChanged =
         _daoModelProviderId != widget.conversationModel.modelProviderId ||
             _daoModelId != widget.conversationModel.modelId;
@@ -1540,7 +1541,7 @@ class _ConversationPageState extends State<ConversationPage> {
     }
     final memoryHits = _assistant == null
         ? const <AssistantMemoryEntryPreview>[]
-        : AssistantRoleCardService.matchMemoryEntries(
+        : await AssistantRoleCardService.matchMemoryEntriesSafely(
             _assistant!.memoryBook,
             _roleMemoryScanText(inputMessage),
           );
@@ -1549,7 +1550,7 @@ class _ConversationPageState extends State<ConversationPage> {
     }
     AssistantMemoryContextBudget? memoryBudget;
     if (_assistant != null) {
-      memoryBudget = AssistantMemoryBook.budgetContext(
+      memoryBudget = await AssistantMemoryBook.budgetContextSafely(
         _assistant!.memoryBook,
         _roleMemoryScanText(inputMessage),
       );
@@ -2426,7 +2427,7 @@ class _ConversationPageState extends State<ConversationPage> {
     // 首帧布局完成后算一次按钮可见性（打开长会话时立即出现「回到顶部」）。
     WidgetsBinding.instance.addPostFrameCallback((_) => _onPositionsChanged());
     _daoAssistant = _assistant;
-    _daoSystemPrompt = _assistantSystemPromptFor('');
+    _daoSystemPrompt = await _assistantSystemPromptForSafely('');
     _daoModelProviderId = widget.conversationModel.modelProviderId;
     _daoModelId = widget.conversationModel.modelId;
     // 从持久化块恢复工具调用历史（遗留项 2）+ 附件文本历史（遗留项 6），
@@ -3605,11 +3606,15 @@ class _RoleContextPreviewSheet extends StatefulWidget {
 
 class _RoleContextPreviewSheetState extends State<_RoleContextPreviewSheet> {
   late final TextEditingController _inputCtl;
+  int _previewRequest = 0;
+  String _preview = '';
+  String _summary = '正在匹配世界书…';
 
   @override
   void initState() {
     super.initState();
     _inputCtl = TextEditingController()..addListener(_onInputChanged);
+    _onInputChanged();
   }
 
   @override
@@ -3620,29 +3625,42 @@ class _RoleContextPreviewSheetState extends State<_RoleContextPreviewSheet> {
     super.dispose();
   }
 
-  void _onInputChanged() => setState(() {});
+  Future<void> _onInputChanged() async {
+    final request = ++_previewRequest;
+    setState(() {
+      _preview = '';
+      _summary = '正在匹配世界书…';
+    });
+    final scanText = ConversationRoleContextPreview.scanText(
+      userInput: _inputCtl.text,
+      recentMessages: widget.recentMessages,
+    );
+    final preview = await ConversationRoleContextPreview.buildSafely(
+      assistant: widget.assistant,
+      userInput: scanText,
+      conversation: widget.conversation,
+      memories: widget.memories,
+    );
+    final summary = await ConversationRoleContextPreview.summarySafely(
+      assistant: widget.assistant,
+      userInput: scanText,
+      conversation: widget.conversation,
+      memories: widget.memories,
+    );
+    if (!mounted || request != _previewRequest) return;
+    setState(() {
+      _preview = preview;
+      _summary = summary;
+    });
+  }
 
   @override
   Widget build(BuildContext context) {
     final bottom = MediaQuery.of(context).viewInsets.bottom;
     final visual = AppVisualTheme.of(context);
     final scheme = Theme.of(context).colorScheme;
-    final scanText = ConversationRoleContextPreview.scanText(
-      userInput: _inputCtl.text,
-      recentMessages: widget.recentMessages,
-    );
-    final preview = ConversationRoleContextPreview.build(
-      assistant: widget.assistant,
-      userInput: scanText,
-      conversation: widget.conversation,
-      memories: widget.memories,
-    );
-    final summary = ConversationRoleContextPreview.summary(
-      assistant: widget.assistant,
-      userInput: scanText,
-      conversation: widget.conversation,
-      memories: widget.memories,
-    );
+    final preview = _preview;
+    final summary = _summary;
     return SafeArea(
       child: Padding(
         padding: EdgeInsets.fromLTRB(16, 12, 16, bottom + 16),

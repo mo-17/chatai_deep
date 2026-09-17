@@ -9,7 +9,8 @@ import 'package:chatgpt_app_core/util/avatar_asset_service.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 void main() {
-  test('memoryBookTranslationView preserves raw markers outside translation', () {
+  test('memoryBookTranslationView preserves raw markers outside translation',
+      () {
     const first = '# [chatai_deep.tavern_raw.v1] NOT_BASE64';
     const second = '# [chatai_deep.tavern_raw.v1] SECOND';
     final view = AssistantRoleCardService.memoryBookTranslationView(
@@ -1140,7 +1141,7 @@ void main() {
     expect(imported.exampleDialogs, isNot(contains('English greeting')));
   });
 
-  test('SillyTavern 正则世界书条目会保留为可匹配的角色记忆', () {
+  test('SillyTavern 正则世界书条目会保留为可匹配的角色记忆', () async {
     final imported = AssistantRoleCardService.importJson(jsonEncode({
       'spec': 'chara_card_v2',
       'data': {
@@ -1164,7 +1165,7 @@ void main() {
       imported.memoryBook,
       r'[re] [p=4] 第[一二三]幕 || Act\s+\d+ => 按幕次切换叙事节奏。',
     );
-    final hits = AssistantRoleCardService.matchMemoryEntries(
+    final hits = await AssistantRoleCardService.matchMemoryEntriesSafely(
       imported.memoryBook,
       '现在进入第二幕。',
     );
@@ -2556,6 +2557,65 @@ void main() {
         messageCount: 2,
       ).single.content,
       '雨夜潮汐设定',
+    );
+  });
+
+  test('角色卡 ZIP 在解压前拒绝超量 entry，普通 JSON 仍兼容', () {
+    final archive = Archive();
+    for (var index = 0;
+        index <= AssistantRoleCardService.importArchiveLimits.maxEntries;
+        index++) {
+      archive.addFile(ArchiveFile.bytes('padding/$index.txt', const []));
+    }
+    final bomb = ZipEncoder().encodeBytes(archive);
+
+    expect(
+      () => AssistantRoleCardService.importPackageBatchBytes(
+        bomb,
+        filename: 'crafted.zip',
+      ),
+      throwsA(isA<FormatException>()),
+    );
+    expect(
+      AssistantRoleCardService.importPackageBytes(
+        utf8.encode('{"name":"legal"}'),
+        filename: 'legal.json',
+      ).assistant.name,
+      'legal',
+    );
+  });
+
+  test('PNG 压缩文本元数据在流式解压超过预算时拒绝', () {
+    final compressed = const ZLibEncoder().encodeBytes(
+      List<int>.filled(
+        AssistantRoleCardService.maxPngMetadataBytes + 1,
+        0x41,
+      ),
+    );
+    final png = <int>[
+      137,
+      80,
+      78,
+      71,
+      13,
+      10,
+      26,
+      10,
+      ..._pngChunk('zTXt', [
+        ...latin1.encode('chara'),
+        0,
+        0,
+        ...compressed,
+      ]),
+      ..._pngChunk('IEND', const []),
+    ];
+
+    expect(
+      () => AssistantRoleCardService.importPackageBytes(
+        png,
+        filename: 'crafted.png',
+      ),
+      throwsA(isA<FormatException>()),
     );
   });
 }
