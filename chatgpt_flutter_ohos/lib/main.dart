@@ -1,7 +1,22 @@
 import 'package:chatgpt_app_core/chatgpt_app_core.dart';
-import 'package:login_sdk/dao/backend_host.dart';
+import 'package:flutter/foundation.dart';
+
+import 'ohos_huks_secure_key_value_store.dart';
+import 'ohos_runtime_security.dart';
 
 Future<void> main() async {
-  BackendConfig.host = '192.168.31.167:3000';
-  await runChatGptApp();
+  const host = String.fromEnvironment('BACKEND_HOST', defaultValue: '');
+  const useHttps = bool.fromEnvironment('BACKEND_HTTPS', defaultValue: false);
+  final secureStore = OhosHuksSecureKeyValueStore();
+  await runChatGptApp(
+    platformInitializer: () async {
+      await OhosRuntimeSecurity.configureBackend(
+        host: host,
+        useHttps: useHttps,
+        releaseMode: kReleaseMode,
+      );
+      await secureStore.ensureAvailable();
+    },
+    secureStore: secureStore,
+  );
 }
