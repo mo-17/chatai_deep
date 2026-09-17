@@ -1,7 +1,11 @@
+import 'dart:convert';
 import 'dart:io';
+import 'dart:typed_data';
 
 import 'package:archive/archive_io.dart';
+import 'package:chatgpt_app_core/backup/backup_archive_limits.dart';
 import 'package:chatgpt_app_core/chat/application/sherpa_onnx_tts_assets.dart';
+import 'package:chatgpt_app_core/util/bounded_file_reader.dart';
 import 'package:path_provider/path_provider.dart';
 
 class UserSherpaOnnxTtsModel {
@@ -25,6 +29,13 @@ class UserSherpaOnnxTtsModelStore {
       : _baseDir = baseDir ?? getApplicationSupportDirectory;
 
   static const voiceStylePrefix = 'custom_sherpa:';
+  static const maxManifestBytes = 1024 * 1024;
+  static const importArchiveLimits = BackupArchiveLimits(
+    maxCompressedBytes: 256 * 1024 * 1024,
+    maxEntries: 4096,
+    maxEntryUncompressedBytes: 256 * 1024 * 1024,
+    maxTotalUncompressedBytes: 768 * 1024 * 1024,
+  );
 
   final Future<Directory> Function() _baseDir;
 
@@ -60,6 +71,7 @@ class UserSherpaOnnxTtsModelStore {
     if (!await source.exists()) {
       throw StateError('模型目录不存在');
     }
+    await _validateModelDirectoryBudget(source);
     final manifest = await _readManifest(source);
     _validateManifest(manifest);
     await _assertRequiredFiles(source, manifest);
@@ -89,21 +101,77 @@ class UserSherpaOnnxTtsModelStore {
     );
     await tmp.create(recursive: true);
     try {
-      final archive = ZipDecoder().decodeBytes(await zip.readAsBytes());
-      for (final entry in archive) {
-        final safeName = _safeZipEntryName(entry.name);
-        final targetPath = '${tmp.path}/$safeName';
-        if (entry.isFile) {
-          await File(targetPath).parent.create(recursive: true);
-          await File(targetPath).writeAsBytes(entry.content as List<int>);
-        } else {
-          await Directory(targetPath).create(recursive: true);
-        }
-      }
+      await _extractZipBounded(zip, tmp);
       final modelRoot = await _findModelRoot(tmp);
       return await installFromDirectory(modelRoot.path);
     } finally {
       if (await tmp.exists()) await tmp.delete(recursive: true);
+    }
+  }
+
+  Future<void> _extractZipBounded(File zip, Directory target) async {
+    final type = await FileSystemEntity.type(zip.path, followLinks: false);
+    if (type == FileSystemEntityType.link) {
+      throw const FormatException('TTS 模型 ZIP 不允许使用符号链接');
+    }
+    if (type != FileSystemEntityType.file) {
+      throw const FormatException('TTS 模型 ZIP 不是普通文件');
+    }
+    final compressedBytes = await zip.length();
+    final input = InputFileStream(zip.path);
+    try {
+      final preflight = preflightBoundedZip(
+        input,
+        compressedInputBytes: compressedBytes,
+        limits: importArchiveLimits,
+      );
+      final outputBudget = _TtsArchiveOutputBudget(importArchiveLimits);
+      for (var index = 0;
+          index < preflight.directory.fileHeaders.length;
+          index++) {
+        final header = preflight.directory.fileHeaders[index];
+        final localFile = header.file!;
+        final metadata = preflight.entries[index];
+        if (localFile.flags != header.generalPurposeBitFlag ||
+            localFile.compressedSize != header.compressedSize ||
+            localFile.uncompressedSize != header.uncompressedSize) {
+          throw const FormatException('TTS 模型 ZIP 本地 header 与中央目录不一致');
+        }
+        final safeName = _safeZipEntryName(header.filename);
+        final targetPath = '${target.path}/$safeName';
+        if (metadata.isDirectory) {
+          if (header.uncompressedSize != 0) {
+            throw const FormatException('TTS 模型 ZIP 目录 entry 大小不合法');
+          }
+          await Directory(targetPath).create(recursive: true);
+          continue;
+        }
+
+        await File(targetPath).parent.create(recursive: true);
+        final sink = _BoundedTtsFileSink(
+          targetPath,
+          outputBudget,
+          header.filename,
+        );
+        try {
+          localFile.decompress(sink);
+        } finally {
+          sink.closeSync();
+        }
+        if (sink.length != header.uncompressedSize) {
+          throw FormatException(
+              'TTS 模型 ZIP entry 实际解压大小不一致：${header.filename}');
+        }
+        if (sink.crc32 != header.crc32) {
+          throw FormatException('TTS 模型 ZIP entry CRC 校验失败：${header.filename}');
+        }
+      }
+    } on FormatException {
+      rethrow;
+    } catch (_) {
+      throw const FormatException('TTS 模型 ZIP 解析失败');
+    } finally {
+      input.closeSync();
     }
   }
 
@@ -142,10 +210,16 @@ class UserSherpaOnnxTtsModelStore {
 
   Future<SherpaOnnxTtsManifest> _readManifest(Directory root) async {
     final file = File('${root.path}/manifest.json');
-    if (!await file.exists()) {
+    if (await FileSystemEntity.type(file.path, followLinks: false) !=
+        FileSystemEntityType.file) {
       throw StateError('模型目录缺少 manifest.json');
     }
-    return SherpaOnnxTtsManifest.decode(await file.readAsString());
+    final bytes = await readFileBytesBounded(
+      file,
+      maxBytes: maxManifestBytes,
+      label: 'TTS manifest.json',
+    );
+    return SherpaOnnxTtsManifest.decode(utf8.decode(bytes));
   }
 
   void _validateManifest(SherpaOnnxTtsManifest manifest) {
@@ -159,6 +233,13 @@ class UserSherpaOnnxTtsModelStore {
       throw StateError(
           'manifest.json 缺少 acousticModel/vocoder/tokens/sampleRate');
     }
+    for (final relative in manifest.requiredRelativePaths) {
+      _validateRelativeModelPath(relative);
+    }
+    final dictDir = manifest.dictDir;
+    if (dictDir != null && dictDir.isNotEmpty) {
+      _validateRelativeModelPath(dictDir);
+    }
   }
 
   Future<void> _assertRequiredFiles(
@@ -168,14 +249,19 @@ class UserSherpaOnnxTtsModelStore {
     final missing = <String>[];
     for (final relative in manifest.requiredRelativePaths) {
       final file = File('${root.path}/$relative');
-      if (!await file.exists() || await file.length() <= 0) {
+      if (await FileSystemEntity.type(file.path, followLinks: false) !=
+              FileSystemEntityType.file ||
+          await file.length() <= 0) {
         missing.add(relative);
       }
     }
     final dictDir = manifest.dictDir;
     if (dictDir != null && dictDir.isNotEmpty) {
       final dir = Directory('${root.path}/$dictDir');
-      if (!await dir.exists()) missing.add(dictDir);
+      if (await FileSystemEntity.type(dir.path, followLinks: false) !=
+          FileSystemEntityType.directory) {
+        missing.add(dictDir);
+      }
     }
     if (missing.isNotEmpty) {
       throw StateError('模型文件不完整：${missing.join(', ')}');
@@ -201,6 +287,31 @@ class UserSherpaOnnxTtsModelStore {
       } else if (entity is File) {
         await File(targetPath).parent.create(recursive: true);
         await entity.copy(targetPath);
+      }
+    }
+  }
+
+  Future<void> _validateModelDirectoryBudget(Directory source) async {
+    var entries = 0;
+    var totalBytes = 0;
+    await for (final entity
+        in source.list(recursive: true, followLinks: false)) {
+      entries++;
+      if (entries > importArchiveLimits.maxEntries) {
+        throw const FormatException('TTS 模型目录文件数量过多');
+      }
+      final type = await FileSystemEntity.type(entity.path, followLinks: false);
+      if (type == FileSystemEntityType.link) {
+        throw const FormatException('TTS 模型目录不允许包含符号链接');
+      }
+      if (type != FileSystemEntityType.file) continue;
+      final bytes = await File(entity.path).length();
+      if (bytes > importArchiveLimits.maxEntryUncompressedBytes) {
+        throw const FormatException('TTS 模型单文件过大');
+      }
+      totalBytes += bytes;
+      if (totalBytes > importArchiveLimits.maxTotalUncompressedBytes) {
+        throw const FormatException('TTS 模型目录总大小过大');
       }
     }
   }
@@ -236,6 +347,24 @@ class UserSherpaOnnxTtsModelStore {
     return parts.join(Platform.pathSeparator);
   }
 
+  void _validateRelativeModelPath(String value) {
+    if (value.isEmpty ||
+        value.length > 1024 ||
+        value != value.trim() ||
+        value.startsWith('/') ||
+        value.contains(r'\') ||
+        value.contains('\u0000') ||
+        RegExp(r'^[A-Za-z]:').hasMatch(value)) {
+      throw FormatException('TTS manifest 包含非法路径：$value');
+    }
+    final segments = value.split('/');
+    if (segments.any(
+      (segment) => segment.isEmpty || segment == '.' || segment == '..',
+    )) {
+      throw FormatException('TTS manifest 包含非法路径：$value');
+    }
+  }
+
   String _sanitizeId(String raw) {
     final id = raw
         .trim()
@@ -254,4 +383,96 @@ class UserSherpaOnnxTtsModelStore {
         .toList();
     return parts.isEmpty ? 'user-model' : parts.last;
   }
+}
+
+final class _TtsArchiveOutputBudget {
+  final BackupArchiveLimits limits;
+  int totalBytes = 0;
+
+  _TtsArchiveOutputBudget(this.limits);
+
+  void add(int count, int entryBytes, String name) {
+    if (count < 0 || entryBytes > limits.maxEntryUncompressedBytes) {
+      throw FormatException('TTS 模型 ZIP 单个 entry 实际解压后过大：$name');
+    }
+    if (totalBytes + count > limits.maxTotalUncompressedBytes) {
+      throw const FormatException('TTS 模型 ZIP 实际解压后总大小过大');
+    }
+    totalBytes += count;
+  }
+}
+
+/// 同步解压器的有界文件 sink：不在 Dart heap 中保留完整模型，
+/// 并在每个输出 chunk 上核算单文件/总量预算与 CRC。
+final class _BoundedTtsFileSink extends OutputStream {
+  static const _chunkBytes = 32 * 1024;
+
+  final OutputFileStream _output;
+  final _TtsArchiveOutputBudget _budget;
+  final String _name;
+  int _length = 0;
+  int _crc32 = 0;
+
+  _BoundedTtsFileSink(
+    String path,
+    this._budget,
+    this._name,
+  )   : _output = OutputFileStream(path, bufferSize: _chunkBytes),
+        super(byteOrder: ByteOrder.littleEndian);
+
+  @override
+  int get length => _length;
+
+  int get crc32 => _crc32;
+
+  @override
+  bool get isOpen => _output.isOpen;
+
+  @override
+  void clear() => throw UnsupportedError('TTS ZIP sink 不支持 clear');
+
+  @override
+  void flush() => _output.flush();
+
+  @override
+  Future<void> close() => _output.close();
+
+  @override
+  void closeSync() => _output.closeSync();
+
+  @override
+  void writeByte(int value) => writeBytes([value]);
+
+  @override
+  void writeBytes(List<int> bytes, {int? length}) {
+    final count = length ?? bytes.length;
+    if (count < 0 || count > bytes.length) {
+      throw const FormatException('TTS ZIP entry 输出块大小不合法');
+    }
+    final chunk = count == bytes.length ? bytes : bytes.sublist(0, count);
+    final nextLength = _length + count;
+    _budget.add(count, nextLength, _name);
+    _crc32 = getCrc32(chunk, _crc32);
+    _output.writeBytes(chunk);
+    _length = nextLength;
+  }
+
+  @override
+  void writeStream(InputStream stream) {
+    while (!stream.isEOS) {
+      final remaining = stream.length;
+      if (remaining <= 0) {
+        throw const FormatException('TTS ZIP entry 输出流提前结束');
+      }
+      final count = remaining > _chunkBytes ? _chunkBytes : remaining;
+      final chunk = stream.readBytes(count).toUint8List();
+      if (chunk.isEmpty) {
+        throw const FormatException('TTS ZIP entry 输出流提前结束');
+      }
+      writeBytes(chunk);
+    }
+  }
+
+  @override
+  Uint8List subset(int start, [int? end]) => _output.subset(start, end);
 }

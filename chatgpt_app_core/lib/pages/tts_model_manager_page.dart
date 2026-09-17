@@ -135,6 +135,7 @@ class _TtsModelManagerPageState extends State<TtsModelManagerPage> {
       final result = await FilePicker.pickFiles(
         type: FileType.custom,
         allowedExtensions: const ['zip'],
+        withData: false,
       );
       final files = result?.files ?? const <PlatformFile>[];
       final path = files.isEmpty ? null : files.first.path;

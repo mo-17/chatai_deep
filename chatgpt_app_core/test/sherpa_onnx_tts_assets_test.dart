@@ -112,6 +112,68 @@ void main() {
     expect(resolved.resolve('tokens.txt'), endsWith('/my-voice/tokens.txt'));
   });
 
+  test('TTS ZIP 在解压/写盘前拒绝超量 entry', () async {
+    final temp = await Directory.systemTemp.createTemp('user_sherpa_bomb_');
+    addTearDown(() => temp.delete(recursive: true));
+    final zipPath = '${temp.path}/bomb.zip';
+    final archive = Archive();
+    for (var index = 0;
+        index <= UserSherpaOnnxTtsModelStore.importArchiveLimits.maxEntries;
+        index++) {
+      archive.addFile(ArchiveFile.bytes('padding/$index.txt', const []));
+    }
+    await File(zipPath).writeAsBytes(ZipEncoder().encode(archive));
+    final store = UserSherpaOnnxTtsModelStore(
+      baseDir: () async => Directory('${temp.path}/app_support'),
+    );
+
+    await expectLater(
+      store.installFromZip(zipPath),
+      throwsA(isA<FormatException>()),
+    );
+  });
+
+  test('TTS 目录导入拒绝符号链接越界读取', () async {
+    if (Platform.isWindows) return;
+    final temp = await Directory.systemTemp.createTemp('user_sherpa_link_');
+    addTearDown(() => temp.delete(recursive: true));
+    final source = Directory('${temp.path}/source');
+    await _writeModelFixture(source);
+    final outside = File('${temp.path}/outside-secret');
+    await outside.writeAsString('must-not-be-imported');
+    await Link('${source.path}/linked-secret').create(outside.path);
+    final store = UserSherpaOnnxTtsModelStore(
+      baseDir: () async => Directory('${temp.path}/app_support'),
+    );
+
+    await expectLater(
+      store.installFromDirectory(source.path),
+      throwsA(isA<FormatException>()),
+    );
+  });
+
+  test('TTS manifest 资源路径不得逃逸模型目录', () async {
+    final temp = await Directory.systemTemp.createTemp('user_sherpa_path_');
+    addTearDown(() => temp.delete(recursive: true));
+    final source = Directory('${temp.path}/source');
+    await _writeModelFixture(source);
+    await File('${temp.path}/outside.onnx').writeAsString('outside');
+    await File('${source.path}/manifest.json').writeAsString(
+      _fixtureManifest.replaceFirst(
+        '"acousticModel": "model.onnx"',
+        '"acousticModel": "../outside.onnx"',
+      ),
+    );
+    final store = UserSherpaOnnxTtsModelStore(
+      baseDir: () async => Directory('${temp.path}/app_support'),
+    );
+
+    await expectLater(
+      store.installFromDirectory(source.path),
+      throwsA(isA<FormatException>()),
+    );
+  });
+
   test('UserSherpaOnnxTtsModelStore 缺少必需文件时拒绝导入', () async {
     final temp = await Directory.systemTemp.createTemp('user_sherpa_bad_');
     addTearDown(() => temp.delete(recursive: true));
