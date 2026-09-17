@@ -6,17 +6,18 @@ import {
   Post,
   UseGuards,
 } from '@nestjs/common';
-import { JwtGuard } from '../auth/jwt.guard';
+import { AdminGuard } from '../auth/admin.guard';
 import { McpService } from './mcp.service';
 import { CallToolDto } from './dto/call-tool.dto';
 
 /**
  * MCP Host 对客户端的桥接接口（方案 B）。客户端拉取聚合工具清单、把每个工具
  * 包成本地 ChatTool，工具执行时回调 /uapi/mcp/call 由后端代为执行。
- * 全部 JwtGuard：仅登录用户可用。
+ * MCP server 配置与执行上下文是后端全局共享 authority，当前没有用户级 ACL。
+ * 因此在 REST 共享边界统一要求管理员身份，避免普通用户直调 call 绕过客户端 UI。
  */
 @Controller('uapi/mcp')
-@UseGuards(JwtGuard)
+@UseGuards(AdminGuard)
 export class McpController {
   constructor(private readonly svc: McpService) {}
 
