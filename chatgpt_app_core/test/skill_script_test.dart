@@ -33,13 +33,14 @@ void main() {
     const skillMd = '---\nname: story-deslop\n'
         'description: 网文去AI味\n---\n你是去AI味助手。';
     final archive = Archive()
-      ..addFile(ArchiveFile.bytes('story-deslop/SKILL.md', utf8.encode(skillMd)))
+      ..addFile(
+          ArchiveFile.bytes('story-deslop/SKILL.md', utf8.encode(skillMd)))
       ..addFile(ArchiveFile.bytes('story-deslop/references/banned-words.md',
           utf8.encode('# 违禁词\n忽然、顿时')))
       ..addFile(ArchiveFile.bytes('story-deslop/scripts/normalize.js',
           utf8.encode('INPUT.replace(/--/g, "——")')))
-      ..addFile(ArchiveFile.bytes('story-deslop/.deslop-whitelist',
-          utf8.encode('x')));
+      ..addFile(ArchiveFile.bytes(
+          'story-deslop/.deslop-whitelist', utf8.encode('x')));
     return ZipEncoder().encodeBytes(archive);
   }
 
@@ -48,8 +49,8 @@ void main() {
       final storage = await newDb();
       final dao = await SkillScriptDao.create(storage);
 
-      final id = await dao.saveScript(SkillScript(
-          assistantId: 7, name: 'a.js', code: 'INPUT'));
+      final id = await dao
+          .saveScript(SkillScript(assistantId: 7, name: 'a.js', code: 'INPUT'));
       expect(id, isNotNull);
 
       final got = await dao.getScript(7, 'a.js');
@@ -58,10 +59,12 @@ void main() {
       expect(got.auditLevel, SkillScript.levelPending);
 
       await dao.updateAudit(id!, SkillScript.levelSafe, '无风险');
-      expect((await dao.getScript(7, 'a.js'))!.auditLevel, SkillScript.levelSafe);
+      expect(
+          (await dao.getScript(7, 'a.js'))!.auditLevel, SkillScript.levelSafe);
 
       // 另一个助手的脚本互不可见。
-      await dao.saveScript(SkillScript(assistantId: 8, name: 'b.js', code: 'x'));
+      await dao
+          .saveScript(SkillScript(assistantId: 8, name: 'b.js', code: 'x'));
       expect((await dao.getScripts(7)).length, 1);
       expect((await dao.getScripts(8)).length, 1);
 
@@ -112,7 +115,9 @@ void main() {
 
       final pkg = SkillImportService.parseArchive(zipWithScript());
       await SkillImportService.import(pkg,
-          assistantDao: assistantDao, knowledgeDao: kbDao, scriptDao: scriptDao);
+          assistantDao: assistantDao,
+          knowledgeDao: kbDao,
+          scriptDao: scriptDao);
       final a = (await assistantDao.getAssistants()).single;
       expect((await scriptDao.getScripts(a.id!)).single.auditLevel,
           SkillScript.levelPending);
@@ -170,8 +175,8 @@ void main() {
     test('确认通过 → 经注入 runJs 执行并返回输出', () async {
       final storage = await newDb();
       final dao = await SkillScriptDao.create(storage);
-      await dao.saveScript(
-          SkillScript(assistantId: 1, name: 'n.js', code: 'INPUT'));
+      await dao
+          .saveScript(SkillScript(assistantId: 1, name: 'n.js', code: 'INPUT'));
 
       final ctx = ToolActionContext(
         openStorage: () async => storage,
@@ -185,8 +190,8 @@ void main() {
     test('用户拒绝 → 不执行', () async {
       final storage = await newDb();
       final dao = await SkillScriptDao.create(storage);
-      await dao.saveScript(
-          SkillScript(assistantId: 1, name: 'n.js', code: 'INPUT'));
+      await dao
+          .saveScript(SkillScript(assistantId: 1, name: 'n.js', code: 'INPUT'));
       var ran = false;
       final ctx = ToolActionContext(
         openStorage: () async => storage,
@@ -201,11 +206,52 @@ void main() {
       expect(ran, isFalse);
     });
 
+    test('确认展示完整脚本长度与 SHA-256，区分相同预览前缀', () async {
+      final storage = await newDb();
+      final dao = await SkillScriptDao.create(storage);
+      final prefix = 'a' * 400;
+
+      Future<String> detailFor(int assistantId, String suffix) async {
+        await dao.saveScript(SkillScript(
+          assistantId: assistantId,
+          name: 'same-preview.js',
+          code: '$prefix$suffix',
+        ));
+        var detail = '';
+        final ctx = ToolActionContext(
+          openStorage: () async => storage,
+          assistantId: assistantId,
+          confirm: (_, value) async {
+            detail = value;
+            return false;
+          },
+          runJs: (_, __) async => const JsExecResult.ok('unused'),
+        );
+        expect(
+          await runTool(ctx, name: 'same-preview.js'),
+          contains('拒绝'),
+        );
+        return detail;
+      }
+
+      final first = await detailFor(11, ';1');
+      final second = await detailFor(12, ';2');
+      final digestPattern = RegExp(r'SHA-256：([a-f0-9]{64})');
+      expect(first, contains('完整代码：402 字符'));
+      expect(second, contains('完整代码：402 字符'));
+      expect(digestPattern.firstMatch(first), isNotNull);
+      expect(digestPattern.firstMatch(second), isNotNull);
+      expect(
+        digestPattern.firstMatch(first)!.group(1),
+        isNot(digestPattern.firstMatch(second)!.group(1)),
+      );
+    });
+
     test('runJs 为 null（环境不支持）→ 优雅跳过', () async {
       final storage = await newDb();
       final dao = await SkillScriptDao.create(storage);
-      await dao.saveScript(
-          SkillScript(assistantId: 1, name: 'n.js', code: 'INPUT'));
+      await dao
+          .saveScript(SkillScript(assistantId: 1, name: 'n.js', code: 'INPUT'));
       final ctx = ToolActionContext(
         openStorage: () async => storage,
         assistantId: 1,

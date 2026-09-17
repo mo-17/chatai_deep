@@ -1,6 +1,7 @@
 import 'dart:convert';
 
 import 'package:chatgpt_app_core/backup/backup_service.dart';
+import 'package:chatgpt_app_core/chat/application/safe_url_fetcher.dart';
 import 'package:chatgpt_app_core/chat/application/tool_registry.dart';
 import 'package:chatgpt_app_core/db/conversation_dao.dart';
 import 'package:chatgpt_app_core/db/favorite_dao.dart';
@@ -12,6 +13,7 @@ import 'package:chatgpt_app_core/model/conversation_model.dart';
 import 'package:chatgpt_app_core/model/favorite_model.dart';
 import 'package:chatgpt_app_core/model/skill_script.dart';
 import 'package:chatgpt_app_core/skill/js_exec_result.dart';
+import 'package:crypto/crypto.dart';
 import 'package:http/http.dart' as http;
 import 'package:sqflite/sqflite.dart';
 
@@ -122,8 +124,9 @@ class BuiltinTools {
       );
 
   // ── 抓取网页正文 ─────────────────────────────────────────
-  /// [client] 仅供测试注入；默认用 package:http。
-  static ChatTool fetchUrl({http.Client? client}) => ChatTool(
+  /// [client] / [resolver] 仅供测试注入；生产路径会把连接固定到已校验的公网 IP。
+  static ChatTool fetchUrl({http.Client? client, HostResolver? resolver}) =>
+      ChatTool(
         name: ToolRegistry.fetchUrlId,
         description: '抓取一个网页 URL 并返回其正文文本（已去除 HTML 标签）。'
             '当用户给出链接、要求阅读/总结某个页面时调用。',
@@ -143,19 +146,16 @@ class BuiltinTools {
           if (uri == null || !(uri.isScheme('http') || uri.isScheme('https'))) {
             return const ToolOutcome(content: '错误：url 不是有效的 http/https 地址');
           }
-          final c = client ?? http.Client();
           try {
-            final resp = await c.get(uri).timeout(const Duration(seconds: 15));
-            if (resp.statusCode != 200) {
-              return ToolOutcome(content: '抓取失败：HTTP ${resp.statusCode}');
-            }
-            final text = HtmlText.extract(resp.body);
+            final body = await SafeUrlFetcher(
+              resolver: resolver,
+              testClient: client,
+            ).fetch(uri);
+            final text = HtmlText.extract(body);
             if (text.isEmpty) return const ToolOutcome(content: '页面没有可提取的正文');
             return ToolOutcome(content: _cap(text, 4000));
           } catch (e) {
             return ToolOutcome(content: '抓取失败：$e');
-          } finally {
-            if (client == null) c.close();
           }
         },
       );
@@ -573,7 +573,10 @@ class BuiltinTools {
           }
           final summary =
               script.auditSummary.isNotEmpty ? '（${script.auditSummary}）' : '';
+          final codeDigest = sha256.convert(utf8.encode(script.code));
           final detail = '安全审计：${_auditLabel(script.auditLevel)}$summary\n'
+              '完整代码：${script.code.length} 字符\n'
+              'SHA-256：$codeDigest\n'
               '代码预览：\n${_cap(script.code, 400)}';
           if (!await _confirm(ctx, '运行脚本「$name」', detail)) return _denied;
           final r = await ctx.runJs!(script.code, input);
