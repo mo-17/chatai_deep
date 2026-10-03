@@ -21,6 +21,11 @@ class ModelCatalog {
   static const _hardcodedDeepseek = <ModelOption>[
     ModelOption('deepseek-chat', 'V3 对话模型（推荐）'),
     ModelOption('deepseek-reasoner', 'R1 推理模型，会输出思考过程'),
+    ModelOption('deepseek-flash', 'Flash 多模态模型，支持图片与图片文件',
+        providerCode: 'deepseek',
+        supportsVision: true,
+        supportsTool: true,
+        supportsReasoning: true),
   ];
 
   static List<ModelOption> _openai = List.unmodifiable(_hardcodedOpenai);

@@ -1,11 +1,15 @@
+import 'dart:async';
 import 'dart:convert';
 
 import 'package:chat_message/models/message_model.dart';
+import 'package:chatgpt_app_core/chat/application/chat_context_planner.dart';
 import 'package:chatgpt_app_core/chat/application/search_orchestrator.dart';
 import 'package:chatgpt_app_core/chat/application/tool_loop_runner.dart';
 import 'package:chatgpt_app_core/chat/application/tool_registry.dart';
 import 'package:chatgpt_app_core/chat/application/web_search_provider.dart';
 import 'package:chatgpt_app_core/chat/domain/chat_attachments.dart';
+import 'package:chatgpt_app_core/chat/domain/chat_request_options.dart';
+import 'package:chatgpt_app_core/chat/domain/chat_send_progress.dart';
 import 'package:chatgpt_app_core/chat/domain/message_block.dart';
 import 'package:chatgpt_app_core/chat/domain/model_capabilities.dart';
 import 'package:chatgpt_app_core/chat/domain/stream_event.dart';
@@ -57,14 +61,21 @@ class CompletionDao {
   /// 用于把“有思考但无正文”的短期状态带到下一轮，不进入长期记忆。
   final Map<int, String> _roleContinuationHistory;
 
+  /// 显式启用新的请求预算，旧调用方与静态历史重建行为保持原样。
+  final bool manageContext;
+  final ChatContextPolicy contextPolicy;
+
   CompletionDao(
       {required AISettings settings,
+      ChatService? chatService,
       List<MessageModel>? messages,
       String? systemPrompt,
       Map<int, List<ToolBlock>>? toolHistory,
       Map<int, String>? fileHistory,
-      Map<int, String>? roleContinuationHistory})
-      : chatService = ChatService.from(settings),
+      Map<int, String>? roleContinuationHistory,
+      this.manageContext = false,
+      this.contextPolicy = const ChatContextPolicy()})
+      : chatService = chatService ?? ChatService.from(settings),
         _settings = settings,
         _systemPrompt = systemPrompt?.trim() ?? '',
         // 防御性拷贝成可增删的 growable 列表：调用方常把上一个 dao 的
@@ -89,12 +100,70 @@ class CompletionDao {
   ///当前附件文本历史，供重建 CompletionDao 时一并传递（遗留项 6）。
   Map<int, String> get currentFileHistory => Map.unmodifiable(_fileHistory);
 
+  /// 重新生成前恢复原提问的附件；必须在 dropLastTurn 清理文件历史前调用。
+  ChatAttachments attachmentsForUserMessage(MessageModel message) =>
+      ChatAttachments(
+        images: message.imageUrlsOrB64 ?? const [],
+        extraText: _fileHistory[message.createdAt] ?? '',
+      );
+
   ///当前未完成回复状态承接，供重建 CompletionDao 时一并传递。
   Map<int, String> get currentRoleContinuationHistory =>
       Map.unmodifiable(_roleContinuationHistory);
 
   ///当前生效模型的能力探测结果（阶段三）。UI 据此开关图片/PDF/工具入口。
   ModelCapabilities get capabilities => chatService.capabilities;
+
+  /// 预览本轮实际发送的历史副本，不写库，也不会改动 currentMessages。
+  ChatContextPlan previewContext({
+    required String prompt,
+    ChatAttachments? attachments,
+    ToolRegistry? tools,
+    List<Map<String, dynamic>> extraMessages = const [],
+  }) =>
+      _planContext(
+        prompt: prompt,
+        attachments: attachments,
+        declarations: tools?.declarations ?? const [],
+        extraMessages: extraMessages,
+      );
+
+  ChatContextPlan _planContext({
+    required String prompt,
+    ChatAttachments? attachments,
+    List<Map<String, dynamic>> declarations = const [],
+    List<Map<String, dynamic>> extraMessages = const [],
+  }) =>
+      const ChatContextPlanner().plan(
+        history: _buildHistory(),
+        systemPrompt: injectSystemPrompt(const [], _systemPrompt)
+            .single['content'] as String,
+        prompt: prompt,
+        attachments: attachments,
+        tools: declarations,
+        extraMessages: extraMessages,
+        policy: contextPolicy,
+        maxOutputTokens: _settings.maxOutputTokens,
+      );
+
+  List<Map<String, dynamic>> _requestHistory({
+    required String prompt,
+    ChatAttachments? attachments,
+    List<Map<String, dynamic>> declarations = const [],
+    List<Map<String, dynamic>> extraMessages = const [],
+    ChatContextPlanCallback? onContextPlan,
+  }) {
+    if (!manageContext) return _withSystem(_buildHistory());
+    final plan = _planContext(
+      prompt: prompt,
+      attachments: attachments,
+      declarations: declarations,
+      extraMessages: extraMessages,
+    );
+    onContextPlan?.call(plan);
+    if (!plan.canSend) throw ChatContextBudgetException(plan);
+    return plan.history;
+  }
 
   ///把已完成的一轮（用户 + assistant）追加进历史，使后续轮次携带完整上下文。
   ///应在请求已发出（_buildHistory 已读取）之后调用，避免与当前轮 prompt 重复。
@@ -149,7 +218,7 @@ class CompletionDao {
   ///和 AI 进行会话。[attachments] 为当前轮附件（阶段四：图片/文件）。
   Future<String?> createCompletions(
       {required String prompt, ChatAttachments? attachments}) async {
-    final history = _withSystem(_buildHistory());
+    final history = _requestHistory(prompt: prompt, attachments: attachments);
     final response = await chatService.chat(
         prompt: prompt, history: history, attachments: attachments);
     AILogger.log('ai response length: ${response?.length ?? 0}');
@@ -161,18 +230,46 @@ class CompletionDao {
     required String prompt,
     ChatAttachments? attachments,
     bool webSearch = false,
+    Future<void>? abortTrigger,
+    ChatSendProgressCallback? onProgress,
+    ChatContextPlanCallback? onContextPlan,
   }) async {
+    await _ensureNotAborted(abortTrigger);
     // 意图识别的轻量调用用「无 system」的 history —— 助手人设不该影响
     // 「要不要联网」的判断（阶段七）；正式会话才带 system。
-    final history = _buildHistory();
+    final history = manageContext
+        ? _requestHistory(prompt: prompt, attachments: attachments)
+            .where((message) => message['role'] != 'system')
+            .toList()
+        : _buildHistory();
+    if (webSearch) onProgress?.call(const ChatSendProgress('联网搜索'));
     final results = webSearch
-        ? await _runWebSearch(prompt, history)
+        ? await _awaitRequestStage(_runWebSearch(prompt, history), abortTrigger)
         : const <WebSearchResult>[];
-    final response = await chatService.chatWithUsage(
-      prompt: prompt,
-      history: _withSystem(history),
-      attachments: _withSearchContext(attachments, results),
-    );
+    await _ensureNotAborted(abortTrigger);
+    final preparedAttachments = _withSearchContext(attachments, results);
+    final requestHistory = manageContext
+        ? _requestHistory(
+            prompt: prompt,
+            attachments: preparedAttachments,
+            onContextPlan: onContextPlan)
+        : _withSystem(history);
+    onProgress?.call(const ChatSendProgress('等待回答'));
+    final responseFuture = abortTrigger == null && onProgress == null
+        ? chatService.chatWithUsage(
+            prompt: prompt,
+            history: requestHistory,
+            attachments: preparedAttachments,
+          )
+        : chatService.chatWithUsageWithOptions(
+            prompt: prompt,
+            history: requestHistory,
+            attachments: preparedAttachments,
+            options: ChatRequestOptions(
+                abortTrigger: abortTrigger, onProgress: onProgress),
+          );
+    final response = await _awaitRequestStage(responseFuture, abortTrigger);
+    await _ensureNotAborted(abortTrigger);
     AILogger.log('ai response length: ${response.content?.length ?? 0}');
     return CompletionResult(
       content: response.content,
@@ -188,7 +285,7 @@ class CompletionDao {
   ///流式会话，逐 token yield（仅文本）
   Stream<String> streamCompletions(
       {required String prompt, ChatAttachments? attachments}) {
-    final history = _withSystem(_buildHistory());
+    final history = _requestHistory(prompt: prompt, attachments: attachments);
     return chatService.chatStream(
         prompt: prompt, history: history, attachments: attachments);
   }
@@ -205,26 +302,95 @@ class CompletionDao {
     ChatAttachments? attachments,
     bool webSearch = false,
     ToolRegistry? tools,
+    Future<void>? abortTrigger,
+    ChatSendProgressCallback? onProgress,
+    ChatContextPlanCallback? onContextPlan,
   }) async* {
-    final history = _buildHistory();
+    await _ensureNotAborted(abortTrigger);
+    final history = manageContext
+        ? _requestHistory(prompt: prompt, attachments: attachments)
+            .where((message) => message['role'] != 'system')
+            .toList()
+        : _buildHistory();
     if (tools != null && !tools.isEmpty) {
       yield* ToolLoopRunner(chatService: chatService, registry: tools).run(
         prompt: prompt,
-        history: _withSystem(history),
+        history: manageContext
+            ? _requestHistory(
+                prompt: prompt,
+                attachments: attachments,
+                declarations: tools.declarations,
+                onContextPlan: onContextPlan)
+            : _withSystem(history),
         attachments: attachments,
+        abortTrigger: abortTrigger,
+        onProgress: onProgress,
+        historyForRound: manageContext
+            ? (extraMessages, declarations) => _requestHistory(
+                  prompt: prompt,
+                  attachments: attachments,
+                  declarations: declarations ?? const [],
+                  extraMessages: extraMessages,
+                  onContextPlan: onContextPlan,
+                )
+            : null,
       );
       return;
     }
     // 意图识别用无 system 的 history（同 createCompletionsWithSearch）。
+    if (webSearch) onProgress?.call(const ChatSendProgress('联网搜索'));
     final results = webSearch
-        ? await _runWebSearch(prompt, history)
+        ? await _awaitRequestStage(_runWebSearch(prompt, history), abortTrigger)
         : const <WebSearchResult>[];
-    yield* chatService.chatStreamEvents(
-      prompt: prompt,
-      history: _withSystem(history),
-      attachments: _withSearchContext(attachments, results),
-    );
+    await _ensureNotAborted(abortTrigger);
+    final preparedAttachments = _withSearchContext(attachments, results);
+    final requestHistory = manageContext
+        ? _requestHistory(
+            prompt: prompt,
+            attachments: preparedAttachments,
+            onContextPlan: onContextPlan)
+        : _withSystem(history);
+    onProgress?.call(const ChatSendProgress('等待回答'));
+    if (abortTrigger == null && onProgress == null) {
+      yield* chatService.chatStreamEvents(
+        prompt: prompt,
+        history: requestHistory,
+        attachments: preparedAttachments,
+      );
+    } else {
+      yield* chatService.chatStreamEventsWithOptions(
+        prompt: prompt,
+        history: requestHistory,
+        attachments: preparedAttachments,
+        options: ChatRequestOptions(
+            abortTrigger: abortTrigger, onProgress: onProgress),
+      );
+    }
     if (results.isNotEmpty) yield StreamEvent.citation(results);
+  }
+
+  static Future<void> _ensureNotAborted(Future<void>? abortTrigger) async {
+    if (abortTrigger == null) return;
+    var cancelled = false;
+    unawaited(abortTrigger.then<void>((_) => cancelled = true,
+        onError: (Object _, StackTrace __) => cancelled = true));
+    await Future<void>.value();
+    if (cancelled) {
+      throw const ChatTransportException(
+          safeCode: 'cancelled', safeMessage: '请求已取消');
+    }
+  }
+
+  static Future<T> _awaitRequestStage<T>(
+      Future<T> pending, Future<void>? abortTrigger) {
+    if (abortTrigger == null) return pending;
+    Never cancelled() => throw const ChatTransportException(
+        safeCode: 'cancelled', safeMessage: '请求已取消');
+    return Future.any([
+      pending,
+      abortTrigger.then<T>((_) => cancelled(),
+          onError: (Object _, StackTrace __) => cancelled()),
+    ]);
   }
 
   ///联网搜索编排：意图识别 → 并行搜索聚合。任何失败都降级为「不搜」，

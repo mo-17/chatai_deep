@@ -124,7 +124,37 @@ abstract interface class OptionsAwareChatService {
   });
 }
 
+/// 非流式可选入口，避免旧的 implements ChatService 实现被迫改签名。
+abstract interface class OptionsAwareNonStreamingChatService {
+  Future<ChatCompletionResult> chatWithUsageWithOptions({
+    required String prompt,
+    required List<Map<String, dynamic>> history,
+    ChatAttachments? attachments,
+    required ChatRequestOptions options,
+  });
+}
+
 extension ChatServiceRequestOptionsExtension on ChatService {
+  Future<ChatCompletionResult> chatWithUsageWithOptions({
+    required String prompt,
+    required List<Map<String, dynamic>> history,
+    ChatAttachments? attachments,
+    required ChatRequestOptions options,
+  }) {
+    final service = this;
+    if (service is OptionsAwareNonStreamingChatService) {
+      return (service as OptionsAwareNonStreamingChatService)
+          .chatWithUsageWithOptions(
+        prompt: prompt,
+        history: history,
+        attachments: attachments,
+        options: options,
+      );
+    }
+    return chatWithUsage(
+        prompt: prompt, history: history, attachments: attachments);
+  }
+
   Stream<StreamEvent> chatStreamEventsWithOptions({
     required String prompt,
     required List<Map<String, dynamic>> history,

@@ -88,6 +88,41 @@ void main() {
       expect(c.image, isFalse);
     });
 
+    test('DeepSeek Flash 与兼容别名：图片 + Files API，无原生 PDF', () {
+      for (final model in [
+        'deepseek-flash',
+        'deepseek-v4-flash',
+        'deepseek-v4-flash-vision-exp',
+        '  DeepSeek-Flash  ',
+      ]) {
+        expect(ModelCapabilities.isDeepSeekVisionModel(model), isTrue);
+        final c = ModelCapabilities.heuristic(model);
+        expect(c.image, isTrue, reason: model);
+        expect(c.tool, isTrue, reason: model);
+        expect(c.reasoning, isTrue, reason: model);
+        expect(c.pdf, isFalse, reason: model);
+        expect(c.largeFileUpload, isTrue, reason: model);
+        expect(c.fileSizeLimitFor('image'), 64 * 1024 * 1024);
+        expect(c.fileSizeLimitFor('image_inline'), 32 * 1024 * 1024);
+        expect(c.fileSizeLimitFor('pdf'), isNull);
+      }
+    });
+
+    test('DeepSeek Pro 与未知 Flash 后缀不误开图片 / PDF', () {
+      for (final model in [
+        'deepseek-v4-pro',
+        'deepseek-flash-custom',
+        'deepseek-v4-flash-preview',
+        'custom-model',
+      ]) {
+        expect(ModelCapabilities.isDeepSeekVisionModel(model), isFalse);
+        final c = ModelCapabilities.heuristic(model, providerCode: 'deepseek');
+        expect(c.image, isFalse, reason: model);
+        expect(c.pdf, isFalse, reason: model);
+        expect(c.largeFileUpload, isFalse, reason: model);
+      }
+    });
+
     test('gpt-4o：原生 PDF（Chat Completions file part），上限 32MB', () {
       final c = ModelCapabilities.heuristic('gpt-4o', providerCode: 'openai');
       expect(c.pdf, isTrue);
@@ -154,6 +189,20 @@ void main() {
       expect(caps.tool, isFalse);
     });
 
+    test('本地与后端 DeepSeek Flash 都启用图片入口并保留 PDF 文本降级', () {
+      for (final settings in [
+        localSettings('deepseek', 'deepseek-flash'),
+        backendSettings('deepseek-flash'),
+      ]) {
+        final caps = ChatService.from(settings).capabilities;
+        expect(caps.image, isTrue);
+        expect(caps.reasoning, isTrue);
+        expect(caps.pdf, isFalse);
+        expect(caps.largeFileUpload, isTrue);
+        expect(caps, ChatService.capabilitiesFor(settings));
+      }
+    });
+
     test('后端模式 + gpt-4o：按 modelId 反查也得到 image=true', () {
       final caps = ChatService.from(backendSettings('gpt-4o')).capabilities;
       expect(caps.image, isTrue);
@@ -213,6 +262,37 @@ void main() {
   });
 
   group('ModelCatalog.capabilitiesFor 合并远程 supportsVision', () {
+    test('本地兜底清单提供 Flash 图片模型', () {
+      final option = ModelCatalog.deepseek
+          .singleWhere((model) => model.id == 'deepseek-flash');
+      expect(option.supportsVision, isTrue);
+      expect(option.supportsTool, isTrue);
+      expect(option.supportsReasoning, isTrue);
+      expect(option.supportsPdf, isFalse);
+    });
+
+    test('远程 Flash 全 false 不会关闭图片，也不会打开 PDF', () {
+      ModelCatalog.applyRemote({
+        'models': [
+          {
+            'modelId': 'deepseek-flash',
+            'displayName': 'DeepSeek Flash',
+            'providerCode': 'deepseek',
+            'supportsVision': false,
+            'supportsTool': false,
+            'supportsReasoning': false,
+            'supportsPdf': false,
+          },
+        ],
+      });
+      final caps = ModelCatalog.capabilitiesFor('deepseek-flash');
+      expect(caps.image, isTrue);
+      expect(caps.tool, isTrue);
+      expect(caps.reasoning, isTrue);
+      expect(caps.pdf, isFalse);
+      expect(caps.largeFileUpload, isTrue);
+    });
+
     test('远程清单标了 supportsVision=true 的自定义模型 -> image 被强制打开', () {
       // 该 id 在启发式里命中不了任何家族（基线 image=false），
       // 唯有远程清单的 supportsVision 能把 image 打开 —— 验证合并逻辑。

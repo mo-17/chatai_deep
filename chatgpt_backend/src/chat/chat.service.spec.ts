@@ -247,6 +247,117 @@ describe('ChatService upstream transport', () => {
     jest.restoreAllMocks();
   });
 
+  it.each([
+    'deepseek-flash',
+    'deepseek-v4-flash',
+    'deepseek-v4-flash-vision-exp',
+  ])(
+    'disables thinking for %s tool requests and preserves image parts',
+    async (model) => {
+      const { service } = createService();
+      const installedFetch = installFetch(
+        () =>
+          new Response(
+            JSON.stringify({ choices: [{ message: { content: 'ok' } }] }),
+          ),
+      );
+      const messages = [
+        {
+          role: 'user',
+          content: [
+            { type: 'text', text: 'Describe the image and calculate its area' },
+            {
+              type: 'image_url',
+              image_url: { url: 'data:image/png;base64,AAAA' },
+            },
+          ],
+        },
+      ];
+      const tools = [{ type: 'function', function: { name: 'calculator' } }];
+
+      await service.complete(
+        7,
+        requestBody({
+          model,
+          messages,
+          tools,
+          reasoning_policy: 'provider_default',
+        }),
+      );
+
+      expect(jsonRequestBody(installedFetch.requestInit)).toMatchObject({
+        model,
+        messages,
+        tools,
+        thinking: { type: 'disabled' },
+      });
+    },
+  );
+
+  it('disables thinking in the Flash stream final round with historic tool calls', async () => {
+    const { service } = createService();
+    const installedFetch = installFetch(() => new Response('data: [DONE]\n\n'));
+    const messages = [
+      { role: 'user', content: 'hello' },
+      { role: 'assistant', content: null, tool_calls: [{ id: 'call_1' }] },
+      { role: 'tool', tool_call_id: 'call_1', content: '42' },
+    ];
+
+    await service.completeStream(
+      7,
+      requestBody({
+        model: 'deepseek-flash',
+        messages,
+        reasoning_policy: 'provider_default',
+      }),
+      response(),
+    );
+
+    expect(jsonRequestBody(installedFetch.requestInit)).toMatchObject({
+      messages,
+      thinking: { type: 'disabled' },
+      stream: true,
+    });
+  });
+
+  it.each([
+    { selected: provider(), model: 'deepseek-flash', tools: [] },
+    {
+      selected: provider(),
+      model: 'deepseek-v4-pro',
+      tools: [{ type: 'function' }],
+    },
+    {
+      selected: provider({ code: 'custom' }),
+      model: 'deepseek-flash',
+      tools: [{ type: 'function' }],
+    },
+  ])(
+    'keeps default thinking outside trusted Flash tool requests',
+    async ({ selected, model, tools }) => {
+      const { service } = createService(selected);
+      const installedFetch = installFetch(
+        () =>
+          new Response(
+            JSON.stringify({ choices: [{ message: { content: 'ok' } }] }),
+          ),
+      );
+
+      await service.complete(
+        7,
+        requestBody({
+          model,
+          tools,
+          reasoning_policy: 'provider_default',
+        }),
+      );
+
+      expect(jsonRequestBody(installedFetch.requestInit)).not.toHaveProperty(
+        'thinking',
+      );
+    },
+  );
+
   it('strips semantic and raw lifecycle fields from non-stream upstream body', async () => {
     const { service } = createService(
       provider({ code: 'custom_1', displayName: 'Custom' }),

@@ -14,6 +14,32 @@ void main() {
       MessageModel(ownerType: type, content: content, createdAt: t);
 
   group('CompletionDao 消息列表可变性', () {
+    test('重新生成保留图片与已解析文件文字，回退后可再次写入历史', () {
+      final user = MessageModel(
+        ownerType: OwnerType.sender,
+        content: '分析附件',
+        createdAt: 1,
+        imageUrlsOrB64: const ['data:image/png;base64,cGljdHVyZQ=='],
+      );
+      final dao = CompletionDao(
+        settings: AISettings.defaults(),
+        messages: [user, msg(OwnerType.receiver, '第一次回答', 2)],
+        fileHistory: const {1: '[附件「报告.txt」内容开始]\n营收增长\n内容结束'},
+      );
+      final attachments = dao.attachmentsForUserMessage(user);
+      dao.dropLastTurn();
+      expect(dao.currentFileHistory, isEmpty);
+      final parts = attachments.buildUserContent(user.content) as List;
+      expect(parts.first['text'], contains('营收增长'));
+      expect(parts.last['image_url']['url'], user.imageUrlsOrB64!.single);
+      dao.appendTurn(user, msg(OwnerType.receiver, '再次回答', 3),
+          userFileText: attachments.extraText);
+      final history = CompletionDao.buildHistory(dao.currentMessages, {},
+          fileHistory: dao.currentFileHistory);
+      expect(
+          (history.first['content'] as List).first['text'], contains('营收增长'));
+    });
+
     test('用上一个 dao 的 currentMessages 重建后仍能 appendTurn / dropLastTurn', () {
       final settings = AISettings.defaults();
       final dao1 = CompletionDao(

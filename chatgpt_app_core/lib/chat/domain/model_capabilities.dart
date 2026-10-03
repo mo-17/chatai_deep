@@ -21,7 +21,7 @@ class ModelCapabilities {
   /// 会不会输出推理 / 思考过程（驱动思考块展示；阶段二已接 reasoning 流）。
   final bool reasoning;
 
-  /// 是否支持大文件上传（File API），用于阶段四超限 PDF 的上传降级路径。
+  /// 是否支持大文件上传（Files API）。支持的文件类型仍由 image / pdf 决定。
   final bool largeFileUpload;
 
   /// 按文件类型（如 'pdf' / 'image'）的字节上限映射；null / 缺省 = 未知 / 不限制。
@@ -59,6 +59,15 @@ class ModelCapabilities {
         largeFileUpload: largeFileUpload ?? this.largeFileUpload,
         fileSizeLimits: fileSizeLimits ?? this.fileSizeLimits,
       );
+
+  /// 官方 Flash 图片模型及当前仍可调用的兼容别名。
+  /// 图片能力与 DeepSeek 专用请求适配共用这份白名单。
+  static bool isDeepSeekVisionModel(String modelId) {
+    final id = modelId.toLowerCase().trim();
+    return id == 'deepseek-flash' ||
+        id == 'deepseek-v4-flash' ||
+        id == 'deepseek-v4-flash-vision-exp';
+  }
 
   /// 按 modelId 前缀 + providerCode 查表得到「基线」能力。
   ///
@@ -136,6 +145,22 @@ class ModelCapabilities {
     // 其余 GPT（gpt-4 / gpt-3.5）：支持工具，无 vision。
     if (id.startsWith('gpt-4') || id.startsWith('gpt-3.5')) {
       return const ModelCapabilities(tool: true);
+    }
+
+    // DeepSeek Flash 原生视觉：两个旧 Flash 别名也由当前 Flash 承接。
+    // 仅对官方明确的模型名开图片能力，避免把 V4 Pro / 未知模型误判为 vision。
+    // Files API 支持单图 64 MiB；内联图片单图仍有 32 MiB 上限，无原生 PDF。
+    if (isDeepSeekVisionModel(id)) {
+      return const ModelCapabilities(
+        image: true,
+        tool: true,
+        reasoning: true,
+        largeFileUpload: true,
+        fileSizeLimits: {
+          'image': 64 * 1024 * 1024,
+          'image_inline': 32 * 1024 * 1024,
+        },
+      );
     }
 
     // DeepSeek-R1 推理模型（deepseek-reasoner / *-r1）：输出思考，暂不支持工具 / vision。

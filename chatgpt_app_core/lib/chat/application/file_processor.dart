@@ -1,7 +1,10 @@
+import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
+import 'dart:typed_data';
 
 import 'package:chatgpt_app_core/chat/domain/chat_attachments.dart';
+import 'package:chatgpt_app_core/chat/domain/chat_send_progress.dart';
 import 'package:chatgpt_app_core/chat/domain/message_block.dart';
 import 'package:chatgpt_app_core/chat/domain/model_capabilities.dart';
 import 'package:chatgpt_app_core/util/bounded_file_reader.dart';
@@ -111,35 +114,78 @@ class FileProcessor {
   }
 
   /// 把本地图片编码为 base64 data URI（MIME 已修正）。
-  static Future<String> encodeImage(String path) async {
+  static Future<String> encodeImage(
+    String path, {
+    Future<void>? abortTrigger,
+    bool Function()? isCancelled,
+  }) async {
+    final cancellation = _ProcessingCancellation(abortTrigger, isCancelled);
+    await cancellation.checkpoint();
     final bytes = await readFileBytesBounded(
       File(path),
       maxBytes: maxImageBytes,
       label: '图片附件',
     );
+    await cancellation.checkpoint();
     return 'data:${imageMimeFor(path)};base64,${base64Encode(bytes)}';
   }
 
-  static Future<List<String>> encodeImages(List<String> paths) async {
-    return [for (final p in paths) await encodeImage(p)];
+  static Future<List<String>> encodeImages(
+    List<String> paths, {
+    ChatSendProgressCallback? onProgress,
+    Future<void>? abortTrigger,
+    bool Function()? isCancelled,
+  }) async {
+    final cancellation = _ProcessingCancellation(abortTrigger, isCancelled);
+    final images = <String>[];
+    for (var i = 0; i < paths.length; i++) {
+      await cancellation.checkpoint();
+      reportChatSendProgress(
+        onProgress,
+        ChatSendProgress('准备图片',
+            fileName: paths[i].split(RegExp(r'[/\\]')).last,
+            index: i + 1,
+            total: paths.length),
+      );
+      images.add(await encodeImage(paths[i],
+          abortTrigger: abortTrigger, isCancelled: isCancelled));
+      await cancellation.checkpoint();
+    }
+    return images;
   }
 
   /// 按能力位处理一批用户选择的文件，分拣成「原生 part / 降级文本」，
   /// 并产出 [FileMetadata] 供消息里的 FileBlock 展示。
   static Future<ProcessedFiles> process(
-      List<String> paths, ModelCapabilities caps) async {
+    List<String> paths,
+    ModelCapabilities caps, {
+    ChatSendProgressCallback? onProgress,
+    Future<void>? abortTrigger,
+    bool Function()? isCancelled,
+  }) async {
     final nativeFiles = <NativeFilePart>[];
     final metas = <FileMetadata>[];
+    final diagnostics = <FileProcessingDiagnostic>[];
+    final cancellation = _ProcessingCancellation(abortTrigger, isCancelled);
 
-    for (final path in paths) {
+    for (var index = 0; index < paths.length; index++) {
+      await cancellation.checkpoint();
+      final path = paths[index];
       final file = File(path);
       final name = path.split(Platform.pathSeparator).last;
       final ext = name.split('.').last.toLowerCase();
+      reportChatSendProgress(
+          onProgress,
+          ChatSendProgress('解析附件',
+              fileName: name, index: index + 1, total: paths.length));
+      await cancellation.checkpoint();
       final size = await file.length();
+      await cancellation.checkpoint();
       final managedPath = await ManagedAttachmentStore.importFile(
         file,
         maxBytes: ext == 'pdf' ? defaultPdfLimit : maxTextFileBytes,
       );
+      await cancellation.checkpoint();
 
       if (ext == 'pdf') {
         final limit = caps.fileSizeLimitFor('pdf') ?? defaultPdfLimit;
@@ -151,6 +197,7 @@ class FileProcessor {
             maxBytes: nativeLimit,
             label: 'PDF 附件',
           );
+          await cancellation.checkpoint();
           nativeFiles.add(NativeFilePart(
             filename: name,
             dataUri: 'data:application/pdf;base64,${base64Encode(bytes)}',
@@ -162,7 +209,11 @@ class FileProcessor {
               size: size));
         } else {
           // 降级路径：syncfusion 抽文本（限页），文本随 meta 落库（遗留项 6）。
-          final text = _wrapFileText(name, await _extractPdfText(file));
+          final extracted =
+              await _extractPdfContent(file, limitCharacters: true);
+          await cancellation.checkpoint();
+          diagnostics.addAll(extracted.diagnosticsFor(name));
+          final text = _wrapFileText(name, extracted.text);
           metas.add(FileMetadata(
               name: name,
               path: managedPath,
@@ -174,7 +225,10 @@ class FileProcessor {
       }
 
       if (_textExts.contains(ext)) {
-        final text = _wrapFileText(name, await _readTextFile(file));
+        final extracted = await _readTextContent(file);
+        await cancellation.checkpoint();
+        diagnostics.addAll(extracted.diagnosticsFor(name));
+        final text = _wrapFileText(name, extracted.text);
         metas.add(FileMetadata(
             name: name,
             path: managedPath,
@@ -185,6 +239,11 @@ class FileProcessor {
       }
 
       // 不可解析的类型（理论上被 pickerExtensions 挡掉，这里兜底）。
+      diagnostics.add(FileProcessingDiagnostic(
+        filename: name,
+        kind: FileProcessingDiagnosticKind.unsupported,
+        message: '文件格式暂不支持解析，模型不会收到文件正文',
+      ));
       metas.add(FileMetadata(
           name: name,
           path: managedPath,
@@ -199,41 +258,114 @@ class FileProcessor {
       extraText:
           metas.map((m) => m.extractedText).whereType<String>().join('\n\n'),
       metas: metas,
+      diagnostics: diagnostics,
     );
   }
 
   /// 抽取 PDF 文本（限 [maxPdfPages] 页）。解析失败返回提示文案而不抛，
   /// 保证一个坏文件不中断整次发送。
-  static Future<String> _extractPdfText(File file) async {
+  static Future<String> _extractPdfText(File file) async =>
+      (await _extractPdfContent(file)).text;
+
+  static Future<_ExtractedContent> _extractPdfContent(File file,
+      {bool limitCharacters = false}) async {
     try {
-      final document = PdfDocument(
-        inputBytes: await readFileBytesBounded(
-          file,
-          maxBytes: defaultPdfLimit,
-          label: 'PDF 文件',
-        ),
-      );
+      final bytes = await readFileBytesBounded(file,
+          maxBytes: defaultPdfLimit, label: 'PDF 文件');
+      return _extractPdfBytesContent(bytes, limitCharacters: limitCharacters);
+    } catch (_) {
+      return _pdfExtractionFailure;
+    }
+  }
+
+  /// 重试附件已通过托管目录检查后使用其准确字节，避免再次读取旧路径。
+  static Future<ProcessedFiles> processPdfBytes(
+    Uint8List bytes,
+    ModelCapabilities caps, {
+    required String filename,
+    ChatSendProgressCallback? onProgress,
+    Future<void>? abortTrigger,
+    bool Function()? isCancelled,
+  }) async {
+    final cancellation = _ProcessingCancellation(abortTrigger, isCancelled);
+    await cancellation.checkpoint();
+    if (bytes.length > defaultPdfLimit) {
+      throw const FormatException('PDF 附件过大（最多 32 MiB）');
+    }
+    reportChatSendProgress(
+        onProgress, ChatSendProgress('恢复 PDF 附件', fileName: filename));
+    await cancellation.checkpoint();
+    final configuredLimit = caps.fileSizeLimitFor('pdf') ?? defaultPdfLimit;
+    final nativeLimit =
+        configuredLimit < defaultPdfLimit ? configuredLimit : defaultPdfLimit;
+    if (caps.pdf && bytes.length <= nativeLimit) {
+      return ProcessedFiles(nativeFiles: [
+        NativeFilePart(
+            filename: filename,
+            dataUri: 'data:application/pdf;base64,${base64Encode(bytes)}')
+      ]);
+    }
+    final extracted = _extractPdfBytesContent(bytes, limitCharacters: true);
+    await cancellation.checkpoint();
+    return ProcessedFiles(
+        extraText: _wrapFileText(filename, extracted.text),
+        diagnostics: extracted.diagnosticsFor(filename).toList());
+  }
+
+  static const _pdfExtractionFailure = _ExtractedContent('[PDF 解析失败，内容未提供]', [
+    _ExtractionWarning(
+        FileProcessingDiagnosticKind.failed, 'PDF 解析失败，模型不会收到文件正文'),
+  ]);
+
+  static _ExtractedContent _extractPdfBytesContent(Uint8List bytes,
+      {bool limitCharacters = false}) {
+    try {
+      final document = PdfDocument(inputBytes: bytes);
       try {
         final pageCount = document.pages.count;
         final endIndex =
             (pageCount > maxPdfPages ? maxPdfPages : pageCount) - 1;
-        if (endIndex < 0) return '[PDF 无可读页面]';
+        if (endIndex < 0) {
+          return const _ExtractedContent('[PDF 无可读页面]', [
+            _ExtractionWarning(
+                FileProcessingDiagnosticKind.empty, 'PDF 无可读页面，模型不会收到文件正文'),
+          ]);
+        }
         var text = PdfTextExtractor(document)
             .extractText(startPageIndex: 0, endPageIndex: endIndex);
+        final warnings = <_ExtractionWarning>[];
+        if (text.trim().isEmpty) {
+          return const _ExtractedContent('[PDF 未抽取到文本（可能是扫描件）]', [
+            _ExtractionWarning(FileProcessingDiagnosticKind.scannedPdf,
+                '未抽取到文字，PDF 可能是扫描件；当前仅发送解析提示'),
+          ]);
+        }
+        if (limitCharacters && text.length > maxTextChars) {
+          text = '${text.substring(0, maxTextChars)}\n\n[注：内容过长，已截断]';
+          warnings.add(const _ExtractionWarning(
+              FileProcessingDiagnosticKind.truncated,
+              'PDF 文字超过 $maxTextChars 字符，仅发送前 $maxTextChars 字符'));
+        }
         if (pageCount > maxPdfPages) {
           text += '\n\n[注：原文共 $pageCount 页，仅抽取前 $maxPdfPages 页]';
+          warnings.add(_ExtractionWarning(
+              FileProcessingDiagnosticKind.truncated,
+              'PDF 共 $pageCount 页，仅解析前 $maxPdfPages 页'));
         }
-        return text.trim().isEmpty ? '[PDF 未抽取到文本（可能是扫描件）]' : text;
+        return _ExtractedContent(text, warnings);
       } finally {
         document.dispose();
       }
-    } catch (e) {
-      return '[PDF 解析失败: $e]';
+    } catch (_) {
+      return _pdfExtractionFailure;
     }
   }
 
   /// 读取文本文件（截断到 [maxTextChars]）。非 UTF-8 等读取失败时降级提示。
-  static Future<String> _readTextFile(File file) async {
+  static Future<String> _readTextFile(File file) async =>
+      (await _readTextContent(file)).text;
+
+  static Future<_ExtractedContent> _readTextContent(File file) async {
     try {
       final bytes = await readFileBytesBounded(
         file,
@@ -241,10 +373,22 @@ class FileProcessor {
         label: '文本文件',
       );
       final text = utf8.decode(bytes);
-      if (text.length <= maxTextChars) return text;
-      return '${text.substring(0, maxTextChars)}\n\n[注：内容过长，已截断]';
-    } catch (e) {
-      return '[文件读取失败: $e]';
+      if (text.trim().isEmpty) {
+        return _ExtractedContent(text, const [
+          _ExtractionWarning(FileProcessingDiagnosticKind.empty, '文件没有可读文字'),
+        ]);
+      }
+      if (text.length <= maxTextChars) return _ExtractedContent(text);
+      return _ExtractedContent(
+          '${text.substring(0, maxTextChars)}\n\n[注：内容过长，已截断]', const [
+        _ExtractionWarning(FileProcessingDiagnosticKind.truncated,
+            '文字超过 $maxTextChars 字符，仅发送前 $maxTextChars 字符'),
+      ]);
+    } catch (_) {
+      return const _ExtractedContent('[文件读取失败，内容未提供]', [
+        _ExtractionWarning(
+            FileProcessingDiagnosticKind.failed, '文件读取失败，可能不是 UTF-8 文本或文件不可访问'),
+      ]);
     }
   }
 
@@ -289,9 +433,84 @@ class ProcessedFiles {
   /// 全部文件的元数据，供用户消息里的 FileBlock 展示。
   final List<FileMetadata> metas;
 
+  /// 本轮预检结果，供发送前确认；不修改旧消息的 FileMetadata/落库格式。
+  final List<FileProcessingDiagnostic> diagnostics;
+
+  bool get hasWarnings => diagnostics.isNotEmpty;
+
   const ProcessedFiles({
     this.nativeFiles = const [],
     this.extraText = '',
     this.metas = const [],
+    this.diagnostics = const [],
   });
+}
+
+enum FileProcessingDiagnosticKind {
+  failed,
+  empty,
+  scannedPdf,
+  truncated,
+  unsupported,
+  textFallback,
+}
+
+final class FileProcessingDiagnostic {
+  final String filename;
+  final FileProcessingDiagnosticKind kind;
+  final String message;
+
+  const FileProcessingDiagnostic({
+    required this.filename,
+    required this.kind,
+    required this.message,
+  });
+}
+
+final class AttachmentProcessingCancelledException implements Exception {
+  const AttachmentProcessingCancelledException();
+
+  @override
+  String toString() => '附件处理已取消';
+}
+
+final class _ProcessingCancellation {
+  final bool Function()? _isCancelled;
+  bool _aborted = false;
+
+  _ProcessingCancellation(Future<void>? abortTrigger, this._isCancelled) {
+    if (abortTrigger != null) {
+      unawaited(abortTrigger.then((_) => _aborted = true,
+          onError: (Object _) => _aborted = true));
+    }
+  }
+
+  Future<void> checkpoint() async {
+    // 给取消信号与画面更新一次执行机会；同步解析器完成后再检查一次。
+    await Future<void>.delayed(Duration.zero);
+    if (_aborted || _isCancelled?.call() == true) {
+      throw const AttachmentProcessingCancelledException();
+    }
+  }
+}
+
+final class _ExtractionWarning {
+  final FileProcessingDiagnosticKind kind;
+  final String message;
+
+  const _ExtractionWarning(this.kind, this.message);
+}
+
+final class _ExtractedContent {
+  final String text;
+  final List<_ExtractionWarning> warnings;
+
+  const _ExtractedContent(this.text, [this.warnings = const []]);
+
+  Iterable<FileProcessingDiagnostic> diagnosticsFor(String name) =>
+      warnings.map((warning) => FileProcessingDiagnostic(
+            filename: name,
+            kind: warning.kind,
+            message: warning.message,
+          ));
 }

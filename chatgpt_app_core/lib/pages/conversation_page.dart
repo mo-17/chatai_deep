@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:io';
 
 import 'package:chat_message/core/chat_controller.dart';
 import 'package:chat_message/models/message_model.dart';
@@ -8,7 +9,10 @@ import 'package:chatgpt_app_core/ai_readiness/ai_readiness_resolver.dart';
 import 'package:chatgpt_app_core/ai_readiness/ai_send_guard.dart';
 import 'package:chatgpt_app_core/chat/application/assistant_conversation_avatar_resolver.dart';
 import 'package:chatgpt_app_core/chat/application/chat_block_store.dart';
+import 'package:chatgpt_app_core/chat/application/conversation_draft_store.dart';
+import 'package:chatgpt_app_core/chat/application/chat_context_planner.dart';
 import 'package:chatgpt_app_core/chat/application/file_processor.dart';
+import 'package:chatgpt_app_core/chat/application/retry_attachment_restorer.dart';
 import 'package:chatgpt_app_core/chat/application/read_aloud_service.dart';
 import 'package:chatgpt_app_core/chat/application/assistant_role_card_service.dart';
 import 'package:chatgpt_app_core/chat/application/assistant_memory_suggestion_service.dart';
@@ -23,6 +27,7 @@ import 'package:chatgpt_app_core/chat/application/mcp/mcp_tool_source.dart';
 import 'package:chatgpt_app_core/chat/application/tool_registry.dart';
 import 'package:chatgpt_app_core/chat/application/user_sherpa_onnx_tts_models.dart';
 import 'package:chatgpt_app_core/chat/domain/chat_request_options.dart';
+import 'package:chatgpt_app_core/chat/domain/chat_send_progress.dart';
 import 'package:chatgpt_app_core/chat/domain/translation_request_profile.dart';
 import 'package:chatgpt_app_core/skill/js_runtime_service.dart';
 import 'package:chatgpt_app_core/chat/domain/chat_attachments.dart';
@@ -55,6 +60,7 @@ import 'package:chatgpt_app_core/theme/app_visual_theme.dart';
 import 'package:chatgpt_app_core/util/app_events.dart';
 import 'package:chatgpt_app_core/util/hi_dialog.dart';
 import 'package:chatgpt_app_core/util/hi_utils.dart';
+import 'package:chatgpt_app_core/util/managed_attachment_store.dart';
 import 'package:chatgpt_app_core/util/scroll_jump.dart';
 import 'package:chatgpt_app_core/widget/assistant_avatar.dart';
 import 'package:chatgpt_app_core/widget/ai_readiness_card.dart';
@@ -62,6 +68,7 @@ import 'package:chatgpt_app_core/widget/assistant_picker.dart';
 import 'package:chatgpt_app_core/widget/configured_ai_model_picker_sheet.dart';
 import 'package:chatgpt_app_core/widget/forward_sheet.dart';
 import 'package:chatgpt_app_core/widget/message_input_widget.dart';
+import 'package:chatgpt_app_core/widget/chat_send_status_panel.dart';
 import 'package:chatgpt_app_core/widget/starcore_message_avatar.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -133,6 +140,22 @@ class _ConversationPageState extends State<ConversationPage> {
   bool _hadUpdate = false;
   late Map<String, dynamic> userInfo;
   String _inputMessage = "";
+  late final TextEditingController _inputController;
+  late final String _pageAccount;
+  late final ConversationDraftStore _draftStore;
+  Timer? _draftTimer;
+  int _draftRevision = 0;
+  bool _ready = false;
+  bool _hasEarlierContext = false;
+  bool _contextAttachmentsPrepared = false;
+  String _plannedPrompt = '';
+  String _plannedAttachmentInfo = '';
+  String _plannedFileText = '';
+  bool _draftOnlyConversation = false;
+  bool _draftLoaded = false;
+  String? _draftNotice;
+  ChatSendProgress? _sendProgress;
+  ChatContextPlan? _contextPlan;
   bool _isStreaming = false;
   late MessageDao messageDao;
   late FavoriteDao favoriteDao;
@@ -174,6 +197,7 @@ class _ConversationPageState extends State<ConversationPage> {
   StreamSubscription<StreamEvent>? _activeEventSub;
   StreamDispatcher? _activeDispatcher;
   Completer<void>? _streamCompleter;
+  Completer<void>? _streamAbortCompleter;
   MessageModel? _activeReceiver;
 
   ///本轮用户消息，assistant 收尾时与之配对追加进会话历史。
@@ -201,6 +225,140 @@ class _ConversationPageState extends State<ConversationPage> {
   late AISettings _currentSettings;
   List<String> _pendingImages = [];
   List<String> _pendingFiles = [];
+
+  bool get _accountCurrent =>
+      !_disposed && (LoginDao.getAccountHash() ?? 'guest') == _pageAccount;
+
+  void _inputChanged(String text) {
+    _inputMessage = text;
+    if (!_isStreaming) {
+      _plannedPrompt = text;
+      _plannedAttachmentInfo = '';
+      _plannedFileText = '';
+      if (_ready) _draftNotice = null;
+      _contextPlan = null;
+      _contextAttachmentsPrepared = false;
+    }
+    _scheduleDraftSave();
+  }
+
+  void _scheduleDraftSave() {
+    _draftRevision++;
+    if (!_draftLoaded || !_accountCurrent) return;
+    _draftTimer?.cancel();
+    _draftTimer = Timer(const Duration(milliseconds: 350), () {
+      unawaited(_saveDraft());
+    });
+  }
+
+  Future<void> _saveDraft() async {
+    if (!_draftLoaded || !_accountCurrent) return;
+    final revision = _draftRevision;
+    final text = _inputController.text;
+    final images = List<String>.from(_pendingImages);
+    final files = List<String>.from(_pendingFiles);
+    try {
+      final draft =
+          await _draftStore.save(text: text, images: images, files: files);
+      if (!mounted ||
+          !_accountCurrent ||
+          revision != _draftRevision ||
+          draft == null) {
+        return;
+      }
+      setState(() {
+        if (draft.missingAttachmentCount == 0) {
+          _pendingImages = draft.imagePaths;
+          _pendingFiles = draft.filePaths;
+        }
+        _draftNotice = draft.missingAttachmentCount > 0
+            ? '${draft.missingAttachmentCount} 个附件未能保存，请重新选择；文字草稿已保存'
+            : (_draftNotice?.startsWith('已恢复') == true ? _draftNotice : null);
+        if (!_isStreaming && _ready) {
+          _contextPlan = completionDao.previewContext(prompt: text);
+          _contextAttachmentsPrepared = false;
+        }
+      });
+      if (!_isStreaming) await _retainNewDraftConversation(text, images, files);
+    } catch (_) {
+      if (mounted && _accountCurrent && revision == _draftRevision) {
+        setState(() => _draftNotice = '草稿未能保存，请保留当前页面后重试');
+      }
+    }
+  }
+
+  void _markNewDraftConversation(
+      String text, List<String> images, List<String> files) {
+    if (!_ready ||
+        chatController.initialMessageList.any((m) => m.createdAt > 0)) {
+      return;
+    }
+    if (!_draftOnlyConversation && widget.conversationModel.title != null) {
+      return;
+    }
+    if (text.trim().isEmpty && images.isEmpty && files.isEmpty) return;
+    _draftOnlyConversation = true;
+    final preview =
+        text.trim().isEmpty ? '附件草稿' : text.trim().split('\n').first;
+    widget.conversationModel.title =
+        preview.length > 60 ? preview.substring(0, 60) : preview;
+    widget.conversationModel.lastMessage = '[草稿] $preview';
+    widget.conversationModel.updateAt = DateTime.now().millisecondsSinceEpoch;
+    widget.conversationModel.messageCount = 0;
+    widget.conversationModel.hadChanged = true;
+  }
+
+  Future<void> _retainNewDraftConversation(
+      String text, List<String> images, List<String> files) async {
+    if (!_accountCurrent) return;
+    if (_draftOnlyConversation &&
+        text.trim().isEmpty &&
+        images.isEmpty &&
+        files.isEmpty) {
+      final deleted = await conversationListDao.storage.db.rawDelete(
+          'delete from tb_conversation_list where cid = ? and not exists '
+          '(select 1 from tb_messages where cid = ?)',
+          [widget.conversationModel.cid, widget.conversationModel.cid]);
+      if (deleted > 0 && !_isStreaming && _accountCurrent) {
+        widget.conversationModel.title = null;
+        widget.conversationModel.lastMessage = null;
+        _draftOnlyConversation = false;
+        AppEvents.notifyConversationsChanged();
+      }
+      return;
+    }
+    _markNewDraftConversation(text, images, files);
+    if (_draftOnlyConversation) {
+      await conversationListDao.saveConversation(widget.conversationModel);
+      AppEvents.notifyConversationsChanged();
+    }
+  }
+
+  Future<void> _restoreDraft() async {
+    final revision = _draftRevision;
+    try {
+      final draft = await _draftStore.load();
+      if (!mounted || !_accountCurrent || revision != _draftRevision) return;
+      if (draft != null && widget.initialPrompt.isEmpty) {
+        _inputController.text = draft.text;
+        _inputMessage = draft.text;
+        _pendingImages = draft.imagePaths;
+        _pendingFiles = draft.filePaths;
+        _draftNotice = draft.missingAttachmentCount > 0
+            ? '已恢复文字草稿；${draft.missingAttachmentCount} 个附件已失效，请重新选择'
+            : '已恢复此会话的草稿';
+      }
+    } catch (_) {
+      if (mounted && _accountCurrent) _draftNotice = '草稿读取失败，已有聊天记录不受影响';
+    } finally {
+      _draftLoaded = true;
+    }
+  }
+
+  void _onSendProgress(ChatSendProgress progress) {
+    if (!mounted || !_accountCurrent || _userStopped) return;
+    setState(() => _sendProgress = progress);
+  }
 
   /// 会话绑定的助手（阶段七）。null = 未绑定 / 已被删除（自然回落无助手）。
   AssistantModel? _assistant;
@@ -741,12 +899,15 @@ class _ConversationPageState extends State<ConversationPage> {
   _inputWidget(ModelCapabilities caps, AISettings settings) {
     return MessageInputWidget(
       '请输入',
-      enable: !_isStreaming,
+      enable: _ready && !_isStreaming,
+      editingEnabled: _ready && !_isStreaming,
       isStreaming: _isStreaming,
-      initialText: widget.initialPrompt,
+      controller: _inputController,
+      clearOnSend: false,
       onStop: _isStreaming ? _stopStream : null,
-      onChanged: (text) => _inputMessage = text,
-      canSend: () => _canStartAIRequest(showPrompt: true),
+      onChanged: _inputChanged,
+      canSend: () =>
+          _ready && _accountCurrent && _canStartAIRequest(showPrompt: true),
       onSend: () => _onSend(_inputMessage),
       // 联网搜索开关（阶段五）：当前所选服务商配置了 key 才展示；独立于
       // caps.tool，搜索结果以上下文回填，任何模型都可用（与 Cherry 一致）。
@@ -759,20 +920,29 @@ class _ConversationPageState extends State<ConversationPage> {
       speechLocale: widget.conversationModel.voiceLocale,
       pendingImages: _pendingImages,
       imagesEnabled: caps.image,
-      imagesDisabledReason: caps.image ? '' : '当前模型不支持图片，请切换 gpt-4o 等多模态模型',
-      onImagesPicked: (images) => setState(() => _pendingImages = images),
+      imagesDisabledReason:
+          caps.image ? '' : '当前模型不支持图片，请切换 deepseek-flash、gpt-4o 等多模态模型',
+      onImagesPicked: (images) {
+        setState(() => _pendingImages = images);
+        _scheduleDraftSave();
+      },
       onRemoveImage: (index) {
         setState(() {
           _pendingImages = List.from(_pendingImages)..removeAt(index);
         });
+        _scheduleDraftSave();
       },
       // 文件入口不按能力位关闭：不支持原生文件的模型走抽文本降级（阶段四）。
       pendingFiles: _pendingFiles,
-      onFilesPicked: (files) => setState(() => _pendingFiles = files),
+      onFilesPicked: (files) {
+        setState(() => _pendingFiles = files);
+        _scheduleDraftSave();
+      },
       onRemoveFile: (index) {
         setState(() {
           _pendingFiles = List.from(_pendingFiles)..removeAt(index);
         });
+        _scheduleDraftSave();
       },
     );
   }
@@ -780,6 +950,15 @@ class _ConversationPageState extends State<ConversationPage> {
   @override
   void initState() {
     super.initState();
+    _pageAccount = context.read<AISettingsProvider>().accountHash;
+    _draftOnlyConversation = widget.conversationModel.messageCount == 0 &&
+        (widget.conversationModel.lastMessage?.startsWith('[草稿] ') ?? false);
+    _inputController = TextEditingController(text: widget.initialPrompt);
+    _inputMessage = widget.initialPrompt;
+    _draftStore = ConversationDraftStore(
+      conversationId: widget.conversationModel.cid.toString(),
+      accountHash: _pageAccount,
+    );
     _readAloudService = widget.readAloudService ?? HybridReadAloudService();
     _prewarmReadAloudIfNeeded();
     _doInit();
@@ -787,6 +966,42 @@ class _ConversationPageState extends State<ConversationPage> {
 
   @override
   void dispose() {
+    _draftTimer?.cancel();
+    // 快照必须先于 dispose；草稿写入只使用固定账号，不跟随新登录账号。
+    if (_draftLoaded && _accountCurrent) {
+      if (_ready &&
+          _draftOnlyConversation &&
+          _inputController.text.trim().isEmpty &&
+          _pendingImages.isEmpty &&
+          _pendingFiles.isEmpty &&
+          !chatController.initialMessageList.any((m) => m.createdAt > 0)) {
+        widget.conversationModel.title = null;
+        widget.conversationModel.lastMessage = null;
+        _draftOnlyConversation = false;
+        unawaited(conversationListDao.storage.db
+            .rawDelete(
+                'delete from tb_conversation_list where cid = ? and not exists '
+                '(select 1 from tb_messages where cid = ?)',
+                [widget.conversationModel.cid, widget.conversationModel.cid])
+            .then((_) => AppEvents.notifyConversationsChanged())
+            .catchError((_) {}));
+      }
+      _markNewDraftConversation(
+          _inputController.text, _pendingImages, _pendingFiles);
+      if (_draftOnlyConversation) {
+        unawaited(conversationListDao
+            .saveConversation(widget.conversationModel)
+            .then((_) => AppEvents.notifyConversationsChanged())
+            .catchError((_) {}));
+      }
+      unawaited(_draftStore
+          .save(
+            text: _inputController.text,
+            images: List.from(_pendingImages),
+            files: List.from(_pendingFiles),
+          )
+          .catchError((_) => null));
+    }
     _disposed = true;
     // 流式中途离开页面：先把已收到的块落库，避免半截回复丢失（旧逻辑在
     // catch/stop 分支里保存，新流程只在 completer 解开后保存，而 cancel 不触发
@@ -800,11 +1015,13 @@ class _ConversationPageState extends State<ConversationPage> {
     // 完成挂起的 completer，让 _onSendStream 的 await 解开（其后续会因 _disposed 跳过）。
     final c = _streamCompleter;
     if (c != null && !c.isCompleted) c.complete();
+    _abortStreamRequest();
     _activeEventSub?.cancel();
     unawaited(_readAloudService.stop());
     _itemPositionsListener.itemPositions.removeListener(_onPositionsChanged);
     _blockStore.dispose();
     _updateConversation();
+    _inputController.dispose();
     super.dispose();
     //fix A ScrollController was used after being disposed.
     // chatController.dispose();
@@ -827,7 +1044,32 @@ class _ConversationPageState extends State<ConversationPage> {
       child: Scaffold(
         appBar: _appBar,
         body: Column(
-          children: [_chatList, _inputWidget(caps, settings)],
+          children: [
+            _chatList,
+            ChatSendStatusPanel(
+              progress: _sendProgress,
+              busy: _isStreaming,
+              draftNotice: _draftNotice,
+              contextPlan: _contextPlan,
+              attachmentsPending: !_contextAttachmentsPrepared &&
+                  (_pendingImages.isNotEmpty || _pendingFiles.isNotEmpty),
+              onCancel: _isStreaming ? _stopStream : null,
+              onPreview: _ready ? _showContextPreview : null,
+              onDismissDraft: () => setState(() => _draftNotice = null),
+            ),
+            if (_ready &&
+                !_isStreaming &&
+                chatController.initialMessageList.isNotEmpty &&
+                chatController.initialMessageList.first.ownerType ==
+                    OwnerType.sender)
+              TextButton.icon(
+                  key: const ValueKey('retry_unanswered_chat_prompt'),
+                  onPressed: () => _retryUserMessage(
+                      chatController.initialMessageList.first),
+                  icon: const Icon(Icons.refresh),
+                  label: const Text('重试上次未完成的提问')),
+            _inputWidget(caps, settings),
+          ],
         ),
       ),
     );
@@ -902,6 +1144,21 @@ class _ConversationPageState extends State<ConversationPage> {
               ? _readAloudBubbleButton(message.content, message.createdAt)
               : null,
         ),
+        if (message.ownerType == OwnerType.receiver)
+          Selector<ChatBlockStore, bool>(
+            selector: (_, store) =>
+                store.blocksFor(key).whereType<ErrorBlock>().isNotEmpty,
+            builder: (_, failed, __) => failed &&
+                    chatController.initialMessageList.isNotEmpty &&
+                    chatController.initialMessageList.first.createdAt ==
+                        message.createdAt
+                ? TextButton.icon(
+                    key: const ValueKey('retry_failed_chat_reply'),
+                    onPressed: () => _regenerate(message),
+                    icon: const Icon(Icons.refresh),
+                    label: const Text('重试此条提问'))
+                : const SizedBox.shrink(),
+          ),
         if (hasRoleStatePanel) roleStatePanel,
         if (hasMemoryPanel) memoryPanel,
         if (hasRoleContextPanel) roleContextPanel,
@@ -1469,156 +1726,371 @@ class _ConversationPageState extends State<ConversationPage> {
   }
 
   ///不用_inputMessage是因为在结果回来之前_inputMessage可能会变
-  void _onSend(final String inputMessage) async {
-    if (!_canStartAIRequest(showPrompt: true)) return;
-    // 防止并发发送：流式进行中直接忽略（输入框回车键也走这里）。
-    // 必须在任何 await 之前同步置位 _isStreaming，否则双击/连按会在
-    // 图片编码的 await 间隙挤进第二次发送，覆盖活跃流字段、悬挂前一条流。
-    if (_isStreaming) return;
+  Future<void> _onSend(final String inputMessage) async {
+    if (inputMessage.trim().isEmpty &&
+        _pendingImages.isEmpty &&
+        _pendingFiles.isEmpty) {
+      return;
+    }
+    if (!_ready ||
+        !_accountCurrent ||
+        _isStreaming ||
+        !_canStartAIRequest(showPrompt: true)) {
+      return;
+    }
+    // 锁覆盖附件准备、持久化及网络等待，停止准备时仍保留输入和草稿。
+    _draftTimer?.cancel();
+    _userStopped = false;
+    _streamAbortCompleter = Completer<void>();
     setState(() {
       _isStreaming = true;
+      _sendProgress = const ChatSendProgress('准备发送');
     });
-    widget.conversationModel.hadChanged = true;
-
-    // 仅在 settings / 助手变更时重建 CompletionDao，避免每次发送都新建实例。
-    // CompletionDao 用「应用助手模型覆盖后」的设置 + 助手系统提示词（阶段七）。
-    final rawSettings = context.read<AISettingsProvider>().settings;
-    final assistantSystemPrompt =
-        await _assistantSystemPromptForSafely(inputMessage);
-    final modelChanged =
-        _daoModelProviderId != widget.conversationModel.modelProviderId ||
-            _daoModelId != widget.conversationModel.modelId;
-    if (rawSettings != _currentSettings ||
-        !identical(_assistant, _daoAssistant) ||
-        assistantSystemPrompt != _daoSystemPrompt ||
-        modelChanged) {
-      _currentSettings = rawSettings;
-      _daoAssistant = _assistant;
-      _daoSystemPrompt = assistantSystemPrompt;
-      _daoModelProviderId = widget.conversationModel.modelProviderId;
-      _daoModelId = widget.conversationModel.modelId;
-      completionDao = CompletionDao(
+    var accepted = false;
+    try {
+      final rawSettings = context.read<AISettingsProvider>().settings;
+      final assistantSystemPrompt =
+          await _assistantSystemPromptForSafely(inputMessage);
+      if (_sendCancelled) return;
+      final modelChanged =
+          _daoModelProviderId != widget.conversationModel.modelProviderId ||
+              _daoModelId != widget.conversationModel.modelId;
+      if (rawSettings != _currentSettings ||
+          !identical(_assistant, _daoAssistant) ||
+          assistantSystemPrompt != _daoSystemPrompt ||
+          modelChanged) {
+        _currentSettings = rawSettings;
+        _daoAssistant = _assistant;
+        _daoSystemPrompt = assistantSystemPrompt;
+        _daoModelProviderId = widget.conversationModel.modelProviderId;
+        _daoModelId = widget.conversationModel.modelId;
+        completionDao = CompletionDao(
+          manageContext: true,
           settings: _effective(rawSettings),
           systemPrompt: assistantSystemPrompt,
           messages: completionDao.currentMessages,
           toolHistory: completionDao.currentToolHistory,
           fileHistory: completionDao.currentFileHistory,
-          roleContinuationHistory:
-              completionDao.currentRoleContinuationHistory);
-    }
-    final settings = _effective(rawSettings);
-    _markUsageRound(prompt: inputMessage, settings: settings);
-    // 能力探测（与 build 里驱动入口开关的是同一来源）：决定附件走原生还是降级。
-    final caps = ChatService.capabilitiesFor(settings);
+          roleContinuationHistory: completionDao.currentRoleContinuationHistory,
+        );
+      }
+      final settings = _effective(rawSettings);
+      final caps = ChatService.capabilitiesFor(settings);
+      final pendingImages = List<String>.from(_pendingImages);
+      final pendingFiles = List<String>.from(_pendingFiles);
+      await _saveDraft();
+      if (_sendCancelled) return;
+      final abort = _streamAbortCompleter!.future;
+      final b64Images = pendingImages.isEmpty
+          ? <String>[]
+          : await FileProcessor.encodeImages(pendingImages,
+              onProgress: _onSendProgress,
+              abortTrigger: abort,
+              isCancelled: () => _sendCancelled);
+      final officialDeepSeek = (settings.mode == AIMode.backend &&
+              ModelCapabilities.isDeepSeekVisionModel(
+                  settings.effectiveModel)) ||
+          (settings.mode == AIMode.local &&
+              Uri.tryParse(settings.activeLocal.baseUrl)?.host.toLowerCase() ==
+                  'api.deepseek.com');
+      final processed = pendingFiles.isEmpty
+          ? const ProcessedFiles()
+          : await FileProcessor.process(
+              pendingFiles, officialDeepSeek ? caps.copyWith(pdf: false) : caps,
+              onProgress: _onSendProgress,
+              abortTrigger: abort,
+              isCancelled: () => _sendCancelled);
+      if (_sendCancelled) return;
+      if (processed.hasWarnings &&
+          !await _confirmAttachmentWarnings(processed.diagnostics)) {
+        return;
+      }
+      if (_sendCancelled) return;
+      // 图片进入与历史附件相同的托管目录后，才可清理草稿的自有副本。
+      final imagePaths = <String>[];
+      for (final path in pendingImages) {
+        imagePaths.add(await ManagedAttachmentStore.importFile(File(path),
+            maxBytes: FileProcessor.maxImageBytes));
+        if (_sendCancelled) return;
+      }
+      final attachments = ChatAttachments(
+          images: b64Images,
+          nativeFiles: processed.nativeFiles,
+          extraText: processed.extraText);
+      final webSearch =
+          settings.webSearchEnabled && settings.webSearchConfigured;
+      final tools = await _toolsForSend(settings, caps, webSearch);
+      if (_sendCancelled) return;
+      final plan = completionDao.previewContext(
+          prompt: inputMessage, attachments: attachments, tools: tools);
+      _plannedPrompt = inputMessage;
+      _plannedAttachmentInfo =
+          '${pendingImages.length} 张图片，${pendingFiles.length} 份文件';
+      _plannedFileText = processed.extraText;
+      _onContextPlan(plan);
+      if (!plan.canSend) throw ChatContextBudgetException(plan);
+      final userModel = _genMessageModel(
+          ownerType: OwnerType.sender,
+          message: inputMessage,
+          imagePaths: imagePaths.isEmpty ? null : imagePaths,
+          imageUrlsOrB64: b64Images.isEmpty ? null : b64Images);
+      final roleContextSnapshot = assistantSystemPrompt?.trim() ?? '';
+      if (roleContextSnapshot.isNotEmpty) {
+        _roleContextByMessageAt[userModel.createdAt] = roleContextSnapshot;
+      }
+      final roleStatePreview = _conversationRoleStatePreview();
+      if (roleStatePreview.isNotEmpty) {
+        _roleStateByMessageAt[userModel.createdAt] = roleStatePreview;
+      }
+      final memoryHits = _assistant == null
+          ? const <AssistantMemoryEntryPreview>[]
+          : await AssistantRoleCardService.matchMemoryEntriesSafely(
+              _assistant!.memoryBook,
+              _roleMemoryScanText(inputMessage),
+            );
+      if (memoryHits.isNotEmpty) {
+        _memoryHitsByMessageAt[userModel.createdAt] = memoryHits;
+      }
+      AssistantMemoryContextBudget? memoryBudget;
+      if (_assistant != null) {
+        memoryBudget = await AssistantMemoryBook.budgetContextSafely(
+          _assistant!.memoryBook,
+          _roleMemoryScanText(inputMessage),
+        );
+        if (memoryBudget.affected) {
+          _memoryBudgetByMessageAt[userModel.createdAt] = memoryBudget;
+        }
+      }
+      final memorySuggestion = _assistant?.id == null
+          ? null
+          : AssistantMemorySuggestionService.suggestFromUserMessage(
+              inputMessage,
+              _assistantMemories,
+            );
+      if (memorySuggestion != null) {
+        _memorySuggestionsByMessageAt[userModel.createdAt] = memorySuggestion;
+      }
 
-    // 编码图片为 base64（MIME 修正收敛在 FileProcessor）
-    final b64Images = _pendingImages.isNotEmpty
-        ? await FileProcessor.encodeImages(_pendingImages)
-        : null;
-    final pendingPaths =
-        _pendingImages.isNotEmpty ? List<String>.from(_pendingImages) : null;
-    // 处理文件（阶段四）：能原生喂模型就喂，不能就降级抽文本拼 prompt。
-    final processed = _pendingFiles.isNotEmpty
-        ? await FileProcessor.process(List<String>.from(_pendingFiles), caps)
-        : const ProcessedFiles();
+      if (_sendCancelled) return;
+      if (processed.metas.isNotEmpty || roleContextSnapshot.isNotEmpty) {
+        await _addUserMessageWithBlocks(userModel, imagePaths, processed.metas,
+            roleContextSnapshot: roleContextSnapshot,
+            roleMemoryBudget:
+                memoryBudget?.affected == true ? memoryBudget : null,
+            roleMemoryHits: memoryHits);
+      } else {
+        await messageDao.saveMessageWithBlocks(userModel);
+        if (mounted && _accountCurrent) chatController.addMessage(userModel);
+        _notifyConversationListUpdate();
+      }
+      accepted = true;
+      _lastUserModel = userModel;
+      _lastUserFileText = processed.extraText;
+      if (_draftOnlyConversation) {
+        widget.conversationModel.title = null;
+        _draftOnlyConversation = false;
+      }
+      await _saveConversationSummary(userModel);
+      widget.conversationModel.hadChanged = true;
+      _markUsageRound(prompt: inputMessage, settings: settings);
+      _draftRevision++;
+      _draftTimer?.cancel();
+      if (mounted && _accountCurrent) {
+        setState(() {
+          _inputController.clear();
+          _inputMessage = '';
+          _pendingImages = [];
+          _pendingFiles = [];
+          _draftNotice = null;
+        });
+      }
+      _draftTimer?.cancel();
+      try {
+        await _draftStore.clear(discardAttachments: true);
+      } catch (_) {
+        if (mounted && _accountCurrent) {
+          setState(() => _draftNotice = '消息已保存，草稿清理失败');
+        }
+      }
+      if (_sendCancelled) {
+        // 用户消息已入库：留下可重试的停止回复，避免重复发送提问。
+        if (!_disposed && _accountCurrent) {
+          await _saveFailedReply('已停止发送，可重试此条提问');
+        }
+        return;
+      }
+      if (settings.streamEnabled) {
+        await _onSendStream(inputMessage, attachments,
+            webSearch: webSearch && tools == null, tools: tools);
+      } else {
+        await _onSendNonStream(inputMessage, attachments, webSearch: webSearch);
+      }
+    } catch (e) {
+      if (mounted && _accountCurrent) {
+        if (accepted && _lastUserModel != null) {
+          await _saveFailedReply(_friendlyError(e));
+        } else if (!_userStopped) {
+          HiDialog.showSnackBar(context, '发送前检查失败：${_friendlyError(e)}');
+        }
+      }
+    } finally {
+      _abortStreamRequest();
+      _streamAbortCompleter = null;
+      _clearUsageRound();
+      if (mounted && _accountCurrent) {
+        setState(() {
+          _isStreaming = false;
+          _sendProgress = null;
+        });
+      }
+      if (!accepted && mounted && _accountCurrent) _scheduleDraftSave();
+    }
+  }
 
-    // 记下本轮用户消息：assistant 收尾时连同它一起追加进会话历史（见 _persistAssistant）。
-    // 此刻不直接加入 completionDao 历史，否则会与稍后作为 prompt 单独发送的当前轮重复。
-    final userModel = _genMessageModel(
-      ownerType: OwnerType.sender,
-      message: inputMessage,
-      imagePaths: pendingPaths,
-      imageUrlsOrB64: b64Images,
-    );
-    _lastUserModel = userModel;
-    final roleContextSnapshot = assistantSystemPrompt?.trim() ?? '';
-    if (roleContextSnapshot.isNotEmpty) {
-      _roleContextByMessageAt[userModel.createdAt] = roleContextSnapshot;
-    }
-    final roleStatePreview = _conversationRoleStatePreview();
-    if (roleStatePreview.isNotEmpty) {
-      _roleStateByMessageAt[userModel.createdAt] = roleStatePreview;
-    }
-    final memoryHits = _assistant == null
-        ? const <AssistantMemoryEntryPreview>[]
-        : await AssistantRoleCardService.matchMemoryEntriesSafely(
-            _assistant!.memoryBook,
-            _roleMemoryScanText(inputMessage),
-          );
-    if (memoryHits.isNotEmpty) {
-      _memoryHitsByMessageAt[userModel.createdAt] = memoryHits;
-    }
-    AssistantMemoryContextBudget? memoryBudget;
-    if (_assistant != null) {
-      memoryBudget = await AssistantMemoryBook.budgetContextSafely(
-        _assistant!.memoryBook,
-        _roleMemoryScanText(inputMessage),
-      );
-      if (memoryBudget.affected) {
-        _memoryBudgetByMessageAt[userModel.createdAt] = memoryBudget;
+  Future<void> _saveConversationSummary(MessageModel latest) async {
+    try {
+      if (latest.ownerType == OwnerType.sender &&
+          !_isUsableConversationText(widget.conversationModel.title)) {
+        final content = latest.content.trim();
+        widget.conversationModel.title = content.isNotEmpty
+            ? content
+            : (latest.imageUrlsOrB64?.isNotEmpty == true ? '图片对话' : '文件对话');
+      }
+      widget.conversationModel.lastMessage =
+          latest.content.trim().isNotEmpty ? latest.content.trim() : '附件消息';
+      widget.conversationModel.updateAt = latest.createdAt;
+      widget.conversationModel.messageCount =
+          await messageDao.getMessageCount();
+      widget.conversationModel.hadChanged = true;
+      await conversationListDao.saveConversation(widget.conversationModel);
+      AppEvents.notifyConversationsChanged();
+    } catch (e) {
+      // 用户消息已经入库；索引刷新失败不能阻断输入清理或导致重复发送。
+      AILogger.log('conversation summary save failed: ${e.runtimeType}');
+      if (mounted && _accountCurrent) {
+        HiDialog.showSnackBar(context, '消息已保存，会话列表刷新失败');
       }
     }
-    final memorySuggestion = _assistant?.id == null
-        ? null
-        : AssistantMemorySuggestionService.suggestFromUserMessage(
-            inputMessage,
-            _assistantMemories,
-          );
-    if (memorySuggestion != null) {
-      _memorySuggestionsByMessageAt[userModel.createdAt] = memorySuggestion;
-    }
-    // 附件降级文本随本轮用户消息记入历史（遗留项 6：后续轮从 _fileHistory 重建）。
-    _lastUserFileText = processed.extraText;
-    if (processed.metas.isNotEmpty || roleContextSnapshot.isNotEmpty) {
-      // 带文件或角色上下文快照的用户消息：建块化内容并随消息落库。
-      _addUserMessageWithBlocks(
-        userModel,
-        pendingPaths,
-        processed.metas,
-        roleContextSnapshot: roleContextSnapshot,
-        roleMemoryBudget: memoryBudget?.affected == true ? memoryBudget : null,
-        roleMemoryHits: memoryHits,
-      );
-    } else {
-      _addMessage(userModel);
-    }
-    setState(() {
-      _pendingImages = [];
-      _pendingFiles = [];
-    });
+  }
 
-    final attachments = ChatAttachments(
-      images: b64Images ?? const [],
-      nativeFiles: processed.nativeFiles,
-      extraText: processed.extraText,
-    );
-    // 联网搜索（阶段五）：用户开关 + 当前服务商 key 已配置才启用。
-    final webSearch = settings.webSearchEnabled && settings.webSearchConfigured;
-    // 选路（阶段六决策）：模型支持工具调用（caps.tool）-> 注册工具、由模型
-    // 自主决定是否调用（ToolLoopRunner）；否则回落阶段五的意图编排。两条路
-    // 互斥，引用来源（CitationBlock）体验一致。阶段七：助手关了工具开关回落。
-    // L1：注册表由所绑助手的 toolIds 拼；会话联网开关经 forceWebSearch 兼容旧行为
-    // （助手显式绑定 web_search 时，即使联网开关关着也暴露给模型）。
+  bool get _sendCancelled => _userStopped || !_accountCurrent || !mounted;
+
+  Future<ToolRegistry?> _toolsForSend(
+      AISettings settings, ModelCapabilities caps, bool webSearch) async {
     final allowTools = _assistant?.useTools ?? true;
-    // MCP 工具（方案 A/B）：仅当工具回路可能启用时才去发现，省掉无谓网络往返。
-    final mcpTools = (caps.tool && settings.streamEnabled && allowTools)
-        ? await _discoverMcpTools(settings)
-        : const <ChatTool>[];
+    if (!caps.tool || !settings.streamEnabled || !allowTools) return null;
+    _onSendProgress(const ChatSendProgress('准备工具'));
+    final mcpTools = await _discoverMcpTools(settings);
     final registry = ToolRegistry.fromAssistant(settings, _effectiveToolIds,
         forceWebSearch: webSearch,
         actions: _toolActions(),
         extraTools: mcpTools);
-    final tools =
-        caps.tool && settings.streamEnabled && allowTools && !registry.isEmpty
-            ? registry
-            : null;
-    if (settings.streamEnabled) {
-      await _onSendStream(inputMessage, attachments,
-          webSearch: webSearch && tools == null, tools: tools);
-    } else {
-      // 非流式保持阶段五意图编排（工具回路仅接流式路径，见指南 §7 实施记录）。
-      await _onSendNonStream(inputMessage, attachments, webSearch: webSearch);
+    return registry.isEmpty ? null : registry;
+  }
+
+  void _onContextPlan(ChatContextPlan plan) {
+    if (mounted && _accountCurrent && !_userStopped) {
+      setState(() {
+        _contextPlan = plan;
+        _contextAttachmentsPrepared = true;
+      });
     }
+  }
+
+  Future<bool> _confirmAttachmentWarnings(
+      List<FileProcessingDiagnostic> diagnostics) async {
+    if (_sendCancelled) return false;
+    final result = await showDialog<bool>(
+        context: context,
+        builder: (ctx) => AlertDialog(
+              title: const Text('附件内容需要确认'),
+              content: SingleChildScrollView(
+                  child: Column(
+                      mainAxisSize: MainAxisSize.min,
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                    for (final warning in diagnostics)
+                      Padding(
+                          padding: const EdgeInsets.only(bottom: 12),
+                          child:
+                              Text('${warning.filename}：${warning.message}')),
+                  ])),
+              actions: [
+                TextButton(
+                    onPressed: () => Navigator.pop(ctx, false),
+                    child: const Text('返回修改')),
+                FilledButton(
+                    onPressed: () => Navigator.pop(ctx, true),
+                    child: const Text('继续发送')),
+              ],
+            ));
+    return result == true && !_sendCancelled;
+  }
+
+  void _showContextPreview() {
+    if (!_ready || !_accountCurrent) return;
+    final plan = _contextPlan ??
+        completionDao.previewContext(prompt: _inputController.text);
+    showModalBottomSheet<void>(
+        context: context,
+        isScrollControlled: true,
+        useSafeArea: true,
+        builder: (ctx) => SizedBox(
+              height: MediaQuery.sizeOf(ctx).height * .75,
+              child: ListView(padding: const EdgeInsets.all(20), children: [
+                Text('本轮上下文预览', style: Theme.of(ctx).textTheme.titleLarge),
+                const SizedBox(height: 12),
+                Text(
+                    '预计输入 ${plan.estimatedInputTokens} Token / 输入预算 ${plan.inputBudgetTokens}'),
+                Text('输出预留 ${plan.reservedOutputTokens} Token'),
+                Text(
+                    '完整带入 ${plan.includedHistoryTurns} 轮，省略 ${plan.omittedHistoryTurns} 轮'),
+                const SizedBox(height: 12),
+                const Text('本轮提问'),
+                SelectableText(_contextPlan == null
+                    ? _inputController.text
+                    : _plannedPrompt),
+                if (_plannedAttachmentInfo.isNotEmpty)
+                  Text(_plannedAttachmentInfo),
+                if (_plannedFileText.isNotEmpty) ...[
+                  const SizedBox(height: 12),
+                  const Text('附件正文摘录（最多 3000 字）'),
+                  SelectableText(_plannedFileText.length > 3000
+                      ? _plannedFileText.substring(0, 3000)
+                      : _plannedFileText),
+                ],
+                if (!_contextAttachmentsPrepared &&
+                    (_pendingImages.isNotEmpty || _pendingFiles.isNotEmpty))
+                  const Text('附件尚未处理，此处仅预览文字；发送前会重新估算完整附件。'),
+                if (_hasEarlierContext)
+                  const Text('更早记录未进入候选范围，仍完整保存在本地，可从对话目录查看。'),
+                for (final warning in plan.warnings)
+                  Padding(
+                      padding: const EdgeInsets.only(top: 8),
+                      child: Text(warning)),
+                if (plan.error != null)
+                  Text(plan.error!,
+                      style: TextStyle(color: Theme.of(ctx).colorScheme.error)),
+                if (plan.summary.isNotEmpty) ...[
+                  const SizedBox(height: 16),
+                  const Text('较早对话摘录摘要'),
+                  SelectableText(plan.summary),
+                ],
+                const SizedBox(height: 16),
+                const Text('历史轮次（正文摘录）'),
+                for (final turn in plan.turns.reversed)
+                  ListTile(
+                    contentPadding: EdgeInsets.zero,
+                    leading: Icon(turn.included
+                        ? Icons.check_circle_outline
+                        : Icons.compress),
+                    title: Text(
+                        '第 ${turn.index + 1} 轮 · ${turn.included ? '完整带入' : '摘录或省略'}'),
+                    subtitle: Text(
+                        turn.excerpt.isEmpty ? '图片、附件或工具消息' : turn.excerpt),
+                  ),
+              ]),
+            ));
   }
 
   bool _canStartAIRequest({required bool showPrompt}) {
@@ -1752,14 +2224,14 @@ class _ConversationPageState extends State<ConversationPage> {
 
   /// 带文件的用户消息：把图片/文件/文本组装成块，seed 进块仓库并连块落库。
   /// （纯图片消息沿用默认气泡的九宫格渲染，不走块化 —— 保留点击预览。）
-  void _addUserMessageWithBlocks(
+  Future<void> _addUserMessageWithBlocks(
     MessageModel userModel,
     List<String>? imagePaths,
     List<FileMetadata> metas, {
     String roleContextSnapshot = '',
     AssistantMemoryContextBudget? roleMemoryBudget,
     List<AssistantMemoryEntryPreview> roleMemoryHits = const [],
-  }) {
+  }) async {
     final key = chatMessageKey(userModel.createdAt);
     var seq = 0;
     final blocks = <MessageBlock>[
@@ -1798,17 +2270,18 @@ class _ConversationPageState extends State<ConversationPage> {
           memoryHits: roleMemoryHits,
         ),
     ];
+    await messageDao.saveMessageWithBlocks(userModel,
+        blocksJson: MessageBlock.encodeList(blocks));
+    if (!mounted || !_accountCurrent) return;
     _blockStore.seedMessage(key, blocks);
     _blockStore.commitSeed();
     chatController.addMessage(userModel);
-    messageDao.saveMessageWithBlocks(userModel,
-        blocksJson: MessageBlock.encodeList(blocks));
     _notifyConversationListUpdate();
   }
 
   /// 非流式 + 联网搜索的回复：组装「正文块 + 引用块」，seed 进块仓库并连块落库。
-  void _addReceiverMessageWithCitations(
-      MessageModel receiverModel, List<WebSearchResult> webResults) {
+  Future<void> _addReceiverMessageWithCitations(
+      MessageModel receiverModel, List<WebSearchResult> webResults) async {
     final key = chatMessageKey(receiverModel.createdAt);
     final blocks = <MessageBlock>[
       MainTextBlock(
@@ -1831,7 +2304,7 @@ class _ConversationPageState extends State<ConversationPage> {
     _blockStore.seedMessage(key, blocks);
     _blockStore.commitSeed();
     chatController.addMessage(receiverModel);
-    messageDao.saveMessageWithBlocks(receiverModel,
+    await messageDao.saveMessageWithBlocks(receiverModel,
         blocksJson: MessageBlock.encodeList(blocks));
     _notifyConversationListUpdate();
   }
@@ -1839,57 +2312,86 @@ class _ConversationPageState extends State<ConversationPage> {
   void _stopStream() {
     // 用户主动停止：把当前活跃块标记 paused，取消订阅，并放行 await。
     _userStopped = true;
+    if (mounted && _accountCurrent) {
+      setState(() => _sendProgress = const ChatSendProgress('正在停止'));
+    }
     _activeDispatcher?.onStopped();
+    _abortStreamRequest();
     _activeEventSub?.cancel();
     final c = _streamCompleter;
     if (c != null && !c.isCompleted) c.complete();
   }
 
+  void _abortStreamRequest() {
+    final abort = _streamAbortCompleter;
+    if (abort != null && !abort.isCompleted) abort.complete();
+  }
+
   Future<void> _onSendNonStream(
       String inputMessage, ChatAttachments attachments,
       {bool webSearch = false}) async {
-    String? response = "";
-    var webResults = const <WebSearchResult>[];
-    CompletionResult? completionResult;
     try {
       final result = await completionDao.createCompletionsWithSearch(
           prompt: inputMessage,
           attachments: attachments.isEmpty ? null : attachments,
-          webSearch: webSearch);
-      response = result.content;
-      webResults = result.webResults;
-      completionResult = result;
+          webSearch: webSearch,
+          abortTrigger: _streamAbortCompleter?.future,
+          onProgress: _onSendProgress,
+          onContextPlan: _onContextPlan);
+      if (_sendCancelled) {
+        if (!_disposed && _accountCurrent) {
+          await _saveFailedReply('已停止等待，可重试此条提问');
+        }
+        return;
+      }
+      final response = result.content?.trim().isNotEmpty == true
+          ? result.content!
+          : 'no response';
+      final receiverModel =
+          _genMessageModel(ownerType: OwnerType.receiver, message: response);
+      if (result.webResults.isNotEmpty) {
+        await _addReceiverMessageWithCitations(
+            receiverModel, result.webResults);
+      } else {
+        await messageDao.saveMessageWithBlocks(receiverModel);
+        if (!_accountCurrent) return;
+        chatController.addMessage(receiverModel);
+        _notifyConversationListUpdate();
+      }
+      await _saveConversationSummary(receiverModel);
+      final user = _lastUserModel;
+      if (user != null) {
+        completionDao.appendTurn(user, receiverModel,
+            userFileText: _lastUserFileText);
+        _lastUserModel = null;
+        _lastUserFileText = '';
+        await _recordUsageFromCompletion(
+            completionText: response,
+            completionResult: result,
+            createdAt: receiverModel.createdAt);
+        if (!_sendCancelled) await _readAloudAssistant(receiverModel.content);
+        _clearUsageRound();
+      }
     } catch (e) {
-      response = e.toString();
-      AILogger.log('non-stream error: $e');
+      if (!_disposed && _accountCurrent) {
+        await _saveFailedReply(
+            _userStopped ? '已停止等待，可重试此条提问' : _friendlyError(e));
+      }
     }
-    response ??= 'no response';
-    final receiverModel =
-        _genMessageModel(ownerType: OwnerType.receiver, message: response);
-    if (webResults.isNotEmpty) {
-      // 带引用来源的回复：正文 + citation 块化落库（消息底部展示可点来源）。
-      _addReceiverMessageWithCitations(receiverModel, webResults);
-    } else {
-      _addMessage(receiverModel);
-    }
-    // 把本轮追加进历史，使后续轮次携带完整上下文（与流式路径一致）。
-    final user = _lastUserModel;
-    if (user != null) {
-      completionDao.appendTurn(user, receiverModel,
-          userFileText: _lastUserFileText);
-      _lastUserModel = null;
-      _lastUserFileText = '';
-      await _recordUsageFromCompletion(
-        completionText: response,
-        completionResult: completionResult,
-        createdAt: receiverModel.createdAt,
-      );
-      await _readAloudAssistant(receiverModel.content);
-      _clearUsageRound();
-    }
-    setState(() {
-      _isStreaming = false;
-    });
+  }
+
+  Future<void> _saveFailedReply(String message) async {
+    if (_lastUserModel == null || _disposed || !_accountCurrent) return;
+    final receiver =
+        _genMessageModel(ownerType: OwnerType.receiver, message: '');
+    final dispatcher = StreamDispatcher(
+        _blockStore, chatMessageKey(receiver.createdAt),
+        modelId: _effectiveModelId)
+      ..start()
+      ..onError(message);
+    chatController.addMessage(receiver);
+    await _persistAssistant(receiver, dispatcher);
+    _notifyConversationListUpdate();
   }
 
   Future<void> _onSendStream(String inputMessage, ChatAttachments attachments,
@@ -1905,9 +2407,10 @@ class _ConversationPageState extends State<ConversationPage> {
           ..start();
     chatController.addMessage(receiverModel);
 
-    _userStopped = false;
     final completer = Completer<void>();
+    final abort = _streamAbortCompleter ?? Completer<void>();
     _streamCompleter = completer;
+    _streamAbortCompleter = abort;
     _activeDispatcher = dispatcher;
     _activeReceiver = receiverModel;
 
@@ -1918,16 +2421,22 @@ class _ConversationPageState extends State<ConversationPage> {
         .streamCompletionEvents(
             prompt: inputMessage,
             attachments: attachments.isEmpty ? null : attachments,
+            abortTrigger: abort.future,
             webSearch: webSearch,
+            onProgress: _onSendProgress,
+            onContextPlan: _onContextPlan,
             tools: tools)
         .listen(
       (event) {
-        if (!mounted || _userStopped) return;
+        if (_sendCancelled) return;
         switch (event.type) {
           case StreamEventType.reasoning:
             dispatcher.onThinkingChunk(event.delta);
             break;
           case StreamEventType.text:
+            if (_sendProgress?.label != '生成回答') {
+              _onSendProgress(const ChatSendProgress('生成回答'));
+            }
             dispatcher.onTextChunk(event.delta);
             break;
           case StreamEventType.toolCall:
@@ -1979,13 +2488,15 @@ class _ConversationPageState extends State<ConversationPage> {
       await _persistAssistant(receiverModel, dispatcher);
       _notifyConversationListUpdate();
     } finally {
+      if (!abort.isCompleted) abort.complete();
+      _streamAbortCompleter = null;
       _activeEventSub = null;
       _activeDispatcher = null;
       _streamCompleter = null;
       _activeReceiver = null;
       if (mounted) {
         setState(() {
-          _isStreaming = false;
+          _sendProgress = null;
         });
       }
     }
@@ -2019,6 +2530,7 @@ class _ConversationPageState extends State<ConversationPage> {
     final blocksJson =
         blocks.isNotEmpty ? MessageBlock.encodeList(blocks) : null;
     await messageDao.saveMessageWithBlocks(finalModel, blocksJson: blocksJson);
+    await _saveConversationSummary(finalModel);
     // 把本轮「用户 + assistant」追加进会话历史，使后续轮次携带完整上下文
     // （CompletionDao._messageList 不会自动增长；正文已不含思考内容）。
     // 连块一起传：其中的 ToolBlock 记入工具历史，使工具调用跨轮可见（遗留项 2）。
@@ -2032,7 +2544,9 @@ class _ConversationPageState extends State<ConversationPage> {
         completionText: finalModel.content,
         createdAt: finalModel.createdAt,
       );
-      await _readAloudAssistant(finalModel.content);
+      if (!dispatcher.hasError && !_sendCancelled) {
+        await _readAloudAssistant(finalModel.content);
+      }
       _clearUsageRound();
     }
   }
@@ -2420,7 +2934,9 @@ class _ConversationPageState extends State<ConversationPage> {
       _assistant = await _assistantDao!.getAssistant(aid);
     }
     await _loadAssistantMemories();
+    if (!mounted || !_accountCurrent) return;
     final list = await _loadData();
+    if (!mounted || !_accountCurrent) return;
     chatController.loadMoreData(list);
     _showInitialAssistantOpeningIfNeeded(list);
     await _jumpToInitialTargetMessage();
@@ -2432,16 +2948,22 @@ class _ConversationPageState extends State<ConversationPage> {
     _daoModelId = widget.conversationModel.modelId;
     // 从持久化块恢复工具调用历史（遗留项 2）+ 附件文本历史（遗留项 6），
     // 使重开会话后工具调用与文件上下文仍跨轮可见。
-    final blockHistory = await _loadBlockHistory(list);
+    final candidates = await messageDao.loadContextCandidates();
+    if (!mounted || !_accountCurrent) return;
+    _hasEarlierContext = candidates.hasEarlierMessages;
+    final blockHistory = await _loadBlockHistory(candidates.messages);
     completionDao = CompletionDao(
+        manageContext: true,
         settings: _effective(settings),
         systemPrompt: _daoSystemPrompt,
-        messages: list,
+        messages: candidates.messages,
         toolHistory: blockHistory.$1,
         fileHistory: blockHistory.$2,
         roleContinuationHistory: blockHistory.$3);
-    // 刷新标题/能力位（助手是异步加载的，首帧可能还没就位）。
-    setState(() {});
+    await _restoreDraft();
+    if (!mounted || !_accountCurrent) return;
+    setState(() => _ready = true);
+    if (_inputController.text.isNotEmpty) _scheduleDraftSave();
   }
 
   /// 会话内切换助手（阶段七）：弹选择器 + 确认，从下一轮开始使用新助手。
@@ -2950,12 +3472,6 @@ class _ConversationPageState extends State<ConversationPage> {
     );
   }
 
-  void _addMessage(MessageModel model) {
-    chatController.addMessage(model);
-    messageDao.saveMessage(model);
-    _notifyConversationListUpdate();
-  }
-
   int pageIndex = 1;
 
   ///从数据库加载历史聊天记录
@@ -2982,7 +3498,7 @@ class _ConversationPageState extends State<ConversationPage> {
 
   /// 从持久化块里抽取这批消息的工具调用块（遗留项 2）与附件降级文本（遗留项 6），
   /// 一次查询同时构成 `createdAt -> List<ToolBlock>` 与 `createdAt -> 附件文本`，
-  /// 供 [CompletionDao] 跨轮重建。只读「首页」消息（与 CompletionDao 历史范围一致）。
+  /// 供 [CompletionDao] 跨轮重建。候选历史与 UI 分页独立，保持重开会话后上下文一致。
   Future<(Map<int, List<ToolBlock>>, Map<int, String>, Map<int, String>)>
       _loadBlockHistory(List<MessageModel> list) async {
     if (list.isEmpty) {
@@ -3498,9 +4014,12 @@ class _ConversationPageState extends State<ConversationPage> {
 
   /// 重新生成最后一条 assistant 回复：删除旧回复，回退该轮历史，用对应的用户
   /// 提问重新发起一次请求。仅支持最新一条回复（见 [_canRegenerate]）。
-  void _regenerate(MessageModel assistantMessage) async {
-    if (!_canRegenerate(assistantMessage)) return;
-    // 找到该回复对应的用户提问：列表新→旧，紧邻其后的第一条 sender 消息。
+  Future<void> _regenerate(MessageModel assistantMessage) async {
+    if (!_canRegenerate(assistantMessage) ||
+        !_accountCurrent ||
+        !_canStartAIRequest(showPrompt: true)) {
+      return;
+    }
     final list = chatController.initialMessageList;
     final idx =
         list.indexWhere((m) => m.createdAt == assistantMessage.createdAt);
@@ -3515,55 +4034,134 @@ class _ConversationPageState extends State<ConversationPage> {
       HiDialog.showSnackBar(context, '找不到对应的提问，无法重新生成');
       return;
     }
+    await _retryUserMessage(userMessage, oldReply: assistantMessage);
+  }
 
-    setState(() => _isStreaming = true);
-
-    // 删除旧的 assistant 回复（UI + DB + 块仓库）。
+  Future<void> _retryUserMessage(MessageModel userMessage,
+      {MessageModel? oldReply}) async {
+    if (!_ready ||
+        !_accountCurrent ||
+        _isStreaming ||
+        !_canStartAIRequest(showPrompt: true)) {
+      return;
+    }
+    _userStopped = false;
+    _streamAbortCompleter = Completer<void>();
+    setState(() {
+      _isStreaming = true;
+      _sendProgress = const ChatSendProgress('准备重试');
+    });
     try {
-      if (assistantMessage.id != null) {
-        await messageDao.deleteMessage(assistantMessage.id!);
+      final rawSettings = context.read<AISettingsProvider>().settings;
+      final systemPrompt =
+          await _assistantSystemPromptForSafely(userMessage.content);
+      if (_sendCancelled) return;
+      final settings = _effective(rawSettings);
+      final candidate = CompletionDao(
+        manageContext: true,
+        settings: settings,
+        systemPrompt: systemPrompt,
+        messages: oldReply == null
+            ? completionDao.currentMessages
+                .where((m) => m.createdAt != userMessage.createdAt)
+                .toList()
+            : completionDao.currentMessages,
+        toolHistory: completionDao.currentToolHistory,
+        fileHistory: completionDao.currentFileHistory,
+        roleContinuationHistory: completionDao.currentRoleContinuationHistory,
+      );
+      final persistedAttachments =
+          candidate.attachmentsForUserMessage(userMessage);
+      // 未完成的孤立提问可能来自旧版或异常退出；只从请求副本剔除，不修改原记录。
+      if (oldReply != null) {
+        candidate.dropLastTurn();
+      }
+      final caps = ChatService.capabilitiesFor(settings);
+      var blocks = _blockStore.blocksFor(chatMessageKey(userMessage.createdAt));
+      if (blocks.isEmpty) {
+        final stored =
+            await messageDao.getBlocksByCreatedAt([userMessage.createdAt]);
+        blocks = MessageBlock.decodeList(
+            stored[chatMessageKey(userMessage.createdAt)]);
+      }
+      if (_sendCancelled) return;
+      final officialDeepSeek = (settings.mode == AIMode.backend &&
+              ModelCapabilities.isDeepSeekVisionModel(
+                  settings.effectiveModel)) ||
+          (settings.mode == AIMode.local &&
+              Uri.tryParse(settings.activeLocal.baseUrl)?.host.toLowerCase() ==
+                  'api.deepseek.com');
+      final restored = await const RetryAttachmentRestorer().restore(
+        persisted: persistedAttachments,
+        files: blocks.whereType<FileBlock>().map((b) => b.file).toList(),
+        capabilities: officialDeepSeek ? caps.copyWith(pdf: false) : caps,
+        onProgress: _onSendProgress,
+        abortTrigger: _streamAbortCompleter?.future,
+        isCancelled: () => _sendCancelled,
+      );
+      if (restored.hasWarnings &&
+          !await _confirmAttachmentWarnings(restored.diagnostics)) {
+        return;
+      }
+      if (_sendCancelled) return;
+      final attachments = restored.attachments;
+      final webSearch =
+          settings.webSearchEnabled && settings.webSearchConfigured;
+      final tools = await _toolsForSend(settings, caps, webSearch);
+      if (_sendCancelled) return;
+      final plan = candidate.previewContext(
+          prompt: userMessage.content, attachments: attachments, tools: tools);
+      _plannedPrompt = userMessage.content;
+      _plannedAttachmentInfo =
+          '${attachments.images.length} 张图片，${attachments.nativeFiles.length} 份原生文件';
+      _plannedFileText = attachments.extraText;
+      _onContextPlan(plan);
+      if (!plan.canSend) throw ChatContextBudgetException(plan);
+      // 检查成功后才替换旧回复；提问行始终沿用，重试不会复制提问。
+      if (oldReply != null) {
+        await messageDao.deleteMessageByCreatedAt(oldReply.createdAt);
+        if (!_accountCurrent) return;
+        chatController.deleteMessage(oldReply);
+        _blockStore.removeMessage(chatMessageKey(oldReply.createdAt));
+      }
+      completionDao = candidate;
+      _currentSettings = rawSettings;
+      _daoSystemPrompt = systemPrompt;
+      _daoAssistant = _assistant;
+      _daoModelProviderId = widget.conversationModel.modelProviderId;
+      _daoModelId = widget.conversationModel.modelId;
+      _lastUserModel = userMessage;
+      _lastUserFileText = attachments.extraText;
+      _markUsageRound(prompt: userMessage.content, settings: settings);
+      if (_sendCancelled) {
+        if (_accountCurrent) await _saveFailedReply('已停止发送，可重试此条提问');
+        return;
+      }
+      if (settings.streamEnabled) {
+        await _onSendStream(userMessage.content, attachments,
+            webSearch: webSearch && tools == null, tools: tools);
       } else {
-        // 刚流式生成的回复还没有数据库 id，按 createdAt 删除旧行，
-        // 否则旧回复会残留在 DB，重进会话时出现重复。
-        await messageDao.deleteMessageByCreatedAt(assistantMessage.createdAt);
+        await _onSendNonStream(userMessage.content, attachments,
+            webSearch: webSearch);
       }
     } catch (e) {
-      AILogger.log('regenerate: delete old reply failed: $e');
-    }
-    chatController.deleteMessage(assistantMessage);
-    _blockStore.removeMessage(chatMessageKey(assistantMessage.createdAt));
-
-    // 回退 completionDao 历史里这一轮，避免把同一用户提问既留在历史又作为
-    // 当前 prompt 重发；收尾时由 _persistAssistant 再次配对入历史。
-    completionDao.dropLastTurn();
-    _lastUserModel = userMessage;
-    _lastUserFileText = '';
-
-    // 复用当前设置/助手构造请求（与 _onSend 尾部选路一致）。
-    final settings = _effective(_currentSettings);
-    final caps = ChatService.capabilitiesFor(settings);
-    // 复原原提问的图片附件（若有）；文件降级文本不重建（少见，从简）。
-    final images = userMessage.imageUrlsOrB64 ?? const <String>[];
-    final attachments = ChatAttachments(images: images);
-    final webSearch = settings.webSearchEnabled && settings.webSearchConfigured;
-    final allowTools = _assistant?.useTools ?? true;
-    final mcpTools = (caps.tool && settings.streamEnabled && allowTools)
-        ? await _discoverMcpTools(settings)
-        : const <ChatTool>[];
-    final registry = ToolRegistry.fromAssistant(settings, _effectiveToolIds,
-        forceWebSearch: webSearch,
-        actions: _toolActions(),
-        extraTools: mcpTools);
-    final tools =
-        caps.tool && settings.streamEnabled && allowTools && !registry.isEmpty
-            ? registry
-            : null;
-    if (settings.streamEnabled) {
-      await _onSendStream(userMessage.content, attachments,
-          webSearch: webSearch && tools == null, tools: tools);
-    } else {
-      await _onSendNonStream(userMessage.content, attachments,
-          webSearch: webSearch);
+      if (mounted && _accountCurrent) {
+        if (_lastUserModel != null) {
+          await _saveFailedReply(_friendlyError(e));
+        } else if (!_userStopped) {
+          HiDialog.showSnackBar(context, '重试前检查失败：${_friendlyError(e)}');
+        }
+      }
+    } finally {
+      _abortStreamRequest();
+      _streamAbortCompleter = null;
+      _clearUsageRound();
+      if (mounted && _accountCurrent) {
+        setState(() {
+          _isStreaming = false;
+          _sendProgress = null;
+        });
+      }
     }
   }
 

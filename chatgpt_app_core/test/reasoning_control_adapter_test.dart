@@ -27,7 +27,16 @@ void main() {
     test('uses only the brief allowlisted DeepSeek models', () {
       expect(_fields('deepseek', 'deepseek-v4-pro'), isNotEmpty);
       expect(_fields('deepseek', 'deepseek-v4-flash'), isNotEmpty);
+      expect(_fields('deepseek', 'deepseek-flash'), {
+        'thinking': {'type': 'disabled'},
+      });
+      expect(_fields('deepseek', 'deepseek-v4-flash-vision-exp'), {
+        'thinking': {'type': 'disabled'},
+      });
       expect(_fields('deepseek', 'deepseek-reasoner'), isEmpty);
+      expect(_fields('deepseek', 'deepseek-flash-custom'), isEmpty);
+      expect(_fields('custom_1', 'deepseek-flash', providerCode: 'deepseek'),
+          isEmpty);
       expect(_fields('deepseek', 'DeepSeek-V4-Pro'), isEmpty);
     });
 
@@ -95,6 +104,8 @@ void main() {
     test('providerDefault always leaves request fields unchanged', () {
       for (final entry in [
         ('deepseek', 'deepseek-v4-flash'),
+        ('deepseek', 'deepseek-flash'),
+        ('deepseek', 'deepseek-v4-flash-vision-exp'),
         ('dashscope', 'qwen3.5-plus'),
         ('openai', 'gpt-5.2'),
         ('custom_1', 'gpt-5.2'),
@@ -114,6 +125,8 @@ void main() {
     test('suppressed decisions always leave request fields unchanged', () {
       for (final entry in [
         ('deepseek', 'deepseek-v4-flash'),
+        ('deepseek', 'deepseek-flash'),
+        ('deepseek', 'deepseek-v4-flash-vision-exp'),
         ('dashscope', 'qwen3.5-plus'),
         ('openai', 'gpt-5.2'),
         ('custom_1', 'gpt-5.2'),

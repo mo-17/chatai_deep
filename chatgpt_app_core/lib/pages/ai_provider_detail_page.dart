@@ -2,9 +2,11 @@ import 'dart:async';
 
 import 'package:chatgpt_app_core/ai_readiness/ai_health_state_guard.dart';
 import 'package:chatgpt_app_core/data/provider_presets.dart';
+import 'package:chatgpt_app_core/dao/ai_provider_api.dart';
 import 'package:chatgpt_app_core/dao/chat/chat_service.dart';
 import 'package:chatgpt_app_core/model/ai_provider.dart';
 import 'package:chatgpt_app_core/model/ai_settings.dart';
+import 'package:chatgpt_app_core/pages/deepseek_files_page.dart';
 import 'package:chatgpt_app_core/provider/ai_settings_provider.dart';
 import 'package:chatgpt_app_core/theme/app_visual_theme.dart';
 import 'package:chatgpt_app_core/widget/ai_provider/api_key_field.dart';
@@ -12,6 +14,7 @@ import 'package:chatgpt_app_core/widget/ai_provider/capability_chip.dart';
 import 'package:chatgpt_app_core/widget/ai_provider/provider_avatar.dart';
 import 'package:chatgpt_app_core/widget/ai_provider/section_card.dart';
 import 'package:flutter/material.dart';
+import 'package:login_sdk/dao/login_dao.dart';
 import 'package:provider/provider.dart';
 import 'package:url_launcher/url_launcher.dart';
 
@@ -21,7 +24,8 @@ enum _TestState { idle, running, success, failure }
 /// 配 API Key / 地址、测试连接、管理模型、设为当前。改动即时保存。
 class AiProviderDetailPage extends StatefulWidget {
   final String providerId;
-  const AiProviderDetailPage({super.key, required this.providerId});
+  final AiProviderApi? api;
+  const AiProviderDetailPage({super.key, required this.providerId, this.api});
 
   @override
   State<AiProviderDetailPage> createState() => _AiProviderDetailPageState();
@@ -36,6 +40,16 @@ class _AiProviderDetailPageState extends State<AiProviderDetailPage> {
   String? _testError;
   final Map<String, _TestState> _modelTestStates = {};
   final Map<String, String> _modelTestErrors = {};
+  late final AiProviderApi _api = widget.api ?? AiProviderApi();
+  bool _modelsLoading = false;
+  String? _modelsError;
+  bool _balanceLoading = false;
+  String? _balanceError;
+  DeepSeekBalance? _balance;
+  AiProvider? _balanceConfiguration;
+  int _apiRevision = 0;
+  Completer<void>? _modelsAbort;
+  Completer<void>? _balanceAbort;
 
   // initState 时缓存，避免 dispose 里再用 context.read。
   late final AISettingsProvider _store = context.read<AISettingsProvider>();
@@ -58,6 +72,7 @@ class _AiProviderDetailPageState extends State<AiProviderDetailPage> {
   @override
   void dispose() {
     _debounce?.cancel();
+    _cancelProviderRequests();
     // 落盘未触发的防抖编辑（如粘贴 Key 后立刻返回），静默保存避免丢失。
     unawaited(_flush(notify: false, showError: false));
     _keyCtl.dispose();
@@ -67,11 +82,220 @@ class _AiProviderDetailPageState extends State<AiProviderDetailPage> {
 
   /// 文本框防抖保存（500ms），避免每个字符都落盘。
   void _debouncedSave() {
+    _invalidateProviderApi();
     _debounce?.cancel();
     _debounce = Timer(
       const Duration(milliseconds: 500),
       () => unawaited(_flush()),
     );
+  }
+
+  void _cancelProviderRequests() {
+    for (final abort in [_modelsAbort, _balanceAbort]) {
+      if (abort != null && !abort.isCompleted) abort.complete();
+    }
+  }
+
+  void _invalidateProviderApi() {
+    _cancelProviderRequests();
+    setState(() {
+      _apiRevision++;
+      _modelsLoading = false;
+      _modelsError = null;
+      _balanceLoading = false;
+      _balanceError = null;
+      _balance = null;
+      _balanceConfiguration = null;
+    });
+  }
+
+  bool _requestStillCurrent(AiProvider snapshot, int revision) {
+    final current = _provider;
+    return mounted &&
+        revision == _apiRevision &&
+        _accountHashAtOpen == _store.accountHash &&
+        _accountHashAtOpen == (LoginDao.getAccountHash() ?? 'guest') &&
+        current != null &&
+        current.type == snapshot.type &&
+        current.apiKey == snapshot.apiKey &&
+        current.apiHost == snapshot.apiHost &&
+        _keyCtl.text.trim() == snapshot.apiKey &&
+        _hostCtl.text.trim() == snapshot.apiHost;
+  }
+
+  Future<void> _fetchModels() async {
+    if (_modelsLoading) return;
+    final revision = _apiRevision;
+    setState(() {
+      _modelsLoading = true;
+      _modelsError = null;
+    });
+    final saved = await _flush();
+    if (!mounted || revision != _apiRevision) return;
+    final snapshot = _provider?.copy();
+    if (!saved || snapshot == null) {
+      setState(() => _modelsLoading = false);
+      return;
+    }
+    final abort = _modelsAbort = Completer<void>();
+    try {
+      final models =
+          await _api.fetchModels(snapshot, abortTrigger: abort.future);
+      if (!mounted || !_requestStillCurrent(snapshot, revision)) return;
+      setState(() => _modelsLoading = false);
+      if (models.isEmpty) {
+        setState(() => _modelsError = '服务商未返回可用模型');
+        return;
+      }
+      final existingIds = _provider!.models.map((m) => m.id).toSet();
+      final selectedIds = models
+          .where((m) => !existingIds.contains(m.id))
+          .map((m) => m.id)
+          .toSet();
+      final additions = await showModalBottomSheet<Set<String>>(
+        context: context,
+        isScrollControlled: true,
+        useSafeArea: true,
+        showDragHandle: true,
+        builder: (context) => StatefulBuilder(
+          builder: (context, updateSheet) => SizedBox(
+            height: MediaQuery.sizeOf(context).height * .75,
+            child: Column(
+              children: [
+                const Padding(
+                  padding: EdgeInsets.fromLTRB(16, 0, 16, 12),
+                  child: Text('获取到的模型'),
+                ),
+                Expanded(
+                  child: ListView(
+                    children: [
+                      for (final model in models)
+                        CheckboxListTile(
+                          value: existingIds.contains(model.id) ||
+                              selectedIds.contains(model.id),
+                          title: Text(model.name),
+                          subtitle: Text([
+                            model.id,
+                            if (existingIds.contains(model.id)) '已添加',
+                            if (model.description?.isNotEmpty ?? false)
+                              model.description!,
+                          ].join('\n')),
+                          onChanged: existingIds.contains(model.id)
+                              ? null
+                              : (value) => updateSheet(() {
+                                    if (value == true) {
+                                      selectedIds.add(model.id);
+                                    } else {
+                                      selectedIds.remove(model.id);
+                                    }
+                                  }),
+                        ),
+                    ],
+                  ),
+                ),
+                Padding(
+                  padding: const EdgeInsets.all(16),
+                  child: SizedBox(
+                    width: double.infinity,
+                    child: FilledButton(
+                      onPressed: selectedIds.isEmpty
+                          ? null
+                          : () => Navigator.pop(context, selectedIds),
+                      child: Text('添加 ${selectedIds.length} 个模型'),
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
+      );
+      if (additions == null || !_requestStillCurrent(snapshot, revision)) {
+        return;
+      }
+      // 从最新设置增量追加，不用远程清单覆盖手动模型与当前选择。
+      final next = _provider!.copy();
+      var count = 0;
+      for (final model in models) {
+        if (additions.contains(model.id) &&
+            !next.models.any((m) => m.id == model.id)) {
+          next.models.add(model.copy());
+          count++;
+        }
+      }
+      if (count > 0 && await _persistProvider(next) && mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('已添加 $count 个模型')),
+        );
+      }
+    } catch (error) {
+      if (_requestStillCurrent(snapshot, revision)) {
+        // 不把任意异常正文带到 UI，代理响应可能回显凭据。
+        setState(() => _modelsError = error is AiProviderApiException
+            ? error.message
+            : '获取模型失败，请检查 API Key、地址和网络后重试');
+      }
+    } finally {
+      if (!abort.isCompleted) abort.complete();
+      if (mounted && revision == _apiRevision) {
+        setState(() => _modelsLoading = false);
+      }
+    }
+  }
+
+  Future<void> _fetchBalance() async {
+    if (_balanceLoading) return;
+    final revision = _apiRevision;
+    setState(() {
+      _balanceLoading = true;
+      _balanceError = null;
+      _balance = null;
+      _balanceConfiguration = null;
+    });
+    final saved = await _flush();
+    if (!mounted || revision != _apiRevision) return;
+    final snapshot = _provider?.copy();
+    if (!saved || snapshot == null) {
+      setState(() => _balanceLoading = false);
+      return;
+    }
+    final abort = _balanceAbort = Completer<void>();
+    try {
+      final balance = await _api.fetchDeepSeekBalance(
+        snapshot,
+        abortTrigger: abort.future,
+      );
+      if (_requestStillCurrent(snapshot, revision)) {
+        setState(() {
+          _balance = balance;
+          _balanceConfiguration = snapshot;
+        });
+      }
+    } catch (error) {
+      if (_requestStillCurrent(snapshot, revision)) {
+        setState(() => _balanceError = error is AiProviderApiException
+            ? error.message
+            : '查询余额失败，请检查 API Key 和网络后重试');
+      }
+    } finally {
+      if (!abort.isCompleted) abort.complete();
+      if (mounted && revision == _apiRevision) {
+        setState(() => _balanceLoading = false);
+      }
+    }
+  }
+
+  Future<void> _openCloudFiles() async {
+    final revision = _apiRevision;
+    if (!await _flush() || !mounted) return;
+    final snapshot = _provider?.copy();
+    if (snapshot == null || !_requestStillCurrent(snapshot, revision)) return;
+    await Navigator.of(context).push<void>(MaterialPageRoute(
+      builder: (_) => ChangeNotifierProvider.value(
+        value: _store,
+        child: DeepSeekFilesPage(providerId: widget.providerId, api: _api),
+      ),
+    ));
   }
 
   Future<bool> _flush({
@@ -369,6 +593,9 @@ class _AiProviderDetailPageState extends State<AiProviderDetailPage> {
   Widget build(BuildContext context) {
     // watch：启用/激活/模型变化时重建。
     context.watch<AISettingsProvider>();
+    if (_store.accountHash != _accountHashAtOpen) {
+      return const Scaffold(body: Center(child: Text('账号已切换，请返回重新打开')));
+    }
     final p = _provider;
     if (p == null) {
       return const Scaffold(body: Center(child: Text('服务商不存在')));
@@ -492,6 +719,7 @@ class _AiProviderDetailPageState extends State<AiProviderDetailPage> {
                         icon: const Icon(Icons.restart_alt_rounded),
                         onPressed: () {
                           _hostCtl.text = _defaultHost;
+                          _invalidateProviderApi();
                           unawaited(_flush());
                         },
                       ),
@@ -507,22 +735,60 @@ class _AiProviderDetailPageState extends State<AiProviderDetailPage> {
           ),
           const SizedBox(height: 24),
 
+          if (AiProviderApi.supportsDeepSeekBalance(p)) ...[
+            const SectionLabel('账户余额'),
+            SectionCard(children: [_buildBalance(cs, tt)]),
+            const SizedBox(height: 24),
+          ],
+
+          if (AiProviderApi.supportsDeepSeekFiles(p)) ...[
+            const SectionLabel('云端文件'),
+            SectionCard(children: [
+              ListTile(
+                leading: const Icon(Icons.cloud_outlined),
+                title: const Text('管理云端文件'),
+                subtitle: const Text('查看和删除此 API Key 上传的图片'),
+                trailing: const Icon(Icons.chevron_right_rounded),
+                onTap: _openCloudFiles,
+              ),
+            ]),
+            const SizedBox(height: 24),
+          ],
+
           // 模型
-          Row(
-            children: [
-              const SectionLabel('模型',
-                  padding: EdgeInsets.fromLTRB(16, 0, 8, 8)),
-              const Spacer(),
-              Padding(
-                padding: const EdgeInsets.only(right: 8, bottom: 8),
-                child: TextButton.icon(
+          Padding(
+            padding: const EdgeInsets.fromLTRB(16, 0, 16, 8),
+            child: Wrap(
+              spacing: 8,
+              runSpacing: 4,
+              crossAxisAlignment: WrapCrossAlignment.center,
+              children: [
+                Text('模型', style: tt.titleSmall),
+                TextButton.icon(
+                  icon: _modelsLoading
+                      ? const SizedBox(
+                          width: 16,
+                          height: 16,
+                          child: CircularProgressIndicator(strokeWidth: 2),
+                        )
+                      : const Icon(Icons.cloud_download_outlined, size: 18),
+                  label: const Text('获取模型'),
+                  onPressed: _modelsLoading ? null : _fetchModels,
+                ),
+                TextButton.icon(
                   icon: const Icon(Icons.add_rounded, size: 18),
                   label: const Text('添加模型'),
                   onPressed: _showAddModelSheet,
                 ),
-              ),
-            ],
+              ],
+            ),
           ),
+          if (_modelsError != null)
+            Padding(
+              padding: const EdgeInsets.fromLTRB(16, 0, 16, 12),
+              child: Text(_modelsError!,
+                  style: tt.bodySmall?.copyWith(color: cs.error)),
+            ),
           SectionCard(
             children: [
               if (p.models.isEmpty)
@@ -535,6 +801,54 @@ class _AiProviderDetailPageState extends State<AiProviderDetailPage> {
             ],
           ),
           const SizedBox(height: 32),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildBalance(ColorScheme cs, TextTheme tt) {
+    final balance = _balanceConfiguration != null &&
+            _requestStillCurrent(_balanceConfiguration!, _apiRevision)
+        ? _balance
+        : null;
+    return Padding(
+      padding: const EdgeInsets.all(16),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          const Text('查询此 API Key 对应的 DeepSeek 账户余额'),
+          const SizedBox(height: 8),
+          OutlinedButton.icon(
+            onPressed: _balanceLoading ? null : _fetchBalance,
+            icon: _balanceLoading
+                ? const SizedBox(
+                    width: 16,
+                    height: 16,
+                    child: CircularProgressIndicator(strokeWidth: 2),
+                  )
+                : const Icon(Icons.account_balance_wallet_outlined),
+            label: const Text('查询余额'),
+          ),
+          if (_balanceError != null) ...[
+            const SizedBox(height: 8),
+            Text(_balanceError!,
+                style: tt.bodySmall?.copyWith(color: cs.error)),
+          ],
+          if (balance != null) ...[
+            const SizedBox(height: 8),
+            Text(balance.isAvailable ? '可调用' : '不可调用：账户余额不足',
+                style: tt.bodyMedium?.copyWith(
+                    color: balance.isAvailable ? cs.primary : cs.error)),
+            for (final info in balance.balances) ...[
+              const SizedBox(height: 12),
+              Text('${info.currency} · 总余额 ${info.totalBalance}',
+                  style: tt.titleMedium),
+              const SizedBox(height: 4),
+              Text('赠金 ${info.grantedBalance} · 充值余额 ${info.toppedUpBalance}',
+                  style: tt.bodySmall),
+            ],
+            if (balance.balances.isEmpty) const Text('未返回余额明细'),
+          ],
         ],
       ),
     );
@@ -709,11 +1023,17 @@ class _AiProviderDetailPageState extends State<AiProviderDetailPage> {
         color: selected ? cs.primary : cs.onSurfaceVariant,
       ),
       title: Text(m.name, style: tt.bodyMedium),
-      subtitle: statusChips.isEmpty && testError == null
+      subtitle: statusChips.isEmpty &&
+              testError == null &&
+              m.name == m.id &&
+              m.description == null
           ? null
           : Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
+                if (m.name != m.id) Text(m.id, style: tt.bodySmall),
+                if (m.description?.isNotEmpty ?? false)
+                  Text(m.description!, style: tt.bodySmall),
                 if (statusChips.isNotEmpty)
                   Padding(
                     padding: const EdgeInsets.only(top: 4),

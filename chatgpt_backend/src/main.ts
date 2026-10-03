@@ -6,11 +6,12 @@ import { NestFactory, Reflector } from '@nestjs/core';
 import { ValidationPipe, ClassSerializerInterceptor } from '@nestjs/common';
 import { Logger } from 'nestjs-pino';
 import { NestExpressApplication } from '@nestjs/platform-express';
-import { json } from 'express';
+import { urlencoded } from 'express';
 import { AppModule } from './app.module';
 import { AllExceptionsFilter } from './common/all-exceptions.filter';
 import { existsSync, mkdirSync } from 'fs';
 import { resolveUploadsDir } from './common/uploads-path';
+import { createJsonBodyParser } from './common/json-body-parser';
 
 async function bootstrap() {
   const origins = (
@@ -27,6 +28,7 @@ async function bootstrap() {
       methods: ['GET', 'POST', 'PATCH', 'DELETE', 'OPTIONS'],
     },
     bufferLogs: true,
+    bodyParser: false,
   });
   app.enableShutdownHooks();
   app.useLogger(app.get(Logger));
@@ -34,8 +36,8 @@ async function bootstrap() {
   app.useGlobalInterceptors(new ClassSerializerInterceptor(app.get(Reflector)));
   app.useGlobalFilters(new AllExceptionsFilter());
 
-  // 加大 JSON body 限制，base64 图片上传需要 ~5MB
-  app.use(json({ limit: '5mb' }));
+  app.use(createJsonBodyParser());
+  app.use(urlencoded({ extended: true }));
 
   // 静态文件服务 — 头像等上传资源
   const uploadsDir = resolveUploadsDir();

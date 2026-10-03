@@ -400,7 +400,16 @@ class AISettings {
           .toList();
       final existing = providers.map((p) => p.id).toSet();
       for (final preset in ProviderPresets.all()) {
-        if (!existing.contains(preset.id)) providers.add(preset);
+        if (!existing.contains(preset.id)) {
+          providers.add(preset);
+        } else if (preset.id == 'deepseek') {
+          // 只补新增的 Flash 图片模型；保留旧选择、key/host 与用户改过的清单。
+          final provider = providers.firstWhere((p) => p.id == preset.id);
+          if (!provider.models.any((m) => m.id == 'deepseek-flash')) {
+            provider.models
+                .add(preset.models.firstWhere((m) => m.id == 'deepseek-flash'));
+          }
+        }
       }
       activeId =
           j['activeProviderId'] as String? ?? ProviderPresets.defaultActiveId;

@@ -1,5 +1,6 @@
 import 'package:chatgpt_app_core/data/provider_presets.dart';
 import 'package:chatgpt_app_core/model/ai_provider.dart';
+import 'package:chatgpt_app_core/model/ai_settings.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 void main() {
@@ -32,6 +33,103 @@ void main() {
     });
     test('空串返回空', () {
       expect(AiProvider.buildChatCompletionsUrl(''), '');
+    });
+  });
+
+  group('DeepSeek Flash 升级补充', () {
+    test('已有账号仅补 Flash，保留模型自定义、选择与服务配置', () {
+      final custom = AiModel(
+        id: 'my-proxy-model',
+        name: '我的模型',
+        group: '私人分组',
+        tool: true,
+      );
+      final previous = AiProvider(
+        id: 'deepseek',
+        type: 'openai',
+        name: 'DeepSeek 私有代理',
+        apiKey: 'account-key',
+        apiHost: 'https://my-proxy.example/chat/completions',
+        models: [custom],
+        selectedModelId: custom.id,
+        enabled: true,
+        isSystem: true,
+      );
+      final source = {
+        'providers': [previous.toJson()],
+        'activeProviderId': 'deepseek',
+        'backendModel': 'my-backend-model',
+        'temperature': 0.4,
+      };
+
+      final settings = AISettings.fromJson(source);
+      final provider = settings.activeProvider;
+      expect(provider.models.map((model) => model.id),
+          ['my-proxy-model', 'deepseek-flash']);
+      expect(provider.models.first.toJson(), custom.toJson());
+      expect(provider.selectedModelId, custom.id);
+      expect(settings.effectiveModel, custom.id);
+      expect(provider.apiKey, previous.apiKey);
+      expect(provider.apiHost, previous.apiHost);
+      expect(provider.name, previous.name);
+      expect(provider.enabled, isTrue);
+      expect(settings.backendModel, 'my-backend-model');
+      expect(settings.temperature, 0.4);
+      expect((source['providers'] as List).single, previous.toJson());
+
+      final reloaded = AISettings.fromJson(settings.toJson());
+      expect(reloaded.activeProvider.toJson(), provider.toJson(),
+          reason: '重复加载不应重复补充或改写任何模型配置');
+    });
+
+    test('已配置 Flash 保留用户标注，也不重新启用服务商', () {
+      final flash = AiModel(id: 'deepseek-flash', name: '自定义 Flash 名称');
+      final previous = AiProvider(
+        id: 'deepseek',
+        type: 'openai',
+        name: 'DeepSeek',
+        models: [flash],
+        selectedModelId: flash.id,
+        enabled: false,
+        isSystem: true,
+      );
+      final settings = AISettings.fromJson({
+        'providers': [previous.toJson()],
+        'activeProviderId': 'deepseek',
+      });
+      expect(settings.activeProvider.toJson(), previous.toJson());
+    });
+
+    test('不会补回其他服务商已移除的默认模型', () {
+      final previous = AiProvider(
+        id: 'openai',
+        type: 'openai',
+        name: 'OpenAI',
+        models: [AiModel(id: 'only-my-model')],
+        selectedModelId: 'only-my-model',
+      );
+      final settings = AISettings.fromJson({
+        'providers': [previous.toJson()],
+        'activeProviderId': 'openai',
+      });
+      expect(settings.activeProvider.toJson(), previous.toJson());
+    });
+
+    test('旧版 DeepSeek 配置迁移仍保留选择，同时提供 Flash', () {
+      final settings = AISettings.fromJson({
+        'localProvider': 'deepseek',
+        'deepseek': {
+          'apiKey': 'legacy-key',
+          'model': 'legacy-proxy-model',
+          'baseUrl': 'https://legacy.example/chat/completions',
+        },
+      });
+      expect(settings.activeProvider.selectedModelId, 'legacy-proxy-model');
+      expect(settings.activeProvider.apiKey, 'legacy-key');
+      expect(settings.activeProvider.apiHost,
+          'https://legacy.example/chat/completions');
+      expect(settings.activeProvider.models.map((model) => model.id),
+          contains('deepseek-flash'));
     });
   });
 
@@ -78,6 +176,18 @@ void main() {
         expect(p.models.any((m) => m.id == p.effectiveModelId), isTrue,
             reason: '${p.id} 生效模型不在清单');
       }
+    });
+
+    test('DeepSeek 提供 Flash 图片模型，并保持既有默认选择', () {
+      final provider = ProviderPresets.byId('deepseek')!;
+      final flash =
+          provider.models.singleWhere((model) => model.id == 'deepseek-flash');
+      expect(flash.vision, isTrue);
+      expect(flash.tool, isTrue);
+      expect(flash.reasoning, isTrue);
+      expect(provider.effectiveModelId, 'deepseek-chat');
+      expect(provider.models.map((model) => model.id),
+          containsAll(['deepseek-chat', 'deepseek-reasoner']));
     });
 
     test('providerCode 映射：gemini->gemini, deepseek->deepseek, 其余->openai', () {

@@ -21,6 +21,21 @@ abstract class IMessage {
   Future<int> getMessageCount();
 }
 
+/// 请求历史的有限候选集，与聊天列表的分页展示相互独立。
+class MessageContextCandidates {
+  final List<MessageModel> messages;
+  final bool hasEarlierMessages;
+  final int storedBytes;
+  final bool exceededStoredByteBudget;
+
+  const MessageContextCandidates({
+    required this.messages,
+    required this.hasEarlierMessages,
+    required this.storedBytes,
+    required this.exceededStoredByteBudget,
+  });
+}
+
 ///统一消息表 tb_messages，所有会话的消息存储在同一张表中，通过 cid 区分
 class MessageDao implements IMessage, ITable {
   final HiDBManager storage;
@@ -101,6 +116,120 @@ class MessageDao implements IMessage, ITable {
     return List.from(list.reversed);
   }
 
+  /// 先在 SQLite 内测量正文/图片/块的字节数，避免一次反序列化海量 Base64。
+  /// 候选按连续的最新范围加载，触及边界时尽量从 user 开始保留完整轮次。
+  /// 最新完整 user 轮即使独自超出字节预算仍保留，之后不再累积更早轮次。
+  Future<MessageContextCandidates> loadContextCandidates({
+    int maxMessages = 1000,
+    int maxStoredBytes = 8 * 1024 * 1024,
+  }) async {
+    if (maxMessages <= 0 || maxMessages > 10000) {
+      throw ArgumentError.value(maxMessages, 'maxMessages', '必须为 1 到 10000');
+    }
+    if (maxStoredBytes <= 0) {
+      throw ArgumentError.value(maxStoredBytes, 'maxStoredBytes', '必须大于 0');
+    }
+    return storage.db.transaction((txn) async {
+      final selected = <Map<String, Object?>>[];
+      final pendingTurn = <Map<String, Object?>>[];
+      int? beforeId;
+      var storedBytes = 0;
+      var pendingBytes = 0;
+      var latestUserFound = false;
+      var hasEarlier = false;
+      var stop = false;
+      while (!stop) {
+        final metadata = await txn.rawQuery(
+          'select id, ownerType, '
+          'coalesce(length(cast(content as blob)), 0) + '
+          'coalesce(length(cast(images as blob)), 0) + '
+          'coalesce(length(cast(blocks as blob)), 0) + '
+          'coalesce(length(cast(ownerName as blob)), 0) + '
+          'coalesce(length(cast(avatar as blob)), 0) as storedBytes '
+          'from $tableName where cid = ? '
+          '${beforeId == null ? '' : 'and id < ? '}order by id desc limit 64',
+          [cid, if (beforeId != null) beforeId],
+        );
+        if (metadata.isEmpty) break;
+        for (final row in metadata) {
+          final rowBytes = row['storedBytes'] as int;
+          final isUser = row['ownerType'] != OwnerType.receiver.toString();
+          if (selected.length + pendingTurn.length >= maxMessages) {
+            hasEarlier = true;
+            stop = true;
+            break;
+          }
+          beforeId = row['id'] as int;
+          if (!latestUserFound) {
+            // 最近图片通常存于 user，不能只因最后 assistant 较小就漏掉原图。
+            // 没有 user 的异常旧记录仍按字节预算停止，避免无限累积 assistant。
+            if (selected.isNotEmpty &&
+                !isUser &&
+                storedBytes + rowBytes > maxStoredBytes) {
+              hasEarlier = true;
+              stop = true;
+              break;
+            }
+            selected.add(row);
+            storedBytes += rowBytes;
+            latestUserFound = isUser;
+          } else {
+            if (storedBytes + pendingBytes + rowBytes > maxStoredBytes) {
+              hasEarlier = true;
+              stop = true;
+              break;
+            }
+            pendingTurn.add(row);
+            pendingBytes += rowBytes;
+            if (isUser) {
+              selected.addAll(pendingTurn);
+              storedBytes += pendingBytes;
+              pendingTurn.clear();
+              pendingBytes = 0;
+            }
+          }
+        }
+        if (metadata.length < 64) break;
+      }
+      // 已到数据库起点的 assistant-only 旧前缀原样保留；限额处半轮整体省略。
+      if (!hasEarlier && pendingTurn.isNotEmpty) {
+        selected.addAll(pendingTurn);
+        storedBytes += pendingBytes;
+      }
+      if (selected.isEmpty) {
+        return const MessageContextCandidates(
+          messages: [],
+          hasEarlierMessages: false,
+          storedBytes: 0,
+          exceededStoredByteBudget: false,
+        );
+      }
+      final rows = await txn.query(
+        tableName,
+        // blocks 由 getBlocksByCreatedAt 恢复，这里不重复跨进程传输。
+        columns: const [
+          'id',
+          'cid',
+          'content',
+          'createdAt',
+          'ownerName',
+          'ownerType',
+          'avatar',
+          'images',
+        ],
+        where: 'cid = ? and id >= ? and id <= ?',
+        whereArgs: [cid, selected.last['id'], selected.first['id']],
+        orderBy: 'id asc',
+      );
+      return MessageContextCandidates(
+        messages: List.unmodifiable(rows.map(MessageModel.fromJson)),
+        hasEarlierMessages: hasEarlier,
+        storedBytes: storedBytes,
+        exceededStoredByteBudget: storedBytes > maxStoredBytes,
+      );
+    });
+  }
+
   @override
   void saveMessage(MessageModel model) {
     final data = model.toJson();
@@ -126,19 +255,23 @@ class MessageDao implements IMessage, ITable {
       Iterable<int> createdAts) async {
     final ids = createdAts.toList();
     if (ids.isEmpty) return const {};
-    final placeholders = List.filled(ids.length, '?').join(',');
-    final rows = await storage.db.query(
-      tableName,
-      columns: ['createdAt', 'blocks'],
-      where: 'cid = ? and createdAt in ($placeholders)',
-      whereArgs: [cid, ...ids],
-    );
     final map = <String, String>{};
-    for (final r in rows) {
-      final blocks = r['blocks'] as String?;
-      final createdAt = r['createdAt'] as int?;
-      if (blocks != null && blocks.isNotEmpty && createdAt != null) {
-        map[chatMessageKey(createdAt)] = blocks;
+    // Android 旧 SQLite 的绑定参数上限可能为 999，候选历史批量恢复要分段。
+    for (var start = 0; start < ids.length; start += 400) {
+      final batch = ids.skip(start).take(400).toList();
+      final placeholders = List.filled(batch.length, '?').join(',');
+      final rows = await storage.db.query(
+        tableName,
+        columns: ['createdAt', 'blocks'],
+        where: 'cid = ? and createdAt in ($placeholders)',
+        whereArgs: [cid, ...batch],
+      );
+      for (final r in rows) {
+        final blocks = r['blocks'] as String?;
+        final createdAt = r['createdAt'] as int?;
+        if (blocks != null && blocks.isNotEmpty && createdAt != null) {
+          map[chatMessageKey(createdAt)] = blocks;
+        }
       }
     }
     return map;

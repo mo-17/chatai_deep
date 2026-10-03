@@ -25,6 +25,8 @@ abstract final class ReasoningControlAdapter {
   static const _deepSeekDualMode = {
     'deepseek-v4-pro',
     'deepseek-v4-flash',
+    'deepseek-flash',
+    'deepseek-v4-flash-vision-exp',
   };
 
   static final _qwenThinking = RegExp(r'^qwen3(?:[.-]|$)');

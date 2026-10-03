@@ -1,6 +1,11 @@
 export type ReasoningPolicy = 'provider_default' | 'off_if_supported';
 
-const deepSeekDualMode = new Set(['deepseek-v4-pro', 'deepseek-v4-flash']);
+const deepSeekDualMode = new Set([
+  'deepseek-v4-pro',
+  'deepseek-v4-flash',
+  'deepseek-flash',
+  'deepseek-v4-flash-vision-exp',
+]);
 const qwenThinking = /^qwen3(?:[.-]|$)/;
 const openAiNone = new Set([
   'gpt-5.1',

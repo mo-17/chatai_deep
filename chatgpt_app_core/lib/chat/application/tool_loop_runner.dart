@@ -1,7 +1,10 @@
+import 'dart:async';
 import 'dart:convert';
 
 import 'package:chatgpt_app_core/chat/application/tool_registry.dart';
 import 'package:chatgpt_app_core/chat/domain/chat_attachments.dart';
+import 'package:chatgpt_app_core/chat/domain/chat_request_options.dart';
+import 'package:chatgpt_app_core/chat/domain/chat_send_progress.dart';
 import 'package:chatgpt_app_core/chat/domain/message_block.dart';
 import 'package:chatgpt_app_core/chat/domain/stream_event.dart';
 import 'package:chatgpt_app_core/dao/chat/chat_service.dart';
@@ -31,7 +34,28 @@ class ToolLoopRunner {
     required String prompt,
     required List<Map<String, dynamic>> history,
     ChatAttachments? attachments,
+    Future<void>? abortTrigger,
+    ChatSendProgressCallback? onProgress,
+    List<Map<String, dynamic>> Function(
+      List<Map<String, dynamic>> extraMessages,
+      List<Map<String, dynamic>>? declarations,
+    )? historyForRound,
   }) async* {
+    var cancelled = false;
+    unawaited(abortTrigger?.then<void>((_) {
+      cancelled = true;
+    }, onError: (Object _, StackTrace __) {
+      cancelled = true;
+    }));
+    void ensureRunning() {
+      if (cancelled) {
+        throw const ChatTransportException(
+            safeCode: 'cancelled', safeMessage: '请求已取消');
+      }
+    }
+
+    // 已完成的取消信号也应阻止首轮请求；无信号时保留原有执行时序。
+    if (abortTrigger != null) await Future<void>.value();
     // 工具回灌消息（assistant tool_calls + role:tool），追加在当前轮 user 之后。
     final extraMessages = <Map<String, dynamic>>[];
     // 汇总各轮联网搜索来源（按 URL 去重），收尾发一次 citation 事件。
@@ -39,17 +63,34 @@ class ToolLoopRunner {
     final seenUrls = <String>{};
 
     for (var round = 0;; round++) {
+      ensureRunning();
       final calls = <StreamEvent>[];
       // 本轮正文缓存：回灌 assistant 消息时带上（模型边说边调用的场景）。
       final textBuf = StringBuffer();
-      await for (final e in chatService.chatStreamEvents(
-        prompt: prompt,
-        history: history,
-        attachments: attachments,
-        // 最后一轮不带 tools：模型只能直接作答，回路必然终止。
-        tools: round < maxRounds ? registry.declarations : null,
-        extraMessages: extraMessages,
-      )) {
+      // 最后一轮不带 tools：模型只能直接作答，回路必然终止。
+      final declarations = round < maxRounds ? registry.declarations : null;
+      final roundHistory =
+          historyForRound?.call(extraMessages, declarations) ?? history;
+      onProgress?.call(const ChatSendProgress('等待回答'));
+      final events = abortTrigger == null && onProgress == null
+          ? chatService.chatStreamEvents(
+              prompt: prompt,
+              history: roundHistory,
+              attachments: attachments,
+              tools: declarations,
+              extraMessages: extraMessages,
+            )
+          : chatService.chatStreamEventsWithOptions(
+              prompt: prompt,
+              history: roundHistory,
+              attachments: attachments,
+              tools: declarations,
+              extraMessages: extraMessages,
+              options: ChatRequestOptions(
+                  abortTrigger: abortTrigger, onProgress: onProgress),
+            );
+      await for (final e in events) {
+        ensureRunning();
         if (e.type == StreamEventType.toolCall) {
           calls.add(e);
         } else if (e.type == StreamEventType.text) {
@@ -57,6 +98,7 @@ class ToolLoopRunner {
         }
         yield e; // toolCall 也原样上抛 -> UI 立即出现 processing 态 ToolBlock
       }
+      ensureRunning();
       if (calls.isEmpty) break; // 模型不再调用工具，正文已输出完毕
       // 硬性保护：已到无 tools 的收尾轮仍收到调用（上游异常），直接终止。
       if (round >= maxRounds) break;
@@ -78,8 +120,11 @@ class ToolLoopRunner {
         ],
       });
       for (final c in calls) {
-        final outcome =
-            await registry.execute(c.toolName ?? '', c.toolArguments ?? const {});
+        ensureRunning();
+        onProgress?.call(ChatSendProgress('执行工具', fileName: c.toolName));
+        final outcome = await registry.execute(
+            c.toolName ?? '', c.toolArguments ?? const {});
+        ensureRunning();
         extraMessages.add({
           'role': 'tool',
           'tool_call_id': c.toolId,

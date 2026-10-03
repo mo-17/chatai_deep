@@ -1,0 +1,282 @@
+import 'dart:convert';
+import 'dart:io';
+
+import 'package:chat_message/models/message_model.dart';
+import 'package:chatgpt_app_core/chat/application/conversation_draft_store.dart';
+import 'package:chatgpt_app_core/chat/application/read_aloud_service.dart';
+import 'package:chatgpt_app_core/dao/ai_settings_dao.dart';
+import 'package:chatgpt_app_core/db/conversation_dao.dart';
+import 'package:chatgpt_app_core/db/hi_db_manager.dart';
+import 'package:chatgpt_app_core/db/message_dao.dart';
+import 'package:chatgpt_app_core/model/ai_settings.dart';
+import 'package:chatgpt_app_core/model/conversation_model.dart';
+import 'package:chatgpt_app_core/pages/conversation_page.dart';
+import 'package:chatgpt_app_core/provider/ai_settings_provider.dart';
+import 'package:chatgpt_app_core/provider/theme_provider.dart';
+import 'package:chatgpt_app_core/widget/message_input_widget.dart';
+import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
+import 'package:flutter_hi_cache/flutter_hi_cache.dart';
+import 'package:flutter_test/flutter_test.dart';
+import 'package:login_sdk/login_sdk.dart';
+import 'package:provider/provider.dart';
+import 'package:shared_preferences/shared_preferences.dart';
+import 'package:sqflite_common_ffi/sqflite_ffi.dart';
+
+void main() {
+  TestWidgetsFlutterBinding.ensureInitialized();
+  late Directory temporary;
+  late HiDBManager storage;
+  late AISettingsProvider settings;
+  late ThemeProvider theme;
+  late DatabaseFactory? previousFactory;
+  const pathChannel = MethodChannel('plugins.flutter.io/path_provider');
+
+  setUpAll(sqfliteFfiInit);
+  setUp(() async {
+    temporary = await Directory.systemTemp.createTemp('chatai_page_draft_');
+    previousFactory = databaseFactoryOrNull;
+    databaseFactory = databaseFactoryFfi;
+    await databaseFactory.setDatabasesPath('${temporary.path}/database');
+    TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+        .setMockMethodCallHandler(pathChannel, (_) async => temporary.path);
+    SharedPreferences.setMockInitialValues({});
+    await HiCache.preInit();
+    await HiCache.getInstance().prefs?.clear();
+    AISettingsDao.resetSecureStateForTest();
+    LoginSdkConfig.install(LoginSdkConfig(
+      baseUrl: 'localhost:3000',
+      headerProvider: () async => const {},
+      syncHeaders: () => const {},
+      routes: LoginRoutes.imooc,
+      responseAdapter: ImoocResponseAdapter(),
+      storage: _GuestStorage(),
+      onLogoutNavigate: () {},
+    ));
+    final ai = AISettings.defaults();
+    await HiCache.getInstance()
+        .setString(AISettingsDao.keyFor('guest'), jsonEncode(ai.toJson()));
+    settings = AISettingsProvider();
+    theme = ThemeProvider();
+    storage = await HiDBManager.instance(dbName: 'guest');
+  });
+
+  tearDown(() async {
+    await HiDBManager.closeAll();
+    settings.dispose();
+    theme.dispose();
+    LoginSdkConfig.reset();
+    AISettingsDao.resetSecureStateForTest();
+    TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+        .setMockMethodCallHandler(pathChannel, null);
+    databaseFactory = previousFactory;
+    await temporary.delete(recursive: true);
+  });
+
+  Future<void> letIoFinish(WidgetTester tester, {int rounds = 12}) async {
+    for (var i = 0; i < rounds; i++) {
+      await tester.runAsync(
+          () => Future<void>.delayed(const Duration(milliseconds: 15)));
+      await tester.pump(const Duration(milliseconds: 30));
+    }
+  }
+
+  Future<T> finishFuture<T>(WidgetTester tester, Future<T> future) async {
+    var finished = false;
+    T? value;
+    Object? failure;
+    future.then((result) {
+      value = result;
+      finished = true;
+    }, onError: (Object error) {
+      failure = error;
+      finished = true;
+    });
+    for (var attempt = 0; attempt < 100 && !finished; attempt++) {
+      await letIoFinish(tester, rounds: 1);
+    }
+    expect(finished, isTrue, reason: '页面 fake clock 与文件 I/O 必须共同推进');
+    if (failure != null) throw failure!;
+    return value as T;
+  }
+
+  Future<void> openPage(WidgetTester tester, ConversationModel model) async {
+    await tester.pumpWidget(MultiProvider(
+      providers: [
+        ChangeNotifierProvider<AISettingsProvider>.value(value: settings),
+        ChangeNotifierProvider<ThemeProvider>.value(value: theme),
+      ],
+      child: MaterialApp(
+        home: ConversationPage(
+          key: ValueKey('conversation_${model.cid}'),
+          conversationModel: model,
+          readAloudService: const NoopReadAloudService(),
+        ),
+      ),
+    ));
+    for (var attempt = 0; attempt < 40; attempt++) {
+      await letIoFinish(tester, rounds: 1);
+      if (tester
+          .widget<MessageInputWidget>(find.byType(MessageInputWidget))
+          .enable) {
+        break;
+      }
+    }
+    expect(tester.takeException(), isNull);
+  }
+
+  ConversationModel conversation(int cid, {String? title}) => ConversationModel(
+        cid: cid,
+        icon: '',
+        title: title,
+        speechInputEnabled: false,
+      );
+
+  ConversationDraftStore draftFor(int cid) => ConversationDraftStore(
+        conversationId: '$cid',
+        accountHash: 'guest',
+        directoryResolver: () async => temporary,
+      );
+
+  testWidgets('旧无 blocks 消息重开恢复草稿，原记录保持一致且初始化后可发送', (tester) async {
+    final model = conversation(101, title: '旧对话');
+    final drafts = ConversationDraftStore(
+        conversationId: '${model.cid}',
+        accountHash: 'guest',
+        directoryResolver: () async => temporary);
+    final before = await tester.runAsync(() async {
+      final conversations = await ConversationListDao.create(storage);
+      await conversations.saveConversation(model);
+      final messages = await MessageDao.create(storage, cid: model.cid);
+      await messages.saveMessageWithBlocks(MessageModel(
+        ownerType: OwnerType.sender,
+        ownerName: '旧用户',
+        avatar: '',
+        content: '旧问题',
+        createdAt: 1000,
+      ));
+      await messages.saveMessageWithBlocks(MessageModel(
+        ownerType: OwnerType.receiver,
+        ownerName: '旧助手',
+        avatar: '',
+        content: '旧回答',
+        createdAt: 2000,
+      ));
+      await drafts.save(text: '还没有发送的草稿');
+      return storage.db.query('tb_messages',
+          where: 'cid = ?', whereArgs: [model.cid], orderBy: 'id');
+    });
+    await openPage(tester, model);
+    final input =
+        tester.widget<MessageInputWidget>(find.byType(MessageInputWidget));
+    expect(input.controller!.text, '还没有发送的草稿');
+    expect(input.enable, isTrue);
+    expect(input.editingEnabled, isTrue);
+    expect(input.canSend!(), isTrue);
+    expect(find.text('查看本轮上下文'), findsOneWidget);
+    expect(find.text('旧问题'), findsWidgets);
+    expect(find.text('旧回答'), findsWidgets);
+    final after = await tester.runAsync(() => storage.db.query('tb_messages',
+        where: 'cid = ?', whereArgs: [model.cid], orderBy: 'id'));
+    expect(after, before);
+    await tester.enterText(find.byType(TextField), '编辑后未发送的草稿');
+    await tester.pump(const Duration(milliseconds: 400));
+    await letIoFinish(tester);
+    expect((await finishFuture(tester, drafts.load()))!.text, '编辑后未发送的草稿');
+    await tester.pumpWidget(const SizedBox.shrink());
+    await finishFuture(tester, drafts.load());
+    expect(
+        (await tester.runAsync(() => storage.db.query('tb_messages',
+            where: 'cid = ?', whereArgs: [model.cid], orderBy: 'id'))),
+        before);
+    await openPage(tester, model);
+    expect(
+        tester
+            .widget<MessageInputWidget>(find.byType(MessageInputWidget))
+            .controller!
+            .text,
+        '编辑后未发送的草稿');
+    await tester.pumpWidget(const SizedBox.shrink());
+    await finishFuture(tester, drafts.load());
+  });
+
+  testWidgets('新会话草稿自动建立列表入口，同时不伪造历史消息', (tester) async {
+    final model = conversation(102);
+    await openPage(tester, model);
+    await tester.enterText(find.byType(TextField), '待发送的新问题');
+    await tester.pump(const Duration(milliseconds: 400));
+    expect((await finishFuture(tester, draftFor(model.cid).load()))!.text,
+        '待发送的新问题');
+    await letIoFinish(tester, rounds: 3);
+    final rows = await tester.runAsync(() => storage.db.query(
+        'tb_conversation_list',
+        where: 'cid = ?',
+        whereArgs: [model.cid]));
+    expect(rows, hasLength(1));
+    expect(rows!.single['title'], '待发送的新问题');
+    expect(rows.single['lastMessage'], '[草稿] 待发送的新问题');
+    expect(rows.single['messageCount'], 0);
+    final count = await tester.runAsync(() async =>
+        (await MessageDao.create(storage, cid: model.cid)).getMessageCount());
+    expect(count, 0);
+    await tester.pumpWidget(const SizedBox.shrink());
+    await finishFuture(tester, draftFor(model.cid).load());
+  });
+
+  testWidgets('新草稿清空后在防抖前立即离开，不保留空草稿索引', (tester) async {
+    final model = conversation(103);
+    await openPage(tester, model);
+    await tester.enterText(find.byType(TextField), '稍后会清空的草稿');
+    await tester.pump(const Duration(milliseconds: 400));
+    expect((await finishFuture(tester, draftFor(model.cid).load()))!.text,
+        '稍后会清空的草稿');
+    await letIoFinish(tester, rounds: 3);
+    final initial = await tester.runAsync(() => storage.db.query(
+        'tb_conversation_list',
+        where: 'cid = ?',
+        whereArgs: [model.cid]));
+    expect(initial, hasLength(1));
+    await tester.enterText(find.byType(TextField), '');
+    // 不推进350ms防抖时间，模拟快速返回列表/离开助手入口。
+    await tester.pumpWidget(const SizedBox.shrink());
+    await letIoFinish(tester);
+    final after = await tester.runAsync(() => storage.db.query(
+        'tb_conversation_list',
+        where: 'cid = ?',
+        whereArgs: [model.cid]));
+    expect(after, isEmpty);
+    expect(model.title, isNull);
+    expect(model.lastMessage, isNull);
+    final drafts = ConversationDraftStore(
+        conversationId: '${model.cid}',
+        accountHash: 'guest',
+        directoryResolver: () async => temporary);
+    expect(await finishFuture(tester, drafts.load()), isNull);
+  });
+}
+
+final class _GuestStorage implements TokenStorage {
+  static const profile = <String, dynamic>{
+    'userName': '游客',
+    'accountHash': 'guest',
+    'guest': true,
+    'boardingPass': 'guest-mode',
+    'avatar': '',
+  };
+  @override
+  Future<void> clear() async {}
+  @override
+  Future<Map<String, dynamic>?> readProfile() async => readProfileSync();
+  @override
+  Map<String, dynamic>? readProfileSync() => Map.of(profile);
+  @override
+  Future<String?> readToken() async => readTokenSync();
+  @override
+  String? readTokenSync() => 'guest-mode';
+  @override
+  Future<void> writeProfile(
+      {required String token,
+      required String userName,
+      String? avatar,
+      Map<String, dynamic> extras = const {}}) async {}
+}

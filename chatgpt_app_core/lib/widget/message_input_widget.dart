@@ -55,6 +55,9 @@ class MessageInputWidget extends StatefulWidget {
   final ValueChanged<String>? onChanged;
   final VoidCallback? onSend;
 
+  /// 默认保留旧调用的立即清空行为；异步发送页面可在持久化成功后自行清空。
+  final bool clearOnSend;
+
   /// 同步发送闸门。返回 false 时不调用 [onSend]，也不清空输入内容。
   final bool Function()? canSend;
   final VoidCallback? onStop;
@@ -81,6 +84,9 @@ class MessageInputWidget extends StatefulWidget {
   final String initialText;
   final TextEditingController? controller;
   final bool enable;
+
+  /// 可单独锁定本轮草稿编辑；默认 true 保留旧调用在等待回答时继续输入的行为。
+  final bool editingEnabled;
   final bool isStreaming;
   final bool speechInputEnabled;
   final String? speechLocale;
@@ -90,6 +96,7 @@ class MessageInputWidget extends StatefulWidget {
     super.key,
     this.onChanged,
     this.onSend,
+    this.clearOnSend = true,
     this.canSend,
     this.onStop,
     this.onImagesPicked,
@@ -108,6 +115,7 @@ class MessageInputWidget extends StatefulWidget {
     this.initialText = '',
     this.controller,
     this.enable = true,
+    this.editingEnabled = true,
     this.isStreaming = false,
     this.speechInputEnabled = true,
     this.speechLocale,
@@ -125,6 +133,7 @@ class _MessageInputWidgetState extends State<MessageInputWidget> {
   stt.SpeechToText? _speech;
   bool _hasSpeech = true; // 默认显示，初始化失败才隐藏
   bool _isListening = false;
+  int _editingRevision = 0;
   String _lastWords = '';
   final _picker = ImagePicker();
 
@@ -145,6 +154,12 @@ class _MessageInputWidgetState extends State<MessageInputWidget> {
   @override
   void didUpdateWidget(covariant MessageInputWidget oldWidget) {
     super.didUpdateWidget(oldWidget);
+    if (oldWidget.editingEnabled != widget.editingEnabled) _editingRevision++;
+    if (oldWidget.editingEnabled && !widget.editingEnabled) {
+      _speech?.cancel();
+      _isListening = false;
+      _focusNode.unfocus();
+    }
     if (identical(oldWidget.controller, widget.controller)) return;
     _controller.removeListener(_onControllerChanged);
     if (_ownsController) _controller.dispose();
@@ -220,11 +235,16 @@ class _MessageInputWidgetState extends State<MessageInputWidget> {
   }
 
   Future<void> _onMicTap() async {
+    if (!widget.editingEnabled) return;
+    final revision = _editingRevision;
     if (!widget.speechInputEnabled) {
       _focusNode.requestFocus();
       return;
     }
     if (_speech == null) await _initSpeech();
+    if (!mounted || !widget.editingEnabled || revision != _editingRevision) {
+      return;
+    }
 
     // 不支持语音识别时，聚焦输入框唤起系统键盘（键盘自带语音按钮）
     if (!_hasSpeech || _speech == null) {
@@ -245,11 +265,18 @@ class _MessageInputWidgetState extends State<MessageInputWidget> {
     _lastWords = _controller.text;
     try {
       final locales = await _speech!.locales();
+      if (!mounted || !widget.editingEnabled || revision != _editingRevision) {
+        return;
+      }
       final localeId =
           pickSpeechLocaleId(locales, preferredLocale: widget.speechLocale);
       await _speech!.listen(
         onResult: (result) {
-          if (!mounted) return;
+          if (!mounted ||
+              !widget.editingEnabled ||
+              revision != _editingRevision) {
+            return;
+          }
           final text = '$_lastWords${result.recognizedWords}';
           _controller.text = text;
           _controller.selection = TextSelection.fromPosition(
@@ -259,6 +286,10 @@ class _MessageInputWidgetState extends State<MessageInputWidget> {
         },
         localeId: localeId,
       );
+      if (!mounted || !widget.editingEnabled || revision != _editingRevision) {
+        await _speech?.cancel();
+        return;
+      }
       _isListening = true;
       if (mounted) setState(() {});
     } catch (_) {
@@ -268,6 +299,7 @@ class _MessageInputWidgetState extends State<MessageInputWidget> {
   }
 
   Future<void> _onPhotoTap() async {
+    if (!widget.editingEnabled) return;
     if (!widget.imagesEnabled) {
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(content: Text(widget.imagesDisabledReason)),
@@ -302,6 +334,8 @@ class _MessageInputWidgetState extends State<MessageInputWidget> {
   }
 
   Future<void> _pickImage(ImageSource source) async {
+    if (!widget.editingEnabled) return;
+    final revision = _editingRevision;
     if (widget.pendingImages.length >= 4) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
@@ -317,7 +351,10 @@ class _MessageInputWidgetState extends State<MessageInputWidget> {
         maxWidth: 2048,
         maxHeight: 2048,
       );
-      if (picked != null && mounted) {
+      if (picked != null &&
+          mounted &&
+          widget.editingEnabled &&
+          revision == _editingRevision) {
         widget.onImagesPicked?.call([...widget.pendingImages, picked.path]);
       }
     } catch (e) {
@@ -339,10 +376,15 @@ class _MessageInputWidgetState extends State<MessageInputWidget> {
 
   bool get _hasPendingFiles => widget.pendingFiles.isNotEmpty;
 
+  bool get _showSendButton =>
+      _showSend || _hasPendingImages || _hasPendingFiles || widget.isStreaming;
+
   /// 最多可同时携带的文件数（与下游 FileProcessor 处理多文件同口径）。
   static const int _maxFiles = 10;
 
   Future<void> _onFileTap() async {
+    if (!widget.editingEnabled) return;
+    final revision = _editingRevision;
     final remaining = _maxFiles - widget.pendingFiles.length;
     if (remaining <= 0) {
       ScaffoldMessenger.of(context).showSnackBar(
@@ -358,7 +400,12 @@ class _MessageInputWidgetState extends State<MessageInputWidget> {
         allowMultiple: true,
         withData: false,
       );
-      if (result == null || !mounted) return;
+      if (result == null ||
+          !mounted ||
+          !widget.editingEnabled ||
+          revision != _editingRevision) {
+        return;
+      }
       // 去重：跳过已在待发送列表里的、以及本批内重复的路径。
       final seen = widget.pendingFiles.toSet();
       final picked = <String>[];
@@ -395,7 +442,7 @@ class _MessageInputWidgetState extends State<MessageInputWidget> {
   }
 
   get _fileBtn => GestureDetector(
-        onTap: _onFileTap,
+        onTap: widget.editingEnabled ? _onFileTap : null,
         child: Container(
           margin: const EdgeInsets.only(right: 6),
           child: const Icon(
@@ -407,7 +454,7 @@ class _MessageInputWidgetState extends State<MessageInputWidget> {
       );
 
   get _photoBtn => GestureDetector(
-        onTap: _onPhotoTap,
+        onTap: widget.editingEnabled ? _onPhotoTap : null,
         child: Container(
           margin: const EdgeInsets.only(right: 6),
           child: Icon(
@@ -420,7 +467,7 @@ class _MessageInputWidgetState extends State<MessageInputWidget> {
 
   /// 联网搜索开关：开启时用主题色高亮。
   Widget _webSearchBtn(Color themeColor) => GestureDetector(
-        onTap: widget.onToggleWebSearch,
+        onTap: widget.editingEnabled ? widget.onToggleWebSearch : null,
         child: Container(
           margin: const EdgeInsets.only(right: 6),
           child: Icon(
@@ -432,7 +479,7 @@ class _MessageInputWidgetState extends State<MessageInputWidget> {
       );
 
   get _micBtn => GestureDetector(
-        onTap: _onMicTap,
+        onTap: widget.editingEnabled ? _onMicTap : null,
         child: Container(
           margin: const EdgeInsets.only(right: 6),
           child: Icon(
@@ -502,7 +549,7 @@ class _MessageInputWidgetState extends State<MessageInputWidget> {
           ),
           onPressed: widget.isStreaming
               ? widget.onStop
-              : (widget.enable ? _onSend : null),
+              : (widget.enable && widget.editingEnabled ? _onSend : null),
           icon: Icon(
             widget.isStreaming ? Icons.stop_rounded : Icons.send_rounded,
             size: 21,
@@ -522,7 +569,7 @@ class _MessageInputWidgetState extends State<MessageInputWidget> {
           color: widget.isStreaming ? Colors.red : color,
           onPressed: widget.isStreaming
               ? widget.onStop
-              : (widget.enable ? _onSend : null),
+              : (widget.enable && widget.editingEnabled ? _onSend : null),
           child: Icon(
             widget.isStreaming ? Icons.stop : Icons.send,
             color: Colors.white,
@@ -567,7 +614,9 @@ class _MessageInputWidgetState extends State<MessageInputWidget> {
                           dimension: 44,
                           child: IconButton(
                             tooltip: '移除图片',
-                            onPressed: () => widget.onRemoveImage?.call(i),
+                            onPressed: widget.editingEnabled
+                                ? () => widget.onRemoveImage?.call(i)
+                                : null,
                             padding: EdgeInsets.zero,
                             icon: Container(
                               width: 22,
@@ -603,7 +652,9 @@ class _MessageInputWidgetState extends State<MessageInputWidget> {
                       top: -4,
                       right: -4,
                       child: GestureDetector(
-                        onTap: () => widget.onRemoveImage?.call(i),
+                        onTap: widget.editingEnabled
+                            ? () => widget.onRemoveImage?.call(i)
+                            : null,
                         child: Container(
                           decoration: const BoxDecoration(
                             color: Colors.black54,
@@ -665,7 +716,9 @@ class _MessageInputWidgetState extends State<MessageInputWidget> {
                   dimension: 44,
                   child: IconButton(
                     tooltip: '移除文件',
-                    onPressed: () => widget.onRemoveFile?.call(i),
+                    onPressed: widget.editingEnabled
+                        ? () => widget.onRemoveFile?.call(i)
+                        : null,
                     padding: EdgeInsets.zero,
                     icon: Icon(
                       Icons.close,
@@ -676,7 +729,9 @@ class _MessageInputWidgetState extends State<MessageInputWidget> {
                 )
               else
                 GestureDetector(
-                  onTap: () => widget.onRemoveFile?.call(i),
+                  onTap: widget.editingEnabled
+                      ? () => widget.onRemoveFile?.call(i)
+                      : null,
                   child: const Icon(
                     Icons.close,
                     size: 14,
@@ -716,7 +771,7 @@ class _MessageInputWidgetState extends State<MessageInputWidget> {
         alignment: Alignment.centerLeft,
         child: InkWell(
           borderRadius: BorderRadius.circular(14),
-          onTap: widget.onModelTap,
+          onTap: widget.editingEnabled ? widget.onModelTap : null,
           child: Container(
             constraints: BoxConstraints(minHeight: isAnime ? 44 : 0),
             padding: EdgeInsets.symmetric(
@@ -763,6 +818,7 @@ class _MessageInputWidgetState extends State<MessageInputWidget> {
 
   get _input => Expanded(
         child: TextField(
+          readOnly: !widget.editingEnabled,
           focusNode: _focusNode,
           onChanged: _onChanged,
           controller: _controller,
@@ -793,7 +849,7 @@ class _MessageInputWidgetState extends State<MessageInputWidget> {
           _animeToolButton(
             icon: Icons.travel_explore_rounded,
             tooltip: widget.webSearchEnabled ? '关闭联网搜索' : '开启联网搜索',
-            onPressed: widget.onToggleWebSearch,
+            onPressed: widget.editingEnabled ? widget.onToggleWebSearch : null,
             active: widget.webSearchEnabled,
           ),
         if (_showPhotoBtn)
@@ -801,20 +857,20 @@ class _MessageInputWidgetState extends State<MessageInputWidget> {
             icon: Icons.add_photo_alternate_rounded,
             tooltip:
                 widget.imagesEnabled ? '添加图片' : widget.imagesDisabledReason,
-            onPressed: _onPhotoTap,
+            onPressed: widget.editingEnabled ? _onPhotoTap : null,
             muted: !widget.imagesEnabled,
           ),
         if (_showFileBtn)
           _animeToolButton(
             icon: Icons.attach_file_rounded,
             tooltip: '添加文件',
-            onPressed: _onFileTap,
+            onPressed: widget.editingEnabled ? _onFileTap : null,
           ),
         if (widget.speechInputEnabled)
           _animeToolButton(
             icon: _isListening ? Icons.mic_rounded : Icons.mic_none_rounded,
             tooltip: _isListening ? '停止语音输入' : '语音输入',
-            onPressed: _onMicTap,
+            onPressed: widget.editingEnabled ? _onMicTap : null,
             active: _isListening,
             danger: _isListening,
           ),
@@ -834,7 +890,7 @@ class _MessageInputWidgetState extends State<MessageInputWidget> {
         final inputRow = Row(
           children: [
             _animeInput,
-            if (_showSend || widget.isStreaming) _animeSendButton(color),
+            if (_showSendButton) _animeSendButton(color),
           ],
         );
         if (constraints.maxWidth < 420 && tools.isNotEmpty) {
@@ -858,7 +914,7 @@ class _MessageInputWidgetState extends State<MessageInputWidget> {
             ..._withToolSpacing(tools),
             if (tools.isNotEmpty) const SizedBox(width: 6),
             _animeInput,
-            if (_showSend || widget.isStreaming) _animeSendButton(color),
+            if (_showSendButton) _animeSendButton(color),
           ],
         );
       },
@@ -867,6 +923,7 @@ class _MessageInputWidgetState extends State<MessageInputWidget> {
 
   Widget get _animeInput => Expanded(
         child: TextField(
+          readOnly: !widget.editingEnabled,
           key: const ValueKey('anime_message_input'),
           focusNode: _focusNode,
           onChanged: _onChanged,
@@ -936,7 +993,7 @@ class _MessageInputWidgetState extends State<MessageInputWidget> {
                   if (_showFileBtn) _fileBtn,
                   if (widget.speechInputEnabled) _micBtn,
                   _input,
-                  if (_showSend || widget.isStreaming) _sendBtn(color),
+                  if (_showSendButton) _sendBtn(color),
                 ],
               ),
             ),
@@ -953,15 +1010,17 @@ class _MessageInputWidgetState extends State<MessageInputWidget> {
 
   void _onSend() {
     // 流式进行中或被禁用时（如回车键触发），忽略发送，避免并发请求。
-    if (widget.isStreaming || !widget.enable) return;
+    if (widget.isStreaming || !widget.enable || !widget.editingEnabled) return;
     if (widget.canSend?.call() == false) return;
     if (widget.onSend != null) {
       widget.onSend!();
-      _controller.clear();
-      _lastWords = '';
-      setState(() {
-        _showSend = false;
-      });
+      if (widget.clearOnSend) {
+        _controller.clear();
+        _lastWords = '';
+        setState(() {
+          _showSend = false;
+        });
+      }
     }
   }
 }

@@ -3,6 +3,12 @@ import { resolveReasoningControl } from './reasoning-control';
 describe('resolveReasoningControl', () => {
   it.each([
     ['deepseek', 'deepseek-v4-flash', { thinking: { type: 'disabled' } }],
+    ['deepseek', 'deepseek-flash', { thinking: { type: 'disabled' } }],
+    [
+      'deepseek',
+      'deepseek-v4-flash-vision-exp',
+      { thinking: { type: 'disabled' } },
+    ],
     ['dashscope', 'qwen3.5-plus', { enable_thinking: false }],
     ['openai', 'gpt-5.2', { reasoning_effort: 'none' }],
     ['gemini', 'gemini-2.5-pro', {}],
@@ -24,6 +30,9 @@ describe('resolveReasoningControl', () => {
   it.each([
     ['deepseek', 'deepseek-v4-pro', true],
     ['deepseek', 'deepseek-v4-flash', true],
+    ['deepseek', 'deepseek-flash', true],
+    ['deepseek', 'deepseek-v4-flash-vision-exp', true],
+    ['deepseek', 'deepseek-flash-custom', false],
     ['deepseek', 'deepseek-reasoner', false],
     ['deepseek', 'DeepSeek-V4-Pro', false],
     ['dashscope', 'qwen3', true],
@@ -52,6 +61,8 @@ describe('resolveReasoningControl', () => {
 
   it.each([
     ['deepseek', 'deepseek-v4-flash'],
+    ['deepseek', 'deepseek-flash'],
+    ['deepseek', 'deepseek-v4-flash-vision-exp'],
     ['dashscope', 'qwen3.5-plus'],
     ['openai', 'gpt-5.2'],
     ['custom_1', 'gpt-5.2'],

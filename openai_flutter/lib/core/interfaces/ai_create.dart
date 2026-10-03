@@ -11,6 +11,7 @@ abstract class AICreateInterface {
       int? n,
       String? stop,
       String? user,
+      Map<String, dynamic> extraBody = const {},
       Duration timeout = const Duration(seconds: 15)});
 
   Stream<AIStreamChunk> createChatStreamEvents({

@@ -74,6 +74,8 @@ class ProviderPresets {
               _m('deepseek-chat', 'DeepSeek V3', group: 'DeepSeek', tool: true),
               _m('deepseek-reasoner', 'DeepSeek R1',
                   group: 'DeepSeek', reasoning: true),
+              _m('deepseek-flash', 'DeepSeek Flash（支持图片）',
+                  group: 'DeepSeek', vision: true, reasoning: true, tool: true),
             ]),
         _p('siliconflow', '硅基流动', 'https://api.siliconflow.cn', models: [
           _m('deepseek-ai/DeepSeek-V3', 'DeepSeek V3', group: 'DeepSeek', tool: true),

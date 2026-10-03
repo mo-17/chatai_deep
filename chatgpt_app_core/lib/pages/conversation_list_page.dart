@@ -529,15 +529,19 @@ class _ConversationListPageState extends State<ConversationListPage>
       await _repairConversationSummary(model, messageDao);
     }
     if (!_isUsableConversationText(model.title)) return;
-    //fix 置顶消息从对话框返回重复添加的问题
-    if (model.stickTime > 0) {
-      if (!stickConversationList.contains(model)) {
-        stickConversationList.add(model);
-      }
+    // 草稿自动保存可能先触发列表重载；返回页拿到的是同 cid 的另一实例。
+    // 按持久化会话标识合并，避免对象身份比较在两种刷新路径间产生重复项。
+    final target =
+        model.stickTime > 0 ? stickConversationList : conversationList;
+    final other =
+        model.stickTime > 0 ? conversationList : stickConversationList;
+    final previousIndex = target.indexWhere((item) => item.cid == model.cid);
+    target.removeWhere((item) => item.cid == model.cid);
+    other.removeWhere((item) => item.cid == model.cid);
+    if (previousIndex < 0) {
+      target.add(model);
     } else {
-      if (!conversationList.contains(model)) {
-        conversationList.add(model);
-      }
+      target.insert(previousIndex.clamp(0, target.length), model);
     }
     //触发刷新
     setState(() {

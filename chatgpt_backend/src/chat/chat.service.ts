@@ -425,6 +425,26 @@ function requestReasoningControl(
   provider: AiProvider,
   body: CompletionBody,
 ): Record<string, unknown> {
+  // Flash 默认开启思考；当前客户端工具历史未回传 reasoning_content，
+  // 工具回路（含最后一轮不带 tools 的收尾）必须关闭思考，避免上游 400。
+  const flashModels = [
+    'deepseek-flash',
+    'deepseek-v4-flash',
+    'deepseek-v4-flash-vision-exp',
+  ];
+  const hasToolHistory = body.messages.some(
+    (message) =>
+      message.role === 'assistant' &&
+      Array.isArray(message.tool_calls) &&
+      message.tool_calls.length > 0,
+  );
+  if (
+    provider.code === 'deepseek' &&
+    flashModels.includes(body.model.trim().toLowerCase()) &&
+    ((body.tools?.length ?? 0) > 0 || hasToolHistory)
+  ) {
+    return { thinking: { type: 'disabled' } };
+  }
   const policy: ReasoningPolicy =
     body.reasoning_policy === 'off_if_supported'
       ? 'off_if_supported'

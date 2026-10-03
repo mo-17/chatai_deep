@@ -23,6 +23,15 @@ class AICompletion implements AICreateInterface {
 
   AICompletion(this.config);
 
+  static void _validateExtraBody(Map<String, dynamic> extraBody) {
+    for (final key in extraBody.keys) {
+      if (_reservedExtraBodyKeys.contains(key)) {
+        throw ArgumentError.value(
+            key, 'extraBody', 'Cannot override canonical request field');
+      }
+    }
+  }
+
   @override
   Future<AIResponse> createChat({
     String model = 'gpt-3.5-turbo',
@@ -34,8 +43,10 @@ class AICompletion implements AICreateInterface {
     String? stop,
     String? user,
     List<Map<String, dynamic>>? messages,
+    Map<String, dynamic> extraBody = const {},
     Duration timeout = const Duration(seconds: 15),
   }) async {
+    _validateExtraBody(extraBody);
     final body = <String, dynamic>{
       "model": model,
       if (maxTokens != null) "max_tokens": maxTokens,
@@ -54,6 +65,7 @@ class AICompletion implements AICreateInterface {
       ];
     }
 
+    body.addAll(extraBody);
     return await AIHttp.post(
       config: config,
       url: config.chatUrl,
@@ -76,7 +88,9 @@ class AICompletion implements AICreateInterface {
     String? stop,
     String? user,
     List<Map<String, dynamic>>? messages,
+    Map<String, dynamic> extraBody = const {},
   }) async* {
+    _validateExtraBody(extraBody);
     final body = <String, dynamic>{
       "model": model,
       "stream": true,
@@ -97,6 +111,7 @@ class AICompletion implements AICreateInterface {
       ];
     }
 
+    body.addAll(extraBody);
     yield* AIHttp.postStream(
       config: config,
       url: config.chatUrl,
@@ -123,15 +138,7 @@ class AICompletion implements AICreateInterface {
     Future<void>? abortTrigger,
     Duration connectTimeout = const Duration(seconds: 20),
   }) async* {
-    for (final key in extraBody.keys) {
-      if (_reservedExtraBodyKeys.contains(key)) {
-        throw ArgumentError.value(
-          key,
-          'extraBody',
-          'Cannot override canonical request field',
-        );
-      }
-    }
+    _validateExtraBody(extraBody);
 
     final body = <String, dynamic>{
       "model": model,

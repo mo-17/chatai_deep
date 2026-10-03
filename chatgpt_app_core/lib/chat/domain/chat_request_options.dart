@@ -1,3 +1,5 @@
+import 'package:chatgpt_app_core/chat/domain/chat_send_progress.dart';
+
 /// 请求用途。普通聊天与翻译可以在同一网络层使用不同的可靠性策略。
 enum ChatRequestProfile { standard, translation }
 
@@ -24,6 +26,7 @@ final class ChatRequestOptions {
   final int? minOutputTokens;
   final bool suppressReasoningControl;
   final int? maxOutputTokensOverride;
+  final ChatSendProgressCallback? onProgress;
 
   const ChatRequestOptions({
     this.profile = ChatRequestProfile.standard,
@@ -33,6 +36,7 @@ final class ChatRequestOptions {
     this.minOutputTokens,
     this.suppressReasoningControl = false,
     this.maxOutputTokensOverride,
+    this.onProgress,
   }) : assert(
           maxOutputTokensOverride == null || maxOutputTokensOverride > 0,
         );
