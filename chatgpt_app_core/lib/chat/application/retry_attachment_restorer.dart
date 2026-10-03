@@ -1,6 +1,7 @@
 import 'dart:async';
 
 import 'package:chatgpt_app_core/chat/application/file_processor.dart';
+import 'package:chatgpt_app_core/chat/domain/attachment_processing_limits.dart';
 import 'package:chatgpt_app_core/chat/domain/chat_attachments.dart';
 import 'package:chatgpt_app_core/chat/domain/chat_send_progress.dart';
 import 'package:chatgpt_app_core/chat/domain/message_block.dart';
@@ -35,6 +36,7 @@ final class RetryAttachmentRestorer {
     required ChatAttachments persisted,
     required List<FileMetadata> files,
     required ModelCapabilities capabilities,
+    AttachmentProcessingLimits limits = const AttachmentProcessingLimits(),
     ChatSendProgressCallback? onProgress,
     Future<void>? abortTrigger,
     bool Function()? isCancelled,
@@ -95,6 +97,7 @@ final class RetryAttachmentRestorer {
       }
       final restored = await FileProcessor.processPdfBytes(bytes, capabilities,
           filename: file.name,
+          limits: limits,
           onProgress: (progress) => reportChatSendProgress(
               onProgress,
               ChatSendProgress(progress.label,

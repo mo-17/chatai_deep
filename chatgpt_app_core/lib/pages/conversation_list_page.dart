@@ -575,7 +575,8 @@ class _ConversationListPageState extends State<ConversationListPage>
 
   _onDelete(ConversationModel model) async {
     await AvatarAssetService.deleteConversationAvatar(model.avatarValue);
-    conversationListDao.deleteConversation(model);
+    await conversationListDao.deleteConversation(model);
+    if (!mounted) return;
     conversationList.remove(model);
     //fix 置顶消息无法删除问题
     stickConversationList.remove(model);

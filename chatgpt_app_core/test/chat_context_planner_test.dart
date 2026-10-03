@@ -3,6 +3,7 @@ import 'dart:convert';
 
 import 'package:chat_message/models/message_model.dart';
 import 'package:chatgpt_app_core/chat/application/chat_context_planner.dart';
+import 'package:chatgpt_app_core/chat/application/semantic_chat_summary_service.dart';
 import 'package:chatgpt_app_core/chat/application/tool_registry.dart';
 import 'package:chatgpt_app_core/chat/domain/chat_attachments.dart';
 import 'package:chatgpt_app_core/chat/domain/chat_request_options.dart';
@@ -12,7 +13,9 @@ import 'package:chatgpt_app_core/chat/domain/model_capabilities.dart';
 import 'package:chatgpt_app_core/chat/domain/stream_event.dart';
 import 'package:chatgpt_app_core/dao/chat/chat_service.dart';
 import 'package:chatgpt_app_core/dao/completion_dao.dart';
+import 'package:chatgpt_app_core/db/semantic_chat_summary_dao.dart';
 import 'package:chatgpt_app_core/model/ai_settings.dart';
+import 'package:chatgpt_app_core/model/semantic_chat_summary.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 const smallPolicy = ChatContextPolicy(
@@ -220,13 +223,64 @@ void main() {
       );
       final plan = dao.previewContext(prompt: '继续');
       expect(plan.canSend, isTrue);
-      expect(plan.inputBudgetTokens, 32768 - 4096 - 1024);
+      expect(plan.inputBudgetTokens, 262144);
       expect(plan.reservedOutputTokens, 65536);
       expect(plan.contextWindowTokens,
           plan.inputBudgetTokens + plan.reservedOutputTokens + 1024);
       expect(plan.warnings.join(), contains('输出预留另计'));
       await dao.createCompletionsWithSearch(prompt: '继续');
       expect(service.histories.last, plan.history);
+    });
+
+    test('提高默认预算后完整携带超过旧预算的历史，不改原始记录', () async {
+      final original = [
+        message('旧文件内容 ${'甲' * 45000}', 1),
+        message('已记录旧文件', 2, user: false),
+      ];
+      final before = jsonEncode(CompletionDao.buildHistory(original, {}));
+      final service = _CaptureService();
+      final dao = CompletionDao(
+        settings: AISettings.defaults(),
+        chatService: service,
+        messages: original,
+        manageContext: true,
+      );
+      final plan = dao.previewContext(prompt: '继续分析旧文件');
+      expect(plan.canSend, isTrue);
+      expect(plan.estimatedInputTokens, greaterThan(27648));
+      expect(plan.estimatedInputTokens, lessThan(262144));
+      expect(plan.omittedHistoryMessages, 0);
+      expect(plan.summary, isEmpty);
+      await dao.createCompletionsWithSearch(prompt: '继续分析旧文件');
+      expect(service.histories.last, plan.history);
+      expect(jsonEncode(CompletionDao.buildHistory(dao.currentMessages, {})),
+          before);
+    });
+
+    test('显式应用输入预算独立于输出预留，默认和已知容量策略保持原行为', () {
+      for (final output in [1024, 65536]) {
+        final configured = planner.plan(
+          history: const [],
+          systemPrompt: 'system',
+          prompt: 'next',
+          policy: const ChatContextPolicy(inputBudgetTokens: 8192),
+          maxOutputTokens: output,
+        );
+        expect(configured.inputBudgetTokens, 8192);
+        expect(configured.reservedOutputTokens, output);
+        expect(configured.contextWindowTokens, 8192 + output + 1024);
+        expect(configured.canSend, isTrue);
+      }
+      final unchanged = planner
+          .plan(history: const [], systemPrompt: 'system', prompt: 'next');
+      expect(unchanged.inputBudgetTokens, 27648);
+      final knownWindow = planner.plan(
+          history: const [],
+          systemPrompt: 'system',
+          prompt: 'next',
+          policy: smallPolicy,
+          maxOutputTokens: 300);
+      expect(knownWindow.inputBudgetTokens, 1600 - 300 - 50);
     });
 
     test('空字段、assistant 开头的旧记录与旧 file_id 不崩溃', () {
@@ -247,6 +301,169 @@ void main() {
   });
 
   group('CompletionDao 全请求入口一致性', () {
+    test('设置输入预算控制预览与所有正式入口，输出长度不偷改阈值', () async {
+      final settings = AISettings.defaults()
+        ..contextInputBudgetTokens = 1024
+        ..maxOutputTokens = 65536;
+      final service = _CaptureService();
+      final messages = longMessages();
+      final dao = CompletionDao(
+          settings: settings,
+          chatService: service,
+          messages: messages,
+          manageContext: true);
+      final plan = dao.previewContext(prompt: 'next');
+      expect(plan.inputBudgetTokens, 1024);
+      expect(plan.reservedOutputTokens, 65536);
+      expect(plan.omittedHistoryTurns, greaterThan(0));
+      expect(plan.estimatedInputTokens, lessThanOrEqualTo(1024));
+      final observed = <ChatContextPlan>[];
+      await dao.createCompletions(prompt: 'next');
+      await dao.createCompletionsWithSearch(
+          prompt: 'next', onContextPlan: observed.add);
+      await dao.streamCompletions(prompt: 'next').toList();
+      await dao
+          .streamCompletionEvents(prompt: 'next', onContextPlan: observed.add)
+          .toList();
+      expect(service.histories, hasLength(4));
+      for (final request in service.histories) {
+        expect(request, plan.history);
+      }
+      expect(
+          observed.every((value) => value.inputBudgetTokens == 1024), isTrue);
+      expect(dao.currentMessages, messages);
+    });
+
+    test('增大设置预算可保留原来被裁剪的旧轮次，显式 policy 仍优先', () async {
+      final settings = AISettings.defaults()..contextInputBudgetTokens = 65536;
+      final messages = longMessages();
+      final service = _CaptureService();
+      final dao = CompletionDao(
+          settings: settings,
+          chatService: service,
+          messages: messages,
+          manageContext: true);
+      final plan = dao.previewContext(prompt: 'next');
+      expect(plan.inputBudgetTokens, 65536);
+      expect(plan.omittedHistoryMessages, 0);
+      expect(plan.history.skip(1), CompletionDao.buildHistory(messages, {}));
+      await dao.createCompletionsWithSearch(prompt: 'next');
+      expect(service.histories.single, plan.history);
+      final explicit = CompletionDao(
+          settings: settings,
+          chatService: service,
+          messages: messages,
+          manageContext: true,
+          contextPolicy: smallPolicy);
+      final explicitPlan = explicit.previewContext(prompt: 'next');
+      expect(explicitPlan.inputBudgetTokens, 1600 - 200 - 50);
+      expect(explicitPlan.shortened, isTrue);
+      await explicit.createCompletions(prompt: 'next');
+      expect(service.histories.last, explicitPlan.history);
+    });
+
+    test('设置预算同样限制工具回灌，增加预算后完整工具对可继续请求', () async {
+      final registry = ToolRegistry([
+        ChatTool(
+            name: 'large_tool',
+            description: 'returns data',
+            parameters: const {},
+            execute: (_) async => ToolOutcome(content: '验收数据' * 400)),
+      ]);
+      for (final budget in [1024, 4096]) {
+        final service = _CaptureService(toolOnFirst: true);
+        final dao = CompletionDao(
+            settings: AISettings.defaults()..contextInputBudgetTokens = budget,
+            chatService: service,
+            manageContext: true);
+        final plans = <ChatContextPlan>[];
+        final request = dao
+            .streamCompletionEvents(
+                prompt: 'next', tools: registry, onContextPlan: plans.add)
+            .toList();
+        if (budget == 1024) {
+          await expectLater(
+              request, throwsA(isA<ChatContextBudgetException>()));
+          expect(service.histories, hasLength(1));
+          expect(plans.last.canSend, isFalse);
+        } else {
+          final events = await request;
+          expect(events.last.delta, 'answer');
+          expect(service.histories, hasLength(2));
+          expect(service.extraMessageLists.last.map((m) => m['role']),
+              ['assistant', 'tool']);
+          expect(service.extraMessageLists.last.last['content'], '验收数据' * 400);
+          expect(plans.every((plan) => plan.canSend), isTrue);
+        }
+        expect(plans.every((plan) => plan.inputBudgetTokens == budget), isTrue);
+      }
+    });
+
+    test('关闭上下文管理时不按新设置裁剪或调用语义摘要', () async {
+      var summaryCalls = 0;
+      final summaryService = SemanticChatSummaryService(
+        store: _MemorySummaryStore(),
+        summarizer: (_) async {
+          summaryCalls++;
+          return '{"facts":["test"]}';
+        },
+      );
+      final service = _CaptureService();
+      final messages = longMessages();
+      final dao = CompletionDao(
+          settings: AISettings.defaults()..contextInputBudgetTokens = 1024,
+          chatService: service,
+          messages: messages,
+          conversationId: 10,
+          semanticSummaryService: summaryService);
+      await dao.createCompletions(prompt: '提问' * 1000);
+      await dao.streamCompletionEvents(prompt: 'next').toList();
+      expect(summaryCalls, 0);
+      for (final request in service.histories) {
+        expect(request.skip(1), CompletionDao.buildHistory(messages, {}));
+      }
+    });
+
+    test('设置预算决定语义摘要源区间，重建旧对话后按新预算失效重算', () async {
+      var summaryCalls = 0;
+      final store = _MemorySummaryStore();
+      final summaryService = SemanticChatSummaryService(
+        store: store,
+        summarizer: (_) async {
+          summaryCalls++;
+          return '{"goal":["验收旧对话"],"facts":["原始记录保留"],'
+              '"constraints":[],"completed":[],"pending":["继续"]}';
+        },
+      );
+      final messages = longMessages();
+      final service = _CaptureService();
+      final observed = <ChatContextPlan>[];
+      for (final budget in [2560, 4500]) {
+        final dao = CompletionDao(
+            settings: AISettings.defaults()..contextInputBudgetTokens = budget,
+            chatService: service,
+            messages: messages,
+            conversationId: 10,
+            semanticSummaryService: summaryService,
+            manageContext: true);
+        final baseline = dao.previewContext(prompt: 'next');
+        await dao
+            .streamCompletionEvents(prompt: 'next', onContextPlan: observed.add)
+            .toList();
+        final plan = observed.last;
+        expect(plan.inputBudgetTokens, budget);
+        expect(plan.usesSemanticSummary, isTrue);
+        expect(plan.estimatedInputTokens, lessThanOrEqualTo(budget));
+        expect(
+            store.latest!.sourceMessageCount, baseline.omittedHistoryMessages);
+        expect(service.histories.last, plan.history);
+        expect(dao.currentMessages, messages);
+      }
+      expect(summaryCalls, 2);
+      expect(observed.last.omittedHistoryMessages,
+          lessThan(observed.first.omittedHistoryMessages));
+    });
+
     test('默认调用方保留完整旧历史，开启管理后请求与预览一致', () async {
       final messages = longMessages();
       final service = _CaptureService();
@@ -372,6 +589,7 @@ void main() {
 class _CaptureService extends Fake implements ChatService {
   final bool toolOnFirst;
   final histories = <List<Map<String, dynamic>>>[];
+  final extraMessageLists = <List<Map<String, dynamic>>>[];
   Completer<String?>? pendingReply;
   _CaptureService({this.toolOnFirst = false});
 
@@ -399,6 +617,15 @@ class _CaptureService extends Fake implements ChatService {
               prompt: prompt, history: history, attachments: attachments));
 
   @override
+  Stream<String> chatStream(
+      {required String prompt,
+      required List<Map<String, dynamic>> history,
+      ChatAttachments? attachments}) async* {
+    histories.add(List.of(history));
+    yield 'answer';
+  }
+
+  @override
   Stream<StreamEvent> chatStreamEvents(
       {required String prompt,
       required List<Map<String, dynamic>> history,
@@ -406,11 +633,30 @@ class _CaptureService extends Fake implements ChatService {
       List<Map<String, dynamic>>? tools,
       List<Map<String, dynamic>> extraMessages = const []}) async* {
     histories.add(List.of(history));
+    extraMessageLists.add(List.of(extraMessages));
     if (toolOnFirst && histories.length == 1) {
       yield StreamEvent.toolCall(
           toolId: 'call', name: 'large_tool', arguments: const {});
     } else {
       yield StreamEvent.text('answer');
     }
+  }
+}
+
+class _MemorySummaryStore implements SemanticChatSummaryStore {
+  SemanticChatSummary? latest;
+
+  @override
+  Future<SemanticChatSummary?> get(int cid, String sourceFingerprint) async =>
+      latest?.cid == cid && latest?.sourceFingerprint == sourceFingerprint
+          ? latest
+          : null;
+
+  @override
+  Future<void> save(SemanticChatSummary summary) async => latest = summary;
+
+  @override
+  Future<void> deleteForConversation(int cid) async {
+    if (latest?.cid == cid) latest = null;
   }
 }

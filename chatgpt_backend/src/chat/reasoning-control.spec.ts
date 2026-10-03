@@ -1,6 +1,70 @@
-import { resolveReasoningControl } from './reasoning-control';
+import {
+  resolveReasoningControl,
+  type ReasoningEffort,
+} from './reasoning-control';
 
 describe('resolveReasoningControl', () => {
+  it.each(['low', 'high', 'max'] as const)(
+    'enables selected DeepSeek effort %s only for supported dual-mode models',
+    (effort) => {
+      for (const modelId of [
+        'deepseek-v4-pro',
+        'deepseek-v4-flash',
+        'deepseek-flash',
+        'deepseek-v4-flash-vision-exp',
+      ]) {
+        expect(
+          resolveReasoningControl({
+            providerCode: 'deepseek',
+            modelId,
+            policy: 'provider_default',
+            effort,
+          }),
+        ).toEqual({ thinking: { type: 'enabled' }, reasoning_effort: effort });
+      }
+    },
+  );
+
+  it('prioritizes disabling thinking over an effort selection', () => {
+    expect(
+      resolveReasoningControl({
+        providerCode: 'deepseek',
+        modelId: 'deepseek-flash',
+        policy: 'off_if_supported',
+        effort: 'max',
+      }),
+    ).toEqual({ thinking: { type: 'disabled' } });
+  });
+
+  it.each([
+    ['deepseek', 'deepseek-reasoner'],
+    ['deepseek', 'deepseek-flash-custom'],
+    ['custom', 'deepseek-flash'],
+    ['openrouter', 'deepseek-v4-pro'],
+    ['openai', 'gpt-5.2'],
+    ['dashscope', 'qwen3.5-plus'],
+  ])('omits DeepSeek effort for %s/%s', (providerCode, modelId) => {
+    expect(
+      resolveReasoningControl({
+        providerCode,
+        modelId,
+        policy: 'provider_default',
+        effort: 'max',
+      }),
+    ).toEqual({});
+  });
+
+  it('does not forward malformed effort values outside DTO validation', () => {
+    expect(
+      resolveReasoningControl({
+        providerCode: 'deepseek',
+        modelId: 'deepseek-flash',
+        policy: 'provider_default',
+        effort: 'unlimited' as ReasoningEffort,
+      }),
+    ).toEqual({});
+  });
+
   it.each([
     ['deepseek', 'deepseek-v4-flash', { thinking: { type: 'disabled' } }],
     ['deepseek', 'deepseek-flash', { thinking: { type: 'disabled' } }],

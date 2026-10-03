@@ -168,11 +168,10 @@ class DirectMcpClient {
     final sid = resp.headers['mcp-session-id'];
     if (sid != null && sid.isNotEmpty) _sessionId = sid;
 
-    if (isNotification) return null; // 202 Accepted，无响应体
     if (resp.statusCode < 200 || resp.statusCode >= 300) {
-      final text = utf8.decode(resp.bodyBytes, allowMalformed: true);
-      throw McpException('HTTP ${resp.statusCode}: ${_cap(text, 300)}');
+      throw McpException(_httpErrorMessage(resp));
     }
+    if (isNotification) return null; // 202 Accepted，无响应体
 
     final text = utf8.decode(resp.bodyBytes, allowMalformed: true);
     final ct = resp.headers['content-type'] ?? '';
@@ -224,8 +223,32 @@ class DirectMcpClient {
       }
     }
     final text = parts.join('\n').trim();
-    if (result?['isError'] == true) return '工具返回错误：${text.isEmpty ? '(无内容)' : text}';
+    if (result?['isError'] == true) {
+      return '工具返回错误：${text.isEmpty ? '(无内容)' : text}';
+    }
     return text.isEmpty ? '(工具无文本输出)' : text;
+  }
+
+  static String _httpErrorMessage(http.Response response) {
+    final text = utf8.decode(response.bodyBytes, allowMalformed: true);
+    if (response.statusCode == 404) {
+      // Railway 网关回退与普通路径 404 不同，换 MCP 协议或补 Key 无法修复。
+      Object? body;
+      try {
+        body = jsonDecode(text);
+      } catch (_) {
+        // 普通 HTML / 文本 404 仍按端点不存在提示。
+      }
+      if (response.headers['x-railway-fallback'] == 'true' &&
+          body is Map &&
+          body['message'] == 'Application not found') {
+        return 'HTTP 404：服务端不可用，托管平台未找到该应用（Application not found）。'
+            '请等待服务商恢复，或在 MCP 设置中暂时关闭此连接。';
+      }
+      return 'HTTP 404：未找到 MCP 端点，请核对服务商提供的完整地址；'
+          '地址正确时需由服务商恢复服务。响应：${_cap(text, 300)}';
+    }
+    return 'HTTP ${response.statusCode}: ${_cap(text, 300)}';
   }
 
   static String _cap(String s, int max) =>

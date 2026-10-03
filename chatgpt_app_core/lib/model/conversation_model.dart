@@ -1,4 +1,5 @@
 import 'dart:convert';
+import 'package:chatgpt_app_core/chat/domain/deepseek_reasoning_effort.dart';
 
 /// 会话会话（聊天）列表表模型
 class ConversationModel {
@@ -31,6 +32,9 @@ class ConversationModel {
 
   ///会话级联网搜索覆盖。null = 跟随全局设置。
   bool? webSearchEnabled;
+
+  ///会话级 DeepSeek 思考强度。null = 跟随服务端默认，兼容旧会话。
+  DeepSeekReasoningEffort? deepSeekReasoningEffort;
 
   ///会话级工具集覆盖。null = 跟随助手绑定；空列表 = 不暴露绑定工具。
   List<String>? toolIds;
@@ -81,6 +85,7 @@ class ConversationModel {
       this.modelProviderId,
       this.modelId,
       this.webSearchEnabled,
+      this.deepSeekReasoningEffort,
       this.toolIds,
       this.speechInputEnabled,
       this.readAloudEnabled,
@@ -109,6 +114,8 @@ class ConversationModel {
           modelProviderId: json['modelProviderId'],
           modelId: json['modelId'],
           webSearchEnabled: _boolOf(json['webSearchEnabled']),
+          deepSeekReasoningEffort:
+              DeepSeekReasoningEffort.parse(json['deepSeekReasoningEffort']),
           toolIds: _decodeToolIds(json['toolIds']),
           speechInputEnabled: _boolOf(json['speechInputEnabled']),
           readAloudEnabled: _boolOf(json['readAloudEnabled']),
@@ -138,6 +145,7 @@ class ConversationModel {
     data['modelId'] = modelId;
     data['webSearchEnabled'] =
         webSearchEnabled == null ? null : (webSearchEnabled! ? 1 : 0);
+    data['deepSeekReasoningEffort'] = deepSeekReasoningEffort?.wireValue;
     data['toolIds'] = toolIds == null ? null : jsonEncode(toolIds);
     data['speechInputEnabled'] =
         speechInputEnabled == null ? null : (speechInputEnabled! ? 1 : 0);

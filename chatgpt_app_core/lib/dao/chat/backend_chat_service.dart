@@ -2,9 +2,11 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
+import 'package:chatgpt_app_core/chat/application/reasoning_control_adapter.dart';
 import 'package:chatgpt_app_core/chat/application/tool_call_accumulator.dart';
 import 'package:chatgpt_app_core/chat/domain/chat_attachments.dart';
 import 'package:chatgpt_app_core/chat/domain/chat_request_options.dart';
+import 'package:chatgpt_app_core/chat/domain/deepseek_reasoning_effort.dart';
 import 'package:chatgpt_app_core/chat/domain/model_capabilities.dart';
 import 'package:chatgpt_app_core/chat/domain/stream_event.dart';
 import 'package:chatgpt_app_core/dao/chat/chat_service.dart';
@@ -15,10 +17,44 @@ import 'package:http/http.dart' as http;
 import 'package:login_sdk/dao/login_dao.dart';
 import 'package:openai_flutter/utils/ai_logger.dart';
 
-class BackendChatService implements ChatService, OptionsAwareChatService {
+class BackendChatService
+    implements
+        ChatService,
+        OptionsAwareChatService,
+        OptionsAwareNonStreamingChatService {
   final AISettings _settings;
 
   BackendChatService(this._settings);
+
+  Map<String, dynamic> _reasoningFields(ChatRequestOptions options,
+      {bool includeDefaultPolicy = false}) {
+    final effort =
+        options.deepSeekReasoningEffort ?? _settings.deepSeekReasoningEffort;
+    final catalogProvider =
+        ModelCatalog.optionFor(_settings.effectiveModel)?.providerCode;
+    // 目录缺失时只允许精确的 DeepSeek 双模式名称，由后端再核对最终服务商。
+    final supportsEffort = ReasoningControlAdapter.supportsDeepSeekEffort(
+      providerId: catalogProvider ?? 'deepseek',
+      providerCode: catalogProvider,
+      modelId: _settings.effectiveModel,
+    );
+    final policy = options.suppressReasoningControl
+        ? ChatReasoningPolicy.providerDefault
+        : options.reasoningPolicy == ChatReasoningPolicy.offIfSupported ||
+                (supportsEffort && effort == DeepSeekReasoningEffort.off)
+            ? ChatReasoningPolicy.offIfSupported
+            : ChatReasoningPolicy.providerDefault;
+    return {
+      if (includeDefaultPolicy || policy != ChatReasoningPolicy.providerDefault)
+        'reasoning_policy': _reasoningPolicy(policy),
+      if (!options.suppressReasoningControl &&
+          policy == ChatReasoningPolicy.providerDefault &&
+          supportsEffort &&
+          effort != null &&
+          effort != DeepSeekReasoningEffort.off)
+        'reasoning_effort': effort.wireValue,
+    };
+  }
 
   static StreamEvent? usageEventFromStreamJson(Map<String, dynamic> json) {
     final usage = json['usage'];
@@ -46,16 +82,34 @@ class BackendChatService implements ChatService, OptionsAwareChatService {
     List<Map<String, dynamic>> history,
     ChatAttachments? attachments, [
     List<Map<String, dynamic>> extraMessages = const [],
-  ]) =>
-      [
-        ...history,
-        {
-          'role': 'user',
-          'content':
-              (attachments ?? const ChatAttachments()).buildUserContent(prompt),
-        },
-        ...extraMessages,
-      ];
+  ]) {
+    final model = _settings.effectiveModel;
+    final catalogProvider = ModelCatalog.optionFor(model)?.providerCode;
+    // 模型名只是客户端的候选判断；自有后端还会按最终解析的 provider 再过滤。
+    // 目录明确归属其他服务商时提前移除，未知目录的 DeepSeek V4 交给后端决定。
+    final preserveReasoning =
+        (catalogProvider == null || catalogProvider == 'deepseek') &&
+            (ModelCapabilities.isDeepSeekVisionModel(model) ||
+                model.trim().toLowerCase() == 'deepseek-v4-pro');
+    final messages = [
+      ...history,
+      {
+        'role': 'user',
+        'content':
+            (attachments ?? const ChatAttachments()).buildUserContent(prompt),
+      },
+      ...extraMessages,
+    ];
+    return messages.map((message) {
+      final copy = Map<String, dynamic>.from(message);
+      if (!preserveReasoning ||
+          copy['role'] != 'assistant' ||
+          copy['reasoning_content'] is! String) {
+        copy.remove('reasoning_content');
+      }
+      return copy;
+    }).toList();
+  }
 
   @override
   Future<String?> chat({
@@ -76,6 +130,7 @@ class BackendChatService implements ChatService, OptionsAwareChatService {
       if (_settings.temperature != null) 'temperature': _settings.temperature,
       // null = 不带 top_p，用上游默认。
       if (_settings.topP != null) 'top_p': _settings.topP,
+      ..._reasoningFields(const ChatRequestOptions()),
     };
     final token = LoginDao.getBoardingPass();
     final headers = <String, String>{
@@ -125,19 +180,49 @@ class BackendChatService implements ChatService, OptionsAwareChatService {
     required String prompt,
     required List<Map<String, dynamic>> history,
     ChatAttachments? attachments,
+  }) =>
+      _completeWithUsage(
+        prompt: prompt,
+        history: history,
+        attachments: attachments,
+        options: const ChatRequestOptions(),
+      );
+
+  @override
+  Future<ChatCompletionResult> chatWithUsageWithOptions({
+    required String prompt,
+    required List<Map<String, dynamic>> history,
+    ChatAttachments? attachments,
+    required ChatRequestOptions options,
+  }) =>
+      _completeWithUsage(
+        prompt: prompt,
+        history: history,
+        attachments: attachments,
+        options: options,
+      );
+
+  Future<ChatCompletionResult> _completeWithUsage({
+    required String prompt,
+    required List<Map<String, dynamic>> history,
+    ChatAttachments? attachments,
+    required ChatRequestOptions options,
   }) async {
+    final maxTokens = _maxTokensFor(options);
     final uri = BackendConst.buildUri('/uapi/chat/completions');
     final messages = _buildMessages(prompt, history, attachments);
     final body = {
       'model': _settings.effectiveModel,
       'messages': messages,
       // 0 = 不限制：不带 max_tokens，用上游默认（避免长回复被截断）。
-      if (_settings.maxOutputTokens > 0)
-        'max_tokens': _settings.maxOutputTokens,
+      if (maxTokens != null) 'max_tokens': maxTokens,
       // null = 不带 temperature，用上游默认。
       if (_settings.temperature != null) 'temperature': _settings.temperature,
       // null = 不带 top_p，用上游默认。
       if (_settings.topP != null) 'top_p': _settings.topP,
+      ..._reasoningFields(options),
+      if (options.profile != ChatRequestProfile.standard)
+        'request_profile': _requestProfile(options.profile),
     };
     final token = LoginDao.getBoardingPass();
     final headers = <String, String>{
@@ -240,9 +325,7 @@ class BackendChatService implements ChatService, OptionsAwareChatService {
         if (_settings.topP != null) 'top_p': _settings.topP,
         if (tools != null && tools.isNotEmpty) 'tools': tools,
         'request_profile': _requestProfile(options.profile),
-        'reasoning_policy': options.suppressReasoningControl
-            ? 'provider_default'
-            : _reasoningPolicy(options.reasoningPolicy),
+        ..._reasoningFields(options, includeDefaultPolicy: true),
       };
       final token = LoginDao.getBoardingPass();
       final request = http.AbortableRequest(

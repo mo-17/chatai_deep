@@ -1,4 +1,6 @@
 import 'package:chatgpt_app_core/chat/application/mcp/mcp_types.dart';
+import 'package:chatgpt_app_core/chat/domain/attachment_processing_limits.dart';
+import 'package:chatgpt_app_core/chat/domain/deepseek_reasoning_effort.dart';
 import 'package:chatgpt_app_core/data/provider_presets.dart';
 import 'package:chatgpt_app_core/model/ai_provider.dart';
 
@@ -291,6 +293,11 @@ class UsageCostConfig {
 }
 
 class AISettings {
+  static const defaultContextInputBudgetTokens = 262144;
+  static const minContextInputBudgetTokens = 1024;
+  static const maxContextInputBudgetTokens = 1048576;
+  static const _contextInputBudgetVersion = 1;
+
   AIMode mode;
 
   /// 灵活的服务商列表（迁移自 Cherry Studio）。取代旧版写死的 openai+deepseek。
@@ -332,6 +339,26 @@ class AISettings {
   /// 最大输出 token 数，0 = 不限制（请求体不带 max_tokens，用上游默认）。
   int maxOutputTokens;
 
+  /// 单次请求的应用输入预算，包括历史、附件、系统提示和工具内容。
+  /// 按账号保存，独立于最大输出长度；超出后由上下文规划器缩减历史。
+  int contextInputBudgetTokens;
+
+  /// 对运行期间被写入的非法值同样兜底，避免旧配置或导入数据破坏请求。
+  int get effectiveContextInputBudgetTokens =>
+      _parseContextInputBudgetTokens(contextInputBudgetTokens);
+
+  /// 单个附件抽取文字的字符上限（文本文件、PDF 抽文本均适用）。
+  int attachmentTextMaxChars;
+
+  /// 文本文件读取前的文件字节上限，不改变模型的原生图片/PDF限制。
+  int attachmentTextMaxFileBytes;
+
+  AttachmentProcessingLimits get attachmentProcessingLimits =>
+      AttachmentProcessingLimits(
+        maxTextChars: attachmentTextMaxChars,
+        maxTextFileBytes: attachmentTextMaxFileBytes,
+      ).normalized;
+
   /// 采样温度（temperature）。null = 不发送该参数，用上游默认；否则按
   /// [0.0, 2.0] 随请求发送（OpenAI / 各兼容服务商通用）。0.0 是有效值
   /// （更确定），故用 null 而非 0 作「未设置」哨兵。
@@ -339,6 +366,9 @@ class AISettings {
 
   /// 核采样阈值（top_p）。null = 不发送，用上游默认；有效范围 [0, 1]。
   double? topP;
+
+  /// DeepSeek 双模式模型的默认推理等级；null 保留旧请求的服务端默认。
+  DeepSeekReasoningEffort? deepSeekReasoningEffort;
 
   /// MCP 直连 server 列表（方案 A）：客户端直连远程 Streamable HTTP 型 server，
   /// 其工具与内置工具一并装配进工具回路。
@@ -371,8 +401,14 @@ class AISettings {
     this.searchMaxResults = 5,
     this.searchContentLimit = 2000,
     this.maxOutputTokens = 0,
+    this.contextInputBudgetTokens = defaultContextInputBudgetTokens,
+    this.attachmentTextMaxChars =
+        AttachmentProcessingLimits.defaultMaxTextChars,
+    this.attachmentTextMaxFileBytes =
+        AttachmentProcessingLimits.defaultMaxTextFileBytes,
     this.temperature,
     this.topP,
+    this.deepSeekReasoningEffort,
     List<McpServerConfig>? mcpServers,
     this.mcpBackendEnabled = false,
     this.mcpBackendTrusted = false,
@@ -441,8 +477,15 @@ class AISettings {
       searchMaxResults: j['searchMaxResults'] as int? ?? 5,
       searchContentLimit: j['searchContentLimit'] as int? ?? 2000,
       maxOutputTokens: j['maxOutputTokens'] as int? ?? 0,
+      contextInputBudgetTokens: _readContextInputBudgetTokens(j),
+      attachmentTextMaxChars:
+          _parseAttachmentTextMaxChars(j['attachmentTextMaxChars']),
+      attachmentTextMaxFileBytes:
+          _parseAttachmentTextMaxFileBytes(j['attachmentTextMaxFileBytes']),
       temperature: _parseTemperature(j['temperature']),
       topP: _parseTopP(j['topP']),
+      deepSeekReasoningEffort:
+          DeepSeekReasoningEffort.parse(j['deepSeekReasoningEffort']),
       mcpServers: (j['mcpServers'] as List?)
               ?.map((e) =>
                   McpServerConfig.fromJson((e as Map).cast<String, dynamic>()))
@@ -501,8 +544,16 @@ class AISettings {
         'searchMaxResults': searchMaxResults,
         'searchContentLimit': searchContentLimit,
         'maxOutputTokens': maxOutputTokens,
+        'contextInputBudgetTokens': effectiveContextInputBudgetTokens,
+        'contextInputBudgetVersion': _contextInputBudgetVersion,
+        'attachmentTextMaxChars':
+            _parseAttachmentTextMaxChars(attachmentTextMaxChars),
+        'attachmentTextMaxFileBytes':
+            _parseAttachmentTextMaxFileBytes(attachmentTextMaxFileBytes),
         'temperature': temperature,
         'topP': topP,
+        if (deepSeekReasoningEffort != null)
+          'deepSeekReasoningEffort': deepSeekReasoningEffort!.wireValue,
         'mcpServers': mcpServers.map((e) => e.toJson()).toList(),
         'mcpBackendEnabled': mcpBackendEnabled,
         'mcpBackendTrusted': mcpBackendTrusted,
@@ -607,6 +658,34 @@ class AISettings {
     if (s == 'backend') return AIMode.backend;
     return AIMode.local;
   }
+
+  static int _parseContextInputBudgetTokens(Object? value) => value is int &&
+          value >= minContextInputBudgetTokens &&
+          value <= maxContextInputBudgetTokens
+      ? value
+      : defaultContextInputBudgetTokens;
+
+  static int _readContextInputBudgetTokens(Map<String, dynamic> json) {
+    final budget =
+        _parseContextInputBudgetTokens(json['contextInputBudgetTokens']);
+    // 旧版默认预算自动升级；版本标记让用户之后手动设回旧值时仍能保留。
+    if (json['contextInputBudgetVersion'] == null && budget == 27648) {
+      return defaultContextInputBudgetTokens;
+    }
+    return budget;
+  }
+
+  static int _parseAttachmentTextMaxChars(Object? value) => value is int &&
+          value >= AttachmentProcessingLimits.minTextChars &&
+          value <= AttachmentProcessingLimits.maximumTextChars
+      ? value
+      : AttachmentProcessingLimits.defaultMaxTextChars;
+
+  static int _parseAttachmentTextMaxFileBytes(Object? value) => value is int &&
+          value >= AttachmentProcessingLimits.minTextFileBytes &&
+          value <= AttachmentProcessingLimits.maximumTextFileBytes
+      ? value
+      : AttachmentProcessingLimits.defaultMaxTextFileBytes;
 
   static double? _parseTopP(Object? value) {
     final parsed = value is num ? value.toDouble() : double.tryParse('$value');

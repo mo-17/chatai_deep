@@ -22,6 +22,7 @@ import 'package:chatgpt_app_core/db/hi_db_manager.dart';
 import 'package:chatgpt_app_core/db/knowledge_dao.dart';
 import 'package:chatgpt_app_core/db/message_dao.dart';
 import 'package:chatgpt_app_core/db/project_dao.dart';
+import 'package:chatgpt_app_core/db/skill_catalog_dao.dart';
 import 'package:chatgpt_app_core/db/story_artifact_dao.dart';
 import 'package:chatgpt_app_core/db/story_persona_dao.dart';
 import 'package:chatgpt_app_core/db/story_room_dao.dart';
@@ -30,6 +31,7 @@ import 'package:chatgpt_app_core/db/story_template_translation_task_dao.dart';
 import 'package:chatgpt_app_core/model/ai_settings.dart';
 import 'package:chatgpt_app_core/model/assistant_memory_model.dart';
 import 'package:chatgpt_app_core/model/story_template_translation_task_model.dart';
+import 'package:chatgpt_app_core/skill/skill_catalog_entry.dart';
 import 'package:chatgpt_app_core/util/account_resource_scope.dart';
 import 'package:chatgpt_app_core/util/avatar_asset_service.dart';
 import 'package:chatgpt_app_core/util/managed_attachment_store.dart';
@@ -406,6 +408,8 @@ class BackupService {
   static const _kMessages = 'messages.json';
   static const _kAssistants = 'assistants.json';
   static const _kAssistantMemories = 'assistant_memories.json';
+  // v11 可选扩展：旧备份没有此 entry 时仍沿用助手原 prompt fallback。
+  static const _kSkillCatalog = 'skill_catalog.json';
   static const _kFavorites = 'favorites.json';
   static const _kProjects = 'projects.json';
   static const _kSettings = 'settings.json';
@@ -519,10 +523,13 @@ class BackupService {
   }) async {
     // 表是 DAO 懒建的：先确保 schema 就绪（含 assistantId 列 ALTER），
     // 全新账号没建过的表导出为空列表而不是报错。
-    await _ensureSchema();
+    await _ensureSchema(includeSkillCatalog: false);
     final conversations = await storage.db.query('tb_conversation_list');
     final messages = await storage.db.query('tb_messages');
     final assistants = await storage.db.query('tb_assistant');
+    final hasSkillCatalog = await _tableExists(storage.db, 'tb_skill_catalog');
+    final skillCatalog =
+        await readSkillCatalogRows(storage, assistants: assistants);
     final rawAssistantMemories = await storage.db.query('tb_assistant_memory');
     final favorites = await storage.db.query('tb_favorite');
     final projects = await storage.db.query('tb_project');
@@ -591,6 +598,7 @@ class BackupService {
       _kMessages: _jsonBytes(messages),
       _kAssistants: _jsonBytes(assistants),
       _kAssistantMemories: _jsonBytes(assistantMemories),
+      if (hasSkillCatalog) _kSkillCatalog: _jsonBytes(skillCatalog),
       _kFavorites: _jsonBytes(favorites),
       _kProjects: _jsonBytes(projects),
       _kKnowledgeDocs: _jsonBytes(knowledgeDocs),
@@ -694,6 +702,7 @@ class BackupService {
         _readRowsForVersion(archive, _kConversations, version);
     final messages = _readRowsForVersion(archive, _kMessages, version);
     final assistants = _readRowsForVersion(archive, _kAssistants, version);
+    _readSkillCatalog(archive, assistants);
     final assistantMemories = version >= 11
         ? _readRows(archive, _kAssistantMemories, strict: true)
         : <Map<String, dynamic>>[];
@@ -906,6 +915,7 @@ class BackupService {
         _readRowsForVersion(archive, _kConversations, version);
     final messages = _readRowsForVersion(archive, _kMessages, version);
     final assistants = _readRowsForVersion(archive, _kAssistants, version);
+    final skillCatalog = _readSkillCatalog(archive, assistants);
     final assistantMemories = version >= 11
         ? _readRows(archive, _kAssistantMemories, strict: true)
         : <Map<String, dynamic>>[];
@@ -979,6 +989,7 @@ class BackupService {
         messages: messages,
         assistants: assistants,
         assistantMemories: normalizedAssistantMemories,
+        skillCatalog: skillCatalog,
         favorites: favorites,
         knowledgeDocs: knowledgeDocs,
         knowledgeChunks: knowledgeChunks,
@@ -1012,6 +1023,7 @@ class BackupService {
         accountHash: accountHash,
         assistants: assistants,
         assistantMemories: normalizedAssistantMemories,
+        skillCatalog: skillCatalog,
         warnings: warnings,
         accountGuard: accountGuard,
       );
@@ -1204,6 +1216,7 @@ class BackupService {
 
     // 单事务覆盖式写入：任何一步失败整体回滚，不会留下半套数据。
     await _runResourceTransaction(resources, (txn) async {
+      await _clearDerivedConversationState(txn);
       await txn.delete('tb_story_artifact_revision');
       await txn.delete('tb_story_artifact');
       await txn.delete('tb_story_message');
@@ -1215,6 +1228,7 @@ class BackupService {
       batch.delete('tb_conversation_list');
       batch.delete('tb_messages');
       batch.delete('tb_assistant_memory');
+      batch.delete('tb_skill_catalog');
       batch.delete('tb_assistant');
       batch.delete('tb_favorite');
       batch.delete('tb_project_kb');
@@ -1230,6 +1244,9 @@ class BackupService {
       }
       for (final row in normalizedAssistantMemories) {
         batch.insert('tb_assistant_memory', row);
+      }
+      for (final row in skillCatalog) {
+        batch.insert('tb_skill_catalog', row);
       }
       for (final row in normalizedConversations) {
         batch.insert('tb_conversation_list', row);
@@ -1467,6 +1484,7 @@ class BackupService {
     await _runResourceTransaction(resources, (txn) async {
       final batch = txn.batch();
       batch.delete('tb_project_kb');
+      await _clearDerivedConversationState(txn);
       batch.delete('tb_project');
       batch.delete('tb_conversation_list');
       batch.delete('tb_messages');
@@ -1502,6 +1520,7 @@ class BackupService {
     required List<Map<String, dynamic>> messages,
     required List<Map<String, dynamic>> assistants,
     required List<Map<String, dynamic>> assistantMemories,
+    required List<Map<String, dynamic>> skillCatalog,
     required List<Map<String, dynamic>> favorites,
     required List<Map<String, dynamic>> knowledgeDocs,
     required List<Map<String, dynamic>> knowledgeChunks,
@@ -1680,6 +1699,15 @@ class BackupService {
         final oldId = _intValue(row['id']);
         final newId = await txn.insert('tb_assistant', _withoutId(row));
         if (oldId != null) assistantIdMap[oldId] = newId;
+      }
+
+      for (final row in skillCatalog) {
+        final newId = assistantIdMap[_intValue(row['assistantId'])];
+        if (newId == null) continue;
+        await txn.insert('tb_skill_catalog', {
+          ...row,
+          'assistantId': newId,
+        });
       }
 
       for (final row in assistantMemories) {
@@ -2064,6 +2092,7 @@ class BackupService {
     required String accountHash,
     required List<Map<String, dynamic>> assistants,
     required List<Map<String, dynamic>> assistantMemories,
+    required List<Map<String, dynamic>> skillCatalog,
     required List<String> warnings,
     BackupAccountGuard? accountGuard,
   }) async {
@@ -2091,12 +2120,16 @@ class BackupService {
 
     await _runResourceTransaction(resources, (txn) async {
       await txn.delete('tb_assistant_memory');
+      await txn.delete('tb_skill_catalog');
       await txn.delete('tb_assistant');
       for (final row in assistants) {
         await txn.insert('tb_assistant', row);
       }
       for (final row in assistantMemories) {
         await txn.insert('tb_assistant_memory', row);
+      }
+      for (final row in skillCatalog) {
+        await txn.insert('tb_skill_catalog', row);
       }
 
       final fixedConversations = assistantIds.isEmpty
@@ -2365,12 +2398,13 @@ class BackupService {
   }
 
   /// 通过各 DAO 的静态工厂确保四张表存在且 schema 最新（含历史 ALTER）。
-  Future<void> _ensureSchema() async {
+  Future<void> _ensureSchema({bool includeSkillCatalog = true}) async {
     await DbMigration.run(storage.db);
     await ConversationListDao.create(storage);
     await MessageDao.create(storage, cid: 0);
     await AssistantDao.create(storage);
     await AssistantMemoryDao.create(storage);
+    if (includeSkillCatalog) await SkillCatalogDao.create(storage);
     await FavoriteDao.create(storage);
     await ProjectDao.create(storage);
     await KnowledgeDao.create(storage);
@@ -2718,6 +2752,98 @@ class BackupService {
     return normalized;
   }
 
+  static List<Map<String, dynamic>> _readSkillCatalog(
+    Archive archive,
+    List<Map<String, dynamic>> assistants,
+  ) {
+    if (archive.findFile(_kSkillCatalog) == null) return [];
+    return validateSkillCatalogRows(
+      _readRows(archive, _kSkillCatalog, strict: true),
+      assistants,
+    );
+  }
+
+  /// 备份与游客迁移共用的读取入口：只导出仍归属于原助手的有效技能。
+  /// 避免助手删除/覆写后遗留的 catalog 随 id 复用进入另一个助手。
+  static Future<List<Map<String, dynamic>>> readSkillCatalogRows(
+    HiDBManager storage, {
+    required List<Map<String, dynamic>> assistants,
+  }) async {
+    if (!await _tableExists(storage.db, 'tb_skill_catalog')) return [];
+    final rows = await storage.db.rawQuery('''
+      select c.* from tb_skill_catalog c
+      inner join tb_assistant a on a.id = c.assistantId
+        and a.createdAt = c.assistantCreatedAt
+        and a.prompt = c.body
+      order by c.assistantId asc
+    ''');
+    return validateSkillCatalogRows(rows, assistants);
+  }
+
+  /// 校验可选扩展的正文、包内引用和助手归属，返回只包含已知列的写入行。
+  /// 在事务修改旧数据前拒绝损坏或跨助手挂载的技能记录。
+  static List<Map<String, dynamic>> validateSkillCatalogRows(
+    List<Map<String, dynamic>> rows,
+    List<Map<String, dynamic>> assistants,
+  ) {
+    final owners = {
+      for (final assistant in assistants)
+        if (_intValue(assistant['id']) != null)
+          _intValue(assistant['id'])!: assistant,
+    };
+    final used = <int>{};
+    final normalized = <Map<String, dynamic>>[];
+    for (final row in rows) {
+      final id = row['assistantId'];
+      final createdAt = row['assistantCreatedAt'];
+      final body = row['body'];
+      final name = row['name'];
+      final description = row['description'];
+      final rawReferences = row['referencesJson'];
+      final owner = id is int ? owners[id] : null;
+      if (id is! int ||
+          id < 1 ||
+          !used.add(id) ||
+          createdAt is! int ||
+          owner == null ||
+          _intValue(owner['createdAt']) != createdAt ||
+          body is! String ||
+          owner['prompt'] != body ||
+          name is! String ||
+          name.trim().isEmpty ||
+          description is! String ||
+          rawReferences is! String) {
+        throw const FormatException('Skill 目录格式或助手归属不合法');
+      }
+      try {
+        final decoded = jsonDecode(rawReferences);
+        if (decoded is! List ||
+            decoded.length > SkillCatalogDao.maxReferences) {
+          throw const FormatException('Skill 参考资料格式或数量不合法');
+        }
+        final references = decoded
+            .map((ref) => SkillCatalogReference.fromJson(
+                  Map<String, dynamic>.from(ref as Map),
+                ))
+            .toList();
+        SkillCatalogDao.validateContent(body: body, references: references);
+        normalized.add({
+          'assistantId': id,
+          'assistantCreatedAt': createdAt,
+          'name': name,
+          'description': description,
+          'body': body,
+          'referencesJson': jsonEncode(
+            references.map((ref) => ref.toJson()).toList(),
+          ),
+        });
+      } catch (error) {
+        throw FormatException('Skill 目录引用格式不合法：$error');
+      }
+    }
+    return normalized;
+  }
+
   static _AssistantMemoryExportCopy _normalizeAssistantMemoriesForExport(
     List<Map<String, Object?>> rows,
     List<Map<String, Object?>> assistants,
@@ -3029,13 +3155,24 @@ class BackupService {
     return jsonEncode(sorted);
   }
 
-  static Future<bool> _tableExists(Database db, String table) async {
+  static Future<bool> _tableExists(DatabaseExecutor db, String table) async {
     final rows = await db.query('sqlite_master',
         columns: ['name'],
         where: 'type = ? and name = ?',
         whereArgs: ['table', table],
         limit: 1);
     return rows.isNotEmpty;
+  }
+
+  /// 任务断点/语义摘要属于当前本机消息的派生数据，不随备份恢复。
+  /// 两个覆盖会话的模式才清理；追加合并保留已有会话的任务状态。
+  static Future<void> _clearDerivedConversationState(Transaction txn) async {
+    for (final table in [
+      'tb_agent_task_session',
+      'tb_chat_semantic_summary',
+    ]) {
+      if (await _tableExists(txn, table)) await txn.delete(table);
+    }
   }
 
   Future<void> _runResourceTransaction(

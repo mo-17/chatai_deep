@@ -90,6 +90,7 @@ abstract class ChatService {
         providerId: s.activeProvider.id,
         providerCode: providerCodeFor(s),
         maxOutputTokens: s.maxOutputTokens,
+        deepSeekReasoningEffort: s.deepSeekReasoningEffort,
         temperature: s.temperature,
         topP: s.topP);
   }

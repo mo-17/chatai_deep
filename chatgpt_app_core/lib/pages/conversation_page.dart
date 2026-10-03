@@ -11,8 +11,14 @@ import 'package:chatgpt_app_core/chat/application/assistant_conversation_avatar_
 import 'package:chatgpt_app_core/chat/application/chat_block_store.dart';
 import 'package:chatgpt_app_core/chat/application/conversation_draft_store.dart';
 import 'package:chatgpt_app_core/chat/application/chat_context_planner.dart';
+import 'package:chatgpt_app_core/chat/application/agent_task_session.dart';
+import 'package:chatgpt_app_core/chat/application/semantic_chat_summary_service.dart';
+import 'package:chatgpt_app_core/db/semantic_chat_summary_dao.dart';
+import 'package:chatgpt_app_core/skill/skill_catalog_service.dart';
+import 'package:chatgpt_app_core/widget/agent_task_panel.dart';
 import 'package:chatgpt_app_core/chat/application/file_processor.dart';
 import 'package:chatgpt_app_core/chat/application/retry_attachment_restorer.dart';
+import 'package:chatgpt_app_core/chat/application/reasoning_control_adapter.dart';
 import 'package:chatgpt_app_core/chat/application/read_aloud_service.dart';
 import 'package:chatgpt_app_core/chat/application/assistant_role_card_service.dart';
 import 'package:chatgpt_app_core/chat/application/assistant_memory_suggestion_service.dart';
@@ -27,6 +33,7 @@ import 'package:chatgpt_app_core/chat/application/mcp/mcp_tool_source.dart';
 import 'package:chatgpt_app_core/chat/application/tool_registry.dart';
 import 'package:chatgpt_app_core/chat/application/user_sherpa_onnx_tts_models.dart';
 import 'package:chatgpt_app_core/chat/domain/chat_request_options.dart';
+import 'package:chatgpt_app_core/chat/domain/deepseek_reasoning_effort.dart';
 import 'package:chatgpt_app_core/chat/domain/chat_send_progress.dart';
 import 'package:chatgpt_app_core/chat/domain/translation_request_profile.dart';
 import 'package:chatgpt_app_core/skill/js_runtime_service.dart';
@@ -68,6 +75,7 @@ import 'package:chatgpt_app_core/widget/assistant_picker.dart';
 import 'package:chatgpt_app_core/widget/configured_ai_model_picker_sheet.dart';
 import 'package:chatgpt_app_core/widget/forward_sheet.dart';
 import 'package:chatgpt_app_core/widget/message_input_widget.dart';
+import 'package:chatgpt_app_core/widget/deepseek_reasoning_selector.dart';
 import 'package:chatgpt_app_core/widget/chat_send_status_panel.dart';
 import 'package:chatgpt_app_core/widget/starcore_message_avatar.dart';
 import 'package:flutter/material.dart';
@@ -84,6 +92,7 @@ typedef OnConversationUpdate = void Function(
 enum _ConversationModelTestState { idle, running, success, failure }
 
 enum _ConversationMoreAction {
+  taskMode,
   outline,
   assistantProfile,
   roleContext,
@@ -156,6 +165,12 @@ class _ConversationPageState extends State<ConversationPage> {
   String? _draftNotice;
   ChatSendProgress? _sendProgress;
   ChatContextPlan? _contextPlan;
+  AgentTaskSession? _agentTask;
+  SkillCatalogService? _skillCatalog;
+  SkillCatalogSnapshot? _taskSkills;
+  SemanticChatSummaryDao? _summaryDao;
+  bool _daoTaskMode = false;
+  bool get _taskMode => _agentTask?.enabled ?? false;
   bool _isStreaming = false;
   late MessageDao messageDao;
   late FavoriteDao favoriteDao;
@@ -368,6 +383,8 @@ class _ConversationPageState extends State<ConversationPage> {
   String? _daoSystemPrompt;
   String? _daoModelProviderId;
   String? _daoModelId;
+  DeepSeekReasoningEffort? _daoReasoningEffort;
+  bool _savingReasoningEffort = false;
   AssistantDao? _assistantDao;
   AssistantMemoryDao? _assistantMemoryDao;
   List<AssistantMemoryModel> _assistantMemories = const [];
@@ -376,6 +393,9 @@ class _ConversationPageState extends State<ConversationPage> {
   /// 保证「助手指定了模型时，capabilitiesFor 用覆盖后的模型算」。
   AISettings _effective(AISettings s) {
     final next = (_assistant?.applyTo(s) ?? s).clone();
+    next.deepSeekReasoningEffort =
+        widget.conversationModel.deepSeekReasoningEffort;
+    if (_taskMode) next.streamEnabled = true;
     final webSearchOverride = widget.conversationModel.webSearchEnabled;
     if (webSearchOverride != null) {
       next.webSearchEnabled = webSearchOverride;
@@ -395,15 +415,145 @@ class _ConversationPageState extends State<ConversationPage> {
     return next;
   }
 
-  Future<String?> _assistantSystemPromptForSafely(String inputMessage) async {
+  Future<String?> _assistantSystemPromptForSafely(String inputMessage,
+      {bool resumeTask = false}) async {
     final scanText = _roleMemoryScanText(inputMessage);
-    final preview = await ConversationRoleContextPreview.buildSafely(
+    var preview = await ConversationRoleContextPreview.buildSafely(
       assistant: _assistant,
       userInput: scanText,
       conversation: widget.conversationModel,
       memories: _assistantMemories,
     );
+    if (_taskMode) {
+      _taskSkills = await _skillCatalog?.prepare(
+          assistant: _assistant?.emoji == '🧩' ? _assistant : null);
+      if (_taskSkills?.replacesAssistantPrompt == true) {
+        preview =
+            preview.replaceFirst(_assistant?.prompt.trim() ?? '', '').trim();
+      }
+      preview = [
+        preview,
+        _agentTask!.contextPromptFor(resume: resumeTask),
+        _taskSkills?.systemPrompt ?? ''
+      ].where((text) => text.isNotEmpty).join('\n\n');
+    } else {
+      _taskSkills = null;
+    }
     return preview.trim().isEmpty ? null : preview;
+  }
+
+  SemanticChatSummaryService? _summaryServiceFor(AISettings settings) =>
+      !_taskMode || _summaryDao == null
+          ? null
+          : SemanticChatSummaryService(
+              store: _summaryDao!,
+              summarizer: SemanticChatSummaryService.chatSummarizer(
+                  ChatService.from(settings)),
+            );
+
+  void _openTaskMode() {
+    final task = _agentTask;
+    if (task == null || !_ready) return;
+    showModalBottomSheet<void>(
+        context: context,
+        isScrollControlled: true,
+        useSafeArea: true,
+        builder: (ctx) => AnimatedBuilder(
+              animation: task,
+              builder: (ctx, _) => SafeArea(
+                  child: SingleChildScrollView(
+                      padding: const EdgeInsets.all(20),
+                      child: Column(
+                          mainAxisSize: MainAxisSize.min,
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text('任务模式',
+                                style: Theme.of(ctx).textTheme.titleLarge),
+                            SwitchListTile(
+                                contentPadding: EdgeInsets.zero,
+                                title: const Text('在当前对话启用'),
+                                subtitle: const Text(
+                                    '显示任务计划并保存进度，技能按需加载；较早对话按需调用当前模型生成摘要。'),
+                                value: task.enabled,
+                                onChanged: _isStreaming
+                                    ? null
+                                    : (value) async {
+                                        final caps =
+                                            ChatService.capabilitiesFor(
+                                                _effective(context
+                                                    .read<AISettingsProvider>()
+                                                    .settings));
+                                        if (value && !caps.tool) {
+                                          HiDialog.showSnackBar(
+                                              context, '请先选择支持工具调用的模型');
+                                          return;
+                                        }
+                                        try {
+                                          await task.setEnabled(value);
+                                          if (mounted && _accountCurrent) {
+                                            setState(() {});
+                                          }
+                                        } catch (_) {
+                                          if (mounted) {
+                                            HiDialog.showSnackBar(
+                                                context, '任务设置未保存，请重试');
+                                          }
+                                        }
+                                      }),
+                            if (task.executingToolId != null)
+                              const Text('中断前有工具执行结果未确认，继续时会标记结果不明，不会自动重复该操作。'),
+                            for (final todo in task.todos)
+                              ListTile(
+                                  contentPadding: EdgeInsets.zero,
+                                  leading: Icon(todo.status == 'completed'
+                                      ? Icons.check_circle_outline
+                                      : todo.status == 'in_progress'
+                                          ? Icons.pending_outlined
+                                          : Icons.radio_button_unchecked),
+                                  title: Text(todo.content)),
+                            if (task.canResume && !_isStreaming)
+                              FilledButton.icon(
+                                  onPressed: () {
+                                    Navigator.pop(ctx);
+                                    _resumeTask();
+                                  },
+                                  icon: const Icon(Icons.play_arrow),
+                                  label: const Text('继续任务')),
+                          ]))),
+            ));
+  }
+
+  void _resumeTask() async {
+    final task = _agentTask;
+    if (task == null || !task.canResume || _isStreaming) return;
+    final messages = chatController.initialMessageList;
+    final users = messages.where((m) =>
+        m.createdAt == task.userCreatedAt && m.ownerType == OwnerType.sender);
+    if (users.isEmpty ||
+        messages.any((m) =>
+            m.ownerType == OwnerType.sender &&
+            m.createdAt > task.userCreatedAt!)) {
+      HiDialog.showSnackBar(context, '任务对应提问已变化，请重新发送任务');
+      return;
+    }
+    final replies = messages.where((m) =>
+        m.ownerType == OwnerType.receiver && m.createdAt > task.userCreatedAt!);
+    await _retryUserMessage(users.first,
+        oldReply: replies.isEmpty ? null : replies.first, resumeTask: true);
+  }
+
+  static bool _protocolIsBalanced(List<Map<String, dynamic>> messages) {
+    final pending = <String>{};
+    for (final message in messages) {
+      for (final call in message['tool_calls'] as List? ?? const []) {
+        pending.add(call['id'] as String);
+      }
+      if (message['role'] == 'tool' &&
+          !pending.remove(message['tool_call_id'])) {
+        return false;
+      }
+    }
+    return pending.isEmpty;
   }
 
   List<String> _recentRoleMemoryMessages() {
@@ -743,6 +893,8 @@ class _ConversationPageState extends State<ConversationPage> {
             icon: const Icon(Icons.more_vert),
             onSelected: _onConversationMoreAction,
             itemBuilder: (_) => [
+              _moreMenuItem(_ConversationMoreAction.taskMode,
+                  Icons.checklist_rounded, '任务模式'),
               _moreMenuItem(
                 _ConversationMoreAction.outline,
                 Icons.format_list_bulleted,
@@ -796,6 +948,8 @@ class _ConversationPageState extends State<ConversationPage> {
 
   void _onConversationMoreAction(_ConversationMoreAction action) {
     switch (action) {
+      case _ConversationMoreAction.taskMode:
+        _openTaskMode();
       case _ConversationMoreAction.outline:
         _openOutline();
       case _ConversationMoreAction.assistantProfile:
@@ -897,17 +1051,28 @@ class _ConversationPageState extends State<ConversationPage> {
   }
 
   _inputWidget(ModelCapabilities caps, AISettings settings) {
+    final effective = _effective(settings);
+    final supportsEffort = ReasoningControlAdapter.supportsDeepSeekEffort(
+      providerId: effective.mode == AIMode.local
+          ? effective.activeProvider.id
+          : 'deepseek',
+      providerCode: ChatService.providerCodeFor(effective),
+      modelId: effective.effectiveModel,
+    );
     return MessageInputWidget(
       '请输入',
-      enable: _ready && !_isStreaming,
-      editingEnabled: _ready && !_isStreaming,
+      enable: _ready && !_isStreaming && !_savingReasoningEffort,
+      editingEnabled: _ready && !_isStreaming && !_savingReasoningEffort,
       isStreaming: _isStreaming,
       controller: _inputController,
       clearOnSend: false,
       onStop: _isStreaming ? _stopStream : null,
       onChanged: _inputChanged,
       canSend: () =>
-          _ready && _accountCurrent && _canStartAIRequest(showPrompt: true),
+          _ready &&
+          !_savingReasoningEffort &&
+          _accountCurrent &&
+          _canStartAIRequest(showPrompt: true),
       onSend: () => _onSend(_inputMessage),
       // 联网搜索开关（阶段五）：当前所选服务商配置了 key 才展示；独立于
       // caps.tool，搜索结果以上下文回填，任何模型都可用（与 Cherry 一致）。
@@ -916,6 +1081,14 @@ class _ConversationPageState extends State<ConversationPage> {
       onToggleWebSearch: _toggleWebSearch,
       modelLabel: _modelLabel(settings),
       onModelTap: _switchModel,
+      modelAccessory: supportsEffort
+          ? DeepSeekReasoningSelector(
+              effort: widget.conversationModel.deepSeekReasoningEffort,
+              onTap: _ready && !_isStreaming && !_savingReasoningEffort
+                  ? _selectReasoningEffort
+                  : null,
+            )
+          : null,
       speechInputEnabled: widget.conversationModel.speechInputEnabled ?? true,
       speechLocale: widget.conversationModel.voiceLocale,
       pendingImages: _pendingImages,
@@ -1046,6 +1219,12 @@ class _ConversationPageState extends State<ConversationPage> {
         body: Column(
           children: [
             _chatList,
+            if (_agentTask != null)
+              AgentTaskPanel(
+                  session: _agentTask!,
+                  busy: _isStreaming || _savingReasoningEffort,
+                  onOpen: _openTaskMode,
+                  onResume: _resumeTask),
             ChatSendStatusPanel(
               progress: _sendProgress,
               busy: _isStreaming,
@@ -1735,6 +1914,7 @@ class _ConversationPageState extends State<ConversationPage> {
     if (!_ready ||
         !_accountCurrent ||
         _isStreaming ||
+        _savingReasoningEffort ||
         !_canStartAIRequest(showPrompt: true)) {
       return;
     }
@@ -1754,16 +1934,21 @@ class _ConversationPageState extends State<ConversationPage> {
       if (_sendCancelled) return;
       final modelChanged =
           _daoModelProviderId != widget.conversationModel.modelProviderId ||
-              _daoModelId != widget.conversationModel.modelId;
+              _daoModelId != widget.conversationModel.modelId ||
+              _daoReasoningEffort !=
+                  widget.conversationModel.deepSeekReasoningEffort;
       if (rawSettings != _currentSettings ||
           !identical(_assistant, _daoAssistant) ||
           assistantSystemPrompt != _daoSystemPrompt ||
+          _daoTaskMode != _taskMode ||
           modelChanged) {
         _currentSettings = rawSettings;
         _daoAssistant = _assistant;
         _daoSystemPrompt = assistantSystemPrompt;
         _daoModelProviderId = widget.conversationModel.modelProviderId;
         _daoModelId = widget.conversationModel.modelId;
+        _daoReasoningEffort = widget.conversationModel.deepSeekReasoningEffort;
+        _daoTaskMode = _taskMode;
         completionDao = CompletionDao(
           manageContext: true,
           settings: _effective(rawSettings),
@@ -1772,6 +1957,9 @@ class _ConversationPageState extends State<ConversationPage> {
           toolHistory: completionDao.currentToolHistory,
           fileHistory: completionDao.currentFileHistory,
           roleContinuationHistory: completionDao.currentRoleContinuationHistory,
+          protocolHistory: completionDao.currentProtocolHistory,
+          conversationId: widget.conversationModel.cid,
+          semanticSummaryService: _summaryServiceFor(_effective(rawSettings)),
         );
       }
       final settings = _effective(rawSettings);
@@ -1797,6 +1985,7 @@ class _ConversationPageState extends State<ConversationPage> {
           ? const ProcessedFiles()
           : await FileProcessor.process(
               pendingFiles, officialDeepSeek ? caps.copyWith(pdf: false) : caps,
+              limits: settings.attachmentProcessingLimits,
               onProgress: _onSendProgress,
               abortTrigger: abort,
               isCancelled: () => _sendCancelled);
@@ -1884,6 +2073,10 @@ class _ConversationPageState extends State<ConversationPage> {
         _notifyConversationListUpdate();
       }
       accepted = true;
+      if (_taskMode) {
+        await _agentTask!
+            .begin(userAt: userModel.createdAt, input: inputMessage);
+      }
       _lastUserModel = userModel;
       _lastUserFileText = processed.extraText;
       if (_draftOnlyConversation) {
@@ -1934,6 +2127,9 @@ class _ConversationPageState extends State<ConversationPage> {
         }
       }
     } finally {
+      if (accepted && _taskMode && _agentTask?.status == 'running') {
+        await _agentTask!.finish(complete: false);
+      }
       _abortStreamRequest();
       _streamAbortCompleter = null;
       _clearUsageRound();
@@ -1977,14 +2173,18 @@ class _ConversationPageState extends State<ConversationPage> {
 
   Future<ToolRegistry?> _toolsForSend(
       AISettings settings, ModelCapabilities caps, bool webSearch) async {
-    final allowTools = _assistant?.useTools ?? true;
+    final allowTools = _taskMode || (_assistant?.useTools ?? true);
     if (!caps.tool || !settings.streamEnabled || !allowTools) return null;
     _onSendProgress(const ChatSendProgress('准备工具'));
     final mcpTools = await _discoverMcpTools(settings);
     final registry = ToolRegistry.fromAssistant(settings, _effectiveToolIds,
         forceWebSearch: webSearch,
         actions: _toolActions(),
-        extraTools: mcpTools);
+        extraTools: [
+          ...mcpTools,
+          if (_taskMode) _agentTask!.todoTool,
+          if (_taskMode) ...?_taskSkills?.tools
+        ]);
     return registry.isEmpty ? null : registry;
   }
 
@@ -2073,7 +2273,7 @@ class _ConversationPageState extends State<ConversationPage> {
                       style: TextStyle(color: Theme.of(ctx).colorScheme.error)),
                 if (plan.summary.isNotEmpty) ...[
                   const SizedBox(height: 16),
-                  const Text('较早对话摘录摘要'),
+                  Text(plan.usesSemanticSummary ? '较早对话语义摘要' : '较早对话原文摘录'),
                   SelectableText(plan.summary),
                 ],
                 const SizedBox(height: 16),
@@ -2425,6 +2625,7 @@ class _ConversationPageState extends State<ConversationPage> {
             webSearch: webSearch,
             onProgress: _onSendProgress,
             onContextPlan: _onContextPlan,
+            task: _taskMode ? _agentTask : null,
             tools: tools)
         .listen(
       (event) {
@@ -2518,6 +2719,21 @@ class _ConversationPageState extends State<ConversationPage> {
       hasError: dispatcher.hasError,
     );
     final mainText = dispatcher.mainText;
+    final protocol = completionDao.lastProtocolMessages;
+    if (protocol.isNotEmpty && _protocolIsBalanced(protocol)) {
+      final index = blocks.indexWhere((b) => b is MainTextBlock);
+      if (index >= 0) {
+        blocks[index] = (blocks[index] as MainTextBlock)
+            .copyWith(protocolMessages: protocol);
+      } else {
+        blocks.add(MainTextBlock(
+            id: 'blk_${messageKey}_protocol',
+            messageId: messageKey,
+            createdAt: receiverModel.createdAt,
+            status: MessageBlockStatus.success,
+            protocolMessages: protocol));
+      }
+    }
     // 空回复（空流 / 仅思考 / 停止前无正文）不落空串，否则会作为空 assistant
     // 轮次回灌历史，部分上游会拒绝；用「no response」兜底，回退平铺渲染可见。
     final content = mainText.isNotEmpty
@@ -2538,6 +2754,10 @@ class _ConversationPageState extends State<ConversationPage> {
     if (user != null) {
       completionDao.appendTurn(user, finalModel,
           assistantBlocks: blocks, userFileText: _lastUserFileText);
+      if (_taskMode && _agentTask?.userCreatedAt == user.createdAt) {
+        await _agentTask!
+            .finish(complete: !dispatcher.hasError && !_sendCancelled);
+      }
       _lastUserModel = null;
       _lastUserFileText = '';
       await _recordUsageFromStream(
@@ -2925,6 +3145,12 @@ class _ConversationPageState extends State<ConversationPage> {
     usageDao = await UsageDao.create(dbManager);
     usageRecordService = UsageRecordService(usageDao);
     favoriteDao = await FavoriteDao.create(dbManager);
+    _agentTask = AgentTaskSession(
+        cid: widget.conversationModel.cid,
+        store: await AgentTaskDao.create(dbManager));
+    await _agentTask!.load();
+    _skillCatalog = await SkillCatalogService.create(dbManager);
+    _summaryDao = await SemanticChatSummaryDao.create(dbManager);
     // 阶段七：加载会话绑定的助手（先于 CompletionDao 构造，使首轮即带
     // 系统提示词与模型覆盖）。助手已删除时回落 null。
     _assistantDao = await AssistantDao.create(dbManager);
@@ -2946,6 +3172,8 @@ class _ConversationPageState extends State<ConversationPage> {
     _daoSystemPrompt = await _assistantSystemPromptForSafely('');
     _daoModelProviderId = widget.conversationModel.modelProviderId;
     _daoModelId = widget.conversationModel.modelId;
+    _daoReasoningEffort = widget.conversationModel.deepSeekReasoningEffort;
+    _daoTaskMode = _taskMode;
     // 从持久化块恢复工具调用历史（遗留项 2）+ 附件文本历史（遗留项 6），
     // 使重开会话后工具调用与文件上下文仍跨轮可见。
     final candidates = await messageDao.loadContextCandidates();
@@ -2959,7 +3187,10 @@ class _ConversationPageState extends State<ConversationPage> {
         messages: candidates.messages,
         toolHistory: blockHistory.$1,
         fileHistory: blockHistory.$2,
-        roleContinuationHistory: blockHistory.$3);
+        roleContinuationHistory: blockHistory.$3,
+        protocolHistory: blockHistory.$4,
+        conversationId: widget.conversationModel.cid,
+        semanticSummaryService: _summaryServiceFor(_effective(settings)));
     await _restoreDraft();
     if (!mounted || !_accountCurrent) return;
     setState(() => _ready = true);
@@ -3089,6 +3320,53 @@ class _ConversationPageState extends State<ConversationPage> {
     if (!mounted) return;
     final label = picked.modelId == null ? '跟随全局设置' : picked.modelId!;
     HiDialog.showSnackBar(context, '当前会话模型：$label');
+  }
+
+  Future<void> _selectReasoningEffort() async {
+    if (!_ready || _isStreaming || _savingReasoningEffort || !_accountCurrent) {
+      return;
+    }
+    final picked = await showDialog<DeepSeekReasoningSelection>(
+      context: context,
+      builder: (_) => DeepSeekReasoningDialog(
+          selected: widget.conversationModel.deepSeekReasoningEffort),
+    );
+    if (picked == null || !mounted || !_accountCurrent || _isStreaming) return;
+    setState(() => _savingReasoningEffort = true);
+    try {
+      await conversationListDao.updateReasoningEffort(
+          widget.conversationModel, picked.effort);
+      if (!mounted || !_accountCurrent) return;
+      widget.conversationModel.hadChanged = true;
+      final rawSettings = context.read<AISettingsProvider>().settings;
+      final effective = _effective(rawSettings);
+      completionDao = CompletionDao(
+        manageContext: true,
+        settings: effective,
+        systemPrompt: _daoSystemPrompt,
+        messages: completionDao.currentMessages,
+        toolHistory: completionDao.currentToolHistory,
+        fileHistory: completionDao.currentFileHistory,
+        roleContinuationHistory: completionDao.currentRoleContinuationHistory,
+        protocolHistory: completionDao.currentProtocolHistory,
+        conversationId: widget.conversationModel.cid,
+        semanticSummaryService: _summaryServiceFor(effective),
+      );
+      _currentSettings = rawSettings;
+      _daoReasoningEffort = picked.effort;
+      setState(() {
+        _contextPlan = completionDao.previewContext(prompt: _inputMessage);
+        _contextAttachmentsPrepared = false;
+      });
+      HiDialog.showSnackBar(
+          context, '当前会话思考强度：${picked.effort?.label ?? '跟随默认'}');
+    } catch (_) {
+      if (mounted && _accountCurrent) {
+        HiDialog.showSnackBar(context, '思考强度保存失败，请重试');
+      }
+    } finally {
+      if (mounted) setState(() => _savingReasoningEffort = false);
+    }
   }
 
   void _openVoicePrefs() async {
@@ -3499,13 +3777,19 @@ class _ConversationPageState extends State<ConversationPage> {
   /// 从持久化块里抽取这批消息的工具调用块（遗留项 2）与附件降级文本（遗留项 6），
   /// 一次查询同时构成 `createdAt -> List<ToolBlock>` 与 `createdAt -> 附件文本`，
   /// 供 [CompletionDao] 跨轮重建。候选历史与 UI 分页独立，保持重开会话后上下文一致。
-  Future<(Map<int, List<ToolBlock>>, Map<int, String>, Map<int, String>)>
-      _loadBlockHistory(List<MessageModel> list) async {
+  Future<
+      (
+        Map<int, List<ToolBlock>>,
+        Map<int, String>,
+        Map<int, String>,
+        Map<int, List<Map<String, dynamic>>>
+      )> _loadBlockHistory(List<MessageModel> list) async {
     if (list.isEmpty) {
       return (
         <int, List<ToolBlock>>{},
         <int, String>{},
         <int, String>{},
+        <int, List<Map<String, dynamic>>>{},
       );
     }
     final blocksMap =
@@ -3515,15 +3799,22 @@ class _ConversationPageState extends State<ConversationPage> {
         <int, List<ToolBlock>>{},
         <int, String>{},
         <int, String>{},
+        <int, List<Map<String, dynamic>>>{},
       );
     }
     final tools = <int, List<ToolBlock>>{};
     final files = <int, String>{};
     final continuations = <int, String>{};
+    final protocols = <int, List<Map<String, dynamic>>>{};
     for (final m in list) {
       final json = blocksMap[chatMessageKey(m.createdAt)];
       if (json == null) continue;
       final blocks = MessageBlock.decodeList(json);
+      final protocol = blocks
+          .whereType<MainTextBlock>()
+          .expand((b) => b.protocolMessages)
+          .toList();
+      if (protocol.isNotEmpty) protocols[m.createdAt] = protocol;
       final tb = blocks.whereType<ToolBlock>().toList();
       if (tb.isNotEmpty) tools[m.createdAt] = tb;
       final text = blocks
@@ -3539,7 +3830,7 @@ class _ConversationPageState extends State<ConversationPage> {
           .join('\n');
       if (continuation.isNotEmpty) continuations[m.createdAt] = continuation;
     }
-    return (tools, files, continuations);
+    return (tools, files, continuations, protocols);
   }
 
   /// 从 DB 恢复这批消息的块列表并 seed 进 [ChatBlockStore]。
@@ -4038,10 +4329,11 @@ class _ConversationPageState extends State<ConversationPage> {
   }
 
   Future<void> _retryUserMessage(MessageModel userMessage,
-      {MessageModel? oldReply}) async {
+      {MessageModel? oldReply, bool resumeTask = false}) async {
     if (!_ready ||
         !_accountCurrent ||
         _isStreaming ||
+        _savingReasoningEffort ||
         !_canStartAIRequest(showPrompt: true)) {
       return;
     }
@@ -4053,8 +4345,9 @@ class _ConversationPageState extends State<ConversationPage> {
     });
     try {
       final rawSettings = context.read<AISettingsProvider>().settings;
-      final systemPrompt =
-          await _assistantSystemPromptForSafely(userMessage.content);
+      final systemPrompt = await _assistantSystemPromptForSafely(
+          userMessage.content,
+          resumeTask: resumeTask);
       if (_sendCancelled) return;
       final settings = _effective(rawSettings);
       final candidate = CompletionDao(
@@ -4069,6 +4362,9 @@ class _ConversationPageState extends State<ConversationPage> {
         toolHistory: completionDao.currentToolHistory,
         fileHistory: completionDao.currentFileHistory,
         roleContinuationHistory: completionDao.currentRoleContinuationHistory,
+        protocolHistory: completionDao.currentProtocolHistory,
+        conversationId: widget.conversationModel.cid,
+        semanticSummaryService: _summaryServiceFor(settings),
       );
       final persistedAttachments =
           candidate.attachmentsForUserMessage(userMessage);
@@ -4095,6 +4391,7 @@ class _ConversationPageState extends State<ConversationPage> {
         persisted: persistedAttachments,
         files: blocks.whereType<FileBlock>().map((b) => b.file).toList(),
         capabilities: officialDeepSeek ? caps.copyWith(pdf: false) : caps,
+        limits: settings.attachmentProcessingLimits,
         onProgress: _onSendProgress,
         abortTrigger: _streamAbortCompleter?.future,
         isCancelled: () => _sendCancelled,
@@ -4130,8 +4427,16 @@ class _ConversationPageState extends State<ConversationPage> {
       _daoAssistant = _assistant;
       _daoModelProviderId = widget.conversationModel.modelProviderId;
       _daoModelId = widget.conversationModel.modelId;
+      _daoReasoningEffort = widget.conversationModel.deepSeekReasoningEffort;
+      _daoTaskMode = _taskMode;
       _lastUserModel = userMessage;
       _lastUserFileText = attachments.extraText;
+      if (_taskMode) {
+        await _agentTask!.begin(
+            userAt: userMessage.createdAt,
+            input: userMessage.content,
+            resume: resumeTask);
+      }
       _markUsageRound(prompt: userMessage.content, settings: settings);
       if (_sendCancelled) {
         if (_accountCurrent) await _saveFailedReply('已停止发送，可重试此条提问');
@@ -4156,6 +4461,9 @@ class _ConversationPageState extends State<ConversationPage> {
       _abortStreamRequest();
       _streamAbortCompleter = null;
       _clearUsageRound();
+      if (_taskMode && _agentTask?.status == 'running') {
+        await _agentTask!.finish(complete: false);
+      }
       if (mounted && _accountCurrent) {
         setState(() {
           _isStreaming = false;

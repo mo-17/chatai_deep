@@ -1,6 +1,7 @@
 import 'dart:io';
 
 import 'package:chatgpt_app_core/chat/application/file_processor.dart';
+import 'package:chatgpt_app_core/chat/domain/attachment_processing_limits.dart';
 import 'package:chatgpt_app_core/chat/domain/chat_attachments.dart';
 import 'package:chatgpt_app_core/chat/domain/model_capabilities.dart';
 import 'package:chatgpt_app_core/model/story_room_model.dart';
@@ -67,7 +68,9 @@ class StoryRoomAttachmentService {
     required Iterable<String> imagePaths,
     required Iterable<String> filePaths,
     required ModelCapabilities capabilities,
+    AttachmentProcessingLimits limits = const AttachmentProcessingLimits(),
     String fallbackContext = '',
+    bool reuseExtractedContext = false,
   }) async {
     final images = StoryRoomAttachmentPolicy.normalizePaths(
       imagePaths,
@@ -94,13 +97,18 @@ class StoryRoomAttachmentService {
     var processed = const ProcessedFiles();
     if (files.isNotEmpty) {
       try {
-        processed = await FileProcessor.process(files, capabilities);
+        processed =
+            await FileProcessor.process(files, capabilities, limits: limits);
       } catch (_) {
         // 历史文件可能已被系统清理，使用落库的旧文本上下文继续请求。
       }
     }
     final extracted = processed.extraText.trim();
-    final context = extracted.isNotEmpty ? extracted : fallbackContext.trim();
+    // 重试沿用已保存的正文，后续降低上限或修改源文件不会改变旧提问。
+    final savedContext = fallbackContext.trim();
+    final context = reuseExtractedContext && savedContext.isNotEmpty
+        ? savedContext
+        : (extracted.isNotEmpty ? extracted : savedContext);
     return StoryRoomAttachmentBundle(
       imagePaths: images,
       filePaths: files,

@@ -4,6 +4,7 @@ import 'dart:io';
 import 'package:chat_message/models/message_model.dart';
 import 'package:chatgpt_app_core/chat/application/conversation_draft_store.dart';
 import 'package:chatgpt_app_core/chat/application/read_aloud_service.dart';
+import 'package:chatgpt_app_core/chat/domain/deepseek_reasoning_effort.dart';
 import 'package:chatgpt_app_core/dao/ai_settings_dao.dart';
 import 'package:chatgpt_app_core/db/conversation_dao.dart';
 import 'package:chatgpt_app_core/db/hi_db_manager.dart';
@@ -138,7 +139,95 @@ void main() {
         directoryResolver: () async => temporary,
       );
 
+  testWidgets('思考等级会话保存、重开恢复、取消保留和默认清除', (tester) async {
+    final ai = settings.settings.clone()..activeProviderId = 'deepseek';
+    ai.setActiveModel('deepseek-flash');
+    await tester.runAsync(() => settings.update(ai));
+    final model = conversation(104, title: '思考等级验收');
+    await tester.runAsync(() async {
+      await (await ConversationListDao.create(storage)).saveConversation(model);
+    });
+    await openPage(tester, model);
+    expect(find.text('思考：默认'), findsOneWidget);
+    await tester
+        .tap(find.byKey(const ValueKey('conversation_reasoning_effort')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const ValueKey('reasoning_effort_max')));
+    await letIoFinish(tester);
+    expect(find.text('思考：最高'), findsOneWidget);
+    expect(model.deepSeekReasoningEffort, DeepSeekReasoningEffort.max);
+    expect(settings.settings.deepSeekReasoningEffort, isNull,
+        reason: '会话选择不能改变其他对话的默认值');
+    await tester
+        .tap(find.byKey(const ValueKey('conversation_reasoning_effort')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('取消'));
+    await tester.pumpAndSettle();
+    expect(model.deepSeekReasoningEffort, DeepSeekReasoningEffort.max);
+    await tester.pumpWidget(const SizedBox.shrink());
+    await letIoFinish(tester);
+    final reloaded = await tester.runAsync(() async =>
+        (await (await ConversationListDao.create(storage))
+                .getConversationList())
+            .single);
+    expect(reloaded!.deepSeekReasoningEffort, DeepSeekReasoningEffort.max);
+    await openPage(tester, reloaded);
+    expect(find.text('思考：最高'), findsOneWidget);
+    await tester
+        .tap(find.byKey(const ValueKey('conversation_reasoning_effort')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const ValueKey('reasoning_effort_default')));
+    await letIoFinish(tester);
+    expect(find.text('思考：默认'), findsOneWidget);
+    final rows = await tester.runAsync(() => storage.db.query(
+        'tb_conversation_list',
+        where: 'cid = ?',
+        whereArgs: [model.cid]));
+    expect(rows!.single['deepSeekReasoningEffort'], isNull);
+    expect(rows.single['title'], '思考等级验收');
+    expect(tester.takeException(), isNull);
+    await tester.pumpWidget(const SizedBox.shrink());
+    await letIoFinish(tester);
+  });
+
+  testWidgets('320 像素窄屏下 DeepSeek 模型和思考入口可用', (tester) async {
+    tester.view.physicalSize = const Size(320, 720);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+    final ai = settings.settings.clone()..activeProviderId = 'deepseek';
+    ai.setActiveModel('deepseek-v4-flash-vision-exp');
+    await tester.runAsync(() => settings.update(ai));
+    await openPage(tester, conversation(105));
+    expect(find.byKey(const ValueKey('conversation_reasoning_effort')),
+        findsOneWidget);
+    expect(tester.takeException(), isNull);
+    await tester
+        .tap(find.byKey(const ValueKey('conversation_reasoning_effort')));
+    await tester.pumpAndSettle();
+    expect(find.text('思考强度'), findsOneWidget);
+    expect(tester.takeException(), isNull);
+    await tester.tap(find.text('取消'));
+    await tester.pumpAndSettle();
+    await tester.pumpWidget(const SizedBox.shrink());
+    await letIoFinish(tester);
+  });
+
+  testWidgets('不支持等级的模型隐藏入口', (tester) async {
+    final ai = settings.settings.clone()..activeProviderId = 'openai';
+    ai.setActiveModel('gpt-4o');
+    await tester.runAsync(() => settings.update(ai));
+    await openPage(tester, conversation(106));
+    expect(find.byKey(const ValueKey('conversation_reasoning_effort')),
+        findsNothing);
+    await tester.pumpWidget(const SizedBox.shrink());
+    await letIoFinish(tester);
+  });
+
   testWidgets('旧无 blocks 消息重开恢复草稿，原记录保持一致且初始化后可发送', (tester) async {
+    final ai = settings.settings.clone()..activeProviderId = 'deepseek';
+    ai.setActiveModel('deepseek-flash');
+    await tester.runAsync(() => settings.update(ai));
     final model = conversation(101, title: '旧对话');
     final drafts = ConversationDraftStore(
         conversationId: '${model.cid}',
@@ -176,6 +265,18 @@ void main() {
     expect(find.text('查看本轮上下文'), findsOneWidget);
     expect(find.text('旧问题'), findsWidgets);
     expect(find.text('旧回答'), findsWidgets);
+    await tester
+        .tap(find.byKey(const ValueKey('conversation_reasoning_effort')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const ValueKey('reasoning_effort_high')));
+    await letIoFinish(tester);
+    expect(find.text('思考：高'), findsOneWidget);
+    expect(
+        tester
+            .widget<MessageInputWidget>(find.byType(MessageInputWidget))
+            .controller!
+            .text,
+        '还没有发送的草稿');
     final after = await tester.runAsync(() => storage.db.query('tb_messages',
         where: 'cid = ?', whereArgs: [model.cid], orderBy: 'id'));
     expect(after, before);
@@ -190,6 +291,7 @@ void main() {
             where: 'cid = ?', whereArgs: [model.cid], orderBy: 'id'))),
         before);
     await openPage(tester, model);
+    expect(find.text('思考：高'), findsOneWidget);
     expect(
         tester
             .widget<MessageInputWidget>(find.byType(MessageInputWidget))

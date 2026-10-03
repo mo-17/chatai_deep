@@ -9,6 +9,7 @@ import 'package:chatgpt_app_core/chat/application/tool_call_accumulator.dart';
 import 'package:chatgpt_app_core/chat/domain/chat_attachments.dart';
 import 'package:chatgpt_app_core/chat/domain/chat_request_options.dart';
 import 'package:chatgpt_app_core/chat/domain/chat_send_progress.dart';
+import 'package:chatgpt_app_core/chat/domain/deepseek_reasoning_effort.dart';
 import 'package:chatgpt_app_core/chat/domain/model_capabilities.dart';
 import 'package:chatgpt_app_core/chat/domain/stream_event.dart';
 import 'package:chatgpt_app_core/dao/chat/chat_service.dart';
@@ -52,27 +53,40 @@ class DirectChatService
         capabilities.image;
   }
 
+  bool get _supportsThinkingReplay {
+    final firstParty = _providerId == 'deepseek' ||
+        (_providerId == null && _providerCode == 'deepseek') ||
+        Uri.tryParse(_cfg.baseUrl)?.host.toLowerCase() == 'api.deepseek.com';
+    return firstParty &&
+        (ModelCapabilities.isDeepSeekVisionModel(_cfg.model) ||
+            _cfg.model.toLowerCase().trim() == 'deepseek-v4-pro');
+  }
+
   Map<String, dynamic> _requestFields(
     List<Map<String, dynamic>> messages, {
     List<Map<String, dynamic>>? tools,
     Map<String, dynamic> extraBody = const {},
   }) {
-    final firstParty = _providerId == 'deepseek' ||
-        (_providerId == null && _providerCode == 'deepseek') ||
-        Uri.tryParse(_cfg.baseUrl)?.host.toLowerCase() == 'api.deepseek.com';
     final hasToolHistory = messages.any((message) =>
         message['role'] == 'assistant' &&
         message['tool_calls'] is List &&
         (message['tool_calls'] as List).isNotEmpty);
-    // 当前工具历史未保存 reasoning_content。Flash 工具回路改用非思考模式，
-    // 避免下一轮因缺少思考回传被拒绝；普通图片问答仍保留上游默认思考模式。
-    final disableThinking = firstParty &&
-        ModelCapabilities.isDeepSeekVisionModel(_cfg.model) &&
-        ((tools?.isNotEmpty ?? false) || hasToolHistory);
-    return {
+    // 思考模式带 tools 时需回传所有历史 assistant 的 reasoning_content，
+    // 包含未调用工具的回答。新回路已保留完整字段；旧对话或非思考轮次缺字段时
+    // 继续使用非思考模式，避免升级后因旧工具历史缺失而收到 400。
+    final missingReasoning = messages.any((message) =>
+        message['role'] == 'assistant' &&
+        message['reasoning_content'] is! String);
+    final disableThinking = _supportsThinkingReplay &&
+        ((tools?.isNotEmpty ?? false) || hasToolHistory) &&
+        missingReasoning;
+    final fields = <String, dynamic>{
       ...extraBody,
       if (disableThinking) 'thinking': {'type': 'disabled'},
     };
+    // 旧工具历史降级到非思考模式时，不发送与 disabled 冲突的推理强度。
+    if (disableThinking) fields.remove('reasoning_effort');
+    return fields;
   }
 
   /// 精确服务商 id。用于防止 custom/openrouter 因派生 code 被误判为 first-party。
@@ -91,6 +105,8 @@ class DirectChatService
   /// 核采样阈值，null = 不发送（用上游默认）。0.0 是有效值。
   final double? _topP;
 
+  final DeepSeekReasoningEffort? _deepSeekReasoningEffort;
+
   DirectChatService(
     ProviderConfig cfg, {
     String? providerId,
@@ -98,6 +114,7 @@ class DirectChatService
     int maxOutputTokens = 0,
     double? temperature,
     double? topP,
+    DeepSeekReasoningEffort? deepSeekReasoningEffort,
     DeepSeekAttachmentAdapter? attachmentAdapter,
     String? previewAccountHash,
     DeepSeekFilePreviewStore? previewStore,
@@ -115,7 +132,19 @@ class DirectChatService
         _providerCode = providerCode,
         _maxOutputTokens = maxOutputTokens,
         _temperature = temperature,
-        _topP = topP;
+        _topP = topP,
+        _deepSeekReasoningEffort = deepSeekReasoningEffort;
+
+  ReasoningControlDecision _reasoningFor(ChatRequestOptions options) =>
+      ReasoningControlAdapter.resolve(
+        providerId: _providerId,
+        providerCode: _providerCode,
+        modelId: _cfg.model,
+        policy: options.reasoningPolicy,
+        deepSeekReasoningEffort:
+            options.deepSeekReasoningEffort ?? _deepSeekReasoningEffort,
+        suppressed: options.suppressReasoningControl,
+      );
 
   static String? _currentPreviewAccountHash() {
     // getter 只读取已存在的 provider；不可在纯 transport 构造时触发登录/缓存初始化。
@@ -165,6 +194,7 @@ class DirectChatService
     List<Map<String, dynamic>> extraMessages = const [],
     Future<void>? abortTrigger,
     ChatSendProgressCallback? onProgress,
+    Map<String, dynamic>? reasoningFields,
   ]) async {
     final messages = <Map<String, dynamic>>[
       ...history,
@@ -176,9 +206,38 @@ class DirectChatService
       ...extraMessages,
     ];
     final adapter = _attachmentAdapter;
-    if (adapter == null) return messages;
-    return await adapter.prepareMessages(messages,
-        abortTrigger: abortTrigger, onProgress: onProgress);
+    final prepared = adapter == null
+        ? messages
+        : await adapter.prepareMessages(messages,
+            abortTrigger: abortTrigger, onProgress: onProgress);
+    final controlFields = reasoningFields ??
+        _reasoningFor(const ChatRequestOptions()).requestFields;
+    final thinking = controlFields['thinking'];
+    final completeOrdinaryReasoning = _supportsThinkingReplay &&
+        thinking is Map &&
+        thinking['type'] == 'enabled' &&
+        const {'low', 'high', 'max'}
+            .contains(controlFields['reasoning_effort']);
+    // reasoning_content 是已确认的 DeepSeek V4 协议字段。切换模型/服务商
+    // 时只删请求副本中的字段，不触碰本地协议记录，以免其他上游拒绝它。
+    return prepared.map((message) {
+      final copy = Map<String, dynamic>.from(message);
+      if (!_supportsThinkingReplay ||
+          copy['role'] != 'assistant' ||
+          copy['reasoning_content'] is! String) {
+        copy.remove('reasoning_content');
+      }
+      final calls = copy['tool_calls'];
+      if (completeOrdinaryReasoning &&
+          copy['role'] == 'assistant' &&
+          copy['reasoning_content'] is! String &&
+          (calls == null || (calls is List && calls.isEmpty))) {
+        // 非思考的普通回答没有可回传的思考正文。显式切回思考时在请求副本
+        // 补空字段，避免其阻止后续等级生效；旧工具调用缺字段仍交给兼容降级。
+        copy['reasoning_content'] = '';
+      }
+      return copy;
+    }).toList();
   }
 
   @override
@@ -198,7 +257,8 @@ class DirectChatService
     final response = await completion.createChat(
       model: _cfg.model,
       messages: messages,
-      extraBody: _requestFields(messages),
+      extraBody: _requestFields(messages,
+          extraBody: _reasoningFor(const ChatRequestOptions()).requestFields),
       maxTokens: _maxTokensOrNull,
       temperature: _temperature,
       topP: _topP,
@@ -254,16 +314,17 @@ class DirectChatService
       chatUrl: _cfg.baseUrl,
     );
     final completion = AICompletion(config);
-    final messages = await _buildMessages(prompt, history, attachments,
-        const [], options.abortTrigger, options.onProgress);
+    final reasoning = _reasoningFor(options);
+    final messages = await _buildMessages(
+        prompt,
+        history,
+        attachments,
+        const [],
+        options.abortTrigger,
+        options.onProgress,
+        reasoning.requestFields);
     await _checkRequestAbort(options.abortTrigger);
     reportChatSendProgress(options.onProgress, const ChatSendProgress('等待回答'));
-    final reasoning = ReasoningControlAdapter.resolve(
-        providerId: _providerId,
-        providerCode: _providerCode,
-        modelId: _cfg.model,
-        policy: options.reasoningPolicy,
-        suppressed: options.suppressReasoningControl);
     final response = await _awaitUnlessAborted(
         completion.createChat(
           model: _cfg.model,
@@ -301,7 +362,8 @@ class DirectChatService
     yield* completion.createChatStream(
       model: _cfg.model,
       messages: messages,
-      extraBody: _requestFields(messages),
+      extraBody: _requestFields(messages,
+          extraBody: _reasoningFor(const ChatRequestOptions()).requestFields),
       maxTokens: _maxTokensOrNull,
       temperature: _temperature,
       topP: _topP,
@@ -324,6 +386,7 @@ class DirectChatService
       tools: tools,
       extraMessages: extraMessages,
       maxTokens: _maxTokensOrNull,
+      extraBody: _reasoningFor(const ChatRequestOptions()).requestFields,
     );
   }
 
@@ -340,13 +403,7 @@ class DirectChatService
     var reasoningControlAttached = false;
     try {
       _ensureApiKey();
-      final reasoning = ReasoningControlAdapter.resolve(
-        providerId: _providerId,
-        providerCode: _providerCode,
-        modelId: _cfg.model,
-        policy: options.reasoningPolicy,
-        suppressed: options.suppressReasoningControl,
-      );
+      final reasoning = _reasoningFor(options);
       reasoningControlAttached = reasoning.requestFields.isNotEmpty;
       final events = _createStreamEvents(
         prompt: prompt,
@@ -404,8 +461,8 @@ class DirectChatService
       chatUrl: _cfg.baseUrl,
     );
     final completion = AICompletion(config);
-    final messages = await _buildMessages(
-        prompt, history, attachments, extraMessages, abortTrigger, onProgress);
+    final messages = await _buildMessages(prompt, history, attachments,
+        extraMessages, abortTrigger, onProgress, extraBody);
     await _checkRequestAbort(abortTrigger);
     reportChatSendProgress(onProgress, const ChatSendProgress('等待回答'));
     // 工具调用分片按 index 累积，流结束后再发完整 toolCall 事件（阶段六）。

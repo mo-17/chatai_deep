@@ -1,4 +1,5 @@
 import 'package:chatgpt_app_core/chat/domain/chat_send_progress.dart';
+import 'package:chatgpt_app_core/chat/domain/deepseek_reasoning_effort.dart';
 
 /// 请求用途。普通聊天与翻译可以在同一网络层使用不同的可靠性策略。
 enum ChatRequestProfile { standard, translation }
@@ -21,6 +22,9 @@ int? validateMaxOutputTokensOverride(int? value) {
 final class ChatRequestOptions {
   final ChatRequestProfile profile;
   final ChatReasoningPolicy reasoningPolicy;
+
+  /// 单次请求覆盖设置中的等级；null 沿用设置（旧设置仍跟随服务端默认）。
+  final DeepSeekReasoningEffort? deepSeekReasoningEffort;
   final Future<void>? abortTrigger;
   final Duration connectTimeout;
   final int? minOutputTokens;
@@ -31,6 +35,7 @@ final class ChatRequestOptions {
   const ChatRequestOptions({
     this.profile = ChatRequestProfile.standard,
     this.reasoningPolicy = ChatReasoningPolicy.providerDefault,
+    this.deepSeekReasoningEffort,
     this.abortTrigger,
     this.connectTimeout = const Duration(seconds: 20),
     this.minOutputTokens,

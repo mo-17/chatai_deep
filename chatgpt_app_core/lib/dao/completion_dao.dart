@@ -3,6 +3,8 @@ import 'dart:convert';
 
 import 'package:chat_message/models/message_model.dart';
 import 'package:chatgpt_app_core/chat/application/chat_context_planner.dart';
+import 'package:chatgpt_app_core/chat/application/agent_task_session.dart';
+import 'package:chatgpt_app_core/chat/application/semantic_chat_summary_service.dart';
 import 'package:chatgpt_app_core/chat/application/search_orchestrator.dart';
 import 'package:chatgpt_app_core/chat/application/tool_loop_runner.dart';
 import 'package:chatgpt_app_core/chat/application/tool_registry.dart';
@@ -60,6 +62,13 @@ class CompletionDao {
   /// 历史里每条 assistant 消息（按 createdAt）未完成回复的角色状态承接。
   /// 用于把“有思考但无正文”的短期状态带到下一轮，不进入长期记忆。
   final Map<int, String> _roleContinuationHistory;
+  final Map<int, List<Map<String, dynamic>>> _protocolHistory;
+  List<Map<String, dynamic>> lastProtocolMessages = [];
+  int _requestGeneration = 0;
+  final SemanticChatSummaryService? semanticSummaryService;
+  final int? conversationId;
+  String? _semanticSummary;
+  String? _semanticSummaryFingerprint;
 
   /// 显式启用新的请求预算，旧调用方与静态历史重建行为保持原样。
   final bool manageContext;
@@ -73,9 +82,15 @@ class CompletionDao {
       Map<int, List<ToolBlock>>? toolHistory,
       Map<int, String>? fileHistory,
       Map<int, String>? roleContinuationHistory,
+      Map<int, List<Map<String, dynamic>>>? protocolHistory,
+      this.semanticSummaryService,
+      this.conversationId,
       this.manageContext = false,
-      this.contextPolicy = const ChatContextPolicy()})
+      ChatContextPolicy? contextPolicy})
       : chatService = chatService ?? ChatService.from(settings),
+        contextPolicy = contextPolicy ??
+            ChatContextPolicy(
+                inputBudgetTokens: settings.effectiveContextInputBudgetTokens),
         _settings = settings,
         _systemPrompt = systemPrompt?.trim() ?? '',
         // 防御性拷贝成可增删的 growable 列表：调用方常把上一个 dao 的
@@ -86,12 +101,15 @@ class CompletionDao {
             : List<MessageModel>.of(messages),
         _toolHistory = {...?toolHistory},
         _fileHistory = {...?fileHistory},
-        _roleContinuationHistory = {...?roleContinuationHistory} {
+        _roleContinuationHistory = {...?roleContinuationHistory},
+        _protocolHistory = {...?protocolHistory} {
     AILogger.log('init finish, loaded ${_messageList.length} messages');
   }
 
   ///当前历史消息列表，供重建 CompletionDao 时传递
   List<MessageModel> get currentMessages => List.unmodifiable(_messageList);
+  Map<int, List<Map<String, dynamic>>> get currentProtocolHistory =>
+      Map.unmodifiable(_protocolHistory);
 
   ///当前工具调用历史，供重建 CompletionDao 时一并传递（遗留项 2）。
   Map<int, List<ToolBlock>> get currentToolHistory =>
@@ -133,18 +151,31 @@ class CompletionDao {
     ChatAttachments? attachments,
     List<Map<String, dynamic>> declarations = const [],
     List<Map<String, dynamic>> extraMessages = const [],
-  }) =>
-      const ChatContextPlanner().plan(
-        history: _buildHistory(),
-        systemPrompt: injectSystemPrompt(const [], _systemPrompt)
-            .single['content'] as String,
-        prompt: prompt,
-        attachments: attachments,
-        tools: declarations,
-        extraMessages: extraMessages,
-        policy: contextPolicy,
-        maxOutputTokens: _settings.maxOutputTokens,
-      );
+  }) {
+    final history = _buildHistory();
+    ChatContextPlan plan(String? summary) => const ChatContextPlanner().plan(
+          history: history,
+          systemPrompt: injectSystemPrompt(const [], _systemPrompt)
+              .single['content'] as String,
+          prompt: prompt,
+          attachments: attachments,
+          tools: declarations,
+          extraMessages: extraMessages,
+          policy: contextPolicy,
+          maxOutputTokens: _settings.maxOutputTokens,
+          semanticSummary: summary,
+        );
+    final baseline = plan(null);
+    // 工具声明和回灌消息会改变省略区间，旧摘要只能覆盖同一段原文。
+    if (_semanticSummary == null ||
+        baseline.omittedHistoryMessages == 0 ||
+        SemanticChatSummaryService.sourceFingerprint(
+                history.take(baseline.omittedHistoryMessages).toList()) !=
+            _semanticSummaryFingerprint) {
+      return baseline;
+    }
+    return plan(_semanticSummary);
+  }
 
   List<Map<String, dynamic>> _requestHistory({
     required String prompt,
@@ -179,6 +210,11 @@ class CompletionDao {
     _messageList.add(user);
     _messageList.add(assistant);
     if (assistantBlocks != null) {
+      final protocol = assistantBlocks
+          .whereType<MainTextBlock>()
+          .expand((b) => b.protocolMessages)
+          .toList();
+      if (protocol.isNotEmpty) _protocolHistory[assistant.createdAt] = protocol;
       final tools = assistantBlocks.whereType<ToolBlock>().toList();
       if (tools.isNotEmpty) _toolHistory[assistant.createdAt] = tools;
       final continuationText = assistantBlocks
@@ -211,6 +247,7 @@ class CompletionDao {
     _messageList.removeLast();
     _toolHistory.remove(assistant.createdAt);
     _roleContinuationHistory.remove(assistant.createdAt);
+    _protocolHistory.remove(assistant.createdAt);
     _fileHistory.remove(user.createdAt);
     return user;
   }
@@ -305,8 +342,37 @@ class CompletionDao {
     Future<void>? abortTrigger,
     ChatSendProgressCallback? onProgress,
     ChatContextPlanCallback? onContextPlan,
+    AgentTaskSession? task,
   }) async* {
+    final requestGeneration = ++_requestGeneration;
+    lastProtocolMessages = [];
     await _ensureNotAborted(abortTrigger);
+    _semanticSummary = null;
+    _semanticSummaryFingerprint = null;
+    if (manageContext &&
+        semanticSummaryService != null &&
+        conversationId != null) {
+      final initial = _planContext(
+          prompt: prompt,
+          attachments: attachments,
+          declarations: tools?.declarations ?? const [],
+          extraMessages: task?.messages ?? const []);
+      if (initial.omittedHistoryMessages > 0) {
+        onProgress?.call(const ChatSendProgress('整理较早对话'));
+        final result = await semanticSummaryService!.prepare(
+            cid: conversationId!,
+            history: _buildHistory(),
+            plan: initial,
+            abortTrigger: abortTrigger);
+        if (requestGeneration != _requestGeneration) {
+          throw const ChatTransportException(
+              safeCode: 'cancelled', safeMessage: '请求已取消');
+        }
+        _semanticSummary = result.summary;
+        _semanticSummaryFingerprint = result.sourceFingerprint;
+        await _ensureNotAborted(abortTrigger);
+      }
+    }
     final history = manageContext
         ? _requestHistory(prompt: prompt, attachments: attachments)
             .where((message) => message['role'] != 'system')
@@ -325,6 +391,13 @@ class CompletionDao {
         attachments: attachments,
         abortTrigger: abortTrigger,
         onProgress: onProgress,
+        task: task,
+        onProtocolMessages: (messages) {
+          // 停止后仍在返回的旧工具不能覆盖下一条提问的历史协议。
+          if (requestGeneration == _requestGeneration) {
+            lastProtocolMessages = messages;
+          }
+        },
         historyForRound: manageContext
             ? (extraMessages, declarations) => _requestHistory(
                   prompt: prompt,
@@ -351,20 +424,34 @@ class CompletionDao {
             onContextPlan: onContextPlan)
         : _withSystem(history);
     onProgress?.call(const ChatSendProgress('等待回答'));
-    if (abortTrigger == null && onProgress == null) {
-      yield* chatService.chatStreamEvents(
-        prompt: prompt,
-        history: requestHistory,
-        attachments: preparedAttachments,
-      );
-    } else {
-      yield* chatService.chatStreamEventsWithOptions(
-        prompt: prompt,
-        history: requestHistory,
-        attachments: preparedAttachments,
-        options: ChatRequestOptions(
-            abortTrigger: abortTrigger, onProgress: onProgress),
-      );
+    final output = abortTrigger == null && onProgress == null
+        ? chatService.chatStreamEvents(
+            prompt: prompt,
+            history: requestHistory,
+            attachments: preparedAttachments,
+          )
+        : chatService.chatStreamEventsWithOptions(
+            prompt: prompt,
+            history: requestHistory,
+            attachments: preparedAttachments,
+            options: ChatRequestOptions(
+                abortTrigger: abortTrigger, onProgress: onProgress),
+          );
+    final text = StringBuffer();
+    final reasoning = StringBuffer();
+    await for (final event in output) {
+      if (event.type == StreamEventType.text) text.write(event.delta);
+      if (event.type == StreamEventType.reasoning) reasoning.write(event.delta);
+      yield event;
+    }
+    if (requestGeneration == _requestGeneration) {
+      lastProtocolMessages = [
+        {
+          'role': 'assistant',
+          'content': text.toString(),
+          'reasoning_content': reasoning.toString()
+        }
+      ];
     }
     if (results.isNotEmpty) yield StreamEvent.citation(results);
   }
@@ -447,6 +534,7 @@ class CompletionDao {
         _toolHistory,
         fileHistory: _fileHistory,
         roleContinuationHistory: _roleContinuationHistory,
+        protocolHistory: _protocolHistory,
       );
 
   /// 把消息列表 + 各 assistant 的工具块 + 各 user 的附件文本重建成 OpenAI
@@ -462,6 +550,7 @@ class CompletionDao {
     Map<int, List<ToolBlock>> toolHistory, {
     Map<int, String> fileHistory = const {},
     Map<int, String> roleContinuationHistory = const {},
+    Map<int, List<Map<String, dynamic>>> protocolHistory = const {},
   }) {
     final history = <Map<String, dynamic>>[];
     for (final m in messages) {
@@ -476,6 +565,30 @@ class CompletionDao {
               : _appendText(m.content, fileText),
         });
       } else {
+        final protocol = protocolHistory[m.createdAt];
+        if (protocol != null && protocol.isNotEmpty) {
+          final normalized = _completeProtocolPairs(protocol);
+          history.addAll(normalized);
+          final continuation =
+              roleContinuationHistory[m.createdAt]?.trim() ?? '';
+          if (normalized.isEmpty ||
+              normalized.last['role'] != 'assistant' ||
+              normalized.last['tool_calls'] != null) {
+            history.add({
+              'role': 'assistant',
+              'content': continuation.isEmpty
+                  ? m.content
+                  : roleContinuationPrompt(continuation),
+            });
+          } else if (continuation.isNotEmpty &&
+              _toolResultContent(normalized.last['content']).trim().isEmpty) {
+            history.last = {
+              ...history.last,
+              'content': roleContinuationPrompt(continuation),
+            };
+          }
+          continue;
+        }
         final tools = toolHistory[m.createdAt];
         if (tools != null && tools.isNotEmpty) {
           history.addAll(toolCallMessages(tools));
@@ -492,6 +605,37 @@ class CompletionDao {
       }
     }
     return history;
+  }
+
+  /// 防御中断或旧备份中的半截工具组，不把未配对协议发给服务商。
+  static List<Map<String, dynamic>> _completeProtocolPairs(
+      List<Map<String, dynamic>> protocol) {
+    final output = <Map<String, dynamic>>[];
+    final pending = <String>{};
+    void closePending() {
+      for (final id in pending) {
+        output.add({
+          'role': 'tool',
+          'tool_call_id': id,
+          'content': '此调用已中断，未保存结果；不能视为执行成功，也不要自动重复操作。',
+        });
+      }
+      pending.clear();
+    }
+
+    for (final message in protocol) {
+      if (message['role'] != 'tool') closePending();
+      if (message['role'] == 'tool' &&
+          !pending.remove(message['tool_call_id'])) {
+        continue;
+      }
+      output.add(Map<String, dynamic>.of(message));
+      for (final call in message['tool_calls'] as List? ?? const []) {
+        if (call is Map && call['id'] is String) pending.add(call['id']);
+      }
+    }
+    closePending();
+    return output;
   }
 
   static String roleContinuationPrompt(String content) {

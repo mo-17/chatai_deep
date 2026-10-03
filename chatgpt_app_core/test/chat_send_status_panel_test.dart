@@ -6,7 +6,10 @@ import 'package:flutter_test/flutter_test.dart';
 
 void main() {
   ChatContextPlan plan(
-          {int omitted = 0, String? error, int estimated = 3000}) =>
+          {int omitted = 0,
+          String? error,
+          int estimated = 3000,
+          bool semantic = false}) =>
       ChatContextPlan(
         history: const [],
         turns: const [],
@@ -22,6 +25,7 @@ void main() {
         warnings: const [],
         error: error,
         usesFallbackBudget: true,
+        usesSemanticSummary: semantic,
       );
 
   Future<void> pump(WidgetTester tester, ChatSendStatusPanel panel,
@@ -136,6 +140,10 @@ void main() {
     expect(find.text('本轮省略 6 条较早消息，附带原文摘录'), findsOneWidget);
     expect(find.text('接近输入预算'), findsOneWidget);
     expect(find.textContaining('8192'), findsNothing);
+    await pump(tester,
+        ChatSendStatusPanel(contextPlan: plan(omitted: 6, semantic: true)));
+    expect(find.text('本轮省略 6 条较早消息，附带语义摘要'), findsOneWidget);
+    expect(find.textContaining('原文摘录'), findsNothing);
     await pump(
         tester, ChatSendStatusPanel(contextPlan: plan(error: '本轮内容超过输入预算')));
     expect(find.text('本轮内容超过输入预算'), findsOneWidget);

@@ -247,12 +247,186 @@ describe('ChatService upstream transport', () => {
     jest.restoreAllMocks();
   });
 
+  it.each(['low', 'high', 'max'] as const)(
+    'sends selected effort %s identically in streaming and ordinary requests',
+    async (effort) => {
+      const { service } = createService();
+      const body = requestBody({
+        model: 'deepseek-flash',
+        request_profile: 'standard',
+        reasoning_policy: 'provider_default',
+        reasoning_effort: effort,
+        tools: [{ type: 'function' }],
+        messages: [
+          {
+            role: 'assistant',
+            content: 'old',
+            reasoning_content: 'old thought',
+          },
+          { role: 'user', content: 'continue' },
+        ],
+      });
+      const original = JSON.stringify(body);
+      const ordinaryFetch = installFetch(
+        () => new Response(JSON.stringify({ choices: [] })),
+      );
+      await service.complete(7, body);
+      const ordinaryBody = jsonRequestBody(ordinaryFetch.requestInit);
+      expect(ordinaryBody).toMatchObject({
+        messages: body.messages,
+        thinking: { type: 'enabled' },
+        reasoning_effort: effort,
+      });
+      expect(ordinaryBody).not.toHaveProperty('reasoning_policy');
+
+      const streamFetch = installFetch(() => new Response('data: [DONE]\n\n'));
+      await service.completeStream(7, body, response());
+      expect(jsonRequestBody(streamFetch.requestInit)).toEqual({
+        ...ordinaryBody,
+        stream: true,
+        stream_options: { include_usage: true },
+      });
+      expect(JSON.stringify(body)).toBe(original);
+    },
+  );
+
+  it.each(['low', 'high', 'max'] as const)(
+    'switches ordinary off replies to %s without changing stored history',
+    async (effort) => {
+      const { service } = createService();
+      const offFetch = installFetch(
+        () =>
+          new Response(
+            JSON.stringify({
+              choices: [{ message: { content: 'off answer' } }],
+            }),
+          ),
+      );
+      await service.complete(7, requestBody());
+      expect(jsonRequestBody(offFetch.requestInit).thinking).toEqual({
+        type: 'disabled',
+      });
+
+      const messages = [
+        { role: 'user', content: 'hello' },
+        { role: 'assistant', content: 'off answer' },
+        { role: 'assistant', content: 'another answer', tool_calls: [] },
+        {
+          role: 'assistant',
+          content: 'old thought',
+          reasoning_content: 'kept',
+        },
+        { role: 'user', content: 'continue with tools' },
+      ];
+      const body = requestBody({
+        request_profile: 'standard',
+        reasoning_policy: 'provider_default',
+        reasoning_effort: effort,
+        tools: [{ type: 'function' }],
+        messages,
+      });
+      const original = JSON.stringify(body);
+      const expectedMessages = messages.map((message) =>
+        message.role === 'assistant' && message.reasoning_content === undefined
+          ? { ...message, reasoning_content: '' }
+          : message,
+      );
+      const ordinaryFetch = installFetch(
+        () => new Response(JSON.stringify({ choices: [] })),
+      );
+      await service.complete(7, body);
+      const ordinaryBody = jsonRequestBody(ordinaryFetch.requestInit);
+      expect(ordinaryBody).toMatchObject({
+        thinking: { type: 'enabled' },
+        reasoning_effort: effort,
+        messages: expectedMessages,
+      });
+
+      const streamFetch = installFetch(() => new Response('data: [DONE]\n\n'));
+      await service.completeStream(7, body, response());
+      expect(jsonRequestBody(streamFetch.requestInit)).toEqual({
+        ...ordinaryBody,
+        stream: true,
+        stream_options: { include_usage: true },
+      });
+      expect(JSON.stringify(body)).toBe(original);
+      expect(messages[1]).not.toHaveProperty('reasoning_content');
+    },
+  );
+
+  it('omits selected effort when the explicit policy disables thinking', async () => {
+    const { service } = createService();
+    const body = requestBody({
+      reasoning_effort: 'max',
+      tools: [{ type: 'function' }],
+      messages: [
+        { role: 'assistant', content: 'ordinary off reply' },
+        { role: 'user', content: 'continue' },
+      ],
+    });
+    const ordinaryFetch = installFetch(
+      () => new Response(JSON.stringify({ choices: [] })),
+    );
+    await service.complete(7, body);
+    const ordinaryBody = jsonRequestBody(ordinaryFetch.requestInit);
+    expect(ordinaryBody.thinking).toEqual({ type: 'disabled' });
+    expect(ordinaryBody).not.toHaveProperty('reasoning_effort');
+    expect(ordinaryBody.messages).toEqual(body.messages);
+
+    const streamFetch = installFetch(() => new Response('data: [DONE]\n\n'));
+    await service.completeStream(7, body, response());
+    expect(jsonRequestBody(streamFetch.requestInit).thinking).toEqual({
+      type: 'disabled',
+    });
+    expect(jsonRequestBody(streamFetch.requestInit)).not.toHaveProperty(
+      'reasoning_effort',
+    );
+  });
+
+  it('drops selected effort for legacy tool history in both transport modes', async () => {
+    const { service } = createService();
+    const body = requestBody({
+      reasoning_policy: 'provider_default',
+      reasoning_effort: 'max',
+      messages: [
+        { role: 'user', content: 'calculate' },
+        { role: 'assistant', content: 'ordinary off reply' },
+        { role: 'assistant', content: null, tool_calls: [{ id: 'c' }] },
+        { role: 'tool', tool_call_id: 'c', content: '42' },
+      ],
+    });
+    const original = JSON.stringify(body);
+    const ordinaryFetch = installFetch(
+      () => new Response(JSON.stringify({ choices: [] })),
+    );
+    await service.complete(7, body);
+    const ordinaryBody = jsonRequestBody(ordinaryFetch.requestInit);
+    expect(ordinaryBody.thinking).toEqual({ type: 'disabled' });
+    expect(ordinaryBody).not.toHaveProperty('reasoning_effort');
+    expect(ordinaryBody.messages).toEqual([
+      body.messages[0],
+      { ...body.messages[1], reasoning_content: '' },
+      body.messages[2],
+      body.messages[3],
+    ]);
+
+    const streamFetch = installFetch(() => new Response('data: [DONE]\n\n'));
+    await service.completeStream(7, body, response());
+    expect(jsonRequestBody(streamFetch.requestInit)).toEqual({
+      ...ordinaryBody,
+      stream: true,
+      stream_options: { include_usage: true },
+    });
+    expect(JSON.stringify(body)).toBe(original);
+  });
+
   it.each([
     'deepseek-flash',
     'deepseek-v4-flash',
     'deepseek-v4-flash-vision-exp',
+    'deepseek-v4-pro',
   ])(
-    'disables thinking for %s tool requests and preserves image parts',
+    'disables thinking for %s legacy history with tools and preserves image parts',
     async (model) => {
       const { service } = createService();
       const installedFetch = installFetch(
@@ -262,6 +436,7 @@ describe('ChatService upstream transport', () => {
           ),
       );
       const messages = [
+        { role: 'assistant', content: 'legacy answer' },
         {
           role: 'user',
           content: [
@@ -291,6 +466,169 @@ describe('ChatService upstream transport', () => {
         tools,
         thinking: { type: 'disabled' },
       });
+    },
+  );
+
+  it.each(['deepseek-flash', 'deepseek-v4-pro'])(
+    'keeps default thinking for a fresh %s tool request',
+    async (model) => {
+      const { service } = createService();
+      const installedFetch = installFetch(
+        () => new Response(JSON.stringify({ choices: [] })),
+      );
+      await service.complete(
+        7,
+        requestBody({
+          model,
+          tools: [{ type: 'function' }],
+          reasoning_policy: 'provider_default',
+        }),
+      );
+      expect(jsonRequestBody(installedFetch.requestInit)).not.toHaveProperty(
+        'thinking',
+      );
+      expect(jsonRequestBody(installedFetch.requestInit)).not.toHaveProperty(
+        'reasoning_effort',
+      );
+    },
+  );
+
+  it.each(['deepseek-flash', 'deepseek-v4-pro'])(
+    'replays complete %s reasoning in streaming and ordinary completions',
+    async (model) => {
+      const { service } = createService();
+      const messages = [
+        {
+          role: 'assistant',
+          content: 'original answer',
+          reasoning_content: 'original thought',
+        },
+        { role: 'user', content: 'calculate' },
+        {
+          role: 'assistant',
+          content: '',
+          reasoning_content: 'call calculator',
+          tool_calls: [{ id: 'c' }],
+        },
+        { role: 'tool', tool_call_id: 'c', content: '42' },
+        { role: 'assistant', content: '42', reasoning_content: '' },
+      ];
+      const body = requestBody({
+        model,
+        messages,
+        tools: [{ type: 'function' }],
+        reasoning_policy: 'provider_default',
+      });
+      const original = JSON.stringify(body);
+      const ordinaryFetch = installFetch(
+        () => new Response(JSON.stringify({ choices: [] })),
+      );
+      await service.complete(7, body);
+      expect(jsonRequestBody(ordinaryFetch.requestInit).messages).toEqual(
+        messages,
+      );
+      expect(jsonRequestBody(ordinaryFetch.requestInit)).not.toHaveProperty(
+        'thinking',
+      );
+      const streamFetch = installFetch(() => new Response('data: [DONE]\n\n'));
+      await service.completeStream(7, body, response());
+      expect(jsonRequestBody(streamFetch.requestInit).messages).toEqual(
+        messages,
+      );
+      expect(jsonRequestBody(streamFetch.requestInit)).not.toHaveProperty(
+        'thinking',
+      );
+      expect(JSON.stringify(body)).toBe(original);
+    },
+  );
+
+  it.each(['deepseek-flash', 'deepseek-v4-pro'])(
+    'falls back for %s when an ordinary historical assistant is missing reasoning',
+    async (model) => {
+      const { service } = createService();
+      const installedFetch = installFetch(
+        () => new Response(JSON.stringify({ choices: [] })),
+      );
+      await service.complete(
+        7,
+        requestBody({
+          model,
+          reasoning_policy: 'provider_default',
+          tools: [{ type: 'function' }],
+          messages: [
+            { role: 'assistant', content: 'legacy ordinary answer' },
+            { role: 'user', content: 'continue' },
+            {
+              role: 'assistant',
+              content: '',
+              reasoning_content: 'valid tool thought',
+              tool_calls: [{ id: 'c' }],
+            },
+            { role: 'tool', tool_call_id: 'c', content: '42' },
+          ],
+        }),
+      );
+      expect(jsonRequestBody(installedFetch.requestInit).thinking).toEqual({
+        type: 'disabled',
+      });
+    },
+  );
+
+  it.each([
+    { code: 'openai', model: 'gpt-4o' },
+    { code: 'custom', model: 'deepseek-flash' },
+    { code: 'openrouter', model: 'deepseek-v4-pro' },
+    { code: 'deepseek', model: 'deepseek-reasoner' },
+  ])(
+    'strips reasoning for final route $code/$model without changing source',
+    async ({ code, model }) => {
+      const { service } = createService(provider({ code }));
+      const messages = [
+        {
+          role: 'assistant',
+          content: 'old',
+          reasoning_content: 'preserve locally',
+          tool_calls: [{ id: 'c' }],
+        },
+        { role: 'tool', tool_call_id: 'c', content: '42' },
+      ];
+      const body = requestBody({
+        model,
+        messages,
+        reasoning_policy: 'provider_default',
+        reasoning_effort: 'max',
+      });
+      const original = JSON.stringify(body);
+      const ordinaryFetch = installFetch(
+        () => new Response(JSON.stringify({ choices: [] })),
+      );
+      await service.complete(7, body);
+      const stripped = messages.map((message) => {
+        const copy: Record<string, unknown> = { ...message };
+        delete copy.reasoning_content;
+        return copy;
+      });
+      expect(jsonRequestBody(ordinaryFetch.requestInit).messages).toEqual(
+        stripped,
+      );
+      expect(jsonRequestBody(ordinaryFetch.requestInit)).not.toHaveProperty(
+        'reasoning_effort',
+      );
+      expect(jsonRequestBody(ordinaryFetch.requestInit)).not.toHaveProperty(
+        'thinking',
+      );
+      const streamFetch = installFetch(() => new Response('data: [DONE]\n\n'));
+      await service.completeStream(7, body, response());
+      expect(jsonRequestBody(streamFetch.requestInit).messages).toEqual(
+        stripped,
+      );
+      expect(jsonRequestBody(streamFetch.requestInit)).not.toHaveProperty(
+        'reasoning_effort',
+      );
+      expect(jsonRequestBody(streamFetch.requestInit)).not.toHaveProperty(
+        'thinking',
+      );
+      expect(JSON.stringify(body)).toBe(original);
     },
   );
 

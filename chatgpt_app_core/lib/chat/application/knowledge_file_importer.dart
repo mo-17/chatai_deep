@@ -1,5 +1,6 @@
 import 'package:chatgpt_app_core/chat/application/file_processor.dart';
 import 'package:chatgpt_app_core/chat/application/ocr_service.dart';
+import 'package:chatgpt_app_core/chat/domain/attachment_processing_limits.dart';
 import 'package:chatgpt_app_core/db/knowledge_dao.dart';
 
 class KnowledgeFileImportItem {
@@ -50,16 +51,19 @@ class KnowledgeFileImporter {
 
   const KnowledgeFileImporter(this.dao);
 
-  Future<KnowledgeFileImportResult> importPaths(List<String> paths) async {
+  Future<KnowledgeFileImportResult> importPaths(List<String> paths,
+      {AttachmentProcessingLimits limits =
+          const AttachmentProcessingLimits()}) async {
     final items = <KnowledgeFileImportItem>[];
     for (final path in paths) {
-      final item = await _importPath(path);
+      final item = await _importPath(path, limits);
       items.add(item);
     }
     return KnowledgeFileImportResult(items);
   }
 
-  Future<KnowledgeFileImportItem> _importPath(String path) async {
+  Future<KnowledgeFileImportItem> _importPath(
+      String path, AttachmentProcessingLimits limits) async {
     final name = _basename(path);
     final title = _titleOf(name);
     if (path.trim().isEmpty) {
@@ -73,7 +77,7 @@ class KnowledgeFileImporter {
     }
 
     try {
-      await FileProcessor.validateKnowledgeImportFile(path);
+      await FileProcessor.validateKnowledgeImportFile(path, limits: limits);
       final ext = _extOf(name);
       final isImage = OcrService.imageExtensions.contains(ext);
       String? text;
@@ -89,7 +93,7 @@ class KnowledgeFileImporter {
         }
         text = await OcrService.recognizeImageFile(path);
       } else {
-        text = await FileProcessor.extractTextForImport(path);
+        text = await FileProcessor.extractTextForImport(path, limits: limits);
         if (ext == 'pdf' &&
             OcrService.isSupported &&
             OcrService.pdfNeedsOcr(text)) {

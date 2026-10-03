@@ -1,4 +1,5 @@
 import 'package:chatgpt_app_core/db/hi_db_manager.dart';
+import 'package:chatgpt_app_core/chat/domain/deepseek_reasoning_effort.dart';
 import 'package:chatgpt_app_core/db/schema_guard.dart';
 import 'package:chatgpt_app_core/db/table_name.dart';
 import 'package:chatgpt_app_core/model/conversation_model.dart';
@@ -10,7 +11,7 @@ abstract class IConversationList {
   ///保存会话并返回数据库记录的id
   Future<int?> saveConversation(ConversationModel model);
 
-  void deleteConversation(ConversationModel model);
+  Future<void> deleteConversation(ConversationModel model);
 
   ///分页查询，pageIndex页码从1开始，pageSize每页显示的数据量
   Future<List<ConversationModel>> getConversationList(
@@ -39,6 +40,10 @@ abstract class IConversationList {
 
   ///更新会话级联网搜索覆盖。enabled 为 null 时恢复跟随全局设置。
   Future<int> updateWebSearchOverride(ConversationModel model, bool? enabled);
+
+  ///更新当前会话的 DeepSeek 思考强度；null 恢复跟随默认。
+  Future<int> updateReasoningEffort(
+      ConversationModel model, DeepSeekReasoningEffort? effort);
 
   ///更新会话级语音偏好。bool 为 null 时恢复默认；locale/rate/style 为 null 时跟随系统/默认。
   Future<int> updateVoicePrefs(
@@ -120,6 +125,7 @@ class ConversationListDao implements IConversationList, ITable {
         ', assistantId	integer, projectId integer'
         ', avatarType text, avatarValue text'
         ', modelProviderId text, modelId text, webSearchEnabled integer'
+        ', deepSeekReasoningEffort text'
         ', toolIds text, speechInputEnabled integer, readAloudEnabled integer'
         ', voiceLocale text, voiceRate real, voiceStyle text'
         ', readAloudTriggerMode text'
@@ -138,6 +144,7 @@ class ConversationListDao implements IConversationList, ITable {
         'modelProviderId': 'text',
         'modelId': 'text',
         'webSearchEnabled': 'integer',
+        'deepSeekReasoningEffort': 'text',
         'toolIds': 'text',
         'speechInputEnabled': 'integer',
         'readAloudEnabled': 'integer',
@@ -162,15 +169,23 @@ class ConversationListDao implements IConversationList, ITable {
   String tableName = 'tb_conversation_list';
 
   @override
-  void deleteConversation(ConversationModel model) {
-    if (model.id == null) {
-      storage.db.delete(tableName, where: 'cid = ?', whereArgs: [model.cid]);
-    } else {
-      storage.db.delete(tableName, where: 'id = ?', whereArgs: [model.id]);
-    }
-
-    ///删除对应聊天记录（统一 tb_messages 表，按 cid 删除）
-    storage.db.delete('tb_messages', where: 'cid = ?', whereArgs: [model.cid]);
+  Future<void> deleteConversation(ConversationModel model) async {
+    await storage.db.transaction((txn) async {
+      if (model.id == null) {
+        await txn.delete(tableName, where: 'cid = ?', whereArgs: [model.cid]);
+      } else {
+        await txn.delete(tableName, where: 'id = ?', whereArgs: [model.id]);
+      }
+      await txn.delete('tb_messages', where: 'cid = ?', whereArgs: [model.cid]);
+      // 老数据库可能从未开启任务模式；只清理已经存在的派生表。
+      final existing = await txn
+          .rawQuery("select name from sqlite_master where type = 'table' and "
+              "name in ('tb_agent_task_session', 'tb_chat_semantic_summary')");
+      for (final row in existing) {
+        await txn.delete(row['name'] as String,
+            where: 'cid = ?', whereArgs: [model.cid]);
+      }
+    });
   }
 
   @override
@@ -276,6 +291,21 @@ class ConversationListDao implements IConversationList, ITable {
         {'webSearchEnabled': enabled == null ? null : (enabled ? 1 : 0)},
         where: model.id == null ? 'cid = ?' : 'id = ?',
         whereArgs: [model.id ?? model.cid]);
+  }
+
+  @override
+  Future<int> updateReasoningEffort(
+      ConversationModel model, DeepSeekReasoningEffort? effort) async {
+    final changed = await storage.db.update(
+        tableName, {'deepSeekReasoningEffort': effort?.wireValue},
+        where: model.id == null ? 'cid = ?' : 'id = ?',
+        whereArgs: [model.id ?? model.cid]);
+    if (changed == 0 && model.id != null) {
+      throw StateError('会话已不存在，无法保存思考强度');
+    }
+    // 新会话暂未落库时只改内存，首次发送/保存草稿会随整行一起保存。
+    model.deepSeekReasoningEffort = effort;
+    return changed;
   }
 
   @override

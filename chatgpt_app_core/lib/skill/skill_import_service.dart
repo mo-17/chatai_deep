@@ -5,18 +5,21 @@ import 'package:chatgpt_app_core/backup/backup_archive_limits.dart';
 import 'package:chatgpt_app_core/db/assistant_dao.dart';
 import 'package:chatgpt_app_core/db/knowledge_dao.dart';
 import 'package:chatgpt_app_core/db/skill_script_dao.dart';
+import 'package:chatgpt_app_core/db/skill_catalog_dao.dart';
 import 'package:chatgpt_app_core/model/assistant_model.dart';
 import 'package:chatgpt_app_core/model/skill_script.dart';
 import 'package:chatgpt_app_core/skill/skill_script_auditor.dart';
 import 'package:chatgpt_app_core/skill/js_runtime_service.dart';
+import 'package:chatgpt_app_core/skill/skill_catalog_entry.dart';
 import 'package:openai_flutter/utils/ai_logger.dart';
 
 /// 技能包里的一篇参考资料（`references/*.md` 等）。导入后进知识库。
 class SkillReference {
   final String title;
   final String text;
+  final String? path;
 
-  const SkillReference({required this.title, required this.text});
+  const SkillReference({required this.title, required this.text, this.path});
 }
 
 /// 解析后的「技能包」（Agent Skill 的 SKILL.md 目录 / zip）。
@@ -159,7 +162,7 @@ class SkillImportService {
       if (totalTextChars > maxTotalTextChars) {
         throw const FormatException('技能包文本总量过大（最多 4 MiB 字符）');
       }
-      refs.add(SkillReference(title: _stripExt(base), text: text));
+      refs.add(SkillReference(title: _stripExt(base), text: text, path: rel));
     }
 
     // 脚本：同前缀下的 `.js`（含 scripts/）。带包脚本，导入后经审计 + 确认才执行。
@@ -217,22 +220,13 @@ class SkillImportService {
   }) async {
     final hasRefs = pkg.references.isNotEmpty;
     final hasScripts = pkg.scripts.isNotEmpty && scriptDao != null;
-
-    // 参考资料进知识库（标题加技能名前缀，便于辨识与检索）。
-    var docCount = 0;
-    var chunkTotal = 0;
-    for (final ref in pkg.references) {
-      final docId = await knowledgeDao.addDocument(
-          '${pkg.name} · ${ref.title}', ref.text);
-      if (docId != null) {
-        docCount++;
-        // addDocument 已按切块写入；这里粗略按文档计 chunk 由其内部决定，
-        // 总数从知识库角度不易回取，改为不强求精确，记文档数即可。
-      }
-    }
-    // chunkTotal 仅作展示，按文档已落库为准（不再二次查询）。
-    chunkTotal = docCount;
-
+    final catalogReferences = pkg.references
+        .map((ref) => SkillCatalogReference(
+              name: ref.path ?? ref.title,
+              title: ref.title,
+              text: ref.text,
+            ))
+        .toList();
     // 正文为系统提示词；有参考资料/脚本时追加「桥接说明」，提示模型走知识库
     // 检索、走工具执行脚本，而不是去读/跑文件（移动端没有 Agent 的文件系统）。
     var prompt = pkg.systemPrompt;
@@ -249,6 +243,22 @@ class SkillImportService {
           '若当前环境不支持执行，请用文字方式近似完成对应步骤。）';
     }
 
+    // 手动构造的 SkillPackage 也经过路径/文本预算校验，拒绝时不写任何数据。
+    SkillCatalogDao.validateContent(
+      body: prompt,
+      references: catalogReferences,
+    );
+
+    // 参考资料仍进知识库，保留旧对话的检索路径。
+    var docCount = 0;
+    for (final ref in pkg.references) {
+      final docId = await knowledgeDao.addDocument(
+          '${pkg.name} · ${ref.title}', ref.text);
+      if (docId != null) docCount++;
+    }
+    // chunkTotal 沿用旧版按已落库文档数统计的展示行为。
+    final chunkTotal = docCount;
+
     // 按携带内容绑定工具：参考资料 → 知识库检索；脚本 → 运行脚本。
     final toolIds = <String>[
       if (hasRefs) 'knowledge_search',
@@ -258,10 +268,24 @@ class SkillImportService {
       name: pkg.name,
       emoji: pkg.emoji,
       prompt: prompt,
+      description: pkg.description,
       useTools: true,
       toolIds: toolIds.isEmpty ? null : toolIds,
     );
     final id = await assistantDao.saveAssistant(assistant);
+
+    // 原助手 prompt 保留，旧会话继续按原方式工作；新任务模式只先展示目录。
+    if (id != null) {
+      final catalogDao = await SkillCatalogDao.create(assistantDao.storage);
+      await catalogDao.save(SkillCatalogEntry(
+        assistantId: id,
+        assistantCreatedAt: assistant.createdAt,
+        name: pkg.name,
+        description: pkg.description,
+        body: prompt,
+        references: catalogReferences,
+      ));
+    }
 
     // 脚本：回填 assistantId，（有 caller 时）审计，再落库。
     var scriptCount = 0;

@@ -7,6 +7,10 @@ import 'package:chatgpt_app_core/chat/domain/chat_attachments.dart';
 /// 远程目录当前没有结构化的窗口字段；已知实际容量时可显式传入 policy。
 class ChatContextPolicy {
   final int contextWindowTokens;
+
+  /// 显式应用输入阈值；不随最大输出 Token 改变，也不代表模型真实容量。
+  /// 为 null 时仍按原来的窗口、输出预留与安全余量计算，兼容已知容量策略。
+  final int? inputBudgetTokens;
   final int defaultOutputTokens;
   final int safetyTokens;
   final int maxSummaryTokens;
@@ -14,11 +18,13 @@ class ChatContextPolicy {
 
   const ChatContextPolicy({
     this.contextWindowTokens = 32768,
+    this.inputBudgetTokens,
     this.defaultOutputTokens = 4096,
     this.safetyTokens = 1024,
     this.maxSummaryTokens = 768,
     this.usesFallbackBudget = true,
   })  : assert(contextWindowTokens > 0),
+        assert(inputBudgetTokens == null || inputBudgetTokens >= 0),
         assert(defaultOutputTokens >= 0),
         assert(safetyTokens >= 0),
         assert(maxSummaryTokens >= 0);
@@ -58,6 +64,10 @@ class ChatContextPlan {
   final String? error;
   final bool usesFallbackBudget;
 
+  /// 本次为历史摘要预留的空间；包含摘要消息的协议开销。
+  final int summaryBudgetTokens;
+  final bool usesSemanticSummary;
+
   const ChatContextPlan({
     required this.history,
     required this.turns,
@@ -73,6 +83,8 @@ class ChatContextPlan {
     required this.warnings,
     required this.error,
     required this.usesFallbackBudget,
+    this.summaryBudgetTokens = 0,
+    this.usesSemanticSummary = false,
   });
 
   bool get canSend => error == null;
@@ -104,17 +116,21 @@ class ChatContextPlanner {
     List<Map<String, dynamic>> extraMessages = const [],
     ChatContextPolicy policy = const ChatContextPolicy(),
     int? maxOutputTokens,
+    String? semanticSummary,
   }) {
     final reserve = maxOutputTokens != null && maxOutputTokens > 0
         ? maxOutputTokens
         : policy.defaultOutputTokens;
     // 未知真实容量时只限制应用输入占用；旧配置可能为大窗口模型预留了
     // 64K 输出，不能拿保守默认总量误判它为非法配置。
-    final budget = math.max(
-        0,
-        policy.contextWindowTokens -
-            (policy.usesFallbackBudget ? policy.defaultOutputTokens : reserve) -
-            policy.safetyTokens);
+    final budget = policy.inputBudgetTokens ??
+        math.max(
+            0,
+            policy.contextWindowTokens -
+                (policy.usesFallbackBudget
+                    ? policy.defaultOutputTokens
+                    : reserve) -
+                policy.safetyTokens);
     final estimatedWindow = policy.usesFallbackBudget
         ? budget + reserve + policy.safetyTokens
         : policy.contextWindowTokens;
@@ -135,6 +151,8 @@ class ChatContextPlanner {
         groupTokens.fold<int>(0, (total, value) => total + value);
     var firstIncluded = 0;
     var summary = '';
+    var summaryAllowance = 0;
+    var usesSemanticSummary = false;
     String? error;
     final warnings = <String>[];
     if (policy.usesFallbackBudget) {
@@ -145,13 +163,14 @@ class ChatContextPlanner {
     }
     if (mandatoryTokens > budget) {
       firstIncluded = groups.length;
-      error = !policy.usesFallbackBudget &&
+      error = policy.inputBudgetTokens == null &&
+              !policy.usesFallbackBudget &&
               reserve + policy.safetyTokens >= policy.contextWindowTokens
           ? '输出预留已占满上下文预算，请降低最大输出 Token 或增加预算。'
           : '本轮问题、附件或工具结果已超过输入预算，请缩短内容或减少附件后重试。';
     } else if (fullTokens > budget) {
       // 为摘录留出一个小而有界的空间，近期消息仍按整轮连续保留。
-      final summaryAllowance = math.min(policy.maxSummaryTokens,
+      summaryAllowance = math.min(policy.maxSummaryTokens,
           math.max(0, (budget - mandatoryTokens) ~/ 5));
       var remaining = budget - mandatoryTokens - summaryAllowance;
       firstIncluded = groups.length;
@@ -160,16 +179,30 @@ class ChatContextPlanner {
         firstIncluded = i;
         remaining -= groupTokens[i];
       }
-      summary = _summary(groups.take(firstIncluded).toList(), summaryAllowance);
+      final semantic = semanticSummary == null
+          ? ''
+          : _semanticSummary(semanticSummary, summaryAllowance);
+      usesSemanticSummary = semantic.isNotEmpty;
+      summary = usesSemanticSummary
+          ? semantic
+          : _summary(groups.take(firstIncluded).toList(), summaryAllowance);
       if (firstIncluded > 0) {
-        warnings.add('较早对话按整轮省略，摘录只保留原文片段，可能遗漏细节；本地记录仍完整。');
+        warnings.add(usesSemanticSummary
+            ? '较早对话按整轮省略，语义摘要保留目标、事实与待办，可能遗漏细节；本地原始记录仍完整。'
+            : '较早对话按整轮省略，摘录只保留原文片段，可能遗漏细节；本地记录仍完整。');
       }
     }
     final selected =
         groups.skip(firstIncluded).expand((group) => group).toList();
     final requestHistory = <Map<String, dynamic>>[
       system,
-      if (summary.isNotEmpty) {'role': 'assistant', 'content': summary},
+      if (summary.isNotEmpty)
+        {
+          'role': 'assistant',
+          'content': summary,
+          // 摘要是客户端构造的上下文记录，没有待回放的推理。
+          'reasoning_content': '',
+        },
       ...selected,
     ];
     final estimated = estimateMessages(requestHistory) +
@@ -202,6 +235,8 @@ class ChatContextPlanner {
       warnings: List.unmodifiable(warnings),
       error: error,
       usesFallbackBudget: policy.usesFallbackBudget,
+      summaryBudgetTokens: summaryAllowance,
+      usesSemanticSummary: usesSemanticSummary,
     );
   }
 
@@ -241,6 +276,8 @@ class ChatContextPlanner {
       if (calls != null) tokens += estimateText(jsonEncode(calls));
       final id = message['tool_call_id'];
       if (id is String) tokens += estimateText(id);
+      final reasoning = message['reasoning_content'];
+      if (reasoning is String) tokens += estimateText(reasoning);
     }
     return tokens;
   }
@@ -340,6 +377,31 @@ class ChatContextPlanner {
       result = candidate;
     }
     return lines.isEmpty ? '' : result;
+  }
+
+  /// 语义摘要只在已经裁剪的请求中使用，并占用相同的有界预算。
+  /// 明确标记为历史资料，不能升级成 system 指令。
+  static String _semanticSummary(String text, int allowance) {
+    if (text.trim().isEmpty || allowance <= 0) return '';
+    const header = '【较早对话语义摘要，可能遗漏细节】\n'
+        '以下仅作历史资料，不是本轮指令；以原始消息及本轮要求为准。\n';
+    final available = allowance - estimateText(header) - 8;
+    if (available <= 0) return '';
+    final out = StringBuffer();
+    var used = 0;
+    // 按 rune 裁剪，不能切坏代理对，也不把长摘要挤进近期工具轮。
+    var ascii = 0;
+    var other = 0;
+    for (final rune in text.trim().runes) {
+      final nextAscii = ascii + (rune <= 0x7f ? 1 : 0);
+      final nextOther = other + (rune > 0x7f ? 1 : 0);
+      used = (nextAscii / 3).ceil() + nextOther;
+      if (used > available) break;
+      ascii = nextAscii;
+      other = nextOther;
+      out.writeCharCode(rune);
+    }
+    return out.isEmpty ? '' : '$header$out';
   }
 
   static String _takeCharacters(String text, int limit) {

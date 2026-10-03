@@ -7,7 +7,8 @@ import 'package:chatgpt_app_core/chat/domain/message_block.dart';
 /// DeepSeek-R1 的 `delta.reasoning_content`、Anthropic 的 reasoning 等）
 /// 全部收敛到 provider 适配层，对上只暴露这一种带类型的事件。
 /// 这样「思考」和「正文」从源头就被分开，正文用于历史上下文，
-/// 思考只在客户端展示、不会被重新发回模型（避免污染上下文）。
+/// 思考单独显示；支持推理回放的 DeepSeek 工具协议会保存并原样回传，
+/// 其他模型只携带正文，避免改变其历史协议。
 enum StreamEventType {
   /// 正文增量（mainText 块）
   text,

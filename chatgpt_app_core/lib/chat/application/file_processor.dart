@@ -3,6 +3,7 @@ import 'dart:convert';
 import 'dart:io';
 import 'dart:typed_data';
 
+import 'package:chatgpt_app_core/chat/domain/attachment_processing_limits.dart';
 import 'package:chatgpt_app_core/chat/domain/chat_attachments.dart';
 import 'package:chatgpt_app_core/chat/domain/chat_send_progress.dart';
 import 'package:chatgpt_app_core/chat/domain/message_block.dart';
@@ -29,13 +30,15 @@ class FileProcessor {
   /// PDF 降级抽文本的最大页数（源项目 pdf-text-extractor 同为 20 页）。
   static const int maxPdfPages = 20;
 
-  /// 单个文本附件拼进 prompt 的最大字符数，防止撑爆上下文。
-  static const int maxTextChars = 30000;
+  /// 未传入用户配置时，单个文本附件拼进 prompt 的默认最大字符数。
+  static const int maxTextChars =
+      AttachmentProcessingLimits.defaultMaxTextChars;
 
   /// 无能力位 / 无限制配置时的 PDF 原生发送兜底上限（与 OpenAI 32MB 对齐）。
   static const int defaultPdfLimit = 32 * 1024 * 1024;
   static const int maxImageBytes = 20 * 1024 * 1024;
-  static const int maxTextFileBytes = 2 * 1024 * 1024;
+  static const int maxTextFileBytes =
+      AttachmentProcessingLimits.defaultMaxTextFileBytes;
 
   /// 文件选择器允许的扩展名（图片走 image_picker，不在此列）。
   static const List<String> pickerExtensions = [
@@ -159,6 +162,7 @@ class FileProcessor {
   static Future<ProcessedFiles> process(
     List<String> paths,
     ModelCapabilities caps, {
+    AttachmentProcessingLimits limits = const AttachmentProcessingLimits(),
     ChatSendProgressCallback? onProgress,
     Future<void>? abortTrigger,
     bool Function()? isCancelled,
@@ -167,6 +171,7 @@ class FileProcessor {
     final metas = <FileMetadata>[];
     final diagnostics = <FileProcessingDiagnostic>[];
     final cancellation = _ProcessingCancellation(abortTrigger, isCancelled);
+    final effectiveLimits = limits.normalized;
 
     for (var index = 0; index < paths.length; index++) {
       await cancellation.checkpoint();
@@ -183,7 +188,8 @@ class FileProcessor {
       await cancellation.checkpoint();
       final managedPath = await ManagedAttachmentStore.importFile(
         file,
-        maxBytes: ext == 'pdf' ? defaultPdfLimit : maxTextFileBytes,
+        maxBytes:
+            ext == 'pdf' ? defaultPdfLimit : effectiveLimits.maxTextFileBytes,
       );
       await cancellation.checkpoint();
 
@@ -209,8 +215,8 @@ class FileProcessor {
               size: size));
         } else {
           // 降级路径：syncfusion 抽文本（限页），文本随 meta 落库（遗留项 6）。
-          final extracted =
-              await _extractPdfContent(file, limitCharacters: true);
+          final extracted = await _extractPdfContent(file,
+              limitCharacters: true, limits: effectiveLimits);
           await cancellation.checkpoint();
           diagnostics.addAll(extracted.diagnosticsFor(name));
           final text = _wrapFileText(name, extracted.text);
@@ -225,7 +231,7 @@ class FileProcessor {
       }
 
       if (_textExts.contains(ext)) {
-        final extracted = await _readTextContent(file);
+        final extracted = await _readTextContent(file, limits: effectiveLimits);
         await cancellation.checkpoint();
         diagnostics.addAll(extracted.diagnosticsFor(name));
         final text = _wrapFileText(name, extracted.text);
@@ -264,15 +270,21 @@ class FileProcessor {
 
   /// 抽取 PDF 文本（限 [maxPdfPages] 页）。解析失败返回提示文案而不抛，
   /// 保证一个坏文件不中断整次发送。
-  static Future<String> _extractPdfText(File file) async =>
-      (await _extractPdfContent(file)).text;
+  static Future<String> _extractPdfText(File file,
+          {AttachmentProcessingLimits limits =
+              const AttachmentProcessingLimits()}) async =>
+      (await _extractPdfContent(file, limitCharacters: true, limits: limits))
+          .text;
 
   static Future<_ExtractedContent> _extractPdfContent(File file,
-      {bool limitCharacters = false}) async {
+      {bool limitCharacters = false,
+      AttachmentProcessingLimits limits =
+          const AttachmentProcessingLimits()}) async {
     try {
       final bytes = await readFileBytesBounded(file,
           maxBytes: defaultPdfLimit, label: 'PDF 文件');
-      return _extractPdfBytesContent(bytes, limitCharacters: limitCharacters);
+      return _extractPdfBytesContent(bytes,
+          limitCharacters: limitCharacters, limits: limits);
     } catch (_) {
       return _pdfExtractionFailure;
     }
@@ -283,6 +295,7 @@ class FileProcessor {
     Uint8List bytes,
     ModelCapabilities caps, {
     required String filename,
+    AttachmentProcessingLimits limits = const AttachmentProcessingLimits(),
     ChatSendProgressCallback? onProgress,
     Future<void>? abortTrigger,
     bool Function()? isCancelled,
@@ -305,7 +318,8 @@ class FileProcessor {
             dataUri: 'data:application/pdf;base64,${base64Encode(bytes)}')
       ]);
     }
-    final extracted = _extractPdfBytesContent(bytes, limitCharacters: true);
+    final extracted = _extractPdfBytesContent(bytes,
+        limitCharacters: true, limits: limits.normalized);
     await cancellation.checkpoint();
     return ProcessedFiles(
         extraText: _wrapFileText(filename, extracted.text),
@@ -318,7 +332,8 @@ class FileProcessor {
   ]);
 
   static _ExtractedContent _extractPdfBytesContent(Uint8List bytes,
-      {bool limitCharacters = false}) {
+      {bool limitCharacters = false,
+      AttachmentProcessingLimits limits = const AttachmentProcessingLimits()}) {
     try {
       final document = PdfDocument(inputBytes: bytes);
       try {
@@ -340,11 +355,12 @@ class FileProcessor {
                 '未抽取到文字，PDF 可能是扫描件；当前仅发送解析提示'),
           ]);
         }
-        if (limitCharacters && text.length > maxTextChars) {
-          text = '${text.substring(0, maxTextChars)}\n\n[注：内容过长，已截断]';
-          warnings.add(const _ExtractionWarning(
+        final textLimit = limits.normalized.maxTextChars;
+        if (limitCharacters && text.length > textLimit) {
+          text = '${text.substring(0, textLimit)}\n\n[注：内容过长，已截断]';
+          warnings.add(_ExtractionWarning(
               FileProcessingDiagnosticKind.truncated,
-              'PDF 文字超过 $maxTextChars 字符，仅发送前 $maxTextChars 字符'));
+              'PDF 文字超过 $textLimit 字符，仅发送前 $textLimit 字符'));
         }
         if (pageCount > maxPdfPages) {
           text += '\n\n[注：原文共 $pageCount 页，仅抽取前 $maxPdfPages 页]';
@@ -361,15 +377,20 @@ class FileProcessor {
     }
   }
 
-  /// 读取文本文件（截断到 [maxTextChars]）。非 UTF-8 等读取失败时降级提示。
-  static Future<String> _readTextFile(File file) async =>
-      (await _readTextContent(file)).text;
+  /// 读取文本文件（按用户配置截断）。非 UTF-8 等读取失败时降级提示。
+  static Future<String> _readTextFile(File file,
+          {AttachmentProcessingLimits limits =
+              const AttachmentProcessingLimits()}) async =>
+      (await _readTextContent(file, limits: limits)).text;
 
-  static Future<_ExtractedContent> _readTextContent(File file) async {
+  static Future<_ExtractedContent> _readTextContent(File file,
+      {AttachmentProcessingLimits limits =
+          const AttachmentProcessingLimits()}) async {
+    final effectiveLimits = limits.normalized;
     try {
       final bytes = await readFileBytesBounded(
         file,
-        maxBytes: maxTextFileBytes,
+        maxBytes: effectiveLimits.maxTextFileBytes,
         label: '文本文件',
       );
       final text = utf8.decode(bytes);
@@ -378,11 +399,12 @@ class FileProcessor {
           _ExtractionWarning(FileProcessingDiagnosticKind.empty, '文件没有可读文字'),
         ]);
       }
-      if (text.length <= maxTextChars) return _ExtractedContent(text);
+      final textLimit = effectiveLimits.maxTextChars;
+      if (text.length <= textLimit) return _ExtractedContent(text);
       return _ExtractedContent(
-          '${text.substring(0, maxTextChars)}\n\n[注：内容过长，已截断]', const [
+          '${text.substring(0, textLimit)}\n\n[注：内容过长，已截断]', [
         _ExtractionWarning(FileProcessingDiagnosticKind.truncated,
-            '文字超过 $maxTextChars 字符，仅发送前 $maxTextChars 字符'),
+            '文字超过 $textLimit 字符，仅发送前 $textLimit 字符'),
       ]);
     } catch (_) {
       return const _ExtractedContent('[文件读取失败，内容未提供]', [
@@ -398,26 +420,38 @@ class FileProcessor {
   /// 知识库导入用：从一个本地文件抽**纯正文**（不带附件包裹标记）。
   /// 支持 PDF（限页抽取）与文本类扩展名；其它类型返回 null。
   /// 复用 [_extractPdfText]/[_readTextFile]，解析失败由它们返回提示文案而不抛。
-  static Future<String?> extractTextForImport(String path) async {
+  static Future<String?> extractTextForImport(String path,
+      {AttachmentProcessingLimits limits =
+          const AttachmentProcessingLimits()}) async {
     final ext = path.split('.').last.toLowerCase();
-    if (ext == 'pdf') return _extractPdfText(File(path));
-    if (_textExts.contains(ext)) return _readTextFile(File(path));
+    final effectiveLimits = limits.normalized;
+    if (ext == 'pdf') {
+      return _extractPdfText(File(path), limits: effectiveLimits);
+    }
+    if (_textExts.contains(ext)) {
+      return _readTextFile(File(path), limits: effectiveLimits);
+    }
     return null;
   }
 
   /// OCR/文本/PDF 共用的知识库导入预检；必须在原生解析器或 OCR 插件接收
   /// 路径前调用，避免它们在 Dart 侧预算建立前分配整个攻击者文件。
-  static Future<void> validateKnowledgeImportFile(String path) async {
+  static Future<void> validateKnowledgeImportFile(String path,
+      {AttachmentProcessingLimits limits =
+          const AttachmentProcessingLimits()}) async {
     final file = File(path);
     final ext = path.split('.').last.toLowerCase();
     final maxBytes = ext == 'pdf'
         ? defaultPdfLimit
         : _textExts.contains(ext)
-            ? maxTextFileBytes
+            ? limits.normalized.maxTextFileBytes
             : maxImageBytes;
     if (!await file.exists()) throw const FormatException('导入文件不存在');
     if (await file.length() > maxBytes) {
-      throw FormatException('导入文件过大（最多 ${maxBytes ~/ (1024 * 1024)} MiB）');
+      final mib = maxBytes / (1024 * 1024);
+      final display =
+          mib == mib.roundToDouble() ? '${mib.toInt()} MiB' : '$maxBytes bytes';
+      throw FormatException('导入文件过大（最多 $display）');
     }
   }
 }

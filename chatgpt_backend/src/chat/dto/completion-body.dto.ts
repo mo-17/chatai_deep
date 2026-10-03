@@ -46,4 +46,8 @@ export class CompletionBodyDto {
   @IsOptional()
   @IsIn(['provider_default', 'off_if_supported'])
   reasoning_policy?: 'provider_default' | 'off_if_supported';
+
+  @IsOptional()
+  @IsIn(['low', 'high', 'max'])
+  reasoning_effort?: 'low' | 'high' | 'max';
 }

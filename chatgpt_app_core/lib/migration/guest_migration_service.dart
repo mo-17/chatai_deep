@@ -7,6 +7,7 @@ import 'package:chatgpt_app_core/db/favorite_dao.dart';
 import 'package:chatgpt_app_core/db/hi_db_manager.dart';
 import 'package:chatgpt_app_core/db/message_dao.dart';
 import 'package:chatgpt_app_core/db/project_dao.dart';
+import 'package:chatgpt_app_core/db/skill_catalog_dao.dart';
 import 'package:chatgpt_app_core/util/uuid_v4.dart';
 import 'package:flutter_hi_cache/flutter_hi_cache.dart';
 import 'package:login_sdk/dao/login_dao.dart';
@@ -77,7 +78,8 @@ class GuestMigrationService {
         (String value) => HiDBManager.instance(dbName: value);
     final guest = await resolve(guestHash);
     if (await _conversationCount(guest) > 0 ||
-        await _validMemoryCount(guest) > 0) {
+        await _validMemoryCount(guest) > 0 ||
+        await _hasValidSkillCatalog(guest)) {
       return true;
     }
     // 系统恢复可能只留下 secure v2 快照；先强一致准备，才能恢复普通 marker。
@@ -164,6 +166,8 @@ class GuestMigrationService {
     await _ensureSchema(to);
 
     final assistants = await from.db.query('tb_assistant');
+    final skillCatalog =
+        await BackupService.readSkillCatalogRows(from, assistants: assistants);
     final conversations = await from.db.query('tb_conversation_list');
     final messages = await from.db.query('tb_messages');
     final favorites = await from.db.query('tb_favorite');
@@ -219,6 +223,16 @@ class GuestMigrationService {
         final newId = await txn.insert('tb_assistant', row);
         if (oldId != null) assistantIdMap[oldId] = newId;
         ast++;
+      }
+
+      // Skill 正文和引用跟随助手同事务迁移；创建时间保留，只改助手 id。
+      for (final skill in skillCatalog) {
+        final newId = assistantIdMap[_intValue(skill['assistantId'])];
+        if (newId == null) continue;
+        await txn.insert('tb_skill_catalog', {
+          ...skill,
+          'assistantId': newId,
+        });
       }
 
       // 项目：丢弃原 id，自增插入，记录 旧id→新id。
@@ -393,6 +407,7 @@ class GuestMigrationService {
     await FavoriteDao.create(storage);
     await ProjectDao.create(storage);
     await AssistantMemoryDao.create(storage);
+    await SkillCatalogDao.create(storage);
     await _ensureConversationProjectIdColumn(storage.db);
   }
 
@@ -445,6 +460,25 @@ class GuestMigrationService {
       'on assistant.id = memory.assistantId',
     );
     return (rows.first['c'] as num?)?.toInt() ?? 0;
+  }
+
+  static Future<bool> _hasValidSkillCatalog(HiDBManager storage) async {
+    final tables = await storage.db.query(
+      'sqlite_master',
+      columns: ['name'],
+      where: 'type = ? and name = ?',
+      whereArgs: ['table', 'tb_skill_catalog'],
+      limit: 1,
+    );
+    if (tables.isEmpty) return false;
+    final rows = await storage.db.rawQuery('''
+      select c.assistantId from tb_skill_catalog c
+      inner join tb_assistant a on a.id = c.assistantId
+        and a.createdAt = c.assistantCreatedAt
+        and a.prompt = c.body
+      limit 1
+    ''');
+    return rows.isNotEmpty;
   }
 
   static int? _intValue(Object? raw) {

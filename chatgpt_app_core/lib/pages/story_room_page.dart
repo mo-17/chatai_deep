@@ -1560,7 +1560,9 @@ class _StoryRoomPageState extends State<StoryRoomPage> {
       imagePaths: userMessage.imagePaths,
       filePaths: userMessage.filePaths,
       capabilities: ChatService.capabilitiesFor(settings),
+      limits: settings.attachmentProcessingLimits,
       fallbackContext: userMessage.attachmentContext,
+      reuseExtractedContext: true,
     );
     final reply = await _runSingleSpeakerGeneration(
       input: input,
@@ -3024,6 +3026,7 @@ class _StoryRoomPageState extends State<StoryRoomPage> {
       imagePaths: pendingImages,
       filePaths: pendingFiles,
       capabilities: capabilities,
+      limits: settings.attachmentProcessingLimits,
     );
     final previousMessages = List<StoryMessageModel>.from(_messages);
     final userMessage = StoryMessageModel(

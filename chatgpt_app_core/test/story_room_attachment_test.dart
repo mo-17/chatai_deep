@@ -1,10 +1,25 @@
+import 'dart:io';
+
 import 'package:chatgpt_app_core/chat/application/story_context_builder.dart';
 import 'package:chatgpt_app_core/chat/application/story_room_attachments.dart';
+import 'package:chatgpt_app_core/chat/domain/attachment_processing_limits.dart';
 import 'package:chatgpt_app_core/chat/domain/model_capabilities.dart';
 import 'package:chatgpt_app_core/model/story_room_model.dart';
+import 'package:chatgpt_app_core/util/managed_attachment_store.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 void main() {
+  late Directory root;
+  setUp(() async {
+    root = await Directory.systemTemp.createTemp('story_attachment_limits_');
+    ManagedAttachmentStore.debugRootDirectory =
+        Directory('${root.path}/managed');
+  });
+  tearDown(() async {
+    ManagedAttachmentStore.debugRootDirectory = null;
+    await root.delete(recursive: true);
+  });
+
   test('附件路径去重并限制图片和文件数量', () {
     expect(
       StoryRoomAttachmentPolicy.normalizePaths(
@@ -50,5 +65,41 @@ void main() {
     expect(bundle.filePaths, ['/missing/world.txt']);
     expect(bundle.attachmentContext, '[附件 world.txt 的历史抽取内容]');
     expect(bundle.attachments.extraText, contains('历史抽取内容'));
+  });
+
+  test('故事房间新附件遵循配置，旧调用默认保留超过30000字符正文', () async {
+    final text = 'NOVEL_START${'n' * 35000}NOVEL_END';
+    final file = await File('${root.path}/novel.txt').writeAsString(text);
+    final defaultBundle = await StoryRoomAttachmentService.prepare(
+        imagePaths: const [],
+        filePaths: [file.path],
+        capabilities: const ModelCapabilities.none());
+    expect(defaultBundle.attachmentContext, contains(text));
+    final limited = await StoryRoomAttachmentService.prepare(
+        imagePaths: const [],
+        filePaths: [file.path],
+        capabilities: const ModelCapabilities.none(),
+        limits: const AttachmentProcessingLimits(maxTextChars: 1024));
+    expect(limited.attachmentContext, contains('NOVEL_START'));
+    expect(limited.attachmentContext, isNot(contains('NOVEL_END')));
+    expect(limited.attachmentContext, contains('已截断'));
+    expect(limited.attachments.extraText, limited.attachmentContext);
+  });
+
+  test('故事重试以旧fallback正文为准，降低限额或改写源文件不会改变提问', () async {
+    final file = await File('${root.path}/novel.txt')
+        .writeAsString('CHANGED_START${'n' * 5000}CHANGED_END');
+    final saved = 'SAVED_START${'s' * 6000}SAVED_END';
+    final bundle = await StoryRoomAttachmentService.prepare(
+        imagePaths: const [],
+        filePaths: [file.path],
+        capabilities: const ModelCapabilities.none(),
+        limits: const AttachmentProcessingLimits(maxTextChars: 1024),
+        fallbackContext: saved,
+        reuseExtractedContext: true);
+    expect(bundle.attachmentContext, saved);
+    expect(bundle.attachments.extraText, saved);
+    expect(bundle.attachmentContext, isNot(contains('CHANGED_START')));
+    expect(bundle.attachmentContext, isNot(contains('已截断')));
   });
 }

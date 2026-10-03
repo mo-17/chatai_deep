@@ -224,6 +224,64 @@ void main() {
       );
       expect(() => c.listTools(), throwsA(isA<McpException>()));
     });
+
+    test('平台回退 404 提示服务不可用，不误导用户补 Key', () async {
+      final c = DirectMcpClient(
+        url: 'https://api.usefulai.fun/mcp',
+        client: MockClient((_) async => http.Response(
+              '{"status":"error","code":404,"message":"Application not found"}',
+              404,
+              headers: {'x-railway-fallback': 'true'},
+            )),
+      );
+      expect(
+        c.listTools(),
+        throwsA(isA<McpException>().having(
+          (e) => e.message,
+          'message',
+          allOf(contains('服务端不可用'), contains('暂时关闭此连接')),
+        )),
+      );
+    });
+
+    test('普通 HTML 404 提示核对端点，不误判为平台故障', () async {
+      final c = DirectMcpClient(
+        url: 'https://x/mcp',
+        client: MockClient(
+            (_) async => http.Response('<html>Not found</html>', 404)),
+      );
+      expect(
+        c.listTools(),
+        throwsA(isA<McpException>().having(
+          (e) => e.message,
+          'message',
+          allOf(contains('核对服务商提供的完整地址'), isNot(contains('托管平台'))),
+        )),
+      );
+    });
+
+    test('初始化通知返回 404 时不能继续列工具或记作连通', () async {
+      final methods = <String>[];
+      final c = DirectMcpClient(
+        url: 'https://x/mcp',
+        client: MockClient((request) async {
+          final body = jsonDecode(request.body) as Map<String, dynamic>;
+          methods.add(body['method'] as String);
+          if (body['method'] == 'initialize') {
+            return http.Response(
+                jsonEncode({
+                  'jsonrpc': '2.0',
+                  'id': body['id'],
+                  'result': {'capabilities': {}},
+                }),
+                200);
+          }
+          return http.Response('Not found', 404);
+        }),
+      );
+      await expectLater(c.listTools(), throwsA(isA<McpException>()));
+      expect(methods, ['initialize', 'notifications/initialized']);
+    });
   });
 
   group('McpToolSource 直连发现 + 映射', () {

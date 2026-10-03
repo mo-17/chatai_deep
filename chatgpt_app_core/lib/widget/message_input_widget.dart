@@ -80,6 +80,7 @@ class MessageInputWidget extends StatefulWidget {
   final VoidCallback? onToggleWebSearch;
   final String? modelLabel;
   final VoidCallback? onModelTap;
+  final Widget? modelAccessory;
   final String hint;
   final String initialText;
   final TextEditingController? controller;
@@ -112,6 +113,7 @@ class MessageInputWidget extends StatefulWidget {
     this.onToggleWebSearch,
     this.modelLabel,
     this.onModelTap,
+    this.modelAccessory,
     this.initialText = '',
     this.controller,
     this.enable = true,
@@ -769,6 +771,7 @@ class _MessageInputWidgetState extends State<MessageInputWidget> {
       padding: const EdgeInsets.only(bottom: 5),
       child: Align(
         alignment: Alignment.centerLeft,
+        widthFactor: 1,
         child: InkWell(
           borderRadius: BorderRadius.circular(14),
           onTap: widget.editingEnabled ? widget.onModelTap : null,
@@ -795,7 +798,8 @@ class _MessageInputWidgetState extends State<MessageInputWidget> {
                 Icon(Icons.tune, size: 14, color: color),
                 const SizedBox(width: 4),
                 ConstrainedBox(
-                  constraints: const BoxConstraints(maxWidth: 240),
+                  constraints: BoxConstraints(
+                      maxWidth: widget.modelAccessory == null ? 240 : 180),
                   child: Text(
                     label,
                     maxLines: 1,
@@ -978,7 +982,18 @@ class _MessageInputWidgetState extends State<MessageInputWidget> {
       child: Column(
         mainAxisSize: MainAxisSize.min,
         children: [
-          _buildModelBar(color, isAnime: isAnime),
+          Align(
+            alignment: Alignment.centerLeft,
+            child: Wrap(
+              spacing: 8,
+              runSpacing: 4,
+              crossAxisAlignment: WrapCrossAlignment.center,
+              children: [
+                _buildModelBar(color, isAnime: isAnime),
+                if (widget.modelAccessory != null) widget.modelAccessory!,
+              ],
+            ),
+          ),
           _buildThumbnailBar(isAnime: isAnime),
           _buildFileBar(isAnime: isAnime),
           if (isAnime)

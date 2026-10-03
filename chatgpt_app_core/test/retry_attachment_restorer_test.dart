@@ -4,6 +4,7 @@ import 'dart:io';
 
 import 'package:chatgpt_app_core/chat/application/file_processor.dart';
 import 'package:chatgpt_app_core/chat/application/retry_attachment_restorer.dart';
+import 'package:chatgpt_app_core/chat/domain/attachment_processing_limits.dart';
 import 'package:chatgpt_app_core/chat/domain/chat_attachments.dart';
 import 'package:chatgpt_app_core/chat/domain/chat_send_progress.dart';
 import 'package:chatgpt_app_core/chat/domain/message_block.dart';
@@ -63,6 +64,52 @@ void main() {
         files: const [FileMetadata(name: 'old.txt', extractedText: '旧文件正文')],
         capabilities: const ModelCapabilities.none());
     expect(fallback.attachments.extraText, '旧文件正文');
+  });
+
+  test('降低配置不会重截断旧提问保存的正文或读取旧路径', () async {
+    const limits = AttachmentProcessingLimits(
+        maxTextChars: 1024, maxTextFileBytes: 1024 * 1024);
+    final original = 'SAVED_START${'n' * 5000}SAVED_END';
+    final extracted = 'FILE_START${'f' * 6000}FILE_END';
+    final files = [
+      FileMetadata(
+          name: 'old.txt',
+          path: '/missing/old.txt',
+          size: 2 * 1024 * 1024,
+          extractedText: extracted),
+    ];
+    final persisted = await restorer.restore(
+        persisted: ChatAttachments(extraText: original),
+        files: files,
+        capabilities: const ModelCapabilities.none(),
+        limits: limits);
+    expect(persisted.attachments.extraText, original);
+    expect(persisted.hasWarnings, isFalse);
+    final fallback = await restorer.restore(
+        persisted: const ChatAttachments(),
+        files: files,
+        capabilities: const ModelCapabilities.none(),
+        limits: limits);
+    expect(fallback.attachments.extraText, extracted);
+    expect(fallback.hasWarnings, isFalse);
+    expect(await Directory('${root.path}/managed').exists(), isFalse);
+  });
+
+  test('原生PDF重试降级提取时使用当前配置的字符上限', () async {
+    final text = List.generate(40, (i) => 'line$i ${'n' * 50}').join('\n');
+    final file = await pdf(text);
+    final result = await restorer.restore(
+        persisted: const ChatAttachments(),
+        files: [file],
+        capabilities: const ModelCapabilities.none(),
+        limits: const AttachmentProcessingLimits(maxTextChars: 1024));
+    expect(result.attachments.extraText, contains('已截断'));
+    expect(result.attachments.extraText, isNot(contains('line39')));
+    expect(result.diagnostics.map((d) => d.kind), [
+      FileProcessingDiagnosticKind.textFallback,
+      FileProcessingDiagnosticKind.truncated,
+    ]);
+    expect(result.diagnostics.last.message, 'PDF 文字超过 1024 字符，仅发送前 1024 字符');
   });
 
   test('从安全托管文件恢复原生PDF字节与原始文件名', () async {

@@ -110,6 +110,10 @@ sealed class MessageBlock {
           status: status,
           modelId: modelId,
           content: j['content'] as String? ?? '',
+          protocolMessages: [
+            for (final m in (j['protocolMessages'] as List? ?? const []))
+              (m as Map).cast<String, dynamic>()
+          ],
         );
       case MessageBlockType.thinking:
         return ThinkingBlock(
@@ -290,6 +294,9 @@ class PlaceholderBlock extends MessageBlock {
 class MainTextBlock extends MessageBlock {
   final String content;
 
+  /// 精确工具轮次及推理协议历史，独立于显示文本；旧块缺省为空。
+  final List<Map<String, dynamic>> protocolMessages;
+
   const MainTextBlock({
     required super.id,
     required super.messageId,
@@ -298,6 +305,7 @@ class MainTextBlock extends MessageBlock {
     super.updatedAt,
     super.modelId,
     this.content = '',
+    this.protocolMessages = const [],
   });
 
   @override
@@ -307,6 +315,7 @@ class MainTextBlock extends MessageBlock {
     String? content,
     MessageBlockStatus? status,
     int? updatedAt,
+    List<Map<String, dynamic>>? protocolMessages,
   }) =>
       MainTextBlock(
         id: id,
@@ -316,10 +325,15 @@ class MainTextBlock extends MessageBlock {
         modelId: modelId,
         status: status ?? this.status,
         content: content ?? this.content,
+        protocolMessages: protocolMessages ?? this.protocolMessages,
       );
 
   @override
-  Map<String, dynamic> toJson() => _baseJson()..['content'] = content;
+  Map<String, dynamic> toJson() => _baseJson()
+    ..['content'] = content
+    ..addAll(protocolMessages.isEmpty
+        ? const {}
+        : {'protocolMessages': protocolMessages});
 }
 
 class ThinkingBlock extends MessageBlock {

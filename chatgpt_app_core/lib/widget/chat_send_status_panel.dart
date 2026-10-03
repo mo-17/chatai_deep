@@ -140,7 +140,7 @@ class ChatSendStatusPanel extends StatelessWidget {
             if (plan.shortened)
               Text(
                 '本轮省略 ${plan.omittedHistoryMessages} 条较早消息'
-                '${plan.summary.isEmpty ? '' : '，附带原文摘录'}',
+                '${plan.summary.isEmpty ? '' : plan.usesSemanticSummary ? '，附带语义摘要' : '，附带原文摘录'}',
                 style: theme.textTheme.bodySmall,
               ),
             if (!plan.canSend)

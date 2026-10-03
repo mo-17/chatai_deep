@@ -1,5 +1,6 @@
 import 'dart:async';
 
+import 'package:chatgpt_app_core/chat/domain/attachment_processing_limits.dart';
 import 'package:chatgpt_app_core/dao/chat/chat_service.dart';
 import 'package:chatgpt_app_core/model/ai_settings.dart';
 import 'package:chatgpt_app_core/pages/ai_health_check_page.dart';
@@ -405,6 +406,42 @@ class _AISettingsPageState extends State<AISettingsPage> {
           onTap: _editMaxTokens,
         ),
         ListTile(
+          key: const ValueKey('context_input_budget_setting'),
+          title: const Text('应用输入预算'),
+          subtitle: Text(
+              '${s.effectiveContextInputBudgetTokens} Token\n控制本轮问题、附件和历史的输入总量',
+              style: tt.bodySmall?.copyWith(color: cs.onSurfaceVariant)),
+          trailing:
+              Icon(Icons.edit_rounded, size: 18, color: cs.onSurfaceVariant),
+          contentPadding:
+              const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
+          onTap: _editInputBudget,
+        ),
+        ListTile(
+          key: const ValueKey('attachment_text_chars_setting'),
+          title: const Text('单个附件文字上限'),
+          subtitle: Text(
+              '${s.attachmentProcessingLimits.maxTextChars} 字符\n文本文件、PDF 抽文本均适用',
+              style: tt.bodySmall?.copyWith(color: cs.onSurfaceVariant)),
+          trailing:
+              Icon(Icons.edit_rounded, size: 18, color: cs.onSurfaceVariant),
+          contentPadding:
+              const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
+          onTap: () => _editAttachmentLimit(fileSize: false),
+        ),
+        ListTile(
+          key: const ValueKey('attachment_text_file_size_setting'),
+          title: const Text('文本文件大小上限'),
+          subtitle: Text(
+              '${_formatAttachmentMiB(s.attachmentProcessingLimits.maxTextFileBytes)} MiB\n读取文本文件前检查文件大小',
+              style: tt.bodySmall?.copyWith(color: cs.onSurfaceVariant)),
+          trailing:
+              Icon(Icons.edit_rounded, size: 18, color: cs.onSurfaceVariant),
+          contentPadding:
+              const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
+          onTap: () => _editAttachmentLimit(fileSize: true),
+        ),
+        ListTile(
           title: const Text('采样温度'),
           subtitle: Text(
               s.temperature == null
@@ -441,6 +478,36 @@ class _AISettingsPageState extends State<AISettingsPage> {
         ),
       ],
     );
+  }
+
+  Future<void> _editInputBudget() async {
+    final value = await showDialog<int>(
+      context: context,
+      builder: (_) => _ContextInputBudgetDialog(
+          initialValue: _store.settings.effectiveContextInputBudgetTokens),
+    );
+    if (value == null || !mounted) return;
+    final next = _store.settings.clone()..contextInputBudgetTokens = value;
+    await _persistSettings(next);
+  }
+
+  Future<void> _editAttachmentLimit({required bool fileSize}) async {
+    final limits = _store.settings.attachmentProcessingLimits;
+    final value = await showDialog<int>(
+      context: context,
+      builder: (_) => _AttachmentLimitDialog(
+        fileSize: fileSize,
+        initialValue: fileSize ? limits.maxTextFileBytes : limits.maxTextChars,
+      ),
+    );
+    if (value == null || !mounted) return;
+    final next = _store.settings.clone();
+    if (fileSize) {
+      next.attachmentTextMaxFileBytes = value;
+    } else {
+      next.attachmentTextMaxChars = value;
+    }
+    await _persistSettings(next);
   }
 
   Future<void> _editMaxTokens() async {
@@ -747,4 +814,209 @@ class _AISettingsPageState extends State<AISettingsPage> {
       ),
     );
   }
+}
+
+class _ContextInputBudgetDialog extends StatefulWidget {
+  final int initialValue;
+
+  const _ContextInputBudgetDialog({required this.initialValue});
+
+  @override
+  State<_ContextInputBudgetDialog> createState() =>
+      _ContextInputBudgetDialogState();
+}
+
+class _ContextInputBudgetDialogState extends State<_ContextInputBudgetDialog> {
+  final _formKey = GlobalKey<FormState>();
+  late final TextEditingController _controller =
+      TextEditingController(text: widget.initialValue.toString());
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) => AlertDialog(
+        title: const Text('应用输入预算'),
+        content: SingleChildScrollView(
+          child: Form(
+            key: _formKey,
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                TextFormField(
+                  key: const ValueKey('context_input_budget_field'),
+                  controller: _controller,
+                  autofocus: true,
+                  keyboardType: TextInputType.number,
+                  autovalidateMode: AutovalidateMode.onUserInteraction,
+                  decoration: InputDecoration(
+                    labelText: '输入预算（Token）',
+                    helperText: '范围：1024～1048576',
+                    border: AppVisualTheme.of(context).isAnime
+                        ? null
+                        : const OutlineInputBorder(),
+                  ),
+                  validator: (text) {
+                    final value = int.tryParse(text?.trim() ?? '');
+                    if (value == null ||
+                        value < AISettings.minContextInputBudgetTokens ||
+                        value > AISettings.maxContextInputBudgetTokens) {
+                      return '请输入 1024～1048576 之间的整数';
+                    }
+                    return null;
+                  },
+                ),
+                const SizedBox(height: 12),
+                const Text('超出预算时压缩较早对话，原始记录保留。输出长度单独设置；请根据模型实际容量调整。'),
+              ],
+            ),
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () {
+              _controller.text =
+                  AISettings.defaultContextInputBudgetTokens.toString();
+              _formKey.currentState?.validate();
+            },
+            child: const Text('恢复默认'),
+          ),
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: const Text('取消'),
+          ),
+          FilledButton(
+            onPressed: () {
+              if (_formKey.currentState?.validate() != true) return;
+              Navigator.pop(context, int.parse(_controller.text.trim()));
+            },
+            child: const Text('保存'),
+          ),
+        ],
+      );
+}
+
+String _formatAttachmentMiB(int bytes) =>
+    (bytes / (1024 * 1024)).toString().replaceFirst(RegExp(r'\.0$'), '');
+
+class _AttachmentLimitDialog extends StatefulWidget {
+  final bool fileSize;
+  final int initialValue;
+
+  const _AttachmentLimitDialog({
+    required this.fileSize,
+    required this.initialValue,
+  });
+
+  @override
+  State<_AttachmentLimitDialog> createState() => _AttachmentLimitDialogState();
+}
+
+class _AttachmentLimitDialogState extends State<_AttachmentLimitDialog> {
+  static const _minMiB =
+      AttachmentProcessingLimits.minTextFileBytes ~/ (1024 * 1024);
+  static const _maxMiB =
+      AttachmentProcessingLimits.maximumTextFileBytes ~/ (1024 * 1024);
+  final _formKey = GlobalKey<FormState>();
+  late final TextEditingController _controller = TextEditingController(
+    text: widget.fileSize
+        ? _formatAttachmentMiB(widget.initialValue)
+        : widget.initialValue.toString(),
+  );
+
+  int? _parseValue(String? text) {
+    final trimmed = text?.trim() ?? '';
+    if (!widget.fileSize) {
+      final value = int.tryParse(trimmed);
+      return value != null &&
+              value >= AttachmentProcessingLimits.minTextChars &&
+              value <= AttachmentProcessingLimits.maximumTextChars
+          ? value
+          : null;
+    }
+    final value = double.tryParse(trimmed);
+    if (value == null || !value.isFinite || value < _minMiB || value > _maxMiB) {
+      return null;
+    }
+    return (value * 1024 * 1024).round();
+  }
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) => AlertDialog(
+        title: Text(widget.fileSize ? '文本文件大小上限' : '单个附件文字上限'),
+        content: SingleChildScrollView(
+          child: Form(
+            key: _formKey,
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                TextFormField(
+                  key: ValueKey(widget.fileSize
+                      ? 'attachment_text_file_size_field'
+                      : 'attachment_text_chars_field'),
+                  controller: _controller,
+                  autofocus: true,
+                  keyboardType:
+                      TextInputType.numberWithOptions(decimal: widget.fileSize),
+                  autovalidateMode: AutovalidateMode.onUserInteraction,
+                  decoration: InputDecoration(
+                    labelText: widget.fileSize ? '文件大小（MiB）' : '文字上限（字符）',
+                    helperText: widget.fileSize
+                        ? '范围：$_minMiB～$_maxMiB MiB，可输入小数'
+                        : '范围：1024～1048576 字符',
+                    border: AppVisualTheme.of(context).isAnime
+                        ? null
+                        : const OutlineInputBorder(),
+                  ),
+                  validator: (text) => _parseValue(text) != null
+                      ? null
+                      : widget.fileSize
+                          ? '请输入 $_minMiB～$_maxMiB 之间的大小（MiB）'
+                          : '请输入 1024～1048576 之间的整数',
+                ),
+                const SizedBox(height: 12),
+                Text(widget.fileSize
+                    ? '适用于 TXT、Markdown 等文本文件。图片和原生 PDF 上传仍按模型限制处理。'
+                    : '适用于文本文件和 PDF 抽取的文字。超出时截取前面的内容，并显示截断提示。'),
+                const SizedBox(height: 8),
+                const Text('本轮问题、附件和历史合计仍受「应用输入预算」限制。'),
+              ],
+            ),
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () {
+              _controller.text = widget.fileSize
+                  ? _formatAttachmentMiB(
+                      AttachmentProcessingLimits.defaultMaxTextFileBytes)
+                  : AttachmentProcessingLimits.defaultMaxTextChars.toString();
+              _formKey.currentState?.validate();
+            },
+            child: const Text('恢复默认'),
+          ),
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: const Text('取消'),
+          ),
+          FilledButton(
+            onPressed: () {
+              if (_formKey.currentState?.validate() != true) return;
+              Navigator.pop(context, _parseValue(_controller.text));
+            },
+            child: const Text('保存'),
+          ),
+        ],
+      );
 }

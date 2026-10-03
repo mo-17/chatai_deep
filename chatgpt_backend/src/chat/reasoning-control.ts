@@ -1,4 +1,5 @@
 export type ReasoningPolicy = 'provider_default' | 'off_if_supported';
+export type ReasoningEffort = 'low' | 'high' | 'max';
 
 const deepSeekDualMode = new Set([
   'deepseek-v4-pro',
@@ -19,15 +20,25 @@ export function resolveReasoningControl(input: {
   providerCode: string;
   modelId: string;
   policy: ReasoningPolicy;
+  effort?: ReasoningEffort;
 }): Record<string, unknown> {
-  if (input.policy === 'provider_default') return {};
-
   if (
     input.providerCode === 'deepseek' &&
     deepSeekDualMode.has(input.modelId)
   ) {
-    return { thinking: { type: 'disabled' } };
+    // 关闭思考优先于等级设置；未选择等级时沿用旧请求的服务端默认值。
+    if (input.policy === 'off_if_supported') {
+      return { thinking: { type: 'disabled' } };
+    }
+    if (['low', 'high', 'max'].includes(input.effort ?? '')) {
+      return {
+        thinking: { type: 'enabled' },
+        reasoning_effort: input.effort,
+      };
+    }
+    return {};
   }
+  if (input.policy === 'provider_default') return {};
   if (input.providerCode === 'dashscope' && qwenThinking.test(input.modelId)) {
     return { enable_thinking: false };
   }

@@ -3,6 +3,20 @@ import { validate } from 'class-validator';
 import { CompletionBodyDto } from './completion-body.dto';
 
 describe('CompletionBodyDto', () => {
+  it.each(['low', 'high', 'max'])(
+    'keeps valid reasoning effort %s under whitelist validation',
+    async (reasoningEffort) => {
+      const body = plainToInstance(CompletionBodyDto, {
+        model: 'deepseek-flash',
+        messages: [],
+        reasoning_effort: reasoningEffort,
+      });
+
+      expect(await validate(body, { whitelist: true })).toHaveLength(0);
+      expect(body.reasoning_effort).toBe(reasoningEffort);
+    },
+  );
+
   it.each([
     ['standard', 'provider_default'],
     ['translation', 'off_if_supported'],
@@ -39,6 +53,11 @@ describe('CompletionBodyDto', () => {
     ['request_profile', 'translation '],
     ['reasoning_policy', 'off'],
     ['reasoning_policy', 'OFF_IF_SUPPORTED'],
+    ['reasoning_effort', 'off'],
+    ['reasoning_effort', 'medium'],
+    ['reasoning_effort', 'MAX'],
+    ['reasoning_effort', 'high '],
+    ['reasoning_effort', 3],
   ])('rejects unsupported semantic option %s=%s', async (field, value) => {
     const body = plainToInstance(CompletionBodyDto, {
       model: 'test-model',

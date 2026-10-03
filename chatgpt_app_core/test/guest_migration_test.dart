@@ -10,12 +10,14 @@ import 'package:chatgpt_app_core/db/favorite_dao.dart';
 import 'package:chatgpt_app_core/db/hi_db_manager.dart';
 import 'package:chatgpt_app_core/db/message_dao.dart';
 import 'package:chatgpt_app_core/db/project_dao.dart';
+import 'package:chatgpt_app_core/db/skill_catalog_dao.dart';
 import 'package:chatgpt_app_core/migration/guest_migration_service.dart';
 import 'package:chatgpt_app_core/model/assistant_memory_model.dart';
 import 'package:chatgpt_app_core/model/assistant_model.dart';
 import 'package:chatgpt_app_core/model/conversation_model.dart';
 import 'package:chatgpt_app_core/model/ai_settings.dart';
 import 'package:chatgpt_app_core/model/project_model.dart';
+import 'package:chatgpt_app_core/skill/skill_catalog_entry.dart';
 import 'package:flutter_hi_cache/flutter_hi_cache.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:login_sdk/dao/login_dao.dart';
@@ -367,6 +369,33 @@ void main() {
         .single;
     expect(accountMemory['assistantId'], accountAid);
     expect(accountMemory['memoryId'], 'shared-memory-id');
+  });
+
+  test('shouldPrompt：游客只有有效 Skill 目录时仍提示迁移', () async {
+    const accountHash = 'account-skill-prompt';
+    await LoginSdkConfig.instance.storage.writeProfile(
+      token: 'real-token',
+      userName: 'account-user',
+      extras: const {'accountHash': accountHash},
+    );
+    final guest = await newDb();
+    addTearDown(guest.db.close);
+    final assistant =
+        AssistantModel(name: 'writing', emoji: '🧩', prompt: '写作技能');
+    await (await AssistantDao.create(guest)).saveAssistant(assistant);
+    await (await SkillCatalogDao.create(guest)).save(SkillCatalogEntry(
+      assistantId: assistant.id!,
+      assistantCreatedAt: assistant.createdAt,
+      name: 'writing',
+      description: '小说写作',
+      body: assistant.prompt,
+    ));
+    expect(
+      await GuestMigrationService.shouldPrompt(
+        storageResolver: (_) async => guest,
+      ),
+      isTrue,
+    );
   });
 
   test('shouldPrompt：仅有效助手长期记忆触发，空库与悬空记忆不触发', () async {

@@ -11,6 +11,7 @@ import { AiGlobalConfig } from '../ai/ai-global-config.entity';
 import { ProviderCacheService } from '../ai/provider-cache.service';
 import {
   resolveReasoningControl,
+  type ReasoningEffort,
   type ReasoningPolicy,
 } from './reasoning-control';
 import {
@@ -34,6 +35,7 @@ export interface CompletionBody {
   tools?: Record<string, unknown>[];
   request_profile?: StreamRequestProfile;
   reasoning_policy?: ReasoningPolicy;
+  reasoning_effort?: ReasoningEffort;
 }
 
 export interface UpstreamResponse {
@@ -156,8 +158,9 @@ export class ChatService {
     assertProviderAvailable(provider);
 
     const url = `${provider.baseUrl}/chat/completions`;
-    const reasoningControl = requestReasoningControl(provider, body);
-    const upstreamBody = buildUpstreamBody(body, reasoningControl);
+    const preparedBody = prepareUpstreamRequest(body, provider);
+    const reasoningControl = requestReasoningControl(provider, preparedBody);
+    const upstreamBody = buildUpstreamBody(preparedBody, reasoningControl);
     const t0 = Date.now();
     try {
       const resp = await fetch(url, {
@@ -200,9 +203,10 @@ export class ChatService {
 
     const url = `${provider.baseUrl}/chat/completions`;
     const requestProfile = safeRequestProfile(body.request_profile);
-    const reasoningControl = requestReasoningControl(provider, body);
+    const preparedBody = prepareUpstreamRequest(body, provider);
+    const reasoningControl = requestReasoningControl(provider, preparedBody);
     const streamBody = {
-      ...buildUpstreamBody(body, reasoningControl),
+      ...buildUpstreamBody(preparedBody, reasoningControl),
       stream: true,
       stream_options: { include_usage: true },
     };
@@ -404,6 +408,52 @@ export class ChatService {
   }
 }
 
+function prepareUpstreamRequest(
+  body: CompletionBody,
+  provider: AiProvider,
+): CompletionBody {
+  const selectedControl = resolveReasoningControl({
+    providerCode: provider.code,
+    modelId: body.model,
+    policy:
+      body.reasoning_policy === 'off_if_supported'
+        ? 'off_if_supported'
+        : 'provider_default',
+    effort: body.reasoning_effort,
+  });
+  const selectedEffort = selectedControl.reasoning_effort;
+  const fillOrdinaryReasoning =
+    selectedEffort === 'low' ||
+    selectedEffort === 'high' ||
+    selectedEffort === 'max';
+  return {
+    ...body,
+    messages: body.messages.map((message) => {
+      const copy = { ...message };
+      // 根据实际路由后的服务商过滤，而不是相信客户端的模型前缀。
+      // 不修改输入 body，保留客户端用于恢复和换回 DeepSeek 的原始协议记录。
+      if (
+        !supportsThinkingReplay(provider, body.model) ||
+        copy.role !== 'assistant' ||
+        typeof copy.reasoning_content !== 'string'
+      ) {
+        delete copy.reasoning_content;
+      }
+      // 显式由 off 切回思考时，普通回复确实没有思考内容，可在请求副本中补空。
+      // 工具调用回复不能补造字段，仍由下方兼容检查安全关闭思考。
+      if (
+        fillOrdinaryReasoning &&
+        copy.role === 'assistant' &&
+        !hasToolCalls(copy) &&
+        typeof copy.reasoning_content !== 'string'
+      ) {
+        copy.reasoning_content = '';
+      }
+      return copy;
+    }),
+  };
+}
+
 function buildUpstreamBody(
   body: CompletionBody,
   reasoningControl: Record<string, unknown>,
@@ -421,27 +471,28 @@ function buildUpstreamBody(
   };
 }
 
+function hasToolCalls(message: Record<string, unknown>): boolean {
+  return Array.isArray(message.tool_calls) && message.tool_calls.length > 0;
+}
+
 function requestReasoningControl(
   provider: AiProvider,
   body: CompletionBody,
 ): Record<string, unknown> {
-  // Flash 默认开启思考；当前客户端工具历史未回传 reasoning_content，
-  // 工具回路（含最后一轮不带 tools 的收尾）必须关闭思考，避免上游 400。
-  const flashModels = [
-    'deepseek-flash',
-    'deepseek-v4-flash',
-    'deepseek-v4-flash-vision-exp',
-  ];
+  // 思考工具协议需要所有历史 assistant 的 reasoning_content。完整的新历史
+  // 使用选定的等级或上游默认；旧历史缺字段时保留非思考兼容路径（含工具收尾轮）。
   const hasToolHistory = body.messages.some(
+    (message) => message.role === 'assistant' && hasToolCalls(message),
+  );
+  const missingReasoning = body.messages.some(
     (message) =>
       message.role === 'assistant' &&
-      Array.isArray(message.tool_calls) &&
-      message.tool_calls.length > 0,
+      typeof message.reasoning_content !== 'string',
   );
   if (
-    provider.code === 'deepseek' &&
-    flashModels.includes(body.model.trim().toLowerCase()) &&
-    ((body.tools?.length ?? 0) > 0 || hasToolHistory)
+    supportsThinkingReplay(provider, body.model) &&
+    ((body.tools?.length ?? 0) > 0 || hasToolHistory) &&
+    missingReasoning
   ) {
     return { thinking: { type: 'disabled' } };
   }
@@ -453,7 +504,20 @@ function requestReasoningControl(
     providerCode: provider.code,
     modelId: body.model,
     policy,
+    effort: body.reasoning_effort,
   });
+}
+
+function supportsThinkingReplay(provider: AiProvider, model: string): boolean {
+  return (
+    provider.code === 'deepseek' &&
+    [
+      'deepseek-flash',
+      'deepseek-v4-flash',
+      'deepseek-v4-flash-vision-exp',
+      'deepseek-v4-pro',
+    ].includes(model.trim().toLowerCase())
+  );
 }
 
 function classifyReasoningControlFailure(

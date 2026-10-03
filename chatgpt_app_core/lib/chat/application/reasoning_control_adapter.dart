@@ -1,4 +1,5 @@
 import 'package:chatgpt_app_core/chat/domain/chat_request_options.dart';
+import 'package:chatgpt_app_core/chat/domain/deepseek_reasoning_effort.dart';
 
 final class ReasoningControlDecision {
   final bool supported;
@@ -48,6 +49,7 @@ abstract final class ReasoningControlAdapter {
     required String? providerCode,
     required String modelId,
     required ChatReasoningPolicy policy,
+    DeepSeekReasoningEffort? deepSeekReasoningEffort,
     bool suppressed = false,
   }) {
     final provider = _resolveFirstPartyProvider(
@@ -57,18 +59,45 @@ abstract final class ReasoningControlAdapter {
     final supportedFields = _supportedFields(provider, modelId);
     final supported = supportedFields != null;
 
-    if (policy == ChatReasoningPolicy.providerDefault) {
-      return ReasoningControlDecision(
-        supported: supported,
-        requestFields: const {},
-        explanation: 'provider_default',
-      );
-    }
     if (suppressed) {
       return ReasoningControlDecision(
         supported: supported,
         requestFields: const {},
         explanation: 'suppressed',
+      );
+    }
+    // 翻译等用途主动关闭思考时，优先于用户为普通对话设置的等级。
+    if (policy == ChatReasoningPolicy.offIfSupported && supported) {
+      return ReasoningControlDecision(
+        supported: true,
+        requestFields: supportedFields,
+        explanation: 'reasoning_disabled',
+      );
+    }
+    if (deepSeekReasoningEffort != null &&
+        supportsDeepSeekEffort(
+          providerId: providerId,
+          providerCode: providerCode,
+          modelId: modelId,
+        )) {
+      return ReasoningControlDecision(
+        supported: true,
+        requestFields: deepSeekReasoningEffort == DeepSeekReasoningEffort.off
+            ? const {
+                'thinking': {'type': 'disabled'}
+              }
+            : {
+                'thinking': {'type': 'enabled'},
+                'reasoning_effort': deepSeekReasoningEffort.wireValue,
+              },
+        explanation: 'deepseek_${deepSeekReasoningEffort.wireValue}',
+      );
+    }
+    if (policy == ChatReasoningPolicy.providerDefault) {
+      return ReasoningControlDecision(
+        supported: supported,
+        requestFields: const {},
+        explanation: 'provider_default',
       );
     }
     if (!supported) {
@@ -84,6 +113,19 @@ abstract final class ReasoningControlAdapter {
       explanation: 'reasoning_disabled',
     );
   }
+
+  /// UI 与传输层共享精确白名单，custom/openrouter 的派生 code 不算直连。
+  static bool supportsDeepSeekEffort({
+    required String? providerId,
+    required String? providerCode,
+    required String modelId,
+  }) =>
+      _resolveFirstPartyProvider(
+            providerId: providerId,
+            providerCode: providerCode,
+          ) ==
+          'deepseek' &&
+      _deepSeekDualMode.contains(modelId);
 
   static bool isExplicitUnsupportedParameter({
     required int statusCode,

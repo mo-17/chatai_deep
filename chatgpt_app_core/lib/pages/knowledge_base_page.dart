@@ -3,6 +3,7 @@ import 'dart:io';
 import 'package:chatgpt_app_core/chat/application/file_processor.dart';
 import 'package:chatgpt_app_core/chat/application/knowledge_file_importer.dart';
 import 'package:chatgpt_app_core/chat/application/ocr_service.dart';
+import 'package:chatgpt_app_core/dao/ai_settings_dao.dart';
 import 'package:chatgpt_app_core/db/hi_db_manager.dart';
 import 'package:chatgpt_app_core/db/knowledge_dao.dart';
 import 'package:chatgpt_app_core/model/knowledge_model.dart';
@@ -182,9 +183,10 @@ class _KnowledgeBasePageState extends State<KnowledgeBasePage> {
     }
     if (paths.isEmpty) return;
     if (!mounted) return;
+    final limits = AISettingsDao.load().attachmentProcessingLimits;
     final result = await _withLoading(
       paths.length == 1 ? '正在导入文件…' : '正在导入 ${paths.length} 个文件…',
-      () => KnowledgeFileImporter(_dao!).importPaths(paths),
+      () => KnowledgeFileImporter(_dao!).importPaths(paths, limits: limits),
     );
     if (!mounted) return;
     HiDialog.showSnackBar(context, result.message);

@@ -3,9 +3,11 @@ import 'dart:convert';
 import 'dart:io';
 
 import 'package:chatgpt_app_core/chat/domain/chat_request_options.dart';
+import 'package:chatgpt_app_core/chat/domain/deepseek_reasoning_effort.dart';
 import 'package:chatgpt_app_core/chat/domain/stream_event.dart';
 import 'package:chatgpt_app_core/dao/chat/backend_chat_service.dart';
 import 'package:chatgpt_app_core/model/ai_settings.dart';
+import 'package:chatgpt_app_core/dao/chat/chat_service.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:login_sdk/dao/backend_host.dart';
 import 'package:login_sdk/config/login_sdk_config.dart';
@@ -191,6 +193,94 @@ void main() {
         AISettings.defaults()..topP = topP,
       );
 
+  for (final effort in [null, ...DeepSeekReasoningEffort.values]) {
+    test('后端代理所有入口传送所选等级 $effort', () async {
+      final settings = AISettings.defaults()
+        ..mode = AIMode.backend
+        ..backendModel = 'deepseek-flash'
+        ..deepSeekReasoningEffort = effort;
+      final service = ChatService.from(settings);
+      await service.chat(prompt: 'plain', history: const []);
+      await service.chatWithUsage(prompt: 'usage', history: const []);
+      await service
+          .chatStream(prompt: 'stream', history: const []).drain<void>();
+      await service
+          .chatStreamEvents(prompt: 'typed', history: const []).drain<void>();
+      await service.chatWithUsageWithOptions(
+          prompt: 'usage options',
+          history: const [],
+          options: const ChatRequestOptions());
+      await service
+          .chatStreamEventsWithOptions(
+              prompt: 'typed options',
+              history: const [],
+              options: const ChatRequestOptions())
+          .drain<void>();
+      expect(bodies, hasLength(6));
+      for (final body in bodies) {
+        expect(body.containsKey('thinking'), isFalse);
+        if (effort == DeepSeekReasoningEffort.off) {
+          expect(body['reasoning_policy'], 'off_if_supported');
+          expect(body.containsKey('reasoning_effort'), isFalse);
+        } else if (effort == null) {
+          expect(body.containsKey('reasoning_effort'), isFalse);
+          expect(body['reasoning_policy'], isNot('off_if_supported'));
+        } else {
+          expect(body['reasoning_effort'], effort.wireValue);
+          expect(body['reasoning_policy'], isNot('off_if_supported'));
+        }
+      }
+    });
+  }
+
+  test('后端等级覆盖、翻译关闭、抑制在流式和非流式保持一致', () async {
+    final service = BackendChatService(AISettings.defaults()
+      ..mode = AIMode.backend
+      ..backendModel = 'deepseek-v4-pro'
+      ..deepSeekReasoningEffort = DeepSeekReasoningEffort.max);
+    for (final options in [
+      const ChatRequestOptions(
+          deepSeekReasoningEffort: DeepSeekReasoningEffort.low),
+      const ChatRequestOptions(
+          profile: ChatRequestProfile.translation,
+          reasoningPolicy: ChatReasoningPolicy.offIfSupported),
+      const ChatRequestOptions(suppressReasoningControl: true),
+    ]) {
+      await service.chatWithUsageWithOptions(
+          prompt: 'usage', history: const [], options: options);
+      await service
+          .chatStreamEventsWithOptions(
+              prompt: 'stream', history: const [], options: options)
+          .drain<void>();
+    }
+    expect(bodies[0]['reasoning_effort'], 'low');
+    expect(bodies[1]['reasoning_effort'], 'low');
+    for (final body in bodies.skip(2).take(2)) {
+      expect(body['reasoning_policy'], 'off_if_supported');
+      expect(body.containsKey('reasoning_effort'), isFalse);
+      expect(body['request_profile'], 'translation');
+    }
+    for (final body in bodies.skip(4)) {
+      expect(body.containsKey('reasoning_effort'), isFalse);
+      expect(body['reasoning_policy'], isNot('off_if_supported'));
+    }
+  });
+
+  test('后端非双模式模型不携带所选 DeepSeek 等级', () async {
+    for (final model in ['deepseek-reasoner', 'gpt-5.2', 'custom-flash']) {
+      final service = BackendChatService(AISettings.defaults()
+        ..mode = AIMode.backend
+        ..backendModel = model
+        ..deepSeekReasoningEffort = DeepSeekReasoningEffort.max);
+      await service.chatWithUsage(prompt: 'usage', history: const []);
+      await service
+          .chatStreamEvents(prompt: 'stream', history: const []).drain<void>();
+    }
+    for (final body in bodies) {
+      expect(body.containsKey('reasoning_effort'), isFalse);
+    }
+  });
+
   test('BackendChatService 可从流式 JSON 中解析 final usage 事件', () {
     final event = BackendChatService.usageEventFromStreamJson(const {
       'choices': [],
@@ -240,6 +330,55 @@ void main() {
 
     expect(bodies.single.containsKey('top_p'), isFalse);
   });
+
+  for (final model in ['deepseek-flash', 'deepseek-v4-pro', 'gpt-4o']) {
+    test(
+        'BackendChatService $model preserves compatible reasoning and leaves source intact',
+        () async {
+      final settings = AISettings.defaults()
+        ..mode = AIMode.backend
+        ..backendModel = model;
+      final service = BackendChatService(settings);
+      final history = <Map<String, dynamic>>[
+        {
+          'role': 'assistant',
+          'content': '',
+          'reasoning_content': 'preserve locally',
+          'tool_calls': [
+            {
+              'id': 'c',
+              'type': 'function',
+              'function': {'name': 'calc', 'arguments': '{}'}
+            }
+          ]
+        },
+        {'role': 'tool', 'tool_call_id': 'c', 'content': '42'},
+        {'role': 'assistant', 'content': '42', 'reasoning_content': ''},
+      ];
+      final original = jsonEncode(history);
+      await service.chat(prompt: 'one', history: history);
+      await service.chatWithUsage(prompt: 'two', history: history);
+      await service
+          .chatStreamEvents(prompt: 'three', history: history)
+          .drain<void>();
+      expect(bodies, hasLength(3));
+      for (final body in bodies) {
+        final transmitted =
+            (body['messages'] as List).take(history.length).toList();
+        if (model.startsWith('deepseek-')) {
+          expect(transmitted, history);
+        } else {
+          final stripped = history.map((row) {
+            final copy = Map<String, dynamic>.from(row);
+            copy.remove('reasoning_content');
+            return copy;
+          }).toList();
+          expect(transmitted, stripped);
+        }
+      }
+      expect(jsonEncode(history), original);
+    });
+  }
 
   test(
       'options-aware stream sends only semantic policy fields and raises max tokens',
