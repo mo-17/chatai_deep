@@ -286,20 +286,43 @@ class LoginDao {
   ///登出
   static Future<void> logOut() {
     _invalidateAuthAttempts();
-    return _enqueueAuthMutation(() async {
-      for (final cb in _onLogoutReadyHooks) {
-        try {
-          await cb();
-        } catch (_) {}
-      }
-      for (final cb in _onLogoutHooks) {
-        try {
-          cb();
-        } catch (_) {}
-      }
-      await LoginSdkConfig.instance.storage.clear();
-      LoginSdkConfig.instance.onLogoutNavigate();
-    });
+    return _enqueueAuthMutation(() => _performLogOut());
+  }
+
+  /// 网络请求过期后的条件注销。校验必须在账号队列内部，避免迟到的 401
+  /// 注销后来登录的账号，或让旧请求使新的网络登录句柄失效。
+  static Future<bool> logOutIfSessionMatches({
+    required TokenStorage expectedStorage,
+    required String? expectedToken,
+    required String? expectedAccountHash,
+  }) =>
+      _enqueueAuthOperation<bool>(() async {
+        final config = LoginSdkConfig.instance;
+        if (!identical(config.storage, expectedStorage) ||
+            config.storage.readTokenSync() != expectedToken ||
+            config.storage.readProfileSync()?['accountHash']?.toString() !=
+                expectedAccountHash) {
+          return false;
+        }
+        _invalidateAuthAttempts();
+        await _performLogOut(sessionConfig: config);
+        return true;
+      });
+
+  static Future<void> _performLogOut({LoginSdkConfig? sessionConfig}) async {
+    for (final cb in _onLogoutReadyHooks) {
+      try {
+        await cb();
+      } catch (_) {}
+    }
+    for (final cb in _onLogoutHooks) {
+      try {
+        cb();
+      } catch (_) {}
+    }
+    final config = sessionConfig ?? LoginSdkConfig.instance;
+    await config.storage.clear();
+    config.onLogoutNavigate();
   }
 
   static Future<void> _runLoginHooks({LoginAuthAttempt? attempt}) async {

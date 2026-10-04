@@ -343,6 +343,7 @@ class CompletionDao {
     ChatSendProgressCallback? onProgress,
     ChatContextPlanCallback? onContextPlan,
     AgentTaskSession? task,
+    Future<String?> Function(String answer)? verifyFinal,
   }) async* {
     final requestGeneration = ++_requestGeneration;
     lastProtocolMessages = [];
@@ -392,6 +393,7 @@ class CompletionDao {
         abortTrigger: abortTrigger,
         onProgress: onProgress,
         task: task,
+        verifyFinal: verifyFinal,
         onProtocolMessages: (messages) {
           // 停止后仍在返回的旧工具不能覆盖下一条提问的历史协议。
           if (requestGeneration == _requestGeneration) {

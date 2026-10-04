@@ -21,11 +21,17 @@ void main() {
   late bool previousUseHttps;
   late _RecordingTokenStorage storage;
   late int logoutNavigations;
+  late Completer<void> logoutNavigated;
+  Completer<void>? auth401RequestReceived;
+  Completer<void>? auth401ResponseGate;
 
   setUp(() async {
     LoginDao.resetHooksForTest();
     storage = _RecordingTokenStorage.seeded();
     logoutNavigations = 0;
+    logoutNavigated = Completer<void>();
+    auth401RequestReceived = null;
+    auth401ResponseGate = null;
     LoginSdkConfig.install(LoginSdkConfig(
       baseUrl: 'localhost:3000',
       headerProvider: () async => const {},
@@ -33,7 +39,10 @@ void main() {
       routes: LoginRoutes.imooc,
       responseAdapter: ImoocResponseAdapter(),
       storage: storage,
-      onLogoutNavigate: () => logoutNavigations++,
+      onLogoutNavigate: () {
+        logoutNavigations++;
+        if (!logoutNavigated.isCompleted) logoutNavigated.complete();
+      },
     ));
     previousHost = BackendConfig.host;
     previousUseHttps = BackendConfig.useHttps;
@@ -48,6 +57,8 @@ void main() {
       final messages = body['messages'] as List<dynamic>;
       final prompt = (messages.last as Map<String, dynamic>)['content'];
       if (prompt == 'provider-401' || prompt == 'backend-auth-401') {
+        auth401RequestReceived?.complete();
+        await auth401ResponseGate?.future;
         request.response.statusCode = HttpStatus.unauthorized;
         request.response.headers.contentType = ContentType.json;
         request.response.write(jsonEncode(prompt == 'provider-401'
@@ -653,6 +664,7 @@ void main() {
       ),
     );
     await storage.cleared.future.timeout(const Duration(seconds: 1));
+    await logoutNavigated.future.timeout(const Duration(seconds: 1));
 
     expect(
       error,
@@ -665,6 +677,76 @@ void main() {
     expect(storage.readTokenSync(), isNull);
     expect(logoutNavigations, 1);
   });
+
+  test(
+      'backend JWT401 is delivered before logout waits for stream cancellation',
+      () async {
+    final service =
+        BackendChatService(AISettings.defaults()..mode = AIMode.backend);
+    final errorDelivered = Completer<Object>();
+    final cancellationFinished = Completer<void>();
+    late StreamSubscription<StreamEvent> subscription;
+    LoginDao.addLogoutReadyHook(() async {
+      await subscription.cancel();
+      cancellationFinished.complete();
+    });
+    subscription = service
+        .chatStreamEventsWithOptions(
+      prompt: 'backend-auth-401',
+      history: const [],
+      options: const ChatRequestOptions(),
+    )
+        .listen((_) {}, onError: (Object error) {
+      errorDelivered.complete(error);
+    });
+
+    final error =
+        await errorDelivered.future.timeout(const Duration(seconds: 1));
+    await cancellationFinished.future.timeout(const Duration(seconds: 1));
+    await storage.cleared.future.timeout(const Duration(seconds: 1));
+    expect(
+        error,
+        isA<ChatTransportException>()
+            .having((e) => e.statusCode, 'status', 401));
+    expect(bodies, hasLength(1));
+    expect(storage.clearCalls, 1);
+  });
+
+  for (final streaming in [true, false]) {
+    test(
+        'late backend JWT401 does not log out a newer session stream=$streaming',
+        () async {
+      auth401RequestReceived = Completer<void>();
+      auth401ResponseGate = Completer<void>();
+      final service =
+          BackendChatService(AISettings.defaults()..mode = AIMode.backend);
+      final request = streaming
+          ? _captureError(service.chatStreamEventsWithOptions(
+              prompt: 'backend-auth-401',
+              history: const [],
+              options: const ChatRequestOptions()))
+          : _captureFutureError(service
+              .chatWithUsage(prompt: 'backend-auth-401', history: const []));
+      await auth401RequestReceived!.future;
+      await LoginDao.saveAuthToken('new-jwt',
+          userName: 'new-user', extras: const {'accountHash': 'new-account'});
+      auth401ResponseGate!.complete();
+      final error = await request.timeout(const Duration(seconds: 1));
+      // 注销安排在事件队列，先等该事件入账号队列，再等待账号队列稳定。
+      await Future<void>.delayed(const Duration(milliseconds: 20));
+      await LoginDao.runWithStableAccount<void>(
+          expectedAccountHash: 'new-account', action: () async {});
+
+      expect(
+          error,
+          isA<ChatTransportException>()
+              .having((e) => e.statusCode, 'status', 401));
+      expect(storage.readTokenSync(), 'new-jwt');
+      expect(storage.clearCalls, 0);
+      expect(logoutNavigations, 0);
+      expect(bodies, hasLength(1));
+    });
+  }
 
   for (final method in const ['chat', 'chatWithUsage']) {
     test('$method keeps app login and exposes typed provider 401 safely',
@@ -701,11 +783,30 @@ void main() {
         _runNonStreamingRequest(service, method, 'backend-auth-401'),
       );
       await storage.cleared.future.timeout(const Duration(seconds: 1));
+      await logoutNavigated.future.timeout(const Duration(seconds: 1));
 
       expect(error.toString(), contains('登录已过期'));
       expect(storage.clearCalls, 1);
       expect(storage.readTokenSync(), isNull);
       expect(logoutNavigations, 1);
+    });
+
+    test('$method delivers JWT401 before logout waits for request settlement',
+        () async {
+      final service =
+          BackendChatService(AISettings.defaults()..mode = AIMode.backend);
+      final requestSettled = Completer<void>();
+      LoginDao.addLogoutReadyHook(() => requestSettled.future);
+      final error = await _captureFutureError(
+        _runNonStreamingRequest(service, method, 'backend-auth-401'),
+      ).timeout(const Duration(seconds: 1));
+      requestSettled.complete();
+      await storage.cleared.future.timeout(const Duration(seconds: 1));
+      expect(
+          error,
+          isA<ChatTransportException>()
+              .having((e) => e.statusCode, 'status', 401));
+      expect(storage.clearCalls, 1);
     });
   }
 

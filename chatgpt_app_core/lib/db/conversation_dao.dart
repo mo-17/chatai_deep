@@ -178,9 +178,21 @@ class ConversationListDao implements IConversationList, ITable {
       }
       await txn.delete('tb_messages', where: 'cid = ?', whereArgs: [model.cid]);
       // 老数据库可能从未开启任务模式；只清理已经存在的派生表。
+      final workspaceTables = await txn.rawQuery(
+          "select name from sqlite_master where type = 'table' and "
+          "name in ('tb_agent_workspace_files', 'tb_agent_workspace_revisions')");
+      if (workspaceTables.length == 2) {
+        await txn.rawDelete(
+            'delete from tb_agent_workspace_revisions where fileId in '
+            '(select id from tb_agent_workspace_files where cid = ?)',
+            [model.cid]);
+      }
       final existing = await txn
           .rawQuery("select name from sqlite_master where type = 'table' and "
-              "name in ('tb_agent_task_session', 'tb_chat_semantic_summary')");
+              "name in ('tb_agent_task_session', 'tb_chat_semantic_summary', "
+              "'tb_agent_workspace_files', 'tb_agent_task_criteria', "
+              "'tb_agent_verification_turn', 'tb_agent_read_interval', "
+              "'tb_agent_verification_report')");
       for (final row in existing) {
         await txn.delete(row['name'] as String,
             where: 'cid = ?', whereArgs: [model.cid]);

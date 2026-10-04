@@ -2,6 +2,7 @@ import 'dart:convert';
 
 import 'package:chatgpt_app_core/chat/application/assistant_role_card_service.dart';
 import 'package:chatgpt_app_core/model/assistant_model.dart';
+import 'package:chatgpt_app_core/chat/domain/local_source_citation.dart';
 
 /// 块化消息系统的核心领域模型。
 ///
@@ -175,6 +176,13 @@ sealed class MessageBlock {
               .map((e) =>
                   WebSearchResult.fromJson((e as Map).cast<String, dynamic>()))
               .toList(),
+          localSources: [
+            for (final item in (j['localSources'] is List
+                ? j['localSources'] as List
+                : const []))
+              if (LocalSourceCitation.tryFromJson(item) case final source?)
+                source,
+          ],
         );
       case MessageBlockType.file:
         return FileBlock(
@@ -520,6 +528,7 @@ class ToolBlock extends MessageBlock {
 
 class CitationBlock extends MessageBlock {
   final List<WebSearchResult> webResults;
+  final List<LocalSourceCitation> localSources;
 
   const CitationBlock({
     required super.id,
@@ -529,14 +538,16 @@ class CitationBlock extends MessageBlock {
     super.updatedAt,
     super.modelId,
     this.webResults = const [],
+    this.localSources = const [],
   });
 
   @override
   MessageBlockType get type => MessageBlockType.citation;
 
   @override
-  Map<String, dynamic> toJson() =>
-      _baseJson()..['webResults'] = webResults.map((e) => e.toJson()).toList();
+  Map<String, dynamic> toJson() => _baseJson()
+    ..['webResults'] = webResults.map((e) => e.toJson()).toList()
+    ..['localSources'] = localSources.map((e) => e.toJson()).toList();
 }
 
 class FileBlock extends MessageBlock {
@@ -666,12 +677,16 @@ class FileMetadata {
   /// 原生直发（如 PDF base64）或不可解析类型为 null。
   final String? extractedText;
 
+  /// 按需阅读的工作区文件引用。旧附件没有此字段，继续使用原来的文本路径。
+  final int? workspaceFileId;
+
   const FileMetadata({
     this.name = '',
     this.path,
     this.mime,
     this.size,
     this.extractedText,
+    this.workspaceFileId,
   });
 
   factory FileMetadata.fromJson(Map<String, dynamic> j) => FileMetadata(
@@ -680,6 +695,7 @@ class FileMetadata {
         mime: j['mime'] as String?,
         size: j['size'] as int?,
         extractedText: j['extractedText'] as String?,
+        workspaceFileId: j['workspaceFileId'] as int?,
       );
 
   Map<String, dynamic> toJson() => {
@@ -689,5 +705,6 @@ class FileMetadata {
         'size': size,
         // 仅在有文本时写入，避免给原生/图片类附件徒增空字段。
         if (extractedText != null) 'extractedText': extractedText,
+        if (workspaceFileId != null) 'workspaceFileId': workspaceFileId,
       };
 }

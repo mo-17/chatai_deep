@@ -1,6 +1,7 @@
 import 'package:chatgpt_app_core/backup/backup_service.dart';
 import 'package:chatgpt_app_core/dao/ai_settings_dao.dart';
 import 'package:chatgpt_app_core/db/assistant_dao.dart';
+import 'package:chatgpt_app_core/db/agent_workspace_dao.dart';
 import 'package:chatgpt_app_core/db/assistant_memory_dao.dart';
 import 'package:chatgpt_app_core/db/conversation_dao.dart';
 import 'package:chatgpt_app_core/db/favorite_dao.dart';
@@ -170,6 +171,7 @@ class GuestMigrationService {
         await BackupService.readSkillCatalogRows(from, assistants: assistants);
     final conversations = await from.db.query('tb_conversation_list');
     final messages = await from.db.query('tb_messages');
+    final workspace = await BackupService.readWorkspaceRows(from);
     final favorites = await from.db.query('tb_favorite');
     final projects = await from.db.query('tb_project');
     final memories = await from.db.query('tb_assistant_memory');
@@ -185,6 +187,9 @@ class GuestMigrationService {
     final usedCids = <int>{
       for (final r in existing)
         if (r['cid'] != null) r['cid'] as int,
+      for (final r
+          in await to.db.query(AgentWorkspaceDao.filesTable, columns: ['cid']))
+        if (_intValue(r['cid']) != null) _intValue(r['cid'])!,
     };
     var maxCid =
         usedCids.isEmpty ? 0 : usedCids.reduce((a, b) => a > b ? a : b);
@@ -319,9 +324,19 @@ class GuestMigrationService {
         mem++;
       }
 
-      // 消息：cid 按会话映射改写，丢弃自增 id。
+      // 正文和全部修订跟随新会话追加，文件 id 不沿用游客库的自增序列。
+      final workspaceIdMap = await BackupService.restoreWorkspaceRows(txn,
+          files: workspace.files,
+          revisions: workspace.revisions,
+          cidMap: cidMap);
+
+      // 消息：cid 与工作区引用按映射改写，丢弃自增 id。
       for (final m in messages) {
-        final row = Map<String, Object?>.from(m);
+        final row = BackupService.remapWorkspaceMessageReferences(
+            Map<String, dynamic>.from(m),
+            files: workspace.files,
+            fileIdMap: workspaceIdMap,
+            cidMap: cidMap);
         row.remove('id');
         final oldCid = row['cid'] as int?;
         if (oldCid != null) {
@@ -408,6 +423,7 @@ class GuestMigrationService {
     await ProjectDao.create(storage);
     await AssistantMemoryDao.create(storage);
     await SkillCatalogDao.create(storage);
+    await AgentWorkspaceDao.create(storage, cid: 0);
     await _ensureConversationProjectIdColumn(storage.db);
   }
 

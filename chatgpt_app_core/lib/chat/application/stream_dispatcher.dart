@@ -1,5 +1,6 @@
 import 'package:chatgpt_app_core/chat/application/chat_block_store.dart';
 import 'package:chatgpt_app_core/chat/domain/message_block.dart';
+import 'package:chatgpt_app_core/chat/domain/local_source_citation.dart';
 
 /// 流式分发器。对应源项目 `BlockManager` + 各 `*Callbacks`。
 ///
@@ -24,6 +25,7 @@ class StreamDispatcher {
   String? _placeholderId;
   String? _mainTextId;
   String? _thinkingId;
+  String? _citationId;
   int _thinkingStartMs = 0;
   int _seq = 0;
   bool _hasError = false;
@@ -161,18 +163,38 @@ class StreamDispatcher {
 
   /// 引用事件到达即完整（无增量）：占位块变身或新建一个 success 态 CitationBlock。
   /// 编排器在流式正文结束后才发该事件，因此块自然落在消息底部。
-  void onCitation(List<WebSearchResult> results) {
-    if (results.isEmpty) return;
-    _morphOrCreate(
+  void onCitation(List<WebSearchResult> results,
+      {List<LocalSourceCitation> localSources = const []}) {
+    if (results.isEmpty && localSources.isEmpty) return;
+    final existing = _citationId == null ? null : store.block(_citationId!);
+    final web = <String, WebSearchResult>{
+      if (existing is CitationBlock)
+        for (final result in existing.webResults) result.url: result,
+      for (final result in results) result.url: result,
+    };
+    // 按 sourceId 保留重映射后的别名；正文中旧标记仍能打开同一个来源。
+    final local = <String, LocalSourceCitation>{
+      if (existing is CitationBlock)
+        for (final source in existing.localSources) source.sourceId: source,
+      for (final source in localSources) source.sourceId: source,
+    };
+    CitationBlock build(String id) => CitationBlock(
+          id: id,
+          messageId: messageKey,
+          createdAt: existing?.createdAt ?? _now(),
+          updatedAt: _now(),
+          status: MessageBlockStatus.success,
+          modelId: modelId,
+          webResults: web.values.toList(),
+          localSources: local.values.toList(),
+        );
+    if (_citationId != null) {
+      store.upsertBlock(build(_citationId!));
+      return;
+    }
+    _citationId = _morphOrCreate(
       kind: 'cite',
-      build: (id) => CitationBlock(
-        id: id,
-        messageId: messageKey,
-        createdAt: _now(),
-        status: MessageBlockStatus.success,
-        modelId: modelId,
-        webResults: results,
-      ),
+      build: build,
     );
   }
 

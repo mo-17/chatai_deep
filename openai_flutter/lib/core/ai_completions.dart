@@ -1,5 +1,6 @@
 import 'package:openai_flutter/core/interfaces/ai_create.dart';
 import 'package:openai_flutter/http/ai_config.dart';
+import 'package:openai_flutter/http/ai_exception.dart';
 import 'package:openai_flutter/http/ai_http.dart';
 import 'package:openai_flutter/model/ai_response.dart';
 import 'package:openai_flutter/model/ai_stream_chunk.dart';
@@ -45,6 +46,7 @@ class AICompletion implements AICreateInterface {
     List<Map<String, dynamic>>? messages,
     Map<String, dynamic> extraBody = const {},
     Duration timeout = const Duration(seconds: 15),
+    Future<void>? abortTrigger,
   }) async {
     _validateExtraBody(extraBody);
     final body = <String, dynamic>{
@@ -70,10 +72,19 @@ class AICompletion implements AICreateInterface {
       config: config,
       url: config.chatUrl,
       onSuccess: (Map<String, dynamic> response) {
-        return AIResponse.fromJson(response);
+        try {
+          return AIResponse.fromJson(response);
+        } on FormatException {
+          throw const AIResponseFormatException();
+        } on TypeError {
+          throw const AIResponseFormatException();
+        } on RangeError {
+          throw const AIResponseFormatException();
+        }
       },
       body: body,
       timeout: timeout,
+      abortTrigger: abortTrigger,
     );
   }
 

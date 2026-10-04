@@ -4,6 +4,7 @@ import 'dart:typed_data';
 import 'package:chatgpt_app_core/backup/backup_archive_limits.dart';
 import 'package:chatgpt_app_core/backup/backup_service.dart';
 import 'package:chatgpt_app_core/backup/backup_settings_merge.dart';
+import 'package:chatgpt_app_core/chat/application/agent_task_executor.dart';
 import 'package:chatgpt_app_core/chat/application/story_template_translation_tasks.dart';
 import 'package:chatgpt_app_core/db/hi_db_manager.dart';
 import 'package:chatgpt_app_core/model/ai_settings.dart';
@@ -588,12 +589,19 @@ class _BackupRestorePageState extends State<BackupRestorePage> {
           final service = BackupService(storage);
           Future<void> accountGuard() async =>
               _assertStableAccount(accountHash);
-          Future<BackupRestoreResult> importAction() => service.importArchive(
+          Future<BackupRestoreResult> restoreArchive() => service.importArchive(
                 archiveBytes,
                 accountHash: accountHash,
                 mode: mode,
                 accountGuard: accountGuard,
               );
+          // 覆盖恢复会替换会话与任务快照。先结束旧运行，并在整个恢复期
+          // 拒绝同账号新任务，避免恢复后旧 runner 写回同 cid 的数据。
+          Future<BackupRestoreResult> importAction() =>
+              mode == BackupImportMode.overwriteAll
+                  ? AgentTaskExecutor.instance.runWithTasksPaused(
+                      accountHash, '正在恢复备份，任务已暂停', restoreArchive)
+                  : restoreArchive();
           final affectsTranslationTasks =
               mode == BackupImportMode.overwriteAll ||
                   mode == BackupImportMode.mergeAppend;

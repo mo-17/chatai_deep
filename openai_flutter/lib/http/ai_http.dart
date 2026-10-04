@@ -17,11 +17,24 @@ class AIHttp {
     required T Function(Map<String, dynamic>) onSuccess,
     Map<String, dynamic>? body,
     Duration timeout = const Duration(seconds: 15),
+    Future<void>? abortTrigger,
   }) async {
     AILogger.log('starting request');
     final myClient = _createOwnedClient(config);
     final requestAbort = Completer<void>();
     var timedOut = false;
+    var responseStarted = false;
+    int? responseStatus;
+    Map<String, String> responseHeaders = const {};
+    Object networkFailure() {
+      if (responseStatus != null &&
+          (responseStatus < 200 || responseStatus >= 300)) {
+        return AIRequestException('HTTP request failed', responseStatus,
+            headers: responseHeaders);
+      }
+      return AITransportException(responseStarted: responseStarted);
+    }
+
     void abortOnce({bool timeout = false}) {
       if (requestAbort.isCompleted) return;
       timedOut = timeout;
@@ -29,6 +42,8 @@ class AIHttp {
     }
 
     final timeoutTimer = Timer(timeout, () => abortOnce(timeout: true));
+    abortTrigger?.then<void>((_) => abortOnce(),
+        onError: (Object _, StackTrace __) => abortOnce());
 
     try {
       final request = http.AbortableRequest(
@@ -40,35 +55,53 @@ class AIHttp {
       late http.Response response;
       try {
         final streamedResponse = await myClient.send(request);
-        response = await http.Response.fromStream(streamedResponse);
+        responseStatus = streamedResponse.statusCode;
+        responseHeaders = streamedResponse.headers;
+        response = await http.Response.fromStream(
+            http.StreamedResponse(streamedResponse.stream.map((bytes) {
+          if (streamedResponse.statusCode >= 200 &&
+              streamedResponse.statusCode < 300 &&
+              bytes.isNotEmpty) {
+            responseStarted = true;
+          }
+          return bytes;
+        }), streamedResponse.statusCode, headers: streamedResponse.headers));
       } on http.RequestAbortedException {
-        if (timedOut) throw TimeoutException('Request timed out', timeout);
+        if (timedOut) {
+          if (responseStatus != null &&
+              (responseStatus < 200 || responseStatus >= 300)) {
+            throw networkFailure();
+          }
+          throw AIRequestTimeoutException(timeout,
+              responseStarted: responseStarted);
+        }
         throw const AIRequestCancelledException();
       } on http.ClientException {
-        throw const AITransportException();
+        throw networkFailure();
       } on SocketException {
-        throw const AITransportException();
+        throw networkFailure();
       } on TlsException {
-        throw const AITransportException();
+        throw networkFailure();
       } on HttpException {
-        throw const AITransportException();
+        throw networkFailure();
       }
       AILogger.log('request finished with status code ${response.statusCode}');
       AILogger.log('starting decoding response body');
 
       ///防止乱码
-      final bodyString = const Utf8Decoder().convert(response.bodyBytes);
+      if (response.statusCode < 200 || response.statusCode >= 300) {
+        throw AIRequestException('HTTP request failed', response.statusCode,
+            headers: response.headers,
+            safeCode: _safeErrorCodeFromBytes(response.bodyBytes));
+      }
       Map<String, dynamic> decodedBody;
       try {
+        final bodyString = const Utf8Decoder().convert(response.bodyBytes);
         final decoded = jsonDecode(bodyString);
         if (decoded is! Map<String, dynamic>) throw const FormatException();
         decodedBody = decoded;
       } on FormatException {
-        throw AIRequestException(
-          'HTTP request failed',
-          response.statusCode,
-          headers: response.headers,
-        );
+        throw const AIResponseFormatException();
       }
       AILogger.log("response body decoded successfully");
       if (decodedBody['error'] != null) {
@@ -78,6 +111,7 @@ class AIHttp {
           response.statusCode,
           headers: response.headers,
           safeCode: _safeErrorCode(decodedBody),
+          responseStarted: true,
         );
       }
       AILogger.log("request finished successfully");
@@ -115,6 +149,7 @@ class AIHttp {
     final myClient = _createOwnedClient(config);
     final requestAbort = Completer<void>();
     var connectTimedOut = false;
+    var responseStarted = false;
     void abortOnce({bool timeout = false}) {
       if (requestAbort.isCompleted) return;
       connectTimedOut = timeout;
@@ -143,7 +178,14 @@ class AIHttp {
           'stream request finished with status ${streamedResponse.statusCode}');
 
       if (streamedResponse.statusCode != 200) {
-        final responseBytes = await streamedResponse.stream.toBytes();
+        List<int> responseBytes;
+        try {
+          responseBytes = await streamedResponse.stream.toBytes();
+        } on http.RequestAbortedException {
+          rethrow;
+        } catch (_) {
+          responseBytes = const [];
+        }
         throw AIRequestException(
           'HTTP request failed',
           streamedResponse.statusCode,
@@ -153,6 +195,10 @@ class AIHttp {
       }
 
       final lineStream = streamedResponse.stream
+          .map((bytes) {
+            if (bytes.isNotEmpty) responseStarted = true;
+            return bytes;
+          })
           .transform(const Utf8Decoder())
           .transform(const LineSplitter());
       String? eventName;
@@ -176,6 +222,7 @@ class AIHttp {
             streamedResponse.statusCode,
             headers: streamedResponse.headers,
             safeCode: _safeErrorCodeFromText(data),
+            responseStarted: responseStarted,
           );
         }
         if (data == '[DONE]') break;
@@ -195,6 +242,7 @@ class AIHttp {
             streamedResponse.statusCode,
             headers: streamedResponse.headers,
             safeCode: _safeErrorCode(json),
+            responseStarted: responseStarted,
           );
         }
 
@@ -247,13 +295,17 @@ class AIHttp {
       }
       throw const AIRequestCancelledException();
     } on http.ClientException {
-      throw const AITransportException();
+      throw AITransportException(responseStarted: responseStarted);
     } on SocketException {
-      throw const AITransportException();
+      throw AITransportException(responseStarted: responseStarted);
     } on TlsException {
-      throw const AITransportException();
+      throw AITransportException(responseStarted: responseStarted);
     } on HttpException {
-      throw const AITransportException();
+      throw AITransportException(responseStarted: responseStarted);
+    } on FormatException {
+      throw const AIResponseFormatException();
+    } on TypeError {
+      throw const AIResponseFormatException();
     } finally {
       connectTimer.cancel();
       abortOnce();
@@ -279,7 +331,7 @@ class AIHttp {
       }
       return endpoint;
     } on FormatException {
-      throw const AITransportException();
+      throw const AITransportException(safeCode: 'invalid_endpoint');
     }
   }
 

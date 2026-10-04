@@ -5,6 +5,8 @@ import 'package:chatgpt_app_core/capability/generated_image_save_service.dart';
 import 'package:chatgpt_app_core/capability/product_capabilities.dart';
 import 'package:chatgpt_app_core/chat/application/chat_block_store.dart';
 import 'package:chatgpt_app_core/chat/domain/message_block.dart';
+import 'package:chatgpt_app_core/chat/domain/local_source_citation.dart';
+import 'package:chatgpt_app_core/chat/ui/local_source_viewer_page.dart';
 import 'package:chatgpt_app_core/chat/ui/thinking_block_view.dart';
 import 'package:chatgpt_app_core/theme/app_visual_theme.dart';
 import 'package:chatgpt_app_core/widget/starcore_tool_icon.dart';
@@ -32,6 +34,9 @@ class BlockMessageContent extends StatelessWidget {
   /// 与字数并排展示的消息底部操作，例如朗读按钮。
   final Widget? footerTrailing;
 
+  /// 对话打开时固定的账号，防止旧消息在切换账号后打开别人的同 id 文件。
+  final String? sourceAccountHash;
+
   const BlockMessageContent({
     super.key,
     required this.messageKey,
@@ -39,6 +44,7 @@ class BlockMessageContent extends StatelessWidget {
     this.fontSize = 16,
     this.showCharCount = false,
     this.footerTrailing,
+    this.sourceAccountHash,
   });
 
   @override
@@ -58,6 +64,7 @@ class BlockMessageContent extends StatelessWidget {
                 messageKey: messageKey,
                 textColor: resolvedTextColor,
                 fontSize: fontSize,
+                sourceAccountHash: sourceAccountHash,
               ),
             if (showCharCount || footerTrailing != null)
               _BlockMessageFooter(
@@ -163,12 +170,14 @@ class _BlockView extends StatelessWidget {
   final String messageKey;
   final Color textColor;
   final double fontSize;
+  final String? sourceAccountHash;
 
   const _BlockView({
     required this.blockId,
     required this.messageKey,
     required this.textColor,
     required this.fontSize,
+    this.sourceAccountHash,
   });
 
   @override
@@ -183,12 +192,14 @@ class _BlockView extends StatelessWidget {
               messageKey: messageKey,
               color: textColor,
               fontSize: fontSize,
+              sourceAccountHash: sourceAccountHash,
             ),
           final ThinkingBlock b => ThinkingBlockView(b),
           final CodeBlock b => _Code(b),
           final ImageBlock b => _Image(b),
           final ToolBlock b => _Tool(b),
-          final CitationBlock b => _Citation(b),
+          final CitationBlock b =>
+            _Citation(b, sourceAccountHash: sourceAccountHash),
           final FileBlock b => _File(b),
           final RoleContextBlock b => _RoleContext(b),
           final RoleContinuationBlock b => _RoleContinuation(b),
@@ -198,6 +209,7 @@ class _BlockView extends StatelessWidget {
               messageKey: messageKey,
               color: textColor,
               fontSize: fontSize,
+              sourceAccountHash: sourceAccountHash,
             ),
           final PlaceholderBlock b => b.status == MessageBlockStatus.success
               ? const SizedBox.shrink()
@@ -216,12 +228,14 @@ class _MainText extends StatelessWidget {
   final String messageKey;
   final Color color;
   final double fontSize;
+  final String? sourceAccountHash;
 
   const _MainText(
     this.content, {
     required this.messageKey,
     required this.color,
     required this.fontSize,
+    this.sourceAccountHash,
   });
 
   Future<void> _open(String url) async {
@@ -248,25 +262,34 @@ class _MainText extends StatelessWidget {
       decorationColor: linkColor,
     );
     final normalStyle = TextStyle(fontSize: fontSize, color: color);
-    return Selector<ChatBlockStore, List<WebSearchResult>>(
-      selector: (_, store) {
-        final results = <WebSearchResult>[];
-        for (final b
-            in store.blocksFor(messageKey).whereType<CitationBlock>()) {
-          results.addAll(b.webResults);
-        }
-        return results;
-      },
-      builder: (_, results, __) {
-        if (results.isEmpty) {
+    return Selector<ChatBlockStore, List<CitationBlock>>(
+      selector: (_, store) =>
+          store.blocksFor(messageKey).whereType<CitationBlock>().toList(),
+      builder: (_, blocks, __) {
+        final results = blocks.expand((block) => block.webResults).toList();
+        final sources = blocks.expand((block) => block.localSources).toList();
+        if (results.isEmpty && sources.isEmpty) {
           return Text(content, style: normalStyle);
         }
         final segments = parseCitationTextSegments(
           content: content,
           webResults: results,
+          localSources: sources,
         );
         final spans = <InlineSpan>[];
         for (final segment in segments) {
+          if (segment.localSource != null) {
+            spans.add(WidgetSpan(
+                alignment: PlaceholderAlignment.middle,
+                child: LocalSourceLink(
+                    key: ValueKey(
+                        'local-inline-${segment.localSource!.sourceId}-${spans.length}'),
+                    source: segment.localSource!,
+                    sourceAccountHash: sourceAccountHash,
+                    inline: true,
+                    style: linkStyle)));
+            continue;
+          }
           if (segment.citationIndex == null || segment.url == null) {
             spans.add(TextSpan(text: segment.text, style: normalStyle));
             continue;
@@ -303,11 +326,13 @@ class CitationTextSegment {
   final String text;
   final int? citationIndex;
   final String? url;
+  final LocalSourceCitation? localSource;
 
   const CitationTextSegment({
     required this.text,
     this.citationIndex,
     this.url,
+    this.localSource,
   });
 }
 
@@ -319,8 +344,12 @@ class CitationTextSegment {
 List<CitationTextSegment> parseCitationTextSegments({
   required String content,
   required List<WebSearchResult> webResults,
+  List<LocalSourceCitation> localSources = const [],
 }) {
-  final regex = RegExp(r'\[(\d+)\]');
+  final regex = RegExp(r'\[(\d+)\]|\[原文:([A-Za-z0-9_-]{1,128})\]');
+  final localById = {
+    for (final source in localSources) source.sourceId: source
+  };
   final segments = <CitationTextSegment>[];
   var cursor = 0;
   for (final match in regex.allMatches(content)) {
@@ -329,7 +358,7 @@ List<CitationTextSegment> parseCitationTextSegments({
           CitationTextSegment(text: content.substring(cursor, match.start)));
     }
     final raw = match.group(0)!;
-    final index = int.tryParse(match.group(1)!);
+    final index = int.tryParse(match.group(1) ?? '');
     String? url;
     if (index != null &&
         index > 0 &&
@@ -342,6 +371,7 @@ List<CitationTextSegment> parseCitationTextSegments({
         text: raw,
         citationIndex: index,
         url: url,
+        localSource: localById[match.group(2)],
       ),
     );
     cursor = match.end;
@@ -1031,7 +1061,8 @@ class _ToolState extends State<_Tool> {
 /// 点击用系统浏览器打开来源链接。
 class _Citation extends StatelessWidget {
   final CitationBlock block;
-  const _Citation(this.block);
+  final String? sourceAccountHash;
+  const _Citation(this.block, {this.sourceAccountHash});
 
   Future<void> _open(String url) async {
     final uri = Uri.tryParse(url);
@@ -1045,7 +1076,12 @@ class _Citation extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    if (block.webResults.isEmpty) return const SizedBox.shrink();
+    if (block.webResults.isEmpty && block.localSources.isEmpty) {
+      return const SizedBox.shrink();
+    }
+    final local = <String, LocalSourceCitation>{
+      for (final source in block.localSources) source.identityKey: source,
+    }.values.toList();
     final visual = AppVisualTheme.of(context);
     final scheme = Theme.of(context).colorScheme;
     final muted = visual.isAnime ? scheme.onSurfaceVariant : Colors.black54;
@@ -1074,6 +1110,16 @@ class _Citation extends StatelessWidget {
             ],
           ),
           const SizedBox(height: 4),
+          for (final source in local)
+            LocalSourceLink(
+                key: ValueKey('local-source-${source.sourceId}'),
+                source: source,
+                sourceAccountHash: sourceAccountHash,
+                style: TextStyle(
+                    fontSize: 12,
+                    color: linkColor,
+                    decoration: TextDecoration.underline,
+                    decorationColor: linkColor)),
           for (var i = 0; i < block.webResults.length; i++)
             Padding(
               padding: const EdgeInsets.only(top: 2),

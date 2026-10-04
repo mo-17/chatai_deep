@@ -356,6 +356,7 @@ void main() {
         history: const [],
         options: const ChatRequestOptions(
           connectTimeout: Duration(milliseconds: 50),
+          maxAutoRetries: 0,
         ),
       ),
     );
@@ -370,7 +371,45 @@ void main() {
     expect(error.toString(), isNot(contains('/private')));
   });
 
-  test('options-aware stream maps network failures without exposing endpoint',
+  test('response-body timeout is diagnosed after response and never retried',
+      () async {
+    final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+    addTearDown(() => server.close(force: true));
+    var requests = 0;
+    server.listen((request) async {
+      await request.drain<void>();
+      requests++;
+      request.response.headers.contentType = ContentType.json;
+      request.response.bufferOutput = false;
+      request.response.write('{"choices":[');
+      await request.response.flush();
+      // 保持成功响应正文未结束，直到 SDK 请求期限取消该连接。
+    });
+    final service = DirectChatService(
+      ProviderConfig(
+        apiKey: 'test-key',
+        baseUrl: 'http://${server.address.host}:${server.port}/chat',
+        model: 'test-model',
+      ),
+      providerId: 'custom_1',
+      providerCode: 'openai',
+    );
+    await expectLater(
+      service.chat(
+        prompt: 'test',
+        history: const [],
+        timeout: const Duration(milliseconds: 300),
+      ),
+      throwsA(isA<ChatTransportException>()
+          .having((error) => error.safeCode, 'code', 'timeout')
+          .having((error) => error.responseStarted, 'response started', isTrue)
+          .having((error) => error.failureStage, 'stage',
+              ChatFailureStage.response)),
+    );
+    expect(requests, 1);
+  });
+
+  test('options-aware stream rejects invalid endpoint without exposing it',
       () async {
     const unsafeUrl = 'http://127.0.0.1:not-a-port/private?key=secret';
     final service = DirectChatService(
@@ -394,7 +433,7 @@ void main() {
     expect(
       error,
       isA<ChatTransportException>()
-          .having((value) => value.safeCode, 'safeCode', 'network_error'),
+          .having((value) => value.safeCode, 'safeCode', 'invalid_endpoint'),
     );
     expect(error.toString(), isNot(contains(unsafeUrl)));
     expect(error.toString(), isNot(contains('secret')));

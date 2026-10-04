@@ -1,6 +1,7 @@
 import 'dart:convert';
 
 import 'package:chatgpt_app_core/chat/application/tool_registry.dart';
+import 'package:chatgpt_app_core/chat/domain/chat_failure_diagnosis.dart';
 import 'package:chatgpt_app_core/db/hi_db_manager.dart';
 import 'package:chatgpt_app_core/db/table_name.dart';
 import 'package:flutter/foundation.dart';
@@ -29,8 +30,14 @@ class AgentTaskDao implements IAgentTaskStore, ITable {
     final rows = await storage.db.query(tableName,
         columns: ['snapshot'], where: 'cid = ?', whereArgs: [cid], limit: 1);
     if (rows.isEmpty) return null;
-    return (jsonDecode(rows.single['snapshot'] as String) as Map)
-        .cast<String, dynamic>();
+    try {
+      final decoded = jsonDecode(rows.single['snapshot'] as String);
+      return decoded is Map ? decoded.cast<String, dynamic>() : null;
+    } on FormatException {
+      return null;
+    } on TypeError {
+      return null;
+    }
   }
 
   @override
@@ -58,6 +65,7 @@ class AgentTaskSession extends ChangeNotifier {
   final int cid;
   final IAgentTaskStore store;
   bool enabled = false;
+  bool backgroundEnabled = true;
   List<AgentTodo> todos = const [];
   String status = 'idle';
   String prompt = '';
@@ -65,8 +73,11 @@ class AgentTaskSession extends ChangeNotifier {
   int nextRound = 0;
   int generation = 0;
   bool needsContinuation = false;
+  String? pauseReason;
+  ChatFailureDiagnosis? failureDiagnosis;
   String? executingToolId;
   List<Map<String, dynamic>> messages = [];
+  Future<void> _saveQueue = Future<void>.value();
 
   AgentTaskSession({required this.cid, required this.store});
 
@@ -78,29 +89,58 @@ class AgentTaskSession extends ChangeNotifier {
   Future<void> load() async {
     final value = await store.read(cid);
     if (value == null) return;
-    enabled = value['enabled'] == true;
-    prompt = value['prompt'] as String? ?? '';
-    status = value['status'] as String? ?? 'idle';
-    userCreatedAt = value['userCreatedAt'] as int?;
-    nextRound = value['nextRound'] as int? ?? 0;
-    generation = value['generation'] as int? ?? 0;
-    needsContinuation = value['needsContinuation'] == true;
-    executingToolId = value['executingToolId'] as String?;
-    todos = [
-      for (final t in (value['todos'] as List? ?? const []))
-        AgentTodo(t['content'] as String, t['status'] as String)
-    ];
-    messages = [
-      for (final m in (value['messages'] as List? ?? const []))
-        (m as Map).cast<String, dynamic>()
-    ];
-    if (status == 'running') status = 'paused';
+    try {
+      if (value['version'] != null && value['version'] != 1) {
+        throw const FormatException('unsupported task snapshot');
+      }
+      enabled = value['enabled'] == true;
+      backgroundEnabled = value['backgroundEnabled'] as bool? ?? true;
+      prompt = value['prompt'] as String? ?? '';
+      status = value['status'] as String? ?? 'idle';
+      userCreatedAt = value['userCreatedAt'] as int?;
+      nextRound = value['nextRound'] as int? ?? 0;
+      generation = value['generation'] as int? ?? 0;
+      needsContinuation = value['needsContinuation'] == true;
+      pauseReason = value['pauseReason'] as String?;
+      failureDiagnosis =
+          ChatFailureDiagnosis.fromJson(value['failureDiagnosis']);
+      executingToolId = value['executingToolId'] as String?;
+      todos = [
+        for (final t in (value['todos'] as List? ?? const []))
+          AgentTodo(t['content'] as String, t['status'] as String)
+      ];
+      messages = [
+        for (final m in (value['messages'] as List? ?? const []))
+          (m as Map).cast<String, dynamic>()
+      ];
+      if (status == 'running') {
+        status = 'paused';
+        pauseReason ??= '应用中断，可从已保存的进度继续';
+      }
+    } catch (_) {
+      // 损坏快照不阻碍旧会话打开，也不能据此重放工具操作。
+      enabled = value['enabled'] == true;
+      backgroundEnabled = value['backgroundEnabled'] == null ||
+          value['backgroundEnabled'] == true;
+      prompt = '';
+      status = 'idle';
+      userCreatedAt = null;
+      nextRound = 0;
+      generation = 0;
+      needsContinuation = false;
+      executingToolId = null;
+      todos = const [];
+      messages = [];
+      pauseReason = '任务记录不完整，请重新发送任务';
+      failureDiagnosis = null;
+    }
     notifyListeners();
   }
 
   Map<String, dynamic> toJson() => {
         'version': 1,
         'enabled': enabled,
+        'backgroundEnabled': backgroundEnabled,
         'todos': todos.map((t) => t.toJson()).toList(),
         'status': status,
         'prompt': prompt,
@@ -108,14 +148,27 @@ class AgentTaskSession extends ChangeNotifier {
         'nextRound': nextRound,
         'generation': generation,
         'needsContinuation': needsContinuation,
+        if (pauseReason != null) 'pauseReason': pauseReason,
+        if (failureDiagnosis != null)
+          'failureDiagnosis': failureDiagnosis!.toJson(),
         'executingToolId': executingToolId,
         'messages': messages,
       };
 
   Future<void> _save() async {
-    await store.write(cid, toJson());
+    final snapshot =
+        (jsonDecode(jsonEncode(toJson())) as Map).cast<String, dynamic>();
+    // 保存按调用顺序串行，避免较早的 running 写入覆盖已暂停的断点。
+    final operation = _saveQueue
+        .catchError((Object _) {})
+        .then((_) => store.write(cid, snapshot));
+    _saveQueue = operation;
+    await operation;
     notifyListeners();
   }
+
+  /// 原生系统回收前等待此前排队的暂停/工具断点写入完成。
+  Future<void> flush() => _saveQueue;
 
   Future<void> setEnabled(bool value) async {
     final previous = enabled;
@@ -124,6 +177,17 @@ class AgentTaskSession extends ChangeNotifier {
       await _save();
     } catch (_) {
       enabled = previous;
+      rethrow;
+    }
+  }
+
+  Future<void> setBackgroundEnabled(bool value) async {
+    final previous = backgroundEnabled;
+    backgroundEnabled = value;
+    try {
+      await _save();
+    } catch (_) {
+      backgroundEnabled = previous;
       rethrow;
     }
   }
@@ -144,6 +208,21 @@ class AgentTaskSession extends ChangeNotifier {
     userCreatedAt = userAt;
     prompt = input;
     status = 'running';
+    pauseReason = null;
+    failureDiagnosis = null;
+    await _save();
+  }
+
+  Future<void> pause(String reason,
+      {int? expectedGeneration, ChatFailureDiagnosis? diagnosis}) async {
+    if ((expectedGeneration != null && generation != expectedGeneration) ||
+        status != 'running' ||
+        userCreatedAt == null) {
+      return;
+    }
+    status = 'paused';
+    pauseReason = reason;
+    failureDiagnosis = diagnosis;
     await _save();
   }
 
@@ -161,12 +240,27 @@ class AgentTaskSession extends ChangeNotifier {
     await _save();
   }
 
-  Future<void> finish({required bool complete}) async {
-    if (complete) {
+  Future<void> finish(
+      {required bool complete, bool requiresCorrection = false}) async {
+    if (requiresCorrection) {
+      needsContinuation = true;
+    } else if (complete) {
       needsContinuation = todos.any((todo) => todo.status != 'completed');
     }
     status = complete && !needsContinuation ? 'complete' : 'paused';
-    await _save();
+    if (status == 'complete') {
+      pauseReason = null;
+      failureDiagnosis = null;
+    }
+    try {
+      await _save();
+    } catch (_) {
+      status = 'paused';
+      pauseReason = '任务进度保存失败，请检查存储空间后重试';
+      failureDiagnosis = null;
+      notifyListeners();
+      rethrow;
+    }
   }
 
   String get contextPrompt => contextPromptFor(resume: true);

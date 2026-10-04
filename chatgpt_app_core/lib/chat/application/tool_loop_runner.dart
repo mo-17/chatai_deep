@@ -6,6 +6,7 @@ import 'package:chatgpt_app_core/chat/application/agent_task_session.dart';
 import 'package:chatgpt_app_core/chat/domain/chat_attachments.dart';
 import 'package:chatgpt_app_core/chat/domain/chat_request_options.dart';
 import 'package:chatgpt_app_core/chat/domain/chat_send_progress.dart';
+import 'package:chatgpt_app_core/chat/domain/local_source_citation.dart';
 import 'package:chatgpt_app_core/chat/domain/message_block.dart';
 import 'package:chatgpt_app_core/chat/domain/stream_event.dart';
 import 'package:chatgpt_app_core/dao/chat/chat_service.dart';
@@ -49,6 +50,9 @@ class ToolLoopRunner {
     FutureOr<void> Function(List<Map<String, dynamic>> messages)?
         onProtocolMessages,
     AgentTaskSession? task,
+
+    /// 最终回答保存后执行客观验收；非空提示触发有限纠错。
+    Future<String?> Function(String answer)? verifyFinal,
   }) async* {
     var cancelled = false;
     unawaited(abortTrigger?.then<void>((_) {
@@ -70,8 +74,68 @@ class ToolLoopRunner {
     // 汇总各轮联网搜索来源（按 URL 去重），收尾发一次 citation 事件。
     final citations = <WebSearchResult>[];
     final seenUrls = <String>{};
+    final localSources = <String, LocalSourceCitation>{};
+    bool rememberSource(LocalSourceCitation? source) {
+      if (source == null ||
+          (task != null && source.cid != task.cid) ||
+          localSources.containsKey(source.sourceId)) {
+        return false;
+      }
+      localSources[source.sourceId] = source;
+      return true;
+    }
+
+    StreamEvent localCitationEvent() => StreamEvent.citation(
+          const [],
+          localSources: List.unmodifiable(localSources.values),
+        );
     final taskGeneration = task?.generation;
     final uncertainOperations = <String>{};
+    int? correctionStartRound;
+    for (final message in extraMessages) {
+      final content = message['content'];
+      if (message['role'] == 'user' &&
+          content is String &&
+          content.startsWith(_correctionPrefix)) {
+        correctionStartRound = int.tryParse(
+            RegExp(r'起始轮：(\d+)').firstMatch(content)?.group(1) ?? '');
+      }
+    }
+    // 用户明确继续验收失败的任务，获得新的执行预算；已有工具结果仍仅回放。
+    if (task?.needsContinuation == true && task?.nextRound == 0) {
+      correctionStartRound = null;
+      extraMessages.removeWhere((message) =>
+          message['role'] == 'user' &&
+          (message['content'] as String? ?? '').startsWith(_budgetPrefix));
+    }
+    // 首次失败后至多两个额外模型请求；不能用无工具轮盲目尝试修复文件。
+    bool correctionBudgetAvailable(int nextRound) =>
+        nextRound < maxRounds &&
+        (correctionStartRound == null || nextRound < correctionStartRound! + 2);
+    Future<bool> verifyAndContinue(String answer, int round) async {
+      if (verifyFinal == null) return false;
+      ensureRunning();
+      onProgress?.call(const ChatSendProgress('客观验收'));
+      final correction = await verifyFinal(answer);
+      ensureRunning();
+      if (correction == null) return false;
+      if (!correctionBudgetAvailable(round + 1)) {
+        await task?.finish(complete: false);
+        onProgress?.call(const ChatSendProgress('验收未通过，自动纠错预算已用尽'));
+        return false;
+      }
+      correctionStartRound ??= round + 1;
+      extraMessages.add({
+        'role': 'user',
+        'content': '$_correctionPrefix起始轮：$correctionStartRound\n$correction'
+      });
+      await task?.checkpoint(extraMessages, round + 1,
+          expectedGeneration: taskGeneration);
+      await onProtocolMessages?.call(_protocolSnapshot(extraMessages));
+      ensureRunning();
+      onProgress?.call(const ChatSendProgress('验收未通过，正在纠错'));
+      return true;
+    }
 
     // 恢复时声明/结果必须配对。已完成结果直接复用；执行中崩溃的调用不重放。
     if (extraMessages.isNotEmpty) {
@@ -102,6 +166,7 @@ class ToolLoopRunner {
             final unknown = interruptedToolId == id;
             await task?.checkpoint(extraMessages, task.nextRound,
                 executing: id, expectedGeneration: taskGeneration);
+            ensureRunning();
             final content = unknown ||
                     uncertainOperations.contains(_operationKey(name, args))
                 ? _uncertainResult
@@ -111,8 +176,16 @@ class ToolLoopRunner {
             await task?.checkpoint(extraMessages, task.nextRound,
                 expectedGeneration: taskGeneration);
           }
+          ensureRunning();
           final result = extraMessages.firstWhere(
               (m) => m['role'] == 'tool' && m['tool_call_id'] == id);
+          // 恢复引用只解析实际 read_file 的外层结果，不扫描模型正文或原文。
+          if (rememberSource(LocalSourceCitation.fromToolResult(
+              toolName: name,
+              content: result['content'],
+              expectedCid: task?.cid))) {
+            yield localCitationEvent();
+          }
           yield StreamEvent.toolResult(toolId: id, content: result['content']);
         }
       }
@@ -127,12 +200,23 @@ class ToolLoopRunner {
         final text = finalMessage['content'] as String? ?? '';
         if (reasoning.isNotEmpty) yield StreamEvent.reasoning(reasoning);
         if (text.isNotEmpty) yield StreamEvent.text(text);
-        return;
+        if (!await verifyAndContinue(text, task?.nextRound ?? 0)) return;
       }
     }
 
     for (var round = task?.nextRound ?? 0;; round++) {
       ensureRunning();
+      if (correctionStartRound != null && !correctionBudgetAvailable(round)) {
+        // 最后一个纠错请求可能执行了工具；本地重新验收结果，但不请求第三轮。
+        onProgress?.call(const ChatSendProgress('客观验收'));
+        final correction = await verifyFinal?.call('');
+        ensureRunning();
+        if (correction != null) {
+          await task?.finish(complete: false);
+          onProgress?.call(const ChatSendProgress('验收未通过，自动纠错预算已用尽'));
+        }
+        break;
+      }
       final calls = <StreamEvent>[];
       // 本轮正文缓存：回灌 assistant 消息时带上（模型边说边调用的场景）。
       final textBuf = StringBuffer();
@@ -140,6 +224,24 @@ class ToolLoopRunner {
       final reasoningBuf = StringBuffer();
       // 最后一轮不带 tools：模型只能直接作答，回路必然终止。
       final declarations = round < maxRounds ? registry.declarations : null;
+      if (declarations == null &&
+          verifyFinal != null &&
+          !extraMessages.any((message) =>
+              message['role'] == 'user' &&
+              (message['content'] as String? ?? '')
+                  .startsWith(_budgetPrefix))) {
+        extraMessages.add({
+          'role': 'user',
+          'content': '$_budgetPrefix'
+              '工具预算已用尽。当前请求没有工具，不能再读取、创建或覆盖文件。'
+              '请仅用普通文字说明已完成的实际工作、尚未满足的验收条件，并提示用户点击继续任务。'
+              '尚未验收通过不可声称任务完成。禁止输出工具调用协议、DSML/calls 标记或伪造工具结果。'
+        });
+        await task?.checkpoint(extraMessages, round,
+            expectedGeneration: taskGeneration);
+        await onProtocolMessages?.call(_protocolSnapshot(extraMessages));
+        ensureRunning();
+      }
       final roundHistory =
           historyForRound?.call(extraMessages, declarations) ?? history;
       onProgress?.call(const ChatSendProgress('等待回答'));
@@ -181,6 +283,7 @@ class ToolLoopRunner {
         await onProtocolMessages?.call(_protocolSnapshot(extraMessages));
         await task?.checkpoint(extraMessages, round,
             expectedGeneration: taskGeneration);
+        if (await verifyAndContinue(textBuf.toString(), round)) continue;
         break; // 模型不再调用工具，正文已输出完毕
       }
       // 硬性保护：已到无 tools 的收尾轮仍收到调用（上游异常），直接终止。
@@ -210,6 +313,7 @@ class ToolLoopRunner {
         onProgress?.call(ChatSendProgress('执行工具', fileName: c.toolName));
         await task?.checkpoint(extraMessages, round + 1,
             executing: c.toolId, expectedGeneration: taskGeneration);
+        ensureRunning();
         final outcome = uncertainOperations.contains(
                 _operationKey(c.toolName ?? '', c.toolArguments ?? const {}))
             ? const ToolOutcome(content: _uncertainResult)
@@ -228,17 +332,30 @@ class ToolLoopRunner {
         for (final r in outcome.webResults) {
           if (r.url.isNotEmpty && seenUrls.add(r.url)) citations.add(r);
         }
+        var hasNewSource = false;
+        if (c.toolName == 'read_file') {
+          for (final source in outcome.localSources) {
+            hasNewSource = rememberSource(source) || hasNewSource;
+          }
+        }
+        if (hasNewSource) yield localCitationEvent();
         yield StreamEvent.toolResult(
             toolId: c.toolId ?? '', content: outcome.content);
       }
     }
 
-    if (citations.isNotEmpty) yield StreamEvent.citation(citations);
+    if (citations.isNotEmpty || localSources.isNotEmpty) {
+      yield StreamEvent.citation(citations,
+          localSources: List.unmodifiable(localSources.values));
+    }
   }
 
   static List<Map<String, dynamic>> _protocolSnapshot(
           List<Map<String, dynamic>> messages) =>
       List.unmodifiable(messages.map(Map<String, dynamic>.unmodifiable));
+
+  static const _correctionPrefix = '[任务验收纠错]\n';
+  static const _budgetPrefix = '[任务工具预算已用尽]\n';
 
   static String _operationKey(String name, Map<String, dynamic> arguments) {
     Object? canonical(Object? value) {

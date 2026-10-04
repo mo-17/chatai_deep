@@ -5,6 +5,7 @@ import 'package:chatgpt_app_core/diagnostics/diagnostics_sink.dart';
 import 'package:chatgpt_app_core/diagnostics/flutter_diagnostics_bridge.dart';
 import 'package:chatgpt_app_core/dao/ai_settings_dao.dart';
 import 'package:chatgpt_app_core/chat/application/story_template_translation_tasks.dart';
+import 'package:chatgpt_app_core/chat/application/agent_task_executor.dart';
 import 'package:chatgpt_app_core/chat/application/story_template_background_scheduler.dart';
 import 'package:chatgpt_app_core/chat/application/translation_model_eligibility.dart';
 import 'package:chatgpt_app_core/chat/application/translation_model_preference_store.dart';
@@ -235,6 +236,7 @@ class _MyAppState extends State<MyApp> {
       unawaited(_resumeStoryTemplateTranslations());
     }
 
+    final taskExecutor = AgentTaskExecutor.ensureInitialized();
     if (!LoginDao.hooksRegistered) {
       LoginDao.hooksRegistered = true;
       LoginDao.addLoginReadyHook(() async {
@@ -250,6 +252,8 @@ class _MyAppState extends State<MyApp> {
         }
       });
       LoginDao.addLogoutReadyHook(() async {
+        // 独立任务先取消并保存断点，再关闭账号库；不能等页面销毁才收尾。
+        await taskExecutor.cancelAll('已退出账户，任务已暂停');
         await StoryTemplateTranslationCoordinator.instance.detachForLifecycle();
         await HiDBManager.closeAll();
       });

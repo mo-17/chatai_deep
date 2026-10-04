@@ -1,4 +1,5 @@
 import 'package:chatgpt_app_core/chat/domain/message_block.dart';
+import 'package:chatgpt_app_core/chat/domain/local_source_citation.dart';
 
 /// 统一的流式事件。对应源项目把流拆成
 /// `onTextChunk / onThinkingChunk / onToolCall / ...` 的回调模型。
@@ -49,6 +50,7 @@ class StreamEvent {
 
   /// 引用事件（阶段五）：联网搜索的来源列表。
   final List<WebSearchResult>? webResults;
+  final List<LocalSourceCitation>? localSources;
 
   /// usage 事件：上游在流式收尾返回的真实 token 统计。
   final int? promptTokens;
@@ -64,6 +66,7 @@ class StreamEvent {
     this.toolContent,
     this.imageUrl,
     this.webResults,
+    this.localSources,
     this.promptTokens,
     this.cachedPromptTokens,
     this.completionTokens,
@@ -102,8 +105,10 @@ class StreamEvent {
       StreamEvent._(StreamEventType.image, imageUrl: url);
 
   /// 引用来源（阶段五）：联网搜索结果，到达即完整、无增量。
-  factory StreamEvent.citation(List<WebSearchResult> results) =>
-      StreamEvent._(StreamEventType.citation, webResults: results);
+  factory StreamEvent.citation(List<WebSearchResult> results,
+          {List<LocalSourceCitation> localSources = const []}) =>
+      StreamEvent._(StreamEventType.citation,
+          webResults: results, localSources: localSources);
 
   /// 流式 usage 收尾事件，到达即完整、无 UI 渲染。
   factory StreamEvent.usage({

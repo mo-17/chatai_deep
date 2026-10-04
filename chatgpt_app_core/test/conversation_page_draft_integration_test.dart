@@ -139,6 +139,37 @@ void main() {
         directoryResolver: () async => temporary,
       );
 
+  testWidgets('详情导航迟到切账号时不显示旧标题草稿、不加载任务且可安全销毁', (tester) async {
+    final model = conversation(109, title: '旧账号的私有任务标题');
+    await tester.pumpWidget(MultiProvider(
+      providers: [
+        ChangeNotifierProvider<AISettingsProvider>.value(value: settings),
+        ChangeNotifierProvider<ThemeProvider>.value(value: theme),
+      ],
+      child: MaterialApp(
+          home: ConversationPage(
+        conversationModel: model,
+        expectedAccountHash: 'previous-account',
+        initialPrompt: '旧账号草稿内容',
+        resumeAgentTask: true,
+        initialTargetCreatedAt: 10,
+        initialAgentTaskGeneration: 1,
+        readAloudService: const NoopReadAloudService(),
+      )),
+    ));
+    await tester.pumpAndSettle();
+    expect(find.text('账号已切换，请返回当前账号的对话'), findsOneWidget);
+    expect(find.text('旧账号的私有任务标题'), findsNothing);
+    expect(find.text('旧账号草稿内容'), findsNothing);
+    expect(find.byType(MessageInputWidget), findsNothing);
+    final tables = await tester.runAsync(() => storage.db.rawQuery(
+        "select name from sqlite_master where name='tb_agent_task_session'"));
+    expect(tables, isEmpty);
+    await tester.pumpWidget(const SizedBox.shrink());
+    await tester.pumpAndSettle();
+    expect(tester.takeException(), isNull);
+  });
+
   testWidgets('思考等级会话保存、重开恢复、取消保留和默认清除', (tester) async {
     final ai = settings.settings.clone()..activeProviderId = 'deepseek';
     ai.setActiveModel('deepseek-flash');

@@ -11,9 +11,11 @@ import 'package:chatgpt_app_core/capability/generated_image_save_service.dart';
 import 'package:chatgpt_app_core/chat/application/assistant_role_card_asset_store.dart';
 import 'package:chatgpt_app_core/chat/application/story_tavern_preset_transfer.dart';
 import 'package:chatgpt_app_core/chat/domain/message_block.dart';
+import 'package:chatgpt_app_core/chat/domain/agent_workspace_file.dart';
 import 'package:chatgpt_app_core/chat/domain/translation_request_profile.dart';
 import 'package:chatgpt_app_core/dao/ai_settings_dao.dart';
 import 'package:chatgpt_app_core/db/assistant_dao.dart';
+import 'package:chatgpt_app_core/db/agent_workspace_dao.dart';
 import 'package:chatgpt_app_core/db/assistant_memory_dao.dart';
 import 'package:chatgpt_app_core/db/conversation_dao.dart';
 import 'package:chatgpt_app_core/db/db_migration.dart';
@@ -410,6 +412,9 @@ class BackupService {
   static const _kAssistantMemories = 'assistant_memories.json';
   // v11 可选扩展：旧备份没有此 entry 时仍沿用助手原 prompt fallback。
   static const _kSkillCatalog = 'skill_catalog.json';
+  // v11 可选扩展：正文和修订只存 SQLite，不根据 sourceKey 读取本机路径。
+  static const _kWorkspaceFiles = 'workspace_files.json';
+  static const _kWorkspaceRevisions = 'workspace_revisions.json';
   static const _kFavorites = 'favorites.json';
   static const _kProjects = 'projects.json';
   static const _kSettings = 'settings.json';
@@ -526,6 +531,7 @@ class BackupService {
     await _ensureSchema(includeSkillCatalog: false);
     final conversations = await storage.db.query('tb_conversation_list');
     final messages = await storage.db.query('tb_messages');
+    final workspace = await readWorkspaceRows(storage);
     final assistants = await storage.db.query('tb_assistant');
     final hasSkillCatalog = await _tableExists(storage.db, 'tb_skill_catalog');
     final skillCatalog =
@@ -599,6 +605,8 @@ class BackupService {
       _kAssistants: _jsonBytes(assistants),
       _kAssistantMemories: _jsonBytes(assistantMemories),
       if (hasSkillCatalog) _kSkillCatalog: _jsonBytes(skillCatalog),
+      _kWorkspaceFiles: _jsonBytes(workspace.files),
+      _kWorkspaceRevisions: _jsonBytes(workspace.revisions),
       _kFavorites: _jsonBytes(favorites),
       _kProjects: _jsonBytes(projects),
       _kKnowledgeDocs: _jsonBytes(knowledgeDocs),
@@ -701,6 +709,7 @@ class BackupService {
     final conversations =
         _readRowsForVersion(archive, _kConversations, version);
     final messages = _readRowsForVersion(archive, _kMessages, version);
+    _readWorkspaceArchiveRows(archive);
     final assistants = _readRowsForVersion(archive, _kAssistants, version);
     _readSkillCatalog(archive, assistants);
     final assistantMemories = version >= 11
@@ -914,6 +923,7 @@ class BackupService {
     final conversations =
         _readRowsForVersion(archive, _kConversations, version);
     final messages = _readRowsForVersion(archive, _kMessages, version);
+    final workspace = _readWorkspaceArchiveRows(archive);
     final assistants = _readRowsForVersion(archive, _kAssistants, version);
     final skillCatalog = _readSkillCatalog(archive, assistants);
     final assistantMemories = version >= 11
@@ -987,6 +997,8 @@ class BackupService {
         projects: projects,
         conversations: conversations,
         messages: messages,
+        workspaceFiles: workspace.files,
+        workspaceRevisions: workspace.revisions,
         assistants: assistants,
         assistantMemories: normalizedAssistantMemories,
         skillCatalog: skillCatalog,
@@ -1013,6 +1025,8 @@ class BackupService {
         projects: projects,
         conversations: conversations,
         messages: messages,
+        workspaceFiles: workspace.files,
+        workspaceRevisions: workspace.revisions,
         warnings: warnings,
         accountGuard: accountGuard,
       );
@@ -1217,6 +1231,17 @@ class BackupService {
     // 单事务覆盖式写入：任何一步失败整体回滚，不会留下半套数据。
     await _runResourceTransaction(resources, (txn) async {
       await _clearDerivedConversationState(txn);
+      await txn.delete(AgentWorkspaceDao.revisionsTable);
+      await txn.delete(AgentWorkspaceDao.filesTable);
+      final workspaceCidMap = {
+        for (final row in normalizedConversations)
+          if (_intValue(row['cid']) != null)
+            _intValue(row['cid'])!: _intValue(row['cid'])!,
+      };
+      final workspaceIdMap = await restoreWorkspaceRows(txn,
+          files: workspace.files,
+          revisions: workspace.revisions,
+          cidMap: workspaceCidMap);
       await txn.delete('tb_story_artifact_revision');
       await txn.delete('tb_story_artifact');
       await txn.delete('tb_story_message');
@@ -1252,7 +1277,12 @@ class BackupService {
         batch.insert('tb_conversation_list', row);
       }
       for (final row in messages) {
-        batch.insert('tb_messages', row);
+        batch.insert(
+            'tb_messages',
+            remapWorkspaceMessageReferences(row,
+                files: workspace.files,
+                fileIdMap: workspaceIdMap,
+                cidMap: workspaceCidMap));
       }
       for (final row in favorites) {
         batch.insert('tb_favorite', row);
@@ -1400,6 +1430,8 @@ class BackupService {
     required List<Map<String, dynamic>> projects,
     required List<Map<String, dynamic>> conversations,
     required List<Map<String, dynamic>> messages,
+    required List<Map<String, dynamic>> workspaceFiles,
+    required List<Map<String, dynamic>> workspaceRevisions,
     required List<String> warnings,
     BackupAccountGuard? accountGuard,
   }) async {
@@ -1485,6 +1517,17 @@ class BackupService {
       final batch = txn.batch();
       batch.delete('tb_project_kb');
       await _clearDerivedConversationState(txn);
+      await txn.delete(AgentWorkspaceDao.revisionsTable);
+      await txn.delete(AgentWorkspaceDao.filesTable);
+      final workspaceCidMap = {
+        for (final row in normalizedConversations)
+          if (_intValue(row['cid']) != null)
+            _intValue(row['cid'])!: _intValue(row['cid'])!,
+      };
+      final workspaceIdMap = await restoreWorkspaceRows(txn,
+          files: workspaceFiles,
+          revisions: workspaceRevisions,
+          cidMap: workspaceCidMap);
       batch.delete('tb_project');
       batch.delete('tb_conversation_list');
       batch.delete('tb_messages');
@@ -1495,7 +1538,12 @@ class BackupService {
         batch.insert('tb_conversation_list', row);
       }
       for (final row in messages) {
-        batch.insert('tb_messages', row);
+        batch.insert(
+            'tb_messages',
+            remapWorkspaceMessageReferences(row,
+                files: workspaceFiles,
+                fileIdMap: workspaceIdMap,
+                cidMap: workspaceCidMap));
       }
       await batch.commit(noResult: true);
     }, accountGuard: accountGuard);
@@ -1518,6 +1566,8 @@ class BackupService {
     required List<Map<String, dynamic>> projects,
     required List<Map<String, dynamic>> conversations,
     required List<Map<String, dynamic>> messages,
+    required List<Map<String, dynamic>> workspaceFiles,
+    required List<Map<String, dynamic>> workspaceRevisions,
     required List<Map<String, dynamic>> assistants,
     required List<Map<String, dynamic>> assistantMemories,
     required List<Map<String, dynamic>> skillCatalog,
@@ -1779,6 +1829,9 @@ class BackupService {
       final usedCids = {
         for (final row in await txn.query('tb_conversation_list'))
           if (_intValue(row['cid']) != null) _intValue(row['cid'])!,
+        for (final row
+            in await txn.query(AgentWorkspaceDao.filesTable, columns: ['cid']))
+          if (_intValue(row['cid']) != null) _intValue(row['cid'])!,
       };
       var nextCid =
           usedCids.isEmpty ? 1 : usedCids.reduce((a, b) => a > b ? a : b) + 1;
@@ -1820,6 +1873,8 @@ class BackupService {
         await txn.insert('tb_conversation_list', next);
       }
 
+      final workspaceIdMap = await restoreWorkspaceRows(txn,
+          files: workspaceFiles, revisions: workspaceRevisions, cidMap: cidMap);
       for (final row in messages) {
         final oldCid = _intValue(row['cid']);
         final newCid = oldCid == null ? null : cidMap[oldCid];
@@ -1829,7 +1884,9 @@ class BackupService {
         }
         await txn.insert(
           'tb_messages',
-          _withoutId(row)..['cid'] = newCid,
+          _withoutId(remapWorkspaceMessageReferences(row,
+              files: workspaceFiles, fileIdMap: workspaceIdMap, cidMap: cidMap))
+            ..['cid'] = newCid,
         );
       }
 
@@ -2413,6 +2470,7 @@ class BackupService {
     await StoryArtifactDao.create(storage);
     await StoryTemplateDao.create(storage);
     await StoryTemplateTranslationTaskDao.create(storage);
+    await AgentWorkspaceDao.create(storage, cid: 0);
     await _ensureConversationProjectIdColumn(storage.db);
   }
 
@@ -2447,6 +2505,219 @@ class BackupService {
           rawProjectId is int ? rawProjectId : int.tryParse('$rawProjectId');
     }
     return r;
+  }
+
+  /// 工作区只读取账号库中的正文快照；sourceKey 即使像路径也不会被访问。
+  static Future<
+          ({List<Map<String, dynamic>> files, List<Map<String, dynamic>> revisions})>
+      readWorkspaceRows(HiDBManager storage) async => (
+            files: await _tableExists(storage.db, AgentWorkspaceDao.filesTable)
+                ? (await storage.db.query(AgentWorkspaceDao.filesTable))
+                    .map(Map<String, dynamic>.from)
+                    .toList()
+                : <Map<String, dynamic>>[],
+            revisions:
+                await _tableExists(storage.db, AgentWorkspaceDao.revisionsTable)
+                    ? (await storage.db.query(AgentWorkspaceDao.revisionsTable))
+                        .map(Map<String, dynamic>.from)
+                        .toList()
+                    : <Map<String, dynamic>>[],
+          );
+
+  static ({
+    List<Map<String, dynamic>> files,
+    List<Map<String, dynamic>> revisions
+  }) _readWorkspaceArchiveRows(Archive archive) {
+    final hasFiles = archive.findFile(_kWorkspaceFiles) != null;
+    final hasRevisions = archive.findFile(_kWorkspaceRevisions) != null;
+    if (hasFiles != hasRevisions) {
+      throw const FormatException('工作区备份缺少文件或修订条目');
+    }
+    if (!hasFiles) {
+      return (
+        files: <Map<String, dynamic>>[],
+        revisions: <Map<String, dynamic>>[]
+      );
+    }
+    final files = _readRows(archive, _kWorkspaceFiles, strict: true);
+    final revisions = _readRows(archive, _kWorkspaceRevisions, strict: true);
+    _validateWorkspaceRows(files, revisions);
+    return (files: files, revisions: revisions);
+  }
+
+  static void _validateWorkspaceRows(
+      List<Map<String, dynamic>> files, List<Map<String, dynamic>> revisions) {
+    final ids = <int>{};
+    final versions = <String>{};
+    for (final row in revisions) {
+      final parsed = AgentWorkspaceRevision.fromJson(row);
+      if (parsed.fileId <= 0 ||
+          parsed.revision <= 0 ||
+          !versions.add('${parsed.fileId}:${parsed.revision}')) {
+        throw const FormatException('工作区修订 ID 无效或重复');
+      }
+    }
+    for (final row in files) {
+      final parsed = AgentWorkspaceFile.fromJson(row);
+      if (parsed.id <= 0 ||
+          parsed.revision <= 0 ||
+          !ids.add(parsed.id) ||
+          !versions.contains('${parsed.id}:${parsed.revision}')) {
+        throw const FormatException('工作区文件缺少当前修订或 ID 重复');
+      }
+    }
+  }
+
+  /// 与游客迁移共用同一事务内的引用映射，输出及其全部修订均追加保存。
+  static Future<Map<int, int>> restoreWorkspaceRows(
+    DatabaseExecutor db, {
+    required List<Map<String, dynamic>> files,
+    required List<Map<String, dynamic>> revisions,
+    required Map<int, int> cidMap,
+  }) async {
+    _validateWorkspaceRows(files, revisions);
+    final ids = <int, int>{};
+    for (final file in files) {
+      final cid = cidMap[_intValue(file['cid'])];
+      if (cid == null) continue;
+      final oldId = _intValue(file['id'])!;
+      ids[oldId] = await db.insert(
+          AgentWorkspaceDao.filesTable, _withoutId(file)..['cid'] = cid);
+    }
+    for (final revision in revisions) {
+      final id = ids[_intValue(revision['fileId'])];
+      if (id == null) continue;
+      await db.insert(
+          AgentWorkspaceDao.revisionsTable, {...revision, 'fileId': id});
+    }
+    return ids;
+  }
+
+  /// 只改文件、原文引用的结构化 ID 及清单 JSON，不替换普通正文和引用标记。
+  static Map<String, dynamic> remapWorkspaceMessageReferences(
+    Map<String, dynamic> message, {
+    required List<Map<String, dynamic>> files,
+    required Map<int, int> fileIdMap,
+    required Map<int, int> cidMap,
+  }) {
+    final next = Map<String, dynamic>.from(message);
+    final raw = message['blocks'];
+    if (raw is! String || raw.isEmpty) return next;
+    Object? decoded;
+    try {
+      decoded = jsonDecode(raw);
+    } catch (_) {
+      return next;
+    }
+    if (decoded is! List) return next;
+    var changed = false;
+    final blocks = <Object?>[];
+    final oldCid = _intValue(message['cid']);
+    for (final original in decoded) {
+      if (original is Map &&
+          original['type'] == 'citation' &&
+          original['localSources'] is List) {
+        final block = Map<String, dynamic>.from(original);
+        block['localSources'] = [
+          for (final rawSource in original['localSources'] as List)
+            if (rawSource is Map)
+              _remapWorkspaceCitation(
+                Map<String, dynamic>.from(rawSource),
+                oldMessageCid: oldCid,
+                files: files,
+                fileIdMap: fileIdMap,
+                cidMap: cidMap,
+              )
+            else
+              rawSource,
+        ];
+        blocks.add(block);
+        changed = true;
+        continue;
+      }
+      if (original is! Map ||
+          original['type'] != 'file' ||
+          original['file'] is! Map) {
+        blocks.add(original);
+        continue;
+      }
+      final block = Map<String, dynamic>.from(original);
+      final file = Map<String, dynamic>.from(original['file'] as Map);
+      final oldId = _intValue(file['workspaceFileId']);
+      if (oldId == null) {
+        blocks.add(original);
+        continue;
+      }
+      final belongsToConversation = files.any((row) =>
+          _intValue(row['id']) == oldId && _intValue(row['cid']) == oldCid);
+      var id = belongsToConversation ? fileIdMap[oldId] : null;
+      final cid = oldCid == null ? null : cidMap[oldCid];
+      final text = file['extractedText'];
+      const prefix = '【工作区附件，正文尚未读取】\n';
+      if (text is String && text.startsWith(prefix)) {
+        final end = text.indexOf('\n', prefix.length);
+        if (end >= 0) {
+          try {
+            final manifest = Map<String, dynamic>.from(
+                jsonDecode(text.substring(prefix.length, end)) as Map);
+            if (_intValue(manifest['id']) != oldId) id = null;
+            if (id != null && cid != null) {
+              manifest['id'] = id;
+              manifest['cid'] = cid;
+              file['extractedText'] =
+                  '$prefix${jsonEncode(manifest)}${text.substring(end)}';
+            } else {
+              manifest.remove('id');
+              manifest.remove('cid');
+              manifest['available'] = false;
+              file['extractedText'] = '$prefix${jsonEncode(manifest)}\n'
+                  '此备份未包含可用的工作区正文，请重新附加原文件后阅读。';
+            }
+          } catch (_) {
+            // 非清单文本保留原样，引用仍按数据库映射处理。
+          }
+        }
+      }
+      if (id == null || cid == null) {
+        file.remove('workspaceFileId');
+      } else {
+        file['workspaceFileId'] = id;
+      }
+      block['file'] = file;
+      blocks.add(block);
+      changed = true;
+    }
+    if (changed) next['blocks'] = jsonEncode(blocks);
+    return next;
+  }
+
+  static Map<String, dynamic> _remapWorkspaceCitation(
+    Map<String, dynamic> source, {
+    required int? oldMessageCid,
+    required List<Map<String, dynamic>> files,
+    required Map<int, int> fileIdMap,
+    required Map<int, int> cidMap,
+  }) {
+    final next = Map<String, dynamic>.from(source);
+    final oldFileId = _intValue(source['fileId']);
+    final oldSourceCid = _intValue(source['cid']);
+    final owned = oldFileId != null &&
+        oldMessageCid != null &&
+        oldSourceCid == oldMessageCid &&
+        files.any((row) =>
+            _intValue(row['id']) == oldFileId &&
+            _intValue(row['cid']) == oldMessageCid);
+    final mappedFileId = owned ? fileIdMap[oldFileId] : null;
+    final mappedCid = owned ? cidMap[oldMessageCid] : null;
+    if (mappedFileId == null || mappedCid == null) {
+      // 缺正文或跨会话伪造引用不能沿用旧 ID，避免碰巧指向目标库同号文件。
+      next['available'] = false;
+    } else {
+      next['fileId'] = mappedFileId;
+      next['cid'] = mappedCid;
+    }
+    // sourceId 与正文标记保持一致；版本、区间、hash、quote 不随 ID 映射改变。
+    return next;
   }
 
   static void _normalizeStoryMessageBranches(
@@ -3168,6 +3439,10 @@ class BackupService {
   /// 两个覆盖会话的模式才清理；追加合并保留已有会话的任务状态。
   static Future<void> _clearDerivedConversationState(Transaction txn) async {
     for (final table in [
+      'tb_agent_read_interval',
+      'tb_agent_verification_report',
+      'tb_agent_verification_turn',
+      'tb_agent_task_criteria',
       'tb_agent_task_session',
       'tb_chat_semantic_summary',
     ]) {
@@ -3692,6 +3967,7 @@ class BackupService {
           mime: block.file.mime,
           size: block.file.size,
           extractedText: block.file.extractedText,
+          workspaceFileId: block.file.workspaceFileId,
         ),
       );
 

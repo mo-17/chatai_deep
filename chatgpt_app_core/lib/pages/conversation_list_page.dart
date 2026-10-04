@@ -6,6 +6,7 @@ import 'package:chat_message/models/message_model.dart';
 import 'package:chatgpt_app_core/backup/backup_service.dart';
 import 'package:chatgpt_app_core/chat/application/assistant_conversation_factory.dart';
 import 'package:chatgpt_app_core/chat/application/tool_registry.dart';
+import 'package:chatgpt_app_core/chat/application/agent_task_executor.dart';
 import 'package:chatgpt_app_core/dao/ai_catalog_dao.dart';
 import 'package:chatgpt_app_core/db/conversation_dao.dart';
 import 'package:chatgpt_app_core/db/favorite_dao.dart';
@@ -17,6 +18,7 @@ import 'package:chatgpt_app_core/model/assistant_model.dart';
 import 'package:chatgpt_app_core/model/conversation_model.dart';
 import 'package:chatgpt_app_core/model/project_model.dart';
 import 'package:chatgpt_app_core/pages/conversation_page.dart';
+import 'package:chatgpt_app_core/pages/agent_task_center_page.dart';
 import 'package:chatgpt_app_core/pages/ai_health_check_page.dart';
 import 'package:chatgpt_app_core/pages/ai_settings_page.dart';
 import 'package:chatgpt_app_core/provider/ai_readiness_provider.dart';
@@ -160,6 +162,15 @@ class _ConversationListPageState extends State<ConversationListPage>
         title: const Text('艾普'),
         centerTitle: true,
         actions: [
+          IconButton(
+            key: const ValueKey('conversation_list_agent_task_center'),
+            tooltip: 'Agent 任务中心',
+            icon: const Icon(Icons.assignment_outlined),
+            onPressed: () => Navigator.push<void>(
+              context,
+              MaterialPageRoute(builder: (_) => const AgentTaskCenterPage()),
+            ),
+          ),
           IconButton(
             key: const ValueKey('conversation_list_global_search'),
             onPressed: _openSearch,
@@ -574,6 +585,9 @@ class _ConversationListPageState extends State<ConversationListPage>
   bool get wantKeepAlive => true;
 
   _onDelete(ConversationModel model) async {
+    final account = HiDBManager.getAccountHash();
+    await AgentTaskExecutor.instance.forget(AgentTaskKey(account, model.cid));
+    if (!mounted || account != HiDBManager.getAccountHash()) return;
     await AvatarAssetService.deleteConversationAvatar(model.avatarValue);
     await conversationListDao.deleteConversation(model);
     if (!mounted) return;

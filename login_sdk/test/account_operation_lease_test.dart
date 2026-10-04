@@ -60,6 +60,70 @@ void main() {
     expect(LoginDao.getBoardingPass(), isNull);
   });
 
+  test('条件注销在队列内部校验，不会注销已排队的新登录', () async {
+    final entered = Completer<void>();
+    final release = Completer<void>();
+    final lease = LoginDao.runWithStableAccount<void>(
+        expectedAccountHash: 'account-a',
+        action: () async {
+          entered.complete();
+          await release.future;
+        });
+    await entered.future;
+    final login = LoginDao.saveAuthToken('token-b',
+        userName: 'user-b', extras: const {'accountHash': 'account-b'});
+    var logoutHookCalls = 0;
+    LoginDao.addLogoutHook(() => logoutHookCalls++);
+    final logout = LoginDao.logOutIfSessionMatches(
+        expectedStorage: storage,
+        expectedToken: 'token-a',
+        expectedAccountHash: 'account-a');
+    release.complete();
+    await lease;
+    await login;
+    expect(await logout, isFalse);
+    expect(LoginDao.getBoardingPass(), 'token-b');
+    expect(logoutHookCalls, 0);
+  });
+
+  test('条件注销拒绝同账号的新token和后来替换的storage', () async {
+    await LoginDao.saveAuthToken('fresh-token',
+        userName: 'user-a', extras: const {'accountHash': 'account-a'});
+    expect(
+        await LoginDao.logOutIfSessionMatches(
+            expectedStorage: storage,
+            expectedToken: 'token-a',
+            expectedAccountHash: 'account-a'),
+        isFalse);
+    expect(
+        await LoginDao.logOutIfSessionMatches(
+            expectedStorage: _MemoryTokenStorage(),
+            expectedToken: 'fresh-token',
+            expectedAccountHash: 'account-a'),
+        isFalse);
+    expect(LoginDao.getBoardingPass(), 'fresh-token');
+  });
+
+  test('条件注销匹配时保持ready、同步hook、清除资料顺序', () async {
+    final events = <String>[];
+    LoginDao.addLogoutReadyHook(() async {
+      expect(LoginDao.getBoardingPass(), 'token-a');
+      events.add('ready');
+    });
+    LoginDao.addLogoutHook(() {
+      expect(LoginDao.getBoardingPass(), 'token-a');
+      events.add('hook');
+    });
+    expect(
+        await LoginDao.logOutIfSessionMatches(
+            expectedStorage: storage,
+            expectedToken: 'token-a',
+            expectedAccountHash: 'account-a'),
+        isTrue);
+    expect(events, ['ready', 'hook']);
+    expect(LoginDao.getBoardingPass(), isNull);
+  });
+
   test('稳定账号操作期间新登录也必须排队等待', () async {
     final entered = Completer<void>();
     final release = Completer<void>();

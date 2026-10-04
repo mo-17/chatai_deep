@@ -2,6 +2,8 @@ import 'dart:async';
 import 'dart:typed_data';
 
 import 'package:chatgpt_app_core/chat/application/deepseek_attachment_adapter.dart';
+import 'package:chatgpt_app_core/chat/application/chat_request_recovery.dart';
+import 'package:chatgpt_app_core/chat/domain/chat_failure_diagnosis.dart';
 import 'package:chatgpt_app_core/chat/application/deepseek_file_preview_store.dart';
 import 'package:chatgpt_app_core/chat/application/deepseek_file_service.dart';
 import 'package:chatgpt_app_core/chat/application/reasoning_control_adapter.dart';
@@ -173,15 +175,17 @@ class DirectChatService
     }
   }
 
-  int? get _maxTokensOrNull => _maxOutputTokens > 0 ? _maxOutputTokens : null;
-
   @override
   ModelCapabilities get capabilities =>
       ModelCatalog.capabilitiesFor(_cfg.model, providerCode: _providerCode);
 
   void _ensureApiKey() {
     if (_cfg.apiKey.trim().isEmpty) {
-      throw Exception('请先在「我的 → AI 服务设置」中填写 API Key');
+      throw const ChatTransportException(
+          safeCode: 'api_key_missing',
+          safeMessage: '请先在「我的 → AI 服务设置」中填写 API Key',
+          failureStage: ChatFailureStage.prepare,
+          failureKind: ChatFailureKind.invalidConfiguration);
     }
   }
 
@@ -247,25 +251,13 @@ class DirectChatService
     ChatAttachments? attachments,
     Duration? timeout,
   }) async {
-    _ensureApiKey();
-    final config = AIConfigBuilder(
-      apiKey: _cfg.apiKey,
-      chatUrl: _cfg.baseUrl,
-    );
-    final completion = AICompletion(config);
-    final messages = await _buildMessages(prompt, history, attachments);
-    final response = await completion.createChat(
-      model: _cfg.model,
-      messages: messages,
-      extraBody: _requestFields(messages,
-          extraBody: _reasoningFor(const ChatRequestOptions()).requestFields),
-      maxTokens: _maxTokensOrNull,
-      temperature: _temperature,
-      topP: _topP,
-      timeout: timeout ?? const Duration(seconds: 15),
-    );
-    final choices = response.choices?.first;
-    return choices?.message?.content;
+    final response = await _completeWithUsage(
+        prompt: prompt,
+        history: history,
+        attachments: attachments,
+        options: const ChatRequestOptions(),
+        timeout: timeout ?? const Duration(seconds: 15));
+    return response.content;
   }
 
   @override
@@ -274,7 +266,7 @@ class DirectChatService
     required List<Map<String, dynamic>> history,
     ChatAttachments? attachments,
   }) =>
-      _completeWithUsage(
+      chatWithUsageWithOptions(
           prompt: prompt,
           history: history,
           attachments: attachments,
@@ -307,6 +299,7 @@ class DirectChatService
     required List<Map<String, dynamic>> history,
     ChatAttachments? attachments,
     required ChatRequestOptions options,
+    Duration timeout = const Duration(seconds: 15),
   }) async {
     _ensureApiKey();
     final config = AIConfigBuilder(
@@ -325,8 +318,9 @@ class DirectChatService
         reasoning.requestFields);
     await _checkRequestAbort(options.abortTrigger);
     reportChatSendProgress(options.onProgress, const ChatSendProgress('等待回答'));
-    final response = await _awaitUnlessAborted(
-        completion.createChat(
+    final response = await recoverChatRequest(() async {
+      try {
+        return await completion.createChat(
           model: _cfg.model,
           messages: messages,
           extraBody:
@@ -334,8 +328,24 @@ class DirectChatService
           maxTokens: _maxTokensFor(options),
           temperature: _temperature,
           topP: _topP,
-        ),
-        options.abortTrigger);
+          timeout: timeout,
+          abortTrigger: options.abortTrigger,
+        );
+      } catch (error, stack) {
+        Error.throwWithStackTrace(
+            _mapTransportFailure(error,
+                reasoningControlAttached: reasoning.requestFields.isNotEmpty),
+            stack);
+      }
+    }, options: options);
+    if (response.choices?.isEmpty ?? true) {
+      throw const ChatTransportException(
+          safeCode: 'invalid_response',
+          safeMessage: '响应格式无效',
+          responseStarted: true,
+          failureStage: ChatFailureStage.decode,
+          failureKind: ChatFailureKind.invalidPayload);
+    }
     final choices = response.choices?.first;
     return ChatCompletionResult(
       content: choices?.message?.content,
@@ -351,24 +361,13 @@ class DirectChatService
     required String prompt,
     required List<Map<String, dynamic>> history,
     ChatAttachments? attachments,
-  }) async* {
-    _ensureApiKey();
-    final config = AIConfigBuilder(
-      apiKey: _cfg.apiKey,
-      chatUrl: _cfg.baseUrl,
-    );
-    final completion = AICompletion(config);
-    final messages = await _buildMessages(prompt, history, attachments);
-    yield* completion.createChatStream(
-      model: _cfg.model,
-      messages: messages,
-      extraBody: _requestFields(messages,
-          extraBody: _reasoningFor(const ChatRequestOptions()).requestFields),
-      maxTokens: _maxTokensOrNull,
-      temperature: _temperature,
-      topP: _topP,
-    );
-  }
+  }) =>
+      chatStreamEvents(
+              prompt: prompt, history: history, attachments: attachments)
+          .where((event) =>
+              event.type == StreamEventType.text ||
+              event.type == StreamEventType.reasoning)
+          .map((event) => event.delta);
 
   @override
   Stream<StreamEvent> chatStreamEvents({
@@ -377,18 +376,14 @@ class DirectChatService
     ChatAttachments? attachments,
     List<Map<String, dynamic>>? tools,
     List<Map<String, dynamic>> extraMessages = const [],
-  }) async* {
-    _ensureApiKey();
-    yield* _createStreamEvents(
-      prompt: prompt,
-      history: history,
-      attachments: attachments,
-      tools: tools,
-      extraMessages: extraMessages,
-      maxTokens: _maxTokensOrNull,
-      extraBody: _reasoningFor(const ChatRequestOptions()).requestFields,
-    );
-  }
+  }) =>
+      chatStreamEventsWithOptions(
+          prompt: prompt,
+          history: history,
+          attachments: attachments,
+          tools: tools,
+          extraMessages: extraMessages,
+          options: const ChatRequestOptions());
 
   @override
   Stream<StreamEvent> chatStreamEventsWithOptions({
@@ -416,6 +411,7 @@ class DirectChatService
         abortTrigger: options.abortTrigger,
         connectTimeout: options.connectTimeout,
         onProgress: options.onProgress,
+        options: options,
       );
       await for (final event in events) {
         yield event;
@@ -455,6 +451,7 @@ class DirectChatService
     Future<void>? abortTrigger,
     Duration connectTimeout = const Duration(seconds: 20),
     ChatSendProgressCallback? onProgress,
+    ChatRequestOptions options = const ChatRequestOptions(),
   }) async* {
     final config = AIConfigBuilder(
       apiKey: _cfg.apiKey,
@@ -467,17 +464,31 @@ class DirectChatService
     reportChatSendProgress(onProgress, const ChatSendProgress('等待回答'));
     // 工具调用分片按 index 累积，流结束后再发完整 toolCall 事件（阶段六）。
     final toolAcc = ToolCallAccumulator();
-    await for (final chunk in completion.createChatStreamEvents(
-      model: _cfg.model,
-      messages: messages,
-      maxTokens: maxTokens,
-      temperature: _temperature,
-      topP: _topP,
-      tools: tools,
-      extraBody: _requestFields(messages, tools: tools, extraBody: extraBody),
-      abortTrigger: abortTrigger,
-      connectTimeout: connectTimeout,
-    )) {
+    Stream<AIStreamChunk> request() async* {
+      try {
+        await for (final chunk in completion.createChatStreamEvents(
+          model: _cfg.model,
+          messages: messages,
+          maxTokens: maxTokens,
+          temperature: _temperature,
+          topP: _topP,
+          tools: tools,
+          extraBody:
+              _requestFields(messages, tools: tools, extraBody: extraBody),
+          abortTrigger: abortTrigger,
+          connectTimeout: connectTimeout,
+        )) {
+          yield chunk;
+        }
+      } catch (error, stack) {
+        Error.throwWithStackTrace(
+            _mapTransportFailure(error,
+                reasoningControlAttached: extraBody.isNotEmpty),
+            stack);
+      }
+    }
+
+    await for (final chunk in recoverChatStream(request, options: options)) {
       switch (chunk.kind) {
         case AIStreamKind.reasoning:
           yield StreamEvent.reasoning(chunk.text);
@@ -507,19 +518,13 @@ class DirectChatService
 Future<void> _checkRequestAbort(Future<void>? abortTrigger) async {
   if (abortTrigger == null) return;
   var aborted = false;
-  unawaited(abortTrigger.then((_) => aborted = true));
+  unawaited(abortTrigger.then<void>((_) {
+    aborted = true;
+  }, onError: (Object _, StackTrace __) {
+    aborted = true;
+  }));
   await Future<void>.value();
   if (aborted) throw http.RequestAbortedException();
-}
-
-Future<T> _awaitUnlessAborted<T>(
-    Future<T> request, Future<void>? abortTrigger) {
-  if (abortTrigger == null) return request;
-  // 旧 SDK 非流式接口没有传输取消参数；抑制迟到结果，底层仍按原超时收尾。
-  return Future.any<T>([
-    request,
-    abortTrigger.then<T>((_) => throw http.RequestAbortedException()),
-  ]);
 }
 
 ChatTransportException _mapTransportFailure(
@@ -528,27 +533,54 @@ ChatTransportException _mapTransportFailure(
 }) {
   if (error is ChatTransportException) return error;
   if (error is DeepSeekFileException) {
-    return ChatTransportException(
-        safeCode: 'attachment_upload_failed', safeMessage: error.message);
+    return const ChatTransportException(
+        safeCode: 'attachment_upload_failed',
+        safeMessage: '附件上传失败',
+        failureStage: ChatFailureStage.prepare,
+        failureKind: ChatFailureKind.transport);
   }
   if (error is AIRequestCancelledException ||
       error is http.RequestAbortedException) {
     return const ChatTransportException(
       safeCode: 'cancelled',
       safeMessage: '请求已取消',
+      failureKind: ChatFailureKind.cancelled,
     );
   }
   if (error is TimeoutException) {
-    return const ChatTransportException(
+    return ChatTransportException(
       safeCode: 'timeout',
       safeMessage: '请求超时',
+      responseStarted:
+          error is AIRequestTimeoutException && error.responseStarted,
+      failureStage: error is AIRequestTimeoutException && error.responseStarted
+          ? ChatFailureStage.response
+          : ChatFailureStage.connect,
+      failureKind: ChatFailureKind.timeout,
     );
   }
   if (error is AITransportException) {
-    return const ChatTransportException(
-      safeCode: 'network_error',
-      safeMessage: '网络请求失败',
+    return ChatTransportException(
+      safeCode: error.safeCode == 'invalid_endpoint'
+          ? 'invalid_endpoint'
+          : 'network_error',
+      safeMessage: error.safeCode == 'invalid_endpoint' ? 'API 地址无效' : '网络请求失败',
+      responseStarted: error.responseStarted,
+      failureStage: error.responseStarted
+          ? ChatFailureStage.response
+          : ChatFailureStage.connect,
+      failureKind: error.safeCode == 'invalid_endpoint'
+          ? ChatFailureKind.invalidConfiguration
+          : ChatFailureKind.transport,
     );
+  }
+  if (error is AIResponseFormatException) {
+    return const ChatTransportException(
+        safeCode: 'invalid_response',
+        safeMessage: '响应格式无效',
+        responseStarted: true,
+        failureStage: ChatFailureStage.decode,
+        failureKind: ChatFailureKind.invalidPayload);
   }
   if (error is AIRequestException) {
     final upstreamCode = error.safeCode ?? _safeCodeForStatus(error.statusCode);
@@ -564,21 +596,26 @@ ChatTransportException _mapTransportFailure(
       retryAfter: error.retryAfter,
       safeCode: code,
       safeMessage: _safeMessageForCode(code),
+      responseStarted: error.responseStarted,
+      failureStage: ChatFailureStage.response,
+      failureKind: ChatFailureKind.httpStatus,
     );
   }
-  return const ChatTransportException(
+  return ChatTransportException(
     safeCode: 'request_failed',
     safeMessage: '请求失败',
+    failureKind: error is TypeError
+        ? ChatFailureKind.type
+        : error is RangeError
+            ? ChatFailureKind.range
+            : error is StateError
+                ? ChatFailureKind.state
+                : ChatFailureKind.unknown,
   );
 }
 
-String _safeCodeForStatus(int statusCode) {
-  if (statusCode == 400) return 'invalid_request';
-  if (statusCode == 401 || statusCode == 403) return 'authentication_error';
-  if (statusCode == 429) return 'rate_limited';
-  if (statusCode >= 500) return 'server_error';
-  return 'request_failed';
-}
+String _safeCodeForStatus(int statusCode) =>
+    chatFailureCodeForStatus(statusCode) ?? 'request_failed';
 
 String _safeMessageForCode(String safeCode) {
   switch (safeCode) {
@@ -587,6 +624,10 @@ String _safeMessageForCode(String safeCode) {
     case 'unknown_parameter':
     case 'unsupported_parameter':
       return '上游不支持请求参数';
+    case 'insufficient_balance':
+      return '服务商余额不足';
+    case 'model_not_found':
+      return '模型或 API 路由不存在';
     case 'invalid_request':
       return '请求参数无效';
     case 'authentication_error':

@@ -1,3 +1,5 @@
+import 'dart:async';
+
 ///openai_flutter 抛出的异常
 class AIException implements Exception {
   final String message;
@@ -21,12 +23,14 @@ class AIRequestException implements Exception {
   final int statusCode;
   final Map<String, String> headers;
   final String? safeCode;
+  final bool responseStarted;
 
   AIRequestException(
     this.message,
     this.statusCode, {
     Map<String, String> headers = const {},
     String? safeCode,
+    this.responseStarted = false,
   })  : headers = Map.unmodifiable(_safeHeaders(headers)),
         safeCode = _safeCodes.contains(safeCode) ? safeCode : null;
 
@@ -74,10 +78,26 @@ class AIRequestCancelledException implements Exception {
 
 /// 网络传输或 endpoint 构造失败时抛出的安全异常，不携带请求 URI。
 class AITransportException implements Exception {
-  const AITransportException() : message = 'Network request failed';
+  const AITransportException(
+      {this.responseStarted = false, this.safeCode = 'network_error'})
+      : message = 'Network request failed';
 
   final String message;
+  final bool responseStarted;
+  final String safeCode;
 
   @override
   String toString() => 'AITransportException: $message';
+}
+
+class AIResponseFormatException implements Exception {
+  const AIResponseFormatException();
+  @override
+  String toString() => 'AIResponseFormatException: Invalid response';
+}
+
+class AIRequestTimeoutException extends TimeoutException {
+  final bool responseStarted;
+  AIRequestTimeoutException(Duration duration, {this.responseStarted = false})
+      : super('Request timed out', duration);
 }

@@ -3,6 +3,8 @@ import 'dart:convert';
 import 'dart:io';
 
 import 'package:chatgpt_app_core/chat/application/reasoning_control_adapter.dart';
+import 'package:chatgpt_app_core/chat/application/chat_request_recovery.dart';
+import 'package:chatgpt_app_core/chat/domain/chat_failure_diagnosis.dart';
 import 'package:chatgpt_app_core/chat/application/tool_call_accumulator.dart';
 import 'package:chatgpt_app_core/chat/domain/chat_attachments.dart';
 import 'package:chatgpt_app_core/chat/domain/chat_request_options.dart';
@@ -14,6 +16,8 @@ import 'package:chatgpt_app_core/model/ai_settings.dart';
 import 'package:chatgpt_app_core/util/hi_const.dart';
 import 'package:chatgpt_app_core/util/model_catalog.dart';
 import 'package:http/http.dart' as http;
+import 'package:login_sdk/config/login_sdk_config.dart';
+import 'package:login_sdk/config/token_storage.dart';
 import 'package:login_sdk/dao/login_dao.dart';
 import 'package:openai_flutter/utils/ai_logger.dart';
 
@@ -117,63 +121,14 @@ class BackendChatService
     required List<Map<String, dynamic>> history,
     ChatAttachments? attachments,
     Duration? timeout,
-  }) async {
-    final uri = BackendConst.buildUri('/uapi/chat/completions');
-    final messages = _buildMessages(prompt, history, attachments);
-    final body = {
-      'model': _settings.effectiveModel,
-      'messages': messages,
-      // 0 = 不限制：不带 max_tokens，用上游默认（避免长回复被截断）。
-      if (_settings.maxOutputTokens > 0)
-        'max_tokens': _settings.maxOutputTokens,
-      // null = 不带 temperature，用上游默认。
-      if (_settings.temperature != null) 'temperature': _settings.temperature,
-      // null = 不带 top_p，用上游默认。
-      if (_settings.topP != null) 'top_p': _settings.topP,
-      ..._reasoningFields(const ChatRequestOptions()),
-    };
-    final token = LoginDao.getBoardingPass();
-    final headers = <String, String>{
-      'Content-Type': 'application/json',
-      'Authorization': 'Bearer ${token ?? ''}',
-    };
-    final response = await http
-        .post(uri, headers: headers, body: jsonEncode(body))
-        .timeout(timeout ?? const Duration(minutes: 2));
-    AILogger.log('backend response: ${response.statusCode}');
-    final payload = _decodeJsonBytes(response.bodyBytes);
-
-    if (response.statusCode == 401) {
-      if (_isTrustedUpstreamAuthEnvelope(payload, response.statusCode)) {
-        throw _httpFailure(
-          statusCode: response.statusCode,
-          headers: response.headers,
-          payload: payload,
-        );
-      }
-      await LoginDao.logOut();
-      throw Exception('登录已过期，请重新登录');
-    }
-
-    if (response.statusCode == 200 || response.statusCode == 201) {
-      final result = payload;
-      if (result == null) throw const FormatException('响应格式无效');
-      if (result['code'] == 0 && result['data'] != null) {
-        final data = result['data'] as Map<String, dynamic>;
-        final content = data['content'] as String?;
-        if (content != null && content.isNotEmpty) return content;
-        final reasoning = data['reasoningContent'] as String?;
-        if (reasoning != null && reasoning.isNotEmpty) return reasoning;
-        // 后端返回了 data 但没有可展示的文本内容
-        throw Exception('AI 未返回有效内容');
-      }
-      // code != 0：后端业务错误
-      final msg = result['message'] as String?;
-      throw Exception(msg ?? '请求失败');
-    }
-    // HTTP 错误
-    throw Exception('服务异常(${response.statusCode})');
-  }
+  }) async =>
+      (await _completeWithUsage(
+              prompt: prompt,
+              history: history,
+              attachments: attachments,
+              options: const ChatRequestOptions(),
+              timeout: timeout ?? const Duration(minutes: 2)))
+          .content;
 
   @override
   Future<ChatCompletionResult> chatWithUsage({
@@ -207,6 +162,25 @@ class BackendChatService
     required List<Map<String, dynamic>> history,
     ChatAttachments? attachments,
     required ChatRequestOptions options,
+    Duration timeout = const Duration(seconds: 15),
+  }) async {
+    validateMaxOutputTokensOverride(options.maxOutputTokensOverride);
+    return recoverChatRequest(
+        () => _completeOnceWithUsage(
+            prompt: prompt,
+            history: history,
+            attachments: attachments,
+            options: options,
+            timeout: timeout),
+        options: options);
+  }
+
+  Future<ChatCompletionResult> _completeOnceWithUsage({
+    required String prompt,
+    required List<Map<String, dynamic>> history,
+    ChatAttachments? attachments,
+    required ChatRequestOptions options,
+    required Duration timeout,
   }) async {
     final maxTokens = _maxTokensFor(options);
     final uri = BackendConst.buildUri('/uapi/chat/completions');
@@ -224,55 +198,116 @@ class BackendChatService
       if (options.profile != ChatRequestProfile.standard)
         'request_profile': _requestProfile(options.profile),
     };
-    final token = LoginDao.getBoardingPass();
+    final loginSession = _BackendLoginSession.capture();
+    final token = loginSession.token;
     final headers = <String, String>{
       'Content-Type': 'application/json',
       'Authorization': 'Bearer ${token ?? ''}',
     };
-    final response = await http
-        .post(uri, headers: headers, body: jsonEncode(body))
-        .timeout(const Duration(seconds: 15));
-    AILogger.log('backend response: ${response.statusCode}');
-    final payload = _decodeJsonBytes(response.bodyBytes);
+    final response = await () async {
+      final client = http.Client();
+      var responseStarted = false;
+      int? responseStatus;
+      Map<String, String> responseHeaders = const {};
+      try {
+        final request = http.AbortableRequest('POST', uri,
+            abortTrigger: options.abortTrigger)
+          ..headers.addAll(headers)
+          ..body = jsonEncode(body);
+        return await () async {
+          final streamed = await client.send(request);
+          responseStatus = streamed.statusCode;
+          responseHeaders = streamed.headers;
+          return await http.Response.fromStream(
+              http.StreamedResponse(streamed.stream.map((bytes) {
+            if (streamed.statusCode >= 200 &&
+                streamed.statusCode < 300 &&
+                bytes.isNotEmpty) {
+              responseStarted = true;
+            }
+            return bytes;
+          }), streamed.statusCode, headers: streamed.headers));
+        }()
+            .timeout(timeout);
+      } catch (error, stack) {
+        if (responseStatus != null &&
+            responseStatus != 200 &&
+            responseStatus != 201 &&
+            error is! http.RequestAbortedException) {
+          if (responseStatus == 401) {
+            _scheduleExpiredSessionLogout(loginSession);
+            throw _expiredBackendLoginFailure;
+          }
+          throw _httpFailure(
+              statusCode: responseStatus!,
+              headers: responseHeaders,
+              payload: null);
+        }
+        Error.throwWithStackTrace(
+            _mapBackendTransportFailure(error,
+                responseStarted: responseStarted),
+            stack);
+      } finally {
+        client.close();
+      }
+    }();
+    try {
+      final payload = _decodeJsonBytes(response.bodyBytes);
 
-    if (response.statusCode == 401) {
-      if (_isTrustedUpstreamAuthEnvelope(payload, response.statusCode)) {
-        throw _httpFailure(
+      if (response.statusCode == 401) {
+        if (_isTrustedUpstreamAuthEnvelope(payload, response.statusCode)) {
+          throw _httpFailure(
+            statusCode: response.statusCode,
+            headers: response.headers,
+            payload: payload,
+          );
+        }
+        _scheduleExpiredSessionLogout(loginSession);
+        throw _expiredBackendLoginFailure;
+      }
+
+      if (response.statusCode == 200 || response.statusCode == 201) {
+        final result = payload;
+        if (result == null) {
+          throw const ChatTransportException(
+              safeCode: 'invalid_response',
+              safeMessage: '响应格式无效',
+              responseStarted: true,
+              failureStage: ChatFailureStage.decode,
+              failureKind: ChatFailureKind.invalidPayload);
+        }
+        if (result['code'] == 0 && result['data'] != null) {
+          final data = result['data'] as Map<String, dynamic>;
+          final usage = data['usage'] as Map<String, dynamic>?;
+          final promptDetails = usage?['prompt_tokens_details'];
+          final content = data['content'] as String?;
+          final reasoning = data['reasoningContent'] as String?;
+          return ChatCompletionResult(
+            content:
+                (content != null && content.isNotEmpty) ? content : reasoning,
+            promptTokens: usage == null ? null : usage['prompt_tokens'] as int?,
+            cachedPromptTokens: promptDetails is Map
+                ? (promptDetails['cached_tokens'] as num?)?.toInt()
+                : null,
+            completionTokens:
+                usage == null ? null : usage['completion_tokens'] as int?,
+            estimated: false,
+            cost: 0,
+          );
+        }
+        throw _sseFailure(result);
+      }
+      throw _httpFailure(
           statusCode: response.statusCode,
           headers: response.headers,
-          payload: payload,
-        );
-      }
-      await LoginDao.logOut();
-      throw Exception('登录已过期，请重新登录');
+          payload: payload);
+    } catch (error, stack) {
+      Error.throwWithStackTrace(
+          _mapBackendTransportFailure(error,
+              responseStarted:
+                  response.statusCode == 200 || response.statusCode == 201),
+          stack);
     }
-
-    if (response.statusCode == 200 || response.statusCode == 201) {
-      final result = payload;
-      if (result == null) throw const FormatException('响应格式无效');
-      if (result['code'] == 0 && result['data'] != null) {
-        final data = result['data'] as Map<String, dynamic>;
-        final usage = data['usage'] as Map<String, dynamic>?;
-        final promptDetails = usage?['prompt_tokens_details'];
-        final content = data['content'] as String?;
-        final reasoning = data['reasoningContent'] as String?;
-        return ChatCompletionResult(
-          content:
-              (content != null && content.isNotEmpty) ? content : reasoning,
-          promptTokens: usage == null ? null : usage['prompt_tokens'] as int?,
-          cachedPromptTokens: promptDetails is Map
-              ? (promptDetails['cached_tokens'] as num?)?.toInt()
-              : null,
-          completionTokens:
-              usage == null ? null : usage['completion_tokens'] as int?,
-          estimated: false,
-          cost: 0,
-        );
-      }
-      final msg = result['message'] as String?;
-      throw Exception(msg ?? '请求失败');
-    }
-    throw Exception('服务异常(${response.statusCode})');
   }
 
   @override
@@ -311,6 +346,26 @@ class BackendChatService
     List<Map<String, dynamic>> extraMessages = const [],
     required ChatRequestOptions options,
   }) async* {
+    yield* recoverChatStream(
+        () => _streamOnceWithOptions(
+            prompt: prompt,
+            history: history,
+            attachments: attachments,
+            tools: tools,
+            extraMessages: extraMessages,
+            options: options),
+        options: options);
+  }
+
+  Stream<StreamEvent> _streamOnceWithOptions({
+    required String prompt,
+    required List<Map<String, dynamic>> history,
+    ChatAttachments? attachments,
+    List<Map<String, dynamic>>? tools,
+    List<Map<String, dynamic>> extraMessages = const [],
+    required ChatRequestOptions options,
+  }) async* {
+    var responseStarted = false;
     final maxTokens = _maxTokensFor(options);
     final httpClient = http.Client();
     try {
@@ -327,7 +382,8 @@ class BackendChatService
         'request_profile': _requestProfile(options.profile),
         ..._reasoningFields(options, includeDefaultPolicy: true),
       };
-      final token = LoginDao.getBoardingPass();
+      final loginSession = _BackendLoginSession.capture();
+      final token = loginSession.token;
       final request = http.AbortableRequest(
         'POST',
         uri,
@@ -345,14 +401,22 @@ class BackendChatService
 
       if (streamedResponse.statusCode != 200 &&
           streamedResponse.statusCode != 201) {
-        final bytes = await streamedResponse.stream.toBytes();
+        List<int> bytes;
+        try {
+          bytes = await streamedResponse.stream.toBytes();
+        } on http.RequestAbortedException {
+          rethrow;
+        } catch (_) {
+          bytes = const [];
+        }
         final payload = _decodeJsonBytes(bytes);
         if (streamedResponse.statusCode == 401 &&
             !_isTrustedUpstreamAuthEnvelope(
               payload,
               streamedResponse.statusCode,
             )) {
-          await LoginDao.logOut();
+          _scheduleExpiredSessionLogout(loginSession);
+          throw _expiredBackendLoginFailure;
         }
         throw _httpFailure(
           statusCode: streamedResponse.statusCode,
@@ -362,6 +426,10 @@ class BackendChatService
       }
 
       final lineStream = streamedResponse.stream
+          .map((bytes) {
+            if (bytes.isNotEmpty) responseStarted = true;
+            return bytes;
+          })
           .transform(const Utf8Decoder())
           .transform(const LineSplitter());
       final toolAcc = ToolCallAccumulator();
@@ -421,7 +489,9 @@ class BackendChatService
         yield event;
       }
     } catch (error, stackTrace) {
-      Error.throwWithStackTrace(_mapBackendTransportFailure(error), stackTrace);
+      Error.throwWithStackTrace(
+          _mapBackendTransportFailure(error, responseStarted: responseStarted),
+          stackTrace);
     } finally {
       httpClient.close();
     }
@@ -441,8 +511,54 @@ class BackendChatService
   }
 }
 
-ChatTransportException _mapBackendTransportFailure(Object error) {
-  if (error is ChatTransportException) return error;
+const _expiredBackendLoginFailure = ChatTransportException(
+    safeCode: 'authentication_error',
+    safeMessage: '登录已过期，请重新登录',
+    statusCode: 401,
+    failureStage: ChatFailureStage.response,
+    failureKind: ChatFailureKind.httpStatus);
+
+class _BackendLoginSession {
+  const _BackendLoginSession(this.storage, this.token, this.accountHash);
+
+  factory _BackendLoginSession.capture() {
+    final storage = LoginSdkConfig.instance.storage;
+    return _BackendLoginSession(storage, storage.readTokenSync(),
+        storage.readProfileSync()?['accountHash']?.toString());
+  }
+
+  final TokenStorage storage;
+  final String? token;
+  final String? accountHash;
+}
+
+void _scheduleExpiredSessionLogout(_BackendLoginSession session) {
+  // 先交付 typed 401 并释放 HTTP/generator。logout ready hook 会等待任务收尾，
+  // 若请求内部 await logout，则任务取消与 generator 会相互等待。
+  unawaited(Future<void>(() async {
+    try {
+      await LoginDao.logOutIfSessionMatches(
+          expectedStorage: session.storage,
+          expectedToken: session.token,
+          expectedAccountHash: session.accountHash);
+    } catch (_) {
+      AILogger.log('backend expired-session cleanup failed');
+    }
+  }));
+}
+
+ChatTransportException _mapBackendTransportFailure(Object error,
+    {bool responseStarted = false}) {
+  if (error is ChatTransportException) {
+    return ChatTransportException(
+        statusCode: error.statusCode,
+        retryAfter: error.retryAfter,
+        safeCode: error.safeCode,
+        safeMessage: error.safeMessage,
+        responseStarted: error.responseStarted || responseStarted,
+        failureStage: error.failureStage,
+        failureKind: error.failureKind);
+  }
   if (error is http.RequestAbortedException) {
     return const ChatTransportException(
       safeCode: 'cancelled',
@@ -450,7 +566,12 @@ ChatTransportException _mapBackendTransportFailure(Object error) {
     );
   }
   if (error is TimeoutException) {
-    return const ChatTransportException(
+    return ChatTransportException(
+      responseStarted: responseStarted,
+      failureStage: responseStarted
+          ? ChatFailureStage.response
+          : ChatFailureStage.connect,
+      failureKind: ChatFailureKind.timeout,
       safeCode: 'timeout',
       safeMessage: '请求超时',
     );
@@ -459,14 +580,34 @@ ChatTransportException _mapBackendTransportFailure(Object error) {
       error is SocketException ||
       error is TlsException ||
       error is HttpException) {
-    return const ChatTransportException(
+    return ChatTransportException(
+      responseStarted: responseStarted,
+      failureStage: responseStarted
+          ? ChatFailureStage.response
+          : ChatFailureStage.connect,
+      failureKind: ChatFailureKind.transport,
       safeCode: 'network_error',
       safeMessage: '网络请求失败',
     );
   }
-  return const ChatTransportException(
-    safeCode: 'request_failed',
+  return ChatTransportException(
+    safeCode: error is FormatException ||
+            (responseStarted && (error is TypeError || error is RangeError))
+        ? 'invalid_response'
+        : 'request_failed',
     safeMessage: '请求失败',
+    responseStarted: responseStarted,
+    failureStage:
+        responseStarted ? ChatFailureStage.decode : ChatFailureStage.unknown,
+    failureKind: error is FormatException
+        ? ChatFailureKind.invalidPayload
+        : error is TypeError
+            ? ChatFailureKind.type
+            : error is RangeError
+                ? ChatFailureKind.range
+                : error is StateError
+                    ? ChatFailureKind.state
+                    : ChatFailureKind.unknown,
   );
 }
 
@@ -482,6 +623,8 @@ const _safeBackendCodes = {
   'rate_limited',
   'server_error',
   'request_failed',
+  'insufficient_balance',
+  'model_not_found',
 };
 
 String _requestProfile(ChatRequestProfile profile) => switch (profile) {
@@ -507,6 +650,8 @@ ChatTransportException _httpFailure({
         _retryAfterFromHeaders(headers) ?? _retryAfterFromPayload(payload),
     safeCode: safeCode,
     safeMessage: _safeBackendMessage(safeCode),
+    failureStage: ChatFailureStage.response,
+    failureKind: ChatFailureKind.httpStatus,
   );
 }
 
@@ -521,6 +666,8 @@ ChatTransportException _sseFailure(Map<String, dynamic>? payload) {
     retryAfter: _retryAfterFromPayload(payload),
     safeCode: safeCode,
     safeMessage: _safeBackendMessage(safeCode),
+    failureStage: ChatFailureStage.response,
+    failureKind: ChatFailureKind.httpStatus,
   );
 }
 
@@ -582,13 +729,8 @@ int _clampRetryAfterSeconds(int seconds) {
   return seconds;
 }
 
-String _safeCodeForBackendStatus(int statusCode) {
-  if (statusCode == 400) return 'invalid_request';
-  if (statusCode == 401 || statusCode == 403) return 'authentication_error';
-  if (statusCode == 429) return 'rate_limited';
-  if (statusCode >= 500) return 'server_error';
-  return 'request_failed';
-}
+String _safeCodeForBackendStatus(int statusCode) =>
+    chatFailureCodeForStatus(statusCode) ?? 'request_failed';
 
 String _safeBackendMessage(String safeCode) {
   switch (safeCode) {
@@ -603,6 +745,10 @@ String _safeBackendMessage(String safeCode) {
     case 'unknown_parameter':
     case 'unsupported_parameter':
       return '上游不支持请求参数';
+    case 'insufficient_balance':
+      return '服务商余额不足';
+    case 'model_not_found':
+      return '模型或 API 路由不存在';
     case 'invalid_request':
       return '请求参数无效';
     case 'authentication_error':

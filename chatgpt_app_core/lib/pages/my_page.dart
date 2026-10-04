@@ -8,6 +8,7 @@ import 'package:chatgpt_app_core/dao/apk_update_dao.dart';
 import 'package:chatgpt_app_core/model/apk_model.dart';
 import 'package:chatgpt_app_core/pages/ai_settings_page.dart';
 import 'package:chatgpt_app_core/pages/appearance_settings_page.dart';
+import 'package:chatgpt_app_core/pages/agent_task_center_page.dart';
 import 'package:chatgpt_app_core/pages/assistant_list_page.dart';
 import 'package:chatgpt_app_core/pages/backup_restore_page.dart';
 import 'package:chatgpt_app_core/pages/capability_center_page.dart';
@@ -128,6 +129,14 @@ class _MyPageState extends State<MyPage> {
                     context,
                     MaterialPageRoute(
                         builder: (_) => const McpSettingsPage()))),
+            ..._itemWidget(
+                color: color,
+                title: 'Agent 任务中心',
+                icon: Icons.assignment_outlined,
+                onTap: () => Navigator.push(
+                    context,
+                    MaterialPageRoute(
+                        builder: (_) => const AgentTaskCenterPage()))),
             ..._itemWidget(
                 color: color,
                 title: '助手管理',

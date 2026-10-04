@@ -7,6 +7,21 @@ enum ChatRequestProfile { standard, translation }
 /// 请求对模型推理控制的处理方式。
 enum ChatReasoningPolicy { providerDefault, offIfSupported }
 
+enum ChatFailureStage { prepare, connect, response, decode, unknown }
+
+enum ChatFailureKind {
+  transport,
+  httpStatus,
+  timeout,
+  cancelled,
+  invalidPayload,
+  invalidConfiguration,
+  state,
+  range,
+  type,
+  unknown
+}
+
 int? validateMaxOutputTokensOverride(int? value) {
   if (value != null && value <= 0) {
     throw ArgumentError.value(
@@ -32,6 +47,12 @@ final class ChatRequestOptions {
   final int? maxOutputTokensOverride;
   final ChatSendProgressCallback? onProgress;
 
+  /// null：普通请求最多额外两次；翻译由自身恢复策略负责，避免叠加重试。
+  final int? maxAutoRetries;
+  final Duration retryBaseDelay;
+  final Duration maxRetryDelay;
+  final void Function(ChatRequestRetry retry)? onRetry;
+
   const ChatRequestOptions({
     this.profile = ChatRequestProfile.standard,
     this.reasoningPolicy = ChatReasoningPolicy.providerDefault,
@@ -42,6 +63,10 @@ final class ChatRequestOptions {
     this.suppressReasoningControl = false,
     this.maxOutputTokensOverride,
     this.onProgress,
+    this.maxAutoRetries,
+    this.retryBaseDelay = const Duration(milliseconds: 500),
+    this.maxRetryDelay = const Duration(seconds: 5),
+    this.onRetry,
   }) : assert(
           maxOutputTokensOverride == null || maxOutputTokensOverride > 0,
         );
@@ -56,13 +81,33 @@ final class ChatTransportException implements Exception {
   final String safeCode;
   final String safeMessage;
 
+  /// 已收到成功响应的任意字节，包括尚未组成可见事件的工具分片。
+  final bool responseStarted;
+  final ChatFailureStage failureStage;
+  final ChatFailureKind failureKind;
+
   const ChatTransportException({
     this.statusCode,
     this.retryAfter,
     required this.safeCode,
     required this.safeMessage,
+    this.responseStarted = false,
+    this.failureStage = ChatFailureStage.unknown,
+    this.failureKind = ChatFailureKind.unknown,
   });
 
   @override
   String toString() => 'ChatTransportException($safeCode): $safeMessage';
+}
+
+final class ChatRequestRetry {
+  final int attempt;
+  final int maxRetries;
+  final Duration delay;
+  final String safeCode;
+  const ChatRequestRetry(
+      {required this.attempt,
+      required this.maxRetries,
+      required this.delay,
+      required this.safeCode});
 }

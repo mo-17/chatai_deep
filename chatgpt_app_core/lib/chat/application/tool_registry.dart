@@ -2,6 +2,7 @@ import 'dart:convert';
 
 import 'package:chatgpt_app_core/chat/application/builtin_tools.dart';
 import 'package:chatgpt_app_core/chat/application/web_search_provider.dart';
+import 'package:chatgpt_app_core/chat/domain/local_source_citation.dart';
 import 'package:chatgpt_app_core/chat/domain/message_block.dart';
 import 'package:chatgpt_app_core/model/ai_settings.dart';
 
@@ -12,7 +13,14 @@ class ToolOutcome {
   final String content;
   final List<WebSearchResult> webResults;
 
-  const ToolOutcome({required this.content, this.webResults = const []});
+  /// 只由实际文件读取产生的版本与原文区间，不从模型回答解析生成。
+  final List<LocalSourceCitation> localSources;
+
+  const ToolOutcome({
+    required this.content,
+    this.webResults = const [],
+    this.localSources = const [],
+  });
 }
 
 class ToolRetryPolicy {

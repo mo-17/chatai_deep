@@ -1,9 +1,49 @@
 import 'package:chatgpt_app_core/chat/application/agent_task_session.dart';
+import 'package:chatgpt_app_core/chat/domain/chat_failure_diagnosis.dart';
+import 'package:chatgpt_app_core/chat/domain/chat_request_options.dart';
 import 'package:chatgpt_app_core/widget/agent_task_panel.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 void main() {
+  testWidgets('暂停诊断与详情可明确打开，窄屏无溢出，执行中隐藏修复动作', (tester) async {
+    tester.view.physicalSize = const Size(320, 640);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+    final task = AgentTaskSession(cid: 3, store: _Store());
+    addTearDown(task.dispose);
+    await task.setEnabled(true);
+    await task.begin(userAt: 10, input: '读取资料');
+    await task.pause('检查凭据',
+        diagnosis: ChatFailureDiagnosis.from(const ChatTransportException(
+            statusCode: 401,
+            safeCode: 'authentication_error',
+            safeMessage: 'failed')));
+    var details = 0;
+    var resolutions = 0;
+    Widget app(bool busy) => MaterialApp(
+            home: Scaffold(
+          body: AgentTaskPanel(
+              session: task,
+              busy: busy,
+              onOpen: () {},
+              onResume: () {},
+              onDetails: () => details++,
+              onResolveFailure: () => resolutions++),
+        ));
+    await tester.pumpWidget(app(false));
+    expect(details, 0);
+    expect(resolutions, 0);
+    await tester.tap(find.text('任务详情'));
+    await tester.tap(find.text('检查 AI 服务'));
+    expect(details, 1);
+    expect(resolutions, 1);
+    await tester.pumpWidget(app(true));
+    expect(find.text('检查 AI 服务'), findsNothing);
+    expect(find.text('任务详情'), findsOneWidget);
+    expect(tester.takeException(), isNull);
+  });
   testWidgets('旧会话隐藏面板；停止后显示进度和继续入口，执行中隐藏继续', (tester) async {
     final task = AgentTaskSession(cid: 1, store: _Store());
     addTearDown(task.dispose);
