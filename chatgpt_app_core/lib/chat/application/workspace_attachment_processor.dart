@@ -1,12 +1,13 @@
 import 'dart:convert';
-import 'dart:io';
 
 import 'package:chatgpt_app_core/chat/application/agent_workspace_service.dart';
+import 'package:chatgpt_app_core/chat/application/attachment_batch_budget.dart';
 import 'package:chatgpt_app_core/chat/application/file_processor.dart';
+import 'package:chatgpt_app_core/chat/application/office_text_extractor.dart';
 import 'package:chatgpt_app_core/chat/domain/attachment_processing_limits.dart';
 import 'package:chatgpt_app_core/chat/domain/chat_send_progress.dart';
 import 'package:chatgpt_app_core/chat/domain/message_block.dart';
-import 'package:chatgpt_app_core/util/managed_attachment_store.dart';
+import 'dart:io';
 
 /// 任务附件只发送清单；原文持久保存，由 read_file 分段读取。
 class WorkspaceAttachmentProcessor {
@@ -15,10 +16,13 @@ class WorkspaceAttachmentProcessor {
 
   Future<ProcessedFiles> process(List<String> paths,
       {required AttachmentProcessingLimits limits,
+      AttachmentBatchBudget? batchBudget,
       ChatSendProgressCallback? onProgress,
       bool Function()? isCancelled}) async {
     final metas = <FileMetadata>[];
     final diagnostics = <FileProcessingDiagnostic>[];
+    final budget = batchBudget ?? AttachmentBatchBudget(limits: limits);
+    await budget.preflightPaths(paths, isCancelled: isCancelled);
     for (var index = 0; index < paths.length; index++) {
       if (isCancelled?.call() == true) {
         throw const AttachmentProcessingCancelledException();
@@ -31,19 +35,45 @@ class WorkspaceAttachmentProcessor {
       final maxBytes = pdf
           ? FileProcessor.defaultPdfLimit
           : limits.normalized.maxTextFileBytes;
-      final record = await workspace.importPath(path, maxBytes: maxBytes);
+      final snapshot =
+          await budget.snapshotFile(File(path), maxBytes: maxBytes);
+      final separator = metas.isEmpty ? '' : '\n\n';
+      var reservedCharacters = 0;
+      final record = await workspace.importBytes(snapshot.bytes,
+          name: name, sourceKey: path, maxBytes: maxBytes,
+          validateParsed: (fullText, actualBytes, manifestPreview) {
+        if (isCancelled?.call() == true) {
+          throw const AttachmentProcessingCancelledException();
+        }
+        if (actualBytes != snapshot.bytes.length) {
+          throw const FormatException('工作区附件快照字节不一致');
+        }
+        budget.consumeText(fullText);
+        final manifest = '$separator${describe(manifestPreview)}';
+        budget.consumeText(manifest);
+        reservedCharacters = manifest.length;
+      }, onWarnings: (warnings) {
+        diagnostics.addAll(warnings.map((warning) => FileProcessingDiagnostic(
+            filename: name,
+            kind: FileProcessingDiagnosticKind.textFallback,
+            message: warning)));
+      });
+      final manifest = describe(record.toJson());
+      budget.replaceTextReservation(reservedCharacters, '$separator$manifest');
       if (isCancelled?.call() == true) {
         throw const AttachmentProcessingCancelledException();
       }
-      final managedPath = await ManagedAttachmentStore.importFile(File(path),
-          maxBytes: maxBytes);
       metas.add(FileMetadata(
           name: record.name,
-          path: managedPath,
+          path: snapshot.path,
           size: record.sizeBytes,
-          mime: pdf ? 'application/pdf' : 'text/plain',
+          mime: pdf
+              ? 'application/pdf'
+              : OfficeTextExtractor.isOfficeFile(name)
+                  ? OfficeTextExtractor.mimeFor(name)
+                  : 'text/plain',
           workspaceFileId: record.id,
-          extractedText: describe(record.toJson())));
+          extractedText: manifest));
       if (record.characterCount == 0) {
         diagnostics.add(FileProcessingDiagnostic(
             filename: record.name,

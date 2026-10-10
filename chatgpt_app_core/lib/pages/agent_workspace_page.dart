@@ -73,25 +73,30 @@ class _AgentWorkspacePageState extends State<AgentWorkspacePage> {
 
   Future<void> _import() async {
     try {
-      final picked = await _transfer.pickFile(
-          dialogTitle: '导入工作区文件',
-          allowedExtensions: [
-            'txt',
-            'md',
-            'markdown',
-            'csv',
-            'json',
-            'log',
-            'pdf'
-          ]);
+      final picked =
+          await _transfer.pickFile(dialogTitle: '导入工作区文件', allowedExtensions: [
+        'txt',
+        'md',
+        'markdown',
+        'csv',
+        'json',
+        'log',
+        'doc',
+        'docx',
+        'xls',
+        'xlsx',
+        'pdf'
+      ]);
       if (picked == null || !mounted) return;
       // Files Provider 可能只返回 bytes，不依赖平台路径的写权限。
-      if (picked.name.toLowerCase().endsWith('.pdf')) {
-        if (picked.path == null) {
-          throw const FormatException('请通过对话附件入口导入此 PDF');
-        }
-        await widget.workspace
-            .importPath(picked.path!, maxBytes: widget.maxImportBytes);
+      final extension = picked.name.split('.').last.toLowerCase();
+      final warnings = <String>[];
+      if (const {'pdf', 'doc', 'docx', 'xls', 'xlsx'}.contains(extension)) {
+        await widget.workspace.importBytes(picked.bytes,
+            name: picked.name,
+            maxBytes: widget.maxImportBytes,
+            sourceKey: picked.path,
+            onWarnings: warnings.addAll);
       } else {
         await widget.workspace.importText(
             name: picked.name,
@@ -100,7 +105,9 @@ class _AgentWorkspacePageState extends State<AgentWorkspacePage> {
             maxBytes: widget.maxImportBytes);
       }
       await _reload();
-      _notice('文件已导入，启用对话任务模式后可按需读取');
+      _notice(warnings.isEmpty
+          ? '文件已导入，启用对话任务模式后可按需读取'
+          : '文件已导入；${warnings.join('；')}');
     } catch (e) {
       _notice('导入失败：$e');
     }

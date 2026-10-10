@@ -892,22 +892,19 @@ class _StoryRoomPageState extends State<StoryRoomPage> {
       onStop: _stopGeneration,
       showWebSearch: settings.webSearchConfigured,
       webSearchEnabled: settings.webSearchEnabled,
-      onToggleWebSearch: _canEditRoomWebSearch
-          ? () => unawaited(_toggleWebSearch())
-          : null,
+      onToggleWebSearch:
+          _canEditRoomWebSearch ? () => unawaited(_toggleWebSearch()) : null,
       pendingImages: _pendingImages,
       imagesEnabled: capabilities.image,
       imagesDisabledReason: '当前模型不支持图片，请切换多模态模型',
-      onImagesPicked: (paths) => setState(() => _pendingImages =
-          StoryRoomAttachmentPolicy.normalizePaths(paths,
-              limit: StoryRoomAttachmentPolicy.maxImages)),
+      onImagesPicked: (paths) => setState(() =>
+          _pendingImages = StoryRoomAttachmentPolicy.normalizePaths(paths)),
       onRemoveImage: (index) => setState(() {
         _pendingImages = List<String>.from(_pendingImages)..removeAt(index);
       }),
       pendingFiles: _pendingFiles,
-      onFilesPicked: (paths) => setState(() => _pendingFiles =
-          StoryRoomAttachmentPolicy.normalizePaths(paths,
-              limit: StoryRoomAttachmentPolicy.maxFiles)),
+      onFilesPicked: (paths) => setState(() =>
+          _pendingFiles = StoryRoomAttachmentPolicy.normalizePaths(paths)),
       onRemoveFile: (index) => setState(() {
         _pendingFiles = List<String>.from(_pendingFiles)..removeAt(index);
       }),
@@ -3037,18 +3034,48 @@ class _StoryRoomPageState extends State<StoryRoomPage> {
     if (mounted) {
       setState(() {
         _generationStatus = '准备附件...';
+      });
+    }
+    late final StoryRoomAttachmentBundle attachmentBundle;
+    try {
+      attachmentBundle = await StoryRoomAttachmentService.prepare(
+        imagePaths: pendingImages,
+        filePaths: pendingFiles,
+        capabilities: capabilities,
+        limits: settings.attachmentProcessingLimits,
+        isCancelled: () => _stopRequested || !mounted,
+      );
+      if (_stopRequested || !mounted) {
+        if (mounted) {
+          setState(() {
+            _sending = false;
+            _generationStatus = '';
+            _stopRequested = false;
+          });
+        }
+        return;
+      }
+    } catch (error) {
+      if (mounted) {
+        final stopped = _stopRequested;
+        setState(() {
+          _sending = false;
+          _generationStatus = '';
+          _stopRequested = false;
+        });
+        if (!stopped) HiDialog.showSnackBar(context, '附件检查失败：$error');
+      }
+      return;
+    }
+    // 仅在整轮附件通过检查后清理输入，超限或停止仍可删减后重发。
+    if (mounted) {
+      setState(() {
         _inputText = '';
         _pendingImages = [];
         _pendingFiles = [];
       });
     }
     _inputController.clear();
-    final attachmentBundle = await StoryRoomAttachmentService.prepare(
-      imagePaths: pendingImages,
-      filePaths: pendingFiles,
-      capabilities: capabilities,
-      limits: settings.attachmentProcessingLimits,
-    );
     final previousMessages = List<StoryMessageModel>.from(_messages);
     final userMessage = StoryMessageModel(
       roomId: widget.room.id!,
@@ -3147,13 +3174,18 @@ class _StoryRoomPageState extends State<StoryRoomPage> {
       HiDBManager.getAccountHash() == _accountHashAtOpen;
 
   bool get _canEditRoomWebSearch =>
-      !_loading && !_sending && !_savingWebSearch &&
-      _dao != null && widget.room.id != null && _roomAccountCurrent;
+      !_loading &&
+      !_sending &&
+      !_savingWebSearch &&
+      _dao != null &&
+      widget.room.id != null &&
+      _roomAccountCurrent;
 
   String get _roomWebSearchLabel {
     final override = widget.room.webSearchEnabled;
     if (override != null) return override ? '仅此房间开启' : '仅此房间关闭';
-    final enabled = context.read<AISettingsProvider>().settings.webSearchEnabled;
+    final enabled =
+        context.read<AISettingsProvider>().settings.webSearchEnabled;
     return '跟随全局默认（当前${enabled ? '开启' : '关闭'}）';
   }
 

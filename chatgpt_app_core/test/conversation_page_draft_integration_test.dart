@@ -10,6 +10,7 @@ import 'package:chatgpt_app_core/db/conversation_dao.dart';
 import 'package:chatgpt_app_core/db/hi_db_manager.dart';
 import 'package:chatgpt_app_core/db/message_dao.dart';
 import 'package:chatgpt_app_core/model/ai_settings.dart';
+import 'package:chatgpt_app_core/model/ai_provider.dart';
 import 'package:chatgpt_app_core/model/conversation_model.dart';
 import 'package:chatgpt_app_core/pages/conversation_page.dart';
 import 'package:chatgpt_app_core/provider/ai_settings_provider.dart';
@@ -333,6 +334,76 @@ void main() {
     await finishFuture(tester, drafts.load());
   });
 
+  testWidgets('本轮累计文字超限保留输入和附件，不保存消息或发网络请求', (tester) async {
+    final ai = settings.settings.clone()
+      ..mode = AIMode.local
+      ..attachmentTotalMaxChars = 1024
+      ..attachmentTextMaxChars = 2000
+      ..activeProviderId = 'batch-test'
+      ..providers = [
+        AiProvider(
+          id: 'batch-test',
+          name: '附件预算测试',
+          type: 'openai',
+          enabled: true,
+          apiHost: 'https://example.invalid',
+          apiKey: 'fixture-key',
+          selectedModelId: 'gpt-4o',
+          models: [AiModel(id: 'gpt-4o')],
+        ),
+      ];
+    await tester.runAsync(() => settings.update(ai));
+    final files = await tester.runAsync(() async {
+      final paths = <String>[];
+      for (var i = 0; i < 2; i++) {
+        final file = File('${temporary.path}/正文$i.txt');
+        await file.writeAsString(List.filled(600, '文').join());
+        paths.add(file.path);
+      }
+      return paths;
+    });
+    final model = conversation(110, title: '附件累计预算验收');
+    await openPage(tester, model);
+    final previousHttp = HttpOverrides.current;
+    final noNetwork = _RejectHttpOverrides();
+    HttpOverrides.global = noNetwork;
+    addTearDown(() => HttpOverrides.global = previousHttp);
+    tester
+        .widget<MessageInputWidget>(find.byType(MessageInputWidget))
+        .onFilesPicked!(files!);
+    await tester.enterText(find.byType(TextField), '保留这条待发送问题');
+    try {
+      // 真实文件流必须在真实异步区运行，避免 FakeAsync 挂起文件流的检查点。
+      await tester.runAsync(() async {
+        tester
+            .widget<MessageInputWidget>(find.byType(MessageInputWidget))
+            .onSend!();
+        await Future<void>.delayed(const Duration(milliseconds: 200));
+      });
+      await letIoFinish(tester, rounds: 10);
+      final input =
+          tester.widget<MessageInputWidget>(find.byType(MessageInputWidget));
+      expect(input.controller!.text, '保留这条待发送问题');
+      expect(input.pendingFiles, hasLength(2));
+      expect(input.isStreaming, isFalse);
+      expect(find.textContaining('总字数'), findsWidgets);
+      expect(noNetwork.clients, 0);
+      final count = await tester.runAsync(() async =>
+          (await MessageDao.create(storage, cid: model.cid)).getMessageCount());
+      expect(count, 0);
+      final saved = await finishFuture(tester, draftFor(model.cid).load());
+      expect(saved!.text, '保留这条待发送问题');
+      expect(saved.filePaths, hasLength(2));
+    } finally {
+      // dispose 也读写附件快照，须在真实异步区完成并排空保存队列。
+      await tester.runAsync(() async {
+        await tester.pumpWidget(const SizedBox.shrink());
+        await draftFor(model.cid).load();
+      });
+    }
+    expect(tester.takeException(), isNull);
+  });
+
   testWidgets('新会话草稿自动建立列表入口，同时不伪造历史消息', (tester) async {
     final model = conversation(102);
     await openPage(tester, model);
@@ -386,6 +457,16 @@ void main() {
         directoryResolver: () async => temporary);
     expect(await finishFuture(tester, drafts.load()), isNull);
   });
+}
+
+final class _RejectHttpOverrides extends HttpOverrides {
+  int clients = 0;
+
+  @override
+  HttpClient createHttpClient(SecurityContext? context) {
+    clients++;
+    throw StateError('附件检查失败前不得发出 HTTP 请求');
+  }
 }
 
 final class _GuestStorage implements TokenStorage {

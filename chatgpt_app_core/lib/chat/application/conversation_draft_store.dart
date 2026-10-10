@@ -115,9 +115,7 @@ class ConversationDraftStore {
           json['text'] is! String ||
           (json['text'] as String).length > maxTextCharacters ||
           json['images'] is! List ||
-          json['files'] is! List ||
-          (json['images'] as List).length > 4 ||
-          (json['files'] as List).length > 10) {
+          json['files'] is! List) {
         return null;
       }
       var missing = 0;
@@ -193,9 +191,7 @@ class ConversationDraftStore {
     List<String> images = const [],
     List<String> files = const [],
   }) {
-    if (text.length > maxTextCharacters ||
-        images.length > 4 ||
-        files.length > 10) {
+    if (text.length > maxTextCharacters) {
       return Future.error(const DraftStorageException('草稿内容超出保存上限'));
     }
     final imageSnapshot = List<String>.of(images);

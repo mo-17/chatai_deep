@@ -1,6 +1,7 @@
 import 'dart:async';
 
 import 'package:chatgpt_app_core/chat/application/file_processor.dart';
+import 'package:chatgpt_app_core/chat/application/office_text_extractor.dart';
 import 'package:chatgpt_app_core/chat/domain/attachment_processing_limits.dart';
 import 'package:chatgpt_app_core/chat/domain/chat_attachments.dart';
 import 'package:chatgpt_app_core/chat/domain/chat_send_progress.dart';
@@ -67,6 +68,17 @@ final class RetryAttachmentRestorer {
             .where((value) => value.isNotEmpty),
     ];
     final diagnostics = <FileProcessingDiagnostic>[];
+    for (final file in files) {
+      if (OfficeTextExtractor.isOfficeFile(file.name) &&
+          file.extractedText == null &&
+          !persisted.extraText.contains('[附件「${file.name}」内容开始]') &&
+          !persisted.nativeFiles.any((part) => part.filename == file.name)) {
+        // 旧消息只有路径时不能假装模型已经读过 Office 正文，也不重新读取
+        // 用户未授权的历史路径；原提问与回复保留，明确重新选择后再发送。
+        throw RetryAttachmentException(
+            '附件「${file.name}」没有保存的解析正文，请重新选择该文件后发送；原提问和回复已保留');
+      }
+    }
     final pdfs = files
         .where((file) =>
             file.extractedText == null &&

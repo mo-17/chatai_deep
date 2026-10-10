@@ -3,6 +3,7 @@ import 'dart:io';
 
 import 'package:chatgpt_app_core/chat/domain/agent_workspace_file.dart';
 import 'package:chatgpt_app_core/chat/domain/local_source_citation.dart';
+import 'package:chatgpt_app_core/chat/application/office_text_extractor.dart';
 import 'package:chatgpt_app_core/db/agent_workspace_dao.dart';
 import 'package:chatgpt_app_core/db/hi_db_manager.dart';
 import 'package:chatgpt_app_core/util/bounded_file_reader.dart';
@@ -39,7 +40,11 @@ class AgentWorkspaceService {
       dao.revisions(fileId);
 
   Future<AgentWorkspaceFile> importPath(String path,
-      {required int maxBytes}) async {
+      {required int maxBytes,
+      void Function(List<String>)? onWarnings,
+      void Function(String fullText, int byteLength,
+              Map<String, dynamic> manifestPreview)?
+          validateParsed}) async {
     _validateByteLimit(maxBytes);
     if (await FileSystemEntity.type(path, followLinks: false) !=
         FileSystemEntityType.file) {
@@ -50,7 +55,30 @@ class AgentWorkspaceService {
     final bytes = await readFileBytesBounded(File(path),
         maxBytes: maxBytes, label: '工作区文件');
     final parsed = await compute(_parseBytes, {'bytes': bytes, 'name': name});
+    _validateParsedInput(name, parsed, bytes.length, validateParsed);
+    onWarnings?.call((parsed['warnings'] as List? ?? const []).cast<String>());
     return _saveInput(name, parsed, path, bytes.length);
+  }
+
+  /// Files Provider 只提供字节时也走相同解析器，不把 Office 二进制当 UTF-8。
+  Future<AgentWorkspaceFile> importBytes(Uint8List bytes,
+      {required String name,
+      required int maxBytes,
+      String? sourceKey,
+      void Function(List<String>)? onWarnings,
+      void Function(String fullText, int byteLength,
+              Map<String, dynamic> manifestPreview)?
+          validateParsed}) async {
+    _validateName(name, output: false);
+    _validateByteLimit(maxBytes);
+    if (bytes.length > maxBytes) {
+      throw const FormatException('工作区文件超过导入字节上限');
+    }
+    final parsed = await compute(_parseBytes, {'bytes': bytes, 'name': name});
+    _validateParsedInput(name, parsed, bytes.length, validateParsed);
+    onWarnings?.call((parsed['warnings'] as List? ?? const []).cast<String>());
+    return _saveInput(
+        name, parsed, sourceKey ?? 'inline-bytes:$name', bytes.length);
   }
 
   Future<AgentWorkspaceFile> importText({
@@ -79,6 +107,45 @@ class AgentWorkspaceService {
         sections: (parsed['sections'] as List).cast<Map<String, dynamic>>(),
         sizeBytes: bytes,
       );
+
+  /// 验证发生在 DAO 写入前；整数位数保守预留，写入后按真实清单释放差额。
+  void _validateParsedInput(String name, Map<String, dynamic> parsed, int bytes,
+      void Function(String, int, Map<String, dynamic>)? validateParsed) {
+    if (validateParsed == null) return;
+    final content = parsed['content'] as String;
+    final sections = (parsed['sections'] as List).cast<Map<String, dynamic>>();
+    final preview = AgentWorkspaceFile(
+        id: 9223372036854775807,
+        cid: dao.cid,
+        name: name,
+        kind: 'input',
+        revision: 1,
+        characterCount: content.length,
+        lineCount: content.isEmpty ? 0 : '\n'.allMatches(content).length + 1,
+        pageCount: (parsed['pageTexts'] as List).length,
+        sizeBytes: bytes,
+        updatedAt: 9223372036854775807,
+        createdAt: 9223372036854775807,
+        sectionCount: sections.length,
+        sections: sections.take(40).map((section) {
+          final title = section['title'] as String;
+          var end = title.length.clamp(0, 80);
+          if (end < title.length &&
+              end > 0 &&
+              title.codeUnitAt(end - 1) >= 0xd800 &&
+              title.codeUnitAt(end - 1) <= 0xdbff &&
+              title.codeUnitAt(end) >= 0xdc00 &&
+              title.codeUnitAt(end) <= 0xdfff) {
+            end--;
+          }
+          return {
+            ...section,
+            'title': title.substring(0, end),
+            if (end < title.length) 'titleTruncated': true,
+          };
+        }).toList());
+    validateParsed(content, bytes, preview.toJson());
+  }
 
   Future<AgentWorkspaceFile> writeFile({
     int? fileId,
@@ -297,6 +364,13 @@ String _normalize(String text) => text
 Map<String, dynamic> _parseBytes(Map<String, dynamic> input) {
   final bytes = input['bytes'] as Uint8List;
   final name = input['name'] as String;
+  if (OfficeTextExtractor.isOfficeFile(name)) {
+    final extraction = OfficeTextExtractor.extractBytes(bytes, filename: name);
+    return {
+      ..._parseText({'content': extraction.text}),
+      'warnings': extraction.warnings,
+    };
+  }
   if (name.toLowerCase().endsWith('.pdf')) {
     final document = PdfDocument(inputBytes: bytes);
     try {

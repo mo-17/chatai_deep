@@ -66,7 +66,14 @@ void main() {
       await fixture.startHeldServer(tester);
       await fixture.open(tester, withProgress: true);
       await fixture.expectPartial(tester);
-      await fixture.tick(tester, count: 25);
+      // 后台许可通过真实 I/O 返回，通知计时器可能运行在 real-async zone；
+      // 等待实际更新，不能只推进不足一秒的 fake clock。
+      for (var attempt = 0;
+          attempt < 150 &&
+              !fixture.calls.any((call) => call.method == 'update');
+          attempt++) {
+        await fixture.tick(tester, count: 1);
+      }
       final updates = fixture.calls.where((call) => call.method == 'update');
       expect(updates, isNotEmpty);
       final latest = updates.last.arguments as Map;

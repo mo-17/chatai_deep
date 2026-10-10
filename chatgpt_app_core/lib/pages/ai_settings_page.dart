@@ -433,7 +433,7 @@ class _AISettingsPageState extends State<AISettingsPage> {
           key: const ValueKey('attachment_text_chars_setting'),
           title: const Text('单个附件文字上限'),
           subtitle: Text(
-              '${s.attachmentProcessingLimits.maxTextChars} 字符\n文本文件、PDF 抽文本均适用',
+              '${s.attachmentProcessingLimits.maxTextChars} 字符\n文本、Word、Excel、PDF 抽文本均适用',
               style: tt.bodySmall?.copyWith(color: cs.onSurfaceVariant)),
           trailing:
               Icon(Icons.edit_rounded, size: 18, color: cs.onSurfaceVariant),
@@ -445,13 +445,37 @@ class _AISettingsPageState extends State<AISettingsPage> {
           key: const ValueKey('attachment_text_file_size_setting'),
           title: const Text('文本文件大小上限'),
           subtitle: Text(
-              '${_formatAttachmentMiB(s.attachmentProcessingLimits.maxTextFileBytes)} MiB\n读取文本文件前检查文件大小',
+              '${_formatAttachmentMiB(s.attachmentProcessingLimits.maxTextFileBytes)} MiB\n读取文本、Word、Excel 文件前检查大小',
               style: tt.bodySmall?.copyWith(color: cs.onSurfaceVariant)),
           trailing:
               Icon(Icons.edit_rounded, size: 18, color: cs.onSurfaceVariant),
           contentPadding:
               const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
           onTap: () => _editAttachmentLimit(fileSize: true),
+        ),
+        ListTile(
+          key: const ValueKey('attachment_total_file_size_setting'),
+          title: const Text('每轮附件总大小上限'),
+          subtitle: Text(
+              '${_formatAttachmentMiB(s.attachmentProcessingLimits.maxTotalFileBytes)} MiB\n数量不限；图片和文件合计按大小检查',
+              style: tt.bodySmall?.copyWith(color: cs.onSurfaceVariant)),
+          trailing:
+              Icon(Icons.edit_rounded, size: 18, color: cs.onSurfaceVariant),
+          contentPadding:
+              const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
+          onTap: () => _editAttachmentLimit(fileSize: true, total: true),
+        ),
+        ListTile(
+          key: const ValueKey('attachment_total_chars_setting'),
+          title: const Text('每轮附件总字数上限'),
+          subtitle: Text(
+              '${s.attachmentProcessingLimits.maxTotalTextChars} 字符\n正文与附件标记合计；任务模式按本轮导入原文计',
+              style: tt.bodySmall?.copyWith(color: cs.onSurfaceVariant)),
+          trailing:
+              Icon(Icons.edit_rounded, size: 18, color: cs.onSurfaceVariant),
+          contentPadding:
+              const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
+          onTap: () => _editAttachmentLimit(fileSize: false, total: true),
         ),
         ListTile(
           title: const Text('采样温度'),
@@ -503,18 +527,26 @@ class _AISettingsPageState extends State<AISettingsPage> {
     await _persistSettings(next);
   }
 
-  Future<void> _editAttachmentLimit({required bool fileSize}) async {
+  Future<void> _editAttachmentLimit(
+      {required bool fileSize, bool total = false}) async {
     final limits = _store.settings.attachmentProcessingLimits;
     final value = await showDialog<int>(
       context: context,
       builder: (_) => _AttachmentLimitDialog(
         fileSize: fileSize,
-        initialValue: fileSize ? limits.maxTextFileBytes : limits.maxTextChars,
+        total: total,
+        initialValue: total
+            ? (fileSize ? limits.maxTotalFileBytes : limits.maxTotalTextChars)
+            : (fileSize ? limits.maxTextFileBytes : limits.maxTextChars),
       ),
     );
     if (value == null || !mounted) return;
     final next = _store.settings.clone();
-    if (fileSize) {
+    if (total && fileSize) {
+      next.attachmentTotalMaxFileBytes = value;
+    } else if (total) {
+      next.attachmentTotalMaxChars = value;
+    } else if (fileSize) {
       next.attachmentTextMaxFileBytes = value;
     } else {
       next.attachmentTextMaxChars = value;
@@ -928,10 +960,12 @@ String _formatAttachmentMiB(int bytes) =>
 
 class _AttachmentLimitDialog extends StatefulWidget {
   final bool fileSize;
+  final bool total;
   final int initialValue;
 
   const _AttachmentLimitDialog({
     required this.fileSize,
+    this.total = false,
     required this.initialValue,
   });
 
@@ -940,10 +974,39 @@ class _AttachmentLimitDialog extends StatefulWidget {
 }
 
 class _AttachmentLimitDialogState extends State<_AttachmentLimitDialog> {
-  static const _minMiB =
-      AttachmentProcessingLimits.minTextFileBytes ~/ (1024 * 1024);
-  static const _maxMiB =
-      AttachmentProcessingLimits.maximumTextFileBytes ~/ (1024 * 1024);
+  int get _minMiB =>
+      (widget.total
+          ? AttachmentProcessingLimits.minTotalFileBytes
+          : AttachmentProcessingLimits.minTextFileBytes) ~/
+      (1024 * 1024);
+  int get _maxMiB =>
+      (widget.total
+          ? AttachmentProcessingLimits.maximumTotalFileBytes
+          : AttachmentProcessingLimits.maximumTextFileBytes) ~/
+      (1024 * 1024);
+  int get _minChars => widget.total
+      ? AttachmentProcessingLimits.minTotalTextChars
+      : AttachmentProcessingLimits.minTextChars;
+  int get _maxChars => widget.total
+      ? AttachmentProcessingLimits.maximumTotalTextChars
+      : AttachmentProcessingLimits.maximumTextChars;
+  int get _defaultValue => widget.total
+      ? (widget.fileSize
+          ? AttachmentProcessingLimits.defaultMaxTotalFileBytes
+          : AttachmentProcessingLimits.defaultMaxTotalTextChars)
+      : (widget.fileSize
+          ? AttachmentProcessingLimits.defaultMaxTextFileBytes
+          : AttachmentProcessingLimits.defaultMaxTextChars);
+  String get _title => widget.total
+      ? (widget.fileSize ? '每轮附件总大小上限' : '每轮附件总字数上限')
+      : (widget.fileSize ? '文本文件大小上限' : '单个附件文字上限');
+  String get _fieldKey => widget.total
+      ? (widget.fileSize
+          ? 'attachment_total_file_size_field'
+          : 'attachment_total_chars_field')
+      : (widget.fileSize
+          ? 'attachment_text_file_size_field'
+          : 'attachment_text_chars_field');
   final _formKey = GlobalKey<FormState>();
   late final TextEditingController _controller = TextEditingController(
     text: widget.fileSize
@@ -955,14 +1018,15 @@ class _AttachmentLimitDialogState extends State<_AttachmentLimitDialog> {
     final trimmed = text?.trim() ?? '';
     if (!widget.fileSize) {
       final value = int.tryParse(trimmed);
-      return value != null &&
-              value >= AttachmentProcessingLimits.minTextChars &&
-              value <= AttachmentProcessingLimits.maximumTextChars
+      return value != null && value >= _minChars && value <= _maxChars
           ? value
           : null;
     }
     final value = double.tryParse(trimmed);
-    if (value == null || !value.isFinite || value < _minMiB || value > _maxMiB) {
+    if (value == null ||
+        !value.isFinite ||
+        value < _minMiB ||
+        value > _maxMiB) {
       return null;
     }
     return (value * 1024 * 1024).round();
@@ -976,7 +1040,7 @@ class _AttachmentLimitDialogState extends State<_AttachmentLimitDialog> {
 
   @override
   Widget build(BuildContext context) => AlertDialog(
-        title: Text(widget.fileSize ? '文本文件大小上限' : '单个附件文字上限'),
+        title: Text(_title),
         content: SingleChildScrollView(
           child: Form(
             key: _formKey,
@@ -985,9 +1049,7 @@ class _AttachmentLimitDialogState extends State<_AttachmentLimitDialog> {
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
                 TextFormField(
-                  key: ValueKey(widget.fileSize
-                      ? 'attachment_text_file_size_field'
-                      : 'attachment_text_chars_field'),
+                  key: ValueKey(_fieldKey),
                   controller: _controller,
                   autofocus: true,
                   keyboardType:
@@ -997,7 +1059,7 @@ class _AttachmentLimitDialogState extends State<_AttachmentLimitDialog> {
                     labelText: widget.fileSize ? '文件大小（MiB）' : '文字上限（字符）',
                     helperText: widget.fileSize
                         ? '范围：$_minMiB～$_maxMiB MiB，可输入小数'
-                        : '范围：1024～1048576 字符',
+                        : '范围：$_minChars～$_maxChars 字符',
                     border: AppVisualTheme.of(context).isAnime
                         ? null
                         : const OutlineInputBorder(),
@@ -1006,12 +1068,19 @@ class _AttachmentLimitDialogState extends State<_AttachmentLimitDialog> {
                       ? null
                       : widget.fileSize
                           ? '请输入 $_minMiB～$_maxMiB 之间的大小（MiB）'
-                          : '请输入 1024～1048576 之间的整数',
+                          : '请输入 $_minChars～$_maxChars 之间的整数',
                 ),
                 const SizedBox(height: 12),
-                Text(widget.fileSize
-                    ? '适用于 TXT、Markdown 等文本文件。图片和原生 PDF 上传仍按模型限制处理。'
-                    : '适用于文本文件和 PDF 抽取的文字。超出时截取前面的内容，并显示截断提示。'),
+                if (widget.total) ...[
+                  Text(widget.fileSize
+                      ? '附件数量不限。每轮图片和文件的原始大小合计不得超过此上限。'
+                      : '附件数量不限。每轮抽取正文及附件标记合计按字符检查；任务模式按本轮导入原文计。'),
+                  const SizedBox(height: 8),
+                  const Text('图片和原生 PDF 不计入字数，仍受每轮总大小、模型能力和「应用输入预算」限制。'),
+                ] else
+                  Text(widget.fileSize
+                      ? '适用于文本、Word、Excel 文件。图片和原生 PDF 上传仍按模型限制处理。'
+                      : '适用于文本、Word、Excel 和 PDF 抽取的文字。超出时截取前面的内容，并显示截断提示。'),
                 const SizedBox(height: 8),
                 const Text('本轮问题、附件和历史合计仍受「应用输入预算」限制。'),
               ],
@@ -1022,9 +1091,8 @@ class _AttachmentLimitDialogState extends State<_AttachmentLimitDialog> {
           TextButton(
             onPressed: () {
               _controller.text = widget.fileSize
-                  ? _formatAttachmentMiB(
-                      AttachmentProcessingLimits.defaultMaxTextFileBytes)
-                  : AttachmentProcessingLimits.defaultMaxTextChars.toString();
+                  ? _formatAttachmentMiB(_defaultValue)
+                  : _defaultValue.toString();
               _formKey.currentState?.validate();
             },
             child: const Text('恢复默认'),

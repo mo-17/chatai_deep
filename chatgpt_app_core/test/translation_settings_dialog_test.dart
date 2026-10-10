@@ -818,7 +818,12 @@ AISettings _settings({String apiHost = 'https://example.test/v1'}) =>
           apiHost: apiHost,
           enabled: true,
           selectedModelId: 'deepseek-v4-flash',
-          models: [AiModel(id: 'deepseek-v4-flash')],
+          // 与 settings.clone() 补全后的模型清单一致，避免 fake fingerprint
+          // 因预设迁移变化而把已有验证记录误判为另一个配置。
+          models: [
+            AiModel(id: 'deepseek-v4-flash'),
+            AiModel(id: 'deepseek-flash'),
+          ],
         ),
         AiProvider(
           id: 'custom',

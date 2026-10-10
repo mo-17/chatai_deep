@@ -96,6 +96,30 @@ void main() {
     expect(restored.missingAttachmentCount, 0);
   });
 
+  test('超过旧10文件4图片的草稿全部保存，删除原文件后仍能恢复', () async {
+    final files = <String>[];
+    final images = <String>[];
+    for (var i = 0; i < 16; i++) {
+      files.add((await pick('正文$i.txt', utf8.encode('第$i份正文'))).path);
+    }
+    for (var i = 0; i < 7; i++) {
+      images.add((await pick('图片$i.png', [i + 1])).path);
+    }
+    final saved =
+        await store().save(text: '附件数量不限', images: images, files: files);
+    expect(saved!.filePaths, hasLength(16));
+    expect(saved.imagePaths, hasLength(7));
+    await picker.delete(recursive: true);
+    await picker.create();
+    final restored = await store().load();
+    expect(restored!.filePaths, saved.filePaths);
+    expect(restored.imagePaths, saved.imagePaths);
+    expect(restored.missingAttachmentCount, 0);
+    for (var i = 0; i < restored.filePaths.length; i++) {
+      expect(await File(restored.filePaths[i]).readAsString(), '第$i份正文');
+    }
+  });
+
   test('不同内容的同名附件不覆盖；已经托管的路径可以继续保存', () async {
     final first = await pick('same.txt', [1]);
     final saved = await store().save(text: '一', files: [first.path]);

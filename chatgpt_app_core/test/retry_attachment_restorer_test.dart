@@ -66,9 +66,12 @@ void main() {
     expect(fallback.attachments.extraText, '旧文件正文');
   });
 
-  test('降低配置不会重截断旧提问保存的正文或读取旧路径', () async {
+  test('降低单文件和整轮配置不会重截断旧提问保存的正文或读取旧路径', () async {
     const limits = AttachmentProcessingLimits(
-        maxTextChars: 1024, maxTextFileBytes: 1024 * 1024);
+        maxTextChars: 1024,
+        maxTextFileBytes: 1024 * 1024,
+        maxTotalTextChars: 1024,
+        maxTotalFileBytes: 1024 * 1024);
     final original = 'SAVED_START${'n' * 5000}SAVED_END';
     final extracted = 'FILE_START${'f' * 6000}FILE_END';
     final files = [

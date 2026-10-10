@@ -346,14 +346,6 @@ class _MessageInputWidgetState extends State<MessageInputWidget> {
   Future<void> _pickImage(ImageSource source) async {
     if (!widget.editingEnabled) return;
     final revision = _editingRevision;
-    if (widget.pendingImages.length >= 4) {
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('最多选择 4 张图片')),
-        );
-      }
-      return;
-    }
     try {
       final picked = await _picker.pickImage(
         source: source,
@@ -389,21 +381,11 @@ class _MessageInputWidgetState extends State<MessageInputWidget> {
   bool get _showSendButton =>
       _showSend || _hasPendingImages || _hasPendingFiles || widget.isStreaming;
 
-  /// 最多可同时携带的文件数（与下游 FileProcessor 处理多文件同口径）。
-  static const int _maxFiles = 10;
-
   Future<void> _onFileTap() async {
     if (!widget.editingEnabled) return;
     final revision = _editingRevision;
-    final remaining = _maxFiles - widget.pendingFiles.length;
-    if (remaining <= 0) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('最多选择 $_maxFiles 个文件')),
-      );
-      return;
-    }
     try {
-      // allowMultiple：一次可勾选多个文件；再按剩余配额截断并去重。
+      // 不按数量截断；发送前按整轮附件大小和解析字数检查。
       final result = await FilePicker.pickFiles(
         type: FileType.custom,
         allowedExtensions: FileProcessor.pickerExtensions,
@@ -425,14 +407,7 @@ class _MessageInputWidgetState extends State<MessageInputWidget> {
         picked.add(p);
       }
       if (picked.isEmpty) return;
-      final accepted =
-          picked.length > remaining ? picked.sublist(0, remaining) : picked;
-      widget.onFilesPicked?.call([...widget.pendingFiles, ...accepted]);
-      if (accepted.length < picked.length) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('最多选择 $_maxFiles 个文件，多余的已忽略')),
-        );
-      }
+      widget.onFilesPicked?.call([...widget.pendingFiles, ...picked]);
     } catch (e) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
@@ -641,6 +616,7 @@ class _MessageInputWidgetState extends State<MessageInputWidget> {
                             File(widget.pendingImages[i]),
                             width: 48,
                             height: 48,
+                            cacheWidth: 144,
                             fit: BoxFit.cover,
                           ),
                         ),
@@ -683,6 +659,7 @@ class _MessageInputWidgetState extends State<MessageInputWidget> {
                         File(widget.pendingImages[i]),
                         width: 48,
                         height: 48,
+                        cacheWidth: 144,
                         fit: BoxFit.cover,
                       ),
                     ),
@@ -717,9 +694,7 @@ class _MessageInputWidgetState extends State<MessageInputWidget> {
   Widget _buildFileBar({bool isAnime = false}) {
     if (!_hasPendingFiles) return const SizedBox.shrink();
     final colorScheme = Theme.of(context).colorScheme;
-    final chips = [
-      for (var i = 0; i < widget.pendingFiles.length; i++)
-        Container(
+    Widget chip(int i) => Container(
           padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
           decoration: BoxDecoration(
             color: isAnime ? colorScheme.surfaceContainerHighest : Colors.white,
@@ -778,24 +753,21 @@ class _MessageInputWidgetState extends State<MessageInputWidget> {
                 ),
             ],
           ),
+        );
+    // 大量附件只构建可见条目，输入区高度不随文件数量增长。
+    return SizedBox(
+      height: isAnime ? 58 : 32,
+      child: Padding(
+        padding: const EdgeInsets.only(bottom: 4),
+        child: ListView.separated(
+          key: ValueKey(
+              isAnime ? 'anime_pending_files_scroll' : 'pending_files_scroll'),
+          scrollDirection: Axis.horizontal,
+          itemCount: widget.pendingFiles.length,
+          separatorBuilder: (_, __) => const SizedBox(width: 6),
+          itemBuilder: (_, index) => chip(index),
         ),
-    ];
-    return Padding(
-      padding: const EdgeInsets.only(bottom: 4),
-      child: isAnime
-          ? SingleChildScrollView(
-              key: const ValueKey('anime_pending_files_scroll'),
-              scrollDirection: Axis.horizontal,
-              child: Row(
-                children: [
-                  for (var i = 0; i < chips.length; i++) ...[
-                    if (i > 0) const SizedBox(width: 6),
-                    chips[i],
-                  ],
-                ],
-              ),
-            )
-          : Wrap(spacing: 6, runSpacing: 4, children: chips),
+      ),
     );
   }
 
@@ -885,8 +857,7 @@ class _MessageInputWidgetState extends State<MessageInputWidget> {
       );
 
   List<Widget> _animeTools() => [
-        if (widget.showWebSearch)
-          _webSearchBtn(isAnime: true),
+        if (widget.showWebSearch) _webSearchBtn(isAnime: true),
         if (_showPhotoBtn)
           _animeToolButton(
             icon: Icons.add_photo_alternate_rounded,

@@ -20,20 +20,18 @@ void main() {
     await root.delete(recursive: true);
   });
 
-  test('附件路径去重并限制图片和文件数量', () {
+  test('附件路径去重和去空白，不再按图片或文件数量截断', () {
     expect(
       StoryRoomAttachmentPolicy.normalizePaths(
-        ['a', '', 'a', 'b', 'c'],
-        limit: StoryRoomAttachmentPolicy.maxImages,
+        ['a', '', ' a ', 'b', 'c', ' d ', 'e', 'f'],
       ),
-      ['a', 'b', 'c'],
+      ['a', 'b', 'c', 'd', 'e', 'f'],
     );
     expect(
       StoryRoomAttachmentPolicy.normalizePaths(
-        List.generate(12, (index) => 'file-$index'),
-        limit: StoryRoomAttachmentPolicy.maxFiles,
+        List.generate(24, (index) => 'file-$index'),
       ),
-      List.generate(10, (index) => 'file-$index'),
+      List.generate(24, (index) => 'file-$index'),
     );
   });
 
@@ -59,6 +57,7 @@ void main() {
       filePaths: const ['/missing/world.txt'],
       capabilities: const ModelCapabilities(image: true),
       fallbackContext: '[附件 world.txt 的历史抽取内容]',
+      reuseExtractedContext: true,
     );
 
     expect(bundle.imagePaths, ['/missing/image.png']);
@@ -94,7 +93,10 @@ void main() {
         imagePaths: const [],
         filePaths: [file.path],
         capabilities: const ModelCapabilities.none(),
-        limits: const AttachmentProcessingLimits(maxTextChars: 1024),
+        limits: const AttachmentProcessingLimits(
+            maxTextChars: 1024,
+            maxTotalTextChars: 1024,
+            maxTotalFileBytes: 1024 * 1024),
         fallbackContext: saved,
         reuseExtractedContext: true);
     expect(bundle.attachmentContext, saved);

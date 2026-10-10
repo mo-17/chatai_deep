@@ -356,10 +356,18 @@ class AISettings {
   /// 文本文件读取前的文件字节上限，不改变模型的原生图片/PDF限制。
   int attachmentTextMaxFileBytes;
 
+  /// 本轮图片与文件合计的原始字节上限，数量不另设固定上限。
+  int attachmentTotalMaxFileBytes;
+
+  /// 本轮抽取正文与附件标记的合计字符上限；任务模式按导入原文计。
+  int attachmentTotalMaxChars;
+
   AttachmentProcessingLimits get attachmentProcessingLimits =>
       AttachmentProcessingLimits(
         maxTextChars: attachmentTextMaxChars,
         maxTextFileBytes: attachmentTextMaxFileBytes,
+        maxTotalFileBytes: attachmentTotalMaxFileBytes,
+        maxTotalTextChars: attachmentTotalMaxChars,
       ).normalized;
 
   /// 采样温度（temperature）。null = 不发送该参数，用上游默认；否则按
@@ -410,6 +418,10 @@ class AISettings {
         AttachmentProcessingLimits.defaultMaxTextChars,
     this.attachmentTextMaxFileBytes =
         AttachmentProcessingLimits.defaultMaxTextFileBytes,
+    this.attachmentTotalMaxFileBytes =
+        AttachmentProcessingLimits.defaultMaxTotalFileBytes,
+    this.attachmentTotalMaxChars =
+        AttachmentProcessingLimits.defaultMaxTotalTextChars,
     this.temperature,
     this.topP,
     this.deepSeekReasoningEffort,
@@ -487,6 +499,10 @@ class AISettings {
           _parseAttachmentTextMaxChars(j['attachmentTextMaxChars']),
       attachmentTextMaxFileBytes:
           _parseAttachmentTextMaxFileBytes(j['attachmentTextMaxFileBytes']),
+      attachmentTotalMaxFileBytes:
+          _parseAttachmentTotalMaxFileBytes(j['attachmentTotalMaxFileBytes']),
+      attachmentTotalMaxChars:
+          _parseAttachmentTotalMaxChars(j['attachmentTotalMaxChars']),
       temperature: _parseTemperature(j['temperature']),
       topP: _parseTopP(j['topP']),
       deepSeekReasoningEffort:
@@ -556,6 +572,10 @@ class AISettings {
             _parseAttachmentTextMaxChars(attachmentTextMaxChars),
         'attachmentTextMaxFileBytes':
             _parseAttachmentTextMaxFileBytes(attachmentTextMaxFileBytes),
+        'attachmentTotalMaxFileBytes':
+            _parseAttachmentTotalMaxFileBytes(attachmentTotalMaxFileBytes),
+        'attachmentTotalMaxChars':
+            _parseAttachmentTotalMaxChars(attachmentTotalMaxChars),
         'temperature': temperature,
         'topP': topP,
         if (deepSeekReasoningEffort != null)
@@ -692,6 +712,18 @@ class AISettings {
           value <= AttachmentProcessingLimits.maximumTextFileBytes
       ? value
       : AttachmentProcessingLimits.defaultMaxTextFileBytes;
+
+  static int _parseAttachmentTotalMaxFileBytes(Object? value) => value is int &&
+          value >= AttachmentProcessingLimits.minTotalFileBytes &&
+          value <= AttachmentProcessingLimits.maximumTotalFileBytes
+      ? value
+      : AttachmentProcessingLimits.defaultMaxTotalFileBytes;
+
+  static int _parseAttachmentTotalMaxChars(Object? value) => value is int &&
+          value >= AttachmentProcessingLimits.minTotalTextChars &&
+          value <= AttachmentProcessingLimits.maximumTotalTextChars
+      ? value
+      : AttachmentProcessingLimits.defaultMaxTotalTextChars;
 
   static double? _parseTopP(Object? value) {
     final parsed = value is num ? value.toDouble() : double.tryParse('$value');

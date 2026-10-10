@@ -100,11 +100,12 @@ void main() {
 
   test('取消在文件读取前生效，取消后不继续下一附件', () async {
     final first = await textFile('first.txt', 'first');
+    final second = await textFile('second.txt', 'second');
     final abort = Completer<void>();
     final progress = <ChatSendProgress>[];
     await expectLater(
         FileProcessor.process(
-          [first.path, '${root.path}/missing.txt'],
+          [first.path, second.path],
           const ModelCapabilities.none(),
           abortTrigger: abort.future,
           onProgress: (p) {

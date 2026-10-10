@@ -1,5 +1,4 @@
 import 'dart:async';
-import 'dart:io';
 
 import 'package:chat_message/core/chat_controller.dart';
 import 'package:chat_message/models/message_model.dart';
@@ -18,6 +17,7 @@ import 'package:chatgpt_app_core/chat/application/agent_task_detail_service.dart
 import 'package:chatgpt_app_core/chat/domain/chat_failure_diagnosis.dart';
 import 'package:chatgpt_app_core/chat/application/agent_background_execution.dart';
 import 'package:chatgpt_app_core/chat/application/agent_workspace_service.dart';
+import 'package:chatgpt_app_core/chat/application/attachment_batch_budget.dart';
 import 'package:chatgpt_app_core/chat/application/agent_workspace_tools.dart';
 import 'package:chatgpt_app_core/chat/application/workspace_attachment_processor.dart';
 import 'package:chatgpt_app_core/chat/application/semantic_chat_summary_service.dart';
@@ -78,7 +78,6 @@ import 'package:chatgpt_app_core/theme/app_visual_theme.dart';
 import 'package:chatgpt_app_core/util/app_events.dart';
 import 'package:chatgpt_app_core/util/hi_dialog.dart';
 import 'package:chatgpt_app_core/util/hi_utils.dart';
-import 'package:chatgpt_app_core/util/managed_attachment_store.dart';
 import 'package:chatgpt_app_core/util/scroll_jump.dart';
 import 'package:chatgpt_app_core/widget/assistant_avatar.dart';
 import 'package:chatgpt_app_core/provider/theme_provider.dart';
@@ -1168,12 +1167,12 @@ class _ConversationPageState extends State<ConversationPage>
               onBubbleLongPress: _onBubbleLongPress,
               avatarBuilder: buildStarcoreMessageAvatar,
               showAvatars: appearance?.showMessageAvatars ?? true,
-              receiverBackgroundColor: appearance?.bubbleColor(
-                    Theme.of(context), isUser: false) ??
-                  colorScheme.primaryContainer,
-              senderBackgroundColor: appearance?.bubbleColor(
-                    Theme.of(context), isUser: true) ??
-                  colorScheme.surfaceContainerHighest,
+              receiverBackgroundColor:
+                  appearance?.bubbleColor(Theme.of(context), isUser: false) ??
+                      colorScheme.primaryContainer,
+              senderBackgroundColor:
+                  appearance?.bubbleColor(Theme.of(context), isUser: true) ??
+                      colorScheme.surfaceContainerHighest,
               receiverAvatarBackgroundColor:
                   visualTheme.isAnime ? colorScheme.primary : null,
               senderAvatarBackgroundColor:
@@ -1938,8 +1937,8 @@ class _ConversationPageState extends State<ConversationPage>
           if (message.ownerType == OwnerType.receiver)
             MessageFooterBar(
               charCount: message.content.characters.length,
-              trailing:
-                  _readAloudBubbleButton(context, message.content, message.createdAt),
+              trailing: _readAloudBubbleButton(
+                  context, message.content, message.createdAt),
             ),
         ],
       );
@@ -1954,7 +1953,8 @@ class _ConversationPageState extends State<ConversationPage>
           messageKey: key,
           showCharCount: message.ownerType == OwnerType.receiver,
           footerTrailing: message.ownerType == OwnerType.receiver
-              ? _readAloudBubbleButton(context, message.content, message.createdAt)
+              ? _readAloudBubbleButton(
+                  context, message.content, message.createdAt)
               : null,
         ),
         if (message.ownerType == OwnerType.receiver)
@@ -2608,12 +2608,21 @@ class _ConversationPageState extends State<ConversationPage>
       final caps = ChatService.capabilitiesFor(settings);
       final pendingImages = List<String>.from(_pendingImages);
       final pendingFiles = List<String>.from(_pendingFiles);
+      final batchBudget =
+          AttachmentBatchBudget(limits: settings.attachmentProcessingLimits);
+      _onSendProgress(const ChatSendProgress('检查附件总大小'));
+      await batchBudget.preflightPaths([...pendingImages, ...pendingFiles],
+          isCancelled: () => _sendCancelled);
+      if (_sendCancelled) return;
       await _saveDraft();
       if (_sendCancelled) return;
       final abort = _streamAbortCompleter!.future;
+      final imagePaths = <String>[];
       final b64Images = pendingImages.isEmpty
           ? <String>[]
           : await FileProcessor.encodeImages(pendingImages,
+              batchBudget: batchBudget,
+              onSnapshot: (_, managedPath) => imagePaths.add(managedPath),
               onProgress: _onSendProgress,
               abortTrigger: abort,
               isCancelled: () => _sendCancelled);
@@ -2626,10 +2635,12 @@ class _ConversationPageState extends State<ConversationPage>
       final processed = pendingFiles.isEmpty
           ? const ProcessedFiles()
           : _taskMode
-              ? await _prepareWorkspaceFiles(pendingFiles, settings)
+              ? await _prepareWorkspaceFiles(
+                  pendingFiles, settings, batchBudget)
               : await FileProcessor.process(pendingFiles,
                   officialDeepSeek ? caps.copyWith(pdf: false) : caps,
                   limits: settings.attachmentProcessingLimits,
+                  batchBudget: batchBudget,
                   onProgress: _onSendProgress,
                   abortTrigger: abort,
                   isCancelled: () => _sendCancelled);
@@ -2639,13 +2650,7 @@ class _ConversationPageState extends State<ConversationPage>
         return;
       }
       if (_sendCancelled) return;
-      // 图片进入与历史附件相同的托管目录后，才可清理草稿的自有副本。
-      final imagePaths = <String>[];
-      for (final path in pendingImages) {
-        imagePaths.add(await ManagedAttachmentStore.importFile(File(path),
-            maxBytes: FileProcessor.maxImageBytes));
-        if (_sendCancelled) return;
-      }
+      // 编码和消息持久化使用同一份已计量的图片快照。
       final attachments = ChatAttachments(
           images: b64Images,
           nativeFiles: processed.nativeFiles,
@@ -2852,10 +2857,11 @@ class _ConversationPageState extends State<ConversationPage>
     return registry.isEmpty ? null : registry;
   }
 
-  Future<ProcessedFiles> _prepareWorkspaceFiles(
-          List<String> paths, AISettings settings) =>
+  Future<ProcessedFiles> _prepareWorkspaceFiles(List<String> paths,
+          AISettings settings, AttachmentBatchBudget batchBudget) =>
       WorkspaceAttachmentProcessor(_workspace!).process(paths,
           limits: settings.attachmentProcessingLimits,
+          batchBudget: batchBudget,
           onProgress: _onSendProgress,
           isCancelled: () => _sendCancelled);
 
@@ -3706,6 +3712,7 @@ class _ConversationPageState extends State<ConversationPage>
 
   /// 把异常转成对用户友好的简短文案。
   String _friendlyError(Object e) {
+    if (e is AttachmentBatchLimitException) return e.toString();
     final diagnosis = ChatFailureDiagnosis.from(e);
     return '${diagnosis.message}\n${diagnosis.suggestion}';
   }
