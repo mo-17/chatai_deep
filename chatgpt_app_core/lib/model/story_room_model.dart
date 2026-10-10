@@ -20,6 +20,8 @@ class StoryRoomModel {
   /// 仅用于预览、受控参数映射和往返导出，不直接执行第三方模板。
   String tavernPresetJson;
   String? personaKey;
+  /// null 跟随当前账号的全局默认；true/false 仅覆盖此房间。
+  bool? webSearchEnabled;
   String? modelProviderId;
   String? modelId;
   double? temperature;
@@ -49,6 +51,7 @@ class StoryRoomModel {
     this.regexScriptsJson = '',
     this.tavernPresetJson = '',
     this.personaKey,
+    this.webSearchEnabled,
     this.modelProviderId,
     this.modelId,
     this.temperature,
@@ -87,6 +90,7 @@ class StoryRoomModel {
         regexScriptsJson: json['regexScriptsJson'] as String? ?? '',
         tavernPresetJson: json['tavernPresetJson'] as String? ?? '',
         personaKey: json['personaKey'] as String?,
+        webSearchEnabled: _nullableBool(json['webSearchEnabled']),
         modelProviderId: json['modelProviderId'] as String?,
         modelId: json['modelId'] as String?,
         temperature: _safeTemperatureValue(json['temperature']),
@@ -116,6 +120,9 @@ class StoryRoomModel {
         'regexScriptsJson': regexScriptsJson,
         'tavernPresetJson': tavernPresetJson,
         'personaKey': personaKey,
+        'webSearchEnabled': webSearchEnabled == null
+            ? null
+            : (webSearchEnabled! ? 1 : 0),
         'modelProviderId': modelProviderId,
         'modelId': modelId,
         'temperature': temperature,
@@ -132,6 +139,13 @@ class StoryRoomModel {
         ...toJson(),
         if (title != null) 'title': title,
       });
+
+  static bool? _nullableBool(Object? value) {
+    if (value is bool) return value;
+    if (value == 1 || value == '1' || value == 'true') return true;
+    if (value == 0 || value == '0' || value == 'false') return false;
+    return null;
+  }
 
   static int _safeMaxAutoReplies(Object? value) {
     final number = value is num ? value.toInt() : int.tryParse('$value');

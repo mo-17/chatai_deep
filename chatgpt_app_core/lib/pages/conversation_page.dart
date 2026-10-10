@@ -10,6 +10,7 @@ import 'package:chatgpt_app_core/ai_readiness/ai_send_guard.dart';
 import 'package:chatgpt_app_core/chat/application/assistant_conversation_avatar_resolver.dart';
 import 'package:chatgpt_app_core/chat/application/chat_block_store.dart';
 import 'package:chatgpt_app_core/chat/application/conversation_draft_store.dart';
+import 'package:chatgpt_app_core/chat/application/composer_prediction_service.dart';
 import 'package:chatgpt_app_core/chat/application/chat_context_planner.dart';
 import 'package:chatgpt_app_core/chat/application/agent_task_session.dart';
 import 'package:chatgpt_app_core/chat/application/agent_task_executor.dart';
@@ -80,6 +81,7 @@ import 'package:chatgpt_app_core/util/hi_utils.dart';
 import 'package:chatgpt_app_core/util/managed_attachment_store.dart';
 import 'package:chatgpt_app_core/util/scroll_jump.dart';
 import 'package:chatgpt_app_core/widget/assistant_avatar.dart';
+import 'package:chatgpt_app_core/provider/theme_provider.dart';
 import 'package:chatgpt_app_core/widget/ai_readiness_card.dart';
 import 'package:chatgpt_app_core/widget/assistant_picker.dart';
 import 'package:chatgpt_app_core/widget/configured_ai_model_picker_sheet.dart';
@@ -141,6 +143,10 @@ class ConversationPage extends StatefulWidget {
   final String? expectedAccountHash;
   final AgentBackgroundExecution? backgroundExecution;
   final ReadAloudService? readAloudService;
+  final ComposerPredictionService? predictionService;
+
+  /// 嵌入方或测试可注入传输，默认沿用用户配置。
+  final ChatService? chatService;
 
   const ConversationPage({
     super.key,
@@ -154,6 +160,8 @@ class ConversationPage extends StatefulWidget {
     this.expectedAccountHash,
     this.backgroundExecution,
     this.readAloudService,
+    this.predictionService,
+    this.chatService,
   });
 
   @override
@@ -170,6 +178,9 @@ class _ConversationPageState extends State<ConversationPage>
   late Map<String, dynamic> userInfo;
   String _inputMessage = "";
   late final TextEditingController _inputController;
+  late final ComposerPredictionController _prediction;
+  late final AISettingsProvider _predictionSettings;
+  int? _predictionCompletedTurn;
   late final String _pageAccount;
   late final ConversationDraftStore _draftStore;
   Timer? _draftTimer;
@@ -505,7 +516,94 @@ class _ConversationPageState extends State<ConversationPage>
   bool get _accountCurrent =>
       !_disposed && (LoginDao.getAccountHash() ?? 'guest') == _pageAccount;
 
+  bool get _predictionEligible =>
+      _accountCurrent &&
+      _ready &&
+      !_isStreaming &&
+      !_taskMode &&
+      !_applicationInBackground &&
+      !_savingReasoningEffort &&
+      _predictionSettings.settings.composerPredictionsEnabled &&
+      _inputController.text.isEmpty &&
+      (!_inputController.value.composing.isValid ||
+          _inputController.value.composing.isCollapsed) &&
+      _pendingImages.isEmpty &&
+      _pendingFiles.isEmpty;
+
+  void _onPredictionChanged() {
+    if (mounted && !_disposed) setState(() {});
+  }
+
+  void _invalidatePrediction() {
+    _predictionCompletedTurn = null;
+    _prediction.cancel();
+  }
+
+  void _acceptPrediction() {
+    final suggestion = _prediction.suggestion;
+    if (!_predictionEligible || suggestion == null) return;
+    _prediction.cancel();
+    _inputController.value = TextEditingValue(
+      text: suggestion,
+      selection: TextSelection.collapsed(offset: suggestion.length),
+    );
+  }
+
+  void _requestPredictionAfterReply() {
+    final turn = _predictionCompletedTurn;
+    _predictionCompletedTurn = null;
+    if (turn == null || !_predictionEligible) return;
+    final sourceSettings = _predictionSettings.settings;
+    final settings = _effective(sourceSettings);
+    final conversationId = widget.conversationModel.cid;
+    final projectId = widget.conversationModel.projectId;
+    final assistant = _assistant;
+    final modelId = widget.conversationModel.modelId;
+    final providerId = widget.conversationModel.modelProviderId;
+    unawaited(_prediction.request(
+      completedTurn: turn,
+      settings: settings,
+      messages: completionDao.currentMessages,
+      isEligible: () =>
+          _predictionEligible &&
+          identical(sourceSettings, _predictionSettings.settings) &&
+          conversationId == widget.conversationModel.cid &&
+          identical(assistant, _assistant) &&
+          modelId == widget.conversationModel.modelId &&
+          providerId == widget.conversationModel.modelProviderId,
+      onUsage: (result) async {
+        if (!_accountCurrent) return;
+        try {
+          await usageRecordService.recordTurn(
+            modelId: settings.effectiveModel,
+            providerId: settings.mode == AIMode.local
+                ? settings.activeProviderId
+                : providerId,
+            projectId: projectId,
+            cid: conversationId,
+            prompt: result.requestText,
+            completion: result.usage.content ?? '',
+            promptTokens: result.usage.promptTokens,
+            cachedPromptTokens: result.usage.cachedPromptTokens,
+            completionTokens: result.usage.completionTokens,
+            estimated: result.usage.estimated,
+            cost: result.usage.cost,
+            costConfig: settings.usageCostConfig,
+            createdAt: DateTime.now().millisecondsSinceEpoch,
+          );
+        } catch (_) {
+          // 用量记录失败不阻塞可选建议，也不重复模型请求。
+        }
+      },
+    ));
+  }
+
   void _inputChanged(String text) {
+    if (text.isNotEmpty ||
+        (_inputController.value.composing.isValid &&
+            !_inputController.value.composing.isCollapsed)) {
+      _invalidatePrediction();
+    }
     _inputMessage = text;
     if (!_isStreaming) {
       _plannedPrompt = text;
@@ -719,6 +817,7 @@ class _ConversationPageState extends State<ConversationPage>
             );
 
   void _openTaskMode() {
+    _invalidatePrediction();
     final task = _agentTask;
     if (task == null || !_ready) return;
     showModalBottomSheet<void>(
@@ -918,6 +1017,7 @@ class _ConversationPageState extends State<ConversationPage>
   }
 
   void _resumeTask() async {
+    _invalidatePrediction();
     final task = _agentTask;
     if (!_ready ||
         !mounted ||
@@ -1055,6 +1155,7 @@ class _ConversationPageState extends State<ConversationPage>
   String get _effectiveModelId => _effective(_currentSettings).effectiveModel;
 
   Widget get _chatList {
+    final appearance = context.watch<ThemeProvider?>();
     final visualTheme = AppVisualTheme.of(context);
     final colorScheme = Theme.of(context).colorScheme;
     return Expanded(
@@ -1066,17 +1167,17 @@ class _ConversationPageState extends State<ConversationPage>
               chatController: chatController,
               onBubbleLongPress: _onBubbleLongPress,
               avatarBuilder: buildStarcoreMessageAvatar,
-              receiverBackgroundColor: visualTheme.isAnime
-                  ? colorScheme.primaryContainer.withValues(alpha: 0.78)
-                  : null,
-              senderBackgroundColor: visualTheme.isAnime
-                  ? colorScheme.secondaryContainer.withValues(alpha: 0.82)
-                  : null,
+              showAvatars: appearance?.showMessageAvatars ?? true,
+              receiverBackgroundColor: appearance?.bubbleColor(
+                    Theme.of(context), isUser: false) ??
+                  colorScheme.primaryContainer,
+              senderBackgroundColor: appearance?.bubbleColor(
+                    Theme.of(context), isUser: true) ??
+                  colorScheme.surfaceContainerHighest,
               receiverAvatarBackgroundColor:
                   visualTheme.isAnime ? colorScheme.primary : null,
               senderAvatarBackgroundColor:
                   visualTheme.isAnime ? colorScheme.secondary : null,
-              textColor: visualTheme.isAnime ? colorScheme.onSurface : null,
               bubbleRadius:
                   visualTheme.isAnime ? const Radius.circular(18) : null,
             ),
@@ -1504,6 +1605,9 @@ class _ConversationPageState extends State<ConversationPage>
       editingEnabled: _ready && !_isStreaming && !_savingReasoningEffort,
       isStreaming: _isStreaming,
       controller: _inputController,
+      suggestedMessage: _predictionEligible ? _prediction.suggestion : null,
+      onAcceptSuggestion: _acceptPrediction,
+      onDismissSuggestion: _prediction.cancel,
       clearOnSend: false,
       onStop: _isStreaming ? _stopStream : null,
       onChanged: _inputChanged,
@@ -1515,8 +1619,8 @@ class _ConversationPageState extends State<ConversationPage>
       onSend: () => _onSend(_inputMessage),
       // 联网搜索开关（阶段五）：当前所选服务商配置了 key 才展示；独立于
       // caps.tool，搜索结果以上下文回填，任何模型都可用（与 Cherry 一致）。
-      showWebSearch: settings.webSearchConfigured,
-      webSearchEnabled: settings.webSearchEnabled,
+      showWebSearch: effective.webSearchConfigured,
+      webSearchEnabled: effective.webSearchEnabled,
       onToggleWebSearch: _toggleWebSearch,
       modelLabel: _modelLabel(settings),
       onModelTap: _switchModel,
@@ -1535,6 +1639,7 @@ class _ConversationPageState extends State<ConversationPage>
       imagesDisabledReason:
           caps.image ? '' : '当前模型不支持图片，请切换 deepseek-flash、gpt-4o 等多模态模型',
       onImagesPicked: (images) {
+        _invalidatePrediction();
         setState(() => _pendingImages = images);
         _scheduleDraftSave();
       },
@@ -1547,6 +1652,7 @@ class _ConversationPageState extends State<ConversationPage>
       // 文件入口不按能力位关闭：不支持原生文件的模型走抽文本降级（阶段四）。
       pendingFiles: _pendingFiles,
       onFilesPicked: (files) {
+        _invalidatePrediction();
         setState(() => _pendingFiles = files);
         _scheduleDraftSave();
       },
@@ -1573,6 +1679,11 @@ class _ConversationPageState extends State<ConversationPage>
         context.read<AISettingsProvider>().accountHash;
     _draftOnlyConversation = widget.conversationModel.messageCount == 0 &&
         (widget.conversationModel.lastMessage?.startsWith('[草稿] ') ?? false);
+    _prediction =
+        ComposerPredictionController(service: widget.predictionService)
+          ..addListener(_onPredictionChanged);
+    _predictionSettings = context.read<AISettingsProvider>()
+      ..addListener(_invalidatePrediction);
     _inputController = TextEditingController(text: widget.initialPrompt);
     _inputMessage = widget.initialPrompt;
     _draftStore = ConversationDraftStore(
@@ -1582,6 +1693,14 @@ class _ConversationPageState extends State<ConversationPage>
     _readAloudService = widget.readAloudService ?? HybridReadAloudService();
     if (_accountCurrent) _prewarmReadAloudIfNeeded();
     _doInit();
+  }
+
+  @override
+  void didUpdateWidget(covariant ConversationPage oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.conversationModel.cid != widget.conversationModel.cid) {
+      _invalidatePrediction();
+    }
   }
 
   @override
@@ -1598,6 +1717,7 @@ class _ConversationPageState extends State<ConversationPage>
     }
     if (_applicationInBackground && state != AppLifecycleState.detached) return;
     _applicationInBackground = true;
+    _invalidatePrediction();
     if (_agentRun?.busy == true) {
       if (_toolConfirmationRoute != null) _dismissToolConfirmation();
       return;
@@ -1617,6 +1737,9 @@ class _ConversationPageState extends State<ConversationPage>
   @override
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
+    _predictionSettings.removeListener(_invalidatePrediction);
+    _prediction.removeListener(_onPredictionChanged);
+    _prediction.dispose();
     _draftTimer?.cancel();
     _taskExecutor.removeListener(_syncAgentRun);
     _taskExecutor.unbindConfirmation(_taskKey, this);
@@ -1763,6 +1886,9 @@ class _ConversationPageState extends State<ConversationPage>
 
   /// 切换联网搜索开关：当前会话优先覆盖，避免改动全局 AI 设置影响其它会话。
   void _toggleWebSearch() async {
+    if (!_ready || !_accountCurrent || _isStreaming || _savingReasoningEffort) {
+      return;
+    }
     final effective = _effective(context.read<AISettingsProvider>().settings);
     final enabled = !effective.webSearchEnabled;
     setState(() => widget.conversationModel.webSearchEnabled = enabled);
@@ -1813,7 +1939,7 @@ class _ConversationPageState extends State<ConversationPage>
             MessageFooterBar(
               charCount: message.content.characters.length,
               trailing:
-                  _readAloudBubbleButton(message.content, message.createdAt),
+                  _readAloudBubbleButton(context, message.content, message.createdAt),
             ),
         ],
       );
@@ -1828,7 +1954,7 @@ class _ConversationPageState extends State<ConversationPage>
           messageKey: key,
           showCharCount: message.ownerType == OwnerType.receiver,
           footerTrailing: message.ownerType == OwnerType.receiver
-              ? _readAloudBubbleButton(message.content, message.createdAt)
+              ? _readAloudBubbleButton(context, message.content, message.createdAt)
               : null,
         ),
         if (message.ownerType == OwnerType.receiver)
@@ -2300,7 +2426,8 @@ class _ConversationPageState extends State<ConversationPage>
     );
   }
 
-  Widget _readAloudBubbleButton(String text, int createdAt) {
+  Widget _readAloudBubbleButton(
+      BuildContext context, String text, int createdAt) {
     final content = text.trim();
     if (content.isEmpty) return const SizedBox.shrink();
     final mode = _ReadAloudTriggerMode.normalize(
@@ -2426,6 +2553,7 @@ class _ConversationPageState extends State<ConversationPage>
         !_canStartAIRequest(showPrompt: true)) {
       return;
     }
+    _invalidatePrediction();
     // 锁覆盖附件准备、持久化及网络等待，停止准备时仍保留输入和草稿。
     _draftTimer?.cancel();
     _userStopped = false;
@@ -2463,6 +2591,7 @@ class _ConversationPageState extends State<ConversationPage>
         _daoReasoningEffort = widget.conversationModel.deepSeekReasoningEffort;
         _daoTaskMode = _taskMode;
         completionDao = CompletionDao(
+          chatService: widget.chatService,
           manageContext: true,
           settings: _effective(rawSettings),
           systemPrompt: assistantSystemPrompt,
@@ -2671,6 +2800,7 @@ class _ConversationPageState extends State<ConversationPage>
           _isStreaming = false;
           _sendProgress = null;
         });
+        _requestPredictionAfterReply();
       }
       if (!accepted && mounted && _accountCurrent) _scheduleDraftSave();
     }
@@ -3070,6 +3200,7 @@ class _ConversationPageState extends State<ConversationPage>
   }
 
   void _stopStream({String reason = '已手动暂停，可从保存的进度继续'}) {
+    _invalidatePrediction();
     if (_agentRun?.busy == true) {
       _dismissToolConfirmation();
       unawaited(_taskExecutor.cancel(_taskKey, reason: reason));
@@ -3157,6 +3288,9 @@ class _ConversationPageState extends State<ConversationPage>
             completionResult: result,
             createdAt: receiverModel.createdAt);
         if (!_sendCancelled) await _readAloudAssistant(receiverModel.content);
+        if (!_sendCancelled && result.content?.trim().isNotEmpty == true) {
+          _predictionCompletedTurn = receiverModel.createdAt;
+        }
         _clearUsageRound();
       }
     } catch (e) {
@@ -3269,6 +3403,11 @@ class _ConversationPageState extends State<ConversationPage>
       // 正常结束（或用户停止）：收尾块、落库。
       if (!_userStopped) dispatcher.finish();
       await _persistAssistant(receiverModel, dispatcher);
+      if (!_sendCancelled &&
+          !dispatcher.hasError &&
+          dispatcher.mainText.trim().isNotEmpty) {
+        _predictionCompletedTurn = receiverModel.createdAt;
+      }
       _notifyConversationListUpdate();
     } catch (e) {
       if (_disposed) return;
@@ -3808,6 +3947,7 @@ class _ConversationPageState extends State<ConversationPage>
     _hasEarlierContext = candidates.hasEarlierMessages;
     final blockHistory = await _loadBlockHistory(candidates.messages);
     completionDao = CompletionDao(
+        chatService: widget.chatService,
         manageContext: true,
         settings: _effective(settings),
         systemPrompt: _daoSystemPrompt,
@@ -3844,6 +3984,7 @@ class _ConversationPageState extends State<ConversationPage>
   /// 会话内切换助手（阶段七）：弹选择器 + 确认，从下一轮开始使用新助手。
   /// 历史消息的 ownerName/avatar 已经随消息落库，不随当前会话助手变化。
   void _openAssistantProfile() async {
+    _invalidatePrediction();
     final assistant = _assistant;
     if (assistant == null) return;
     await Navigator.push(
@@ -3889,6 +4030,7 @@ class _ConversationPageState extends State<ConversationPage>
   }
 
   void _switchAssistant() async {
+    _invalidatePrediction();
     final pick = await showAssistantPicker(context,
         selectedId: widget.conversationModel.assistantId);
     if (pick == null || !mounted) return; // 取消
@@ -3946,6 +4088,7 @@ class _ConversationPageState extends State<ConversationPage>
   }
 
   void _switchModel() async {
+    _invalidatePrediction();
     if (!_ready || !_accountCurrent || _isStreaming) return;
     final rawSettings = context.read<AISettingsProvider>().settings;
     final picked = rawSettings.mode == AIMode.backend
@@ -3969,6 +4112,7 @@ class _ConversationPageState extends State<ConversationPage>
   }
 
   Future<void> _selectReasoningEffort() async {
+    _invalidatePrediction();
     if (!_ready || _isStreaming || _savingReasoningEffort || !_accountCurrent) {
       return;
     }
@@ -3987,6 +4131,7 @@ class _ConversationPageState extends State<ConversationPage>
       final rawSettings = context.read<AISettingsProvider>().settings;
       final effective = _effective(rawSettings);
       completionDao = CompletionDao(
+        chatService: widget.chatService,
         manageContext: true,
         settings: effective,
         systemPrompt: _daoSystemPrompt,
@@ -4991,6 +5136,7 @@ class _ConversationPageState extends State<ConversationPage>
     _sendRoundSettled = settled;
     _taskCheckpointFailed = false;
     _backgroundNotice = null;
+    _invalidatePrediction();
     setState(() {
       _isStreaming = true;
       _sendProgress = const ChatSendProgress('准备重试');
@@ -5006,6 +5152,7 @@ class _ConversationPageState extends State<ConversationPage>
       if (_sendCancelled) return;
       final settings = _effective(rawSettings);
       final candidate = CompletionDao(
+        chatService: widget.chatService,
         manageContext: true,
         settings: settings,
         systemPrompt: systemPrompt,
@@ -5196,11 +5343,13 @@ class _ConversationPageState extends State<ConversationPage>
           _isStreaming = false;
           _sendProgress = null;
         });
+        _requestPredictionAfterReply();
       }
     }
   }
 
   _deleteMessage(MessageModel message) async {
+    _invalidatePrediction();
     try {
       // 本次会话内新消息的内存模型可能没有数据库 id（id 为 null），
       // 此时按 createdAt 删除，避免 message.id! 空断言抛异常导致删除「不生效」。

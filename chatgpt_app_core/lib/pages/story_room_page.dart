@@ -51,12 +51,14 @@ import 'package:url_launcher/url_launcher.dart';
 class StoryRoomPage extends StatefulWidget {
   final StoryRoomModel room;
   final ReadAloudService? readAloudService;
+  final StoryRoomToolRunner? toolRunner;
   final bool skipInitialLoadForTesting;
 
   const StoryRoomPage({
     super.key,
     required this.room,
     this.readAloudService,
+    this.toolRunner,
     @visibleForTesting this.skipInitialLoadForTesting = false,
   });
 
@@ -77,6 +79,8 @@ class _StoryRoomPageState extends State<StoryRoomPage> {
   int? _forcedNextParticipantId;
   final Set<int> _skipNextParticipantIds = <int>{};
   bool _loading = true;
+  bool _savingWebSearch = false;
+  late final String _accountHashAtOpen;
   bool _sending = false;
   bool _stopRequested = false;
   bool _presetTransferBusy = false;
@@ -91,7 +95,7 @@ class _StoryRoomPageState extends State<StoryRoomPage> {
   Map<String, String> _displayContentByNodeKey = const {};
   final Set<int> _streamingMessageCreatedAt = {};
   late final StoryRoomReadAloudController _readAloudController;
-  final StoryRoomToolRunner _toolRunner = StoryRoomToolRunner();
+  late final StoryRoomToolRunner _toolRunner;
 
   bool get _isTavern => widget.room.mode == StoryRoomMode.tavern;
 
@@ -108,6 +112,8 @@ class _StoryRoomPageState extends State<StoryRoomPage> {
   @override
   void initState() {
     super.initState();
+    _accountHashAtOpen = HiDBManager.getAccountHash();
+    _toolRunner = widget.toolRunner ?? StoryRoomToolRunner();
     _readAloudController = StoryRoomReadAloudController(
       service: widget.readAloudService,
     )..addListener(_onReadAloudChanged);
@@ -135,7 +141,8 @@ class _StoryRoomPageState extends State<StoryRoomPage> {
   }
 
   Future<void> _load() async {
-    final db = await HiDBManager.instance(dbName: HiDBManager.getAccountHash());
+    if (!_roomAccountCurrent) return;
+    final db = await HiDBManager.instance(dbName: _accountHashAtOpen);
     final dao = await StoryRoomDao.create(db);
     final usageRecordService = UsageRecordService(await UsageDao.create(db));
     final personaDao = await StoryPersonaDao.create(db);
@@ -161,7 +168,7 @@ class _StoryRoomPageState extends State<StoryRoomPage> {
       messages,
       room?.regexScriptsJson ?? widget.room.regexScriptsJson,
     );
-    if (!mounted) return;
+    if (!mounted || !_roomAccountCurrent) return;
     setState(() {
       if (room != null) {
         _applyRoomSnapshot(room);
@@ -251,6 +258,7 @@ class _StoryRoomPageState extends State<StoryRoomPage> {
       ..regexScriptsJson = room.regexScriptsJson
       ..tavernPresetJson = room.tavernPresetJson
       ..personaKey = room.personaKey
+      ..webSearchEnabled = room.webSearchEnabled
       ..modelProviderId = room.modelProviderId
       ..modelId = room.modelId
       ..temperature = room.temperature
@@ -346,6 +354,7 @@ class _StoryRoomPageState extends State<StoryRoomPage> {
               if (value == 'participant') _addAssistantParticipant();
               if (value == 'reply') _editTavernReplyMode();
               if (value == 'model') _editRoomModelSettings();
+              if (value == 'web_search') _editRoomWebSearch();
               if (value == 'prompts') _openPromptManager();
               if (value == 'quick_replies') _openQuickReplies();
               if (value == 'regex_scripts') _openRegexScripts();
@@ -393,6 +402,16 @@ class _StoryRoomPageState extends State<StoryRoomPage> {
                 child: ListTile(
                   leading: Icon(Icons.tune_outlined),
                   title: Text('模型与生成参数'),
+                  contentPadding: EdgeInsets.zero,
+                ),
+              ),
+              PopupMenuItem(
+                value: 'web_search',
+                enabled: _canEditRoomWebSearch,
+                child: ListTile(
+                  leading: const Icon(Icons.travel_explore),
+                  title: const Text('联网搜索'),
+                  subtitle: Text(_roomWebSearchLabel),
                   contentPadding: EdgeInsets.zero,
                 ),
               ),
@@ -854,9 +873,9 @@ class _StoryRoomPageState extends State<StoryRoomPage> {
   Widget get _composer {
     final selected = _selectedParticipant;
     final manual = !_isTavern || widget.room.replyMode == StoryReplyMode.manual;
-    final settings = context.watch<AISettingsProvider>().settings;
-    final capabilities =
-        ChatService.capabilitiesFor(_effectiveSettings(settings));
+    final settings =
+        _effectiveSettings(context.watch<AISettingsProvider>().settings);
+    final capabilities = ChatService.capabilitiesFor(settings);
     final compactForKeyboard = storyUsesAnimeStyle(context) &&
         MediaQuery.viewInsetsOf(context).bottom > 0;
     final availableWithKeyboard = MediaQuery.sizeOf(context).height -
@@ -873,7 +892,9 @@ class _StoryRoomPageState extends State<StoryRoomPage> {
       onStop: _stopGeneration,
       showWebSearch: settings.webSearchConfigured,
       webSearchEnabled: settings.webSearchEnabled,
-      onToggleWebSearch: () => unawaited(_toggleWebSearch()),
+      onToggleWebSearch: _canEditRoomWebSearch
+          ? () => unawaited(_toggleWebSearch())
+          : null,
       pendingImages: _pendingImages,
       imagesEnabled: capabilities.image,
       imagesDisabledReason: '当前模型不支持图片，请切换多模态模型',
@@ -3122,11 +3143,79 @@ class _StoryRoomPageState extends State<StoryRoomPage> {
     }
   }
 
+  bool get _roomAccountCurrent =>
+      HiDBManager.getAccountHash() == _accountHashAtOpen;
+
+  bool get _canEditRoomWebSearch =>
+      !_loading && !_sending && !_savingWebSearch &&
+      _dao != null && widget.room.id != null && _roomAccountCurrent;
+
+  String get _roomWebSearchLabel {
+    final override = widget.room.webSearchEnabled;
+    if (override != null) return override ? '仅此房间开启' : '仅此房间关闭';
+    final enabled = context.read<AISettingsProvider>().settings.webSearchEnabled;
+    return '跟随全局默认（当前${enabled ? '开启' : '关闭'}）';
+  }
+
   Future<void> _toggleWebSearch() async {
-    final provider = context.read<AISettingsProvider>();
-    final next = provider.settings.clone()
-      ..webSearchEnabled = !provider.settings.webSearchEnabled;
-    await provider.update(next);
+    if (!_canEditRoomWebSearch) return;
+    final settings =
+        _effectiveSettings(context.read<AISettingsProvider>().settings);
+    await _saveRoomWebSearch(!settings.webSearchEnabled);
+  }
+
+  Future<void> _editRoomWebSearch() async {
+    if (!_canEditRoomWebSearch) return;
+    final room = widget.room;
+    final global = context.read<AISettingsProvider>().settings.webSearchEnabled;
+    final picked = await showDialog<int>(
+      context: context,
+      builder: (ctx) => SimpleDialog(
+        title: const Text('房间联网搜索'),
+        children: [
+          for (final option in [
+            (-1, '跟随全局默认', '当前默认：${global ? '开启' : '关闭'}'),
+            (1, '仅此房间开启', '不随全局默认变化'),
+            (0, '仅此房间关闭', '不随全局默认变化'),
+          ])
+            ListTile(
+              key: ValueKey('room_web_search_${option.$1}'),
+              title: Text(option.$2),
+              subtitle: Text(option.$3),
+              trailing: (room.webSearchEnabled == null
+                      ? option.$1 == -1
+                      : option.$1 == (room.webSearchEnabled! ? 1 : 0))
+                  ? const Icon(Icons.check)
+                  : null,
+              onTap: () => Navigator.pop(ctx, option.$1),
+            ),
+        ],
+      ),
+    );
+    if (!mounted || !identical(room, widget.room) || picked == null) return;
+    await _saveRoomWebSearch(picked == -1 ? null : picked == 1);
+  }
+
+  Future<void> _saveRoomWebSearch(bool? enabled) async {
+    if (!_canEditRoomWebSearch) return;
+    final room = widget.room;
+    final dao = _dao!;
+    setState(() => _savingWebSearch = true);
+    try {
+      final updated = await dao.updateWebSearchOverride(room.id!, enabled);
+      if (!mounted || !_roomAccountCurrent || !identical(room, widget.room)) {
+        return;
+      }
+      if (updated != 1) throw StateError('房间不存在');
+      setState(() => room.webSearchEnabled = enabled);
+      HiDialog.showSnackBar(context, '联网搜索：$_roomWebSearchLabel');
+    } catch (_) {
+      if (mounted && _roomAccountCurrent && identical(room, widget.room)) {
+        HiDialog.showSnackBar(context, '联网搜索设置未保存，请重试');
+      }
+    } finally {
+      if (mounted) setState(() => _savingWebSearch = false);
+    }
   }
 
   Future<bool> _confirmRoomToolAction(String title, String detail) async {

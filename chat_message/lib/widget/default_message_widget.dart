@@ -28,6 +28,7 @@ class DefaultMessageWidget extends StatelessWidget {
 
   /// the size of the [avatar].
   final double avatarSize;
+  final bool showAvatars;
 
   /// the text-color of the [content].
   final Color? textColor;
@@ -60,6 +61,7 @@ class DefaultMessageWidget extends StatelessWidget {
     this.senderAvatarBackgroundColor,
     this.bubbleRadius,
     this.avatarSize = 40,
+    this.showAvatars = true,
     this.messageWidget,
     this.contentBuilder,
     this.avatarBuilder,
@@ -67,7 +69,7 @@ class DefaultMessageWidget extends StatelessWidget {
     this.onBubbleLongPress,
   }) : super(key: key);
 
-  double get contentMargin => avatarSize + 10;
+  double get contentMargin => showAvatars ? 16 : 4;
 
   String get senderInitials {
     // ownerName 可能为 null，也可能是空串（后端登录响应缺 userName 时，
@@ -152,9 +154,58 @@ class DefaultMessageWidget extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     if (messageWidget != null) return messageWidget!(message);
-    Widget content = message.ownerType == OwnerType.receiver
-        ? _buildReceiver(context)
-        : _buildSender(context);
+    final theme = Theme.of(context);
+    final background = (message.ownerType == OwnerType.receiver
+            ? receiverBackgroundColor
+            : senderBackgroundColor) ??
+        backgroundColor ??
+        (message.ownerType == OwnerType.receiver
+            ? const Color(0xFFE9E8FC)
+            : Colors.white);
+    final opaque = Color.alphaBlend(background, theme.colorScheme.surface);
+    // 黑白两色取对比度较高者，支持任意手动输入的颜色。
+    final foreground = opaque.computeLuminance() > 0.179
+        ? Colors.black
+        : Colors.white;
+    final scheme = ColorScheme.fromSeed(
+      seedColor: opaque,
+      brightness: foreground == Colors.white
+          ? Brightness.dark
+          : Brightness.light,
+    ).copyWith(
+      onSurface: foreground,
+      onSurfaceVariant: foreground,
+      primary: foreground,
+    );
+    return _withCreatedTime(Theme(
+      data: theme.copyWith(
+        colorScheme: scheme,
+        textTheme: theme.textTheme.apply(
+          bodyColor: foreground,
+          displayColor: foreground,
+        ),
+        iconTheme: theme.iconTheme.copyWith(color: foreground),
+        textSelectionTheme: TextSelectionThemeData(
+          selectionColor: foreground.withValues(alpha: 0.25),
+          selectionHandleColor: foreground,
+        ),
+      ),
+      child: DefaultTextStyle.merge(
+        style: TextStyle(color: foreground),
+        child: Builder(
+          builder: (bubbleContext) => _buildMessage(bubbleContext, context),
+        ),
+      ),
+    ));
+  }
+
+  Widget _buildMessage(BuildContext context, BuildContext actionContext) {
+    return message.ownerType == OwnerType.receiver
+        ? _buildReceiver(context, actionContext)
+        : _buildSender(context, actionContext);
+  }
+
+  Widget _withCreatedTime(Widget content) {
     return Column(
       children: [
         if (message.showCreatedTime) _buildCreatedTime(),
@@ -166,30 +217,30 @@ class DefaultMessageWidget extends StatelessWidget {
     );
   }
 
-  Widget _buildReceiver(BuildContext context) {
+  Widget _buildReceiver(BuildContext context, BuildContext actionContext) {
     return Row(
       mainAxisSize: MainAxisSize.max,
       crossAxisAlignment: CrossAxisAlignment.start,
       mainAxisAlignment: MainAxisAlignment.start,
       children: <Widget>[
-        _buildCircleAvatar(context),
+        if (showAvatars) _buildCircleAvatar(context),
         Flexible(
           child: Bubble(
-              margin: BubbleEdges.fromLTRB(10, 0, contentMargin, 0),
+              margin: BubbleEdges.fromLTRB(showAvatars ? 8 : 0, 0, contentMargin, 0),
               stick: true,
-              nip: BubbleNip.leftTop,
+              nip: showAvatars ? BubbleNip.leftTop : BubbleNip.no,
               radius: bubbleRadius,
               color: receiverBackgroundColor ??
                   backgroundColor ??
                   const Color.fromRGBO(233, 232, 252, 10),
               alignment: Alignment.topLeft,
-              child: _bubbleChild(TextAlign.left, context)),
+              child: _bubbleChild(TextAlign.left, context, actionContext)),
         ),
       ],
     );
   }
 
-  Widget _buildSender(BuildContext context) {
+  Widget _buildSender(BuildContext context, BuildContext actionContext) {
     return Row(
       mainAxisSize: MainAxisSize.max,
       mainAxisAlignment: MainAxisAlignment.end,
@@ -197,30 +248,50 @@ class DefaultMessageWidget extends StatelessWidget {
       children: <Widget>[
         Flexible(
           child: Bubble(
-              margin: BubbleEdges.fromLTRB(contentMargin, 0, 10, 0),
+              margin: BubbleEdges.fromLTRB(contentMargin, 0, showAvatars ? 8 : 0, 0),
               stick: true,
-              nip: BubbleNip.rightTop,
+              nip: showAvatars ? BubbleNip.rightTop : BubbleNip.no,
               radius: bubbleRadius,
               color: senderBackgroundColor ?? backgroundColor ?? Colors.white,
               alignment: Alignment.topRight,
-              child: _bubbleChild(TextAlign.left, context)),
+              child: _bubbleChild(TextAlign.left, context, actionContext)),
         ),
-        _buildCircleAvatar(context)
+        if (showAvatars) _buildCircleAvatar(context)
       ],
     );
   }
 
   /// 气泡内部内容：优先用 [contentBuilder]（块化渲染），回退默认文本/图片。
-  /// 自定义内容外包一层手势，保留气泡级 点击/长按 菜单。
-  Widget _bubbleChild(TextAlign align, BuildContext context) {
-    final custom = contentBuilder?.call(context, message);
-    if (custom == null) return _buildContentText(align, context);
-    return InkWell(
-      onTap: () => onBubbleTap != null ? onBubbleTap!(message, context) : null,
-      onLongPress: () => onBubbleLongPress != null
-          ? onBubbleLongPress!(message, context)
-          : null,
-      child: custom,
+  /// 正文由 SelectionArea 统一处理拖选、长按选词和系统复制快捷键。
+  /// 独立操作按钮保留原消息菜单，避免与文本选择竞争手势。
+  Widget _bubbleChild(
+      TextAlign align, BuildContext context, BuildContext actionContext) {
+    // 菜单沿用页面主题；只有气泡正文使用自定义颜色，避免浅色弹层出现白字。
+    final content = contentBuilder?.call(context, message) ??
+        _buildContentText(align, context);
+    return Column(
+      mainAxisSize: MainAxisSize.min,
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        InkWell(
+          onTap: onBubbleTap == null
+              ? null
+              : () => onBubbleTap!(message, actionContext),
+          onLongPress: onBubbleLongPress == null
+              ? null
+              : () => onBubbleLongPress!(message, actionContext),
+          child: SelectionArea(child: content),
+        ),
+        if (onBubbleLongPress != null)
+          SelectionContainer.disabled(
+            child: IconButton(
+              tooltip: '消息操作',
+              icon: const Icon(Icons.more_horiz, size: 18),
+              color: Theme.of(context).colorScheme.onSurface,
+              onPressed: () => onBubbleLongPress!(message, actionContext),
+            ),
+          ),
+      ],
     );
   }
 
@@ -230,20 +301,13 @@ class DefaultMessageWidget extends StatelessWidget {
     final hasText = message.content.isNotEmpty;
 
     if (!hasImages) {
-      return InkWell(
-        onTap: () =>
-            onBubbleTap != null ? onBubbleTap!(message, context) : null,
-        onLongPress: () => onBubbleLongPress != null
-            ? onBubbleLongPress!(message, context)
-            : null,
-        child: Text(
+      return Text(
           message.content,
           textAlign: align,
           style: TextStyle(
               fontSize: fontSize,
-              color: textColor ?? Colors.black,
+              color: textColor ?? Theme.of(context).colorScheme.onSurface,
               fontFamily: fontFamily),
-        ),
       );
     }
 
@@ -259,7 +323,7 @@ class DefaultMessageWidget extends StatelessWidget {
             textAlign: align,
             style: TextStyle(
                 fontSize: fontSize,
-                color: textColor ?? Colors.black,
+                color: textColor ?? Theme.of(context).colorScheme.onSurface,
                 fontFamily: fontFamily),
           ),
         ],

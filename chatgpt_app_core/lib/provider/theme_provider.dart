@@ -5,6 +5,13 @@ import 'package:flutter_hi_cache/flutter_hi_cache.dart';
 class ThemeProvider extends ChangeNotifier {
   static const keyThemeColor = 'theme_color';
   static const keyVisualStyle = 'app_visual_style_v1';
+  static const keyShowMessageAvatars = 'chat_show_avatars_v1';
+  static const keyUserBubbleColor = 'chat_user_bubble_color_v1';
+  static const keyAiBubbleColor = 'chat_ai_bubble_color_v1';
+
+  late bool _showMessageAvatars;
+  Color? _userBubbleColor;
+  Color? _aiBubbleColor;
 
   ///主题数组
   static const themes = [
@@ -31,11 +38,63 @@ class ThemeProvider extends ChangeNotifier {
   late AppVisualStyle _visualStyle;
 
   ThemeProvider() {
+    final cache = HiCache.getInstance();
+    _showMessageAvatars = cache.get<bool>(keyShowMessageAvatars) ?? true;
+    _userBubbleColor = _loadBubbleColor(keyUserBubbleColor);
+    _aiBubbleColor = _loadBubbleColor(keyAiBubbleColor);
     _themeColorName = _loadThemeName();
     _themeColor = getThemeColor(_themeColorName);
     _visualStyle = AppVisualStyle.fromStorage(
       HiCache.getInstance().get<String>(keyVisualStyle),
     );
+  }
+
+  bool get showMessageAvatars => _showMessageAvatars;
+  Color? get userBubbleColor => _userBubbleColor;
+  Color? get aiBubbleColor => _aiBubbleColor;
+
+  static Color? _loadBubbleColor(String key) {
+    final value = HiCache.getInstance().get<int>(key);
+    if (value == null || value < 0 || value > 0xFFFFFFFF) return null;
+    return Color(value).withValues(alpha: 1);
+  }
+
+  void setShowMessageAvatars(bool value) {
+    if (_showMessageAvatars == value) return;
+    _showMessageAvatars = value;
+    HiCache.getInstance().setBool(keyShowMessageAvatars, value);
+    notifyListeners();
+  }
+
+  /// 两侧独立保存；null 表示恢复随主题变化的默认配色。
+  void setBubbleColor({required bool isUser, required Color? color}) {
+    final opaque = color?.withValues(alpha: 1);
+    if ((isUser ? _userBubbleColor : _aiBubbleColor) == opaque) return;
+    if (isUser) {
+      _userBubbleColor = opaque;
+    } else {
+      _aiBubbleColor = opaque;
+    }
+    final key = isUser ? keyUserBubbleColor : keyAiBubbleColor;
+    if (opaque == null) {
+      HiCache.getInstance().remove(key);
+    } else {
+      HiCache.getInstance().setInt(key, opaque.toARGB32());
+    }
+    notifyListeners();
+  }
+
+  Color bubbleColor(ThemeData theme, {required bool isUser}) {
+    final custom = isUser ? _userBubbleColor : _aiBubbleColor;
+    if (custom != null) return custom;
+    final scheme = theme.colorScheme;
+    if (theme.extension<AppVisualTheme>()?.isAnime ?? false) {
+      return isUser ? scheme.secondaryContainer : scheme.primaryContainer;
+    }
+    if (theme.brightness == Brightness.dark) {
+      return isUser ? scheme.surfaceContainerHighest : scheme.primaryContainer;
+    }
+    return isUser ? Colors.white : const Color(0xFFE9E8FC);
   }
 
   MaterialColor get themeColor => _themeColor;

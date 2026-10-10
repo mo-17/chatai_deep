@@ -14,6 +14,7 @@ class ChatList extends StatefulWidget {
   final OnBubbleClick? onBubbleTap;
   final OnBubbleClick? onBubbleLongPress;
   final MessageAvatarBuilder? avatarBuilder;
+  final bool showAvatars;
   final Color? receiverBackgroundColor;
   final Color? senderBackgroundColor;
   final Color? receiverAvatarBackgroundColor;
@@ -28,6 +29,7 @@ class ChatList extends StatefulWidget {
     this.onBubbleTap,
     this.onBubbleLongPress,
     this.avatarBuilder,
+    this.showAvatars = true,
     this.receiverBackgroundColor,
     this.senderBackgroundColor,
     this.receiverAvatarBackgroundColor,
@@ -88,6 +90,7 @@ class _ChatListState extends State<ChatList> {
                     messageWidget: messageWidgetBuilder,
                     contentBuilder: messageContentBuilder,
                     avatarBuilder: widget.avatarBuilder,
+                    showAvatars: widget.showAvatars,
                     onBubbleTap: widget.onBubbleTap,
                     onBubbleLongPress: widget.onBubbleLongPress,
                     receiverBackgroundColor: widget.receiverBackgroundColor,

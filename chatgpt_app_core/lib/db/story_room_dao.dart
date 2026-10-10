@@ -49,7 +49,7 @@ class StoryRoomDao implements ITable {
         ', maxAutoTotalTokens integer default ${StoryRoomSchedulingLimits.defaultMaxAutoTotalTokens}'
         ', publicContext text, worldBookState text'
         ', promptConfigJson text, quickRepliesJson text, regexScriptsJson text, tavernPresetJson text, personaKey text'
-        ', modelProviderId text, modelId text'
+        ', webSearchEnabled integer, modelProviderId text, modelId text'
         ', temperature real, topP real, maxOutputTokens integer'
         ', activeMessageKey text'
         ', tavernChatMetadataJson text'
@@ -140,6 +140,8 @@ class StoryRoomDao implements ITable {
       'topP real',
       'maxOutputTokens integer',
       'worldBookState text',
+      // 不设默认值：旧房间继续跟随全局，不把当时的值固定为覆盖。
+      'webSearchEnabled integer',
       'promptConfigJson text',
       'quickRepliesJson text',
       'regexScriptsJson text',
@@ -280,6 +282,19 @@ class StoryRoomDao implements ITable {
     await storage.db
         .update(tableName, data, where: 'id = ?', whereArgs: [model.id]);
     return model.id!;
+  }
+
+  /// 只更新搜索偏好，避免开关覆盖并发保存的房间内容或模型参数。
+  Future<int> updateWebSearchOverride(int roomId, bool? enabled) {
+    return storage.db.update(
+      tableName,
+      {
+        'webSearchEnabled': enabled == null ? null : (enabled ? 1 : 0),
+        'updatedAt': DateTime.now().millisecondsSinceEpoch,
+      },
+      where: 'id = ?',
+      whereArgs: [roomId],
+    );
   }
 
   /// 将已验证的 Tavern 导入计划作为一组数据落库；任一写入失败都会回滚。

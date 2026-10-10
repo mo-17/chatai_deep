@@ -61,6 +61,11 @@ class MessageInputWidget extends StatefulWidget {
   /// 同步发送闸门。返回 false 时不调用 [onSend]，也不清空输入内容。
   final bool Function()? canSend;
   final VoidCallback? onStop;
+
+  /// 仅由普通对话显式传入；其余共享输入场景不启用。
+  final String? suggestedMessage;
+  final VoidCallback? onAcceptSuggestion;
+  final VoidCallback? onDismissSuggestion;
   final ValueChanged<List<String>>? onImagesPicked;
   final List<String> pendingImages;
   final ValueChanged<int>? onRemoveImage;
@@ -100,6 +105,9 @@ class MessageInputWidget extends StatefulWidget {
     this.clearOnSend = true,
     this.canSend,
     this.onStop,
+    this.suggestedMessage,
+    this.onAcceptSuggestion,
+    this.onDismissSuggestion,
     this.onImagesPicked,
     this.pendingImages = const [],
     this.onRemoveImage,
@@ -467,18 +475,46 @@ class _MessageInputWidgetState extends State<MessageInputWidget> {
         ),
       );
 
-  /// 联网搜索开关：开启时用主题色高亮。
-  Widget _webSearchBtn(Color themeColor) => GestureDetector(
-        onTap: widget.editingEnabled ? widget.onToggleWebSearch : null,
-        child: Container(
-          margin: const EdgeInsets.only(right: 6),
-          child: Icon(
-            Icons.travel_explore,
-            color: widget.webSearchEnabled ? themeColor : Colors.grey,
-            size: 24,
+  /// 两种布局共用同一开关：选中、关闭和暂不可用有独立的视觉状态。
+  Widget _webSearchBtn({required bool isAnime}) {
+    final scheme = Theme.of(context).colorScheme;
+    final enabled = widget.enable &&
+        widget.editingEnabled &&
+        !widget.isStreaming &&
+        widget.onToggleWebSearch != null;
+    return Padding(
+      padding: EdgeInsets.only(right: isAnime ? 0 : 6),
+      child: SizedBox.square(
+        dimension: 44,
+        child: IconButton(
+          key: const ValueKey('web_search_toggle'),
+          tooltip: widget.webSearchEnabled ? '关闭联网搜索' : '开启联网搜索',
+          isSelected: widget.webSearchEnabled,
+          onPressed: enabled ? widget.onToggleWebSearch : null,
+          style: IconButton.styleFrom(
+            minimumSize: const Size.square(44),
+            maximumSize: const Size.square(44),
+            padding: EdgeInsets.zero,
+            backgroundColor: widget.webSearchEnabled
+                ? scheme.primary
+                : scheme.surfaceContainerHighest,
+            foregroundColor: widget.webSearchEnabled
+                ? scheme.onPrimary
+                : scheme.onSurfaceVariant,
+            disabledBackgroundColor: scheme.onSurface.withValues(alpha: 0.08),
+            disabledForegroundColor: scheme.onSurface.withValues(alpha: 0.38),
+            shape: RoundedRectangleBorder(
+              borderRadius: BorderRadius.circular(isAnime ? 14 : 10),
+            ),
+          ),
+          icon: Icon(
+            isAnime ? Icons.travel_explore_rounded : Icons.travel_explore,
+            size: isAnime ? 22 : 24,
           ),
         ),
-      );
+      ),
+    );
+  }
 
   get _micBtn => GestureDetector(
         onTap: widget.editingEnabled ? _onMicTap : null,
@@ -850,12 +886,7 @@ class _MessageInputWidgetState extends State<MessageInputWidget> {
 
   List<Widget> _animeTools() => [
         if (widget.showWebSearch)
-          _animeToolButton(
-            icon: Icons.travel_explore_rounded,
-            tooltip: widget.webSearchEnabled ? '关闭联网搜索' : '开启联网搜索',
-            onPressed: widget.editingEnabled ? widget.onToggleWebSearch : null,
-            active: widget.webSearchEnabled,
-          ),
+          _webSearchBtn(isAnime: true),
         if (_showPhotoBtn)
           _animeToolButton(
             icon: Icons.add_photo_alternate_rounded,
@@ -994,6 +1025,7 @@ class _MessageInputWidgetState extends State<MessageInputWidget> {
               ],
             ),
           ),
+          if (_canShowSuggestion) _buildSuggestion(),
           _buildThumbnailBar(isAnime: isAnime),
           _buildFileBar(isAnime: isAnime),
           if (isAnime)
@@ -1003,7 +1035,7 @@ class _MessageInputWidgetState extends State<MessageInputWidget> {
               height: 45,
               child: Row(
                 children: [
-                  if (widget.showWebSearch) _webSearchBtn(color),
+                  if (widget.showWebSearch) _webSearchBtn(isAnime: false),
                   if (_showPhotoBtn) _photoBtn,
                   if (_showFileBtn) _fileBtn,
                   if (widget.speechInputEnabled) _micBtn,
@@ -1013,6 +1045,66 @@ class _MessageInputWidgetState extends State<MessageInputWidget> {
               ),
             ),
         ],
+      ),
+    );
+  }
+
+  bool get _canShowSuggestion =>
+      widget.suggestedMessage?.isNotEmpty == true &&
+      widget.onAcceptSuggestion != null &&
+      widget.enable &&
+      widget.editingEnabled &&
+      !widget.isStreaming &&
+      _controller.text.isEmpty &&
+      (!_controller.value.composing.isValid ||
+          _controller.value.composing.isCollapsed) &&
+      widget.pendingImages.isEmpty &&
+      widget.pendingFiles.isEmpty;
+
+  Widget _buildSuggestion() {
+    final colors = Theme.of(context).colorScheme;
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(8, 4, 8, 8),
+      child: Material(
+        key: const ValueKey('composer_prediction'),
+        color: colors.secondaryContainer,
+        borderRadius: BorderRadius.circular(14),
+        child: Row(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Expanded(
+              child: TextButton(
+                key: const ValueKey('accept_composer_prediction'),
+                style: TextButton.styleFrom(
+                  foregroundColor: colors.onSecondaryContainer,
+                  alignment: Alignment.centerLeft,
+                  padding: const EdgeInsets.all(12),
+                ),
+                onPressed: () {
+                  if (_canShowSuggestion) widget.onAcceptSuggestion?.call();
+                },
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text('下一条消息建议 · 点击填入',
+                        style: Theme.of(context)
+                            .textTheme
+                            .labelSmall
+                            ?.copyWith(color: colors.onSecondaryContainer)),
+                    const SizedBox(height: 4),
+                    Text(widget.suggestedMessage!),
+                  ],
+                ),
+              ),
+            ),
+            IconButton(
+              tooltip: '忽略建议',
+              onPressed: widget.onDismissSuggestion,
+              color: colors.onSecondaryContainer,
+              icon: const Icon(Icons.close, size: 18),
+            ),
+          ],
+        ),
       ),
     );
   }

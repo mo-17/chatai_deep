@@ -308,6 +308,9 @@ class AISettings {
 
   String backendModel;
   bool streamEnabled;
+
+  /// 可选的下一条消息建议；会产生独立模型用量，旧设置默认关闭。
+  bool composerPredictionsEnabled;
   bool resetOnLogout;
 
   /// 联网搜索（阶段五）：Tavily API Key（空 = 未配置）。
@@ -391,6 +394,7 @@ class AISettings {
     required this.backendModel,
     required this.streamEnabled,
     required this.resetOnLogout,
+    this.composerPredictionsEnabled = false,
     this.tavilyApiKey = '',
     this.webSearchEnabled = false,
     this.webSearchProviderId = 'tavily',
@@ -466,6 +470,7 @@ class AISettings {
       activeProviderId: activeId,
       backendModel: j['backendModel'] as String? ?? 'deepseek-chat',
       streamEnabled: j['streamEnabled'] as bool? ?? true,
+      composerPredictionsEnabled: j['composerPredictionsEnabled'] == true,
       resetOnLogout: j['resetOnLogout'] as bool? ?? true,
       tavilyApiKey: j['tavilyApiKey'] as String? ?? '',
       webSearchEnabled: j['webSearchEnabled'] as bool? ?? false,
@@ -533,6 +538,7 @@ class AISettings {
         'activeProviderId': activeProviderId,
         'backendModel': backendModel,
         'streamEnabled': streamEnabled,
+        'composerPredictionsEnabled': composerPredictionsEnabled,
         'resetOnLogout': resetOnLogout,
         'tavilyApiKey': tavilyApiKey,
         'webSearchEnabled': webSearchEnabled,

@@ -44,6 +44,8 @@ void main() {
     final provider = AISettingsProvider();
     await pumpWithSettings(tester, const AISettingsPage(), provider);
 
+    await tester.ensureVisible(find.text('核采样 Top P'));
+    await tester.pumpAndSettle();
     await tester.tap(find.text('核采样 Top P'));
     await tester.pumpAndSettle();
 

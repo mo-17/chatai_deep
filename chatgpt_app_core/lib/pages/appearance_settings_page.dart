@@ -1,6 +1,7 @@
 import 'package:chatgpt_app_core/provider/theme_provider.dart';
 import 'package:chatgpt_app_core/theme/app_visual_theme.dart';
 import 'package:chatgpt_app_core/widget/theme_widget.dart';
+import 'package:chatgpt_app_core/widget/chat_appearance_section.dart';
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
@@ -99,6 +100,8 @@ class AppearanceSettingsPage extends StatelessWidget {
                         provider.setVisualStyle(AppVisualStyle.classic),
                   ),
           ),
+          const SizedBox(height: 28),
+          const ChatAppearanceSection(),
         ],
       ),
     );

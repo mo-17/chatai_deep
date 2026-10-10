@@ -394,6 +394,18 @@ class _AISettingsPageState extends State<AISettingsPage> {
           contentPadding:
               const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
         ),
+        SwitchListTile(
+          key: const ValueKey('composer_predictions_setting'),
+          value: s.composerPredictionsEnabled,
+          onChanged: (v) => _patch((x) => x.composerPredictionsEnabled = v),
+          title: const Text('下一条消息建议'),
+          subtitle: Text(
+            '回复完成后，用当前模型和近期已发送对话预测下一条消息，会额外消耗模型用量。不发送未提交草稿；采纳仅填入输入框，由你确认发送。',
+            style: tt.bodySmall?.copyWith(color: cs.onSurfaceVariant),
+          ),
+          contentPadding:
+              const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
+        ),
         ListTile(
           title: const Text('最大输出长度'),
           subtitle: Text(
@@ -687,6 +699,17 @@ class _AISettingsPageState extends State<AISettingsPage> {
         orElse: () => _searchProviders.first);
     return SectionCard(
       children: [
+        SwitchListTile(
+          key: const ValueKey('default_web_search_setting'),
+          title: const Text('默认开启联网搜索'),
+          subtitle: const Text(
+            '适用于跟随全局默认的新旧会话和创作／酒馆房间。'
+            '会话、房间的独立选择及项目指定的默认值不受影响；'
+            '仍需配置下方搜索服务商。',
+          ),
+          value: s.webSearchEnabled,
+          onChanged: (value) => _patch((x) => x.webSearchEnabled = value),
+        ),
         Padding(
           padding: const EdgeInsets.all(16),
           child: Column(

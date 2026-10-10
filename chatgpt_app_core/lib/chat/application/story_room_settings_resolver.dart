@@ -6,6 +6,7 @@ class StoryRoomSettingsResolver {
 
   static AISettings apply(StoryRoomModel room, AISettings settings) {
     final next = settings.clone();
+    next.webSearchEnabled = room.webSearchEnabled ?? settings.webSearchEnabled;
     final model = room.modelId?.trim() ?? '';
     if (next.mode == AIMode.backend) {
       if (model.isNotEmpty) next.backendModel = model;

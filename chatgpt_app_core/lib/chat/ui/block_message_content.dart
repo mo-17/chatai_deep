@@ -221,8 +221,8 @@ class _BlockView extends StatelessWidget {
   }
 }
 
-/// 主文本块（也复用于翻译块）。保持与原气泡一致用纯 [Text]，
-/// 以便气泡级长按菜单（复制/收藏/删除）正常触发。
+/// 主文本块（也复用于翻译块）。Text / Text.rich 注册到气泡的
+/// SelectionArea，正文与内联引用可一起选择，引用仍保留点击行为。
 class _MainText extends StatelessWidget {
   final String content;
   final String messageKey;
@@ -252,9 +252,7 @@ class _MainText extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     if (content.isEmpty) return const SizedBox.shrink();
-    final visual = AppVisualTheme.of(context);
-    final scheme = Theme.of(context).colorScheme;
-    final linkColor = visual.isAnime ? scheme.primary : const Color(0xFF3B5BDB);
+    final linkColor = color;
     final linkStyle = TextStyle(
       color: linkColor,
       fontSize: fontSize,
