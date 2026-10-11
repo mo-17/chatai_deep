@@ -139,7 +139,14 @@ class AssistantMemoryDao implements IAssistantMemory, ITable {
   }
 
   @override
-  Future<int?> saveMemory(AssistantMemoryModel model) async {
+  Future<int?> saveMemory(AssistantMemoryModel model) => _saveMemory(model);
+
+  /// 管理页写入需要行身份和 revision；旧调用保持原 API。
+  Future<int?> saveMemoryChecked(AssistantMemoryModel model) =>
+      _saveMemory(model, checked: true);
+
+  Future<int?> _saveMemory(AssistantMemoryModel model,
+      {bool checked = false}) async {
     final content = model.content.trim();
     if (content.isEmpty || (model.id == null && model.assistantId <= 0)) {
       return null;
@@ -183,6 +190,12 @@ class AssistantMemoryDao implements IAssistantMemory, ITable {
       );
       if (existingRows.isEmpty) return null;
       final existing = AssistantMemoryModel.fromJson(existingRows.single);
+      if (checked &&
+          (existing.assistantId != model.assistantId ||
+              existing.memoryId != model.memoryId ||
+              existing.revision != model.revision)) {
+        return null;
+      }
       final existingSourceType = existing.sourceType;
       existing
         ..content = content
@@ -261,6 +274,16 @@ class AssistantMemoryDao implements IAssistantMemory, ITable {
   Future<int> deleteMemory(int id) {
     return storage.db.delete(tableName, where: 'id = ?', whereArgs: [id]);
   }
+
+  Future<int> deleteMemoryChecked(AssistantMemoryModel model) =>
+      storage.db.delete(tableName,
+          where: 'id=? and assistantId=? and memoryId=? and revision=?',
+          whereArgs: [
+            model.id,
+            model.assistantId,
+            model.memoryId,
+            model.revision
+          ]);
 
   static String buildSystemContext(List<AssistantMemoryModel> memories,
       {int limit = 8}) {

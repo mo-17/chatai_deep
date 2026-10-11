@@ -112,6 +112,7 @@ class ChatContextPlanner {
     required String systemPrompt,
     required String prompt,
     ChatAttachments? attachments,
+    Object? preparedUserContent,
     List<Map<String, dynamic>> tools = const [],
     List<Map<String, dynamic>> extraMessages = const [],
     ChatContextPolicy policy = const ChatContextPolicy(),
@@ -140,7 +141,9 @@ class ChatContextPlanner {
     };
     final current = <String, dynamic>{
       'role': 'user',
-      'content': attachments?.buildUserContent(prompt) ?? prompt,
+      'content': preparedUserContent ??
+          attachments?.buildUserContent(prompt) ??
+          prompt,
     };
     final mandatoryTokens =
         estimateMessages([system, current, ...extraMessages]) +

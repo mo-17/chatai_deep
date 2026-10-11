@@ -152,7 +152,8 @@ void main() {
     expect(find.textContaining('内容与清单一致（不代表来源可信）'), findsOneWidget);
     expect(find.textContaining('AI 设置：包含（不含 API Key）'), findsOneWidget);
     expect(find.textContaining('会话：3'), findsOneWidget);
-    expect(find.textContaining('长期记忆：3'), findsOneWidget);
+    expect(find.textContaining('助手记忆：3'), findsOneWidget);
+    expect(find.textContaining('个人记忆：0'), findsOneWidget);
     expect(find.textContaining('附件原始文件：2'), findsOneWidget);
     expect(find.textContaining('生成图片：3'), findsOneWidget);
     expect(find.textContaining('备份来自其他账号'), findsOneWidget);

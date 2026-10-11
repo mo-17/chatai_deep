@@ -91,6 +91,9 @@ class AgentTaskRun extends ChangeNotifier {
   ChatSendProgress? progress;
   ChatContextPlan? contextPlan;
   MessageModel? reply;
+
+  /// 仅真实回复事务成功后设置，页面不能用显示快照伪造落盘绑定。
+  int? persistedReplyRowId;
   String? backgroundNotice;
   String? pauseReason;
   ChatFailureDiagnosis? _failureDiagnosis;
@@ -462,12 +465,12 @@ class AgentTaskRun extends ChangeNotifier {
     final saved = await prepared.messages.storage.db.transaction((txn) async {
       final conversations = await txn.query('tb_conversation_list',
           columns: ['cid'], where: 'cid = ?', whereArgs: [key.cid], limit: 1);
-      if (conversations.isEmpty) return false;
+      if (conversations.isEmpty) return null;
       final data = model.toJson()..['cid'] = key.cid;
       if (snapshot.isNotEmpty) {
         data['blocks'] = MessageBlock.encodeList(snapshot);
       }
-      await txn.insert('tb_messages', data);
+      final rowId = await txn.insert('tb_messages', data);
       final counts = await txn.rawQuery(
           'select count(*) as n from tb_messages where cid = ?', [key.cid]);
       // 仅更新摘要，不覆盖其他页面刚修改的模型、助手或偏好。
@@ -480,12 +483,13 @@ class AgentTaskRun extends ChangeNotifier {
           },
           where: 'cid = ?',
           whereArgs: [key.cid]);
-      return true;
+      return rowId;
     });
-    if (!saved) {
+    if (saved == null) {
       requestPause('原对话已删除');
       return;
     }
+    persistedReplyRowId = saved;
     prepared.completion.appendTurn(prepared.user, model,
         assistantBlocks: snapshot,
         userFileText: prepared.attachments.extraText);

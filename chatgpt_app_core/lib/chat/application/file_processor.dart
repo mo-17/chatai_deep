@@ -556,6 +556,29 @@ class FileProcessor {
     return 'Word / Excel 文件损坏或格式不正确，请检查后重新上传';
   }
 
+  /// 引用预览直接解析已校验的字节，不再打开可能被替换的路径。
+  static Future<String?> extractTextFromBytes(Uint8List bytes,
+      {required String filename,
+      AttachmentProcessingLimits limits =
+          const AttachmentProcessingLimits()}) async {
+    final effectiveLimits = limits.normalized;
+    final ext = filename.split('.').last.toLowerCase();
+    if (ext == 'pdf') {
+      return _extractPdfBytesContent(bytes,
+              limitCharacters: true, limits: effectiveLimits)
+          .text;
+    }
+    if (_textExts.contains(ext)) {
+      return _textBytesContent(bytes, limits: effectiveLimits).text;
+    }
+    if (OfficeTextExtractor.isOfficeFile(filename)) {
+      return (await _extractOfficeByteContent(bytes,
+              filename: filename, limits: effectiveLimits))
+          .text;
+    }
+    return null;
+  }
+
   /// 知识库导入用：从一个本地文件抽**纯正文**（不带附件包裹标记）。
   /// 支持 PDF（限页抽取）、文本与 Word / Excel；其它类型返回 null。
   /// Office 解析失败抛出异常，避免把错误提示当成知识库正文保存。

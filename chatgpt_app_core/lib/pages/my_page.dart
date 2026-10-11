@@ -15,6 +15,7 @@ import 'package:chatgpt_app_core/pages/capability_center_page.dart';
 import 'package:chatgpt_app_core/pages/cloud_sync_page.dart';
 import 'package:chatgpt_app_core/pages/generated_image_album_page.dart';
 import 'package:chatgpt_app_core/pages/knowledge_base_page.dart';
+import 'package:chatgpt_app_core/pages/personal_memory_page.dart';
 import 'package:chatgpt_app_core/pages/mcp_settings_page.dart';
 import 'package:chatgpt_app_core/pages/tool_audit_page.dart';
 import 'package:chatgpt_app_core/pages/tts_model_manager_page.dart';
@@ -129,6 +130,13 @@ class _MyPageState extends State<MyPage> {
                     context,
                     MaterialPageRoute(
                         builder: (_) => const McpSettingsPage()))),
+            ..._itemWidget(
+                color: color,
+                title: '个人记忆',
+                icon: Icons.psychology_alt_outlined,
+                subtitle: '本账号跨普通会话使用，可查看和控制',
+                onTap: () => Navigator.push(context,
+                    MaterialPageRoute(builder: (_) => const PersonalMemoryPage()))),
             ..._itemWidget(
                 color: color,
                 title: 'Agent 任务中心',

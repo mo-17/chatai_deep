@@ -1,4 +1,7 @@
 import 'dart:async';
+import 'package:chatgpt_app_core/backup/backup_service.dart';
+import 'package:chatgpt_app_core/chat/domain/interactive_card.dart';
+import 'package:chatgpt_app_core/chat/application/checklist_state_coordinator.dart';
 
 import 'package:chat_message/core/chat_controller.dart';
 import 'package:chat_message/models/message_model.dart';
@@ -9,6 +12,12 @@ import 'package:chatgpt_app_core/ai_readiness/ai_send_guard.dart';
 import 'package:chatgpt_app_core/chat/application/assistant_conversation_avatar_resolver.dart';
 import 'package:chatgpt_app_core/chat/application/chat_block_store.dart';
 import 'package:chatgpt_app_core/chat/application/conversation_draft_store.dart';
+import 'package:chatgpt_app_core/chat/application/user_message_context.dart';
+import 'package:chatgpt_app_core/chat/domain/composer_reference.dart';
+import 'package:chatgpt_app_core/chat/domain/attachment_processing_limits.dart';
+import 'package:chatgpt_app_core/db/message_reference_dao.dart';
+import 'package:chatgpt_app_core/util/account_resource_scope.dart';
+import 'package:chatgpt_app_core/widget/message_reference_picker.dart';
 import 'package:chatgpt_app_core/chat/application/composer_prediction_service.dart';
 import 'package:chatgpt_app_core/chat/application/chat_context_planner.dart';
 import 'package:chatgpt_app_core/chat/application/agent_task_session.dart';
@@ -57,6 +66,10 @@ import 'package:chatgpt_app_core/model/ai_provider.dart';
 import 'package:chatgpt_app_core/model/assistant_model.dart';
 import 'package:chatgpt_app_core/db/assistant_dao.dart';
 import 'package:chatgpt_app_core/db/assistant_memory_dao.dart';
+import 'package:chatgpt_app_core/db/personal_memory_dao.dart';
+import 'package:chatgpt_app_core/chat/application/conversation_memory_context.dart';
+import 'package:chatgpt_app_core/model/personal_memory_model.dart';
+import 'package:chatgpt_app_core/pages/personal_memory_page.dart';
 import 'package:chatgpt_app_core/db/conversation_dao.dart';
 import 'package:chatgpt_app_core/db/favorite_dao.dart';
 import 'package:chatgpt_app_core/db/hi_db_manager.dart';
@@ -147,6 +160,16 @@ class ConversationPage extends StatefulWidget {
   /// 嵌入方或测试可注入传输，默认沿用用户配置。
   final ChatService? chatService;
 
+  /// 测试可延迟真实事务的返回，验证保存与下一轮发送的时序。
+  @visibleForTesting
+  final ChecklistStateCoordinator? checklistCoordinator;
+
+  @visibleForTesting
+  final ConversationDraftStore? draftStore;
+
+  @visibleForTesting
+  final ValueChanged<Object>? onSendPreparationError;
+
   const ConversationPage({
     super.key,
     required this.conversationModel,
@@ -161,6 +184,9 @@ class ConversationPage extends StatefulWidget {
     this.readAloudService,
     this.predictionService,
     this.chatService,
+    this.checklistCoordinator,
+    this.draftStore,
+    this.onSendPreparationError,
   });
 
   @override
@@ -378,6 +404,78 @@ class _ConversationPageState extends State<ConversationPage>
 
   /// 块化消息系统：规范化的块仓库（每页一个，随页面生命周期销毁）。
   final ChatBlockStore _blockStore = ChatBlockStore();
+  final Map<int, int> _cardRows = {};
+  late final int _cardCid;
+  ChecklistStateCoordinator? _checklistCoordinator;
+
+  bool get _cardScopeCurrent =>
+      mounted && _accountCurrent && widget.conversationModel.cid == _cardCid;
+
+  bool _cardMessageCurrent(int createdAt, String blockId, String content) =>
+      _cardScopeCurrent &&
+      _cardRows.containsKey(createdAt) &&
+      chatController.initialMessageList.any((m) =>
+          m.createdAt == createdAt && m.ownerType == OwnerType.receiver) &&
+      _blockStore.blocksFor(chatMessageKey(createdAt)).any(
+          (b) => b is MainTextBlock && b.id == blockId && b.content == content);
+
+  Future<void> _setCardChecked(int createdAt, MainTextBlock block,
+      CardProjection card, String itemId, bool checked) async {
+    final rowId = _cardRows[createdAt];
+    bool current() =>
+        _cardRows[createdAt] == rowId &&
+        _cardMessageCurrent(createdAt, block.id, block.content);
+    if (!mounted || _isStreaming || !current()) return;
+    final coordinator = _checklistCoordinator ??= widget.checklistCoordinator ??
+        ChecklistStateCoordinator(
+            dao: messageDao,
+            accountHash: _pageAccount,
+            isCurrent: () => _cardScopeCurrent);
+    final result = await coordinator.setChecked(
+        createdAt: createdAt,
+        blockId: block.id,
+        expectedContent: block.content,
+        cardKey: card.key,
+        itemId: itemId,
+        checked: checked,
+        expectedRowId: rowId!,
+        messageIsCurrent: current);
+    if (!mounted || !current()) return;
+    if (result.status == ChecklistWriteStatus.saved && result.state != null) {
+      final latest = _blockStore.block(block.id);
+      if (latest is MainTextBlock && latest.content == block.content) {
+        _blockStore.upsertBlock(latest.copyWith(localCardStates: {
+          ...latest.localCardStates,
+          card.key: result.state!,
+        }));
+      }
+    } else {
+      HiDialog.showSnackBar(
+          context,
+          result.status == ChecklistWriteStatus.failed
+              ? '清单保存失败，已保留上次勾选状态'
+              : '这张清单已失效，请重新打开会话');
+    }
+  }
+
+  void _insertCardText(String text, int capturedCid) {
+    if (!_cardScopeCurrent ||
+        capturedCid != _cardCid ||
+        !_ready ||
+        _isStreaming ||
+        _savingReasoningEffort) {
+      return;
+    }
+    final previous = _inputController.text;
+    final next = previous.isEmpty
+        ? text
+        : '$previous${previous.endsWith('\n\n') ? '' : '\n\n'}$text';
+    _inputController.value = TextEditingValue(
+        text: next, selection: TextSelection.collapsed(offset: next.length));
+    _inputChanged(next);
+    setState(() {});
+  }
+
   AgentTaskRun? _agentRun;
   int? _agentReadAloudAt;
   AgentTaskKey get _taskKey =>
@@ -405,6 +503,7 @@ class _ConversationPageState extends State<ConversationPage>
     final run = _agentRun;
     if (run == null || !mounted || _disposed || !_accountCurrent) return;
     final reply = run.reply;
+    var bindingChanged = false;
     if (reply != null) {
       final current = chatController.initialMessageList
           .where((message) => message.createdAt == reply.createdAt)
@@ -414,15 +513,29 @@ class _ConversationPageState extends State<ConversationPage>
       } else if (current.content != reply.content) {
         chatController.updateMessage(reply);
       }
-      _blockStore.seedMessage(
-          run.messageKey, run.blocks.blocksFor(run.messageKey));
+      // 执行器完成后的通知仍会带原快照；同一正文保留本页已保存的本地状态。
+      final latestBlocks = run.blocks.blocksFor(run.messageKey).map((block) {
+        final current = _blockStore.block(block.id);
+        if (block is MainTextBlock &&
+            current is MainTextBlock &&
+            block.content == current.content) {
+          return block.copyWith(localCardStates: current.localCardStates);
+        }
+        return block;
+      }).toList();
+      _blockStore.seedMessage(run.messageKey, latestBlocks);
       _blockStore.commitSeed();
+      if (!run.busy && run.persistedReplyRowId != null) {
+        bindingChanged = _cardRows[reply.createdAt] != run.persistedReplyRowId;
+        _cardRows[reply.createdAt] = run.persistedReplyRowId!;
+      }
     }
     final progress = run.queued
         ? ChatSendProgress(
             '等待执行（队列第 ${_taskExecutor.queuePosition(run.key)} 位）')
         : run.progress;
-    final changed = _isStreaming != run.busy ||
+    final changed = bindingChanged ||
+        _isStreaming != run.busy ||
         _sendProgress?.label != progress?.label ||
         _backgroundNotice != run.backgroundNotice;
     _contextPlan = run.contextPlan ?? _contextPlan;
@@ -511,6 +624,8 @@ class _ConversationPageState extends State<ConversationPage>
   late AISettings _currentSettings;
   List<String> _pendingImages = [];
   List<String> _pendingFiles = [];
+  List<ComposerReference> _references = [];
+  bool _referencePickerOpen = false;
 
   bool get _accountCurrent =>
       !_disposed && (LoginDao.getAccountHash() ?? 'guest') == _pageAccount;
@@ -527,7 +642,9 @@ class _ConversationPageState extends State<ConversationPage>
       (!_inputController.value.composing.isValid ||
           _inputController.value.composing.isCollapsed) &&
       _pendingImages.isEmpty &&
-      _pendingFiles.isEmpty;
+      _pendingFiles.isEmpty &&
+      _references.isEmpty &&
+      !_referencePickerOpen;
 
   void _onPredictionChanged() {
     if (mounted && !_disposed) setState(() {});
@@ -607,7 +724,7 @@ class _ConversationPageState extends State<ConversationPage>
     if (!_isStreaming) {
       _plannedPrompt = text;
       _plannedAttachmentInfo = '';
-      _plannedFileText = '';
+      _plannedFileText = historyReferencesExtraText(_references);
       if (_ready) _draftNotice = null;
       _contextPlan = null;
       _contextAttachmentsPrepared = false;
@@ -624,44 +741,90 @@ class _ConversationPageState extends State<ConversationPage>
     });
   }
 
-  Future<void> _saveDraft() async {
-    if (!_draftLoaded || !_accountCurrent) return;
+  Future<FrozenComposerDraft> _freezeReferences(
+      AttachmentProcessingLimits limits) async {
     final revision = _draftRevision;
+    final cid = widget.conversationModel.cid;
+    final frozen = await _draftStore.freezeForSend(
+        text: _inputController.text,
+        images: List.from(_pendingImages),
+        files: List.from(_pendingFiles),
+        references: List.from(_references),
+        limits: limits);
+    if (!mounted ||
+        !_accountCurrent ||
+        widget.conversationModel.cid != cid ||
+        revision != _draftRevision ||
+        frozen == null) {
+      throw const DraftStorageException('输入已变化，请重新发送');
+    }
+    setState(() {
+      _references = frozen.references;
+      _pendingImages = frozen.imagePaths;
+      _pendingFiles = frozen.filePaths;
+    });
+    if (frozen.missingAttachmentCount > 0 ||
+        frozen.references.any((r) => !r.available)) {
+      throw const DraftStorageException('引用冻结失败，请移除或重新选择后发送');
+    }
+    return frozen;
+  }
+
+  Future<ConversationDraft?> _saveDraft() async {
+    if (!_draftLoaded || !_accountCurrent) {
+      return null;
+    }
+    final revision = _draftRevision;
+    final cid = widget.conversationModel.cid;
     final text = _inputController.text;
     final images = List<String>.from(_pendingImages);
     final files = List<String>.from(_pendingFiles);
+    final references = List<ComposerReference>.from(_references);
     try {
-      final draft =
-          await _draftStore.save(text: text, images: images, files: files);
+      final draft = await _draftStore.save(
+          text: text, images: images, files: files, references: references);
       if (!mounted ||
           !_accountCurrent ||
+          widget.conversationModel.cid != cid ||
           revision != _draftRevision ||
           draft == null) {
-        return;
+        return null;
       }
       setState(() {
-        if (draft.missingAttachmentCount == 0) {
-          _pendingImages = draft.imagePaths;
-          _pendingFiles = draft.filePaths;
-        }
+        _references = draft.references;
+        _pendingImages = draft.imagePaths;
+        _pendingFiles = draft.filePaths;
         _draftNotice = draft.missingAttachmentCount > 0
             ? '${draft.missingAttachmentCount} 个附件未能保存，请重新选择；文字草稿已保存'
             : (_draftNotice?.startsWith('已恢复') == true ? _draftNotice : null);
         if (!_isStreaming && _ready) {
-          _contextPlan = completionDao.previewContext(prompt: text);
+          _plannedPrompt = text;
+          _plannedFileText = historyReferencesExtraText(_references);
+          _contextPlan = completionDao.previewContext(
+              prompt: text,
+              attachments: ChatAttachments(
+                  extraText: historyReferencesExtraText(_references)));
           _contextAttachmentsPrepared = false;
         }
       });
-      if (!_isStreaming) await _retainNewDraftConversation(text, images, files);
+      if (!_isStreaming) {
+        await _retainNewDraftConversation(text, images, files, references);
+      }
+      return draft;
     } catch (_) {
-      if (mounted && _accountCurrent && revision == _draftRevision) {
+      if (mounted &&
+          _accountCurrent &&
+          widget.conversationModel.cid == cid &&
+          revision == _draftRevision) {
         setState(() => _draftNotice = '草稿未能保存，请保留当前页面后重试');
       }
+      return null;
     }
   }
 
   void _markNewDraftConversation(
-      String text, List<String> images, List<String> files) {
+      String text, List<String> images, List<String> files,
+      [List<ComposerReference> references = const []]) {
     if (!_ready ||
         chatController.initialMessageList.any((m) => m.createdAt > 0)) {
       return;
@@ -669,10 +832,15 @@ class _ConversationPageState extends State<ConversationPage>
     if (!_draftOnlyConversation && widget.conversationModel.title != null) {
       return;
     }
-    if (text.trim().isEmpty && images.isEmpty && files.isEmpty) return;
+    if (text.trim().isEmpty &&
+        images.isEmpty &&
+        files.isEmpty &&
+        references.isEmpty) {
+      return;
+    }
     _draftOnlyConversation = true;
     final preview =
-        text.trim().isEmpty ? '附件草稿' : text.trim().split('\n').first;
+        text.trim().isEmpty ? '引用与附件草稿' : text.trim().split('\n').first;
     widget.conversationModel.title =
         preview.length > 60 ? preview.substring(0, 60) : preview;
     widget.conversationModel.lastMessage = '[草稿] $preview';
@@ -682,12 +850,14 @@ class _ConversationPageState extends State<ConversationPage>
   }
 
   Future<void> _retainNewDraftConversation(
-      String text, List<String> images, List<String> files) async {
+      String text, List<String> images, List<String> files,
+      [List<ComposerReference> references = const []]) async {
     if (!_accountCurrent) return;
     if (_draftOnlyConversation &&
         text.trim().isEmpty &&
         images.isEmpty &&
-        files.isEmpty) {
+        files.isEmpty &&
+        references.isEmpty) {
       final deleted = await conversationListDao.storage.db.rawDelete(
           'delete from tb_conversation_list where cid = ? and not exists '
           '(select 1 from tb_messages where cid = ?)',
@@ -700,7 +870,7 @@ class _ConversationPageState extends State<ConversationPage>
       }
       return;
     }
-    _markNewDraftConversation(text, images, files);
+    _markNewDraftConversation(text, images, files, references);
     if (_draftOnlyConversation) {
       await conversationListDao.saveConversation(widget.conversationModel);
       AppEvents.notifyConversationsChanged();
@@ -717,6 +887,7 @@ class _ConversationPageState extends State<ConversationPage>
         _inputMessage = draft.text;
         _pendingImages = draft.imagePaths;
         _pendingFiles = draft.filePaths;
+        _references = draft.references;
         _draftNotice = draft.missingAttachmentCount > 0
             ? '已恢复文字草稿；${draft.missingAttachmentCount} 个附件已失效，请重新选择'
             : '已恢复此会话的草稿';
@@ -746,6 +917,45 @@ class _ConversationPageState extends State<ConversationPage>
   AssistantDao? _assistantDao;
   AssistantMemoryDao? _assistantMemoryDao;
   List<AssistantMemoryModel> _assistantMemories = const [];
+  PersonalMemoryDao? _personalMemoryDao;
+  PersonalMemoryTurn? _personalMemoryTurn;
+
+  Future<String> Function(bool)? _memoryResolver() {
+    final personal = _personalMemoryDao;
+    final assistant = _assistantMemoryDao;
+    if (personal == null || assistant == null) return null;
+    return ConversationMemoryContext(
+            storage: messageDao.storage,
+            accountHash: _pageAccount,
+            cid: widget.conversationModel.cid,
+            assistantId: widget.conversationModel.assistantId,
+            taskMode: _taskMode,
+            personal: personal,
+            assistant: assistant)
+        .resolve;
+  }
+
+  Future<void> _proposePersonalMemory(int replyCreatedAt) async {
+    final turn = _personalMemoryTurn;
+    final user = _lastUserModel;
+    _personalMemoryTurn = null;
+    if (turn == null ||
+        user == null ||
+        !_accountCurrent ||
+        _taskMode ||
+        widget.conversationModel.assistantId != null ||
+        turn.cid != widget.conversationModel.cid) {
+      return;
+    }
+    try {
+      await _personalMemoryDao?.suggestAfterPersist(turn,
+          userCreatedAt: user.createdAt, replyCreatedAt: replyCreatedAt);
+    } catch (_) {
+      if (mounted && _accountCurrent) {
+        HiDialog.showSnackBar(context, '回复已保存，个人记忆建议保存失败');
+      }
+    }
+  }
 
   /// 应用助手的模型覆盖后的设置 —— 能力位与请求构造都用它，
   /// 保证「助手指定了模型时，capabilitiesFor 用覆盖后的模型算」。
@@ -780,7 +990,7 @@ class _ConversationPageState extends State<ConversationPage>
       assistant: _assistant,
       userInput: scanText,
       conversation: widget.conversationModel,
-      memories: _assistantMemories,
+      memories: const [],
     );
     if (_taskMode) {
       _taskSkills = await _skillCatalog?.prepare(
@@ -803,7 +1013,9 @@ class _ConversationPageState extends State<ConversationPage>
     } else {
       _taskSkills = null;
     }
-    return preview.trim().isEmpty ? null : preview;
+    return [preview, interactiveCardSystemPrompt]
+        .where((text) => text.trim().isNotEmpty)
+        .join('\n\n');
   }
 
   SemanticChatSummaryService? _summaryServiceFor(AISettings settings) =>
@@ -1604,6 +1816,19 @@ class _ConversationPageState extends State<ConversationPage>
       editingEnabled: _ready && !_isStreaming && !_savingReasoningEffort,
       isStreaming: _isStreaming,
       controller: _inputController,
+      referencesEnabled: true,
+      referenceScopeKey: '$_pageAccount:${widget.conversationModel.cid}',
+      isReferenceScopeCurrent: () => _accountCurrent,
+      references: _references,
+      pickHistoryReference: _pickHistoryReference,
+      onReferencePicked: _addReference,
+      onRemoveReference: _removeReference,
+      onPreviewReference: _previewReference,
+      onReferencePickerChanged: (open) {
+        if (!mounted || !_accountCurrent) return;
+        _invalidatePrediction();
+        setState(() => _referencePickerOpen = open);
+      },
       suggestedMessage: _predictionEligible ? _prediction.suggestion : null,
       onAcceptSuggestion: _acceptPrediction,
       onDismissSuggestion: _prediction.cancel,
@@ -1637,36 +1862,162 @@ class _ConversationPageState extends State<ConversationPage>
       imagesEnabled: caps.image,
       imagesDisabledReason:
           caps.image ? '' : '当前模型不支持图片，请切换 deepseek-flash、gpt-4o 等多模态模型',
-      onImagesPicked: (images) {
-        _invalidatePrediction();
-        setState(() => _pendingImages = images);
-        _scheduleDraftSave();
-      },
+      onImagesPicked: (images) => _setAttachmentPaths(images, photo: true),
       onRemoveImage: (index) {
-        setState(() {
-          _pendingImages = List.from(_pendingImages)..removeAt(index);
-        });
-        _scheduleDraftSave();
+        _setAttachmentPaths(List.from(_pendingImages)..removeAt(index),
+            photo: true);
       },
       // 文件入口不按能力位关闭：不支持原生文件的模型走抽文本降级（阶段四）。
       pendingFiles: _pendingFiles,
-      onFilesPicked: (files) {
-        _invalidatePrediction();
-        setState(() => _pendingFiles = files);
-        _scheduleDraftSave();
-      },
+      onFilesPicked: (files) => _setAttachmentPaths(files, photo: false),
       onRemoveFile: (index) {
-        setState(() {
-          _pendingFiles = List.from(_pendingFiles)..removeAt(index);
-        });
-        _scheduleDraftSave();
+        _setAttachmentPaths(List.from(_pendingFiles)..removeAt(index),
+            photo: false);
       },
     );
+  }
+
+  void _setAttachmentPaths(List<String> paths, {required bool photo}) {
+    if (!_accountCurrent || !_ready || _isStreaming) return;
+    final kind =
+        photo ? ComposerReferenceKind.photo : ComposerReferenceKind.file;
+    final unique = paths
+        .map((path) {
+          final identity =
+              ComposerReference.attachment(path, photo: photo).sourceIdentity;
+          final existing = _references
+              .where((r) =>
+                  r.kind == kind &&
+                  (r.attachmentPath == path || r.sourceIdentity == identity))
+              .firstOrNull;
+          return existing?.attachmentPath ?? path;
+        })
+        .toSet()
+        .toList();
+    _invalidatePrediction();
+    setState(() {
+      _references = _references
+          .where((r) =>
+              r.kind != kind ||
+              !r.available ||
+              unique.contains(r.attachmentPath))
+          .toList();
+      for (final path in unique) {
+        if (!_references
+            .any((r) => r.kind == kind && r.attachmentPath == path)) {
+          _references.add(ComposerReference.attachment(path, photo: photo));
+        }
+      }
+      if (photo) {
+        _pendingImages = unique;
+      } else {
+        _pendingFiles = unique;
+      }
+    });
+    _inputChanged(_inputController.text);
+    _draftTimer?.cancel();
+    unawaited(_saveDraft());
+  }
+
+  Future<void> _previewReference(ComposerReference reference) async {
+    if (!_accountCurrent || !_ready || _isStreaming) return;
+    final cid = widget.conversationModel.cid;
+    final revision = _draftRevision;
+    bool current() =>
+        mounted &&
+        _accountCurrent &&
+        !_isStreaming &&
+        widget.conversationModel.cid == cid &&
+        _draftRevision == revision;
+    if (reference.kind == ComposerReferenceKind.historyMessage) {
+      await showReferencePreview(context, reference, isCurrent: current);
+      return;
+    }
+    try {
+      _draftTimer?.cancel();
+      final frozen = await _freezeReferences(context
+          .read<AISettingsProvider>()
+          .settings
+          .attachmentProcessingLimits);
+      if (!current()) return;
+      // 预览取消了防抖，冻结后立即保存最新草稿；容量不足仅提示，不阻止预览。
+      await _saveDraft();
+      final preview = frozen.previewForReference(reference.id);
+      if (!mounted || !current() || preview == null) return;
+      await showDraftAttachmentPreview(context, preview, isCurrent: current);
+    } catch (_) {
+      if (!current()) return;
+      // 冻结失败也取消了防抖，立即保留最新正文与不可用标签，避免退出后丢失。
+      final saved = await _saveDraft();
+      if (!mounted || !current()) return;
+      HiDialog.showSnackBar(
+          context,
+          saved == null
+              ? '引用无法冻结或已合并，请重新选择；草稿未能保存，请保留当前页面后重试'
+              : '引用无法冻结或已合并，请重新选择');
+    }
+  }
+
+  void _addReference(ComposerReference reference) {
+    if (!_accountCurrent ||
+        !_ready ||
+        _isStreaming ||
+        reference.historySnapshot?.accountToken !=
+            AccountResourceScope.tokenFor(_pageAccount)) {
+      return;
+    }
+    _invalidatePrediction();
+    if (_references.any((r) => r.sourceIdentity == reference.sourceIdentity)) {
+      return;
+    }
+    setState(() => _references = [..._references, reference]);
+    _inputChanged(_inputController.text);
+  }
+
+  void _removeReference(String id) {
+    if (!_accountCurrent || _isStreaming) return;
+    _invalidatePrediction();
+    setState(() {
+      _references = _references.where((r) => r.id != id).toList();
+      _pendingImages = _references
+          .where((r) => r.kind == ComposerReferenceKind.photo && r.available)
+          .map((r) => r.attachmentPath)
+          .whereType<String>()
+          .toList();
+      _pendingFiles = _references
+          .where((r) => r.kind == ComposerReferenceKind.file && r.available)
+          .map((r) => r.attachmentPath)
+          .whereType<String>()
+          .toList();
+    });
+    _inputChanged(_inputController.text);
+  }
+
+  Future<ComposerReference?> _pickHistoryReference() async {
+    if (!_accountCurrent || !_ready || _isStreaming) return null;
+    final value = _inputController.value;
+    final cid = widget.conversationModel.cid;
+    bool current() =>
+        mounted &&
+        _accountCurrent &&
+        !_isStreaming &&
+        widget.conversationModel.cid == cid &&
+        _inputController.value == value;
+    final result = await showModalBottomSheet<ComposerReference>(
+        context: context,
+        isScrollControlled: true,
+        useSafeArea: true,
+        builder: (_) => HistoryReferencePicker(
+            dao: MessageReferenceDao(messageDao.storage,
+                accountHash: _pageAccount),
+            isCurrent: current));
+    return current() ? result : null;
   }
 
   @override
   void initState() {
     super.initState();
+    _cardCid = widget.conversationModel.cid;
     _backgroundExecution =
         widget.backgroundExecution ?? PlatformAgentBackgroundExecution.instance;
     final lifecycle = WidgetsBinding.instance.lifecycleState;
@@ -1685,10 +2036,11 @@ class _ConversationPageState extends State<ConversationPage>
       ..addListener(_invalidatePrediction);
     _inputController = TextEditingController(text: widget.initialPrompt);
     _inputMessage = widget.initialPrompt;
-    _draftStore = ConversationDraftStore(
-      conversationId: widget.conversationModel.cid.toString(),
-      accountHash: _pageAccount,
-    );
+    _draftStore = widget.draftStore ??
+        ConversationDraftStore(
+          conversationId: widget.conversationModel.cid.toString(),
+          accountHash: _pageAccount,
+        );
     _readAloudService = widget.readAloudService ?? HybridReadAloudService();
     if (_accountCurrent) _prewarmReadAloudIfNeeded();
     _doInit();
@@ -1750,6 +2102,7 @@ class _ConversationPageState extends State<ConversationPage>
           _inputController.text.trim().isEmpty &&
           _pendingImages.isEmpty &&
           _pendingFiles.isEmpty &&
+          _references.isEmpty &&
           !chatController.initialMessageList.any((m) => m.createdAt > 0)) {
         widget.conversationModel.title = null;
         widget.conversationModel.lastMessage = null;
@@ -1763,7 +2116,7 @@ class _ConversationPageState extends State<ConversationPage>
             .catchError((_) {}));
       }
       _markNewDraftConversation(
-          _inputController.text, _pendingImages, _pendingFiles);
+          _inputController.text, _pendingImages, _pendingFiles, _references);
       if (_draftOnlyConversation) {
         unawaited(conversationListDao
             .saveConversation(widget.conversationModel)
@@ -1775,6 +2128,7 @@ class _ConversationPageState extends State<ConversationPage>
             text: _inputController.text,
             images: List.from(_pendingImages),
             files: List.from(_pendingFiles),
+            references: List.from(_references),
           )
           .catchError((_) => null));
     }
@@ -1949,6 +2303,22 @@ class _ConversationPageState extends State<ConversationPage>
       mainAxisSize: MainAxisSize.min,
       children: [
         BlockMessageContent(
+          enableInteractiveCards: message.ownerType == OwnerType.receiver,
+          cardReplyCompleted: _cardRows.containsKey(message.createdAt),
+          cardsWritable: _cardScopeCurrent &&
+              !_isStreaming &&
+              _cardRows.containsKey(message.createdAt),
+          cardInsertEnabled: _cardScopeCurrent &&
+              _ready &&
+              !_isStreaming &&
+              !_savingReasoningEffort,
+          cardScopeCurrent: () =>
+              _cardScopeCurrent &&
+              chatController.initialMessageList
+                  .any((m) => m.createdAt == message.createdAt),
+          onCardCheck: (block, card, item, checked) =>
+              _setCardChecked(message.createdAt, block, card, item, checked),
+          onCardInsert: (text) => _insertCardText(text, _cardCid),
           sourceAccountHash: _pageAccount,
           messageKey: key,
           showCharCount: message.ownerType == OwnerType.receiver,
@@ -2541,16 +2911,23 @@ class _ConversationPageState extends State<ConversationPage>
 
   ///不用_inputMessage是因为在结果回来之前_inputMessage可能会变
   Future<void> _onSend(final String inputMessage) async {
+    final personalTurnStartedAt = DateTime.now().millisecondsSinceEpoch;
     if (inputMessage.trim().isEmpty &&
         _pendingImages.isEmpty &&
-        _pendingFiles.isEmpty) {
+        _pendingFiles.isEmpty &&
+        _references.isEmpty) {
       return;
     }
     if (!_ready ||
         !_accountCurrent ||
         _isStreaming ||
+        _referencePickerOpen ||
         _savingReasoningEffort ||
         !_canStartAIRequest(showPrompt: true)) {
+      return;
+    }
+    if (_references.any((r) => !r.available)) {
+      HiDialog.showSnackBar(context, '有不可用引用，请移除或重新选择后发送');
       return;
     }
     _invalidatePrediction();
@@ -2568,7 +2945,15 @@ class _ConversationPageState extends State<ConversationPage>
     });
     var accepted = false;
     var handedOff = false;
+    _personalMemoryTurn = null;
     try {
+      _personalMemoryTurn = await _personalMemoryDao?.beginTurn(
+          cid: widget.conversationModel.cid,
+          assistantId: widget.conversationModel.assistantId,
+          taskMode: _taskMode,
+          rawInput: inputMessage,
+          startedAt: personalTurnStartedAt);
+      if (!mounted || _sendCancelled) return;
       final rawSettings = context.read<AISettingsProvider>().settings;
       final assistantSystemPrompt =
           await _assistantSystemPromptForSafely(inputMessage);
@@ -2591,6 +2976,7 @@ class _ConversationPageState extends State<ConversationPage>
         _daoReasoningEffort = widget.conversationModel.deepSeekReasoningEffort;
         _daoTaskMode = _taskMode;
         completionDao = CompletionDao(
+          memoryContextResolver: _memoryResolver(),
           chatService: widget.chatService,
           manageContext: true,
           settings: _effective(rawSettings),
@@ -2606,15 +2992,24 @@ class _ConversationPageState extends State<ConversationPage>
       }
       final settings = _effective(rawSettings);
       final caps = ChatService.capabilitiesFor(settings);
-      final pendingImages = List<String>.from(_pendingImages);
-      final pendingFiles = List<String>.from(_pendingFiles);
-      final batchBudget =
-          AttachmentBatchBudget(limits: settings.attachmentProcessingLimits);
+      final frozen =
+          await _freezeReferences(settings.attachmentProcessingLimits);
+      if (_sendCancelled) return;
+      final references =
+          List<ComposerReference>.unmodifiable(frozen.references);
+      final pendingImages = List<String>.from(frozen.imagePaths);
+      final pendingFiles = List<String>.from(frozen.filePaths);
+      final batchBudget = AttachmentBatchBudget(
+          limits: settings.attachmentProcessingLimits,
+          expectedDigests: {
+            for (final reference in references)
+              if (reference.attachmentPath != null &&
+                  reference.snapshotDigest.isNotEmpty)
+                reference.attachmentPath!: reference.snapshotDigest
+          });
       _onSendProgress(const ChatSendProgress('检查附件总大小'));
       await batchBudget.preflightPaths([...pendingImages, ...pendingFiles],
           isCancelled: () => _sendCancelled);
-      if (_sendCancelled) return;
-      await _saveDraft();
       if (_sendCancelled) return;
       final abort = _streamAbortCompleter!.future;
       final imagePaths = <String>[];
@@ -2645,6 +3040,11 @@ class _ConversationPageState extends State<ConversationPage>
                   abortTrigger: abort,
                   isCancelled: () => _sendCancelled);
       if (_sendCancelled) return;
+      final referenceText = historyReferencesExtraText(references);
+      if (referenceText.isNotEmpty) {
+        batchBudget.consumeText(
+            '${processed.extraText.isEmpty ? '' : '\n\n'}$referenceText');
+      }
       if (processed.hasWarnings &&
           !await _confirmAttachmentWarnings(processed.diagnostics)) {
         return;
@@ -2654,7 +3054,9 @@ class _ConversationPageState extends State<ConversationPage>
       final attachments = ChatAttachments(
           images: b64Images,
           nativeFiles: processed.nativeFiles,
-          extraText: processed.extraText);
+          extraText: [processed.extraText, referenceText]
+              .where((text) => text.isNotEmpty)
+              .join('\n\n'));
       final webSearch =
           settings.webSearchEnabled && settings.webSearchConfigured;
       final tools = await _toolsForSend(settings, caps, webSearch);
@@ -2663,8 +3065,8 @@ class _ConversationPageState extends State<ConversationPage>
           prompt: inputMessage, attachments: attachments, tools: tools);
       _plannedPrompt = inputMessage;
       _plannedAttachmentInfo =
-          '${pendingImages.length} 张图片，${pendingFiles.length} 份文件';
-      _plannedFileText = processed.extraText;
+          '${pendingImages.length} 张图片，${pendingFiles.length} 份文件，${references.where((r) => r.historySnapshot != null).length} 条历史引用';
+      _plannedFileText = attachments.extraText;
       _onContextPlan(plan);
       if (!plan.canSend) throw ChatContextBudgetException(plan);
       final userModel = _genMessageModel(
@@ -2710,12 +3112,15 @@ class _ConversationPageState extends State<ConversationPage>
       }
 
       if (_sendCancelled) return;
-      if (processed.metas.isNotEmpty || roleContextSnapshot.isNotEmpty) {
+      if (processed.metas.isNotEmpty ||
+          roleContextSnapshot.isNotEmpty ||
+          referenceText.isNotEmpty) {
         await _addUserMessageWithBlocks(userModel, imagePaths, processed.metas,
             roleContextSnapshot: roleContextSnapshot,
             roleMemoryBudget:
                 memoryBudget?.affected == true ? memoryBudget : null,
-            roleMemoryHits: memoryHits);
+            roleMemoryHits: memoryHits,
+            references: references);
       } else {
         await messageDao.saveMessageWithBlocks(userModel);
         if (mounted && _accountCurrent) chatController.addMessage(userModel);
@@ -2731,7 +3136,7 @@ class _ConversationPageState extends State<ConversationPage>
         ]);
       }
       _lastUserModel = userModel;
-      _lastUserFileText = processed.extraText;
+      _lastUserFileText = attachments.extraText;
       if (_draftOnlyConversation) {
         widget.conversationModel.title = null;
         _draftOnlyConversation = false;
@@ -2747,6 +3152,7 @@ class _ConversationPageState extends State<ConversationPage>
           _inputMessage = '';
           _pendingImages = [];
           _pendingFiles = [];
+          _references = [];
           _draftNotice = null;
         });
       }
@@ -2789,10 +3195,12 @@ class _ConversationPageState extends State<ConversationPage>
         if (accepted && _lastUserModel != null) {
           await _saveFailedReply(_friendlyError(e));
         } else if (!_userStopped) {
+          widget.onSendPreparationError?.call(e);
           HiDialog.showSnackBar(context, '发送前检查失败：${_friendlyError(e)}');
         }
       }
     } finally {
+      _personalMemoryTurn = null;
       if (!handedOff) await _finishTaskCheckpoint(accepted: accepted);
       _settleSendRound(settled);
       await _releaseBackgroundExecution(
@@ -2807,21 +3215,32 @@ class _ConversationPageState extends State<ConversationPage>
         });
         _requestPredictionAfterReply();
       }
-      if (!accepted && mounted && _accountCurrent) _scheduleDraftSave();
+      // 失败或准备阶段取消也在本轮 Future 收尾前保存，避免依赖防抖定时器。
+      if (!accepted && mounted && _accountCurrent) await _saveDraft();
     }
   }
 
   Future<void> _saveConversationSummary(MessageModel latest) async {
     try {
+      final hasHistoryReference = _blockStore
+          .blocksFor(chatMessageKey(latest.createdAt))
+          .any((block) => block is ReferenceBlock);
       if (latest.ownerType == OwnerType.sender &&
           !_isUsableConversationText(widget.conversationModel.title)) {
         final content = latest.content.trim();
         widget.conversationModel.title = content.isNotEmpty
             ? content
-            : (latest.imageUrlsOrB64?.isNotEmpty == true ? '图片对话' : '文件对话');
+            : (latest.imageUrlsOrB64?.isNotEmpty == true
+                ? '图片对话'
+                : hasHistoryReference
+                    ? '引用对话'
+                    : '文件对话');
       }
-      widget.conversationModel.lastMessage =
-          latest.content.trim().isNotEmpty ? latest.content.trim() : '附件消息';
+      widget.conversationModel.lastMessage = latest.content.trim().isNotEmpty
+          ? latest.content.trim()
+          : hasHistoryReference
+              ? '引用消息'
+              : '附件消息';
       widget.conversationModel.updateAt = latest.createdAt;
       widget.conversationModel.messageCount =
           await messageDao.getMessageCount();
@@ -2907,7 +3326,10 @@ class _ConversationPageState extends State<ConversationPage>
   void _showContextPreview() {
     if (!_ready || !_accountCurrent) return;
     final plan = _contextPlan ??
-        completionDao.previewContext(prompt: _inputController.text);
+        completionDao.previewContext(
+            prompt: _inputController.text,
+            attachments: ChatAttachments(
+                extraText: historyReferencesExtraText(_references)));
     showModalBottomSheet<void>(
         context: context,
         isScrollControlled: true,
@@ -3127,6 +3549,7 @@ class _ConversationPageState extends State<ConversationPage>
     String roleContextSnapshot = '',
     AssistantMemoryContextBudget? roleMemoryBudget,
     List<AssistantMemoryEntryPreview> roleMemoryHits = const [],
+    List<ComposerReference> references = const [],
   }) async {
     final key = chatMessageKey(userModel.createdAt);
     var seq = 0;
@@ -3147,6 +3570,14 @@ class _ConversationPageState extends State<ConversationPage>
           status: MessageBlockStatus.success,
           file: m,
         ),
+      for (final reference in references
+          .where((r) => r.kind == ComposerReferenceKind.historyMessage))
+        ReferenceBlock(
+            id: 'blk_${key}_uref_${seq++}',
+            messageId: key,
+            createdAt: userModel.createdAt,
+            status: MessageBlockStatus.success,
+            reference: reference),
       if (userModel.content.isNotEmpty)
         MainTextBlock(
           id: 'blk_${key}_utext_${seq++}',
@@ -3188,20 +3619,23 @@ class _ConversationPageState extends State<ConversationPage>
         modelId: _effectiveModelId,
         content: receiverModel.content,
       ),
-      CitationBlock(
-        id: 'blk_${key}_cite_1',
-        messageId: key,
-        createdAt: receiverModel.createdAt,
-        status: MessageBlockStatus.success,
-        modelId: _effectiveModelId,
-        webResults: webResults,
-      ),
+      if (webResults.isNotEmpty)
+        CitationBlock(
+          id: 'blk_${key}_cite_1',
+          messageId: key,
+          createdAt: receiverModel.createdAt,
+          status: MessageBlockStatus.success,
+          modelId: _effectiveModelId,
+          webResults: webResults,
+        ),
     ];
+    final rowId = await messageDao.saveMessageWithBlocks(receiverModel,
+        blocksJson: MessageBlock.encodeList(blocks));
+    if (!mounted || !_accountCurrent) return;
+    _cardRows[receiverModel.createdAt] = rowId;
     _blockStore.seedMessage(key, blocks);
     _blockStore.commitSeed();
     chatController.addMessage(receiverModel);
-    await messageDao.saveMessageWithBlocks(receiverModel,
-        blocksJson: MessageBlock.encodeList(blocks));
     _notifyConversationListUpdate();
   }
 
@@ -3273,16 +3707,12 @@ class _ConversationPageState extends State<ConversationPage>
           : 'no response';
       final receiverModel =
           _genMessageModel(ownerType: OwnerType.receiver, message: response);
-      if (result.webResults.isNotEmpty) {
-        await _addReceiverMessageWithCitations(
-            receiverModel, result.webResults);
-      } else {
-        await messageDao.saveMessageWithBlocks(receiverModel);
-        if (!_accountCurrent) return;
-        chatController.addMessage(receiverModel);
-        _notifyConversationListUpdate();
-      }
+      await _addReceiverMessageWithCitations(receiverModel, result.webResults);
+      if (!_accountCurrent) return;
       await _saveConversationSummary(receiverModel);
+      if (!_sendCancelled && result.content?.trim().isNotEmpty == true) {
+        await _proposePersonalMemory(receiverModel.createdAt);
+      }
       final user = _lastUserModel;
       if (user != null) {
         completionDao.appendTurn(user, receiverModel,
@@ -3479,8 +3909,17 @@ class _ConversationPageState extends State<ConversationPage>
     if (!_disposed) chatController.updateMessage(finalModel);
     final blocksJson =
         blocks.isNotEmpty ? MessageBlock.encodeList(blocks) : null;
-    await messageDao.saveMessageWithBlocks(finalModel, blocksJson: blocksJson);
+    final rowId = await messageDao.saveMessageWithBlocks(finalModel,
+        blocksJson: blocksJson);
+    if (!_disposed && _accountCurrent) {
+      _cardRows[finalModel.createdAt] = rowId;
+      _blockStore.seedMessage(messageKey, blocks);
+      _blockStore.commitSeed();
+    }
     await _saveConversationSummary(finalModel);
+    if (!dispatcher.hasError && !_sendCancelled && mainText.trim().isNotEmpty) {
+      await _proposePersonalMemory(finalModel.createdAt);
+    }
     // 把本轮「用户 + assistant」追加进会话历史，使后续轮次携带完整上下文
     // （CompletionDao._messageList 不会自动增长；正文已不含思考内容）。
     // 连块一起传：其中的 ToolBlock 记入工具历史，使工具调用跨轮可见（遗留项 2）。
@@ -3927,6 +4366,8 @@ class _ConversationPageState extends State<ConversationPage>
     // 系统提示词与模型覆盖）。助手已删除时回落 null。
     _assistantDao = await AssistantDao.create(dbManager);
     _assistantMemoryDao = await AssistantMemoryDao.create(dbManager);
+    _personalMemoryDao =
+        await PersonalMemoryDao.create(dbManager, accountHash: _pageAccount);
     final aid = widget.conversationModel.assistantId;
     if (aid != null) {
       _assistant = await _assistantDao!.getAssistant(aid);
@@ -3954,6 +4395,7 @@ class _ConversationPageState extends State<ConversationPage>
     _hasEarlierContext = candidates.hasEarlierMessages;
     final blockHistory = await _loadBlockHistory(candidates.messages);
     completionDao = CompletionDao(
+        memoryContextResolver: _memoryResolver(),
         chatService: widget.chatService,
         manageContext: true,
         settings: _effective(settings),
@@ -4138,6 +4580,7 @@ class _ConversationPageState extends State<ConversationPage>
       final rawSettings = context.read<AISettingsProvider>().settings;
       final effective = _effective(rawSettings);
       completionDao = CompletionDao(
+        memoryContextResolver: _memoryResolver(),
         chatService: widget.chatService,
         manageContext: true,
         settings: effective,
@@ -4615,11 +5058,7 @@ class _ConversationPageState extends State<ConversationPage>
       if (protocol.isNotEmpty) protocols[m.createdAt] = protocol;
       final tb = blocks.whereType<ToolBlock>().toList();
       if (tb.isNotEmpty) tools[m.createdAt] = tb;
-      final text = blocks
-          .whereType<FileBlock>()
-          .map((b) => b.file.extractedText)
-          .whereType<String>()
-          .join('\n\n');
+      final text = userMessageExtraText(blocks);
       if (text.isNotEmpty) files[m.createdAt] = text;
       final continuation = blocks
           .whereType<RoleContinuationBlock>()
@@ -4640,6 +5079,13 @@ class _ConversationPageState extends State<ConversationPage>
     blocksMap.forEach((key, json) {
       _blockStore.seedMessage(key, MessageBlock.decodeList(json));
     });
+    for (final message in list) {
+      if (message.ownerType == OwnerType.receiver &&
+          message.id != null &&
+          blocksMap.containsKey(chatMessageKey(message.createdAt))) {
+        _cardRows[message.createdAt] = message.id!;
+      }
+    }
     _blockStore.commitSeed();
   }
 
@@ -4723,11 +5169,19 @@ class _ConversationPageState extends State<ConversationPage>
         ),
       if (persisted && _assistant?.id != null)
         PopupMenuItem(
-          child: const Text('记住'),
+          child: const Text('记为助手记忆'),
           onTap: () {
             _saveAssistantMemory(message);
           },
         ),
+      if (persisted &&
+          widget.conversationModel.assistantId == null &&
+          !_taskMode &&
+          message.ownerType == OwnerType.sender &&
+          !_isStreaming)
+        PopupMenuItem(
+            child: const Text('记为个人记忆'),
+            onTap: () => _savePersonalMemory(message)),
       if (persisted &&
           _assistant?.id != null &&
           message.content.trim().isNotEmpty)
@@ -5045,6 +5499,44 @@ class _ConversationPageState extends State<ConversationPage>
     });
   }
 
+  Future<void> _savePersonalMemory(MessageModel message) async {
+    final dao = _personalMemoryDao;
+    final cid = widget.conversationModel.cid;
+    if (dao == null ||
+        !_accountCurrent ||
+        _taskMode ||
+        widget.conversationModel.assistantId != null ||
+        message.ownerType != OwnerType.sender) {
+      return;
+    }
+    try {
+      final prefs = await dao.preferences();
+      final source = await dao.sourceForMessage(cid, message.createdAt);
+      if (!mounted ||
+          !_accountCurrent ||
+          cid != widget.conversationModel.cid ||
+          source == null) {
+        return;
+      }
+      final text = await showPersonalMemoryEditor(context,
+          initialText: message.content, title: '记为个人记忆');
+      if (text == null ||
+          !mounted ||
+          !_accountCurrent ||
+          cid != widget.conversationModel.cid ||
+          _taskMode ||
+          widget.conversationModel.assistantId != null) {
+        return;
+      }
+      await dao.save(text, source: source, expectedEpoch: prefs.epoch);
+      if (mounted && _accountCurrent) HiDialog.showSnackBar(context, '个人记忆已保存');
+    } catch (e) {
+      if (mounted && _accountCurrent) {
+        HiDialog.showSnackBar(context, '保存个人记忆失败：$e');
+      }
+    }
+  }
+
   Future<bool> _saveAssistantMemoryText({
     required String initialText,
     required String source,
@@ -5053,25 +5545,56 @@ class _ConversationPageState extends State<ConversationPage>
   }) async {
     final assistantId = _assistant?.id;
     if (assistantId == null || _assistantMemoryDao == null) return false;
+    final account = _pageAccount;
+    final cid = widget.conversationModel.cid;
+    final tick = BackupService.restoreTick.value;
+    final dao = _assistantMemoryDao!;
+    bool current() =>
+        mounted &&
+        _accountCurrent &&
+        widget.conversationModel.cid == cid &&
+        _assistant?.id == assistantId &&
+        BackupService.restoreTick.value == tick;
     final content = await showDialog<String>(
       context: context,
       builder: (_) => _AssistantMemorySaveDialog(initialText: initialText),
     );
-    if (content == null || content.trim().isEmpty) return false;
+    if (content == null || content.trim().isEmpty || !current()) return false;
     if (AssistantMemoryDao.hasDuplicateContent(_assistantMemories, content)) {
       if (mounted) HiDialog.showSnackBar(context, '这条长期记忆已存在');
       return false;
     }
-    final id = await _assistantMemoryDao!.saveMemory(
-      AssistantMemoryModel.confirmedFromConversation(
-        assistantId: assistantId,
-        content: content,
-        source: source,
-        sourceType: sourceType,
-        conversationId: widget.conversationModel.cid.toString(),
-        messageId: sourceMessageId,
-      ),
-    );
+    int? id;
+    try {
+      id = await LoginDao.runWithStableAccount(
+          expectedAccountHash: account,
+          action: () async {
+            if (!current()) throw StateError('原会话已变化');
+            final rows = await messageDao.storage.db.query(
+                'tb_conversation_list',
+                where: 'cid=? and assistantId=?',
+                whereArgs: [cid, assistantId]);
+            final assistants = await messageDao.storage.db
+                .query('tb_assistant', where: 'id=?', whereArgs: [assistantId]);
+            if (rows.length != 1 || assistants.length != 1 || !current()) {
+              throw StateError('原助手或会话已删除');
+            }
+            return dao.saveMemory(
+              AssistantMemoryModel.confirmedFromConversation(
+                assistantId: assistantId,
+                content: content,
+                source: source,
+                sourceType: sourceType,
+                conversationId: widget.conversationModel.cid.toString(),
+                messageId: sourceMessageId,
+              ),
+            );
+          });
+    } catch (e) {
+      if (mounted && current()) HiDialog.showSnackBar(context, '保存助手记忆失败：$e');
+      return false;
+    }
+    if (!current()) return false;
     if (id == null) {
       if (mounted) HiDialog.showSnackBar(context, '保存记忆失败');
       return false;
@@ -5136,6 +5659,8 @@ class _ConversationPageState extends State<ConversationPage>
       return;
     }
     final resumeGeneration = resumeTask ? _agentTask?.generation : null;
+    // 重生成/重试不采集旧轮次，不在重开或续跑时补扫。
+    _personalMemoryTurn = null;
     var handedOff = false;
     _userStopped = false;
     _streamAbortCompleter = Completer<void>();
@@ -5159,6 +5684,7 @@ class _ConversationPageState extends State<ConversationPage>
       if (_sendCancelled) return;
       final settings = _effective(rawSettings);
       final candidate = CompletionDao(
+        memoryContextResolver: _memoryResolver(),
         chatService: widget.chatService,
         manageContext: true,
         settings: settings,
@@ -5232,8 +5758,10 @@ class _ConversationPageState extends State<ConversationPage>
               nativeFiles: persistedAttachments.nativeFiles,
               extraText: [
                 ...legacyMetas.map((m) => m.extractedText).whereType<String>(),
-                ...workspaceTexts
-              ].join('\n\n'))
+                ...workspaceTexts,
+                historyReferencesExtraText(
+                    blocks.whereType<ReferenceBlock>().map((b) => b.reference)),
+              ].where((text) => text.isNotEmpty).join('\n\n'))
           : persistedAttachments;
       final restored = await const RetryAttachmentRestorer().restore(
         persisted: persistedForRetry,
@@ -5250,6 +5778,11 @@ class _ConversationPageState extends State<ConversationPage>
       }
       if (_sendCancelled) return;
       final attachments = restored.attachments;
+      if (blocks.any((block) => block is ReferenceBlock)) {
+        // 引用重放仍遵守当前整轮文字预算，且在删除旧回复前拒绝超限。
+        AttachmentBatchBudget(limits: settings.attachmentProcessingLimits)
+            .consumeText(attachments.extraText);
+      }
       final webSearch =
           settings.webSearchEnabled && settings.webSearchConfigured;
       final tools = await _toolsForSend(settings, caps, webSearch);

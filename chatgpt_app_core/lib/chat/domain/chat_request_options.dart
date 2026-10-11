@@ -22,6 +22,11 @@ enum ChatFailureKind {
   unknown
 }
 
+/// 传入不含动态记忆的附件准备结果；每次真正发起聊天请求前重新构造副本。
+/// 上传结果只准备一次，重试不能复用上一次解析出的账号数据。
+typedef ChatAttemptMessagesResolver = Future<List<Map<String, dynamic>>>
+    Function(List<Map<String, dynamic>> preparedMessages);
+
 int? validateMaxOutputTokensOverride(int? value) {
   if (value != null && value <= 0) {
     throw ArgumentError.value(
@@ -52,6 +57,7 @@ final class ChatRequestOptions {
   final Duration retryBaseDelay;
   final Duration maxRetryDelay;
   final void Function(ChatRequestRetry retry)? onRetry;
+  final ChatAttemptMessagesResolver? messagesForAttempt;
 
   const ChatRequestOptions({
     this.profile = ChatRequestProfile.standard,
@@ -67,9 +73,32 @@ final class ChatRequestOptions {
     this.retryBaseDelay = const Duration(milliseconds: 500),
     this.maxRetryDelay = const Duration(seconds: 5),
     this.onRetry,
+    this.messagesForAttempt,
   }) : assert(
           maxOutputTokensOverride == null || maxOutputTokensOverride > 0,
         );
+
+  Future<List<Map<String, dynamic>>> resolveAttemptMessages(
+      List<Map<String, dynamic>> preparedMessages) async {
+    var aborted = false;
+    abortTrigger?.then<void>((_) => aborted = true,
+        onError: (Object _, StackTrace __) => aborted = true);
+    await Future<void>.value();
+    void check() {
+      if (aborted) {
+        throw const ChatTransportException(
+            safeCode: 'cancelled',
+            safeMessage: '请求已取消',
+            failureKind: ChatFailureKind.cancelled);
+      }
+    }
+
+    check();
+    final messages = await (messagesForAttempt?.call(preparedMessages) ??
+        Future.value(preparedMessages));
+    check();
+    return messages;
+  }
 }
 
 /// 聊天传输层对上暴露的安全失败信息。

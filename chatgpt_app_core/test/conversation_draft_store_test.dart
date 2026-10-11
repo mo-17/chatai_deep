@@ -170,13 +170,13 @@ void main() {
     expect(await store().load(), isNull);
     expect(await file.readAsString(), '{broken');
     await file.writeAsString(jsonEncode({
-      'version': 2,
+      'version': 3,
       'text': '未来版本',
       'images': [],
       'files': [],
     }));
     expect(await store().load(), isNull);
-    expect((jsonDecode(await file.readAsString()) as Map)['version'], 2);
+    expect((jsonDecode(await file.readAsString()) as Map)['version'], 3);
   });
 
   test('恶意路径 metadata 不获得外部文件读取能力', () async {

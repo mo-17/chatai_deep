@@ -49,6 +49,11 @@ class CompletionDao {
   /// 注意调用方应传入「已应用模型覆盖」的 settings（见 AssistantModel.applyTo）。
   final String _systemPrompt;
 
+  /// 仅正式聊天 dispatch 使用；辅助请求与持久化协议不包含这份动态数据。
+  final Future<String> Function(bool allowPersonal)? memoryContextResolver;
+  final Future<List<WebSearchResult>> Function(
+      String prompt, List<Map<String, dynamic>> history)? webSearchRunner;
+
   /// 历史里每条 assistant 消息（按 createdAt）当轮调用过的工具块（遗留项 2）。
   /// 用于 _buildHistory 跨轮重建「assistant(tool_calls) + role:tool」消息序列，
   /// 使工具调用对后续轮次可见（落库 history 不再只剩正文）。
@@ -79,6 +84,8 @@ class CompletionDao {
       ChatService? chatService,
       List<MessageModel>? messages,
       String? systemPrompt,
+      this.memoryContextResolver,
+      this.webSearchRunner,
       Map<int, List<ToolBlock>>? toolHistory,
       Map<int, String>? fileHistory,
       Map<int, String>? roleContinuationHistory,
@@ -151,11 +158,13 @@ class CompletionDao {
     ChatAttachments? attachments,
     List<Map<String, dynamic>> declarations = const [],
     List<Map<String, dynamic>> extraMessages = const [],
+    String? resolvedSystemPrompt,
   }) {
     final history = _buildHistory();
     ChatContextPlan plan(String? summary) => const ChatContextPlanner().plan(
           history: history,
-          systemPrompt: injectSystemPrompt(const [], _systemPrompt)
+          systemPrompt: injectSystemPrompt(
+                  const [], resolvedSystemPrompt ?? _systemPrompt)
               .single['content'] as String,
           prompt: prompt,
           attachments: attachments,
@@ -183,17 +192,128 @@ class CompletionDao {
     List<Map<String, dynamic>> declarations = const [],
     List<Map<String, dynamic>> extraMessages = const [],
     ChatContextPlanCallback? onContextPlan,
+    String? resolvedSystemPrompt,
   }) {
-    if (!manageContext) return _withSystem(_buildHistory());
+    if (!manageContext) {
+      return injectSystemPrompt(
+          _buildHistory(), resolvedSystemPrompt ?? _systemPrompt);
+    }
     final plan = _planContext(
       prompt: prompt,
       attachments: attachments,
       declarations: declarations,
       extraMessages: extraMessages,
+      resolvedSystemPrompt: resolvedSystemPrompt,
     );
     onContextPlan?.call(plan);
     if (!plan.canSend) throw ChatContextBudgetException(plan);
     return plan.history;
+  }
+
+  Future<List<Map<String, dynamic>>> _dispatchHistory({
+    required String prompt,
+    ChatAttachments? attachments,
+    List<Map<String, dynamic>> declarations = const [],
+    List<Map<String, dynamic>> extraMessages = const [],
+    ChatContextPlanCallback? onContextPlan,
+    bool allowMemory = true,
+  }) async {
+    // 真正传输层只接收静态基线；动态账号数据在上传结束、每次重试前读取。
+    if (chatService is AttemptAwareChatService) {
+      return _requestHistory(
+          prompt: prompt,
+          attachments: attachments,
+          declarations: declarations,
+          extraMessages: extraMessages,
+          onContextPlan: onContextPlan);
+    }
+    final memory = await memoryContextResolver?.call(allowMemory) ?? '';
+    final system =
+        [_systemPrompt, memory].where((s) => s.isNotEmpty).join('\n\n');
+    // 动态记忆也消耗输入预算；不足时先舍弃数据，不影响本轮正文/附件。
+    if (memory.isNotEmpty) {
+      final plan = _planContext(
+          prompt: prompt,
+          attachments: attachments,
+          declarations: declarations,
+          extraMessages: extraMessages,
+          resolvedSystemPrompt: system);
+      if (!plan.canSend) {
+        return _requestHistory(
+            prompt: prompt,
+            attachments: attachments,
+            declarations: declarations,
+            extraMessages: extraMessages,
+            onContextPlan: onContextPlan);
+      }
+      if (!manageContext) {
+        onContextPlan?.call(plan);
+        return plan.history;
+      }
+    }
+    return _requestHistory(
+        prompt: prompt,
+        attachments: attachments,
+        declarations: declarations,
+        extraMessages: extraMessages,
+        onContextPlan: onContextPlan,
+        resolvedSystemPrompt: system);
+  }
+
+  ChatAttemptMessagesResolver? _attemptResolver({
+    List<Map<String, dynamic>> declarations = const [],
+    List<Map<String, dynamic>> extraMessages = const [],
+    ChatContextPlanCallback? onContextPlan,
+    bool allowMemory = true,
+    int? requestGeneration,
+  }) {
+    if (memoryContextResolver == null ||
+        chatService is! AttemptAwareChatService) {
+      return null;
+    }
+    return (prepared) async {
+      void checkGeneration() {
+        if (requestGeneration != null &&
+            requestGeneration != _requestGeneration) {
+          throw const ChatTransportException(
+              safeCode: 'cancelled',
+              safeMessage: '请求已取消',
+              failureKind: ChatFailureKind.cancelled);
+        }
+      }
+
+      checkGeneration();
+      final memory = await memoryContextResolver!(allowMemory);
+      checkGeneration();
+      final currentIndex = prepared.length - extraMessages.length - 1;
+      if (currentIndex < 1 ||
+          prepared.first['role'] != 'system' ||
+          prepared[currentIndex]['role'] != 'user') {
+        throw const ChatTransportException(
+            safeCode: 'invalid_attempt_messages',
+            safeMessage: '请求消息结构已变化',
+            failureKind: ChatFailureKind.invalidPayload);
+      }
+      if (memory.isEmpty && !manageContext) return prepared;
+      // 原生 file_id 已由适配器准备完成；重新预算时直接使用实际消息副本。
+      // 动态数据从未进入 prepared，不需要查找或删除任何正文字符串。
+      final staticSystem = prepared.first['content'] as String;
+      ChatContextPlan plan(String data) => const ChatContextPlanner().plan(
+          history: prepared.sublist(1, currentIndex),
+          systemPrompt:
+              [staticSystem, data].where((s) => s.isNotEmpty).join('\n\n'),
+          prompt: '',
+          preparedUserContent: prepared[currentIndex]['content'],
+          tools: declarations,
+          extraMessages: prepared.sublist(currentIndex + 1),
+          policy: contextPolicy,
+          maxOutputTokens: _settings.maxOutputTokens);
+      var result = plan(memory);
+      if (!result.canSend && memory.isNotEmpty) result = plan('');
+      onContextPlan?.call(result);
+      if (!result.canSend) throw ChatContextBudgetException(result);
+      return [...result.history, ...prepared.sublist(currentIndex)];
+    };
   }
 
   ///把已完成的一轮（用户 + assistant）追加进历史，使后续轮次携带完整上下文。
@@ -255,9 +375,18 @@ class CompletionDao {
   ///和 AI 进行会话。[attachments] 为当前轮附件（阶段四：图片/文件）。
   Future<String?> createCompletions(
       {required String prompt, ChatAttachments? attachments}) async {
-    final history = _requestHistory(prompt: prompt, attachments: attachments);
-    final response = await chatService.chat(
-        prompt: prompt, history: history, attachments: attachments);
+    final history =
+        await _dispatchHistory(prompt: prompt, attachments: attachments);
+    final response = memoryContextResolver == null
+        ? await chatService.chat(
+            prompt: prompt, history: history, attachments: attachments)
+        : (await chatService.chatWithUsageWithOptions(
+                prompt: prompt,
+                history: history,
+                attachments: attachments,
+                options:
+                    ChatRequestOptions(messagesForAttempt: _attemptResolver())))
+            .content;
     AILogger.log('ai response length: ${response?.length ?? 0}');
     return response;
   }
@@ -285,14 +414,14 @@ class CompletionDao {
         : const <WebSearchResult>[];
     await _ensureNotAborted(abortTrigger);
     final preparedAttachments = _withSearchContext(attachments, results);
-    final requestHistory = manageContext
-        ? _requestHistory(
-            prompt: prompt,
-            attachments: preparedAttachments,
-            onContextPlan: onContextPlan)
-        : _withSystem(history);
+    final requestHistory = await _dispatchHistory(
+        prompt: prompt,
+        attachments: preparedAttachments,
+        onContextPlan: onContextPlan);
     onProgress?.call(const ChatSendProgress('等待回答'));
-    final responseFuture = abortTrigger == null && onProgress == null
+    final responseFuture = abortTrigger == null &&
+            onProgress == null &&
+            memoryContextResolver == null
         ? chatService.chatWithUsage(
             prompt: prompt,
             history: requestHistory,
@@ -303,7 +432,10 @@ class CompletionDao {
             history: requestHistory,
             attachments: preparedAttachments,
             options: ChatRequestOptions(
-                abortTrigger: abortTrigger, onProgress: onProgress),
+                abortTrigger: abortTrigger,
+                onProgress: onProgress,
+                messagesForAttempt:
+                    _attemptResolver(onContextPlan: onContextPlan)),
           );
     final response = await _awaitRequestStage(responseFuture, abortTrigger);
     await _ensureNotAborted(abortTrigger);
@@ -321,10 +453,23 @@ class CompletionDao {
 
   ///流式会话，逐 token yield（仅文本）
   Stream<String> streamCompletions(
-      {required String prompt, ChatAttachments? attachments}) {
-    final history = _requestHistory(prompt: prompt, attachments: attachments);
-    return chatService.chatStream(
-        prompt: prompt, history: history, attachments: attachments);
+      {required String prompt, ChatAttachments? attachments}) async* {
+    final history =
+        await _dispatchHistory(prompt: prompt, attachments: attachments);
+    if (memoryContextResolver == null) {
+      yield* chatService.chatStream(
+          prompt: prompt, history: history, attachments: attachments);
+    } else {
+      yield* chatService
+          .chatStreamEventsWithOptions(
+              prompt: prompt,
+              history: history,
+              attachments: attachments,
+              options:
+                  ChatRequestOptions(messagesForAttempt: _attemptResolver()))
+          .where((e) => e.type == StreamEventType.text)
+          .map((e) => e.delta);
+    }
   }
 
   ///流式会话，逐「带类型」事件 yield（区分正文 / 推理），供块化分发使用。
@@ -382,13 +527,7 @@ class CompletionDao {
     if (tools != null && !tools.isEmpty) {
       yield* ToolLoopRunner(chatService: chatService, registry: tools).run(
         prompt: prompt,
-        history: manageContext
-            ? _requestHistory(
-                prompt: prompt,
-                attachments: attachments,
-                declarations: tools.declarations,
-                onContextPlan: onContextPlan)
-            : _withSystem(history),
+        history: _withSystem(history),
         attachments: attachments,
         abortTrigger: abortTrigger,
         onProgress: onProgress,
@@ -400,15 +539,21 @@ class CompletionDao {
             lastProtocolMessages = messages;
           }
         },
-        historyForRound: manageContext
-            ? (extraMessages, declarations) => _requestHistory(
-                  prompt: prompt,
-                  attachments: attachments,
-                  declarations: declarations ?? const [],
-                  extraMessages: extraMessages,
-                  onContextPlan: onContextPlan,
-                )
-            : null,
+        historyForRound: (extraMessages, declarations) => _dispatchHistory(
+          prompt: prompt,
+          attachments: attachments,
+          declarations: declarations ?? const [],
+          extraMessages: extraMessages,
+          onContextPlan: onContextPlan,
+          allowMemory: task == null,
+        ),
+        messagesForAttemptForRound: (extraMessages, declarations) =>
+            _attemptResolver(
+                declarations: declarations ?? const [],
+                extraMessages: extraMessages,
+                onContextPlan: onContextPlan,
+                allowMemory: task == null,
+                requestGeneration: requestGeneration),
       );
       return;
     }
@@ -419,14 +564,15 @@ class CompletionDao {
         : const <WebSearchResult>[];
     await _ensureNotAborted(abortTrigger);
     final preparedAttachments = _withSearchContext(attachments, results);
-    final requestHistory = manageContext
-        ? _requestHistory(
-            prompt: prompt,
-            attachments: preparedAttachments,
-            onContextPlan: onContextPlan)
-        : _withSystem(history);
+    final requestHistory = await _dispatchHistory(
+        prompt: prompt,
+        attachments: preparedAttachments,
+        onContextPlan: onContextPlan,
+        allowMemory: task == null);
     onProgress?.call(const ChatSendProgress('等待回答'));
-    final output = abortTrigger == null && onProgress == null
+    final output = abortTrigger == null &&
+            onProgress == null &&
+            memoryContextResolver == null
         ? chatService.chatStreamEvents(
             prompt: prompt,
             history: requestHistory,
@@ -437,7 +583,12 @@ class CompletionDao {
             history: requestHistory,
             attachments: preparedAttachments,
             options: ChatRequestOptions(
-                abortTrigger: abortTrigger, onProgress: onProgress),
+                abortTrigger: abortTrigger,
+                onProgress: onProgress,
+                messagesForAttempt: _attemptResolver(
+                    onContextPlan: onContextPlan,
+                    allowMemory: task == null,
+                    requestGeneration: requestGeneration)),
           );
     final text = StringBuffer();
     final reasoning = StringBuffer();
@@ -486,6 +637,7 @@ class CompletionDao {
   ///绝不阻塞正式会话。未配置搜索 key 时直接返回空。
   Future<List<WebSearchResult>> _runWebSearch(
       String prompt, List<Map<String, dynamic>> history) async {
+    if (webSearchRunner != null) return webSearchRunner!(prompt, history);
     final provider = WebSearchProvider.fromSettings(_settings);
     if (provider == null) return const [];
     try {

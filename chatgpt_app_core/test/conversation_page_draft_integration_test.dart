@@ -357,7 +357,7 @@ void main() {
       final paths = <String>[];
       for (var i = 0; i < 2; i++) {
         final file = File('${temporary.path}/正文$i.txt');
-        await file.writeAsString(List.filled(600, '文').join());
+        await file.writeAsString('${List.filled(600, '文').join()}$i');
         paths.add(file.path);
       }
       return paths;
@@ -368,17 +368,19 @@ void main() {
     final noNetwork = _RejectHttpOverrides();
     HttpOverrides.global = noNetwork;
     addTearDown(() => HttpOverrides.global = previousHttp);
-    tester
-        .widget<MessageInputWidget>(find.byType(MessageInputWidget))
-        .onFilesPicked!(files!);
+    await tester.runAsync(() async {
+      tester
+          .widget<MessageInputWidget>(find.byType(MessageInputWidget))
+          .onFilesPicked!(files!);
+      await draftFor(model.cid).whenIdle();
+    });
     await tester.enterText(find.byType(TextField), '保留这条待发送问题');
     try {
       // 真实文件流必须在真实异步区运行，避免 FakeAsync 挂起文件流的检查点。
       await tester.runAsync(() async {
-        tester
+        await tester
             .widget<MessageInputWidget>(find.byType(MessageInputWidget))
             .onSend!();
-        await Future<void>.delayed(const Duration(milliseconds: 200));
       });
       await letIoFinish(tester, rounds: 10);
       final input =
@@ -395,11 +397,9 @@ void main() {
       expect(saved!.text, '保留这条待发送问题');
       expect(saved.filePaths, hasLength(2));
     } finally {
-      // dispose 也读写附件快照，须在真实异步区完成并排空保存队列。
-      await tester.runAsync(() async {
-        await tester.pumpWidget(const SizedBox.shrink());
-        await draftFor(model.cid).load();
-      });
+      // 当前 fake clock 内明确完成 dispose 保存，再关闭数据库和文件目录。
+      await tester.runAsync(() => tester.pumpWidget(const SizedBox.shrink()));
+      await finishFuture(tester, draftFor(model.cid).whenIdle());
     }
     expect(tester.takeException(), isNull);
   });

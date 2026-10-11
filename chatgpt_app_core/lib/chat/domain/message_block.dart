@@ -1,5 +1,8 @@
 import 'dart:convert';
 
+import 'package:chatgpt_app_core/chat/domain/interactive_card.dart';
+
+import 'package:chatgpt_app_core/chat/domain/composer_reference.dart';
 import 'package:chatgpt_app_core/chat/application/assistant_role_card_service.dart';
 import 'package:chatgpt_app_core/model/assistant_model.dart';
 import 'package:chatgpt_app_core/chat/domain/local_source_citation.dart';
@@ -37,6 +40,7 @@ enum MessageBlockType {
   tool, // 工具调用
   citation, // 引用（网络搜索 / 知识库 grounding）
   file, // 文件
+  reference, // 用户主动选择的历史消息快照
   roleContext, // 角色上下文快照（调试/追溯用）
   roleContinuation, // 未完成回复的角色状态承接
   error, // 错误
@@ -111,6 +115,8 @@ sealed class MessageBlock {
           status: status,
           modelId: modelId,
           content: j['content'] as String? ?? '',
+          localCardStates: decodeLocalCardStates(
+              j['localCardStates'], j['content'] as String? ?? ''),
           protocolMessages: [
             for (final m in (j['protocolMessages'] as List? ?? const []))
               (m as Map).cast<String, dynamic>()
@@ -195,6 +201,15 @@ sealed class MessageBlock {
           file: FileMetadata.fromJson(
               ((j['file'] as Map?) ?? const {}).cast<String, dynamic>()),
         );
+      case MessageBlockType.reference:
+        return ReferenceBlock(
+            id: id,
+            messageId: messageId,
+            createdAt: createdAt,
+            updatedAt: updatedAt,
+            status: status,
+            reference: ComposerReference.fromJson(
+                (j['reference'] as Map).cast<String, dynamic>()));
       case MessageBlockType.roleContext:
         final rawMemoryBudget = j['memoryBudget'];
         final rawMemoryHits = j['memoryHits'];
@@ -272,9 +287,16 @@ sealed class MessageBlock {
     if (raw == null || raw.isEmpty) return const [];
     try {
       final list = jsonDecode(raw) as List;
-      return list
-          .map((e) => MessageBlock.fromJson((e as Map).cast<String, dynamic>()))
-          .toList();
+      final blocks = <MessageBlock>[];
+      for (final entry in list) {
+        try {
+          blocks.add(
+              MessageBlock.fromJson((entry as Map).cast<String, dynamic>()));
+        } catch (_) {
+          // 单个损坏块不能丢弃同一消息的其余正文与附件。
+        }
+      }
+      return blocks;
     } catch (_) {
       return const [];
     }
@@ -302,6 +324,9 @@ class PlaceholderBlock extends MessageBlock {
 class MainTextBlock extends MessageBlock {
   final String content;
 
+  /// 仅用于本地显示，不进入正文或请求协议。
+  final Map<String, ChecklistLocalState> localCardStates;
+
   /// 精确工具轮次及推理协议历史，独立于显示文本；旧块缺省为空。
   final List<Map<String, dynamic>> protocolMessages;
 
@@ -314,6 +339,7 @@ class MainTextBlock extends MessageBlock {
     super.modelId,
     this.content = '',
     this.protocolMessages = const [],
+    this.localCardStates = const {},
   });
 
   @override
@@ -324,6 +350,7 @@ class MainTextBlock extends MessageBlock {
     MessageBlockStatus? status,
     int? updatedAt,
     List<Map<String, dynamic>>? protocolMessages,
+    Map<String, ChecklistLocalState>? localCardStates,
   }) =>
       MainTextBlock(
         id: id,
@@ -334,11 +361,19 @@ class MainTextBlock extends MessageBlock {
         status: status ?? this.status,
         content: content ?? this.content,
         protocolMessages: protocolMessages ?? this.protocolMessages,
+        localCardStates: localCardStates ?? this.localCardStates,
       );
 
   @override
   Map<String, dynamic> toJson() => _baseJson()
     ..['content'] = content
+    ..addAll(localCardStates.isEmpty
+        ? const {}
+        : {
+            'localCardStates': {
+              for (final e in localCardStates.entries) e.key: e.value.toJson()
+            },
+          })
     ..addAll(protocolMessages.isEmpty
         ? const {}
         : {'protocolMessages': protocolMessages});
@@ -568,6 +603,29 @@ class FileBlock extends MessageBlock {
 
   @override
   Map<String, dynamic> toJson() => _baseJson()..['file'] = file.toJson();
+}
+
+class ReferenceBlock extends MessageBlock {
+  final ComposerReference reference;
+  ReferenceBlock(
+      {required super.id,
+      required super.messageId,
+      required super.createdAt,
+      required super.status,
+      super.updatedAt,
+      required this.reference}) {
+    if (reference.kind != ComposerReferenceKind.historyMessage ||
+        reference.historySnapshot == null ||
+        reference.attachmentPath != null) {
+      throw const FormatException('消息引用块只能保存历史正文快照');
+    }
+    ComposerReference.fromJson(reference.toJson());
+  }
+  @override
+  MessageBlockType get type => MessageBlockType.reference;
+  @override
+  Map<String, dynamic> toJson() =>
+      _baseJson()..['reference'] = reference.toJson();
 }
 
 class RoleContextBlock extends MessageBlock {

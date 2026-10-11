@@ -24,6 +24,7 @@ import 'package:openai_flutter/utils/ai_logger.dart';
 class BackendChatService
     implements
         ChatService,
+        AttemptAwareChatService,
         OptionsAwareChatService,
         OptionsAwareNonStreamingChatService {
   final AISettings _settings;
@@ -184,7 +185,8 @@ class BackendChatService
   }) async {
     final maxTokens = _maxTokensFor(options);
     final uri = BackendConst.buildUri('/uapi/chat/completions');
-    final messages = _buildMessages(prompt, history, attachments);
+    final messages = await options
+        .resolveAttemptMessages(_buildMessages(prompt, history, attachments));
     final body = {
       'model': _settings.effectiveModel,
       'messages': messages,
@@ -370,8 +372,8 @@ class BackendChatService
     final httpClient = http.Client();
     try {
       final uri = BackendConst.buildUri('/uapi/chat/completions/stream');
-      final messages =
-          _buildMessages(prompt, history, attachments, extraMessages);
+      final messages = await options.resolveAttemptMessages(
+          _buildMessages(prompt, history, attachments, extraMessages));
       final body = {
         'model': _settings.effectiveModel,
         'messages': messages,

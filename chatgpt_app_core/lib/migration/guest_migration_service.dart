@@ -1,4 +1,6 @@
 import 'package:chatgpt_app_core/backup/backup_service.dart';
+import 'package:chatgpt_app_core/backup/personal_memory_backup.dart';
+import 'package:chatgpt_app_core/db/personal_memory_dao.dart';
 import 'package:chatgpt_app_core/dao/ai_settings_dao.dart';
 import 'package:chatgpt_app_core/db/assistant_dao.dart';
 import 'package:chatgpt_app_core/db/agent_workspace_dao.dart';
@@ -23,6 +25,7 @@ class GuestMigrationResult {
   final int favorites;
   final int projects;
   final int memories;
+  final int personalMemories;
 
   /// 是否套用了游客的 AI 设置（仅在账号原本没有设置时才会）。
   final bool settingsImported;
@@ -34,6 +37,7 @@ class GuestMigrationResult {
     this.favorites = 0,
     this.projects = 0,
     this.memories = 0,
+    this.personalMemories = 0,
     this.settingsImported = false,
   });
 }
@@ -80,6 +84,7 @@ class GuestMigrationService {
     final guest = await resolve(guestHash);
     if (await _conversationCount(guest) > 0 ||
         await _validMemoryCount(guest) > 0 ||
+        await _personalMemoryCount(guest) > 0 ||
         await _hasValidSkillCatalog(guest)) {
       return true;
     }
@@ -135,6 +140,7 @@ class GuestMigrationService {
           favorites: counts.favorites,
           projects: counts.projects,
           memories: counts.memories,
+          personalMemories: counts.personalMemories,
           settingsImported: settingsImported,
         );
       },
@@ -175,6 +181,10 @@ class GuestMigrationService {
     final favorites = await from.db.query('tb_favorite');
     final projects = await from.db.query('tb_project');
     final memories = await from.db.query('tb_assistant_memory');
+    final personalRows = PersonalMemoryBackup.validate(
+        await PersonalMemoryBackup.read(from.db),
+        messages: messages,
+        conversations: conversations);
     final hasProjectIdColumn =
         await _hasColumn(to.db, 'tb_conversation_list', 'projectId');
     final normalizedConversations = conversations
@@ -202,6 +212,7 @@ class GuestMigrationService {
     }
 
     var conv = 0, msg = 0, ast = 0, fav = 0, prj = 0, mem = 0;
+    var personalCount = 0;
     GuestMigrationResult? journalResult;
     await to.db.transaction((txn) async {
       if (idempotencyKey != null) {
@@ -346,6 +357,9 @@ class GuestMigrationService {
         msg++;
       }
 
+      personalCount = await PersonalMemoryBackup.restore(txn, personalRows,
+          overwrite: false, cidMap: cidMap);
+
       // 收藏：无外键，丢弃自增 id 直接追加。
       for (final f in favorites) {
         final row = Map<String, Object?>.from(f);
@@ -363,6 +377,7 @@ class GuestMigrationService {
           'favorites': fav,
           'projects': prj,
           'memories': mem,
+          'personalMemories': personalCount,
           'committedAt': DateTime.now().millisecondsSinceEpoch,
         });
       }
@@ -376,6 +391,7 @@ class GuestMigrationService {
       favorites: fav,
       projects: prj,
       memories: mem,
+      personalMemories: personalCount,
     );
   }
 
@@ -389,18 +405,18 @@ class GuestMigrationService {
         favorites integer not null,
         projects integer not null,
         memories integer not null default 0,
+        personalMemories integer not null default 0,
         committedAt integer not null
       )
     ''');
-    if (await _hasColumn(db, _migrationJournalTable, 'memories')) return;
-    try {
-      await db.execute(
-        'alter table $_migrationJournalTable '
-        'add column memories integer not null default 0',
-      );
-    } catch (_) {
-      // 并发/历史升级若已补列可继续；其它失败必须让事务回滚。
-      if (!await _hasColumn(db, _migrationJournalTable, 'memories')) rethrow;
+    for (final column in ['memories', 'personalMemories']) {
+      if (await _hasColumn(db, _migrationJournalTable, column)) continue;
+      try {
+        await db.execute(
+            'alter table $_migrationJournalTable add column $column integer not null default 0');
+      } catch (_) {
+        if (!await _hasColumn(db, _migrationJournalTable, column)) rethrow;
+      }
     }
   }
 
@@ -412,6 +428,7 @@ class GuestMigrationService {
         favorites: (row['favorites'] as num?)?.toInt() ?? 0,
         projects: (row['projects'] as num?)?.toInt() ?? 0,
         memories: (row['memories'] as num?)?.toInt() ?? 0,
+        personalMemories: (row['personalMemories'] as num?)?.toInt() ?? 0,
       );
 
   /// 通过各 DAO 静态工厂确保迁移表存在且 schema 最新（含历史 ALTER）。
@@ -422,6 +439,7 @@ class GuestMigrationService {
     await FavoriteDao.create(storage);
     await ProjectDao.create(storage);
     await AssistantMemoryDao.create(storage);
+    await PersonalMemoryDao.ensureSchema(storage.db);
     await SkillCatalogDao.create(storage);
     await AgentWorkspaceDao.create(storage, cid: 0);
     await _ensureConversationProjectIdColumn(storage.db);
@@ -467,9 +485,17 @@ class GuestMigrationService {
     return (rows.first['c'] as int?) ?? 0;
   }
 
+  static Future<int> _personalMemoryCount(HiDBManager storage) async {
+    await PersonalMemoryDao.ensureSchema(storage.db);
+    return Sqflite.firstIntValue(await storage.db
+            .rawQuery('select count(*) from tb_personal_memory')) ??
+        0;
+  }
+
   static Future<int> _validMemoryCount(HiDBManager storage) async {
     await AssistantDao.create(storage);
     await AssistantMemoryDao.create(storage);
+    await PersonalMemoryDao.ensureSchema(storage.db);
     final rows = await storage.db.rawQuery(
       'select count(*) as c from tb_assistant_memory memory '
       'inner join tb_assistant assistant '

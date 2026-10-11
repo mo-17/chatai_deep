@@ -39,10 +39,14 @@ class ToolLoopRunner {
     ChatAttachments? attachments,
     Future<void>? abortTrigger,
     ChatSendProgressCallback? onProgress,
-    List<Map<String, dynamic>> Function(
+    FutureOr<List<Map<String, dynamic>>> Function(
       List<Map<String, dynamic>> extraMessages,
       List<Map<String, dynamic>>? declarations,
     )? historyForRound,
+    ChatAttemptMessagesResolver? Function(
+            List<Map<String, dynamic>> extraMessages,
+            List<Map<String, dynamic>>? declarations)?
+        messagesForAttemptForRound,
 
     /// 每个工具结果保存后、最终回答结束时提供当前协议快照，供断点落库。
     /// 多工具轮执行途中可能尚未配对完成，消息历史的调用方需过滤或补齐。
@@ -243,9 +247,14 @@ class ToolLoopRunner {
         ensureRunning();
       }
       final roundHistory =
-          historyForRound?.call(extraMessages, declarations) ?? history;
+          await (historyForRound?.call(extraMessages, declarations) ?? history);
+      ensureRunning();
       onProgress?.call(const ChatSendProgress('等待回答'));
-      final events = abortTrigger == null && onProgress == null
+      final messagesForAttempt = messagesForAttemptForRound?.call(
+          List.unmodifiable(extraMessages), declarations);
+      final events = abortTrigger == null &&
+              onProgress == null &&
+              messagesForAttempt == null
           ? chatService.chatStreamEvents(
               prompt: prompt,
               history: roundHistory,
@@ -260,7 +269,9 @@ class ToolLoopRunner {
               tools: declarations,
               extraMessages: extraMessages,
               options: ChatRequestOptions(
-                  abortTrigger: abortTrigger, onProgress: onProgress),
+                  abortTrigger: abortTrigger,
+                  onProgress: onProgress,
+                  messagesForAttempt: messagesForAttempt),
             );
       await for (final e in events) {
         ensureRunning();

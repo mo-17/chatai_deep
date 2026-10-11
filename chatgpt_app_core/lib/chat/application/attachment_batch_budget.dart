@@ -1,6 +1,8 @@
 import 'dart:io';
 import 'dart:typed_data';
 
+import 'package:crypto/crypto.dart';
+
 import 'package:chatgpt_app_core/chat/domain/attachment_processing_limits.dart';
 import 'package:chatgpt_app_core/util/bounded_file_reader.dart';
 import 'package:chatgpt_app_core/util/managed_attachment_store.dart';
@@ -9,17 +11,21 @@ import 'package:chatgpt_app_core/util/managed_attachment_store.dart';
 final class AttachmentBatchBudget {
   final AttachmentProcessingLimits limits;
   final bool _enforceLimits;
+  final Map<String, String> expectedDigests;
   int _usedBytes = 0;
   int _usedTextCharacters = 0;
 
   AttachmentBatchBudget(
-      {AttachmentProcessingLimits limits = const AttachmentProcessingLimits()})
-      : limits = limits.normalized,
+      {AttachmentProcessingLimits limits = const AttachmentProcessingLimits(),
+      Map<String, String> expectedDigests = const {}})
+      : expectedDigests = Map.unmodifiable(expectedDigests),
+        limits = limits.normalized,
         _enforceLimits = true;
 
   /// 仅用于已保存消息恢复；单文件读取边界仍由每个处理器执行。
   AttachmentBatchBudget.forHistoricalRetry()
-      : limits = const AttachmentProcessingLimits(),
+      : expectedDigests = const {},
+        limits = const AttachmentProcessingLimits(),
         _enforceLimits = false;
 
   int get usedBytes => _usedBytes;
@@ -91,6 +97,10 @@ final class AttachmentBatchBudget {
         singleLimit: maxBytes,
         readLimit: readLimit);
     final bytes = await readFileBytes(File(path), maxBytes: maxBytes);
+    final expected = expectedDigests[source.path];
+    if (expected != null && sha256.convert(bytes).toString() != expected) {
+      throw const FormatException('引用快照校验失败，请重新选择');
+    }
     return AttachmentBatchSnapshot(path: path, bytes: bytes);
   }
 

@@ -442,6 +442,23 @@ void main() {
     expect(AssistantMemoryDao.hasDuplicateContent(memories, ' '), isFalse);
   });
 
+  test('管理写入CAS拒绝旧revision/错误助手/已删除行，不复活', () async {
+    final original = AssistantMemoryModel(assistantId: 1, content: '合成原文');
+    await dao.saveMemory(original);
+    final stale = AssistantMemoryModel.fromJson(original.toJson());
+    original.content = '合成更新';
+    expect(await dao.saveMemoryChecked(original), isNotNull);
+    stale.content = '过期覆盖';
+    expect(await dao.saveMemoryChecked(stale), isNull);
+    expect(await dao.deleteMemoryChecked(stale), 0);
+    final wrongAssistant = AssistantMemoryModel.fromJson(original.toJson())
+      ..assistantId = 2;
+    expect(await dao.saveMemoryChecked(wrongAssistant), isNull);
+    expect(await dao.deleteMemoryChecked(original), 1);
+    expect(await dao.saveMemoryChecked(original), isNull);
+    expect(await dao.getMemories(1), isEmpty);
+  });
+
   test('删除记忆', () async {
     final memory = AssistantMemoryModel(assistantId: 1, content: '待删除');
     final id = await dao.saveMemory(memory);

@@ -1,4 +1,6 @@
 import 'package:chatgpt_app_core/db/assistant_memory_dao.dart';
+import 'package:chatgpt_app_core/backup/backup_service.dart';
+import 'package:login_sdk/dao/login_dao.dart';
 import 'package:chatgpt_app_core/db/hi_db_manager.dart';
 import 'package:chatgpt_app_core/model/assistant_memory_model.dart';
 import 'package:chatgpt_app_core/model/assistant_model.dart';
@@ -23,11 +25,25 @@ class _AssistantMemoryPageState extends State<AssistantMemoryPage> {
   List<AssistantMemoryModel> _memories = const [];
   late final TextEditingController _searchCtl;
   bool _loading = true;
+  late final String? _account;
+  int _loadGeneration = 0;
+  bool get _current =>
+      mounted &&
+      (_account == null
+          ? widget.dao != null
+          : LoginDao.getAccountHash() == _account);
+  void _guard(int tick) {
+    if (!_current || tick != BackupService.restoreTick.value) {
+      throw StateError('账号或恢复状态已变化');
+    }
+  }
+
   Object? _loadError;
 
   @override
   void initState() {
     super.initState();
+    _account = LoginDao.getAccountHash();
     _searchCtl = TextEditingController()..addListener(_onSearchChanged);
     _doInit();
   }
@@ -51,8 +67,8 @@ class _AssistantMemoryPageState extends State<AssistantMemoryPage> {
       if (widget.dao != null) {
         _dao = widget.dao;
       } else {
-        final dbManager =
-            await HiDBManager.instance(dbName: HiDBManager.getAccountHash());
+        final dbManager = await HiDBManager.instance(
+            dbName: _account ?? (throw StateError('账号未初始化')));
         _dao = await AssistantMemoryDao.create(dbManager);
       }
       await _loadData();
@@ -69,8 +85,11 @@ class _AssistantMemoryPageState extends State<AssistantMemoryPage> {
       if (mounted) setState(() => _memories = const []);
       return;
     }
+    final generation = ++_loadGeneration;
     final list = await _dao!.getMemories(id, limit: 100);
-    if (mounted) setState(() => _memories = list);
+    if (_current && generation == _loadGeneration) {
+      setState(() => _memories = list);
+    }
   }
 
   @override
@@ -112,7 +131,7 @@ class _AssistantMemoryPageState extends State<AssistantMemoryPage> {
   Widget get _emptyView {
     final message = widget.assistant.id == null
         ? '请先保存助手，再添加长期记忆'
-        : '点右下角新增，或在会话中长按消息选择「记住」。';
+        : '点右下角新增，或在会话中长按消息选择「记为助手记忆」。';
     return AppVisualEmptyState(
       icon: Icons.psychology_alt_outlined,
       title: widget.assistant.id == null ? '还不能添加记忆' : '还没有长期记忆',
@@ -123,7 +142,7 @@ class _AssistantMemoryPageState extends State<AssistantMemoryPage> {
           child: Text(
             widget.assistant.id == null
                 ? '请先保存助手，再添加长期记忆'
-                : '还没有长期记忆。点右下角新增，或在会话中长按消息选择「记住」。',
+                : '还没有长期记忆。点右下角新增，或在会话中长按消息选择「记为助手记忆」。',
             textAlign: TextAlign.center,
             style: TextStyle(
               color: Theme.of(context).colorScheme.onSurfaceVariant,
@@ -158,6 +177,7 @@ class _AssistantMemoryPageState extends State<AssistantMemoryPage> {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
+          const Text('仅供当前助手使用；不属于个人跨会话记忆。'),
           Text(
             '共 ${_memories.length} 条 · 手动 $manualCount · 自动建议 $suggestionCount · 对话 $conversationCount',
             style: TextStyle(fontSize: 13, color: colorScheme.onSurfaceVariant),
@@ -224,7 +244,18 @@ class _AssistantMemoryPageState extends State<AssistantMemoryPage> {
           final tile = ListTile(
             title: Text(memory.content,
                 maxLines: 3, overflow: TextOverflow.ellipsis),
-            subtitle: Text(_subtitle(memory)),
+            subtitle:
+                Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+              Text(_subtitle(memory)),
+              TextButton(
+                  onPressed: _loading ? null : () => _toggleStatus(memory),
+                  child: Text(memory.status == AssistantMemoryStatus.active &&
+                          memory.confirmedByUser
+                      ? '停用记忆'
+                      : memory.status == AssistantMemoryStatus.pending
+                          ? '确认并启用记忆'
+                          : '启用记忆')),
+            ]),
             onTap: () => _editMemory(memory),
             trailing: SizedBox(
               width: 96,
@@ -263,12 +294,22 @@ class _AssistantMemoryPageState extends State<AssistantMemoryPage> {
     };
     final date = DateTime.fromMillisecondsSinceEpoch(
         memory.updatedAt > 0 ? memory.updatedAt : memory.createdAt);
-    return '$source · ${date.year}-${date.month.toString().padLeft(2, '0')}-${date.day.toString().padLeft(2, '0')}';
+    final state =
+        memory.status == AssistantMemoryStatus.active && memory.confirmedByUser
+            ? '生效'
+            : memory.status == AssistantMemoryStatus.pending
+                ? '待确认'
+                : '停用';
+    final origin = memory.sourceConversationId.isEmpty
+        ? ''
+        : ' · 会话 ${memory.sourceConversationId} · 消息 ${memory.sourceMessageId}';
+    return '$state · $source$origin · ${date.year}-${date.month.toString().padLeft(2, '0')}-${date.day.toString().padLeft(2, '0')}';
   }
 
   Future<void> _editMemory(AssistantMemoryModel? memory) async {
     final assistantId = widget.assistant.id;
     if (assistantId == null || _dao == null) return;
+    final tick = BackupService.restoreTick.value;
     final result = await showDialog<String>(
       context: context,
       builder: (ctx) => _AssistantMemoryEditDialog(
@@ -300,37 +341,80 @@ class _AssistantMemoryPageState extends State<AssistantMemoryPage> {
       confirmedByUser: memory?.confirmedByUser ?? true,
       revision: memory?.revision ?? 1,
     );
-    if (mounted) {
-      setState(() {
-        final next = List<AssistantMemoryModel>.of(_memories);
-        final index = next.indexWhere((item) => item.id == saved.id);
-        if (index >= 0) {
-          next[index] = saved;
-        } else {
-          next.insert(0, saved);
-        }
-        _memories = next;
-      });
-    }
-    await _dao!.saveMemory(saved);
-    if (!mounted) return;
-    setState(() {
-      final next = List<AssistantMemoryModel>.of(_memories);
-      final index = next.indexWhere((item) => item.id == saved.id);
-      if (index >= 0) {
-        next[index] = saved;
-      } else {
-        next.insert(0, saved);
+    await _mutate(tick, () async {
+      final dao = _dao!;
+      final id = dao is AssistantMemoryDao
+          ? await dao.saveMemoryChecked(saved)
+          : await dao.saveMemory(saved);
+      if (id == null) throw StateError('记忆已删除或修改，请刷新');
+    }, memory == null ? '已新增长期记忆' : '已更新长期记忆');
+  }
+
+  Future<void> _mutate(
+      int tick, Future<void> Function() action, String notice) async {
+    if (!_current || _loading) return;
+    setState(() => _loading = true);
+    try {
+      Future<void> write() async {
+        _guard(tick);
+        await action();
       }
-      _memories = next;
-    });
-    if (!mounted) return;
-    HiDialog.showSnackBar(context, memory == null ? '已新增长期记忆' : '已更新长期记忆');
+
+      if (_account == null) {
+        await write();
+      } else {
+        await LoginDao.runWithStableAccount(
+            expectedAccountHash: _account!, action: write);
+      }
+      if (!mounted) return;
+      _guard(tick);
+      await _loadData();
+      if (!mounted || !_current) return;
+      HiDialog.showSnackBar(context, notice);
+    } catch (e) {
+      if (mounted && _current) HiDialog.showSnackBar(context, '记忆保存失败：$e');
+    } finally {
+      if (mounted) setState(() => _loading = false);
+    }
+  }
+
+  Future<void> _toggleStatus(AssistantMemoryModel memory) async {
+    final tick = BackupService.restoreTick.value;
+    final active =
+        memory.status == AssistantMemoryStatus.active && memory.confirmedByUser;
+    if (!active) {
+      final ok = await showDialog<bool>(
+          context: context,
+          builder: (ctx) => AlertDialog(
+                  title: const Text('启用助手记忆'),
+                  content: Text('确认后此内容仅供当前助手使用：\n${memory.content}'),
+                  actions: [
+                    TextButton(
+                        onPressed: () => Navigator.pop(ctx, false),
+                        child: const Text('取消')),
+                    FilledButton(
+                        onPressed: () => Navigator.pop(ctx, true),
+                        child: const Text('确认启用'))
+                  ]));
+      if (ok != true) return;
+    }
+    final next = AssistantMemoryModel.fromJson(memory.toJson())
+      ..status =
+          active ? AssistantMemoryStatus.archived : AssistantMemoryStatus.active
+      ..confirmedByUser = !active;
+    await _mutate(tick, () async {
+      final dao = _dao!;
+      final id = dao is AssistantMemoryDao
+          ? await dao.saveMemoryChecked(next)
+          : await dao.saveMemory(next);
+      if (id == null) throw StateError('记忆已变化');
+    }, active ? '助手记忆已停用' : '助手记忆已启用');
   }
 
   Future<void> _deleteMemory(AssistantMemoryModel memory) async {
     final id = memory.id;
     if (id == null || _dao == null) return;
+    final tick = BackupService.restoreTick.value;
     final ok = await showDialog<bool>(
       context: context,
       builder: (ctx) => AlertDialog(
@@ -347,17 +431,13 @@ class _AssistantMemoryPageState extends State<AssistantMemoryPage> {
       ),
     );
     if (ok != true) return;
-    if (!mounted) return;
-    setState(() {
-      _memories = _memories.where((item) => item.id != id).toList();
-    });
-    await _dao!.deleteMemory(id);
-    if (!mounted) return;
-    setState(() {
-      _memories = _memories.where((item) => item.id != id).toList();
-    });
-    if (!mounted) return;
-    HiDialog.showSnackBar(context, '已删除长期记忆');
+    await _mutate(tick, () async {
+      final dao = _dao!;
+      final count = dao is AssistantMemoryDao
+          ? await dao.deleteMemoryChecked(memory)
+          : await dao.deleteMemory(id);
+      if (count != 1) throw StateError('记忆已删除或修改');
+    }, '已删除长期记忆');
   }
 
   Future<void> _copyMemory(AssistantMemoryModel memory) async {

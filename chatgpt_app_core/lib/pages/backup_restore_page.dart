@@ -280,7 +280,8 @@ class _BackupImportPreviewDialogState extends State<BackupImportPreviewDialog> {
       '会话：${preview.conversations}',
       '消息：${preview.messages}',
       '助手：${preview.assistants}',
-      '长期记忆：${preview.assistantMemories}',
+      '助手记忆：${preview.assistantMemories}',
+      '个人记忆：${preview.personalMemories}（恢复后开关关闭）',
       '收藏：${preview.favorites}',
       '项目：${preview.projects}',
       '知识库文档：${preview.knowledgeDocs}',
@@ -723,14 +724,14 @@ class _BackupRestorePageState extends State<BackupRestorePage> {
       case BackupImportMode.overwriteAll:
         return '已恢复 ${result.conversations} 个会话、'
             '${result.messages} 条消息、${result.assistants} 个助手、'
-            '${result.assistantMemories} 条长期记忆、'
+            '${result.assistantMemories} 条助手记忆、${result.personalMemories} 条个人记忆、'
             '${result.favorites} 条收藏。$warning';
       case BackupImportMode.projectConversationsOnly:
         return '已恢复 ${result.projects} 个项目、'
             '${result.conversations} 个会话、${result.messages} 条消息。$warning';
       case BackupImportMode.assistantsOnly:
         return '已恢复 ${result.assistants} 个助手、'
-            '${result.assistantMemories} 条长期记忆。$warning';
+            '${result.assistantMemories} 条助手记忆。$warning';
       case BackupImportMode.knowledgeBaseOnly:
         return '已恢复 ${result.knowledgeDocs} 个知识库文档、'
             '${result.knowledgeChunks} 个片段、'
@@ -738,7 +739,7 @@ class _BackupRestorePageState extends State<BackupRestorePage> {
       case BackupImportMode.mergeAppend:
         return '已合并 ${result.projects} 个项目、${result.conversations} 个会话、'
             '${result.messages} 条消息、${result.assistants} 个助手、'
-            '${result.assistantMemories} 条长期记忆、'
+            '${result.assistantMemories} 条助手记忆、${result.personalMemories} 条个人记忆、'
             '${result.favorites} 条收藏、${result.knowledgeDocs} 个知识库文档。'
             '$warning';
     }

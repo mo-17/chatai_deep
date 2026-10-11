@@ -1,9 +1,14 @@
+import 'dart:async';
 import 'dart:io';
 
 import 'package:chatgpt_app_core/chat/application/file_processor.dart';
+import 'package:chatgpt_app_core/chat/application/composer_reference_trigger.dart';
+import 'package:chatgpt_app_core/chat/domain/composer_reference.dart';
+import 'package:chatgpt_app_core/widget/message_reference_picker.dart';
 import 'package:chatgpt_app_core/provider/theme_provider.dart';
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:provider/provider.dart';
 import 'package:speech_to_text/speech_to_text.dart' as stt;
@@ -53,7 +58,7 @@ String? _normalizeSpeechLocale(String? locale) {
 ///聊天输入框
 class MessageInputWidget extends StatefulWidget {
   final ValueChanged<String>? onChanged;
-  final VoidCallback? onSend;
+  final FutureOr<void> Function()? onSend;
 
   /// 默认保留旧调用的立即清空行为；异步发送页面可在持久化成功后自行清空。
   final bool clearOnSend;
@@ -94,6 +99,15 @@ class MessageInputWidget extends StatefulWidget {
   /// 可单独锁定本轮草稿编辑；默认 true 保留旧调用在等待回答时继续输入的行为。
   final bool editingEnabled;
   final bool isStreaming;
+  final bool referencesEnabled;
+  final String? referenceScopeKey;
+  final bool Function()? isReferenceScopeCurrent;
+  final List<ComposerReference> references;
+  final Future<ComposerReference?> Function()? pickHistoryReference;
+  final ValueChanged<ComposerReference>? onReferencePicked;
+  final ValueChanged<String>? onRemoveReference;
+  final Future<void> Function(ComposerReference)? onPreviewReference;
+  final ValueChanged<bool>? onReferencePickerChanged;
   final bool speechInputEnabled;
   final String? speechLocale;
 
@@ -127,6 +141,15 @@ class MessageInputWidget extends StatefulWidget {
     this.enable = true,
     this.editingEnabled = true,
     this.isStreaming = false,
+    this.referencesEnabled = false,
+    this.referenceScopeKey,
+    this.isReferenceScopeCurrent,
+    this.references = const [],
+    this.onPreviewReference,
+    this.pickHistoryReference,
+    this.onReferencePicked,
+    this.onRemoveReference,
+    this.onReferencePickerChanged,
     this.speechInputEnabled = true,
     this.speechLocale,
   });
@@ -144,8 +167,13 @@ class _MessageInputWidgetState extends State<MessageInputWidget> {
   bool _hasSpeech = true; // 默认显示，初始化失败才隐藏
   bool _isListening = false;
   int _editingRevision = 0;
+  int _inputGeneration = 0;
   String _lastWords = '';
   final _picker = ImagePicker();
+  late TextEditingValue _previousValue;
+  TextEditingValue _changeBefore = TextEditingValue.empty;
+  bool _suppressPasteTrigger = false;
+  int _pickerDepth = 0;
 
   @override
   void initState() {
@@ -156,6 +184,7 @@ class _MessageInputWidgetState extends State<MessageInputWidget> {
       _controller.text = widget.initialText;
     }
     _showSend = _controller.text.isNotEmpty;
+    _previousValue = _controller.value;
     _controller.addListener(_onControllerChanged);
     if (_controller.text.isNotEmpty) widget.onChanged?.call(_controller.text);
     _initSpeech();
@@ -164,6 +193,9 @@ class _MessageInputWidgetState extends State<MessageInputWidget> {
   @override
   void didUpdateWidget(covariant MessageInputWidget oldWidget) {
     super.didUpdateWidget(oldWidget);
+    if (oldWidget.referenceScopeKey != widget.referenceScopeKey) {
+      _editingRevision++;
+    }
     if (oldWidget.editingEnabled != widget.editingEnabled) _editingRevision++;
     if (oldWidget.editingEnabled && !widget.editingEnabled) {
       _speech?.cancel();
@@ -175,13 +207,21 @@ class _MessageInputWidgetState extends State<MessageInputWidget> {
     if (_ownsController) _controller.dispose();
     _ownsController = widget.controller == null;
     _controller = widget.controller ?? TextEditingController();
+    _previousValue = _controller.value;
     _controller.addListener(_onControllerChanged);
     _showSend = _controller.text.isNotEmpty;
   }
 
   void _onControllerChanged() {
     final text = _controller.text;
-    widget.onChanged?.call(text);
+    final textChanged = _previousValue.text != text;
+    if (textChanged) {
+      _changeBefore = _previousValue;
+      _inputGeneration++;
+    }
+    _previousValue = _controller.value;
+    // 光标、选区及 composing 范围不是正文编辑，不能使等待中的引用冻结失效。
+    if (textChanged) widget.onChanged?.call(text);
     if (mounted && _showSend != text.isNotEmpty) {
       setState(() => _showSend = text.isNotEmpty);
     }
@@ -316,7 +356,10 @@ class _MessageInputWidgetState extends State<MessageInputWidget> {
       );
       return;
     }
-    showModalBottomSheet(
+    final revision = _editingRevision;
+    final generation = _inputGeneration;
+    _pickerEnter();
+    final source = await showModalBottomSheet<ImageSource>(
       context: context,
       builder: (_) => SafeArea(
         child: Wrap(
@@ -325,27 +368,36 @@ class _MessageInputWidgetState extends State<MessageInputWidget> {
               leading: const Icon(Icons.camera_alt),
               title: const Text('拍照'),
               onTap: () {
-                Navigator.pop(context);
-                _pickImage(ImageSource.camera);
+                Navigator.pop(context, ImageSource.camera);
               },
             ),
             ListTile(
               leading: const Icon(Icons.photo_library),
               title: const Text('从相册选择'),
               onTap: () {
-                Navigator.pop(context);
-                _pickImage(ImageSource.gallery);
+                Navigator.pop(context, ImageSource.gallery);
               },
             ),
           ],
         ),
       ),
     );
+    if (source != null &&
+        mounted &&
+        widget.editingEnabled &&
+        revision == _editingRevision &&
+        generation == _inputGeneration &&
+        widget.isReferenceScopeCurrent?.call() != false) {
+      await _pickImage(source);
+    }
+    _pickerLeave();
   }
 
-  Future<void> _pickImage(ImageSource source) async {
-    if (!widget.editingEnabled) return;
+  Future<bool> _pickImage(ImageSource source) async {
+    if (!widget.editingEnabled || !widget.imagesEnabled) return false;
     final revision = _editingRevision;
+    final generation = _inputGeneration;
+    _pickerEnter();
     try {
       final picked = await _picker.pickImage(
         source: source,
@@ -356,8 +408,12 @@ class _MessageInputWidgetState extends State<MessageInputWidget> {
       if (picked != null &&
           mounted &&
           widget.editingEnabled &&
-          revision == _editingRevision) {
-        widget.onImagesPicked?.call([...widget.pendingImages, picked.path]);
+          revision == _editingRevision &&
+          generation == _inputGeneration &&
+          widget.isReferenceScopeCurrent?.call() != false) {
+        widget.onImagesPicked
+            ?.call({...widget.pendingImages, picked.path}.toList());
+        return true;
       }
     } catch (e) {
       if (mounted) {
@@ -365,7 +421,10 @@ class _MessageInputWidgetState extends State<MessageInputWidget> {
           SnackBar(content: Text('选取图片失败: $e')),
         );
       }
+    } finally {
+      _pickerLeave();
     }
+    return false;
   }
 
   bool get _showPhotoBtn =>
@@ -379,11 +438,17 @@ class _MessageInputWidgetState extends State<MessageInputWidget> {
   bool get _hasPendingFiles => widget.pendingFiles.isNotEmpty;
 
   bool get _showSendButton =>
-      _showSend || _hasPendingImages || _hasPendingFiles || widget.isStreaming;
+      _showSend ||
+      _hasPendingImages ||
+      _hasPendingFiles ||
+      widget.references.isNotEmpty ||
+      widget.isStreaming;
 
-  Future<void> _onFileTap() async {
-    if (!widget.editingEnabled) return;
+  Future<bool> _onFileTap() async {
+    if (!widget.editingEnabled) return false;
     final revision = _editingRevision;
+    final generation = _inputGeneration;
+    _pickerEnter();
     try {
       // 不按数量截断；发送前按整轮附件大小和解析字数检查。
       final result = await FilePicker.pickFiles(
@@ -395,8 +460,10 @@ class _MessageInputWidgetState extends State<MessageInputWidget> {
       if (result == null ||
           !mounted ||
           !widget.editingEnabled ||
-          revision != _editingRevision) {
-        return;
+          revision != _editingRevision ||
+          generation != _inputGeneration ||
+          widget.isReferenceScopeCurrent?.call() == false) {
+        return false;
       }
       // 去重：跳过已在待发送列表里的、以及本批内重复的路径。
       final seen = widget.pendingFiles.toSet();
@@ -406,16 +473,230 @@ class _MessageInputWidgetState extends State<MessageInputWidget> {
         if (p == null || !seen.add(p)) continue;
         picked.add(p);
       }
-      if (picked.isEmpty) return;
+      if (picked.isEmpty) return false;
       widget.onFilesPicked?.call([...widget.pendingFiles, ...picked]);
+      return true;
     } catch (e) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(content: Text('选取文件失败: $e')),
         );
       }
+    } finally {
+      _pickerLeave();
+    }
+    return false;
+  }
+
+  void _pickerEnter() {
+    if (_pickerDepth++ == 0 && widget.referencesEnabled) {
+      widget.onReferencePickerChanged?.call(true);
     }
   }
+
+  void _pickerLeave() {
+    if (_pickerDepth > 0 &&
+        --_pickerDepth == 0 &&
+        mounted &&
+        widget.referencesEnabled) {
+      widget.onReferencePickerChanged?.call(false);
+    }
+  }
+
+  Future<void> _openReferenceMenu({int? triggerOffset}) async {
+    if (!widget.referencesEnabled ||
+        !widget.editingEnabled ||
+        _pickerDepth > 0) {
+      return;
+    }
+    final value = _controller.value;
+    final revision = _editingRevision;
+    final generation = _inputGeneration;
+    final scope = widget.referenceScopeKey;
+    bool current() =>
+        mounted &&
+        widget.editingEnabled &&
+        revision == _editingRevision &&
+        generation == _inputGeneration &&
+        scope == widget.referenceScopeKey &&
+        widget.isReferenceScopeCurrent?.call() != false;
+    _pickerEnter();
+    try {
+      final kind = await showModalBottomSheet<ComposerReferenceKind>(
+          context: context,
+          isScrollControlled: true,
+          useSafeArea: true,
+          builder: (ctx) => SingleChildScrollView(
+                  child: Column(mainAxisSize: MainAxisSize.min, children: [
+                const ListTile(title: Text('添加引用')),
+                if (_showFileBtn)
+                  ListTile(
+                      key: const ValueKey('reference_choose_file'),
+                      leading: const Icon(Icons.attach_file),
+                      title: const Text('@文件'),
+                      onTap: () =>
+                          Navigator.pop(ctx, ComposerReferenceKind.file)),
+                if (_showPhotoBtn)
+                  ListTile(
+                      key: const ValueKey('reference_choose_photo'),
+                      leading: const Icon(Icons.photo_library_outlined),
+                      title: const Text('@相册'),
+                      enabled: widget.imagesEnabled,
+                      subtitle: widget.imagesEnabled
+                          ? null
+                          : Text(widget.imagesDisabledReason),
+                      onTap: () =>
+                          Navigator.pop(ctx, ComposerReferenceKind.photo)),
+                ListTile(
+                    key: const ValueKey('reference_choose_history'),
+                    leading: const Icon(Icons.history),
+                    title: const Text('@历史消息'),
+                    onTap: () => Navigator.pop(
+                        ctx, ComposerReferenceKind.historyMessage)),
+                TextButton(
+                    onPressed: () => Navigator.pop(ctx),
+                    child: const Text('取消')),
+              ])));
+      if (kind == null || !current()) return;
+      var accepted = false;
+      switch (kind) {
+        case ComposerReferenceKind.file:
+          accepted = await _onFileTap();
+        case ComposerReferenceKind.photo:
+          accepted = await _pickImage(ImageSource.gallery);
+        case ComposerReferenceKind.historyMessage:
+          final reference = await widget.pickHistoryReference?.call();
+          if (reference != null && current()) {
+            widget.onReferencePicked?.call(reference);
+            accepted = true;
+          }
+      }
+      if (accepted &&
+          current() &&
+          triggerOffset != null &&
+          _controller.value == value) {
+        final text =
+            value.text.replaceRange(triggerOffset, triggerOffset + 1, '');
+        _controller.value = TextEditingValue(
+            text: text,
+            selection: TextSelection.collapsed(offset: triggerOffset));
+      }
+    } finally {
+      _pickerLeave();
+    }
+  }
+
+  Widget _referenceButton() => SizedBox.square(
+      dimension: 44,
+      child: IconButton(
+          key: const ValueKey('composer_reference_button'),
+          tooltip: '添加引用',
+          onPressed: widget.editingEnabled ? _openReferenceMenu : null,
+          icon: const Icon(Icons.alternate_email)));
+
+  Widget _referenceBar() {
+    if (widget.references.isEmpty) return const SizedBox.shrink();
+    return SizedBox(
+        height: 58,
+        child: ListView.separated(
+            key: const ValueKey('composer_reference_tags'),
+            scrollDirection: Axis.horizontal,
+            itemCount: widget.references.length,
+            separatorBuilder: (_, __) => const SizedBox(width: 6),
+            itemBuilder: (_, i) {
+              final reference = widget.references[i];
+              return Card(
+                  child: Row(mainAxisSize: MainAxisSize.min, children: [
+                InkWell(
+                    key: ValueKey('preview_reference_${reference.id}'),
+                    onTap: !widget.editingEnabled
+                        ? null
+                        : () =>
+                            widget.onPreviewReference?.call(reference) ??
+                            showReferencePreview(context, reference,
+                                isCurrent: widget.isReferenceScopeCurrent),
+                    child: Padding(
+                        padding: const EdgeInsets.symmetric(horizontal: 10),
+                        child: Row(children: [
+                          Icon(
+                              reference.available
+                                  ? switch (reference.kind) {
+                                      ComposerReferenceKind.file =>
+                                        Icons.attach_file,
+                                      ComposerReferenceKind.photo =>
+                                        Icons.photo_library_outlined,
+                                      ComposerReferenceKind.historyMessage =>
+                                        Icons.history,
+                                    }
+                                  : Icons.warning_amber,
+                              size: 18),
+                          const SizedBox(width: 4),
+                          ConstrainedBox(
+                              constraints: const BoxConstraints(maxWidth: 180),
+                              child: Text(
+                                  '${reference.available ? '' : '不可用 · '}${reference.label}',
+                                  maxLines: 1,
+                                  overflow: TextOverflow.ellipsis))
+                        ]))),
+                IconButton(
+                    key: ValueKey('remove_reference_${reference.id}'),
+                    tooltip: '移除引用',
+                    onPressed: widget.editingEnabled
+                        ? () => widget.onRemoveReference?.call(reference.id)
+                        : null,
+                    icon: const Icon(Icons.close, size: 18)),
+              ]));
+            }));
+  }
+
+  Widget _contextMenu(BuildContext context, EditableTextState state) =>
+      AdaptiveTextSelectionToolbar.buttonItems(
+          anchors: state.contextMenuAnchors,
+          buttonItems: state.contextMenuButtonItems
+              .map((item) => item.type == ContextMenuButtonType.paste
+                  ? ContextMenuButtonItem(
+                      type: item.type,
+                      label: item.label,
+                      onPressed: () async {
+                        _suppressPasteTrigger = true;
+                        try {
+                          await state.pasteText(SelectionChangedCause.toolbar);
+                        } finally {
+                          _suppressPasteTrigger = false;
+                        }
+                        state.hideToolbar();
+                      })
+                  : item)
+              .toList());
+
+  Future<void> _pasteFromKeyboard() async {
+    if (!widget.editingEnabled) return;
+    final revision = _editingRevision;
+    final generation = _inputGeneration;
+    final value = _controller.value;
+    final data = await Clipboard.getData(Clipboard.kTextPlain);
+    if (!mounted ||
+        !widget.editingEnabled ||
+        revision != _editingRevision ||
+        generation != _inputGeneration ||
+        data?.text == null) {
+      return;
+    }
+    final start =
+        value.selection.isValid ? value.selection.start : value.text.length;
+    final end =
+        value.selection.isValid ? value.selection.end : value.text.length;
+    _controller.value = TextEditingValue(
+        text: value.text.replaceRange(start, end, data!.text!),
+        selection: TextSelection.collapsed(offset: start + data.text!.length));
+  }
+
+  Widget _pasteShortcuts(Widget input) => CallbackShortcuts(bindings: {
+        const SingleActivator(LogicalKeyboardKey.keyV, meta: true): () =>
+            unawaited(_pasteFromKeyboard()),
+        const SingleActivator(LogicalKeyboardKey.keyV, control: true): () =>
+            unawaited(_pasteFromKeyboard()),
+      }, child: input);
 
   @override
   void dispose() {
@@ -829,7 +1110,8 @@ class _MessageInputWidgetState extends State<MessageInputWidget> {
   }
 
   get _input => Expanded(
-        child: TextField(
+        child: _pasteShortcuts(TextField(
+          contextMenuBuilder: _contextMenu,
           readOnly: !widget.editingEnabled,
           focusNode: _focusNode,
           onChanged: _onChanged,
@@ -853,10 +1135,11 @@ class _MessageInputWidgetState extends State<MessageInputWidget> {
               contentPadding: const EdgeInsets.only(left: 10),
               hintStyle: const TextStyle(fontSize: 16),
               hintText: widget.hint),
-        ),
+        )),
       );
 
   List<Widget> _animeTools() => [
+        if (widget.referencesEnabled) _referenceButton(),
         if (widget.showWebSearch) _webSearchBtn(isAnime: true),
         if (_showPhotoBtn)
           _animeToolButton(
@@ -928,7 +1211,8 @@ class _MessageInputWidgetState extends State<MessageInputWidget> {
   }
 
   Widget get _animeInput => Expanded(
-        child: TextField(
+        child: _pasteShortcuts(TextField(
+          contextMenuBuilder: _contextMenu,
           readOnly: !widget.editingEnabled,
           key: const ValueKey('anime_message_input'),
           focusNode: _focusNode,
@@ -943,8 +1227,39 @@ class _MessageInputWidgetState extends State<MessageInputWidget> {
             contentPadding:
                 const EdgeInsets.symmetric(horizontal: 14, vertical: 11),
           ),
-        ),
+        )),
       );
+
+  Widget _classicComposer(Color color) =>
+      LayoutBuilder(builder: (_, constraints) {
+        final tools = <Widget>[
+          if (widget.referencesEnabled) _referenceButton(),
+          if (widget.showWebSearch) _webSearchBtn(isAnime: false),
+          if (_showPhotoBtn) _photoBtn,
+          if (_showFileBtn) _fileBtn,
+          if (widget.speechInputEnabled) _micBtn,
+        ];
+        if (widget.referencesEnabled && constraints.maxWidth < 420) {
+          return Column(mainAxisSize: MainAxisSize.min, children: [
+            SizedBox(
+                height: 44,
+                child: SingleChildScrollView(
+                    scrollDirection: Axis.horizontal,
+                    child: Row(children: tools))),
+            SizedBox(
+                height: 45,
+                child: Row(
+                    children: [_input, if (_showSendButton) _sendBtn(color)])),
+          ]);
+        }
+        return SizedBox(
+            height: 45,
+            child: Row(children: [
+              ...tools,
+              _input,
+              if (_showSendButton) _sendBtn(color)
+            ]));
+      });
 
   @override
   Widget build(BuildContext context) {
@@ -997,24 +1312,10 @@ class _MessageInputWidgetState extends State<MessageInputWidget> {
             ),
           ),
           if (_canShowSuggestion) _buildSuggestion(),
-          _buildThumbnailBar(isAnime: isAnime),
-          _buildFileBar(isAnime: isAnime),
-          if (isAnime)
-            _buildAnimeComposer(color)
-          else
-            SizedBox(
-              height: 45,
-              child: Row(
-                children: [
-                  if (widget.showWebSearch) _webSearchBtn(isAnime: false),
-                  if (_showPhotoBtn) _photoBtn,
-                  if (_showFileBtn) _fileBtn,
-                  if (widget.speechInputEnabled) _micBtn,
-                  _input,
-                  if (_showSendButton) _sendBtn(color),
-                ],
-              ),
-            ),
+          if (widget.referencesEnabled) _referenceBar(),
+          if (!widget.referencesEnabled) _buildThumbnailBar(isAnime: isAnime),
+          if (!widget.referencesEnabled) _buildFileBar(isAnime: isAnime),
+          if (isAnime) _buildAnimeComposer(color) else _classicComposer(color),
         ],
       ),
     );
@@ -1030,7 +1331,9 @@ class _MessageInputWidgetState extends State<MessageInputWidget> {
       (!_controller.value.composing.isValid ||
           _controller.value.composing.isCollapsed) &&
       widget.pendingImages.isEmpty &&
-      widget.pendingFiles.isEmpty;
+      widget.pendingFiles.isEmpty &&
+      widget.references.isEmpty &&
+      _pickerDepth == 0;
 
   Widget _buildSuggestion() {
     final colors = Theme.of(context).colorScheme;
@@ -1084,11 +1387,22 @@ class _MessageInputWidgetState extends State<MessageInputWidget> {
     setState(() {
       _showSend = value.isNotEmpty;
     });
+    final pasted = _suppressPasteTrigger;
+    _suppressPasteTrigger = false;
+    if (widget.referencesEnabled && !pasted && _pickerDepth == 0) {
+      final offset = composerReferenceTrigger(_changeBefore, _controller.value);
+      if (offset != null) unawaited(_openReferenceMenu(triggerOffset: offset));
+    }
   }
 
   void _onSend() {
     // 流式进行中或被禁用时（如回车键触发），忽略发送，避免并发请求。
-    if (widget.isStreaming || !widget.enable || !widget.editingEnabled) return;
+    if (widget.isStreaming ||
+        !widget.enable ||
+        !widget.editingEnabled ||
+        _pickerDepth > 0) {
+      return;
+    }
     if (widget.canSend?.call() == false) return;
     if (widget.onSend != null) {
       widget.onSend!();

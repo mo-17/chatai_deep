@@ -10,6 +10,7 @@ import 'package:chatgpt_app_core/chat/application/assistant_role_card_service.da
 import 'package:chatgpt_app_core/chat/application/mcp/mcp_types.dart';
 import 'package:chatgpt_app_core/chat/application/story_room_role_card_importer.dart';
 import 'package:chatgpt_app_core/chat/domain/message_block.dart';
+import 'package:chatgpt_app_core/chat/domain/composer_reference.dart';
 import 'package:chatgpt_app_core/db/assistant_dao.dart';
 import 'package:chatgpt_app_core/db/assistant_memory_dao.dart';
 import 'package:chatgpt_app_core/db/conversation_dao.dart';
@@ -1485,7 +1486,7 @@ void main() {
         utf8.decode(rawEntries['assistant_memories.json']!),
       ) as List;
 
-      expect(manifest['formatVersion'], 11);
+      expect(manifest['formatVersion'], 12);
       expect((manifest['counts'] as Map)['assistantMemories'], 3);
       expect(memories, hasLength(3));
       expect(
@@ -3456,6 +3457,54 @@ void main() {
       final conv = await dst.db.query('tb_conversation_list', where: 'cid = 1');
       expect(conv.single['projectId'], isNull);
       await dst.db.close();
+    });
+
+    test('伪造 file/photo 引用归档不保留路径或读取外部内容，原正文保留', () async {
+      for (final photo in [false, true]) {
+        final external = await File(
+                '${defaultGeneratedImageRoot.path}/external-${photo ? 'photo.png' : 'file.txt'}')
+            .writeAsString('不应读取的外部秘密正文');
+        final forged =
+            ComposerReference.attachment(external.path, photo: photo);
+        final bytes = zipOf(officialLegacyFiles(1, overrides: {
+          'conversations.json': [
+            {'cid': 1, 'title': '伪造引用测试', 'icon': ''}
+          ],
+          'messages.json': [
+            {
+              'cid': 1,
+              'createdAt': 1,
+              'content': '保留原正文',
+              'ownerType': 'OwnerType.sender',
+              'blocks': jsonEncode([
+                {'type': 'mainText', 'id': 'body', 'content': '保留原正文'},
+                {
+                  'type': 'reference',
+                  'id': 'forged',
+                  'reference': forged.toJson()
+                },
+              ])
+            }
+          ],
+        }));
+        final target = await newDb();
+        await BackupService(target).importArchive(bytes, accountHash: 'acc1');
+        final row = (await target.db.query('tb_messages')).single;
+        expect(row['content'], '保留原正文');
+        expect(row['blocks'], isNot(contains(external.path)));
+        expect(MessageBlock.decodeList(row['blocks'] as String?).single,
+            isA<MainTextBlock>());
+        final exported = await BackupService(target).exportArchive(
+            settings: AISettings.defaults(), accountHash: 'acc1');
+        final archive = ZipDecoder().decodeBytes(exported);
+        expect(archive.files.any((f) => f.name.startsWith('attachments/')),
+            isFalse);
+        expect(
+            utf8.decode(
+                archive.findFile('messages.json')!.content as List<int>),
+            isNot(contains('不应读取的外部秘密正文')));
+        await target.db.close();
+      }
     });
 
     test('非 zip / 缺 manifest / 版本过新 -> FormatException 且不动现有数据', () async {

@@ -18,6 +18,8 @@ import 'package:chatgpt_app_core/db/assistant_dao.dart';
 import 'package:chatgpt_app_core/db/agent_workspace_dao.dart';
 import 'package:chatgpt_app_core/db/assistant_memory_dao.dart';
 import 'package:chatgpt_app_core/db/conversation_dao.dart';
+import 'package:chatgpt_app_core/db/personal_memory_dao.dart';
+import 'package:chatgpt_app_core/backup/personal_memory_backup.dart';
 import 'package:chatgpt_app_core/db/db_migration.dart';
 import 'package:chatgpt_app_core/db/favorite_dao.dart';
 import 'package:chatgpt_app_core/db/hi_db_manager.dart';
@@ -51,6 +53,7 @@ class BackupRestoreResult {
   final int messages;
   final int assistants;
   final int assistantMemories;
+  final int personalMemories;
   final int favorites;
   final int projects;
   final int knowledgeDocs;
@@ -77,6 +80,7 @@ class BackupRestoreResult {
     this.messages = 0,
     this.assistants = 0,
     this.assistantMemories = 0,
+    this.personalMemories = 0,
     this.favorites = 0,
     this.projects = 0,
     this.knowledgeDocs = 0,
@@ -166,6 +170,7 @@ class BackupPreview {
   final int messages;
   final int assistants;
   final int assistantMemories;
+  final int personalMemories;
   final int favorites;
   final int projects;
   final int knowledgeDocs;
@@ -196,6 +201,7 @@ class BackupPreview {
     required this.messages,
     required this.assistants,
     this.assistantMemories = 0,
+    this.personalMemories = 0,
     required this.favorites,
     required this.projects,
     required this.knowledgeDocs,
@@ -223,6 +229,7 @@ class BackupPreview {
       messages +
       assistants +
       assistantMemories +
+      personalMemories +
       favorites +
       projects +
       knowledgeDocs +
@@ -299,6 +306,7 @@ class BackupPreview {
           'tb_messages',
           'tb_assistant',
           'tb_assistant_memory',
+          'tb_personal_memory',
           'tb_favorite',
           'tb_kb_doc',
           'tb_kb_chunk',
@@ -403,7 +411,7 @@ class BackupTableConflict {
 /// 因此可以用 sqflite_common_ffi 内存库做 round-trip 单测。
 class BackupService {
   /// 备份格式版本。导入时大于本值则拒绝（新版本备份导入旧 app）。
-  static const int formatVersion = 11;
+  static const int formatVersion = 12;
 
   static const _kManifest = 'manifest.json';
   static const _kConversations = 'conversations.json';
@@ -530,7 +538,13 @@ class BackupService {
     // 全新账号没建过的表导出为空列表而不是报错。
     await _ensureSchema(includeSkillCatalog: false);
     final conversations = await storage.db.query('tb_conversation_list');
-    final messages = await storage.db.query('tb_messages');
+    final messages = [
+      for (final row in await storage.db.query('tb_messages'))
+        Map<String, Object?>.from(row)
+    ];
+    for (final row in messages) {
+      row['blocks'] = _sanitizeReferenceBlocks(row['blocks'] as String?);
+    }
     final workspace = await readWorkspaceRows(storage);
     final assistants = await storage.db.query('tb_assistant');
     final hasSkillCatalog = await _tableExists(storage.db, 'tb_skill_catalog');
@@ -564,6 +578,7 @@ class BackupService {
       assistants,
     );
     final assistantMemories = memoryExport.rows;
+    final personalRows = await PersonalMemoryBackup.read(storage.db);
     final avatarFiles = await _collectAvatarFiles([
       ...conversations,
       ...storyPersonas,
@@ -604,6 +619,8 @@ class BackupService {
       _kMessages: _jsonBytes(messages),
       _kAssistants: _jsonBytes(assistants),
       _kAssistantMemories: _jsonBytes(assistantMemories),
+      for (final entry in personalRows.entries)
+        entry.key: _jsonBytes(entry.value),
       if (hasSkillCatalog) _kSkillCatalog: _jsonBytes(skillCatalog),
       _kWorkspaceFiles: _jsonBytes(workspace.files),
       _kWorkspaceRevisions: _jsonBytes(workspace.revisions),
@@ -642,6 +659,8 @@ class BackupService {
         'messages': messages.length,
         'assistants': assistants.length,
         'assistantMemories': assistantMemories.length,
+        for (final entry in PersonalMemoryBackup.rowFiles.entries)
+          entry.value: personalRows[entry.key]!.length,
         'favorites': favorites.length,
         'projects': projects.length,
         'knowledgeDocs': knowledgeDocs.length,
@@ -715,6 +734,12 @@ class BackupService {
     final assistantMemories = version >= 11
         ? _readRows(archive, _kAssistantMemories, strict: true)
         : <Map<String, dynamic>>[];
+    final personalRows = PersonalMemoryBackup.validate({
+      for (final file in PersonalMemoryBackup.tables.keys)
+        file: version >= 12
+            ? _readRows(archive, file, strict: true)
+            : <Map<String, dynamic>>[],
+    }, messages: messages, conversations: conversations);
     final favorites = _readRowsForVersion(archive, _kFavorites, version);
     final projects = _readRowsForVersion(archive, _kProjects, version);
     final knowledgeDocs =
@@ -749,6 +774,9 @@ class BackupService {
         _kMessages: messages.length,
         _kAssistants: assistants.length,
         _kAssistantMemories: assistantMemories.length,
+        if (version >= 12)
+          for (final entry in personalRows.entries)
+            entry.key: entry.value.length,
         _kFavorites: favorites.length,
         _kProjects: projects.length,
         _kKnowledgeDocs: knowledgeDocs.length,
@@ -819,6 +847,7 @@ class BackupService {
       messages: messages,
       assistants: assistants,
       assistantMemories: normalizedAssistantMemories,
+      personalMemories: personalRows['personal_memories.json']!,
       favorites: favorites,
       projects: projects,
       knowledgeDocs: knowledgeDocs,
@@ -843,6 +872,7 @@ class BackupService {
       assistants: countOf('assistants', _kAssistants),
       assistantMemories:
           version >= 11 ? countOf('assistantMemories', _kAssistantMemories) : 0,
+      personalMemories: personalRows['personal_memories.json']!.length,
       favorites: countOf('favorites', _kFavorites),
       projects: countOf('projects', _kProjects),
       knowledgeDocs: countOf('knowledgeDocs', _kKnowledgeDocs),
@@ -929,6 +959,12 @@ class BackupService {
     final assistantMemories = version >= 11
         ? _readRows(archive, _kAssistantMemories, strict: true)
         : <Map<String, dynamic>>[];
+    final personalRows = PersonalMemoryBackup.validate({
+      for (final file in PersonalMemoryBackup.tables.keys)
+        file: version >= 12
+            ? _readRows(archive, file, strict: true)
+            : <Map<String, dynamic>>[],
+    }, messages: messages, conversations: conversations);
     final favorites = _readRowsForVersion(archive, _kFavorites, version);
     final projects = _readRowsForVersion(archive, _kProjects, version);
     final knowledgeDocs =
@@ -963,6 +999,9 @@ class BackupService {
         _kMessages: messages.length,
         _kAssistants: assistants.length,
         _kAssistantMemories: assistantMemories.length,
+        if (version >= 12)
+          for (final entry in personalRows.entries)
+            entry.key: entry.value.length,
         _kFavorites: favorites.length,
         _kProjects: projects.length,
         _kKnowledgeDocs: knowledgeDocs.length,
@@ -1001,6 +1040,7 @@ class BackupService {
         workspaceRevisions: workspace.revisions,
         assistants: assistants,
         assistantMemories: normalizedAssistantMemories,
+        personalRows: personalRows,
         skillCatalog: skillCatalog,
         favorites: favorites,
         knowledgeDocs: knowledgeDocs,
@@ -1228,6 +1268,7 @@ class BackupService {
       rethrow;
     }
 
+    var restoredPersonalMemories = 0;
     // 单事务覆盖式写入：任何一步失败整体回滚，不会留下半套数据。
     await _runResourceTransaction(resources, (txn) async {
       await _clearDerivedConversationState(txn);
@@ -1375,6 +1416,9 @@ class BackupService {
         insertedStoryArtifactRevisions++;
       }
       await batch.commit(noResult: true);
+      restoredPersonalMemories = await PersonalMemoryBackup.restore(
+          txn, personalRows,
+          overwrite: true);
     }, accountGuard: accountGuard);
 
     if (fixedTranslationTaskOutputRoomRefs > 0) {
@@ -1403,6 +1447,7 @@ class BackupService {
       messages: messages.length,
       assistants: assistants.length,
       assistantMemories: normalizedAssistantMemories.length,
+      personalMemories: restoredPersonalMemories,
       favorites: favorites.length,
       projects: projects.length,
       knowledgeDocs: knowledgeDocs.length,
@@ -1570,6 +1615,7 @@ class BackupService {
     required List<Map<String, dynamic>> workspaceRevisions,
     required List<Map<String, dynamic>> assistants,
     required List<Map<String, dynamic>> assistantMemories,
+    required Map<String, List<Map<String, dynamic>>> personalRows,
     required List<Map<String, dynamic>> skillCatalog,
     required List<Map<String, dynamic>> favorites,
     required List<Map<String, dynamic>> knowledgeDocs,
@@ -1645,6 +1691,7 @@ class BackupService {
     var fixedTranslationTaskOutputRoomRefs = 0;
     var appliedStoryPersonas = 0;
     var insertedAssistantMemories = 0;
+    var insertedPersonalMemories = 0;
     var deduplicatedAssistantMemories = 0;
     var rekeyedAssistantMemories = 0;
 
@@ -2034,6 +2081,9 @@ class BackupService {
           whereArgs: [newId],
         );
       }
+      insertedPersonalMemories = await PersonalMemoryBackup.restore(
+          txn, personalRows,
+          overwrite: false, cidMap: cidMap);
     }, accountGuard: accountGuard);
 
     if (remappedCids > 0) {
@@ -2126,6 +2176,7 @@ class BackupService {
       messages: messages.length - skippedMessages,
       assistants: assistants.length,
       assistantMemories: insertedAssistantMemories,
+      personalMemories: insertedPersonalMemories,
       favorites: favorites.length,
       projects: projects.length,
       knowledgeDocs: knowledgeDocs.length,
@@ -2341,7 +2392,11 @@ class BackupService {
       entries[file.name] = content;
     }
     verifyEntryDigests(entries, manifest['entries']);
-    for (final name in [..._v11RowCountKeys.keys, _kSettings]) {
+    for (final name in [
+      ..._v11RowCountKeys.keys,
+      if (version >= 12) ...PersonalMemoryBackup.rowFiles.keys,
+      _kSettings
+    ]) {
       if (!entries.containsKey(name)) {
         throw FormatException('v11 备份缺少必需 entry：$name');
       }
@@ -2361,6 +2416,9 @@ class BackupService {
     final expected = <String, int>{
       for (final entry in _v11RowCountKeys.entries)
         entry.value: rowCounts[entry.key] ?? -1,
+      if ((manifest['formatVersion'] as int) >= 12)
+        for (final entry in PersonalMemoryBackup.rowFiles.entries)
+          entry.value: rowCounts[entry.key] ?? -1,
       for (final entry in _v11ResourceCountKeys.entries)
         entry.value: archive.files
             .where((file) => file.isFile && file.name.startsWith(entry.key))
@@ -2461,6 +2519,7 @@ class BackupService {
     await MessageDao.create(storage, cid: 0);
     await AssistantDao.create(storage);
     await AssistantMemoryDao.create(storage);
+    await PersonalMemoryDao.ensureSchema(storage.db);
     if (includeSkillCatalog) await SkillCatalogDao.create(storage);
     await FavoriteDao.create(storage);
     await ProjectDao.create(storage);
@@ -3299,6 +3358,7 @@ class BackupService {
     required List<Map<String, dynamic>> messages,
     required List<Map<String, dynamic>> assistants,
     required List<Map<String, dynamic>> assistantMemories,
+    required List<Map<String, dynamic>> personalMemories,
     required List<Map<String, dynamic>> favorites,
     required List<Map<String, dynamic>> projects,
     required List<Map<String, dynamic>> knowledgeDocs,
@@ -3322,6 +3382,7 @@ class BackupService {
         'memoryId',
         assistantMemories,
       ),
+      _ConflictSpec('tb_personal_memory', 'memoryId', personalMemories),
       _ConflictSpec('tb_favorite', 'id', favorites),
       _ConflictSpec('tb_project', 'id', projects),
       _ConflictSpec('tb_kb_doc', 'id', knowledgeDocs),
@@ -3903,6 +3964,7 @@ class BackupService {
     Directory? stageDir;
     var missing = 0;
     for (final row in messages) {
+      row['blocks'] = _sanitizeReferenceBlocks(row['blocks'] as String?);
       final blocks = MessageBlock.decodeList(row['blocks'] as String?);
       if (blocks.isEmpty) continue;
       var changed = false;
@@ -3951,6 +4013,21 @@ class BackupService {
     if (missing > 0) {
       warnings.add('$missing 个附件原始文件不在备份中，已移除归档携带的本地路径');
     }
+  }
+
+  static String? _sanitizeReferenceBlocks(String? raw) {
+    if (raw == null) return null;
+    try {
+      final list = jsonDecode(raw);
+      if (list is List &&
+          list.any((entry) => entry is Map && entry['type'] == 'reference')) {
+        // 重新编码只保留合法历史快照；归档不能赋予任意附件路径读取能力。
+        return MessageBlock.encodeList(MessageBlock.decodeList(raw));
+      }
+    } catch (_) {
+      // 非引用旧消息的容错仍沿用原路径。
+    }
+    return raw;
   }
 
   static FileBlock _fileBlockWithPath(FileBlock block, String? path) =>

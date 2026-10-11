@@ -1,8 +1,12 @@
+import 'dart:convert';
+
 import 'package:chat_message/models/message_model.dart';
+import 'package:chatgpt_app_core/chat/domain/interactive_card.dart';
 import 'package:chatgpt_app_core/chat/application/chat_block_store.dart';
 import 'package:chatgpt_app_core/db/hi_db_manager.dart';
 import 'package:chatgpt_app_core/db/schema_guard.dart';
 import 'package:chatgpt_app_core/db/table_name.dart';
+import 'package:chatgpt_app_core/util/uuid_v4.dart';
 
 ///消息表数据操作接口
 abstract class IMessage {
@@ -19,6 +23,14 @@ abstract class IMessage {
       {int pageIndex = 1, int pageSize = 20});
 
   Future<int> getMessageCount();
+}
+
+enum ChecklistWriteStatus { saved, stale, notFound, failed }
+
+class ChecklistWriteResult {
+  final ChecklistWriteStatus status;
+  final ChecklistLocalState? state;
+  const ChecklistWriteResult(this.status, [this.state]);
 }
 
 /// 请求历史的有限候选集，与聊天列表的分页展示相互独立。
@@ -65,6 +77,7 @@ class MessageDao implements IMessage, ITable {
       columns: const {
         'images': 'text',
         'blocks': 'text',
+        'memorySourceId': 'text',
       },
     );
     return MessageDao._(storage, cid: cid);
@@ -234,6 +247,7 @@ class MessageDao implements IMessage, ITable {
   void saveMessage(MessageModel model) {
     final data = model.toJson();
     data['cid'] = cid;
+    data['memorySourceId'] = generateUuidV4();
     storage.db.insert(tableName, data);
   }
 
@@ -242,10 +256,114 @@ class MessageDao implements IMessage, ITable {
   Future<int> saveMessageWithBlocks(MessageModel model, {String? blocksJson}) {
     final data = model.toJson();
     data['cid'] = cid;
+    data['memorySourceId'] = generateUuidV4();
     if (blocksJson != null && blocksJson.isNotEmpty) {
       data['blocks'] = blocksJson;
     }
     return storage.db.insert(tableName, data);
+  }
+
+  /// 只合并一张卡的本地状态；重新验证落盘原文，不复活已删除的消息。
+  /// 原始 JSON 的其它块和未知字段必须完整保留。
+  Future<ChecklistWriteResult> setChecklistItemChecked({
+    required int createdAt,
+    required String blockId,
+    required String expectedContent,
+    required String cardKey,
+    required String itemId,
+    required bool checked,
+    required int expectedRowId,
+  }) async {
+    try {
+      return await storage.db.transaction((txn) async {
+        final metadata = await txn.rawQuery(
+            'select id, ownerType, length(cast(blocks as blob)) as blockBytes '
+            'from $tableName where cid = ? and createdAt = ?',
+            [cid, createdAt]);
+        if (metadata.isEmpty) {
+          return const ChecklistWriteResult(ChecklistWriteStatus.notFound);
+        }
+        if (metadata.length != 1 ||
+            metadata.single['id'] != expectedRowId ||
+            metadata.single['ownerType'] != OwnerType.receiver.toString() ||
+            metadata.single['blockBytes'] is! int ||
+            (metadata.single['blockBytes'] as int) > 8 * 1024 * 1024) {
+          return const ChecklistWriteResult(ChecklistWriteStatus.stale);
+        }
+        final id = metadata.single['id'];
+        final rows = await txn.query(tableName,
+            columns: ['blocks'],
+            where: 'id = ? and cid = ?',
+            whereArgs: [id, cid]);
+        final original = rows.single['blocks'] as String;
+        final raw = jsonDecode(original);
+        if (raw is! List) {
+          return const ChecklistWriteResult(ChecklistWriteStatus.stale);
+        }
+        final targets =
+            raw.whereType<Map>().where((b) => b['id'] == blockId).toList();
+        if (targets.length != 1 ||
+            raw.whereType<Map>().any((b) =>
+                b['type'] == 'error' ||
+                const ['pending', 'processing', 'streaming', 'paused', 'error']
+                    .contains(b['status']))) {
+          return const ChecklistWriteResult(ChecklistWriteStatus.stale);
+        }
+        final target = targets.single;
+        if (target['type'] != 'mainText' ||
+            target['status'] != 'success' ||
+            target['content'] != expectedContent ||
+            target['messageId'] != chatMessageKey(createdAt)) {
+          return const ChecklistWriteResult(ChecklistWriteStatus.stale);
+        }
+        // 整条消息共享四张卡额度，避免分块绕过预算。
+        if (!InteractiveCardParser.fitsMessageBudget(raw
+            .whereType<Map>()
+            .where((b) => b['type'] == 'mainText' && b['content'] is String)
+            .map((b) => b['content'] as String))) {
+          return const ChecklistWriteResult(ChecklistWriteStatus.stale);
+        }
+        var remaining = InteractiveCardParser.maxCards;
+        CardProjection? candidate;
+        for (final block in raw.whereType<Map>()) {
+          if (block['type'] != 'mainText' || block['content'] is! String) {
+            continue;
+          }
+          final projections = InteractiveCardParser.parse(
+                  block['content'] as String,
+                  cardLimit: remaining)
+              .whereType<CardProjection>()
+              .toList();
+          remaining -= projections.length;
+          if (identical(block, target)) {
+            candidate = projections.where((p) => p.key == cardKey).firstOrNull;
+          }
+        }
+        final card = candidate?.card;
+        if (card is! ChecklistCard || !card.items.any((i) => i.id == itemId)) {
+          return const ChecklistWriteResult(ChecklistWriteStatus.stale);
+        }
+        final states =
+            decodeLocalCardStates(target['localCardStates'], expectedContent);
+        final ids = {...?states[cardKey]?.checkedItemIds};
+        checked ? ids.add(itemId) : ids.remove(itemId);
+        final state = ChecklistLocalState(ids);
+        // 只替换目标字段，绝不通过容错块解码器重编码整条消息。
+        final previous = target['localCardStates'];
+        target['localCardStates'] = {
+          if (previous is Map) ...previous,
+          cardKey: state.toJson(),
+        };
+        final count = await txn.update(tableName, {'blocks': jsonEncode(raw)},
+            where: 'id = ? and cid = ? and createdAt = ? and blocks = ?',
+            whereArgs: [id, cid, createdAt, original]);
+        return count == 1
+            ? ChecklistWriteResult(ChecklistWriteStatus.saved, state)
+            : const ChecklistWriteResult(ChecklistWriteStatus.stale);
+      });
+    } catch (_) {
+      return const ChecklistWriteResult(ChecklistWriteStatus.failed);
+    }
   }
 
   /// 按 createdAt 批量读取这些消息的块列表 JSON。

@@ -125,6 +125,9 @@ abstract interface class OptionsAwareChatService {
   });
 }
 
+/// 实际传输实现保证附件准备后及每次重试前调用 messagesForAttempt。
+abstract interface class AttemptAwareChatService {}
+
 /// 非流式可选入口，避免旧的 implements ChatService 实现被迫改签名。
 abstract interface class OptionsAwareNonStreamingChatService {
   Future<ChatCompletionResult> chatWithUsageWithOptions({

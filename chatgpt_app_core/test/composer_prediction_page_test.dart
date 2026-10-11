@@ -6,6 +6,8 @@ import 'support/fake_composer_chat.dart';
 import 'dart:io';
 
 import 'package:chatgpt_app_core/chat/application/read_aloud_service.dart';
+import 'package:chatgpt_app_core/chat/domain/composer_reference.dart';
+import 'package:chatgpt_app_core/util/account_resource_scope.dart';
 import 'package:chatgpt_app_core/dao/ai_settings_dao.dart';
 import 'package:chatgpt_app_core/db/hi_db_manager.dart';
 import 'package:chatgpt_app_core/model/ai_settings.dart';
@@ -228,7 +230,16 @@ void main() {
     await letIoFinish(tester);
   });
 
-  for (final action in ['输入草稿', '关闭开关', '更换模型', '切换账号', '切换会话', '退出页面']) {
+  for (final action in [
+    '输入草稿',
+    '添加历史引用',
+    '打开引用选择器',
+    '关闭开关',
+    '更换模型',
+    '切换账号',
+    '切换会话',
+    '退出页面'
+  ]) {
     testWidgets('预测期间$action会取消并丢弃迟到结果', (tester) async {
       predictionChat.pending = Completer<ChatCompletionResult>();
       await startReply(tester);
@@ -237,6 +248,22 @@ void main() {
       predictionChat.requests.single.abortTrigger!.then((_) => aborted = true);
       if (action == '输入草稿') {
         await tester.enterText(find.byType(TextField).last, '未发送的私密草稿');
+      } else if (action == '添加历史引用') {
+        tester
+                .widget<MessageInputWidget>(find.byType(MessageInputWidget))
+                .onReferencePicked!(
+            ComposerReference.history(HistoryMessageSnapshot(
+                accountToken: AccountResourceScope.tokenFor(account),
+                conversationId: 900,
+                messageId: 1,
+                createdAt: 1,
+                title: '引用资料',
+                role: 'assistant',
+                content: '未经发送的引用资料',
+                selectedAt: 2)));
+      } else if (action == '打开引用选择器') {
+        await tester
+            .tap(find.byKey(const ValueKey('composer_reference_button')));
       } else if (action == '关闭开关') {
         await finishFuture(
             tester,
@@ -262,6 +289,9 @@ void main() {
       await letIoFinish(tester);
       expect(find.byKey(const ValueKey('composer_prediction')), findsNothing);
       expect(jsonEncode(predictionChat.histories), isNot(contains('未发送的私密草稿')));
+      expect(
+          jsonEncode(predictionChat.histories), isNot(contains('未经发送的引用资料')));
+      expect(predictionChat.calls, 1, reason: '迟到预测不得为引用再次请求');
       if (action == '输入草稿') {
         expect(
             tester

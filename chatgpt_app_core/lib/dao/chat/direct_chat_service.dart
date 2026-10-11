@@ -28,6 +28,7 @@ import 'package:openai_flutter/model/ai_stream_chunk.dart';
 class DirectChatService
     implements
         ChatService,
+        AttemptAwareChatService,
         OptionsAwareChatService,
         OptionsAwareNonStreamingChatService {
   final ProviderConfig _cfg;
@@ -320,11 +321,12 @@ class DirectChatService
     reportChatSendProgress(options.onProgress, const ChatSendProgress('等待回答'));
     final response = await recoverChatRequest(() async {
       try {
+        final attemptMessages = await options.resolveAttemptMessages(messages);
         return await completion.createChat(
           model: _cfg.model,
-          messages: messages,
-          extraBody:
-              _requestFields(messages, extraBody: reasoning.requestFields),
+          messages: attemptMessages,
+          extraBody: _requestFields(attemptMessages,
+              extraBody: reasoning.requestFields),
           maxTokens: _maxTokensFor(options),
           temperature: _temperature,
           topP: _topP,
@@ -466,15 +468,16 @@ class DirectChatService
     final toolAcc = ToolCallAccumulator();
     Stream<AIStreamChunk> request() async* {
       try {
+        final attemptMessages = await options.resolveAttemptMessages(messages);
         await for (final chunk in completion.createChatStreamEvents(
           model: _cfg.model,
-          messages: messages,
+          messages: attemptMessages,
           maxTokens: maxTokens,
           temperature: _temperature,
           topP: _topP,
           tools: tools,
-          extraBody:
-              _requestFields(messages, tools: tools, extraBody: extraBody),
+          extraBody: _requestFields(attemptMessages,
+              tools: tools, extraBody: extraBody),
           abortTrigger: abortTrigger,
           connectTimeout: connectTimeout,
         )) {

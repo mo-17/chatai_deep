@@ -66,14 +66,14 @@ void main() {
           settings: AISettings.defaults(), accountHash: 'test-account');
 
   test(
-      'v11 roundtrip keeps full text, PDF pages, output revisions and remaps references',
+      'v12 roundtrip keeps full text, PDF pages, output revisions and remaps references',
       () async {
     final source = await newDb();
     final sourceFiles = await _seed(source, label: 'source', longText: true);
     final bytes = await export(source);
     final archive = ZipDecoder().decodeBytes(bytes);
     final manifest = _jsonEntry(archive, 'manifest.json') as Map;
-    expect(manifest['formatVersion'], 11);
+    expect(manifest['formatVersion'], BackupService.formatVersion);
     expect(manifest['entries'], contains('workspace_files.json'));
     expect(manifest['entries'], contains('workspace_revisions.json'));
     expect(_jsonEntry(archive, 'workspace_revisions.json'), hasLength(3));

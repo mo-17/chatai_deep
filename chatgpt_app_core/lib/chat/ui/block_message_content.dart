@@ -5,14 +5,18 @@ import 'package:chatgpt_app_core/capability/generated_image_save_service.dart';
 import 'package:chatgpt_app_core/capability/product_capabilities.dart';
 import 'package:chatgpt_app_core/chat/application/chat_block_store.dart';
 import 'package:chatgpt_app_core/chat/domain/message_block.dart';
+import 'package:chatgpt_app_core/chat/domain/interactive_card.dart';
+import 'package:chatgpt_app_core/chat/ui/interactive_card_view.dart';
 import 'package:chatgpt_app_core/chat/domain/local_source_citation.dart';
 import 'package:chatgpt_app_core/chat/ui/local_source_viewer_page.dart';
 import 'package:chatgpt_app_core/chat/ui/thinking_block_view.dart';
 import 'package:chatgpt_app_core/theme/app_visual_theme.dart';
 import 'package:chatgpt_app_core/widget/starcore_tool_icon.dart';
+import 'package:chatgpt_app_core/widget/message_reference_picker.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:provider/provider.dart';
+import 'package:login_sdk/dao/login_dao.dart';
 import 'package:url_launcher/url_launcher.dart';
 
 /// 一条 assistant 消息的「块化正文」。遍历它的 blockIds 逐块渲染。
@@ -37,6 +41,16 @@ class BlockMessageContent extends StatelessWidget {
   /// 对话打开时固定的账号，防止旧消息在切换账号后打开别人的同 id 文件。
   final String? sourceAccountHash;
 
+  /// 只有普通对话 assistant 正文显式开启，其它复用入口保持原行为。
+  final bool enableInteractiveCards;
+  final bool cardReplyCompleted;
+  final bool cardsWritable;
+  final bool cardInsertEnabled;
+  final bool Function()? cardScopeCurrent;
+  final Future<void> Function(MainTextBlock, CardProjection, String, bool)?
+      onCardCheck;
+  final void Function(String)? onCardInsert;
+
   const BlockMessageContent({
     super.key,
     required this.messageKey,
@@ -45,6 +59,13 @@ class BlockMessageContent extends StatelessWidget {
     this.showCharCount = false,
     this.footerTrailing,
     this.sourceAccountHash,
+    this.enableInteractiveCards = false,
+    this.cardReplyCompleted = false,
+    this.cardsWritable = false,
+    this.cardInsertEnabled = false,
+    this.cardScopeCurrent,
+    this.onCardCheck,
+    this.onCardInsert,
   });
 
   @override
@@ -65,6 +86,13 @@ class BlockMessageContent extends StatelessWidget {
                 textColor: resolvedTextColor,
                 fontSize: fontSize,
                 sourceAccountHash: sourceAccountHash,
+                enableInteractiveCards: enableInteractiveCards,
+                cardReplyCompleted: cardReplyCompleted,
+                cardsWritable: cardsWritable,
+                cardInsertEnabled: cardInsertEnabled,
+                cardScopeCurrent: cardScopeCurrent,
+                onCardCheck: onCardCheck,
+                onCardInsert: onCardInsert,
               ),
             if (showCharCount || footerTrailing != null)
               _BlockMessageFooter(
@@ -171,6 +199,14 @@ class _BlockView extends StatelessWidget {
   final Color textColor;
   final double fontSize;
   final String? sourceAccountHash;
+  final bool enableInteractiveCards;
+  final bool cardReplyCompleted;
+  final bool cardsWritable;
+  final bool cardInsertEnabled;
+  final bool Function()? cardScopeCurrent;
+  final Future<void> Function(MainTextBlock, CardProjection, String, bool)?
+      onCardCheck;
+  final void Function(String)? onCardInsert;
 
   const _BlockView({
     required this.blockId,
@@ -178,6 +214,13 @@ class _BlockView extends StatelessWidget {
     required this.textColor,
     required this.fontSize,
     this.sourceAccountHash,
+    this.enableInteractiveCards = false,
+    this.cardReplyCompleted = false,
+    this.cardsWritable = false,
+    this.cardInsertEnabled = false,
+    this.cardScopeCurrent,
+    this.onCardCheck,
+    this.onCardInsert,
   });
 
   @override
@@ -187,13 +230,7 @@ class _BlockView extends StatelessWidget {
       builder: (_, block, __) {
         // Dart 3 sealed class -> switch 穷尽匹配每种块。
         return switch (block) {
-          final MainTextBlock b => _MainText(
-              b.content,
-              messageKey: messageKey,
-              color: textColor,
-              fontSize: fontSize,
-              sourceAccountHash: sourceAccountHash,
-            ),
+          final MainTextBlock b => _mainText(context, b),
           final ThinkingBlock b => ThinkingBlockView(b),
           final CodeBlock b => _Code(b),
           final ImageBlock b => _Image(b),
@@ -201,6 +238,17 @@ class _BlockView extends StatelessWidget {
           final CitationBlock b =>
             _Citation(b, sourceAccountHash: sourceAccountHash),
           final FileBlock b => _File(b),
+          final ReferenceBlock b => ListTile(
+              key: ValueKey('message_reference_${b.id}'),
+              contentPadding: EdgeInsets.zero,
+              leading: const Icon(Icons.history),
+              title: Text(b.reference.label,
+                  maxLines: 2, overflow: TextOverflow.ellipsis),
+              subtitle: const Text('已引用历史正文快照 · 点击预览'),
+              onTap: () => showReferencePreview(context, b.reference,
+                  isCurrent: sourceAccountHash == null
+                      ? null
+                      : () => LoginDao.getAccountHash() == sourceAccountHash)),
           final RoleContextBlock b => _RoleContext(b),
           final RoleContinuationBlock b => _RoleContinuation(b),
           final ErrorBlock b => _Error(b),
@@ -218,6 +266,63 @@ class _BlockView extends StatelessWidget {
         };
       },
     );
+  }
+
+  Widget _mainText(BuildContext context, MainTextBlock block) {
+    Widget plain(String text) => _MainText(text,
+        messageKey: messageKey,
+        color: textColor,
+        fontSize: fontSize,
+        sourceAccountHash: sourceAccountHash);
+    if (!enableInteractiveCards || !cardReplyCompleted) {
+      return plain(block.content);
+    }
+    final store = context.read<ChatBlockStore>();
+    if (!InteractiveCardParser.fitsMessageBudget(store
+        .blocksFor(messageKey)
+        .whereType<MainTextBlock>()
+        .map((b) => b.content))) {
+      return plain(block.content);
+    }
+    var remaining = InteractiveCardParser.maxCards;
+    for (final preceding in store.blocksFor(messageKey)) {
+      if (preceding.id == block.id) break;
+      if (preceding is MainTextBlock) {
+        remaining -=
+            InteractiveCardParser.parse(preceding.content, cardLimit: remaining)
+                .whereType<CardProjection>()
+                .length;
+      }
+    }
+    final parts =
+        InteractiveCardParser.parse(block.content, cardLimit: remaining);
+    final writable = cardsWritable &&
+        store.blocksFor(messageKey).every((b) =>
+            !b.isActive &&
+            b.status == MessageBlockStatus.success &&
+            b is! ErrorBlock);
+    bool current() => cardScopeCurrent?.call() ?? false;
+    return Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          for (final part in parts)
+            if (part is CardPlainText)
+              plain(part.text)
+            else if (part is CardProjection)
+              InteractiveCardView(
+                  key: ValueKey('${block.id}:${part.key}'),
+                  projection: part,
+                  checked: block.localCardStates[part.key]?.checkedItemIds ??
+                      const {},
+                  writable: writable,
+                  insertEnabled: cardInsertEnabled,
+                  isCurrent: current,
+                  onCheck: onCardCheck == null
+                      ? null
+                      : (item, value) => onCardCheck!(block, part, item, value),
+                  onInsert: onCardInsert),
+        ]);
   }
 }
 

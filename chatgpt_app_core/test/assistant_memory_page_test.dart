@@ -219,6 +219,35 @@ void main() {
     expect(find.text('没有匹配的长期记忆'), findsOneWidget);
   });
 
+  testWidgets('助手记忆显式停用/启用；pending显示待确认，写失败保留原值', (tester) async {
+    await dao.saveMemory(AssistantMemoryModel(assistantId: 1, content: '合成偏好'));
+    await pumpPage(tester, AssistantModel(id: 1, name: '艾琳'));
+    dao.fail = true;
+    await tester.tap(find.text('停用记忆'));
+    await tester.pumpAndSettle();
+    expect(dao.items.single.status, AssistantMemoryStatus.active);
+    expect(find.textContaining('记忆保存失败'), findsOneWidget);
+    dao.fail = false;
+    await tester.tap(find.text('停用记忆'));
+    await tester.pumpAndSettle();
+    expect(dao.items.single.status, AssistantMemoryStatus.archived);
+    await tester.tap(find.text('启用记忆'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('确认启用'));
+    await tester.pumpAndSettle();
+    expect(dao.items.single.status, AssistantMemoryStatus.active);
+    final pending = AssistantMemoryModel(
+        assistantId: 1,
+        content: '待确认合成偏好',
+        status: AssistantMemoryStatus.pending,
+        confirmedByUser: false);
+    await dao.saveMemory(pending);
+    await tester.pumpWidget(const SizedBox.shrink());
+    await pumpPage(tester, AssistantModel(id: 1, name: '艾琳'));
+    expect(find.text('确认并启用记忆'), findsOneWidget);
+    expect(find.textContaining('待确认 ·'), findsOneWidget);
+  });
+
   testWidgets('长期记忆页可复制单条记忆正文', (tester) async {
     final copied = <String>[];
     tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(
@@ -253,6 +282,7 @@ void main() {
 class _FakeAssistantMemoryDao implements IAssistantMemory {
   final List<AssistantMemoryModel> _items = [];
   int _nextId = 1;
+  bool fail = false;
 
   List<AssistantMemoryModel> get items => List.unmodifiable(_items);
 
@@ -275,6 +305,7 @@ class _FakeAssistantMemoryDao implements IAssistantMemory {
 
   @override
   Future<int?> saveMemory(AssistantMemoryModel model) async {
+    if (fail) throw StateError('synthetic write failure');
     final now = DateTime.now().millisecondsSinceEpoch;
     model
       ..id ??= _nextId++
