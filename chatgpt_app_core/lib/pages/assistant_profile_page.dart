@@ -1,3 +1,4 @@
+import 'package:chatgpt_app_core/chat/application/assistant_operation_scope.dart';
 import 'package:chatgpt_app_core/capability/product_capabilities.dart';
 import 'package:chatgpt_app_core/capability/workflow_template_store.dart';
 import 'package:chatgpt_app_core/chat/application/assistant_role_card_service.dart';
@@ -40,6 +41,7 @@ class AssistantProfilePage extends StatefulWidget {
   final VoidCallback? onStartConversation;
   final IAssistantMemory? memoryDao;
   final AssistantWorldBookSaver? worldBookSaver;
+  final AssistantOperationScope? operationScope;
   final AssistantProfileEditor? openEditor;
   final AssistantWorkflowTemplateSaver? saveWorkflowTemplate;
 
@@ -53,6 +55,7 @@ class AssistantProfilePage extends StatefulWidget {
     this.onStartConversation,
     this.memoryDao,
     this.worldBookSaver,
+    this.operationScope,
     this.openEditor,
     this.saveWorkflowTemplate,
   });
@@ -89,6 +92,15 @@ class _AssistantProfilePageState extends State<AssistantProfilePage> {
     _roleScene = widget.conversation?.roleScene;
     _roleRelationship = widget.conversation?.roleRelationship;
     _roleToneNote = widget.conversation?.roleToneNote;
+  }
+
+  String _compatibilityText() {
+    try {
+      return AssistantRoleCardService.compatibilityReport(widget.assistant)
+          .text;
+    } catch (error) {
+      return '原卡保真数据无法读取：$error。原始数据保留，请勿覆盖导入。';
+    }
   }
 
   @override
@@ -233,6 +245,7 @@ class _AssistantProfilePageState extends State<AssistantProfilePage> {
             onTap: () => _saveAsWorkflowTemplate(context),
           ),
           _section(context, '角色卡', [
+            _kv('兼容范围', _compatibilityText()),
             _kv('系统提示词', '${summary.promptChars} 字'),
             _kv('开场白',
                 summary.openingChars == 0 ? '无' : '${summary.openingChars} 字'),
@@ -607,7 +620,9 @@ class _AssistantProfilePageState extends State<AssistantProfilePage> {
       await Navigator.push<bool>(
         context,
         MaterialPageRoute(
-            builder: (_) => AssistantEditPage(assistant: widget.assistant)),
+            builder: (_) => AssistantEditPage(
+                assistant: widget.assistant,
+                operationScope: widget.operationScope)),
       );
     } else {
       await openEditor(context, widget.assistant);
@@ -621,6 +636,7 @@ class _AssistantProfilePageState extends State<AssistantProfilePage> {
       context,
       MaterialPageRoute(
           builder: (_) => AssistantWorldBookPage(
+                operationScope: widget.operationScope,
                 assistant: widget.assistant,
                 onSave: widget.worldBookSaver,
               )),

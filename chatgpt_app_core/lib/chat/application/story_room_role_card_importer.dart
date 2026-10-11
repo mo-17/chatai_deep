@@ -1,3 +1,4 @@
+import 'package:chatgpt_app_core/model/world_book.dart';
 import 'dart:convert';
 
 import 'package:chatgpt_app_core/db/story_room_dao.dart';
@@ -10,6 +11,7 @@ import 'package:chatgpt_app_core/model/story_template_model.dart';
 
 import 'assistant_role_card_service.dart';
 import 'story_tavern_preset_transfer.dart';
+import 'story_role_card_context.dart';
 
 class StoryRoomRoleCardImportPlan {
   final StoryRoomModel room;
@@ -105,6 +107,15 @@ class StoryRoomRoleCardImporter {
         avatarValue: assistant.avatarValue,
       ));
     }
+    room.roleCardContextJson = StoryRoleCardContext.create(
+        room: room,
+        publicText: _safePublicContext(assistant, effectiveMeta),
+        sources: {
+          for (final participant in participants) participant: assistant
+        },
+        meta: {
+          for (final participant in participants) participant: effectiveMeta
+        });
     return StoryRoomRoleCardImportPlan(room: room, participants: participants);
   }
 
@@ -163,6 +174,8 @@ class StoryRoomRoleCardImporter {
       ),
     );
     final participants = <StoryParticipantModel>[];
+    final sources = <StoryParticipantModel, AssistantModel>{};
+    final metas = <StoryParticipantModel, AssistantRoleCardTavernMeta?>{};
     var sortOrder = 0;
     for (final result in results) {
       final assistant = result.assistant;
@@ -174,10 +187,12 @@ class StoryRoomRoleCardImporter {
         for (final participant in resolved) {
           participant.sortOrder = sortOrder++;
           participants.add(participant);
+          sources[participant] = assistant;
+          metas[participant] = result.tavernMeta;
         }
         continue;
       }
-      participants.add(StoryParticipantModel(
+      final participant = StoryParticipantModel(
         roomId: roomId,
         role: StoryParticipantRole.assistant,
         name: assistant.name.trim().isEmpty
@@ -187,8 +202,19 @@ class StoryRoomRoleCardImporter {
         avatarType: assistant.avatarType,
         avatarValue: assistant.avatarValue,
         sortOrder: sortOrder++,
-      ));
+      );
+      participants.add(participant);
+      sources[participant] = assistant;
+      metas[participant] = result.tavernMeta;
     }
+    room.roleCardContextJson = StoryRoleCardContext.create(
+        room: room,
+        publicText: [
+          for (final result in results)
+            _safePublicContext(result.assistant, result.tavernMeta)
+        ].where((text) => text.isNotEmpty).join('\n\n'),
+        sources: sources,
+        meta: metas);
     return StoryRoomRoleCardImportPlan(room: room, participants: participants);
   }
 
@@ -366,6 +392,10 @@ class StoryRoomRoleCardImporter {
     for (final entry in _parseMemoryBookEntries(memoryBook)) {
       final content = entry.content.trim();
       if (content.isEmpty) continue;
+      // 停用的世界书条目也不能经“推断参与者”旁路进入人设。
+      final rule = WorldBookEntry.tryParse(
+          '${entry.metaPrefix} ${entry.keywords.join(',')} => $content');
+      if (rule?.enabled == false) continue;
       if (!_looksLikeParticipantEntry(content)) continue;
       final name = _participantName(entry);
       if (name.isEmpty) continue;
@@ -508,9 +538,23 @@ class StoryRoomRoleCardImporter {
     return text.isEmpty ? '' : '【$title】\n$text';
   }
 
+  static String _safePublicContext(
+      AssistantModel assistant, AssistantRoleCardTavernMeta? given) {
+    final meta =
+        given ?? AssistantRoleCardService.tavernMetaFromAssistant(assistant);
+    return [
+      if (meta == null) _section('角色卡说明', assistant.description),
+      _section('公共设定', assistant.prompt),
+      _section('默认开场', assistant.openingMessage),
+      if (meta != null) _section('备选开场', meta.alternateGreetings.join('\n\n')),
+      _section('示例对话', assistant.exampleDialogs),
+    ].where((text) => text.isNotEmpty).join('\n\n');
+  }
+
   static String _participantPrompt(AssistantModel assistant) {
     final parts = <String>[
-      if (assistant.description.trim().isNotEmpty)
+      if (AssistantRoleCardService.tavernMetaFromAssistant(assistant) == null &&
+          assistant.description.trim().isNotEmpty)
         '[角色简介]\n${assistant.description.trim()}',
       if (assistant.prompt.trim().isNotEmpty) assistant.prompt.trim(),
       if (assistant.exampleDialogs.trim().isNotEmpty)
@@ -685,25 +729,22 @@ class StoryRoomRoleCardImportService {
       ..temperature = temperature
       ..topP = topP
       ..maxOutputTokens = maxOutputTokens;
-    final roomId = await dao.saveRoom(plan.room);
-    for (final participant in plan.participants) {
-      participant.roomId = roomId;
-      await dao.saveParticipant(participant);
-    }
     final opening = initialOpening ??
         StoryRoomRoleCardImporter.initialSceneMessage(
           assistant,
           tavernMeta: tavernMeta,
         );
-    if (opening.isNotEmpty) {
-      await dao.saveMessage(StoryMessageModel(
-        roomId: roomId,
-        speakerRole: 'system',
-        speakerName: '开场',
-        content: opening,
-      ));
-    }
-    return roomId;
+    return dao.saveTavernImport(
+        room: plan.room,
+        participants: plan.participants,
+        messages: [
+          if (opening.isNotEmpty)
+            StoryMessageModel(
+                roomId: 0,
+                speakerRole: 'system',
+                speakerName: '开场',
+                content: opening)
+        ]);
   }
 
   Future<int> importBatchAsTavernRoom(
@@ -739,23 +780,20 @@ class StoryRoomRoleCardImportService {
       ..temperature = temperature
       ..topP = topP
       ..maxOutputTokens = maxOutputTokens;
-    final roomId = await dao.saveRoom(plan.room);
-    for (final participant in plan.participants) {
-      participant.roomId = roomId;
-      await dao.saveParticipant(participant);
-    }
     final opening = initialOpening?.trim().isNotEmpty == true
         ? initialOpening!.trim()
         : StoryRoomRoleCardImporter.initialBatchSceneMessage(results);
-    if (opening.isNotEmpty) {
-      await dao.saveMessage(StoryMessageModel(
-        roomId: roomId,
-        speakerRole: 'system',
-        speakerName: '开场',
-        content: opening,
-      ));
-    }
-    return roomId;
+    return dao.saveTavernImport(
+        room: plan.room,
+        participants: plan.participants,
+        messages: [
+          if (opening.isNotEmpty)
+            StoryMessageModel(
+                roomId: 0,
+                speakerRole: 'system',
+                speakerName: '开场',
+                content: opening)
+        ]);
   }
 
   Future<int> createRoomFromTemplate(

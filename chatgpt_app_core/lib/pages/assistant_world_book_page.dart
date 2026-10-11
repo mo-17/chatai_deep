@@ -1,6 +1,7 @@
+import 'package:chatgpt_app_core/chat/application/assistant_management_session.dart';
+import 'package:chatgpt_app_core/chat/application/assistant_operation_scope.dart';
+import 'package:chatgpt_app_core/util/uuid_v4.dart';
 import 'package:chatgpt_app_core/chat/application/assistant_role_card_service.dart';
-import 'package:chatgpt_app_core/db/assistant_dao.dart';
-import 'package:chatgpt_app_core/db/hi_db_manager.dart';
 import 'package:chatgpt_app_core/model/assistant_model.dart';
 import 'package:chatgpt_app_core/model/world_book.dart';
 import 'package:chatgpt_app_core/theme/app_visual_theme.dart';
@@ -15,11 +16,13 @@ typedef AssistantWorldBookSaver = Future<void> Function(
 class AssistantWorldBookPage extends StatefulWidget {
   final AssistantModel assistant;
   final AssistantWorldBookSaver? onSave;
+  final AssistantOperationScope? operationScope;
 
   const AssistantWorldBookPage({
     super.key,
     required this.assistant,
     this.onSave,
+    this.operationScope,
   });
 
   @override
@@ -27,11 +30,15 @@ class AssistantWorldBookPage extends StatefulWidget {
 }
 
 class _AssistantWorldBookPageState extends State<AssistantWorldBookPage> {
-  late List<String> _lines;
+  late List<WorldBookEntry> _workingEntries;
+  late AssistantModel _workingModel;
   late List<_WorldBookEntry> _entries;
   late final TextEditingController _searchCtl;
   late final TextEditingController _probeCtl;
-  AssistantWorldBookSaver? _save;
+  late Future<AssistantManagementSession?> _session;
+  Object? _sessionError;
+  AssistantOperationScope? _scope;
+  bool _saving = false;
   List<AssistantMemoryEntryPreview> _probeHits = const [];
   int _probeRequest = 0;
   bool _probing = false;
@@ -41,9 +48,13 @@ class _AssistantWorldBookPageState extends State<AssistantWorldBookPage> {
     super.initState();
     _searchCtl = TextEditingController()..addListener(_onSearchChanged);
     _probeCtl = TextEditingController()..addListener(_onProbeChanged);
-    _lines = widget.assistant.memoryBook.split('\n');
+    _workingModel = AssistantModel.fromJson(widget.assistant.toJson());
+    _workingEntries = WorldBookCodec.decode(
+        structuredJson: _workingModel.worldBookJson,
+        legacyText: AssistantRoleCardService.memoryBookForRuntime(
+            _workingModel.memoryBook));
     _reparse();
-    _doInit();
+    _session = _doInit();
   }
 
   @override
@@ -57,21 +68,24 @@ class _AssistantWorldBookPageState extends State<AssistantWorldBookPage> {
     super.dispose();
   }
 
-  Future<void> _doInit() async {
-    if (widget.onSave != null) {
-      _save = widget.onSave;
-      return;
+  Future<AssistantManagementSession?> _doInit() async {
+    try {
+      _scope = (widget.operationScope ?? AssistantOperationScope.capture())
+          .forPage(() => mounted);
+      return await AssistantManagementSession.open(
+          source: widget.assistant,
+          scope: _scope!,
+          injectedPersistence: widget.onSave != null);
+    } catch (error) {
+      _sessionError = error;
+      return null;
     }
-    final dbManager =
-        await HiDBManager.instance(dbName: HiDBManager.getAccountHash());
-    final dao = await AssistantDao.create(dbManager);
-    _save = dao.saveAssistant;
   }
 
   void _reparse() {
     _entries = [
-      for (var i = 0; i < _lines.length; i++)
-        if (_WorldBookEntry.tryParse(_lines[i], i) case final entry?) entry,
+      for (var i = 0; i < _workingEntries.length; i++)
+        _WorldBookEntry(lineIndex: i, value: _workingEntries[i])
     ];
   }
 
@@ -85,7 +99,7 @@ class _AssistantWorldBookPageState extends State<AssistantWorldBookPage> {
       body: _entries.isEmpty ? _emptyView : _contentView,
       floatingActionButton: FloatingActionButton(
         tooltip: '新增设定',
-        onPressed: () => _editEntry(null),
+        onPressed: _saving ? null : () => _editEntry(null),
         child: const Icon(Icons.add),
       ),
     );
@@ -301,7 +315,7 @@ class _AssistantWorldBookPageState extends State<AssistantWorldBookPage> {
             title: Text(entry.content,
                 maxLines: 3, overflow: TextOverflow.ellipsis),
             subtitle: Text(entry.subtitle),
-            onTap: () => _editEntry(entry),
+            onTap: _saving ? null : () => _editEntry(entry),
             trailing: SizedBox(
               width: 96,
               child: Row(
@@ -315,7 +329,7 @@ class _AssistantWorldBookPageState extends State<AssistantWorldBookPage> {
                   IconButton(
                     tooltip: '删除',
                     icon: const Icon(Icons.delete_outline),
-                    onPressed: () => _deleteEntry(entry),
+                    onPressed: _saving ? null : () => _deleteEntry(entry),
                   ),
                 ],
               ),
@@ -339,9 +353,9 @@ class _AssistantWorldBookPageState extends State<AssistantWorldBookPage> {
     });
     if (!_probing) return;
     final hits = await AssistantRoleCardService.matchMemoryEntriesSafely(
-      widget.assistant.memoryBook,
+      _workingModel.memoryBook,
       input,
-      structuredJson: widget.assistant.worldBookJson,
+      structuredJson: _workingModel.worldBookJson,
       characterName: widget.assistant.name,
       characterDescription: widget.assistant.prompt,
       creatorNotes: widget.assistant.description,
@@ -362,6 +376,7 @@ class _AssistantWorldBookPageState extends State<AssistantWorldBookPage> {
   }
 
   Future<void> _editEntry(_WorldBookEntry? entry) async {
+    if (_saving) return;
     final result = await showDialog<_WorldBookEditResult>(
       context: context,
       builder: (_) => _WorldBookEditDialog(entry: entry),
@@ -374,22 +389,20 @@ class _AssistantWorldBookPageState extends State<AssistantWorldBookPage> {
       return;
     }
 
-    final line = result.toLine();
-    setState(() {
-      if (entry == null) {
-        _lines.add(line);
-      } else {
-        _lines[entry.lineIndex] = line;
-      }
-      _reparse();
-      widget.assistant.memoryBook = _normalizedMemoryBook();
-      _syncStructuredWorldBook();
-    });
-    _onProbeChanged();
-    await _saveAssistant(entry == null ? '已新增世界书设定' : '已更新世界书设定');
+    final changed = WorldBookEntry.tryParse(result.toLine(),
+        id: entry?.value.id ?? generateUuidV4());
+    if (changed == null) return;
+    final next = [..._workingEntries];
+    if (entry == null) {
+      next.add(changed);
+    } else {
+      next[entry.lineIndex] = changed;
+    }
+    await _saveAssistant(next, entry == null ? '已新增世界书设定' : '已更新世界书设定');
   }
 
   Future<void> _deleteEntry(_WorldBookEntry entry) async {
+    if (_saving) return;
     final ok = await showDialog<bool>(
       context: context,
       builder: (ctx) => AlertDialog(
@@ -405,15 +418,9 @@ class _AssistantWorldBookPageState extends State<AssistantWorldBookPage> {
         ],
       ),
     );
-    if (ok != true) return;
-    setState(() {
-      _lines.removeAt(entry.lineIndex);
-      _reparse();
-      widget.assistant.memoryBook = _normalizedMemoryBook();
-      _syncStructuredWorldBook();
-    });
-    _onProbeChanged();
-    await _saveAssistant('已删除世界书设定');
+    if (ok != true || !mounted) return;
+    final next = [..._workingEntries]..removeAt(entry.lineIndex);
+    await _saveAssistant(next, '已删除世界书设定');
   }
 
   Future<void> _copyEntry(_WorldBookEntry entry) async {
@@ -434,28 +441,49 @@ class _AssistantWorldBookPageState extends State<AssistantWorldBookPage> {
   static String _normalizeContent(String value) =>
       value.trim().replaceAll(RegExp(r'\s+'), '');
 
-  String _normalizedMemoryBook() => _lines
-      .map((line) => line.trim())
-      .where((line) => line.isNotEmpty)
-      .join('\n');
-
-  Future<void> _saveAssistant(String message) async {
-    final save = _save;
-    if (save == null) return;
+  Future<void> _saveAssistant(
+      List<WorldBookEntry> entries, String message) async {
+    if (_saving) return;
+    setState(() => _saving = true);
     try {
-      await save(widget.assistant);
-      if (!mounted) return;
+      final session = await _session;
+      if (session == null) {
+        throw _sessionError ?? const AssistantOperationExpired();
+      }
+      session.scope.verify();
+      AssistantRoleCardService.exportJson(_workingModel);
+      AssistantRoleCardService.exportTavernV2Json(_workingModel);
+      final candidate = AssistantRoleCardService.withWorldBook(
+          _workingModel,
+          WorldBookCodec.encode(entries,
+              preservingJson: _workingModel.worldBookJson));
+      final comments = AssistantRoleCardService.memoryBookForRuntime(
+              _workingModel.memoryBook)
+          .split('\n')
+          .where((line) => line.trimLeft().startsWith('#'))
+          .toList();
+      if (comments.isNotEmpty) {
+        candidate.memoryBook =
+            '${comments.join('\n')}\n${candidate.memoryBook}';
+      }
+      // 损坏旧保真载体/合并超限不能被清空后继续覆盖保存。
+      AssistantRoleCardService.exportTavernV2Json(candidate);
+      AssistantRoleCardService.exportJson(candidate);
+      final saved = await session.save(candidate, override: widget.onSave);
+      if (!mounted || !session.scope.isCurrent) return;
+      setState(() {
+        _workingModel = AssistantModel.fromJson(saved.toJson());
+        _workingEntries = entries;
+        _reparse();
+        acceptSavedAssistant(widget.assistant, saved);
+      });
+      _onProbeChanged();
       HiDialog.showSnackBar(context, message);
-    } catch (e) {
-      if (!mounted) return;
-      HiDialog.showSnackBar(context, '保存失败：$e');
+    } catch (error) {
+      if (mounted) HiDialog.showSnackBar(context, '保存失败：$error');
+    } finally {
+      if (mounted) setState(() => _saving = false);
     }
-  }
-
-  void _syncStructuredWorldBook() {
-    widget.assistant.worldBookJson = WorldBookCodec.encode(
-      WorldBookCodec.decode(legacyText: widget.assistant.memoryBook),
-    );
   }
 }
 
@@ -531,12 +559,6 @@ class _WorldBookEntry {
   }
 
   String toLine() => value.toLine(preserveSource: false);
-
-  static _WorldBookEntry? tryParse(String raw, int lineIndex) {
-    final value = WorldBookEntry.tryParse(raw, id: 'legacy-$lineIndex');
-    if (value == null) return null;
-    return _WorldBookEntry(lineIndex: lineIndex, value: value);
-  }
 }
 
 String _selectiveLogicLabel(WorldBookSelectiveLogic value) => switch (value) {

@@ -1,3 +1,4 @@
+import 'package:chatgpt_app_core/chat/application/story_role_card_context.dart';
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
@@ -253,6 +254,7 @@ class _StoryRoomPageState extends State<StoryRoomPage> {
       ..maxAutoTotalTokens = room.maxAutoTotalTokens
       ..publicContext = room.publicContext
       ..worldBookState = room.worldBookState
+      ..roleCardContextJson = room.roleCardContextJson
       ..promptConfigJson = room.promptConfigJson
       ..quickRepliesJson = room.quickRepliesJson
       ..regexScriptsJson = room.regexScriptsJson
@@ -490,6 +492,12 @@ class _StoryRoomPageState extends State<StoryRoomPage> {
           ? const Center(child: CircularProgressIndicator())
           : Column(
               children: [
+                if (StoryRoleCardContext.read(widget.room,
+                        participants: _participants)
+                    .degraded)
+                  const Padding(
+                      padding: EdgeInsets.all(8),
+                      child: Text(StoryRoleCardContext.unavailableNotice)),
                 if (!compactForKeyboard) ...[
                   _participantStrip,
                   const Divider(height: 1),
@@ -3356,6 +3364,7 @@ class _StoryRoomPageState extends State<StoryRoomPage> {
           'content': StorySpeakerScheduler.systemPrompt(
             room: widget.room,
             candidates: schedulerCandidates,
+            participants: _participants,
             recentMessages: previousMessages,
             maxSpeakers: maxSpeakers,
           ),
@@ -3442,6 +3451,7 @@ class _StoryRoomPageState extends State<StoryRoomPage> {
       StoryContextBuilder.history(
         historyMessages,
         room: widget.room,
+        participants: _participants,
         speaker: speaker,
         persona: _persona,
       ),

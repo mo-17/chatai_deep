@@ -1310,7 +1310,7 @@ void main() {
         '字符串': {'formatVersion': '11', 'accountHash': 'acc1'},
         '零': {'formatVersion': 0, 'accountHash': 'acc1'},
         '负数': {'formatVersion': -1, 'accountHash': 'acc1'},
-        '未来版本': {'formatVersion': 12, 'accountHash': 'acc1'},
+        '未来版本': {'formatVersion': 14, 'accountHash': 'acc1'},
       };
 
       for (final fixture in manifests.entries) {
@@ -1486,7 +1486,7 @@ void main() {
         utf8.decode(rawEntries['assistant_memories.json']!),
       ) as List;
 
-      expect(manifest['formatVersion'], 12);
+      expect(manifest['formatVersion'], BackupService.formatVersion);
       expect((manifest['counts'] as Map)['assistantMemories'], 3);
       expect(memories, hasLength(3));
       expect(

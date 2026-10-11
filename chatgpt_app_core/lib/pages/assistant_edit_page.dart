@@ -1,11 +1,15 @@
+import 'dart:async';
 import 'dart:io';
+
+import 'package:chatgpt_app_core/chat/application/assistant_management_session.dart';
+import 'package:chatgpt_app_core/chat/application/assistant_operation_scope.dart';
+import 'package:chatgpt_app_core/chat/application/assistant_role_card_service.dart';
+import 'package:chatgpt_app_core/pages/assistant_world_book_page.dart';
 
 import 'package:chatgpt_app_core/chat/application/mcp/mcp_tool_source.dart';
 import 'package:chatgpt_app_core/chat/application/read_aloud_service.dart';
 import 'package:chatgpt_app_core/chat/application/tool_registry.dart';
 import 'package:chatgpt_app_core/chat/application/user_sherpa_onnx_tts_models.dart';
-import 'package:chatgpt_app_core/db/assistant_dao.dart';
-import 'package:chatgpt_app_core/db/hi_db_manager.dart';
 import 'package:chatgpt_app_core/model/ai_settings.dart';
 import 'package:chatgpt_app_core/model/assistant_model.dart';
 import 'package:chatgpt_app_core/model/world_book.dart';
@@ -13,6 +17,8 @@ import 'package:chatgpt_app_core/provider/ai_settings_provider.dart';
 import 'package:chatgpt_app_core/theme/app_visual_theme.dart';
 import 'package:chatgpt_app_core/theme/starcore_icon_assets.dart';
 import 'package:chatgpt_app_core/util/avatar_asset_service.dart';
+import 'package:chatgpt_app_core/util/bounded_file_reader.dart';
+import 'package:chatgpt_app_core/util/uuid_v4.dart';
 import 'package:chatgpt_app_core/util/hi_dialog.dart';
 import 'package:chatgpt_app_core/util/model_catalog.dart';
 import 'package:chatgpt_app_core/widget/assistant_avatar.dart';
@@ -30,11 +36,13 @@ class AssistantEditPage extends StatefulWidget {
   ///null = 新建。
   final AssistantModel? assistant;
   final AssistantEditSaver? saveAssistant;
+  final AssistantOperationScope? operationScope;
 
   const AssistantEditPage({
     super.key,
     this.assistant,
     this.saveAssistant,
+    this.operationScope,
   });
 
   @override
@@ -71,6 +79,7 @@ class _AssistantEditPageState extends State<AssistantEditPage> {
   String? _avatarType;
   String? _avatarValue;
   final Set<String> _obsoleteAvatarPaths = {};
+  final Set<String> _ownedAvatarPaths = {};
   bool _useTools = true;
   List<UserSherpaOnnxTtsModel> _userVoiceModels = const [];
   final _imagePicker = ImagePicker();
@@ -80,6 +89,10 @@ class _AssistantEditPageState extends State<AssistantEditPage> {
   /// 也存进同一集合，与内置工具一视同仁（item 5）。
   late final Set<String> _toolIds;
   bool _saving = false;
+  AssistantOperationScope? _scope;
+  late Future<AssistantManagementSession?> _session;
+  Object? _sessionError;
+  late AssistantModel _worldBookDraft;
 
   /// MCP 工具发现（item 5）：缓存 Future，避免每次 rebuild 重新发现。
   Future<List<McpToolBindSpec>>? _mcpSpecs;
@@ -95,6 +108,9 @@ class _AssistantEditPageState extends State<AssistantEditPage> {
   void initState() {
     super.initState();
     final a = widget.assistant;
+    _worldBookDraft =
+        AssistantModel.fromJson((a ?? AssistantModel(name: '')).toJson());
+    _session = _openSession();
     final promptParts = _splitEditablePromptSections(a?.prompt ?? '');
     _nameCtl = TextEditingController(text: a?.name ?? '');
     _emojiCtl = TextEditingController(text: a?.emoji ?? '🤖');
@@ -104,7 +120,9 @@ class _AssistantEditPageState extends State<AssistantEditPage> {
     _descriptionCtl = TextEditingController(text: a?.description ?? '');
     _openingMessageCtl = TextEditingController(text: a?.openingMessage ?? '');
     _exampleDialogsCtl = TextEditingController(text: a?.exampleDialogs ?? '');
-    _memoryBookCtl = TextEditingController(text: a?.memoryBook ?? '');
+    _memoryBookCtl = TextEditingController(
+        text:
+            AssistantRoleCardService.memoryBookForRuntime(a?.memoryBook ?? ''));
     _providerId = a?.providerId ?? '';
     _model = a?.model ?? '';
     _defaultVoiceStyle = a?.defaultVoiceStyle ?? '';
@@ -117,6 +135,7 @@ class _AssistantEditPageState extends State<AssistantEditPage> {
 
   @override
   void dispose() {
+    if (!_saving) unawaited(_discardOwnedAvatars());
     _nameCtl.dispose();
     _emojiCtl.dispose();
     _promptCtl.dispose();
@@ -270,11 +289,17 @@ class _AssistantEditPageState extends State<AssistantEditPage> {
             children: [
               _textArea(
                 controller: _memoryBookCtl,
+                readOnly: _worldBookDraft.worldBookJson.trim().isNotEmpty,
                 label: '世界书条目',
                 hint: '每行：关键词1,关键词2 => 设定内容\n未写箭头的行会作为常驻设定注入',
                 minLines: 4,
                 maxLines: 10,
               ),
+              if (_worldBookDraft.worldBookJson.trim().isNotEmpty)
+                TextButton.icon(
+                    onPressed: _saving ? null : _editStructuredWorldBook,
+                    icon: const Icon(Icons.auto_stories_outlined),
+                    label: const Text('编辑结构化世界书')),
             ],
           ),
           const SizedBox(height: 12),
@@ -528,10 +553,12 @@ class _AssistantEditPageState extends State<AssistantEditPage> {
     required String label,
     required String hint,
     required int minLines,
+    bool readOnly = false,
     required int maxLines,
   }) {
     return TextField(
       controller: controller,
+      readOnly: readOnly,
       minLines: minLines,
       maxLines: maxLines,
       style: const TextStyle(fontSize: 15, height: 1.35),
@@ -1044,51 +1071,120 @@ class _AssistantEditPageState extends State<AssistantEditPage> {
     if (result != null) setState(() => _model = result);
   }
 
+  Future<AssistantManagementSession?> _openSession() async {
+    try {
+      _scope = (widget.operationScope ?? AssistantOperationScope.capture())
+          .forPage(() => mounted);
+      return await AssistantManagementSession.open(
+          source: widget.assistant,
+          scope: _scope!,
+          injectedPersistence: widget.saveAssistant != null);
+    } catch (error) {
+      _sessionError = error;
+      return null;
+    }
+  }
+
+  Future<void> _editStructuredWorldBook() async {
+    if (_saving) return;
+    try {
+      final draft = AssistantModel.fromJson(_worldBookDraft.toJson())
+        ..name = _nameCtl.text;
+      final session = await _session;
+      if (!mounted || session == null) return;
+      session.scope.verify();
+      await Navigator.push(
+          context,
+          MaterialPageRoute(
+              builder: (_) => AssistantWorldBookPage(
+                    assistant: draft,
+                    operationScope: session.scope,
+                    onSave: (saved) async {
+                      session.scope.verify();
+                      if (!mounted) throw const AssistantOperationExpired();
+                      setState(() {
+                        _worldBookDraft =
+                            AssistantModel.fromJson(saved.toJson());
+                        _memoryBookCtl.text =
+                            AssistantRoleCardService.memoryBookForRuntime(
+                                saved.memoryBook);
+                      });
+                    },
+                  )));
+    } catch (error) {
+      if (mounted) HiDialog.showSnackBar(context, '无法打开世界书：$error');
+    }
+  }
+
   void _save() async {
+    if (_saving) return;
     final name = _nameCtl.text.trim();
     if (name.isEmpty) {
       HiDialog.showSnackBar(context, '请输入助手名称');
       return;
     }
     setState(() => _saving = true);
-    final model = widget.assistant ?? AssistantModel(name: name);
-    final memoryBook = _memoryBookCtl.text.trim();
-    model
-      ..name = name
-      ..emoji = _emojiCtl.text.trim().isEmpty ? '🤖' : _emojiCtl.text.trim()
-      ..prompt = _composePromptWithEditableSections(
-        prompt: _promptCtl.text,
-        personality: _personalityCtl.text,
-        scenario: _scenarioCtl.text,
-      )
-      ..description = _descriptionCtl.text.trim()
-      ..openingMessage = _openingMessageCtl.text.trim()
-      ..exampleDialogs = _exampleDialogsCtl.text.trim()
-      ..memoryBook = memoryBook
-      ..worldBookJson = WorldBookCodec.encode(
-        WorldBookCodec.decode(legacyText: memoryBook),
-      )
-      ..defaultVoiceStyle = _defaultVoiceStyle.trim()
-      ..avatarType = _avatarType
-      ..avatarValue = _avatarValue
-      ..providerId = settingsAwareProviderId()
-      ..model = _model.trim()
-      ..useTools = _useTools
-      ..toolIds = _toolIds.toList();
-    if (widget.saveAssistant != null) {
-      await widget.saveAssistant!(model);
-    } else {
-      final dbManager =
-          await HiDBManager.instance(dbName: HiDBManager.getAccountHash());
-      final dao = await AssistantDao.create(dbManager);
-      await dao.saveAssistant(model);
+    try {
+      final session = await _session;
+      if (session == null) {
+        throw _sessionError ?? const AssistantOperationExpired();
+      }
+      session.scope.verify();
+      if (widget.assistant != null) {
+        AssistantRoleCardService.exportJson(widget.assistant!);
+        AssistantRoleCardService.exportTavernV2Json(widget.assistant!);
+      }
+      var model = AssistantModel.fromJson(
+          (widget.assistant ?? AssistantModel(name: name)).toJson());
+      final body = _memoryBookCtl.text.trim();
+      final previous = AssistantRoleCardService.memoryBookForRuntime(
+          _worldBookDraft.memoryBook);
+      if (body == previous) {
+        model.memoryBook = _worldBookDraft.memoryBook;
+        model.worldBookJson = _worldBookDraft.worldBookJson;
+      } else {
+        // 无结构化源的旧卡仍支持文本编辑；结构化卡通过专用编辑器保留元数据。
+        model = AssistantRoleCardService.withWorldBook(model,
+            WorldBookCodec.encode(WorldBookCodec.decode(legacyText: body)));
+      }
+      model
+        ..name = name
+        ..emoji = _emojiCtl.text.trim().isEmpty ? '🤖' : _emojiCtl.text.trim()
+        ..prompt = _composePromptWithEditableSections(
+            prompt: _promptCtl.text,
+            personality: _personalityCtl.text,
+            scenario: _scenarioCtl.text)
+        ..description = _descriptionCtl.text.trim()
+        ..openingMessage = _openingMessageCtl.text.trim()
+        ..exampleDialogs = _exampleDialogsCtl.text.trim()
+        ..defaultVoiceStyle = _defaultVoiceStyle.trim()
+        ..avatarType = _avatarType
+        ..avatarValue = _avatarValue
+        ..providerId = settingsAwareProviderId()
+        ..model = _model.trim()
+        ..useTools = _useTools
+        ..toolIds = _toolIds.toList();
+      AssistantRoleCardService.exportTavernV2Json(model);
+      AssistantRoleCardService.exportJson(model);
+      final saved = await session.save(model, override: widget.saveAssistant);
+      // 已提交的头像从自有临时集合移出；页面已离开也不能删除有效文件。
+      _ownedAvatarPaths.remove(saved.avatarValue);
+      await _discardOwnedAvatars();
+      if (!mounted || !session.scope.isCurrent) return;
+      if (widget.assistant != null) {
+        acceptSavedAssistant(widget.assistant!, saved);
+      }
+      await _retainObsoleteAvatarImages(
+          finalAvatarType: saved.avatarType,
+          finalAvatarValue: saved.avatarValue,
+          session: session);
+      if (mounted && session.scope.isCurrent) Navigator.pop(context, true);
+    } catch (error) {
+      if (mounted) HiDialog.showSnackBar(context, '保存失败：$error');
+    } finally {
+      if (!mounted) await _discardOwnedAvatars();
+      if (mounted) setState(() => _saving = false);
     }
-    await _deleteObsoleteAvatarImages(
-      finalAvatarType: model.avatarType,
-      finalAvatarValue: model.avatarValue,
-    );
-    if (!mounted) return;
-    Navigator.pop(context, true);
   }
 
   void _selectAvatarPreset(String? assetId) {
@@ -1104,31 +1200,53 @@ class _AssistantEditPageState extends State<AssistantEditPage> {
       HiDialog.showSnackBar(context, '当前平台暂不支持选择图片头像');
       return;
     }
+    String? owned;
     try {
-      final picked = await _imagePicker.pickImage(
-        source: ImageSource.gallery,
-        imageQuality: 80,
-        maxWidth: 512,
-        maxHeight: 512,
-      );
-      if (!mounted || picked == null) return;
-      final name = _nameCtl.text.trim().isEmpty ? 'assistant' : _nameCtl.text;
-      final oldPath =
-          _avatarType == AvatarAssetService.imageType ? _avatarValue : null;
-      final path = await AvatarAssetService.saveAssistantAvatar(
-        sourcePath: picked.path,
-        assistantName: name,
-      );
-      if (oldPath != path) {
-        _queueManagedImagePath(oldPath);
+      final session = await _session;
+      if (session == null) {
+        throw _sessionError ?? const AssistantOperationExpired();
       }
-      if (!mounted) return;
+      session.scope.verify();
+      final picked = await _imagePicker.pickImage(
+          source: ImageSource.gallery,
+          imageQuality: 80,
+          maxWidth: 512,
+          maxHeight: 512);
+      session.scope.verify();
+      if (!mounted || picked == null) return;
+      final bytes = await readFileBytesBounded(File(picked.path),
+          maxBytes: AssistantRoleCardService.maxImportBytes, label: '角色头像');
+      session.scope.verify();
+      // 每次选择只创建自己的文件，不复用选择器给出的其他账号托管路径。
+      final path = await AvatarAssetService.saveAssistantAvatarBytes(
+          bytes: bytes,
+          assistantName: 'operation_${generateUuidV4()}',
+          extension:
+              picked.path.toLowerCase().endsWith('.png') ? '.png' : '.jpg',
+          accountHash: session.scope.accountHash);
+      owned = path;
+      _ownedAvatarPaths.add(path);
+      session.scope.verify();
+      if (!mounted) throw const AssistantOperationExpired();
+      _queueCurrentImageForCleanup();
       setState(() {
         _avatarType = AvatarAssetService.imageType;
         _avatarValue = path;
       });
     } catch (e) {
+      if (owned != null) {
+        _ownedAvatarPaths.remove(owned);
+        await AvatarAssetService.deleteAssistantAvatar(owned);
+      }
       if (mounted) HiDialog.showSnackBar(context, '选取头像失败：$e');
+    }
+  }
+
+  Future<void> _discardOwnedAvatars() async {
+    final paths = _ownedAvatarPaths.toList();
+    _ownedAvatarPaths.clear();
+    for (final path in paths) {
+      await AvatarAssetService.deleteAssistantAvatar(path);
     }
   }
 
@@ -1151,18 +1269,27 @@ class _AssistantEditPageState extends State<AssistantEditPage> {
     _obsoleteAvatarPaths.add(value);
   }
 
-  Future<void> _deleteObsoleteAvatarImages({
+  Future<void> _retainObsoleteAvatarImages({
     required String? finalAvatarType,
     required String? finalAvatarValue,
+    required AssistantManagementSession session,
   }) async {
-    final retainedPath = finalAvatarType == AvatarAssetService.imageType
-        ? finalAvatarValue?.trim()
-        : null;
-    for (final path in _obsoleteAvatarPaths) {
-      if (path == retainedPath) continue;
-      await AvatarAssetService.deleteAssistantAvatar(path);
+    if (_obsoleteAvatarPaths.isEmpty) return;
+    if (session.dao != null) {
+      try {
+        await session.scope.runStable(() async {
+          session.scope.verify();
+          await session.dao!.storage.db
+              .query(session.dao!.tableName, columns: ['avatarValue']);
+          session.scope.verify();
+          // 已发布头像可能被其它入口引用，查询不能授权删除。
+        });
+      } catch (_) {/* 维护核查失败不改变已经保存的结果。 */}
     }
     _obsoleteAvatarPaths.clear();
+    if (mounted && session.scope.isCurrent) {
+      HiDialog.showSnackBar(context, '已保存；旧头像资源已保留，会继续占用磁盘空间');
+    }
   }
 
   String settingsAwareProviderId() {

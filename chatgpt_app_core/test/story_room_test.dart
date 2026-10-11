@@ -1,3 +1,4 @@
+import 'package:chatgpt_app_core/chat/application/story_role_card_context.dart';
 import 'dart:convert';
 
 import 'package:chatgpt_app_core/chat/application/assistant_role_card_service.dart';
@@ -1677,6 +1678,15 @@ void main() {
         role: StoryParticipantRole.assistant,
         name: 'Dr. Moon',
       );
+      room.roleCardContextJson =
+          StoryRoleCardContext.create(room: room, publicText: '', sources: {
+        speaker: AssistantModel(name: '合成', memoryBook: '')
+      }, meta: {
+        speaker: const AssistantRoleCardTavernMeta(
+            characterDepthPrompt: '她会隐藏真实目的。\n第二行注释仍属于 depth prompt。',
+            characterDepthPromptDepth: 1,
+            characterDepthPromptRole: 'assistant')
+      });
       final history = StoryContextBuilder.history(
         [
           StoryMessageModel(
@@ -1693,6 +1703,7 @@ void main() {
           ),
         ],
         room: room,
+        participants: [speaker],
         speaker: speaker,
       );
 
@@ -1714,6 +1725,17 @@ void main() {
           '角色注释角色：unknown',
         ].join('\n'),
       );
+      final speaker = StoryParticipantModel(
+          roomId: 1, name: '角色', role: StoryParticipantRole.assistant);
+      room.roleCardContextJson =
+          StoryRoleCardContext.create(room: room, publicText: '', sources: {
+        speaker: AssistantModel(name: '合成', memoryBook: '')
+      }, meta: {
+        speaker: const AssistantRoleCardTavernMeta(
+            characterDepthPrompt: '保持沉默。',
+            characterDepthPromptDepth: 99,
+            characterDepthPromptRole: 'unknown')
+      });
       final history = StoryContextBuilder.history(
         [
           StoryMessageModel(
@@ -1724,6 +1746,8 @@ void main() {
           ),
         ],
         room: room,
+        participants: [speaker],
+        speaker: speaker,
       );
 
       expect(history.first['role'], 'system');
@@ -1958,6 +1982,14 @@ void main() {
         prompt: '安静观察。',
       );
 
+      room.roleCardContextJson =
+          StoryRoleCardContext.create(room: room, publicText: '', sources: {
+        fuka: AssistantModel(
+            name: '合成',
+            memoryBook: '旧钟声 => 旧钟声不在房间扫描深度内时不触发。\n镜子 => 镜子在最近一轮内会触发。')
+      }, meta: {
+        fuka: const AssistantRoleCardTavernMeta(characterBookScanDepth: 1)
+      });
       final system = StoryContextBuilder.systemPrompt(
         room: room,
         participants: [fuka],
@@ -2005,6 +2037,16 @@ void main() {
         name: 'Fuka',
         prompt: '安静观察。',
       );
+      room.roleCardContextJson =
+          StoryRoleCardContext.create(room: room, publicText: '', sources: {
+        speaker: AssistantModel(
+            name: '合成',
+            memoryBook:
+                '[re] 第[一二三]幕 => 镜子背后藏着暗门。\n[re] 暗[门窗] => 暗门后通向地下书库。\n[re] 沙漠\\d+ => 这条不应注入。')
+      }, meta: {
+        speaker: const AssistantRoleCardTavernMeta(
+            characterBookRecursiveScanning: true)
+      });
       final result = await StoryContextBuilder.buildSystemPromptSafely(
         room: room,
         participants: [speaker],
@@ -2050,6 +2092,14 @@ void main() {
         prompt: '安静观察。',
       );
 
+      room.roleCardContextJson =
+          StoryRoleCardContext.create(room: room, publicText: '', sources: {
+        fuka: AssistantModel(
+            name: '合成', memoryBook: '镜子 => 镜子背后藏着暗门。\n暗门 => 暗门后通向地下书库。')
+      }, meta: {
+        fuka: const AssistantRoleCardTavernMeta(
+            characterBookRecursiveScanning: true)
+      });
       final system = StoryContextBuilder.systemPrompt(
         room: room,
         participants: [fuka],
@@ -2082,6 +2132,14 @@ void main() {
         prompt: '安静观察。',
       );
 
+      room.roleCardContextJson =
+          StoryRoleCardContext.create(room: room, publicText: '', sources: {
+        fuka: AssistantModel(
+            name: '合成', memoryBook: '[norec] 镜子 => 镜子背后藏着暗门。\n暗门 => 暗门后通向地下书库。')
+      }, meta: {
+        fuka: const AssistantRoleCardTavernMeta(
+            characterBookRecursiveScanning: true)
+      });
       final system = StoryContextBuilder.systemPrompt(
         room: room,
         participants: [fuka],
@@ -2144,6 +2202,13 @@ void main() {
         prompt: '安静观察。',
       );
 
+      room.roleCardContextJson =
+          StoryRoleCardContext.create(room: room, publicText: '', sources: {
+        fuka: AssistantModel(
+            name: '合成', memoryBook: '镜子 => 这是一个非常非常非常长的镜子设定，后半段不应该完整出现。')
+      }, meta: {
+        fuka: const AssistantRoleCardTavernMeta(characterBookTokenBudget: 20)
+      });
       final system = StoryContextBuilder.systemPrompt(
         room: room,
         participants: [fuka],
@@ -2181,6 +2246,16 @@ void main() {
         prompt: '火焰将军。',
       );
 
+      room.roleCardContextJson =
+          StoryRoleCardContext.create(room: room, publicText: '', sources: {
+        chandra: AssistantModel(
+            name: '合成',
+            memoryBook:
+                '[p=10] Chandra => Name: Chandra Personality: proud general.\n[pos=after_char] Chandra => After character prompt note.\n[p=10] Medli => Name: Medli Personality: gentle scout.')
+      }, meta: {
+        chandra:
+            const AssistantRoleCardTavernMeta(characterBookTokenBudget: 2000)
+      });
       final system = StoryContextBuilder.systemPrompt(
         room: room,
         participants: [chandra],

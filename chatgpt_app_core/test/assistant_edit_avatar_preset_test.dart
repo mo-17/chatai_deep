@@ -1,3 +1,4 @@
+import 'package:chatgpt_app_core/chat/application/assistant_operation_scope.dart';
 import 'dart:async';
 import 'dart:io';
 
@@ -83,7 +84,7 @@ void main() {
     final timeout = Stopwatch()..start();
     while (finder.evaluate().isEmpty) {
       if (timeout.elapsed > const Duration(seconds: 2)) {
-        fail('Timed out waiting for $finder');
+        fail('Timed out waiting for $finder; texts: ${tester.widgetList<Text>(find.byType(Text)).map((t) => t.data).toList()}');
       }
       await tester.runAsync(
         () => Future<void>.delayed(Duration.zero),
@@ -185,6 +186,11 @@ void main() {
           routes: {
             '/': (_) => const Scaffold(body: Text('assistant-list')),
             '/edit': (_) => AssistantEditPage(
+                  operationScope: AssistantOperationScope(
+                      accountHash: 'test',
+                      restoreRevision: 0,
+                      currentAccount: () => 'test',
+                      currentRestoreRevision: () => 0),
                   assistant: assistant,
                   saveAssistant: saveAssistant,
                 ),
@@ -387,7 +393,7 @@ void main() {
   });
 
   testWidgets(
-      'selecting a preset defers old managed image cleanup until save succeeds',
+      'selecting a preset preserves published old bytes before and after save',
       (tester) async {
     late Directory root;
     late File image;
@@ -430,11 +436,12 @@ void main() {
     expect(await tester.runAsync(image.exists), isTrue);
 
     releasePersistence.complete();
-    expect(await pumpUntilDeleted(tester, image), isTrue);
+    await pumpUntilFound(tester, find.text('assistant-list'));
+    expect(await tester.runAsync(image.exists), isTrue);
     await pumpUntilFound(tester, find.text('assistant-list'));
 
     expect(find.text('assistant-list'), findsOneWidget);
-    expect(await tester.runAsync(image.exists), isFalse);
+    expect(await tester.runAsync(image.exists), isTrue);
   });
 
   testWidgets('selecting a preset then going back preserves the old image',
@@ -519,26 +526,18 @@ void main() {
     expect(deletedBeforeSave, isFalse);
     expect(saveButtonFinder(), findsOneWidget);
     final saveButton = tester.widget<FilledButton>(saveButtonFinder());
-    Object? saveError;
-    await tester.runAsync(() async {
-      final errorObserved = Completer<void>();
-      runZonedGuarded<void>(
-        saveButton.onPressed!,
-        (error, _) {
-          saveError = error;
-          errorObserved.complete();
-        },
-      );
-      await errorObserved.future;
-    });
-    await tester.pump();
+    saveButton.onPressed!();
+    await tester.pump(const Duration(milliseconds: 100));
     expect(saveCalled, isTrue);
-    expect(saveError, same(expectedError));
+    expect(find.textContaining('保存失败'), findsOneWidget);
+    expect(tester.takeException(), isNull);
+    expect(
+        tester.widget<FilledButton>(saveButtonFinder()).onPressed, isNotNull);
     expect(find.byType(AssistantEditPage), findsOneWidget);
     expect(await tester.runAsync(image.exists), isTrue);
   });
 
-  testWidgets('removing a managed image deletes it only after save succeeds',
+  testWidgets('removing a published managed image preserves its bytes after save',
       (tester) async {
     late Directory root;
     late File image;
@@ -569,13 +568,14 @@ void main() {
 
     await tester.tap(find.text('保存修改'));
     await tester.pump();
-    expect(await pumpUntilDeleted(tester, image), isTrue);
+    await pumpUntilFound(tester, find.text('assistant-list'));
+    expect(await tester.runAsync(image.exists), isTrue);
 
     expect(saved?.avatarType, isNull);
     expect(saved?.avatarValue, isNull);
   });
 
-  testWidgets('replacing a managed image deletes only the old image after save',
+  testWidgets('replacing a published managed image preserves old and new bytes',
       (tester) async {
     late Directory root;
     late File oldImage;
@@ -616,14 +616,16 @@ void main() {
 
     await tester.tap(find.text('保存修改'));
     await tester.pump();
-    expect(await pumpUntilDeleted(tester, oldImage), isTrue);
+    await pumpUntilFound(tester, find.text('assistant-list'));
+    expect(await tester.runAsync(oldImage.exists), isTrue);
 
     expect(saved?.avatarType, AvatarAssetService.imageType);
     expect(saved?.avatarValue, replacementPath);
     expect(await tester.runAsync(() => File(replacementPath).exists()), isTrue);
   });
 
-  testWidgets('a queued obsolete path is retained when selected as final image',
+  testWidgets(
+      'reselecting an old image creates owned copy and preserves its bytes',
       (tester) async {
     late Directory root;
     late File originalImage;
@@ -662,10 +664,11 @@ void main() {
       matches: (path) => path != originalImage.path,
     );
     await tapVisible(tester, find.text('更换图片'));
-    await pumpUntilPreviewChanges(
-      tester,
-      matches: (path) => path == originalImage.path,
-    );
+    final finalPath = await pumpUntilPreviewChanges(tester,
+        matches: (path) =>
+            path != replacementPath && path != originalImage.path);
+    final originalBytes = await tester.runAsync(originalImage.readAsBytes);
+    expect(await tester.runAsync(originalImage.exists), isTrue);
     expect(picker.callCount, 2);
 
     await tester.tap(find.text('保存修改'));
@@ -676,7 +679,9 @@ void main() {
     );
 
     expect(saved?.avatarType, AvatarAssetService.imageType);
-    expect(saved?.avatarValue, originalImage.path);
+    expect(saved?.avatarValue, finalPath);
+    expect(await tester.runAsync(() => File(finalPath).readAsBytes()),
+        originalBytes);
     expect(await tester.runAsync(originalImage.exists), isTrue);
   });
 

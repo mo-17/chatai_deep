@@ -1,4 +1,5 @@
 import 'dart:convert';
+import 'story_role_card_context.dart';
 
 import 'package:chatgpt_app_core/chat/application/assistant_role_card_service.dart';
 import 'package:chatgpt_app_core/chat/application/story_room_role_card_importer.dart';
@@ -81,6 +82,7 @@ class StoryContextBuilder {
         recentMessages: recentMessages,
         worldBookMatch: _worldBookScan(
           room,
+          participants,
           speaker,
           persona,
           latestInput,
@@ -106,6 +108,7 @@ class StoryContextBuilder {
         recentMessages: recentMessages,
         worldBookMatch: await _worldBookScan(
           room,
+          participants,
           speaker,
           persona,
           latestInput,
@@ -124,7 +127,10 @@ class StoryContextBuilder {
   }) {
     final isTavern = room.mode == StoryRoomMode.tavern;
     final contextWindow = StoryContextWindow.fromMessages(recentMessages);
-    final decoded = StoryPromptConfigCodec.decode(room.promptConfigJson);
+    final projection =
+        StoryRoleCardContext.read(room, participants: participants);
+    final decoded = StoryPromptConfigCodec.decode(
+        projection.degraded ? '' : room.promptConfigJson);
     final modules = _withRequiredPromptRules(decoded.modules);
     final rules = StringBuffer()
       ..writeln(isTavern ? '你正在一个酒馆角色扮演房间中对话。' : '你正在一个小说创作房间中协作。')
@@ -141,7 +147,7 @@ class StoryContextBuilder {
         ..writeln('- 如果当前发言者是旁白，负责场景、动作、氛围和转场。')
         ..writeln('- 如果当前发言者是作者，负责续写、改写、剧情推进和创作建议。');
     }
-    final publicContext = _withoutWorldBookSection(room.publicContext).trim();
+    final publicContext = projection.publicText.trim();
     final roomSection = StringBuffer()..writeln('当前房间：${room.title}');
     if (publicContext.isNotEmpty) {
       roomSection
@@ -164,7 +170,9 @@ class StoryContextBuilder {
     final worldBookHits = worldBookMatch.hits;
     final budgetedWorldBookHits = _budgetWorldBookHits(
       worldBookHits,
-      maxChars: _worldBookTokenBudget(room),
+      maxChars: projection.isCardSource
+          ? projection.roles[speaker.participantKey]?.tokenBudget
+          : _worldBookTokenBudget(room),
     );
     final beforeCharHits = budgetedWorldBookHits
         .where((hit) => !_isAfterCharWorldBookPosition(hit.position))
@@ -191,7 +199,8 @@ class StoryContextBuilder {
       ..writeln('【当前发言者】')
       ..writeln(
           '${StoryParticipantRole.labelOf(speaker.role)}：${speaker.name}');
-    final speakerPrompt = _speakerPrompt(speaker).trim();
+    final speakerPrompt =
+        (projection.degraded ? '' : _speakerPrompt(speaker)).trim();
     if (speakerPrompt.isNotEmpty) {
       speakerSection
         ..writeln()
@@ -288,6 +297,7 @@ class StoryContextBuilder {
     StoryRoomModel? room,
     StoryParticipantModel? speaker,
     StoryPersonaModel? persona,
+    List<StoryParticipantModel>? participants,
   }) {
     final result = <Map<String, dynamic>>[
       for (final message
@@ -303,10 +313,18 @@ class StoryContextBuilder {
         }
     ];
     if (room == null || room.mode != StoryRoomMode.tavern) return result;
-    final depthPrompt = _tavernDepthPrompt(
-      room.publicContext,
-      speakerName: speaker?.name ?? '',
-    );
+    final projection =
+        StoryRoleCardContext.read(room, participants: participants);
+    final binding = projection.roles[speaker?.participantKey];
+    final depthPrompt = projection.isCardSource
+        ? (binding == null || binding.depthText.trim().isEmpty
+            ? null
+            : _TavernDepthPrompt(
+                content: binding.depthText,
+                depth: binding.depth,
+                role: binding.depthRole))
+        : _tavernDepthPrompt(room.publicContext,
+            speakerName: speaker?.name ?? '');
     if (depthPrompt == null) return result;
     final insertAt =
         (result.length - depthPrompt.depth).clamp(0, result.length);
@@ -496,38 +514,64 @@ class StoryContextBuilder {
 
   static _StoryWorldBookScan _worldBookScan(
     StoryRoomModel room,
+    List<StoryParticipantModel> participants,
     StoryParticipantModel speaker,
     StoryPersonaModel? persona,
     String latestInput,
     List<StoryMessageModel> recentMessages,
   ) {
+    final projection =
+        StoryRoleCardContext.read(room, participants: participants);
+    final binding = projection.roles[speaker.participantKey];
     final modules = _withRequiredPromptRules(
-      StoryPromptConfigCodec.decode(room.promptConfigJson).modules,
+      StoryPromptConfigCodec.decode(
+              projection.degraded ? '' : room.promptConfigJson)
+          .modules,
     );
     final enabled = modules.any((module) =>
         module.enabled &&
         (module.builtInSlot == StoryPromptBuiltInSlot.worldBookBefore ||
             module.builtInSlot == StoryPromptBuiltInSlot.worldBookAfter));
-    final worldBook = _worldBookSection(room.publicContext);
+    final worldBook =
+        projection.isCardSource ? '' : _worldBookSection(room.publicContext);
     final normalized =
         StoryRoomRoleCardImporter.normalizeMemoryBookForMatching(worldBook);
     final recentTexts = _recentMatchTexts(
       StoryContextWindow.fromMessages(recentMessages).recentMessages,
-      maxDepth: _worldBookScanDepth(room),
+      maxDepth: projection.isCardSource
+          ? (binding?.scanDepth ?? 0)
+          : _worldBookScanDepth(room),
     );
     final previousState = _decodeWorldBookState(room.worldBookState);
     final messageCount = recentMessages.length + 1;
-    final depthPrompt = _tavernDepthPrompt(
-      room.publicContext,
-      speakerName: speaker.name,
-    );
+    final depthPrompt = projection.isCardSource
+        ? (binding == null || binding.depthText.trim().isEmpty
+            ? null
+            : _TavernDepthPrompt(
+                content: binding.depthText,
+                depth: binding.depth,
+                role: binding.depthRole))
+        : _tavernDepthPrompt(room.publicContext, speakerName: speaker.name);
     return _StoryWorldBookScan(
-      enabled: enabled && worldBook.isNotEmpty,
-      entries: enabled ? WorldBookCodec.decode(legacyText: normalized) : [],
+      enabled: enabled &&
+          (projection.isCardSource ? binding != null : worldBook.isNotEmpty),
+      entries: enabled
+          ? (projection.isCardSource
+              ? (binding?.entries ?? [])
+              : WorldBookCodec.decode(legacyText: normalized))
+          : [],
       latestInput: latestInput,
       recentTexts: recentTexts,
-      maxEntries: _worldBookHitLimit(room),
-      recursive: _worldBookRecursiveScanning(room),
+      maxEntries: projection.isCardSource
+          ? ((binding?.tokenBudget ?? 1000) >= 2000
+              ? 10
+              : (binding?.tokenBudget ?? 1000) >= 1000
+                  ? 8
+                  : 6)
+          : _worldBookHitLimit(room),
+      recursive: projection.isCardSource
+          ? (binding?.recursive ?? false)
+          : _worldBookRecursiveScanning(room),
       previousState: previousState,
       contextFor: (input) => WorldBookMatchContext(
         input: input,
@@ -539,11 +583,10 @@ class StoryContextBuilder {
         characterPersonality: _promptSection(speaker.prompt, '性格'),
         characterDepthPrompt: depthPrompt?.content ?? '',
         scenario: _promptSection(speaker.prompt, '场景'),
-        creatorNotes: _tavernMetaValue(
-          room.publicContext,
-          speakerName: speaker.name,
-          label: '作者备注：',
-        ),
+        creatorNotes: projection.isCardSource
+            ? (binding?.creatorNotes ?? '')
+            : _tavernMetaValue(room.publicContext,
+                speakerName: speaker.name, label: '作者备注：'),
         messageCount: messageCount,
         generationSeed: WorldBookMatcher.stableSeed(
           '${room.id}|${speaker.id}|$messageCount|$input',
@@ -691,10 +734,6 @@ class StoryContextBuilder {
     return _sectionBody(publicContext, '关键词记忆 / 世界书');
   }
 
-  static String _withoutWorldBookSection(String publicContext) {
-    return _removeSection(publicContext, '关键词记忆 / 世界书');
-  }
-
   static bool _isAfterCharWorldBookPosition(String position) {
     // ignore: deprecated_member_use
     final separatorPattern = RegExp(r'[\s-]+');
@@ -716,15 +755,6 @@ class StoryContextBuilder {
     final next = _nextSectionStart(text, bodyStart);
     final end = next < 0 ? text.length : next;
     return text.substring(bodyStart, end).trim();
-  }
-
-  static String _removeSection(String text, String title) {
-    final marker = '【$title】';
-    final start = text.indexOf(marker);
-    if (start < 0) return text;
-    final next = _nextSectionStart(text, start + marker.length);
-    final end = next < 0 ? text.length : next;
-    return (text.substring(0, start) + text.substring(end)).trim();
   }
 
   static int _nextSectionStart(String text, int start) {

@@ -108,7 +108,7 @@ void main() {
     final bytes = await export();
     final preview =
         await BackupService(target).previewArchive(bytes, accountHash: 'a');
-    expect(preview.formatVersion, 12);
+    expect(preview.formatVersion, BackupService.formatVersion);
     expect(preview.personalMemories, 3);
     expect(preview.integrityVerified, isTrue);
     final dao = await PersonalMemoryDao.create(target, accountHash: 'a');

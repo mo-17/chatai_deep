@@ -28,6 +28,7 @@ class AssistantRoleCardAssetStore {
     required List<AssistantRoleCardResource> resources,
     RoleCardAssetDirectoryResolver? directoryResolver,
     String? accountHash,
+    String? generation,
     @visibleForTesting RoleCardAssetWriteObserver? debugAfterAssetWrite,
     @visibleForTesting RoleCardAssetCleanupObserver? debugBeforeBackupCleanup,
   }) async {
@@ -67,13 +68,44 @@ class AssistantRoleCardAssetStore {
             accountDirectory.path,
           );
         }
-        final directory = Directory('${accountDirectory.path}/$assistantId');
+        if (generation != null &&
+            !RegExp(r'^[a-f0-9-]{36}$').hasMatch(generation)) {
+          throw const FormatException('角色资源 generation 无效');
+        }
+        if (resources.length > maxAssets ||
+            resources
+                .any((item) => (item.bytes?.length ?? 0) > maxAssetBytes) ||
+            resources.fold<int>(
+                    0, (sum, item) => sum + (item.bytes?.length ?? 0)) >
+                maxTotalBytes) {
+          throw const FormatException('角色卡资源超过保存预算，未保存任何资源');
+        }
+        final targetSegments = [
+          ...scopeSegments,
+          '$assistantId',
+          if (generation != null) ...['generations', generation]
+        ];
+        final directory = Directory('${root.path}/${targetSegments.join('/')}');
         await AccountResourceScope.ensureNoLinks(
           root: root,
-          relativeSegments: [...scopeSegments, '$assistantId'],
+          relativeSegments: targetSegments,
         );
-        final staging =
-            await accountDirectory.createTemp('$assistantId.staging.');
+        var stagingParent = accountDirectory;
+        if (generation != null) {
+          stagingParent = await AccountResourceScope.createManagedDirectory(
+              root: root,
+              relativeSegments: [
+                ...scopeSegments,
+                '$assistantId',
+                'generations'
+              ]);
+          if (await FileSystemEntity.type(directory.path, followLinks: false) !=
+              FileSystemEntityType.notFound) {
+            throw const FormatException('角色资源 generation 已存在');
+          }
+        }
+        final staging = await stagingParent
+            .createTemp('${generation ?? assistantId}.staging.');
         final stagingType = await FileSystemEntity.type(
           staging.path,
           followLinks: false,
@@ -81,7 +113,7 @@ class AssistantRoleCardAssetStore {
         if (stagingType != FileSystemEntityType.directory ||
             !await AccountResourceScope.isCanonicalWithin(
               staging,
-              accountDirectory,
+              stagingParent,
             )) {
           throw FileSystemException(
             'role asset staging path is not a managed directory',
@@ -93,8 +125,7 @@ class AssistantRoleCardAssetStore {
           final manifest = <Map<String, dynamic>>[];
           var totalBytes = 0;
           var completedWrites = 0;
-          for (final entry
-              in resources.take(maxAssets).toList().asMap().entries) {
+          for (final entry in resources.asMap().entries) {
             final resource = entry.value;
             final bytes = resource.bytes;
             String localPath = '';
@@ -126,7 +157,7 @@ class AssistantRoleCardAssetStore {
           }
           await AccountResourceScope.ensureNoLinks(
             root: root,
-            relativeSegments: [...scopeSegments, '$assistantId'],
+            relativeSegments: targetSegments,
           );
           await _swapDirectory(
             staging: staging,
@@ -265,6 +296,82 @@ class AssistantRoleCardAssetStore {
     }
     verifyAccount();
     return resources;
+  }
+
+  /// 仅清理本次预备目录。它在数据库提交前不会覆盖旧 generation。
+  static Future<void> discardGeneration({
+    required int assistantId,
+    required String generation,
+    required String accountHash,
+    RoleCardAssetDirectoryResolver? directoryResolver,
+  }) async {
+    if (!RegExp(r'^[a-f0-9-]{36}$').hasMatch(generation)) {
+      throw const FormatException('角色资源 generation 无效');
+    }
+    final base =
+        await (directoryResolver ?? getApplicationDocumentsDirectory)();
+    final root = AccountResourceScope.legacyRoot(
+        base: base, resourceDirectoryName: directoryName);
+    final segments = [
+      AccountResourceScope.accountsDirectoryName,
+      AccountResourceScope.tokenFor(accountHash),
+      '$assistantId',
+      'generations',
+      generation
+    ];
+    await AccountResourceScope.ensureNoLinks(
+        root: root, relativeSegments: segments);
+    final directory = Directory('${root.path}/${segments.join('/')}');
+    if (await FileSystemEntity.type(directory.path, followLinks: false) ==
+        FileSystemEntityType.notFound) {
+      return;
+    }
+    if (!await AccountResourceScope.isCanonicalWithin(directory, root)) {
+      throw const FileSystemException('角色资源目录超出托管范围');
+    }
+    await _ensureTreeContainsNoLinks(directory);
+    await _deleteDirectoryIfRegular(directory);
+  }
+
+  static Future<void> cleanupPreviousGenerations({
+    required int assistantId,
+    required String accountHash,
+    required String previousManifest,
+    required Iterable<String> referencedManifests,
+    RoleCardAssetDirectoryResolver? directoryResolver,
+  }) async {
+    Set<String> generations(String manifest) {
+      final output = <String>{};
+      try {
+        final items = jsonDecode(manifest);
+        if (items is! List) return output;
+        for (final item in items) {
+          if (item is! Map || item['localPath'] is! String) continue;
+          final suffix = managedSuffix(item['localPath'] as String,
+              accountHash: accountHash);
+          if (suffix == null) continue;
+          final parts = suffix.split('/');
+          if (parts.length >= 6 &&
+              parts[2] == '$assistantId' &&
+              parts[3] == 'generations' &&
+              RegExp(r'^[a-f0-9-]{36}$').hasMatch(parts[4])) {
+            output.add(parts[4]);
+          }
+        }
+      } catch (_) {/* 非法旧清单不作为可删除路径。 */}
+      return output;
+    }
+
+    final referenced = referencedManifests.expand(generations).toSet();
+    for (final generation
+        in generations(previousManifest).difference(referenced)) {
+      await discardGeneration(
+          assistantId: assistantId,
+          generation: generation,
+          accountHash: accountHash,
+          directoryResolver: directoryResolver);
+    }
+    // 旧固定目录可能仍有其它对象引用，只保留可识别文件，不删整个 id 目录。
   }
 
   static String? managedSuffix(

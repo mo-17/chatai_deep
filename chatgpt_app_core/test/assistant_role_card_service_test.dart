@@ -156,17 +156,24 @@ void main() {
       'excludeRecursion': true,
       'group': 'bell',
       'groupWeight': 7,
+      'insertion_order': 12,
+      'extensions': <String, dynamic>{},
     });
     expect(entries[1], {
       'content': '按幕次切换叙事节奏。',
       'enabled': false,
       'keys': [r'第[一二三]幕', r'Act\s+\d+'],
       'regex': true,
+      'insertion_order': 0,
+      'extensions': <String, dynamic>{},
     });
     expect(entries[2], {
       'content': '城市由七座浮岛组成。',
       'enabled': true,
       'constant': true,
+      'keys': <String>[],
+      'insertion_order': 0,
+      'extensions': <String, dynamic>{},
     });
     final extensions = data['extensions'] as Map<String, dynamic>;
     final appMeta = extensions['chatai_deep'] as Map<String, dynamic>;
@@ -415,15 +422,18 @@ void main() {
         AssistantRoleCardService.tavernMetaFromAssistant(assistant)?.nickname,
         '馆长');
 
-    final exported = jsonDecode(
-      AssistantRoleCardService.exportTavernV2Json(assistant),
-    ) as Map<String, dynamic>;
+    final packaged = ZipDecoder()
+        .decodeBytes(AssistantRoleCardService.exportCharx(assistant));
+    final exported =
+        jsonDecode(utf8.decode(packaged.findFile('card.json')!.readBytes()!))
+            as Map<String, dynamic>;
     final data = exported['data'] as Map<String, dynamic>;
     final extensions = data['extensions'] as Map<String, dynamic>;
 
     expect(exported['spec'], 'chara_card_v3');
     expect(exported['spec_version'], '3.0');
-    expect((data['description'] as Map<String, dynamic>)['zh'],
+    expect(data['description'], '{{char}} 守护着无尽档案。');
+    expect(extensions['chatai_deep_original_core']['description']['zh'],
         '{{char}} 守护着无尽档案。');
     expect(data['group_only_greetings'], ['{{char}} 在群聊里展开档案。']);
     expect(
@@ -533,7 +543,8 @@ void main() {
     expect(imported.updatedAt, 0);
     expect(imported.name, '艾琳');
     expect(imported.description, '浮岛钟表师');
-    expect(imported.memoryBook, '钟声 => 钟声代表浮岛潮汐');
+    expect(AssistantRoleCardService.memoryBookForRuntime(imported.memoryBook),
+        '钟声 => 钟声代表浮岛潮汐');
     expect(imported.useTools, isFalse);
     expect(imported.toolIds, ['knowledge_search']);
   });
@@ -1162,7 +1173,7 @@ void main() {
     }));
 
     expect(
-      imported.memoryBook,
+      AssistantRoleCardService.memoryBookForRuntime(imported.memoryBook),
       r'[re] [p=4] 第[一二三]幕 || Act\s+\d+ => 按幕次切换叙事节奏。',
     );
     final hits = await AssistantRoleCardService.matchMemoryEntriesSafely(
@@ -1197,7 +1208,7 @@ void main() {
     }));
 
     expect(
-      imported.memoryBook,
+      AssistantRoleCardService.memoryBookForRuntime(imported.memoryBook),
       '[sec=潮汐|浮岛] [p=6] 钟声 => 只有钟声和潮汐同场时才注入。',
     );
     expect(
@@ -1234,7 +1245,7 @@ void main() {
     }));
 
     expect(
-      imported.memoryBook,
+      AssistantRoleCardService.memoryBookForRuntime(imported.memoryBook),
       '[sec=地下|雨夜] 钟声 => 原生二级关键词被保留。',
     );
     expect(
@@ -1270,7 +1281,7 @@ void main() {
     }));
 
     expect(
-      imported.memoryBook,
+      AssistantRoleCardService.memoryBookForRuntime(imported.memoryBook),
       '[exclude=白天|庆典] [p=5] 钟楼 => 钟楼只在安静场景触发。',
     );
     expect(
@@ -1308,7 +1319,8 @@ void main() {
       },
     }));
 
-    expect(imported.memoryBook, '[cs] [ww] Alice => 只在精确提到 Alice 时注入。');
+    expect(AssistantRoleCardService.memoryBookForRuntime(imported.memoryBook),
+        '[cs] [ww] Alice => 只在精确提到 Alice 时注入。');
     expect(
       AssistantRoleCardService.matchMemoryEntries(
           imported.memoryBook, 'alice 来了'),
@@ -1361,7 +1373,7 @@ void main() {
     }));
 
     expect(
-      imported.memoryBook,
+      AssistantRoleCardService.memoryBookForRuntime(imported.memoryBook),
       [
         '城市由七座浮岛组成。',
         '[sec=夜晚] [p=8] 镜子 => 镜子只在夜晚回应。',
@@ -1405,7 +1417,7 @@ void main() {
     }));
 
     expect(
-      imported.memoryBook,
+      AssistantRoleCardService.memoryBookForRuntime(imported.memoryBook),
       [
         '一号 => 第一条。',
         '二号 => 第二条。',
@@ -1453,7 +1465,7 @@ void main() {
     }));
 
     expect(
-      imported.memoryBook,
+      AssistantRoleCardService.memoryBookForRuntime(imported.memoryBook),
       [
         '常驻设定。',
         '[off] 禁用词 => 这条不应该触发。',
@@ -1495,7 +1507,7 @@ void main() {
     }));
 
     expect(
-      imported.memoryBook,
+      AssistantRoleCardService.memoryBookForRuntime(imported.memoryBook),
       [
         '[norec] 镜子 => 镜子背后藏着暗门。',
         '[norec] 暗门 => 暗门后通向地下书库。',
@@ -1538,7 +1550,7 @@ void main() {
     }));
 
     expect(
-      imported.memoryBook,
+      AssistantRoleCardService.memoryBookForRuntime(imported.memoryBook),
       [
         '[group=bell] [gw=20] 钟声 => 晨钟版本。',
         '[group=bell] [gw=5] 钟声 => 暮钟版本。',
@@ -1655,7 +1667,7 @@ void main() {
     }));
 
     expect(
-      imported.memoryBook,
+      AssistantRoleCardService.memoryBookForRuntime(imported.memoryBook),
       [
         '[pos=before_char] [depth=4] [prob=100] 钟楼 => 钟楼会在第四层扫描时触发。',
         '[prob=0] 暗门 => 概率为零的条目不应注入。',
@@ -1702,7 +1714,7 @@ void main() {
     }));
 
     expect(
-      imported.memoryBook,
+      AssistantRoleCardService.memoryBookForRuntime(imported.memoryBook),
       [
         '[off] 废稿一 => disable 布尔禁用。',
         '[off] 废稿二 => disabled 布尔禁用。',
@@ -1801,7 +1813,8 @@ void main() {
     expect(imported.name, '图片角色');
     expect(imported.prompt, contains('[角色设定]\n藏在 PNG 里的角色。'));
     expect(imported.openingMessage, '我在图片里。');
-    expect(imported.memoryBook, '图片 => 图片角色知道自己来自 PNG。');
+    expect(AssistantRoleCardService.memoryBookForRuntime(imported.memoryBook),
+        '图片 => 图片角色知道自己来自 PNG。');
   });
 
   test('PNG 中没有角色卡元数据时拒绝', () {
@@ -1935,7 +1948,7 @@ void main() {
   });
 
   test('CHARX 导入 V3 card.json、头像及背景音频资源清单', () {
-    final jpeg = <int>[0xff, 0xd8, 0xff, 0xe0, 0, 16, 0xff, 0xd9];
+    final jpeg = base64.decode(_fixtureJpeg);
     final audio = <int>[0x49, 0x44, 0x33, 0x04];
     final card = jsonEncode({
       'spec': 'chara_card_v3',
@@ -1999,7 +2012,7 @@ void main() {
 
   test('CHARX 纯服务导出可保留 V3 资源并再次导入', () {
     final png = base64.decode(
-      'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/p9sAAAAASUVORK5CYII=',
+      'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+ip1sAAAAASUVORK5CYII=',
     );
     final result = AssistantRoleCardImportResult(
       assistant: AssistantModel(
@@ -2634,31 +2647,38 @@ List<int> _zipBytesOf(Map<String, List<int>> files) {
 }
 
 List<int> _pngWithTextChunk(String keyword, String text) {
-  final bytes = <int>[
-    137,
-    80,
-    78,
-    71,
-    13,
-    10,
-    26,
-    10,
-    ..._pngChunk(
-        'tEXt', [...latin1.encode(keyword), 0, ...latin1.encode(text)]),
-    ..._pngChunk('IEND', const []),
-  ];
+  final base = AssistantRoleCardService.exportTavernV2Png(
+      AssistantModel(name: 'fixture'));
+  final bytes = <int>[...base.take(8)];
+  var offset = 8;
+  while (offset < base.length) {
+    final length = ByteData.sublistView(base, offset, offset + 4).getUint32(0);
+    final type = ascii.decode(base.sublist(offset + 4, offset + 8));
+    if (type == 'IEND') {
+      bytes.addAll(_pngChunk(
+          'tEXt', [...latin1.encode(keyword), 0, ...latin1.encode(text)]));
+    }
+    if (type != 'tEXt') {
+      bytes.addAll(base.sublist(offset, offset + length + 12));
+    }
+    offset += length + 12;
+  }
   return bytes;
 }
 
 List<int> _pngChunk(String type, List<int> data) {
+  var crc = 0xffffffff;
+  for (final byte in [...ascii.encode(type), ...data]) {
+    crc ^= byte;
+    for (var bit = 0; bit < 8; bit++) {
+      crc = crc & 1 == 1 ? 0xedb88320 ^ (crc >> 1) : crc >> 1;
+    }
+  }
   return [
     ..._uint32(data.length),
     ...ascii.encode(type),
     ...data,
-    0,
-    0,
-    0,
-    0,
+    ..._uint32(crc ^ 0xffffffff)
   ];
 }
 
@@ -2668,3 +2688,6 @@ List<int> _uint32(int value) => [
       (value >> 8) & 0xff,
       value & 0xff,
     ];
+
+const _fixtureJpeg =
+    "/9j/4AAQSkZJRgABAQAASABIAAD/4QBMRXhpZgAATU0AKgAAAAgAAYdpAAQAAAABAAAAGgAAAAAAA6ABAAMAAAABAAEAAKACAAQAAAABAAAAAaADAAQAAAABAAAAAQAAAAD/7QA4UGhvdG9zaG9wIDMuMAA4QklNBAQAAAAAAAA4QklNBCUAAAAAABDUHYzZjwCyBOmACZjs+EJ+/8AAEQgAAQABAwEiAAIRAQMRAf/EAB8AAAEFAQEBAQEBAAAAAAAAAAABAgMEBQYHCAkKC//EALUQAAIBAwMCBAMFBQQEAAABfQECAwAEEQUSITFBBhNRYQcicRQygZGhCCNCscEVUtHwJDNicoIJChYXGBkaJSYnKCkqNDU2Nzg5OkNERUZHSElKU1RVVldYWVpjZGVmZ2hpanN0dXZ3eHl6g4SFhoeIiYqSk5SVlpeYmZqio6Slpqeoqaqys7S1tre4ubrCw8TFxsfIycrS09TV1tfY2drh4uPk5ebn6Onq8fLz9PX29/j5+v/EAB8BAAMBAQEBAQEBAQEAAAAAAAABAgMEBQYHCAkKC//EALURAAIBAgQEAwQHBQQEAAECdwABAgMRBAUhMQYSQVEHYXETIjKBCBRCkaGxwQkjM1LwFWJy0QoWJDThJfEXGBkaJicoKSo1Njc4OTpDREVGR0hJSlNUVVZXWFlaY2RlZmdoaWpzdHV2d3h5eoKDhIWGh4iJipKTlJWWl5iZmqKjpKWmp6ipqrKztLW2t7i5usLDxMXGx8jJytLT1NXW19jZ2uLj5OXm5+jp6vLz9PX29/j5+v/bAEMAAgICAgICAwICAwUDAwMFBgUFBQUGCAYGBgYGCAoICAgICAgKCgoKCgoKCgwMDAwMDA4ODg4ODw8PDw8PDw8PD//bAEMBAgICBAQEBwQEBxALCQsQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEP/dAAQAAf/aAAwDAQACEQMRAD8A/fyiiigD/9k=";

@@ -1,8 +1,8 @@
+import 'package:chatgpt_app_core/chat/application/story_role_card_context.dart';
 import 'dart:async';
 import 'dart:io';
 
 import 'package:chatgpt_app_core/chat/application/story_ai_workflow_service.dart';
-import 'package:chatgpt_app_core/chat/application/story_artifact_context_builder.dart';
 import 'package:chatgpt_app_core/chat/application/story_room_settings_resolver.dart';
 import 'package:chatgpt_app_core/chat/application/usage_record_service.dart';
 import 'package:chatgpt_app_core/chat/domain/stream_event.dart';
@@ -407,6 +407,9 @@ class _StoryWorkbenchPageState extends State<StoryWorkbenchPage> {
         kind: kind,
         room: widget.room,
         artifacts: artifacts,
+        participants: await _roomDao?.getParticipants(widget.room.id!,
+                includeDisabled: true) ??
+            const [],
       );
       final buffer = StringBuffer();
       var promptTokens = 0;
@@ -577,12 +580,13 @@ class _StoryWorkbenchPageState extends State<StoryWorkbenchPage> {
     final roomDao = _roomDao;
     if (dao == null || roomDao == null) return;
     final all = await dao.getArtifacts(widget.room.id!);
-    widget.room.publicContext =
-        StoryArtifactContextBuilder.mergeIntoPublicContext(
-      widget.room.publicContext,
-      all,
-    );
-    await roomDao.saveRoom(widget.room);
+    final participants =
+        await roomDao.getParticipants(widget.room.id!, includeDisabled: true);
+    final next =
+        StoryRoleCardContext.withArtifacts(widget.room, participants, all);
+    await roomDao.saveRoom(next);
+    widget.room.publicContext = next.publicContext;
+    widget.room.roleCardContextJson = next.roleCardContextJson;
   }
 
   Future<void> _export() async {

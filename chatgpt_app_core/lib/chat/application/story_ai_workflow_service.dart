@@ -1,3 +1,4 @@
+import 'story_role_card_context.dart';
 import 'package:chatgpt_app_core/chat/application/story_artifact_context_builder.dart';
 import 'package:chatgpt_app_core/model/story_artifact_model.dart';
 import 'package:chatgpt_app_core/model/story_room_model.dart';
@@ -38,9 +39,14 @@ class StoryAiWorkflowService {
     required StoryAiWorkflowKind kind,
     required StoryRoomModel room,
     required List<StoryArtifactModel> artifacts,
+    List<StoryParticipantModel>? participants,
   }) {
+    final projection =
+        StoryRoleCardContext.read(room, participants: participants);
     final publicContext = _clip(
-      _basePublicContext(room.publicContext),
+      projection.isCardSource
+          ? projection.basePublicText
+          : _basePublicContext(projection.publicText),
       maxPublicContextCharacters,
     );
     final artifactContext = StoryArtifactContextBuilder.build(

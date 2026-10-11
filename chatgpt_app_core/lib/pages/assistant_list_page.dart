@@ -1,3 +1,6 @@
+import 'package:chatgpt_app_core/backup/backup_service.dart';
+import 'package:chatgpt_app_core/chat/application/assistant_operation_scope.dart';
+import 'package:chatgpt_app_core/chat/application/assistant_card_persistence.dart';
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
@@ -43,8 +46,9 @@ import 'package:chatgpt_app_core/provider/ai_settings_provider.dart';
 import 'package:chatgpt_app_core/skill/skill_import_service.dart';
 import 'package:chatgpt_app_core/theme/app_visual_theme.dart';
 import 'package:chatgpt_app_core/util/app_events.dart';
-import 'package:chatgpt_app_core/util/assistant_avatar_bytes.dart';
 import 'package:chatgpt_app_core/util/avatar_asset_service.dart';
+import 'package:chatgpt_app_core/util/account_resource_scope.dart';
+import 'package:chatgpt_app_core/util/assistant_avatar_bytes.dart';
 import 'package:chatgpt_app_core/util/bounded_file_reader.dart';
 import 'package:chatgpt_app_core/util/hi_dialog.dart';
 import 'package:chatgpt_app_core/widget/app_visual_widgets.dart';
@@ -135,6 +139,29 @@ class AssistantListPage extends StatefulWidget {
 
 class _AssistantListPageState extends State<AssistantListPage> {
   AssistantDao? _dao;
+  AssistantOperationScope? _scope;
+  final Map<int, AssistantRowSnapshot> _snapshots = {};
+  int _loadGeneration = 0;
+  List<_RoleCardImportJob> get _importJobs => _roleCardImportCoordinator.jobs
+      .where((job) => job.accountHash == _scope?.accountHash)
+      .toList();
+  AssistantOperationScope get _currentScope {
+    final scope = _scope;
+    if (scope == null) throw const AssistantOperationExpired();
+    scope.verify();
+    return scope;
+  }
+
+  AssistantOperationScope? _tryScope() {
+    final scope = _scope;
+    if (scope != null && scope.isCurrent) return scope;
+    if (mounted) {
+      HiDialog.showSnackBar(
+          context, const AssistantOperationExpired().toString());
+    }
+    return null;
+  }
+
   List<AssistantModel> _assistants = [];
   int _lastImportCompletedTick = 0;
   final Set<int> _observedCompletedTavernTaskIds = <int>{};
@@ -146,6 +173,7 @@ class _AssistantListPageState extends State<AssistantListPage> {
     super.initState();
     _roleCardImportCoordinator.addListener(_handleRoleCardImportChanged);
     _tavernTranslationCoordinator.addListener(_handleTavernImportChanged);
+    BackupService.restoreTick.addListener(_doInit);
     _doInit();
   }
 
@@ -153,6 +181,7 @@ class _AssistantListPageState extends State<AssistantListPage> {
   void dispose() {
     _roleCardImportCoordinator.removeListener(_handleRoleCardImportChanged);
     _tavernTranslationCoordinator.removeListener(_handleTavernImportChanged);
+    BackupService.restoreTick.removeListener(_doInit);
     super.dispose();
   }
 
@@ -163,30 +192,57 @@ class _AssistantListPageState extends State<AssistantListPage> {
   }
 
   void _doInit() async {
+    final generation = ++_loadGeneration;
     setState(() {
       _loading = true;
       _loadError = null;
     });
     try {
-      final dbManager =
-          await HiDBManager.instance(dbName: HiDBManager.getAccountHash());
-      _dao = await AssistantDao.create(dbManager);
-      await _tavernTranslationCoordinator.initialize(
-        dbManager,
-        accountHash: HiDBManager.getAccountHash(),
-      );
-      if (!mounted) return;
+      final scope = AssistantOperationScope.capture(
+          pageIsCurrent: () => mounted && generation == _loadGeneration);
+      final dbManager = await HiDBManager.instance(dbName: scope.accountHash);
+      scope.verify();
+      final dao = await AssistantDao.create(dbManager);
+      scope.verify();
+      await _tavernTranslationCoordinator.initialize(dbManager,
+          accountHash: scope.accountHash);
+      scope.verify();
+      _scope = scope;
+      _dao = dao;
       await _loadData();
     } catch (error) {
-      if (mounted) setState(() => _loadError = error);
+      if (mounted && generation == _loadGeneration) {
+        setState(() => _loadError = error);
+      }
     } finally {
-      if (mounted) setState(() => _loading = false);
+      if (mounted && generation == _loadGeneration) {
+        setState(() => _loading = false);
+      }
     }
   }
 
   Future<void> _loadData() async {
-    final list = await _dao!.getAssistants();
-    setState(() => _assistants = list);
+    final scope = _scope;
+    if (scope == null || !scope.isCurrent) return;
+    final dao = _dao!;
+    final list = await dao.getAssistants();
+    if (!scope.isCurrent) return;
+    final snapshots = <int, AssistantRowSnapshot>{};
+    for (final item in list) {
+      final snapshot = await dao.snapshot(item.id!);
+      if (!scope.isCurrent) return;
+      if (snapshot == null || !snapshot.matchesModel(item)) {
+        _doInit();
+        return;
+      }
+      snapshots[item.id!] = snapshot;
+    }
+    setState(() {
+      _assistants = list;
+      _snapshots
+        ..clear()
+        ..addAll(snapshots);
+    });
   }
 
   void _handleRoleCardImportChanged() {
@@ -236,7 +292,7 @@ class _AssistantListPageState extends State<AssistantListPage> {
           if (Platform.operatingSystem != 'ohos')
             IconButton(
               icon: const Icon(Icons.file_upload_outlined),
-              tooltip: '导入角色卡（.json/.png/.zip）',
+              tooltip: '导入角色卡（.json/.png/.zip/.charx）',
               onPressed: _loading ? null : _importRoleCardFile,
             ),
           if (Platform.operatingSystem != 'ohos')
@@ -262,13 +318,11 @@ class _AssistantListPageState extends State<AssistantListPage> {
   }
 
   Widget get _body {
-    if (_loading &&
-        _roleCardImportCoordinator.jobs.isEmpty &&
-        _tavernTranslationTasks.isEmpty) {
+    if (_loading && _importJobs.isEmpty && _tavernTranslationTasks.isEmpty) {
       return const Center(child: CircularProgressIndicator());
     }
     if (_loadError != null &&
-        _roleCardImportCoordinator.jobs.isEmpty &&
+        _importJobs.isEmpty &&
         _tavernTranslationTasks.isEmpty) {
       return AppVisualEmptyState(
         icon: Icons.cloud_off_outlined,
@@ -282,7 +336,7 @@ class _AssistantListPageState extends State<AssistantListPage> {
       );
     }
     return _assistants.isEmpty &&
-            _roleCardImportCoordinator.jobs.isEmpty &&
+            _importJobs.isEmpty &&
             _tavernTranslationTasks.isEmpty
         ? _emptyView
         : _listView;
@@ -313,7 +367,7 @@ class _AssistantListPageState extends State<AssistantListPage> {
             ? const EdgeInsets.fromLTRB(12, 12, 12, 24)
             : EdgeInsets.zero,
         itemCount: _tavernTranslationTasks.length +
-            _roleCardImportCoordinator.jobs.length +
+            _importJobs.length +
             _assistants.length,
         itemBuilder: (context, index) {
           final tavernTasks = _tavernTranslationTasks;
@@ -334,7 +388,7 @@ class _AssistantListPageState extends State<AssistantListPage> {
             );
           }
           index -= tavernTasks.length;
-          final importJobs = _roleCardImportCoordinator.jobs;
+          final importJobs = _importJobs;
           if (index < importJobs.length) {
             return _RoleCardImportJobTile(
               job: importJobs[index],
@@ -531,10 +585,13 @@ class _AssistantListPageState extends State<AssistantListPage> {
   }
 
   void _edit(AssistantModel? assistant) async {
+    final scope = _tryScope();
+    if (scope == null) return;
     final changed = await Navigator.push<bool>(
         context,
         MaterialPageRoute(
-            builder: (_) => AssistantEditPage(assistant: assistant)));
+            builder: (_) => AssistantEditPage(
+                assistant: assistant, operationScope: scope)));
     if (changed == true) _loadData();
   }
 
@@ -544,7 +601,16 @@ class _AssistantListPageState extends State<AssistantListPage> {
     String? targetName,
     AssistantModel? conflictingAssistant,
     AssistantMemoryBookMergePreview? mergePreview,
+    RoleCardCompatibilityReport? compatibility,
   }) {
+    try {
+      _currentScope.verify();
+      AssistantRoleCardService.extensionSafetyReport(assistant);
+      AssistantRoleCardService.compatibilityReport(assistant);
+    } catch (error) {
+      if (mounted) HiDialog.showSnackBar(context, '无法预览角色卡：$error。原始数据已保留');
+      return Future.value(null);
+    }
     final summary = AssistantRoleCardService.summarize(assistant);
     return showDialog<_RoleCardImportOptions>(
       context: context,
@@ -555,6 +621,7 @@ class _AssistantListPageState extends State<AssistantListPage> {
         targetName: targetName,
         conflictingAssistant: conflictingAssistant,
         mergePreview: mergePreview,
+        compatibility: compatibility,
       ),
     );
   }
@@ -611,6 +678,13 @@ class _AssistantListPageState extends State<AssistantListPage> {
                           color: _mutedTextColor(context), fontSize: 12),
                     ),
                   ),
+                for (final plan in plans)
+                  if (plan.result.diagnostics.isNotEmpty)
+                    Text(
+                        '${plan.originalName}：${plan.result.diagnostics.join('；')}',
+                        style: TextStyle(
+                            color:
+                                _statusColor(context, AppStatusKind.warning))),
                 if (hasConflicts) ...[
                   const SizedBox(height: 12),
                   Text(
@@ -771,16 +845,19 @@ class _AssistantListPageState extends State<AssistantListPage> {
   }
 
   void _openProfilePage(AssistantModel assistant) async {
-    final dbManager =
-        await HiDBManager.instance(dbName: HiDBManager.getAccountHash());
+    final scope = _tryScope();
+    if (scope == null) return;
+    final dbManager = await HiDBManager.instance(dbName: scope.accountHash);
+    if (!scope.isCurrent) return;
     final memoryDao = await AssistantMemoryDao.create(dbManager);
     final memories = await memoryDao.getMemories(assistant.id ?? 0, limit: 8);
-    if (!mounted) return;
+    if (!mounted || !scope.isCurrent) return;
     await Navigator.push(
       context,
       MaterialPageRoute(
         builder: (_) => AssistantProfilePage(
           assistant: assistant,
+          operationScope: scope,
           memories: memories,
           onStartConversation: () {
             Navigator.of(context).pop();
@@ -801,201 +878,232 @@ class _AssistantListPageState extends State<AssistantListPage> {
   }
 
   void _openWorldBookPage(AssistantModel assistant) async {
+    final scope = _tryScope();
+    if (scope == null) return;
     await Navigator.push(
       context,
       MaterialPageRoute(
-          builder: (_) => AssistantWorldBookPage(assistant: assistant)),
+          builder: (_) => AssistantWorldBookPage(
+              assistant: assistant, operationScope: scope)),
     );
     _loadData();
   }
 
   void _importRoleCardFile() async {
-    String? path;
     try {
-      final result = await FilePicker.pickFiles(
-        type: FileType.custom,
-        allowedExtensions: const ['json', 'png', 'zip'],
-        withData: false,
-      );
-      path = result?.files.single.path;
-    } catch (e) {
-      if (mounted) HiDialog.showSnackBar(context, '选取文件失败：$e');
-      return;
-    }
-    if (path == null) return;
+      final scope = _currentScope;
+      String? path;
+      try {
+        final result = await FilePicker.pickFiles(
+          type: FileType.custom,
+          allowedExtensions: const ['json', 'png', 'zip', 'charx'],
+          withData: false,
+        );
+        path = result?.files.single.path;
+      } catch (e) {
+        if (mounted) HiDialog.showSnackBar(context, '选取文件失败：$e');
+        return;
+      }
+      scope.verify();
+      if (path == null) return;
 
-    AssistantRoleCardImportBatchResult importBatch;
-    try {
-      final pickedBytes = await readFileBytesBounded(
-        File(path),
-        maxBytes: AssistantRoleCardService.maxImportBytes,
-        label: '角色卡文件',
-      );
-      importBatch = AssistantRoleCardService.importPackageBatchBytes(
-        pickedBytes,
-        filename: path,
-      );
-    } catch (e) {
+      AssistantRoleCardImportBatchResult importBatch;
+      try {
+        final pickedBytes = await readFileBytesBounded(
+          File(path),
+          maxBytes: AssistantRoleCardService.maxImportBytes,
+          label: '角色卡文件',
+        );
+        importBatch = AssistantRoleCardService.importPackageBatchBytes(
+          pickedBytes,
+          filename: path,
+        );
+      } catch (e) {
+        if (!mounted) return;
+        HiDialog.showSnackBar(
+            context, e is FormatException ? e.message : '解析角色卡失败：$e');
+        return;
+      }
+
+      scope.verify();
       if (!mounted) return;
-      HiDialog.showSnackBar(
-          context, e is FormatException ? e.message : '解析角色卡失败：$e');
-      return;
-    }
-
-    if (!mounted) return;
-    final importResults = importBatch.results;
-    if (importResults.isEmpty) return;
-    if (importResults.length == 1 &&
-        StoryRoomRoleCardImporter.shouldSuggestTavernRoom(
-          importResults.single.assistant,
-        )) {
-      final choice = await _showRoleCardImportTarget(importResults.single);
-      if (choice == null) return;
-      if (choice.target == _RoleCardImportTarget.tavernRoom) {
-        if (choice.translateToSimplifiedChinese) {
-          final initialOpening =
-              await _chooseTavernInitialOpening(importResults.single);
-          if (initialOpening == null || !mounted) return;
-          final estimatedRunes =
-              _translationWorkEstimator.totalRunesForAssistant(
-                    importResults.single.assistant,
-                  ) +
-                  initialOpening.runes.length;
-          final selected = await _selectTranslationProfile(
-            estimatedRunes: estimatedRunes,
-            title: '翻译并创建酒馆房间',
-          );
-          if (selected == null || !mounted) return;
-          await _startPersistentTavernImport(
-            [importResults.single],
-            sourceTitle: importResults.single.sourceName ??
-                importResults.single.assistant.name,
-            initialOpening: initialOpening,
-            selected: selected,
-            estimatedRunes: estimatedRunes,
-            title: '翻译并创建酒馆房间',
-          );
-          return;
-        }
-        await _importRoleCardAsTavernRoom(
-          importResults.single,
-          translateToSimplifiedChinese: choice.translateToSimplifiedChinese,
-        );
-        return;
-      }
-    }
-    if (importResults.length > 1) {
-      final choice = await _showRoleCardBatchImportTarget(
-        importResults,
-        skipped: importBatch.skipped,
-      );
-      if (choice == null) return;
-      if (choice.target == _RoleCardImportTarget.tavernRoom) {
-        if (choice.translateToSimplifiedChinese) {
-          final initialOpening =
-              await _chooseTavernBatchInitialOpening(importResults);
-          if (initialOpening == null || !mounted) return;
-          final estimatedRunes = _translationWorkEstimator.totalRunesForResults(
-            importResults,
-            initialOpening: initialOpening,
-          );
-          final selected = await _selectTranslationProfile(
-            estimatedRunes: estimatedRunes,
-            title: '翻译并创建酒馆房间',
-          );
-          if (selected == null || !mounted) return;
-          await _startPersistentTavernImport(
-            importResults,
-            sourceTitle: _stripExtension(_basename(path)),
-            initialOpening: initialOpening,
-            selected: selected,
-            estimatedRunes: estimatedRunes,
-            title: '翻译并创建酒馆房间',
-          );
-          return;
-        }
-        await _importRoleCardBatchAsTavernRoom(
-          importResults,
-          sourcePath: path,
-          translateToSimplifiedChinese: choice.translateToSimplifiedChinese,
-        );
-        return;
-      }
-    }
-    final importPlans = _planRoleCardImports(importResults);
-    TranslationSettingsSelection? selectedTranslation;
-    int? selectedTranslationRunes;
-    final options = importPlans.length == 1
-        ? await _showRoleCardPreview(
-            importPlans.single.result.assistant,
-            importMode: true,
-            targetName: importPlans.single.renameTargetName,
-            conflictingAssistant: importPlans.single.conflictingAssistant,
-            mergePreview: importPlans.single.mergePreview,
-          )
-        : await _showRoleCardBatchPreview(
-            importPlans,
-            skipped: importBatch.skipped,
-          );
-    if (options == null) return;
-    if (!mounted) return;
-    if (options.translateToSimplifiedChinese) {
-      selectedTranslationRunes = _translationWorkEstimator.totalRunesForResults(
-        importPlans.map((plan) => plan.result),
-      );
-      selectedTranslation = await _selectTranslationProfile(
-        estimatedRunes: selectedTranslationRunes,
-        title: '翻译角色卡',
-      );
-      if (selectedTranslation == null || !mounted) return;
-      final accepted = await runAssistantTranslationPreflightStart(
-        initialValue: selectedTranslation.result.preference,
-        initialSelection: selectedTranslation,
-        select: (nextInitial) => _selectTranslationProfile(
-          estimatedRunes: selectedTranslationRunes!,
-          title: '翻译角色卡',
-          initialValue: nextInitial,
-        ),
-        probeService: TranslationModelProbeService.shared,
-        onConfigurationChanged: () {
-          if (mounted) HiDialog.showSnackBar(context, '翻译配置已变化，请重新确认');
-        },
-        start: (handoff, _) async {
-          final accountHash = handoff.snapshot.accountHash.trim();
-          if (accountHash.isEmpty) {
-            throw StateError('账号状态已变化');
+      final importResults = importBatch.results;
+      if (importResults.isEmpty) return;
+      if (importResults.length == 1 &&
+          StoryRoomRoleCardImporter.shouldSuggestTavernRoom(
+            importResults.single.assistant,
+          )) {
+        final choice = await _showRoleCardImportTarget(importResults.single);
+        scope.verify();
+        if (choice == null) return;
+        if (choice.target == _RoleCardImportTarget.tavernRoom) {
+          if (choice.translateToSimplifiedChinese) {
+            final initialOpening =
+                await _chooseTavernInitialOpening(importResults.single);
+            scope.verify();
+            if (initialOpening == null || !mounted) return;
+            final estimatedRunes =
+                _translationWorkEstimator.totalRunesForAssistant(
+                      importResults.single.assistant,
+                    ) +
+                    initialOpening.runes.length;
+            final selected = await _selectTranslationProfile(
+              estimatedRunes: estimatedRunes,
+              title: '翻译并创建酒馆房间',
+            );
+            scope.verify();
+            if (selected == null || !mounted) return;
+            await _startPersistentTavernImport(
+              [importResults.single],
+              scope: scope,
+              sourceTitle: importResults.single.sourceName ??
+                  importResults.single.assistant.name,
+              initialOpening: initialOpening,
+              selected: selected,
+              estimatedRunes: estimatedRunes,
+              title: '翻译并创建酒馆房间',
+            );
+            return;
           }
-          _roleCardImportCoordinator.start(
-            plans: importPlans,
-            options: options.withTranslationProfile(handoff.profile),
-            settings: handoff.snapshot.settings,
-            accountHash: accountHash,
+          await _importRoleCardAsTavernRoom(
+            importResults.single,
+            scope: scope,
+            translateToSimplifiedChinese: choice.translateToSimplifiedChinese,
           );
-        },
-      );
-      if (accepted == null || !mounted) return;
-      unawaited(_saveTranslationPreferenceAfterStart(
-        accepted.selection.result.preference,
-        accepted.handoff.snapshot.accountHash,
-      ));
-      return;
-    }
-    final accountHash = LoginDao.getAccountHash();
-    if (accountHash == null || accountHash.trim().isEmpty) {
-      HiDialog.showSnackBar(context, '账号状态已变化，请重新进入助手页面后导入');
-      return;
-    }
+          return;
+        }
+      }
+      if (importResults.length > 1) {
+        final choice = await _showRoleCardBatchImportTarget(
+          importResults,
+          skipped: importBatch.skipped,
+        );
+        scope.verify();
+        if (choice == null) return;
+        if (choice.target == _RoleCardImportTarget.tavernRoom) {
+          if (choice.translateToSimplifiedChinese) {
+            final initialOpening =
+                await _chooseTavernBatchInitialOpening(importResults);
+            scope.verify();
+            if (initialOpening == null || !mounted) return;
+            final estimatedRunes =
+                _translationWorkEstimator.totalRunesForResults(
+              importResults,
+              initialOpening: initialOpening,
+            );
+            final selected = await _selectTranslationProfile(
+              estimatedRunes: estimatedRunes,
+              title: '翻译并创建酒馆房间',
+            );
+            scope.verify();
+            if (selected == null || !mounted) return;
+            await _startPersistentTavernImport(
+              importResults,
+              scope: scope,
+              sourceTitle: _stripExtension(_basename(path)),
+              initialOpening: initialOpening,
+              selected: selected,
+              estimatedRunes: estimatedRunes,
+              title: '翻译并创建酒馆房间',
+            );
+            return;
+          }
+          await _importRoleCardBatchAsTavernRoom(
+            importResults,
+            sourcePath: path,
+            scope: scope,
+            translateToSimplifiedChinese: choice.translateToSimplifiedChinese,
+          );
+          return;
+        }
+      }
+      final importPlans = _planRoleCardImports(importResults);
+      TranslationSettingsSelection? selectedTranslation;
+      int? selectedTranslationRunes;
+      final options = importPlans.length == 1
+          ? await _showRoleCardPreview(
+              importPlans.single.result.assistant,
+              importMode: true,
+              targetName: importPlans.single.renameTargetName,
+              conflictingAssistant: importPlans.single.conflictingAssistant,
+              mergePreview: importPlans.single.mergePreview,
+              compatibility: importPlans.single.result.compatibility,
+            )
+          : await _showRoleCardBatchPreview(
+              importPlans,
+              skipped: importBatch.skipped,
+            );
+      scope.verify();
+      if (options == null) return;
+      if (!mounted) return;
+      if (options.translateToSimplifiedChinese) {
+        selectedTranslationRunes =
+            _translationWorkEstimator.totalRunesForResults(
+          importPlans.map((plan) => plan.result),
+        );
+        selectedTranslation = await _selectTranslationProfile(
+          estimatedRunes: selectedTranslationRunes,
+          title: '翻译角色卡',
+        );
+        scope.verify();
+        if (selectedTranslation == null || !mounted) return;
+        final accepted = await runAssistantTranslationPreflightStart(
+          initialValue: selectedTranslation.result.preference,
+          initialSelection: selectedTranslation,
+          select: (nextInitial) async {
+            scope.verify();
+            final choice = await _selectTranslationProfile(
+              estimatedRunes: selectedTranslationRunes!,
+              title: '翻译角色卡',
+              initialValue: nextInitial,
+            );
+            scope.verify();
+            return choice;
+          },
+          probeService: TranslationModelProbeService.shared,
+          onConfigurationChanged: () {
+            if (mounted) HiDialog.showSnackBar(context, '翻译配置已变化，请重新确认');
+          },
+          start: (handoff, _) async {
+            scope.verify();
+            final accountHash = handoff.snapshot.accountHash.trim();
+            if (accountHash != scope.accountHash) {
+              throw const AssistantOperationExpired();
+            }
+            if (accountHash.isEmpty) {
+              throw StateError('账号状态已变化');
+            }
+            _roleCardImportCoordinator.start(
+              plans: importPlans,
+              options: options.withTranslationProfile(handoff.profile),
+              settings: handoff.snapshot.settings,
+              scope: scope,
+            );
+          },
+        );
+        if (accepted == null || !mounted) return;
+        unawaited(_saveTranslationPreferenceAfterStart(
+          accepted.selection.result.preference,
+          accepted.handoff.snapshot.accountHash,
+        ));
+        return;
+      }
+      scope.verify();
 
-    _roleCardImportCoordinator.start(
-      plans: importPlans,
-      options: options,
-      settings: context.read<AISettingsProvider>().settings.clone(),
-      accountHash: accountHash,
-    );
+      _roleCardImportCoordinator.start(
+        plans: importPlans,
+        options: options,
+        settings: context.read<AISettingsProvider>().settings.clone(),
+        scope: scope,
+      );
+    } catch (error) {
+      if (mounted) HiDialog.showSnackBar(context, '导入未完成：$error。原数据已保留');
+    }
   }
 
   Future<void> _startPersistentTavernImport(
     List<AssistantRoleCardImportResult> results, {
+    required AssistantOperationScope scope,
     required String sourceTitle,
     required String initialOpening,
     required TranslationSettingsSelection selected,
@@ -1003,29 +1111,41 @@ class _AssistantListPageState extends State<AssistantListPage> {
     required String title,
   }) async {
     try {
+      scope.verify();
       final accepted = await runAssistantTranslationPreflightStart(
         initialValue: selected.result.preference,
         initialSelection: selected,
-        select: (nextInitial) => _selectTranslationProfile(
-          estimatedRunes: estimatedRunes,
-          title: title,
-          initialValue: nextInitial,
-        ),
+        select: (nextInitial) async {
+          scope.verify();
+          final choice = await _selectTranslationProfile(
+            estimatedRunes: estimatedRunes,
+            title: title,
+            initialValue: nextInitial,
+          );
+          scope.verify();
+          return choice;
+        },
         probeService: TranslationModelProbeService.shared,
         onConfigurationChanged: () {
           if (mounted) HiDialog.showSnackBar(context, '翻译配置已变化，请重新确认');
         },
-        start: (handoff, checkEligibility) =>
-            _tavernTranslationCoordinator.startTavernRoomImport(
-          results,
-          sourceTitle: sourceTitle,
-          initialOpening: initialOpening,
-          requestProfile: handoff.profile,
-          checkEligibility: checkEligibility,
-          resolveExecutor:
-              _translationExecutorResolver(handoff.snapshot.settings),
-        ),
+        start: (handoff, checkEligibility) {
+          scope.verify();
+          if (handoff.snapshot.accountHash != scope.accountHash) {
+            throw const AssistantOperationExpired();
+          }
+          return _tavernTranslationCoordinator.startTavernRoomImport(
+            results,
+            sourceTitle: sourceTitle,
+            initialOpening: initialOpening,
+            requestProfile: handoff.profile,
+            checkEligibility: checkEligibility,
+            resolveExecutor:
+                _translationExecutorResolver(handoff.snapshot.settings),
+          );
+        },
       );
+      scope.verify();
       if (accepted == null || !mounted) return;
       try {
         await TranslationModelPreferenceStore().save(
@@ -1303,15 +1423,26 @@ class _AssistantListPageState extends State<AssistantListPage> {
 
   Future<void> _importRoleCardAsTavernRoom(
     AssistantRoleCardImportResult result, {
+    required AssistantOperationScope scope,
     required bool translateToSimplifiedChinese,
   }) async {
+    scope.verify();
     final prepared = [result];
     final translatedResult = prepared.single;
+    try {
+      for (final item in prepared) {
+        AssistantRoleCardService.extensionSafetyReport(item.assistant);
+      }
+    } catch (error) {
+      if (mounted) HiDialog.showSnackBar(context, '无法创建房间：$error。原卡数据已保留');
+      return;
+    }
     final initialOpening = await _chooseTavernInitialOpening(translatedResult);
+    scope.verify();
     if (initialOpening == null) return;
     try {
-      final dbManager =
-          await HiDBManager.instance(dbName: HiDBManager.getAccountHash());
+      final dbManager = await HiDBManager.instance(dbName: scope.accountHash);
+      scope.verify();
       final dao = await StoryRoomDao.create(dbManager);
       final existingTitles = (await dao.getRooms()).map((room) => room.title);
       final title = AssistantRoleCardService.uniqueImportName(
@@ -1319,40 +1450,53 @@ class _AssistantListPageState extends State<AssistantListPage> {
         existingTitles,
       );
       final importer = StoryRoomRoleCardImportService(dao);
-      final template = await _saveTavernRoomTemplate(
-        dbManager,
-        [translatedResult],
-        title: title,
-        sourceTitle: result.sourceName ?? translatedResult.assistant.name,
-        translated: translateToSimplifiedChinese,
-        initialOpening: initialOpening,
-      );
-      final roomId = await importer.createRoomFromTemplate(template);
-      if (!mounted) return;
+      final roomId = await scope.runStable(() async {
+        final template = await _saveTavernRoomTemplate(
+          dbManager,
+          [translatedResult],
+          title: title,
+          sourceTitle: result.sourceName ?? translatedResult.assistant.name,
+          translated: translateToSimplifiedChinese,
+          initialOpening: initialOpening,
+        );
+        return await importer.createRoomFromTemplate(template);
+      });
+      if (!mounted || !scope.isCurrent) return;
       HiDialog.showSnackBar(context, '已创建酒馆房间「$title」');
       final room = await dao.getRoom(roomId);
-      if (!mounted || room == null) return;
+      if (!mounted || !scope.isCurrent || room == null) return;
       await Navigator.push(
         context,
         MaterialPageRoute(builder: (_) => StoryRoomPage(room: room)),
       );
     } catch (e) {
-      if (!mounted) return;
+      if (!mounted || !scope.isCurrent) return;
       HiDialog.showSnackBar(context, '创建酒馆房间失败：$e');
     }
   }
 
   Future<void> _importRoleCardBatchAsTavernRoom(
     List<AssistantRoleCardImportResult> results, {
+    required AssistantOperationScope scope,
     required String sourcePath,
     required bool translateToSimplifiedChinese,
   }) async {
+    scope.verify();
     final prepared = results;
+    try {
+      for (final item in prepared) {
+        AssistantRoleCardService.extensionSafetyReport(item.assistant);
+      }
+    } catch (error) {
+      if (mounted) HiDialog.showSnackBar(context, '无法创建房间：$error。原卡数据已保留');
+      return;
+    }
     final initialOpening = await _chooseTavernBatchInitialOpening(prepared);
+    scope.verify();
     if (initialOpening == null) return;
     try {
-      final dbManager =
-          await HiDBManager.instance(dbName: HiDBManager.getAccountHash());
+      final dbManager = await HiDBManager.instance(dbName: scope.accountHash);
+      scope.verify();
       final dao = await StoryRoomDao.create(dbManager);
       final existingTitles = (await dao.getRooms()).map((room) => room.title);
       final baseTitle = _roleCardBatchRoomTitle(prepared, sourcePath);
@@ -1361,25 +1505,27 @@ class _AssistantListPageState extends State<AssistantListPage> {
         existingTitles,
       );
       final importer = StoryRoomRoleCardImportService(dao);
-      final template = await _saveTavernRoomTemplate(
-        dbManager,
-        prepared,
-        title: title,
-        sourceTitle: sourcePath,
-        translated: translateToSimplifiedChinese,
-        initialOpening: initialOpening,
-      );
-      final roomId = await importer.createRoomFromTemplate(template);
-      if (!mounted) return;
+      final roomId = await scope.runStable(() async {
+        final template = await _saveTavernRoomTemplate(
+          dbManager,
+          prepared,
+          title: title,
+          sourceTitle: sourcePath,
+          translated: translateToSimplifiedChinese,
+          initialOpening: initialOpening,
+        );
+        return importer.createRoomFromTemplate(template);
+      });
+      if (!mounted || !scope.isCurrent) return;
       HiDialog.showSnackBar(context, '已创建酒馆房间「$title」');
       final room = await dao.getRoom(roomId);
-      if (!mounted || room == null) return;
+      if (!mounted || !scope.isCurrent || room == null) return;
       await Navigator.push(
         context,
         MaterialPageRoute(builder: (_) => StoryRoomPage(room: room)),
       );
     } catch (e) {
-      if (!mounted) return;
+      if (!mounted || !scope.isCurrent) return;
       HiDialog.showSnackBar(context, '创建酒馆房间失败：$e');
     }
   }
@@ -1731,9 +1877,7 @@ class _AssistantListPageState extends State<AssistantListPage> {
   ) {
     final usedNames = {
       ..._assistants.map((assistant) => assistant.name),
-      ..._roleCardImportCoordinator.jobs
-          .where((job) => !job.failed)
-          .map((job) => job.displayName),
+      ..._importJobs.where((job) => !job.failed).map((job) => job.displayName),
     };
     final plans = <_RoleCardImportPlan>[];
     for (final result in results) {
@@ -1746,14 +1890,15 @@ class _AssistantListPageState extends State<AssistantListPage> {
       );
       final mergePreview = conflictingAssistant == null
           ? null
-          : AssistantRoleCardService.mergeMemoryBookPreview(
-              conflictingAssistant.memoryBook,
-              result.assistant.memoryBook,
-            );
+          : AssistantRoleCardService.mergeWorldBooks(
+              conflictingAssistant, result.assistant);
       plans.add(_RoleCardImportPlan(
         result: result,
         renameTargetName: targetName,
         conflictingAssistant: conflictingAssistant,
+        expected: conflictingAssistant == null
+            ? null
+            : _snapshots[conflictingAssistant.id],
         mergePreview: mergePreview,
       ));
       usedNames.add(targetName);
@@ -1775,20 +1920,34 @@ class _AssistantListPageState extends State<AssistantListPage> {
   }
 
   void _startConversationWithAssistant(AssistantModel assistant) async {
+    final scope = _tryScope();
+    if (scope == null) return;
+    final expected = _snapshots[assistant.id];
+    if (expected == null) return;
     final opening = await _chooseAssistantOpening(assistant);
+    if (!scope.isCurrent) return;
     if (opening == null || !mounted) return;
     final model = AssistantConversationFactory.create(
       cid: DateTime.now().millisecondsSinceEpoch,
       icon: AiCatalogDao.avatarUrl(),
       assistant: assistant,
     );
+    Map<String, Object?>? savedConversation;
+    Future<void> saveTail = Future<void>.value();
     NavigatorUtil.push(
       context,
       ConversationPage(
         conversationModel: model,
         initialAssistantOpening: opening,
         conversationUpdate: (updated) {
-          unawaited(_saveStartedConversation(updated));
+          // 同一页面连续标题/状态回调串行，均绑定初始角色和最近一次真实保存行。
+          final captured = ConversationModel.fromJson(updated.toJson());
+          saveTail = saveTail.then((_) async {
+            final saved = await _saveStartedConversation(
+                captured, scope, expected, savedConversation);
+            if (saved != null) savedConversation = saved;
+          });
+          unawaited(saveTail);
         },
       ),
     );
@@ -1824,12 +1983,30 @@ class _AssistantListPageState extends State<AssistantListPage> {
     );
   }
 
-  Future<void> _saveStartedConversation(ConversationModel updated) async {
-    final dbManager =
-        await HiDBManager.instance(dbName: HiDBManager.getAccountHash());
-    final dao = await ConversationListDao.create(dbManager);
-    await dao.saveConversation(updated);
-    AppEvents.notifyConversationsChanged();
+  Future<Map<String, Object?>?> _saveStartedConversation(
+      ConversationModel updated,
+      AssistantOperationScope scope,
+      AssistantRowSnapshot expected,
+      Map<String, Object?>? expectedConversation) async {
+    try {
+      final saved = await scope.runStable(() async {
+        final dbManager = await HiDBManager.instance(dbName: scope.accountHash);
+        scope.verify();
+        final dao = await ConversationListDao.create(dbManager);
+        scope.verify();
+        return dao.saveForAssistant(updated,
+            expectedAssistant: expected,
+            expectedConversation: expectedConversation,
+            validate: scope.verify);
+      });
+      AppEvents.notifyConversationsChanged();
+      return saved;
+    } catch (error) {
+      if (mounted && scope.isCurrent) {
+        HiDialog.showSnackBar(context, '保存会话失败：$error');
+      }
+      return null;
+    }
   }
 
   Widget _assistantAvatar(AssistantModel assistant) {
@@ -1838,13 +2015,12 @@ class _AssistantListPageState extends State<AssistantListPage> {
 
   void _exportRoleCard(AssistantModel assistant) async {
     try {
-      final dir = await getTemporaryDirectory();
-      final file = File(
-          '${dir.path}/${AssistantRoleCardService.filenameFor(assistant)}');
-      await file.writeAsString(AssistantRoleCardService.exportJson(assistant));
-      await SharePlus.instance.share(ShareParams(
-        files: [XFile(file.path)],
-      ));
+      final scope = _currentScope;
+      AssistantRoleCardService.extensionSafetyReport(assistant);
+      await _shareRoleCardBytes(
+          scope,
+          AssistantRoleCardService.filenameFor(assistant),
+          utf8.encode(AssistantRoleCardService.exportJson(assistant)));
     } catch (e) {
       if (mounted) HiDialog.showSnackBar(context, '导出失败：$e');
     }
@@ -1852,10 +2028,14 @@ class _AssistantListPageState extends State<AssistantListPage> {
 
   void _copyRoleCardJson(AssistantModel assistant) async {
     try {
+      final scope = _currentScope;
+      AssistantRoleCardService.extensionSafetyReport(assistant);
       await Clipboard.setData(
         ClipboardData(text: AssistantRoleCardService.exportJson(assistant)),
       );
-      if (mounted) HiDialog.showSnackBar(context, '已复制完整角色卡 JSON');
+      if (mounted && scope.isCurrent) {
+        HiDialog.showSnackBar(context, '已复制完整角色卡 JSON');
+      }
     } catch (e) {
       if (mounted) HiDialog.showSnackBar(context, '复制失败：$e');
     }
@@ -1863,15 +2043,12 @@ class _AssistantListPageState extends State<AssistantListPage> {
 
   void _exportTavernRoleCard(AssistantModel assistant) async {
     try {
-      final dir = await getTemporaryDirectory();
-      final file = File(
-          '${dir.path}/${AssistantRoleCardService.tavernFilenameFor(assistant)}');
-      await file.writeAsString(
-        AssistantRoleCardService.exportTavernV2Json(assistant),
-      );
-      await SharePlus.instance.share(ShareParams(
-        files: [XFile(file.path)],
-      ));
+      final scope = _currentScope;
+      AssistantRoleCardService.extensionSafetyReport(assistant);
+      await _shareRoleCardBytes(
+          scope,
+          AssistantRoleCardService.tavernFilenameFor(assistant),
+          utf8.encode(AssistantRoleCardService.exportTavernV2Json(assistant)));
     } catch (e) {
       if (mounted) HiDialog.showSnackBar(context, '导出 Tavern 角色卡失败：$e');
     }
@@ -1879,12 +2056,16 @@ class _AssistantListPageState extends State<AssistantListPage> {
 
   void _copyTavernRoleCardJson(AssistantModel assistant) async {
     try {
+      final scope = _currentScope;
+      AssistantRoleCardService.extensionSafetyReport(assistant);
       await Clipboard.setData(
         ClipboardData(
           text: AssistantRoleCardService.exportTavernV2Json(assistant),
         ),
       );
-      if (mounted) HiDialog.showSnackBar(context, '已复制 Tavern V2 JSON');
+      if (mounted && scope.isCurrent) {
+        HiDialog.showSnackBar(context, '已复制 Tavern V2 JSON');
+      }
     } catch (e) {
       if (mounted) HiDialog.showSnackBar(context, '复制 Tavern JSON 失败：$e');
     }
@@ -1892,17 +2073,14 @@ class _AssistantListPageState extends State<AssistantListPage> {
 
   void _exportTavernRoleCardPng(AssistantModel assistant) async {
     try {
-      final dir = await getTemporaryDirectory();
-      final file = File(
-          '${dir.path}/${AssistantRoleCardService.tavernPngFilenameFor(assistant)}');
-      final bytes = AssistantRoleCardService.exportTavernV2Png(
-        assistant,
-        basePngBytes: await _readAssistantAvatarBytes(assistant),
-      );
-      await file.writeAsBytes(bytes, flush: true);
-      await SharePlus.instance.share(ShareParams(
-        files: [XFile(file.path)],
-      ));
+      final scope = _currentScope;
+      AssistantRoleCardService.extensionSafetyReport(assistant);
+      final avatar = await _readAssistantAvatarBytes(assistant, scope);
+      scope.verify();
+      final bytes = AssistantRoleCardService.exportTavernV2Png(assistant,
+          basePngBytes: avatar);
+      await _shareRoleCardBytes(scope,
+          AssistantRoleCardService.tavernPngFilenameFor(assistant), bytes);
     } catch (e) {
       if (mounted) HiDialog.showSnackBar(context, '导出 Tavern PNG 失败：$e');
     }
@@ -1910,26 +2088,75 @@ class _AssistantListPageState extends State<AssistantListPage> {
 
   void _exportCharxRoleCard(AssistantModel assistant) async {
     try {
-      final resources =
-          await AssistantRoleCardAssetStore.load(assistant.roleCardAssets);
-      final dir = await getTemporaryDirectory();
-      final file = File(
-        '${dir.path}/${AssistantRoleCardService.charxFilenameFor(assistant)}',
-      );
-      final bytes = AssistantRoleCardService.exportCharx(
-        assistant,
-        resources: resources,
-        avatarPngBytes: await _readAssistantAvatarBytes(assistant),
-      );
-      await file.writeAsBytes(bytes, flush: true);
-      await SharePlus.instance.share(ShareParams(files: [XFile(file.path)]));
+      final scope = _currentScope;
+      AssistantRoleCardService.extensionSafetyReport(assistant);
+      final resources = await AssistantRoleCardAssetStore.load(
+          assistant.roleCardAssets,
+          accountHash: scope.accountHash);
+      scope.verify();
+      final avatar = await _readAssistantAvatarBytes(assistant, scope);
+      scope.verify();
+      final bytes = AssistantRoleCardService.exportCharx(assistant,
+          resources: resources, avatarPngBytes: avatar);
+      await _shareRoleCardBytes(
+          scope, AssistantRoleCardService.charxFilenameFor(assistant), bytes);
     } catch (e) {
       if (mounted) HiDialog.showSnackBar(context, '导出 CHARX 失败：$e');
     }
   }
 
-  Future<List<int>?> _readAssistantAvatarBytes(AssistantModel assistant) async {
-    return AssistantAvatarBytes.read(assistant);
+  Future<void> _shareRoleCardBytes(
+      AssistantOperationScope scope, String name, List<int> bytes) async {
+    scope.verify();
+    Directory? operation;
+    try {
+      final root = await getTemporaryDirectory();
+      scope.verify();
+      operation = await root.createTemp('role-card-export-');
+      scope.verify();
+      final file = File('${operation.path}/$name');
+      await file.writeAsBytes(bytes, flush: true);
+      scope.verify();
+      await SharePlus.instance.share(ShareParams(files: [XFile(file.path)]));
+    } finally {
+      // 仅清理本次导出的自有目录，不动卡内路径或其他分享内容。
+      try {
+        await operation?.delete(recursive: true);
+      } catch (_) {}
+    }
+  }
+
+  Future<List<int>?> _readAssistantAvatarBytes(
+      AssistantModel assistant, AssistantOperationScope scope) async {
+    scope.verify();
+    if (assistant.avatarType != AvatarAssetService.imageType) {
+      final bytes = await AssistantAvatarBytes.read(assistant);
+      scope.verify();
+      return bytes;
+    }
+    final value = assistant.avatarValue?.trim() ?? '';
+    if (value.isEmpty) return null;
+    final suffix = AvatarAssetService.managedSuffix(value);
+    final segment =
+        scope.accountHash.replaceAll(RegExp(r'[^a-zA-Z0-9_.-]'), '_');
+    if (suffix == null ||
+        suffix.split('/').length != 2 ||
+        !suffix.startsWith('$segment/')) {
+      throw const FormatException('头像不在当前账号托管目录，未读取外部路径');
+    }
+    final documents = await getApplicationDocumentsDirectory();
+    scope.verify();
+    final root = Directory('${documents.path}/chat_avatar');
+    await AccountResourceScope.ensureNoLinks(
+        root: root, relativeSegments: suffix.split('/'));
+    final file = File('${root.path}/$suffix');
+    if (file.absolute.path != File(value).absolute.path) {
+      throw const FormatException('头像路径不属于当前应用容器');
+    }
+    final bytes = await readFileBytesBounded(file,
+        maxBytes: AssistantRoleCardService.maxImportBytes, label: '角色头像');
+    scope.verify();
+    return bytes;
   }
 
   /// 导入技能 zip（Agent Skill：SKILL.md + references/）：解析成
@@ -2056,47 +2283,39 @@ class _AssistantListPageState extends State<AssistantListPage> {
   }
 
   void _delete(AssistantModel a) async {
-    final confirmed = await showDialog<bool>(
-      context: context,
-      builder: (ctx) => AlertDialog(
-        title: const Text('删除助手'),
-        content: Text('确定删除「${a.name}」吗？已绑定的会话将回落为无助手。'),
-        actions: [
-          TextButton(
-              onPressed: () => Navigator.pop(ctx, false),
-              child: const Text('取消')),
-          TextButton(
-              onPressed: () => Navigator.pop(ctx, true),
-              child: const Text('删除')),
-        ],
-      ),
-    );
-    if (confirmed != true || a.id == null) return;
-    final accountHash = LoginDao.getAccountHash();
-    if (accountHash == null || accountHash.trim().isEmpty) {
-      if (mounted) HiDialog.showSnackBar(context, '账号状态已变化，请重新进入助手页面后删除');
-      return;
-    }
     try {
-      await LoginDao.runWithStableAccount(
-        expectedAccountHash: accountHash,
-        action: () async {
-          final dbManager = await HiDBManager.instance(dbName: accountHash);
-          final dao = await AssistantDao.create(dbManager);
-          await dao.deleteAssistant(a.id!);
+      final scope = _currentScope;
+      final expected = _snapshots[a.id];
+      if (expected == null) throw const AssistantMutationStale();
+      final confirmed = await showDialog<bool>(
+          context: context,
+          builder: (ctx) => AlertDialog(
+                  title: const Text('删除助手'),
+                  content: Text('确定删除「${a.name}」吗？已绑定的会话将回落为无助手。'),
+                  actions: [
+                    TextButton(
+                        onPressed: () => Navigator.pop(ctx, false),
+                        child: const Text('取消')),
+                    TextButton(
+                        onPressed: () => Navigator.pop(ctx, true),
+                        child: const Text('删除'))
+                  ]));
+      if (confirmed != true) return;
+      scope.verify();
+      await scope.runStable(() async {
+        await _dao!.deleteChecked(expected);
+        // 删除行成功后清理资源只是维护，不将清理失败误报为数据删除失败。
+        try {
           await AssistantRoleCardAssetStore.delete(
-            assistantId: a.id!,
-            accountHash: accountHash,
-          );
-        },
-      );
-    } catch (e) {
-      if (mounted) HiDialog.showSnackBar(context, '删除失败：$e');
-      return;
+              assistantId: expected.id, accountHash: scope.accountHash);
+        } catch (_) {}
+      });
+      if (!mounted || !scope.isCurrent) return;
+      HiDialog.showSnackBar(context, '已删除「${a.name}」');
+      await _loadData();
+    } catch (error) {
+      if (mounted) HiDialog.showSnackBar(context, '删除失败：$error');
     }
-    if (!mounted) return;
-    HiDialog.showSnackBar(context, '已删除「${a.name}」');
-    _loadData();
   }
 }
 
@@ -2146,13 +2365,14 @@ class _RoleCardImportCoordinator extends ChangeNotifier {
     required List<_RoleCardImportPlan> plans,
     required _RoleCardImportOptions options,
     required AISettings settings,
-    required String accountHash,
+    required AssistantOperationScope scope,
   }) {
     if (plans.isEmpty) return;
     final jobs = [
       for (var i = 0; i < plans.length; i++)
         _RoleCardImportJob.fromPlan(
           plan: plans[i],
+          accountHash: scope.accountHash,
           total: plans.length,
           index: i + 1,
           translate: options.translateToSimplifiedChinese,
@@ -2166,7 +2386,7 @@ class _RoleCardImportCoordinator extends ChangeNotifier {
         plans: plans,
         options: options,
         settings: settings,
-        accountHash: accountHash,
+        scope: scope,
       ),
     );
   }
@@ -2181,12 +2401,13 @@ class _RoleCardImportCoordinator extends ChangeNotifier {
     required List<_RoleCardImportPlan> plans,
     required _RoleCardImportOptions options,
     required AISettings settings,
-    required String accountHash,
+    required AssistantOperationScope scope,
   }) async {
     for (var i = 0; i < plans.length; i++) {
       final job = jobs[i];
       final plan = plans[i];
       try {
+        scope.verify();
         _update(
           job,
           status: _RoleCardImportJobStatus.running,
@@ -2197,6 +2418,7 @@ class _RoleCardImportCoordinator extends ChangeNotifier {
           plan,
           options,
           settings,
+          scope: scope,
           onProgress: (value) => _update(
             job,
             stage: value.stage,
@@ -2211,29 +2433,31 @@ class _RoleCardImportCoordinator extends ChangeNotifier {
           detail: '',
           progress: 0.78,
         );
-        await LoginDao.runWithStableAccount(
-          expectedAccountHash: accountHash,
-          action: () async {
-            final dbManager = await HiDBManager.instance(dbName: accountHash);
-            final dao = await AssistantDao.create(dbManager);
-            await dao.saveAssistant(assistant);
-            final assistantId = assistant.id;
-            if (assistantId != null && plan.result.resources.isNotEmpty) {
-              assistant.roleCardAssets = await AssistantRoleCardAssetStore.save(
-                assistantId: assistantId,
+        scope.verify();
+        final dbManager = await HiDBManager.instance(dbName: scope.accountHash);
+        scope.verify();
+        final dao = await AssistantDao.create(dbManager);
+        scope.verify();
+        final overwrite =
+            options.conflictMode != _RoleCardImportConflictMode.rename &&
+                plan.conflictingAssistant != null;
+        if (overwrite && plan.expected == null) {
+          throw const AssistantMutationStale();
+        }
+        final saved = await AssistantCardPersistence(dao: dao, scope: scope)
+            .save(assistant,
+                expected: overwrite ? plan.expected : null,
+                renameOnConflict: !overwrite,
                 resources: plan.result.resources,
-                accountHash: accountHash,
-              );
-              await dao.saveAssistant(assistant);
-            }
-          },
-        );
+                avatarBytes: plan.result.avatarPngBytes,
+                avatarExtension: plan.result.avatarExtension ?? '.png');
+        final savedAssistant = saved.committed.assistant;
         _update(
           job,
           status: _RoleCardImportJobStatus.completed,
           stage: '已保存',
-          displayName: assistant.name,
-          detail: '',
+          displayName: savedAssistant.name,
+          detail: saved.notices.join('；'),
           progress: 1,
         );
         _jobs.remove(job);
@@ -2357,9 +2581,10 @@ class _RoleCardImportCoordinator extends ChangeNotifier {
     _RoleCardImportPlan plan,
     _RoleCardImportOptions options,
     AISettings settings, {
+    required AssistantOperationScope scope,
     RoleCardTranslationProgressCallback? onProgress,
   }) async {
-    var incoming = plan.result.assistant;
+    var incoming = AssistantModel.fromJson(plan.result.assistant.toJson());
     if (options.translateToSimplifiedChinese) {
       final profile = options.translationProfile;
       if (profile == null) {
@@ -2369,10 +2594,11 @@ class _RoleCardImportCoordinator extends ChangeNotifier {
         incoming,
         settings,
         profile: profile,
+        scope: scope,
         onProgress: onProgress,
       );
     }
-    final assistant = AssistantRoleCardService.sanitizeForImport(
+    var assistant = AssistantRoleCardService.sanitizeForImport(
       incoming,
       keepTools: options.keepTools,
       keepModelOverride: options.keepModelOverride,
@@ -2396,32 +2622,19 @@ class _RoleCardImportCoordinator extends ChangeNotifier {
         keepIncomingDefaultVoice: options.keepDefaultVoice,
       );
       if (options.conflictMode == _RoleCardImportConflictMode.mergeMemoryBook) {
-        assistant.memoryBook = plan.mergePreview?.mergedText ??
-            AssistantRoleCardService.mergeMemoryBooks(
-              overwriteTarget.memoryBook,
-              assistant.memoryBook,
-            );
+        final merged = AssistantRoleCardService.mergeWorldBooks(
+            overwriteTarget, assistant);
+        assistant = AssistantRoleCardService.withWorldBook(
+            assistant, merged.structuredJson);
       }
     } else {
       assistant.name = plan.renameTargetName;
     }
-    final avatarBytes = plan.result.avatarPngBytes;
-    if (avatarBytes != null) {
-      try {
-        assistant.avatarType = AvatarAssetService.imageType;
-        assistant.avatarValue =
-            await AvatarAssetService.saveAssistantAvatarBytes(
-          bytes: avatarBytes,
-          assistantName: assistant.name,
-          extension: plan.result.avatarExtension ?? '.png',
-        );
-      } catch (_) {
-        assistant.avatarType = null;
-        assistant.avatarValue = null;
-      }
-    } else if (overwriteTarget != null) {
+    if (overwriteTarget != null) {
       assistant.avatarType = overwriteTarget.avatarType;
       assistant.avatarValue = overwriteTarget.avatarValue;
+    } else {
+      assistant.roleCardAssets = ''; // 外部本地路径不是本账号托管资源。
     }
     return assistant;
   }
@@ -2430,6 +2643,7 @@ class _RoleCardImportCoordinator extends ChangeNotifier {
     AssistantModel assistant,
     AISettings settings, {
     required TranslationRequestProfile profile,
+    required AssistantOperationScope scope,
     RoleCardTranslationProgressCallback? onProgress,
   }) async {
     final executor = TranslationStreamExecutor(
@@ -2442,10 +2656,13 @@ class _RoleCardImportCoordinator extends ChangeNotifier {
       return await AssistantRoleCardTranslationService
           .translateToSimplifiedChinese(
         assistant,
-        complete: (prompt) => executor.complete(
-          prompt,
-          cancellation: cancellation,
-        ),
+        complete: (prompt) async {
+          scope.verify();
+          final result =
+              await executor.complete(prompt, cancellation: cancellation);
+          scope.verify();
+          return result;
+        },
         onProgress: onProgress,
       );
     } on FormatException catch (e) {
@@ -2587,6 +2804,7 @@ class _TavernTranslationTaskTile extends StatelessWidget {
 enum _RoleCardImportJobStatus { queued, running, completed, failed }
 
 class _RoleCardImportJob {
+  final String accountHash;
   final int total;
   final int index;
   final bool translate;
@@ -2599,6 +2817,7 @@ class _RoleCardImportJob {
   _RoleCardImportJobStatus status = _RoleCardImportJobStatus.queued;
 
   _RoleCardImportJob({
+    required this.accountHash,
     required this.total,
     required this.index,
     required this.translate,
@@ -2608,6 +2827,7 @@ class _RoleCardImportJob {
 
   factory _RoleCardImportJob.fromPlan({
     required _RoleCardImportPlan plan,
+    required String accountHash,
     required int total,
     required int index,
     required bool translate,
@@ -2616,6 +2836,7 @@ class _RoleCardImportJob {
         ? plan.conflictingAssistant!.name
         : plan.renameTargetName;
     return _RoleCardImportJob(
+      accountHash: accountHash,
       total: total,
       index: index,
       translate: translate,
@@ -2831,12 +3052,14 @@ class _RoleCardImportPlan {
   final String renameTargetName;
   final AssistantModel? conflictingAssistant;
   final AssistantMemoryBookMergePreview? mergePreview;
+  final AssistantRowSnapshot? expected;
 
   const _RoleCardImportPlan({
     required this.result,
     required this.renameTargetName,
     this.conflictingAssistant,
     this.mergePreview,
+    this.expected,
   });
 
   String get originalName => result.assistant.name.trim();
@@ -2852,6 +3075,7 @@ class _RoleCardPreviewDialog extends StatefulWidget {
   final String? targetName;
   final AssistantModel? conflictingAssistant;
   final AssistantMemoryBookMergePreview? mergePreview;
+  final RoleCardCompatibilityReport? compatibility;
 
   const _RoleCardPreviewDialog({
     required this.assistant,
@@ -2860,6 +3084,7 @@ class _RoleCardPreviewDialog extends StatefulWidget {
     this.targetName,
     this.conflictingAssistant,
     this.mergePreview,
+    this.compatibility,
   });
 
   @override
@@ -2981,6 +3206,12 @@ class _RoleCardPreviewDialogState extends State<_RoleCardPreviewDialog> {
                 _RoleCardMergeMemoryPreview(preview: widget.mergePreview),
               const SizedBox(height: 8),
             ],
+            Text(
+                (widget.compatibility ??
+                        AssistantRoleCardService.compatibilityReport(assistant))
+                    .text,
+                style: TextStyle(fontSize: 12, color: muted)),
+            const SizedBox(height: 8),
             if (assistant.description.trim().isNotEmpty) ...[
               Text(
                 assistant.description.trim(),

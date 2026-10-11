@@ -41,10 +41,41 @@ class WorldBookCodec {
     return entries;
   }
 
-  static String encode(Iterable<WorldBookEntry> entries) => jsonEncode({
-        'version': 1,
-        'entries': entries.map((entry) => entry.toJson()).toList(),
-      });
+  /// 修改已支持字段时按稳定 id 合并原文档；未知字段是导出数据，不能进入匹配器。
+  static String encode(Iterable<WorldBookEntry> entries,
+      {String preservingJson = ''}) {
+    final document = readDocument(preservingJson);
+    final previous = <String, Map<String, dynamic>>{};
+    final rawEntries = document['entries'];
+    if (rawEntries is List) {
+      for (final raw in rawEntries) {
+        if (raw is Map<String, dynamic> && raw['id'] is String) {
+          previous[raw['id'] as String] = raw;
+        }
+      }
+    }
+    return jsonEncode({
+      ...document,
+      'version': 1,
+      'entries': [
+        for (final entry in entries)
+          {
+            ...?previous[entry.id],
+            ...entry.toJson(),
+          }
+      ],
+    });
+  }
+
+  static Map<String, dynamic> readDocument(String source) {
+    try {
+      final value = jsonDecode(source);
+      if (value is Map<String, dynamic>) return value;
+    } catch (_) {
+      // 旧文本/无结构化数据由调用方按原有兼容路径解析。
+    }
+    return {};
+  }
 }
 
 enum WorldBookSelectiveLogic {

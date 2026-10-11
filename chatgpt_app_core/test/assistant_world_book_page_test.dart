@@ -1,3 +1,4 @@
+import 'package:chatgpt_app_core/chat/application/assistant_operation_scope.dart';
 import 'package:chatgpt_app_core/model/assistant_model.dart';
 import 'package:chatgpt_app_core/pages/assistant_world_book_page.dart';
 import 'package:flutter/material.dart';
@@ -12,6 +13,11 @@ void main() {
   }) async {
     await tester.pumpWidget(MaterialApp(
       home: AssistantWorldBookPage(
+        operationScope: AssistantOperationScope(
+            accountHash: 'test',
+            restoreRevision: 0,
+            currentAccount: () => 'test',
+            currentRestoreRevision: () => 0),
         assistant: assistant,
         onSave: (next) async => saved.add(next.memoryBook),
       ),

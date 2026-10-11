@@ -1,4 +1,6 @@
 import 'package:chatgpt_app_core/db/hi_db_manager.dart';
+import 'package:chatgpt_app_core/db/assistant_dao.dart';
+import 'package:flutter/foundation.dart';
 import 'package:chatgpt_app_core/chat/domain/deepseek_reasoning_effort.dart';
 import 'package:chatgpt_app_core/db/schema_guard.dart';
 import 'package:chatgpt_app_core/db/table_name.dart';
@@ -232,6 +234,49 @@ class ConversationListDao implements IConversationList, ITable {
         conflictAlgorithm: ConflictAlgorithm.replace);
     model.id = id;
     return id;
+  }
+
+  /// 从角色管理开启的会话：绑定原角色 CAS 与会话写入处于同一事务。
+  /// 首次只允许插入；后续回调必须仍命中自己上一次保存的行，禁止复活删除行。
+  Future<Map<String, Object?>> saveForAssistant(
+    ConversationModel model, {
+    required AssistantRowSnapshot expectedAssistant,
+    Map<String, Object?>? expectedConversation,
+    void Function()? validate,
+  }) async {
+    final result = await storage.db.transaction((txn) async {
+      validate?.call();
+      final assistants = await txn.query('tb_assistant',
+          where: 'id = ?', whereArgs: [expectedAssistant.id], limit: 1);
+      if (assistants.isEmpty ||
+          !expectedAssistant.matches(assistants.single) ||
+          model.assistantId != expectedAssistant.id) {
+        throw const AssistantMutationStale();
+      }
+      final existing = await txn.query(tableName,
+          where: 'cid = ?', whereArgs: [model.cid], limit: 2);
+      final data = model.toJson()..remove('id');
+      if (expectedConversation == null) {
+        if (existing.isNotEmpty) throw const AssistantMutationStale();
+        await txn.insert(tableName, data);
+      } else {
+        if (existing.length != 1 ||
+            !mapEquals(existing.single, expectedConversation)) {
+          throw const AssistantMutationStale();
+        }
+        if (await txn.update(tableName, data,
+                where: 'id = ?', whereArgs: [expectedConversation['id']]) !=
+            1) {
+          throw const AssistantMutationStale();
+        }
+      }
+      validate?.call();
+      return (await txn.query(tableName,
+              where: 'cid = ?', whereArgs: [model.cid], limit: 1))
+          .single;
+    });
+    model.id = result['id'] as int;
+    return result;
   }
 
   @override

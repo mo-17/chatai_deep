@@ -1,4 +1,5 @@
 import 'dart:convert';
+import 'story_role_card_context.dart';
 
 import 'package:chatgpt_app_core/model/story_room_model.dart';
 
@@ -180,6 +181,7 @@ class StorySpeakerScheduler {
   static String systemPrompt({
     required StoryRoomModel room,
     required List<StoryParticipantModel> candidates,
+    List<StoryParticipantModel>? participants,
     required List<StoryMessageModel> recentMessages,
     int maxSpeakers = 1,
   }) {
@@ -215,7 +217,9 @@ class StorySpeakerScheduler {
       ..writeln()
       ..writeln('房间：${room.title}');
 
-    final publicContext = room.publicContext.trim();
+    final projection = StoryRoleCardContext.read(room,
+        participants: participants ?? candidates);
+    final publicContext = projection.publicText.trim();
     if (publicContext.isNotEmpty) {
       buffer
         ..writeln()
@@ -228,7 +232,7 @@ class StorySpeakerScheduler {
       ..writeln('【候选角色】');
     for (final item in candidates) {
       buffer.writeln(
-          '- speakerId=${item.id}；姓名=${item.name}；人设=${_clip(item.prompt, 360)}');
+          '- speakerId=${item.id}；姓名=${item.name}；人设=${_clip(projection.degraded ? '' : item.prompt, 360)}');
     }
 
     final recent = recentMessages.length > 10

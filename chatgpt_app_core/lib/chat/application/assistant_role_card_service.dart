@@ -5,6 +5,7 @@ import 'dart:typed_data';
 import 'package:archive/archive.dart' as archive;
 import 'package:chatgpt_app_core/backup/backup_archive_limits.dart';
 import 'package:chatgpt_app_core/chat/application/assistant_example_dialogs.dart';
+import 'package:chatgpt_app_core/chat/application/role_card_validation.dart';
 import 'package:chatgpt_app_core/model/assistant_model.dart';
 import 'package:chatgpt_app_core/model/world_book.dart';
 
@@ -23,9 +24,11 @@ class AssistantRoleCardService {
   static const fullExportLabel = '完整角色卡';
   static const fullExportDescription = '保留本应用字段，适合备份或发给同款 App';
   static const tavernExportLabel = 'Tavern V2 兼容';
-  static const tavernExportDescription = '导出 SillyTavern V2 JSON，适合检查或二次编辑';
+  static const tavernExportDescription =
+      '导出 SillyTavern V2 JSON；V3 专有字段及资源请用 CHARX 保留';
   static const tavernPngExportLabel = 'Tavern V2 PNG';
-  static const tavernPngExportDescription = '导出酒馆常用 PNG 角色卡，可直接导入 SillyTavern';
+  static const tavernPngExportDescription =
+      '导出酒馆常用 V2 PNG；V3 专有字段及资源请用 CHARX 保留';
   static const charxExportLabel = 'CHARX V3';
   static const charxExportDescription = '导出 Character Card V3 角色卡及资源包';
   // 只写入 memoryBook 的注释行，因此不会参与角色记忆匹配或系统提示注入。
@@ -52,7 +55,9 @@ class AssistantRoleCardService {
       'exportedAt': (exportedAt ?? DateTime.now()).toIso8601String(),
       'assistant': _assistantPayload(assistant),
     };
-    return const JsonEncoder.withIndent('  ').convert(card);
+    final output = const JsonEncoder.withIndent('  ').convert(card);
+    RoleCardValidation.decode(output);
+    return output;
   }
 
   static String exportTavernV2Json(
@@ -67,19 +72,157 @@ class AssistantRoleCardService {
             rawCard,
             exportedAt: exportedAt,
           );
-    if (rawCard == null) {
-      data.removeWhere((key, value) => _isEmptyTavernValue(value));
+    _fillTavernRequiredFields(data, v3: false);
+    if (rawCard?['spec'] == 'chara_card_v3') {
+      for (final key in const [
+        'assets',
+        'nickname',
+        'creator_notes_multilingual',
+        'source',
+        'group_only_greetings',
+        'creation_date',
+        'modification_date'
+      ]) {
+        data.remove(key);
+      }
     }
     final card = <String, dynamic>{
-      'spec': rawCard?['spec'] is String
-          ? rawCard!['spec'] as String
-          : 'chara_card_v2',
-      'spec_version': rawCard?['spec_version'] is String
-          ? rawCard!['spec_version'] as String
-          : '2.0',
+      if (rawCard != null) ...rawCard,
+      'spec': 'chara_card_v2',
+      'spec_version': '2.0',
       'data': data,
     };
-    return const JsonEncoder.withIndent('  ').convert(card);
+    final output = const JsonEncoder.withIndent('  ').convert(card);
+    RoleCardValidation.decode(output);
+    return output;
+  }
+
+  static void _fillTavernRequiredFields(Map<String, dynamic> data,
+      {required bool v3}) {
+    final originalCore = <String, dynamic>{};
+    for (final key in const [
+      'name',
+      'description',
+      'personality',
+      'scenario',
+      'first_mes',
+      'mes_example',
+      'creator_notes',
+      'system_prompt',
+      'post_history_instructions',
+      'creator',
+      'character_version',
+    ]) {
+      final value = data[key];
+      if (value is Map) {
+        originalCore[key] = _copyJsonMap(_mapStringDynamic(value) ?? {});
+        data[key] = _string(_tavernPreferredLocalizedValue(value));
+      } else {
+        data[key] = value is String ? value : '';
+      }
+    }
+    for (final key in [
+      'alternate_greetings',
+      'tags',
+      if (v3) 'group_only_greetings'
+    ]) {
+      final value = data[key];
+      if (value != null &&
+          (value is! List || value.any((item) => item is! String))) {
+        originalCore[key] = value;
+      }
+      data[key] = value is List && value.every((item) => item is String)
+          ? [...value]
+          : key == 'tags'
+              ? _tavernTags(value)
+              : _tavernAlternateGreetings(value, _string(data['name']));
+    }
+    if (v3 && data['source'] is String) data['source'] = [data['source']];
+    final extensions =
+        _mapStringDynamic(data['extensions']) ?? <String, dynamic>{};
+    if (originalCore.isNotEmpty) {
+      // 固定协议字段必须有合法类型；非标准原值仅作为不可执行扩展保留。
+      extensions['chatai_deep_original_core'] = {
+        ...?_mapStringDynamic(extensions['chatai_deep_original_core']),
+        ...originalCore,
+      };
+    }
+    data['extensions'] = extensions;
+    final rawBook = data['character_book'] ?? data['characterBook'];
+    if (rawBook != null) {
+      data['character_book'] = _normalizeTavernBook(rawBook, v3: v3);
+      if (data.containsKey('characterBook')) {
+        data['characterBook'] =
+            _copyJsonMap(data['character_book'] as Map<String, dynamic>);
+      }
+    }
+  }
+
+  static Map<String, dynamic> _normalizeTavernBook(Object? raw,
+      {required bool v3}) {
+    final book = _copyJsonMap(_mapStringDynamic(raw) ?? {});
+    final entries = <Map<String, dynamic>>[];
+    for (final source in _tavernWorldBookEntries(book['entries'])) {
+      final entry = _copyJsonMap(source);
+      final keys = source['keys'] ?? source['key'];
+      entry['keys'] = keys is List && keys.every((item) => item is String)
+          ? [...keys]
+          : _splitMemoryKeywords(_string(keys),
+              regex: _tavernEntryUsesRegex(source));
+      entry['content'] = source['content'] is String ? source['content'] : '';
+      entry['extensions'] =
+          _mapStringDynamic(source['extensions']) ?? <String, dynamic>{};
+      entry['enabled'] = !_tavernEntryDisabled(source);
+      entry['insertion_order'] = source['insertion_order'] is num
+          ? source['insertion_order']
+          : (_tavernEntryPriority(source) ?? 0);
+      if (v3) entry['use_regex'] = _tavernEntryUsesRegex(source);
+      entries.add(entry);
+    }
+    if (entries.length > RoleCardValidation.maxWorldBookEntries) {
+      throw const FormatException('世界书最多 1024 条（含仅保留条目）');
+    }
+    book['extensions'] =
+        _mapStringDynamic(book['extensions']) ?? <String, dynamic>{};
+    book['entries'] = entries;
+    return book;
+  }
+
+  static RoleCardCompatibilityReport compatibilityReport(
+    AssistantModel assistant, {
+    List<String> diagnostics = const [],
+    List<AssistantRoleCardResource> resources = const [],
+  }) {
+    final raw = _tavernRawCardPayload(assistant.memoryBook);
+    final data = _mapStringDynamic(raw?['data']);
+    final notices = [...diagnostics];
+    if (raw != null) {
+      if (data?['tags'] is String) notices.add('旧版文本标签将映射为数组，原值保留');
+      final missing = const [
+        'creator',
+        'character_version',
+        'tags',
+        'extensions',
+        'alternate_greetings'
+      ].where((key) => data?.containsKey(key) != true).toList();
+      if (missing.isNotEmpty) notices.add('兼容缺省字段：${missing.join('、')}');
+    }
+    if (resources.any(
+        (resource) => resource.bytes == null && resource.uri != 'ccdefault:')) {
+      notices.add('部分资源只有地址/清单；未下载外链，导出无法补齐缺失字节');
+    }
+    if (resources.any((resource) =>
+        resource.type == 'icon' &&
+        resource.bytes != null &&
+        !_isPng(resource.bytes!) &&
+        !_isJpeg(resource.bytes!))) {
+      notices.add('不支持显示的头像资源已按原字节保留，不自动渲染');
+    }
+    return RoleCardCompatibilityReport(
+      format:
+          raw == null ? '本应用角色卡' : '${raw['spec']} / ${raw['spec_version']}',
+      notices: notices,
+    );
   }
 
   static Uint8List exportTavernV2Png(
@@ -89,13 +232,16 @@ class AssistantRoleCardService {
   }) {
     final json = exportTavernV2Json(assistant, exportedAt: exportedAt);
     final payload = base64.encode(utf8.encode(json));
+    if (utf8.encode(payload).length > maxPngMetadataBytes) {
+      throw const FormatException('PNG 角色卡元数据超过 2 MiB，请改用 JSON/CHARX');
+    }
     final base =
         basePngBytes != null && _isPng(basePngBytes) ? basePngBytes : null;
-    return _writePngTextChunk(
-      base ?? _defaultTavernCardPngBytes(),
-      keyword: 'chara',
-      text: payload,
-    );
+    final output = _writePngTextChunk(base ?? _defaultTavernCardPngBytes(),
+        keyword: 'chara', text: payload);
+    _validateImportSize(output);
+    _extractPngRoleCardJson(output);
+    return output;
   }
 
   /// 导出 CHARX。传入导入结果时会携带已解析的资源清单和包内字节；传入
@@ -139,37 +285,84 @@ class AssistantRoleCardService {
       ));
     }
 
-    final card = jsonDecode(exportTavernV2Json(
-      assistant,
-      exportedAt: exportedAt,
-    )) as Map<String, dynamic>;
-    card['spec'] = 'chara_card_v3';
-    card['spec_version'] = '3.0';
-    final data = Map<String, dynamic>.from(card['data'] as Map);
+    final raw = _tavernRawCardPayload(assistant.memoryBook);
+    final data = raw == null
+        ? _tavernDataFromAssistant(assistant, exportedAt: exportedAt)
+        : _tavernDataFromRawCard(assistant, raw, exportedAt: exportedAt);
+    _fillTavernRequiredFields(data, v3: true);
+    final card = <String, dynamic>{
+      if (raw != null) ...raw,
+      'spec': 'chara_card_v3',
+      'spec_version': '3.0',
+      'data': data,
+    };
     if (effectiveResources.any((resource) => resource.includeInCard)) {
+      final rawAssets = data['assets'];
+      final originals =
+          rawAssets is List ? [...rawAssets.whereType<Map>()] : <Map>[];
       data['assets'] = [
         for (final resource in effectiveResources)
-          if (resource.includeInCard) resource.toCardJson(),
+          if (resource.includeInCard) _assetForExport(resource, originals),
       ];
     }
     card['data'] = data;
 
+    if (effectiveResources.length > 256) {
+      throw const FormatException('导出资源超过 256 项');
+    }
+    final cardJson = const JsonEncoder.withIndent('  ').convert(card);
+    RoleCardValidation.decode(cardJson);
+    final cardBytes = utf8.encode(cardJson);
+    if (cardBytes.length > importArchiveLimits.maxEntryUncompressedBytes) {
+      throw const FormatException('CHARX card.json 超过单项 16 MiB');
+    }
+    var totalBytes = cardBytes.length;
     final output = archive.Archive()
-      ..addFile(archive.ArchiveFile.bytes(
-        'card.json',
-        utf8.encode(const JsonEncoder.withIndent('  ').convert(card)),
-      ));
-    final emittedPaths = <String>{'card.json'};
+      ..addFile(archive.ArchiveFile.bytes('card.json', cardBytes));
+    final emitted = <String, List<int>>{'card.json': cardBytes};
     for (final resource in effectiveResources) {
-      final path = _charxArchivePath(resource);
-      if (path == null || !emittedPaths.add(path)) continue;
       final bytes = resource.bytes ??
           resourceBytes[resource.archivePath] ??
           resourceBytes[resource.uri];
-      if (bytes == null || bytes.isEmpty) continue;
+      if (bytes == null || bytes.isEmpty) continue; // 外链不占 ZIP 路径。
+      final path = _charxArchivePath(resource);
+      if (path == null) throw FormatException('资源路径无效：${resource.archivePath}');
+      final previous = emitted[path];
+      if (previous != null) {
+        if (!_sameBytes(previous, bytes)) {
+          throw FormatException('资源导出路径字节冲突：$path');
+        }
+        continue; // 合法共享引用保留全部元数据，包内只写一次字节。
+      }
+      totalBytes += bytes.length;
+      if (bytes.length > importArchiveLimits.maxEntryUncompressedBytes ||
+          totalBytes > importArchiveLimits.maxTotalUncompressedBytes) {
+        throw const FormatException('CHARX 超过单项 16 MiB / 总计 64 MiB');
+      }
+      emitted[path] = bytes;
       output.addFile(archive.ArchiveFile.bytes(path, bytes));
     }
-    return Uint8List.fromList(archive.ZipEncoder().encodeBytes(output));
+    final zipped = Uint8List.fromList(archive.ZipEncoder().encodeBytes(output));
+    _validateImportSize(zipped);
+    return zipped;
+  }
+
+  static bool _sameBytes(List<int> a, List<int> b) {
+    if (a.length != b.length) return false;
+    for (var i = 0; i < a.length; i++) {
+      if (a[i] != b[i]) return false;
+    }
+    return true;
+  }
+
+  static Map<String, dynamic> _assetForExport(
+      AssistantRoleCardResource resource, List<Map> originals) {
+    final index = originals.indexWhere((item) =>
+        item['uri'] == resource.uri &&
+        item['type'] == resource.type &&
+        item['name'] == resource.name);
+    final original = index < 0 ? null : originals.removeAt(index);
+    return {...?_mapStringDynamic(original), ...resource.toCardJson()};
   }
 
   static Uint8List exportCharxImportResult(
@@ -196,35 +389,27 @@ class AssistantRoleCardService {
           : _importZip(bytes);
     }
     if (_isPng(bytes)) {
-      final json = _extractPngRoleCardJson(bytes);
+      final selection = _extractPngRoleCardJson(bytes);
       return _importJsonResult(
-        json,
+        selection.json,
+        diagnostics: selection.diagnostics,
         sourceName: filename,
         avatarPngBytes: bytes,
       );
     }
-    try {
-      return _importJsonResult(
-        utf8.decode(bytes),
-        sourceName: filename,
-      );
-    } catch (_) {
-      return _importJsonResult(
-        latin1.decode(bytes),
-        sourceName: filename,
-      );
-    }
+    return _importJsonResult(
+      RoleCardValidation.decodeUtf8(bytes),
+      sourceName: filename,
+    );
   }
 
   static AssistantRoleCardImportResult _importJsonResult(
     String json, {
     String? sourceName,
     List<int>? avatarPngBytes,
+    List<String> diagnostics = const [],
   }) {
-    final decoded = jsonDecode(json);
-    if (decoded is! Map<String, dynamic>) {
-      throw const FormatException('角色卡 JSON 必须是对象');
-    }
+    final decoded = RoleCardValidation.decode(json);
     return AssistantRoleCardImportResult(
       assistant: importJson(json),
       avatarPngBytes: avatarPngBytes,
@@ -234,6 +419,7 @@ class AssistantRoleCardService {
       resources: _resourcesFromDecoded(decoded),
       sourceName: sourceName,
       tavernMeta: tavernMetaFromJson(json),
+      diagnostics: diagnostics,
     );
   }
 
@@ -256,13 +442,19 @@ class AssistantRoleCardService {
     if (cardBytes == null || cardBytes.isEmpty) {
       throw const FormatException('CHARX 的 card.json 为空');
     }
-    final json = utf8.decode(cardBytes);
-    final decoded = jsonDecode(json);
-    if (decoded is! Map<String, dynamic> ||
-        _string(decoded['spec']) != 'chara_card_v3') {
+    final json = RoleCardValidation.decodeUtf8(cardBytes);
+    final decoded = RoleCardValidation.decode(json);
+    if (_string(decoded['spec']) != 'chara_card_v3') {
       throw const FormatException('CHARX 的 card.json 必须是 Character Card V3');
     }
     final resources = _resourcesFromCharx(decoded, roleArchive);
+    if (resources.length > 256) {
+      throw const FormatException('CHARX 资源超过 256 项，不能完整保留');
+    }
+    for (final resource in resources) {
+      if (resource.bytes == null) continue;
+      _validateRenderableResource(resource);
+    }
     final avatar = _selectAvatarResource(resources);
     return AssistantRoleCardImportResult(
       assistant: importJson(json),
@@ -287,6 +479,77 @@ class AssistantRoleCardService {
       throw FormatException('无法解析角色卡 ZIP：${error.message}');
     } catch (_) {
       throw const FormatException('无法解析角色卡 ZIP');
+    }
+  }
+
+  static void _validateRenderableResource(AssistantRoleCardResource resource) {
+    final bytes = resource.bytes!;
+    final ext = resource.ext.toLowerCase();
+    if (ext != 'png' &&
+        ext != 'jpg' &&
+        ext != 'jpeg' &&
+        !_isPng(bytes) &&
+        !_isJpeg(bytes)) {
+      return;
+    }
+    int width = 0;
+    int height = 0;
+    if (ext == 'png' || _isPng(bytes)) {
+      if (!_isPng(bytes) ||
+          bytes.length < 33 ||
+          ascii.decode(bytes.sublist(12, 16)) != 'IHDR' ||
+          _uint32(bytes, 8) != 13) {
+        throw FormatException('资源 PNG 签名/结构无效：${resource.archivePath}');
+      }
+      width = _uint32(bytes, 16);
+      height = _uint32(bytes, 20);
+      _extractPngRoleCardJson(bytes, requireCard: false);
+    } else {
+      if (!_isJpeg(bytes)) {
+        throw FormatException('资源 JPEG 签名无效：${resource.archivePath}');
+      }
+      var offset = 2;
+      while (offset + 4 <= bytes.length) {
+        if (bytes[offset++] != 255) break;
+        while (offset < bytes.length && bytes[offset] == 255) {
+          offset++;
+        }
+        if (offset >= bytes.length) break;
+        final marker = bytes[offset++];
+        if (marker == 0xda || marker == 0xd9) break;
+        if (marker == 0x01 || (marker >= 0xd0 && marker <= 0xd7)) continue;
+        if (offset + 2 > bytes.length) break;
+        final length = (bytes[offset] << 8) | bytes[offset + 1];
+        if (length < 2 || offset + length > bytes.length) break;
+        if (const [
+              0xc0,
+              0xc1,
+              0xc2,
+              0xc3,
+              0xc5,
+              0xc6,
+              0xc7,
+              0xc9,
+              0xca,
+              0xcb,
+              0xcd,
+              0xce,
+              0xcf
+            ].contains(marker) &&
+            length >= 7) {
+          height = (bytes[offset + 3] << 8) | bytes[offset + 4];
+          width = (bytes[offset + 5] << 8) | bytes[offset + 6];
+          break;
+        }
+        offset += length;
+      }
+    }
+    if (width <= 0 ||
+        height <= 0 ||
+        width > 8192 ||
+        height > 8192 ||
+        width * height > 16 * 1024 * 1024) {
+      throw FormatException('资源图像尺寸无效或超过 8192/16M 像素：${resource.archivePath}');
     }
   }
 
@@ -407,8 +670,16 @@ class AssistantRoleCardService {
     if (original != null && original != 'card.json') return original;
     final type = _safePathPart(resource.type, fallback: 'other');
     final name = _safePathPart(resource.name, fallback: 'asset');
-    final ext = resource.ext.trim().toLowerCase().replaceFirst('.', '');
-    return 'assets/$type/$name${ext.isEmpty ? '' : '.$ext'}';
+    final ext =
+        resource.ext.trim().toLowerCase().replaceFirst(RegExp(r'^\.'), '');
+    if (type == '.' ||
+        type == '..' ||
+        name == '.' ||
+        name == '..' ||
+        (ext.isNotEmpty && !RegExp(r'^[a-z0-9_-]+$').hasMatch(ext))) {
+      return null;
+    }
+    return _safeArchivePath('assets/$type/$name${ext.isEmpty ? '' : '.$ext'}');
   }
 
   static String? _safeArchivePath(String raw) {
@@ -495,8 +766,7 @@ class AssistantRoleCardService {
 
   static AssistantRoleCardTavernMeta? tavernMetaFromJson(String jsonText) {
     try {
-      final decoded = jsonDecode(jsonText);
-      if (decoded is! Map<String, dynamic>) return null;
+      final decoded = RoleCardValidation.decode(jsonText);
       return _tavernMetaFromDecoded(decoded);
     } catch (_) {
       return null;
@@ -567,6 +837,155 @@ class AssistantRoleCardService {
   /// 移除仅用于往返导出的内部标记，供运行时世界书消费方使用。
   static String memoryBookForRuntime(String memoryBook) =>
       _withoutTavernRawCardMarker(memoryBook);
+
+  /// 工作副本的结构化世界书是唯一有效源；旧文本只是兼容投影。
+  /// 内部原卡载体不交给文本编辑器，也不会进入运行时正文。
+  static AssistantModel withWorldBook(
+      AssistantModel source, String structuredJson) {
+    final copy = AssistantModel.fromJson(source.toJson());
+    copy.worldBookJson = structuredJson;
+    final body = WorldBookCodec.decode(structuredJson: structuredJson)
+        .map((entry) => entry.toLine())
+        .join('\n');
+    copy.memoryBook =
+        memoryBookTranslationView(source.memoryBook).restore(body);
+    return copy;
+  }
+
+  static AssistantMemoryBookMergePreview mergeWorldBooks(
+      AssistantModel current, AssistantModel incoming) {
+    Map<String, dynamic> document(AssistantModel model) =>
+        WorldBookCodec.readDocument(WorldBookCodec.encode(
+          WorldBookCodec.decode(
+              structuredJson: model.worldBookJson,
+              legacyText: memoryBookForRuntime(model.memoryBook)),
+          preservingJson: model.worldBookJson,
+        ));
+    final old = document(current);
+    final added = document(incoming);
+    final entries = [
+      for (final raw in old['entries'] as List)
+        _copyJsonMap(raw as Map<String, dynamic>)
+    ];
+    final seen = <String>{};
+    final ids = <String>{};
+    String key(Map<String, dynamic> value) {
+      final normalized = _copyJsonMap(value)
+        ..remove('id')
+        ..remove('tavernSnapshot');
+      return _canonicalJson(normalized);
+    }
+
+    for (final entry in entries) {
+      seen.add(key(entry));
+      ids.add(_string(entry['id']));
+    }
+    var duplicates = 0;
+    final lines = <String>[];
+    for (final raw in added['entries'] as List) {
+      final entry = _copyJsonMap(raw as Map<String, dynamic>);
+      if (!seen.add(key(entry))) {
+        duplicates++;
+        continue;
+      }
+      final previousId = _string(entry['id']);
+      var id = previousId;
+      var suffix = 1;
+      while (id.isEmpty || ids.contains(id)) {
+        id = 'merged-${suffix++}-$previousId';
+      }
+      ids.add(id);
+      entry['id'] = id;
+      entries.add(entry);
+      lines.add(WorldBookEntry.fromJson(entry).toLine());
+    }
+    final oldBook = _mapStringDynamic(old['tavernBook']) ?? {};
+    final incomingBook = _mapStringDynamic(added['tavernBook']) ?? {};
+    final book = <String, dynamic>{...incomingBook, ...oldBook};
+    final extensions = <String, dynamic>{
+      ...?_mapStringDynamic(incomingBook['extensions']),
+      ...?_mapStringDynamic(oldBook['extensions']),
+    };
+    final sources = <Object?>[
+      if (_mapStringDynamic(oldBook['extensions'])?['chatai_deep_merged_books']
+          is List)
+        ...(_mapStringDynamic(
+            oldBook['extensions'])!['chatai_deep_merged_books'] as List),
+      if (_mapStringDynamic(
+          incomingBook['extensions'])?['chatai_deep_merged_books'] is List)
+        ...(_mapStringDynamic(
+            incomingBook['extensions'])!['chatai_deep_merged_books'] as List),
+    ];
+    if (incomingBook.isNotEmpty &&
+        oldBook.isNotEmpty &&
+        _canonicalJson(incomingBook) != _canonicalJson(oldBook)) {
+      final metadata = _copyJsonMap(incomingBook);
+      final nestedExtensions = _mapStringDynamic(metadata['extensions']);
+      nestedExtensions?.remove('chatai_deep_merged_books');
+      if (nestedExtensions != null) metadata['extensions'] = nestedExtensions;
+      sources.add(metadata);
+    }
+    if (sources.isNotEmpty) {
+      final seenSources = <String>{};
+      extensions['chatai_deep_merged_books'] = [
+        for (final source in sources)
+          if (seenSources.add(_canonicalJson(source))) source
+      ];
+    }
+    book['extensions'] = extensions;
+    final unmapped = <Object?>[
+      if (old['tavernUnmappedEntries'] is List)
+        ...old['tavernUnmappedEntries'] as List,
+    ];
+    // 原书自身的重复条目仍保留；同一 incoming 再合并不追加第二份。
+    final oldUnmapped = unmapped.map(_canonicalJson).toSet();
+    if (added['tavernUnmappedEntries'] is List) {
+      unmapped.addAll((added['tavernUnmappedEntries'] as List)
+          .where((entry) => !oldUnmapped.contains(_canonicalJson(entry))));
+    }
+    if (entries.length + unmapped.length >
+        RoleCardValidation.maxWorldBookEntries) {
+      throw const FormatException('合并后世界书超过 1024 条（含仅保留条目）');
+    }
+    final result = jsonEncode({
+      ...added,
+      ...old,
+      'tavernBook': book,
+      'tavernUnmappedEntries': unmapped,
+      'entries': entries,
+    });
+    RoleCardValidation.decode(result,
+        depthLimit: RoleCardValidation.maxDerivedDepth,
+        nodeLimit: RoleCardValidation.maxDerivedNodes,
+        validateKnownFields: false);
+    final projected = withWorldBook(incoming, result);
+    _validateModelClosure(projected);
+    // 固定协议出口也是合并闭环的一部分，不仅验证运行时有效条目。
+    exportTavernV2Json(projected);
+    return AssistantMemoryBookMergePreview(
+      mergedText: projected.memoryBook,
+      structuredJson: result,
+      existingCount: (old['entries'] as List).length,
+      incomingCount: (added['entries'] as List).length,
+      appendedCount: lines.length,
+      skippedDuplicateCount: duplicates,
+      skippedInvalidCount: 0,
+      appendedLines: lines,
+    );
+  }
+
+  static String _canonicalJson(Object? value) {
+    Object? canonical(Object? item) {
+      if (item is Map) {
+        final keys = item.keys.cast<String>().toList()..sort();
+        return {for (final key in keys) key: canonical(item[key])};
+      }
+      if (item is List) return item.map(canonical).toList();
+      return item;
+    }
+
+    return jsonEncode(canonical(value));
+  }
 
   static AssistantMemoryBookTranslationView memoryBookTranslationView(
     String source,
@@ -672,9 +1091,9 @@ class AssistantRoleCardService {
         if (file.isFile != true || file.name != 'card.json') continue;
         final content = file.readBytes();
         if (content == null || content.isEmpty) return false;
-        final decoded = jsonDecode(utf8.decode(content));
-        return decoded is Map<String, dynamic> &&
-            _string(decoded['spec']) == 'chara_card_v3';
+        final decoded =
+            RoleCardValidation.decode(RoleCardValidation.decodeUtf8(content));
+        return _string(decoded['spec']) == 'chara_card_v3';
       }
     } catch (_) {
       return false;
@@ -689,16 +1108,13 @@ class AssistantRoleCardService {
   }
 
   static AssistantModel importJson(String source) {
-    final decoded = jsonDecode(source);
-    if (decoded is! Map<String, dynamic>) {
-      throw const FormatException('角色卡 JSON 必须是对象');
-    }
+    final decoded = RoleCardValidation.decode(source);
     final payload = _extractAssistantPayload(decoded);
     final name = (payload['name'] as String? ?? '').trim();
     if (name.isEmpty) {
       throw const FormatException('角色卡缺少助手名称');
     }
-    return AssistantModel(
+    final assistant = AssistantModel(
       name: name,
       emoji: _string(payload['emoji'], fallback: '🤖'),
       prompt: _string(payload['prompt']),
@@ -716,6 +1132,14 @@ class AssistantRoleCardService {
           : (payload['useTools'] as int? ?? 1) != 0,
       toolIds: _toolIds(payload),
     );
+    // 接受前验证完整保存载体及本应用出口，避免导入成功后原卡被静默丢弃。
+    _validateModelClosure(assistant);
+    return assistant;
+  }
+
+  static void _validateModelClosure(AssistantModel assistant) {
+    _tavernRawCardPayload(assistant.memoryBook);
+    exportJson(assistant);
   }
 
   static AssistantModel sanitizeForImport(
@@ -1320,8 +1744,18 @@ class AssistantRoleCardService {
     String structuredJson = '',
   }) {
     final entries = <Map<String, dynamic>>[];
-    for (final entry in parseMemoryEntries(
-      raw,
+    final document = WorldBookCodec.readDocument(structuredJson);
+    final originals = <String, Map<String, dynamic>>{};
+    final canonical = document['entries'];
+    if (canonical is List) {
+      for (final item in canonical) {
+        if (item is Map<String, dynamic> && item['id'] is String) {
+          originals[item['id'] as String] = item;
+        }
+      }
+    }
+    for (final entry in WorldBookCodec.decode(
+      legacyText: raw,
       structuredJson: structuredJson,
     )) {
       final item = <String, dynamic>{
@@ -1336,8 +1770,8 @@ class AssistantRoleCardService {
       if (entry.secondaryKeywords.isNotEmpty) {
         item['selective'] = true;
         item['secondary_keys'] = entry.secondaryKeywords;
-        if (entry.selectiveLogic != 0) {
-          item['selectiveLogic'] = entry.selectiveLogic;
+        if (entry.selectiveLogic.index != 0) {
+          item['selectiveLogic'] = entry.selectiveLogic.index;
         }
       }
       if (entry.excludeKeywords.isNotEmpty) {
@@ -1383,9 +1817,27 @@ class AssistantRoleCardService {
       }
       if (entry.matchScenario) item['matchScenario'] = true;
       if (entry.matchCreatorNotes) item['matchCreatorNotes'] = true;
-      entries.add(item);
+      final original = originals[entry.id];
+      final preserved = _mapStringDynamic(original?['tavernEntry']);
+      final snapshot = _mapStringDynamic(original?['tavernSnapshot']);
+      item.putIfAbsent('keys', () => <String>[]);
+      item.putIfAbsent('insertion_order', () => entry.priority);
+      item.putIfAbsent('extensions', () => <String, dynamic>{});
+      entries.add(preserved == null
+          ? item
+          : _updatePreservedTavernEntry(preserved, snapshot, entry, item));
     }
-    return {'entries': entries};
+    final unmapped = document['tavernUnmappedEntries'];
+    if (unmapped is List) {
+      entries.addAll(unmapped.whereType<Map<String, dynamic>>());
+    }
+    return {
+      ...?_mapStringDynamic(document['tavernBook']),
+      'extensions': _mapStringDynamic(
+              _mapStringDynamic(document['tavernBook'])?['extensions']) ??
+          {},
+      'entries': entries,
+    };
   }
 
   static bool _isEmptyTavernValue(Object? value) {
@@ -1397,6 +1849,149 @@ class AssistantRoleCardService {
       return entries is List && entries.isEmpty;
     }
     return false;
+  }
+
+  static Map<String, dynamic> _updatePreservedTavernEntry(
+    Map<String, dynamic> original,
+    Map<String, dynamic>? snapshot,
+    WorldBookEntry entry,
+    Map<String, dynamic> projection,
+  ) {
+    final result = _copyJsonMap(original);
+    final extensions = _mapStringDynamic(result['extensions']) ?? {};
+    final current = entry.toJson();
+    void patch(String property, String key, Object? value,
+        [List<String> aliases = const []]) {
+      if (snapshot != null &&
+          jsonEncode(snapshot[property]) == jsonEncode(current[property])) {
+        return;
+      }
+      if (value == null) {
+        result.remove(key);
+      } else {
+        result[key] = value;
+      }
+      // 同步已有别名，避免旧扩展覆盖用户刚编辑的有效值；未知扩展原样保留。
+      for (final alias in [key, ...aliases]) {
+        if (result.containsKey(alias)) {
+          if (value == null) {
+            result.remove(alias);
+          } else {
+            result[alias] = value;
+          }
+        }
+        if (extensions.containsKey(alias)) {
+          if (value == null) {
+            extensions.remove(alias);
+          } else {
+            extensions[alias] = value;
+          }
+        }
+      }
+    }
+
+    patch('content', 'content', entry.content);
+    patch('enabled', 'enabled', entry.enabled);
+    patch('enabled', 'disabled', !entry.enabled, ['disable']);
+    patch('keywords', 'keys', entry.keywords, ['key']);
+    patch('keywords', 'constant', entry.alwaysOn);
+    patch('secondaryKeywords', 'secondary_keys', entry.secondaryKeywords, [
+      'secondaryKeys',
+      'secondary_key',
+      'key_secondary',
+      'keysecondary',
+      'keySecondary'
+    ]);
+    patch('secondaryKeywords', 'selective', entry.secondaryKeywords.isNotEmpty);
+    patch('excludeKeywords', 'exclude_keys', entry.excludeKeywords,
+        ['excludeKeys', 'exclusion_keys', 'exclusionKeys', 'exclusions']);
+    patch('priority', 'priority', entry.priority,
+        ['order', 'insertion_order', 'insertionOrder']);
+    patch('regex', 'regex', entry.regex, ['use_regex', 'useRegex']);
+    patch('caseSensitive', 'case_sensitive', entry.caseSensitive,
+        ['caseSensitive']);
+    patch('wholeWords', 'match_whole_words', entry.wholeWords,
+        ['matchWholeWords']);
+    patch('position', 'position', entry.position);
+    patch('depth', 'depth', entry.depth);
+    patch('probability', 'probability', entry.probability);
+    patch('probabilityEnabled', 'useProbability', entry.probabilityEnabled,
+        ['use_probability']);
+    patch(
+        'excludeFromRecursion',
+        'excludeRecursion',
+        entry.excludeFromRecursion,
+        ['exclude_recursion', 'preventRecursion', 'prevent_recursion']);
+    patch('group', 'group', entry.group, ['group_name', 'groupName']);
+    patch('groupWeight', 'groupWeight', entry.groupWeight, ['group_weight']);
+    patch('groupOverride', 'groupOverride', entry.groupOverride,
+        ['group_override']);
+    patch('useGroupScoring', 'useGroupScoring', entry.useGroupScoring,
+        ['use_group_scoring']);
+    patch('selectiveLogic', 'selectiveLogic', entry.selectiveLogic.index,
+        ['selective_logic']);
+    for (final key in const ['sticky', 'cooldown', 'delay']) {
+      patch(key, key, current[key]);
+    }
+    for (final alias in const {
+      'matchPersonaDescription': 'match_persona_description',
+      'matchCharacterDescription': 'match_character_description',
+      'matchCharacterPersonality': 'match_character_personality',
+      'matchCharacterDepthPrompt': 'match_character_depth_prompt',
+      'matchScenario': 'match_scenario',
+      'matchCreatorNotes': 'match_creator_notes'
+    }.entries) {
+      patch(alias.key, alias.key, current[alias.key], [alias.value]);
+    }
+    if (snapshot == null ||
+        jsonEncode(snapshot['characterFilterNames']) !=
+            jsonEncode(current['characterFilterNames']) ||
+        snapshot['characterFilterExclude'] !=
+            current['characterFilterExclude']) {
+      Map<String, dynamic> patchFilter(Object? source) {
+        final filter = _copyJsonMap(_mapStringDynamic(source) ?? {});
+        filter['names'] = entry.characterFilterNames;
+        filter['isExclude'] = entry.characterFilterExclude;
+        if (filter.containsKey('is_exclude')) {
+          filter['is_exclude'] = entry.characterFilterExclude;
+        }
+        return filter;
+      }
+
+      final sourceFilter = result['characterFilter'] ??
+          result['character_filter'] ??
+          extensions['characterFilter'] ??
+          extensions['character_filter'];
+      result['characterFilter'] = patchFilter(sourceFilter);
+      for (final object in [result, extensions]) {
+        for (final alias in const ['characterFilter', 'character_filter']) {
+          if (object.containsKey(alias)) {
+            object[alias] = patchFilter(object[alias]);
+          }
+        }
+        for (final alias in const [
+          'characterFilterNames',
+          'character_filter_names'
+        ]) {
+          if (object.containsKey(alias)) {
+            object[alias] = entry.characterFilterNames;
+          }
+        }
+        for (final alias in const [
+          'characterFilterExclude',
+          'character_filter_exclude'
+        ]) {
+          if (object.containsKey(alias)) {
+            object[alias] = entry.characterFilterExclude;
+          }
+        }
+      }
+    }
+    result.putIfAbsent('keys', () => projection['keys']);
+    result.putIfAbsent('enabled', () => entry.enabled);
+    result.putIfAbsent('insertion_order', () => entry.priority);
+    result['extensions'] = extensions;
+    return result;
   }
 
   static List<String> _splitMemoryKeywords(String raw, {required bool regex}) {
@@ -1670,7 +2265,7 @@ class AssistantRoleCardService {
 
   static Uint8List _defaultTavernCardPngBytes() {
     return base64.decode(
-      'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/p9sAAAAASUVORK5CYII=',
+      'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+ip1sAAAAASUVORK5CYII=',
     );
   }
 
@@ -1741,13 +2336,18 @@ class AssistantRoleCardService {
     return bytes.buffer.asUint8List();
   }
 
+  static final List<int> _crcTable = List.generate(256, (value) {
+    var crc = value;
+    for (var bit = 0; bit < 8; bit++) {
+      crc = (crc & 1) == 1 ? 0xedb88320 ^ (crc >> 1) : crc >> 1;
+    }
+    return crc;
+  });
+
   static int _crc32(List<int> bytes) {
     var crc = 0xffffffff;
     for (final byte in bytes) {
-      crc ^= byte;
-      for (var i = 0; i < 8; i++) {
-        crc = (crc & 1) == 1 ? 0xedb88320 ^ (crc >> 1) : crc >> 1;
-      }
+      crc = _crcTable[(crc ^ byte) & 255] ^ (crc >> 8);
     }
     return (crc ^ 0xffffffff) & 0xffffffff;
   }
@@ -1771,33 +2371,101 @@ class AssistantRoleCardService {
         (bytes[3] == 0x04 || bytes[3] == 0x06 || bytes[3] == 0x08);
   }
 
-  static String _extractPngRoleCardJson(List<int> bytes) {
+  static _PngCardSelection _extractPngRoleCardJson(List<int> bytes,
+      {bool requireCard = true}) {
     final data = bytes is Uint8List ? bytes : Uint8List.fromList(bytes);
+    final candidates = <({String key, String json})>[];
+    final diagnostics = <String>[];
     var offset = 8;
+    var chunks = 0;
+    var metadataBytes = 0;
+    var ended = false;
+    var hasImageData = false;
     while (offset + 12 <= data.length) {
       final length = _uint32(data, offset);
-      offset += 4;
-      if (length < 0 || offset + 4 + length + 4 > data.length) break;
-      final type = ascii.decode(data.sublist(offset, offset + 4));
-      offset += 4;
-      final chunk = data.sublist(offset, offset + length);
-      offset += length + 4; // skip data + crc
-      String? candidate;
-      if (type == 'tEXt') {
-        candidate = _parseTextChunk(chunk);
-      } else if (type == 'iTXt') {
-        candidate = _parseInternationalTextChunk(chunk);
-      } else if (type == 'zTXt') {
-        candidate = _parseCompressedTextChunk(chunk);
-      } else if (type == 'IEND') {
+      final typeOffset = offset + 4;
+      if (++chunks > 4096 || typeOffset + 4 + length + 4 > data.length) {
+        throw const FormatException('PNG 区块结构无效或超过 4096 块');
+      }
+      final type = ascii.decode(data.sublist(typeOffset, typeOffset + 4));
+      final chunk = data.sublist(typeOffset + 4, typeOffset + 4 + length);
+      if (_uint32(data, typeOffset + 4 + length) !=
+          _crc32(data.sublist(typeOffset, typeOffset + 4 + length))) {
+        throw FormatException('PNG $type 校验失败');
+      }
+      offset = typeOffset + 4 + length + 4;
+      if (chunks == 1) {
+        if (type != 'IHDR' || length != 13) {
+          throw const FormatException('PNG 缺少有效 IHDR');
+        }
+        final width = _uint32(chunk, 0);
+        final height = _uint32(chunk, 4);
+        if (width == 0 ||
+            height == 0 ||
+            width > 8192 ||
+            height > 8192 ||
+            width * height > 16 * 1024 * 1024) {
+          throw const FormatException('PNG 尺寸超过限制（边长 8192 / 16M 像素）');
+        }
+      } else if (type == 'IHDR') {
+        throw const FormatException('PNG 存在重复 IHDR');
+      }
+      if (type == 'IDAT') hasImageData = true;
+      if (type == 'IEND') {
+        if (length != 0 || offset != data.length || !hasImageData) {
+          throw const FormatException('PNG 图像结构不完整');
+        }
+        ended = true;
         break;
       }
-      if (candidate != null) {
-        final json = _decodeRoleCardText(candidate);
-        if (json != null) return json;
+      if (!_isRoleCardPngTextChunk(type, chunk)) continue;
+      final nul = chunk.indexOf(0);
+      final key = latin1.decode(chunk.sublist(0, nul)).trim().toLowerCase();
+      metadataBytes += length;
+      if (metadataBytes > 4 * 1024 * 1024 ||
+          candidates.length + diagnostics.length >= 16) {
+        throw const FormatException('PNG 角色元数据超过限制（4 MiB / 16 份）');
+      }
+      final candidate = type == 'tEXt'
+          ? _parseTextChunk(chunk)
+          : type == 'iTXt'
+              ? _parseInternationalTextChunk(chunk)
+              : _parseCompressedTextChunk(chunk);
+      try {
+        final json = candidate == null ? null : _decodeRoleCardText(candidate);
+        if (json == null) throw const FormatException('编码无效或超过 2 MiB');
+        final decoded = RoleCardValidation.decode(json);
+        if (key == 'ccv3' && decoded['spec'] != 'chara_card_v3') {
+          throw const FormatException('ccv3 必须包含 V3 协议');
+        }
+        importJson(json); // 验证映射与必填名称，失败候选不能遮住可用后备。
+        candidates.add((key: key, json: json));
+      } on FormatException catch (error) {
+        diagnostics.add('$key 元数据无效：${error.message}');
       }
     }
-    throw const FormatException('PNG 中没有找到可识别的角色卡元数据');
+    if (!ended) throw const FormatException('PNG 缺少完整 IEND');
+    if (candidates.isEmpty) {
+      if (!requireCard) return _PngCardSelection('{}', diagnostics);
+      throw FormatException('PNG 中没有找到可识别的角色卡元数据'
+          '${diagnostics.isEmpty ? '' : '：${diagnostics.join('；')}'}');
+    }
+    final v3 = candidates.where((item) => item.key == 'ccv3').toList();
+    final preferred = v3.isEmpty ? candidates : v3;
+    if (preferred
+            .map((item) => jsonEncode(RoleCardValidation.decode(item.json)))
+            .toSet()
+            .length >
+        1) {
+      throw const FormatException('PNG 同一优先级的角色卡元数据冲突');
+    }
+    if (v3.isNotEmpty && candidates.length > v3.length) {
+      diagnostics.add('PNG 同时包含 V2/V3 元数据，已优先读取 ccv3');
+    } else if (v3.isEmpty &&
+        diagnostics.any((item) => item.startsWith('ccv3'))) {
+      diagnostics.add('V3 元数据不可用，已降级读取可用 V2；V3 数据未保留');
+    }
+    return _PngCardSelection(preferred.first.json, diagnostics);
   }
 
   static int _uint32(Uint8List data, int offset) =>
@@ -1909,7 +2577,8 @@ class AssistantRoleCardService {
       return wrapped;
     }
     final data = decoded['data'];
-    if (_looksLikeTavernData(data)) {
+    if ((decoded.containsKey('spec') && data is Map<String, dynamic>) ||
+        _looksLikeTavernData(data)) {
       final tavernData = data as Map<String, dynamic>;
       return _fromTavernData(
         tavernData,
@@ -1982,7 +2651,7 @@ class AssistantRoleCardService {
           extension['useTools'] is bool ? extension['useTools'] as bool : true,
       'toolIds': _toolIds(extension),
     };
-    if (_shouldPreserveTavernRawCard(rawCard, data)) {
+    {
       payload['memoryBook'] = _withTavernRawCardMarker(
         _string(payload['memoryBook']),
         rawCard,
@@ -2010,6 +2679,7 @@ class AssistantRoleCardService {
     Map<String, dynamic> data,
   ) =>
       {
+        if (decoded['data'] is Map) ..._copyJsonMap(decoded),
         'spec': _string(decoded['spec']).isEmpty
             ? 'chara_card_v2'
             : _string(decoded['spec']),
@@ -2025,10 +2695,15 @@ class AssistantRoleCardService {
       final encoded = line.substring(_tavernRawMarker.length).trim();
       if (encoded.isEmpty) continue;
       try {
-        final decoded = jsonDecode(utf8.decode(base64Url.decode(encoded)));
-        if (decoded is Map) return _mapStringDynamic(decoded);
-      } catch (_) {
-        continue;
+        final decoded = RoleCardValidation.decode(
+          RoleCardValidation.decodeUtf8(base64Url.decode(encoded)),
+          depthLimit: RoleCardValidation.maxDepth + 2,
+          nodeLimit: RoleCardValidation.maxCarrierNodes,
+          validateKnownFields: false,
+        );
+        return decoded;
+      } on FormatException catch (error) {
+        throw FormatException('原卡保真载体无效或超过预算：${error.message}');
       }
     }
     return null;
@@ -2050,8 +2725,12 @@ class AssistantRoleCardService {
       'card': rawCard,
       'snapshot': snapshot,
     };
-    final marker =
-        '$_tavernRawMarker${base64Url.encode(utf8.encode(jsonEncode(payload)))}';
+    final encoded = jsonEncode(payload);
+    RoleCardValidation.decode(encoded,
+        depthLimit: RoleCardValidation.maxDepth + 2,
+        nodeLimit: RoleCardValidation.maxCarrierNodes,
+        validateKnownFields: false);
+    final marker = '$_tavernRawMarker${base64Url.encode(utf8.encode(encoded))}';
     final book = _withoutTavernRawCardMarker(memoryBook);
     return book.isEmpty ? marker : '$marker\n$book';
   }
@@ -2064,6 +2743,7 @@ class AssistantRoleCardService {
         'prompt': _string(payload['prompt']),
         'openingMessage': _string(payload['openingMessage']),
         'exampleDialogs': _string(payload['exampleDialogs']),
+        'worldBookJson': _string(payload['worldBookJson']),
         'memoryBook': _withoutTavernRawCardMarker(
           _string(payload['memoryBook']),
         ),
@@ -2169,14 +2849,21 @@ class AssistantRoleCardService {
           alternateGreetings(assistant.exampleDialogs);
     }
     if (!_snapshotMatches(
-      snapshot,
-      'memoryBook',
-      _withoutTavernRawCardMarker(assistant.memoryBook),
-    )) {
+          snapshot,
+          'memoryBook',
+          _withoutTavernRawCardMarker(assistant.memoryBook),
+        ) ||
+        (snapshot?.containsKey('worldBookJson') == true &&
+            !_snapshotMatches(
+                snapshot, 'worldBookJson', assistant.worldBookJson))) {
       data['character_book'] = _tavernWorldBookPayload(
         assistant.memoryBook,
         structuredJson: assistant.worldBookJson,
       );
+      if (data.containsKey('characterBook')) {
+        data['characterBook'] =
+            _copyJsonMap(data['character_book'] as Map<String, dynamic>);
+      }
     }
 
     final extensions =
@@ -2273,142 +2960,14 @@ class AssistantRoleCardService {
   static Object? _tavernCharacterBook(Map<String, dynamic> data) =>
       data['character_book'] ?? data['characterBook'];
 
-  static bool _shouldPreserveTavernRawCard(
-    Map<String, dynamic> rawCard,
-    Map<String, dynamic> data,
-  ) {
-    if (_string(rawCard['spec']).toLowerCase() == 'chara_card_v3') return true;
-    if (_hasTavernLocalizedVariants(data)) return true;
-    if (const {
-      'nickname',
-      'group_only_greetings',
-      'source',
-      'assets',
-      'creation_date',
-      'modification_date',
-    }.any(data.containsKey)) {
-      return true;
-    }
-    final extensions = _mapStringDynamic(data['extensions']);
-    if (extensions != null &&
-        extensions.keys.any((key) => key != 'chatai_deep')) {
-      return true;
-    }
-    return _tavernCharacterBookNeedsRawPreservation(
-      _mapStringDynamic(_tavernCharacterBook(data)),
-    );
-  }
-
-  static bool _hasTavernLocalizedVariants(Map<String, dynamic> data) {
-    for (final key in const [
-      'description',
-      'personality',
-      'scenario',
-      'first_mes',
-      'mes_example',
-      'creator_notes',
-      'creator_notes_multilingual',
-      'system_prompt',
-      'post_history_instructions',
-      'alternate_greetings',
-    ]) {
-      if (data[key] is Map) return true;
-    }
-    return false;
-  }
-
-  static bool _tavernCharacterBookNeedsRawPreservation(
-    Map<String, dynamic>? book,
-  ) {
-    if (book == null) return false;
-    if (book.keys.any((key) => key != 'entries')) return true;
-    for (final entry in _tavernWorldBookEntries(book['entries'])) {
-      if (entry.containsKey('comment') ||
-          entry.containsKey('name') ||
-          entry.containsKey('id') ||
-          entry.containsKey('insertion_order') ||
-          entry.containsKey('insertionOrder')) {
-        return true;
-      }
-      final extensions = _mapStringDynamic(entry['extensions']);
-      if (extensions != null &&
-          extensions.keys
-              .any((key) => !_supportedWorldBookExtensionKeys.contains(key))) {
-        return true;
-      }
-    }
-    return false;
-  }
-
-  static const _supportedWorldBookExtensionKeys = {
-    'position',
-    'depth',
-    'probability',
-    'useProbability',
-    'use_probability',
-    'excludeRecursion',
-    'exclude_recursion',
-    'preventRecursion',
-    'prevent_recursion',
-    'disabled',
-    'disable',
-    'group',
-    'group_name',
-    'groupName',
-    'group_weight',
-    'groupWeight',
-    'group_override',
-    'groupOverride',
-    'use_group_scoring',
-    'useGroupScoring',
-    'selectiveLogic',
-    'selective_logic',
-    'sticky',
-    'cooldown',
-    'delay',
-    'characterFilter',
-    'character_filter',
-    'characterFilterNames',
-    'characterFilterExclude',
-    'character_filter_exclude',
-    'matchPersonaDescription',
-    'match_persona_description',
-    'matchCharacterDescription',
-    'match_character_description',
-    'matchCharacterPersonality',
-    'match_character_personality',
-    'matchCharacterDepthPrompt',
-    'match_character_depth_prompt',
-    'matchScenario',
-    'match_scenario',
-    'matchCreatorNotes',
-    'match_creator_notes',
-    'case_sensitive',
-    'caseSensitive',
-    'match_whole_words',
-    'matchWholeWords',
-    'regex',
-    'use_regex',
-    'useRegex',
-    'secondary_keys',
-    'secondaryKeys',
-    'secondary_key',
-    'keysecondary',
-    'keySecondary',
-    'exclude_keys',
-    'excludeKeys',
-    'exclusion_keys',
-    'exclusionKeys',
-    'exclusions',
-    'priority',
-    'order',
-  };
-
   static AssistantRoleCardTavernMeta? _tavernMetaFromDecoded(
     Map<String, dynamic> decoded,
   ) {
     final nested = decoded['data'];
-    final tavernData = _looksLikeTavernData(nested)
+    final tavernData = (nested is Map<String, dynamic> &&
+                const ['chara_card_v2', 'chara_card_v3']
+                    .contains(decoded['spec'])) ||
+            _looksLikeTavernData(nested)
         ? nested as Map<String, dynamic>
         : _looksLikeTavernData(decoded)
             ? decoded
@@ -2750,12 +3309,46 @@ class AssistantRoleCardService {
     return lines.join('\n');
   }
 
+  static String _tavernRuntimeLine(Map<String, dynamic> item, String name) {
+    final content = _normalizeTavernText(item['content'], name);
+    if (content.isEmpty) return '';
+    final secondary = _tavernEntryUsesSelective(item)
+        ? _tavernSecondaryKeys(item, name, regex: _tavernEntryUsesRegex(item))
+        : const <String>[];
+    final prefix = _tavernWorldBookPrefix(item, secondaryKeys: secondary);
+    final keys = _tavernKeys(item, name,
+        includeSecondary: !_tavernEntryUsesSelective(item));
+    if (_tavernEntryConstant(item) || keys.isEmpty) return '$prefix$content';
+    return '$prefix${keys.join(_tavernEntryUsesRegex(item) ? ' || ' : ',')} => $content';
+  }
+
   static String _canonicalWorldBookJson(Object? raw, String name) {
-    final legacy = _tavernWorldBook(raw, name);
-    if (legacy.trim().isEmpty) return '';
-    return WorldBookCodec.encode(
-      WorldBookCodec.decode(legacyText: legacy),
-    );
+    final book = _mapStringDynamic(raw);
+    if (book == null) return '';
+    final entries = <Map<String, dynamic>>[];
+    final unmapped = <Map<String, dynamic>>[];
+    var ordinal = 0;
+    for (final item in _tavernWorldBookEntries(book['entries'])) {
+      final id = 'tavern-${ordinal++}-${item['id'] ?? ''}';
+      final parsed =
+          WorldBookEntry.tryParse(_tavernRuntimeLine(item, name), id: id);
+      if (parsed == null) {
+        unmapped.add(_copyJsonMap(item));
+        continue;
+      }
+      final value = parsed.toJson();
+      entries.add({
+        ...value,
+        'tavernEntry': _copyJsonMap(item),
+        'tavernSnapshot': _copyJsonMap(value),
+      });
+    }
+    return jsonEncode({
+      'version': 1,
+      'tavernBook': _copyJsonMap(book)..remove('entries'),
+      'tavernUnmappedEntries': unmapped,
+      'entries': entries,
+    });
   }
 
   static String _tavernEntryComment(Map<String, dynamic> item, String name) {
@@ -3357,6 +3950,7 @@ class AssistantRoleCardSummary {
 
 class AssistantMemoryBookMergePreview {
   final String mergedText;
+  final String structuredJson;
   final int existingCount;
   final int incomingCount;
   final int appendedCount;
@@ -3366,6 +3960,7 @@ class AssistantMemoryBookMergePreview {
 
   const AssistantMemoryBookMergePreview({
     required this.mergedText,
+    this.structuredJson = '',
     required this.existingCount,
     required this.incomingCount,
     required this.appendedCount,
@@ -3407,6 +4002,11 @@ class AssistantRoleCardImportResult {
   final List<AssistantRoleCardResource> resources;
   final String? sourceName;
   final AssistantRoleCardTavernMeta? tavernMeta;
+  final List<String> diagnostics;
+
+  RoleCardCompatibilityReport get compatibility =>
+      AssistantRoleCardService.compatibilityReport(assistant,
+          diagnostics: diagnostics, resources: resources);
 
   const AssistantRoleCardImportResult({
     required this.assistant,
@@ -3415,6 +4015,7 @@ class AssistantRoleCardImportResult {
     this.resources = const [],
     this.sourceName,
     this.tavernMeta,
+    this.diagnostics = const [],
   });
 }
 
@@ -4005,4 +4606,25 @@ class _TavernCharacterFilter {
   final bool exclude;
 
   const _TavernCharacterFilter(this.names, this.exclude);
+}
+
+class _PngCardSelection {
+  final String json;
+  final List<String> diagnostics;
+  const _PngCardSelection(this.json, this.diagnostics);
+}
+
+/// 报告描述本应用映射范围，不承诺其它酒馆前端的全部执行语义。
+class RoleCardCompatibilityReport {
+  final String format;
+  final List<String> notices;
+  const RoleCardCompatibilityReport(
+      {required this.format, this.notices = const []});
+  String get text => [
+        '格式：$format',
+        '已映射：人设、性格、场景、开场、示例及支持的世界书规则',
+        '仅保留：作者、版本、标签、未知扩展及资源；外链不自动读取',
+        'PHI/depth 按现有提示/世界书规则使用；不保证其它前端的插入位置与宏语义',
+        ...notices,
+      ].join('\n');
 }

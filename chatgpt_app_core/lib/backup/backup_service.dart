@@ -1,3 +1,5 @@
+import 'package:chatgpt_app_core/chat/application/story_role_card_context.dart';
+import 'package:chatgpt_app_core/model/story_room_model.dart';
 import 'dart:async';
 import 'dart:collection';
 import 'dart:convert';
@@ -411,7 +413,7 @@ class BackupTableConflict {
 /// 因此可以用 sqflite_common_ffi 内存库做 round-trip 单测。
 class BackupService {
   /// 备份格式版本。导入时大于本值则拒绝（新版本备份导入旧 app）。
-  static const int formatVersion = 12;
+  static const int formatVersion = 13;
 
   static const _kManifest = 'manifest.json';
   static const _kConversations = 'conversations.json';
@@ -2786,6 +2788,11 @@ class BackupService {
     List<String> warnings,
   ) {
     for (final room in rooms) {
+      room['roleCardContextJson'] = room['roleCardContextJson'] is String
+          ? room['roleCardContextJson']
+          : (room['roleCardContextJson'] == null
+              ? ''
+              : jsonEncode(room['roleCardContextJson']));
       room['promptConfigJson'] = '${room['promptConfigJson'] ?? ''}';
       room['quickRepliesJson'] = '${room['quickRepliesJson'] ?? ''}';
       room['regexScriptsJson'] = '${room['regexScriptsJson'] ?? ''}';
@@ -2915,6 +2922,16 @@ class BackupService {
     }
     if (repaired > 0) {
       warnings.add('$repaired 处旧故事分支关系已自动修复');
+    }
+    for (final rawRoom in rooms) {
+      final room = StoryRoomModel.fromJson(rawRoom);
+      final source = participants
+          .where((p) => _intValue(p['roomId']) == room.id)
+          .map(StoryParticipantModel.fromJson)
+          .toList();
+      if (StoryRoleCardContext.read(room, participants: source).degraded) {
+        warnings.add(StoryRoleCardContext.unavailableNotice);
+      }
     }
   }
 

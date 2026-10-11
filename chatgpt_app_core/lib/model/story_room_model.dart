@@ -12,6 +12,9 @@ class StoryRoomModel {
   int maxAutoTotalTokens;
   String publicContext;
   String worldBookState;
+
+  /// 原卡展示与运行时白名单分离；旧房间为空。
+  String roleCardContextJson;
   String promptConfigJson;
   String quickRepliesJson;
   String regexScriptsJson;
@@ -20,6 +23,7 @@ class StoryRoomModel {
   /// 仅用于预览、受控参数映射和往返导出，不直接执行第三方模板。
   String tavernPresetJson;
   String? personaKey;
+
   /// null 跟随当前账号的全局默认；true/false 仅覆盖此房间。
   bool? webSearchEnabled;
   String? modelProviderId;
@@ -46,6 +50,7 @@ class StoryRoomModel {
         StoryRoomSchedulingLimits.defaultMaxAutoTotalTokens,
     this.publicContext = '',
     this.worldBookState = '',
+    this.roleCardContextJson = '',
     this.promptConfigJson = '',
     this.quickRepliesJson = '',
     this.regexScriptsJson = '',
@@ -85,6 +90,7 @@ class StoryRoomModel {
         ),
         publicContext: json['publicContext'] as String? ?? '',
         worldBookState: json['worldBookState'] as String? ?? '',
+        roleCardContextJson: json['roleCardContextJson'] as String? ?? '',
         promptConfigJson: json['promptConfigJson'] as String? ?? '',
         quickRepliesJson: json['quickRepliesJson'] as String? ?? '',
         regexScriptsJson: json['regexScriptsJson'] as String? ?? '',
@@ -115,14 +121,14 @@ class StoryRoomModel {
                 maxAutoTotalTokens),
         'publicContext': publicContext,
         'worldBookState': worldBookState,
+        'roleCardContextJson': roleCardContextJson,
         'promptConfigJson': promptConfigJson,
         'quickRepliesJson': quickRepliesJson,
         'regexScriptsJson': regexScriptsJson,
         'tavernPresetJson': tavernPresetJson,
         'personaKey': personaKey,
-        'webSearchEnabled': webSearchEnabled == null
-            ? null
-            : (webSearchEnabled! ? 1 : 0),
+        'webSearchEnabled':
+            webSearchEnabled == null ? null : (webSearchEnabled! ? 1 : 0),
         'modelProviderId': modelProviderId,
         'modelId': modelId,
         'temperature': temperature,

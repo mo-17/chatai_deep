@@ -47,7 +47,7 @@ class StoryRoomDao implements ITable {
         ", speakerStrategy text default '${StorySpeakerStrategy.smart}'"
         ', avoidRepeatSpeaker integer default 1'
         ', maxAutoTotalTokens integer default ${StoryRoomSchedulingLimits.defaultMaxAutoTotalTokens}'
-        ', publicContext text, worldBookState text'
+        ', publicContext text, worldBookState text, roleCardContextJson text'
         ', promptConfigJson text, quickRepliesJson text, regexScriptsJson text, tavernPresetJson text, personaKey text'
         ', webSearchEnabled integer, modelProviderId text, modelId text'
         ', temperature real, topP real, maxOutputTokens integer'
@@ -140,6 +140,7 @@ class StoryRoomDao implements ITable {
       'topP real',
       'maxOutputTokens integer',
       'worldBookState text',
+      'roleCardContextJson text',
       // 不设默认值：旧房间继续跟随全局，不把当时的值固定为覆盖。
       'webSearchEnabled integer',
       'promptConfigJson text',

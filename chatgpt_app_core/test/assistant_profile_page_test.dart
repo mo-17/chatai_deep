@@ -1,3 +1,4 @@
+import 'package:chatgpt_app_core/chat/application/assistant_operation_scope.dart';
 import 'package:chatgpt_app_core/capability/product_capabilities.dart';
 import 'package:chatgpt_app_core/chat/application/conversation_role_state_suggester.dart';
 import 'package:chatgpt_app_core/db/assistant_memory_dao.dart';
@@ -37,6 +38,11 @@ void main() {
 
     await tester.pumpWidget(MaterialApp(
       home: AssistantProfilePage(
+        operationScope: AssistantOperationScope(
+            accountHash: 'test',
+            restoreRevision: 0,
+            currentAccount: () => 'test',
+            currentRestoreRevision: () => 0),
         assistant: assistant,
         memories: [
           AssistantMemoryModel(
@@ -116,6 +122,11 @@ void main() {
 
     await tester.pumpWidget(MaterialApp(
       home: AssistantProfilePage(
+        operationScope: AssistantOperationScope(
+            accountHash: 'test',
+            restoreRevision: 0,
+            currentAccount: () => 'test',
+            currentRestoreRevision: () => 0),
         assistant: assistant,
         conversation: conversation,
         suggestedRoleState: const ConversationRoleStateDraft(
@@ -172,6 +183,11 @@ void main() {
 
     await tester.pumpWidget(MaterialApp(
       home: AssistantProfilePage(
+        operationScope: AssistantOperationScope(
+            accountHash: 'test',
+            restoreRevision: 0,
+            currentAccount: () => 'test',
+            currentRestoreRevision: () => 0),
         assistant: AssistantModel(id: 1, name: '艾琳'),
         conversation: ConversationModel(
           cid: 100,
@@ -200,6 +216,11 @@ void main() {
 
     await tester.pumpWidget(MaterialApp(
       home: AssistantProfilePage(
+        operationScope: AssistantOperationScope(
+            accountHash: 'test',
+            restoreRevision: 0,
+            currentAccount: () => 'test',
+            currentRestoreRevision: () => 0),
         assistant: AssistantModel(id: 1, name: '艾琳'),
         onStartConversation: () {
           started = true;
@@ -220,6 +241,11 @@ void main() {
 
     await tester.pumpWidget(MaterialApp(
       home: AssistantProfilePage(
+        operationScope: AssistantOperationScope(
+            accountHash: 'test',
+            restoreRevision: 0,
+            currentAccount: () => 'test',
+            currentRestoreRevision: () => 0),
         assistant: AssistantModel(
           id: 1,
           name: '艾琳',
@@ -268,6 +294,11 @@ void main() {
 
     await tester.pumpWidget(MaterialApp(
       home: AssistantProfilePage(
+        operationScope: AssistantOperationScope(
+            accountHash: 'test',
+            restoreRevision: 0,
+            currentAccount: () => 'test',
+            currentRestoreRevision: () => 0),
         assistant: assistant,
         openEditor: (context, assistant) async {
           assistant
@@ -308,6 +339,11 @@ void main() {
 
     await tester.pumpWidget(MaterialApp(
       home: AssistantProfilePage(
+        operationScope: AssistantOperationScope(
+            accountHash: 'test',
+            restoreRevision: 0,
+            currentAccount: () => 'test',
+            currentRestoreRevision: () => 0),
         assistant: AssistantModel(
           id: 1,
           name: '艾琳',
@@ -372,6 +408,11 @@ void main() {
 
     await tester.pumpWidget(MaterialApp(
       home: AssistantProfilePage(
+        operationScope: AssistantOperationScope(
+            accountHash: 'test',
+            restoreRevision: 0,
+            currentAccount: () => 'test',
+            currentRestoreRevision: () => 0),
         assistant: AssistantModel(
           id: 1,
           name: '艾琳',
@@ -412,6 +453,11 @@ void main() {
 
     await tester.pumpWidget(MaterialApp(
       home: AssistantProfilePage(
+        operationScope: AssistantOperationScope(
+            accountHash: 'test',
+            restoreRevision: 0,
+            currentAccount: () => 'test',
+            currentRestoreRevision: () => 0),
         assistant: AssistantModel(id: 1, name: '艾琳'),
         memories: [
           AssistantMemoryModel(
@@ -465,6 +511,11 @@ void main() {
 
     await tester.pumpWidget(MaterialApp(
       home: AssistantProfilePage(
+        operationScope: AssistantOperationScope(
+            accountHash: 'test',
+            restoreRevision: 0,
+            currentAccount: () => 'test',
+            currentRestoreRevision: () => 0),
         assistant: AssistantModel(
           id: 1,
           name: '艾琳',
@@ -507,6 +558,11 @@ void main() {
 
     await tester.pumpWidget(MaterialApp(
       home: AssistantProfilePage(
+        operationScope: AssistantOperationScope(
+            accountHash: 'test',
+            restoreRevision: 0,
+            currentAccount: () => 'test',
+            currentRestoreRevision: () => 0),
         assistant: AssistantModel(id: 1, name: '艾琳'),
         memoryDao: dao,
       ),
@@ -514,7 +570,7 @@ void main() {
 
     expect(find.text('未保存'), findsOneWidget);
 
-    await tester.scrollUntilVisible(find.text('长期记忆'), 220);
+    await tester.scrollUntilVisible(find.widgetWithText(ListTile, '长期记忆'), 220);
     await tester.pumpAndSettle();
     await tester.tap(find.widgetWithText(ListTile, '长期记忆'));
     await tester.pumpAndSettle();
@@ -543,12 +599,17 @@ void main() {
 
     await tester.pumpWidget(MaterialApp(
       home: AssistantProfilePage(
+        operationScope: AssistantOperationScope(
+            accountHash: 'test',
+            restoreRevision: 0,
+            currentAccount: () => 'test',
+            currentRestoreRevision: () => 0),
         assistant: assistant,
         worldBookSaver: (next) async => saved.add(next.memoryBook),
       ),
     ));
 
-    await tester.scrollUntilVisible(find.text('世界书'), 220);
+    await tester.scrollUntilVisible(find.widgetWithText(ListTile, '世界书'), 220);
     await tester.pumpAndSettle();
     await tester.tap(find.widgetWithText(ListTile, '世界书'));
     await tester.pumpAndSettle();
@@ -586,6 +647,11 @@ void main() {
 
     await tester.pumpWidget(MaterialApp(
       home: AssistantProfilePage(
+        operationScope: AssistantOperationScope(
+            accountHash: 'test',
+            restoreRevision: 0,
+            currentAccount: () => 'test',
+            currentRestoreRevision: () => 0),
         assistant: assistant,
         conversation: conversation,
         memories: [
@@ -642,6 +708,11 @@ void main() {
 
     await tester.pumpWidget(MaterialApp(
       home: AssistantProfilePage(
+        operationScope: AssistantOperationScope(
+            accountHash: 'test',
+            restoreRevision: 0,
+            currentAccount: () => 'test',
+            currentRestoreRevision: () => 0),
         assistant: AssistantModel(
           id: 1,
           name: '艾琳',
@@ -690,6 +761,11 @@ void main() {
 
     await tester.pumpWidget(MaterialApp(
       home: AssistantProfilePage(
+        operationScope: AssistantOperationScope(
+            accountHash: 'test',
+            restoreRevision: 0,
+            currentAccount: () => 'test',
+            currentRestoreRevision: () => 0),
         assistant: AssistantModel(
           id: 1,
           name: '艾琳',
