@@ -1,4 +1,10 @@
-import { Injectable, Logger, OnModuleInit } from '@nestjs/common';
+import {
+  Injectable,
+  Logger,
+  OnModuleInit,
+  OnApplicationShutdown,
+  Optional,
+} from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { SmtpProvider } from '../entities/smtp-provider.entity';
@@ -8,6 +14,10 @@ import { EmailAliyunSender } from './email-aliyun.sender';
 import { EmailTencentSender } from './email-tencent.sender';
 import * as crypto from 'crypto';
 import { requireAppSecretKey } from '../../security/app-secret';
+import { MicrosoftSmtpConnection } from '../../microsoft/microsoft-smtp.entities';
+import { MicrosoftSmtpService } from '../../microsoft/microsoft-smtp.service';
+import { EmailMicrosoftSender } from './email-microsoft.sender';
+import { MailDeliveryError } from './mail-delivery.error';
 
 /** 启动时为 ak_smtp_providers 预置的 3 个 slot（仅当对应 key 不存在时插入）。 */
 const PROVIDER_SEEDS: Array<
@@ -41,14 +51,19 @@ const PROVIDER_SEEDS: Array<
  * 切换服务商时调用 activate(key) 在事务内切换 enabled 状态。
  */
 @Injectable()
-export class EmailSenderManager implements OnModuleInit {
+export class EmailSenderManager implements OnModuleInit, OnApplicationShutdown {
   private readonly logger = new Logger('EmailSenderManager');
-  private cachedSender: { key: string; sender: IEmailSender } | null = null;
+  private cachedSender: {
+    key: string;
+    fingerprint: string;
+    sender: IEmailSender;
+  } | null = null;
   private readonly appSecret: Buffer;
 
   constructor(
     @InjectRepository(SmtpProvider)
     private readonly smtpRepo: Repository<SmtpProvider>,
+    @Optional() private readonly microsoft?: MicrosoftSmtpService,
   ) {
     const appSecretKey = requireAppSecretKey(process.env.APP_SECRET_KEY);
     this.appSecret = crypto.createHash('sha256').update(appSecretKey).digest();
@@ -84,11 +99,55 @@ export class EmailSenderManager implements OnModuleInit {
   }> {
     const provider = await this.smtpRepo.findOne({ where: { enabled: true } });
     if (!provider) {
-      throw new Error('没有启用的 SMTP 服务商，请在管理后台启用一个');
+      throw new MailDeliveryError('smtp_not_configured', 'failed');
     }
-    // 缓存键变化时重建 sender
-    if (this.cachedSender?.key !== provider.key) {
-      const password = this.decrypt(provider.passwordEncrypted);
+    const sender = this.senderFor(provider);
+    return { key: provider.key, sender, provider };
+  }
+
+  /** 正式与测试发信共用构造入口；指纹覆盖同 key 更新和跨实例修改。 */
+  senderFor(provider: SmtpProvider): IEmailSender {
+    if (provider.authMode === 'microsoft_oauth') {
+      if (provider.key !== 'generic' || !this.microsoft)
+        throw new MailDeliveryError(
+          'microsoft_authorization_unavailable',
+          'failed',
+        );
+      return new EmailMicrosoftSender(provider, this.microsoft);
+    }
+    if (
+      !provider.host ||
+      !provider.username ||
+      !provider.passwordEncrypted ||
+      !provider.fromAddress
+    )
+      throw new MailDeliveryError('smtp_not_configured', 'failed');
+    const fingerprint = crypto
+      .createHash('sha256')
+      .update(
+        JSON.stringify([
+          provider.configRevision,
+          provider.host,
+          provider.port,
+          provider.secure,
+          provider.username,
+          provider.passwordEncrypted,
+          provider.fromName,
+          provider.fromAddress,
+        ]),
+      )
+      .digest('hex');
+    if (
+      this.cachedSender?.key !== provider.key ||
+      this.cachedSender.fingerprint !== fingerprint
+    ) {
+      this.invalidate();
+      let password: string;
+      try {
+        password = this.decrypt(provider.passwordEncrypted);
+      } catch {
+        throw new MailDeliveryError('smtp_configuration_invalid', 'failed');
+      }
       const baseConfig = {
         host: provider.host,
         port: provider.port,
@@ -109,9 +168,16 @@ export class EmailSenderManager implements OnModuleInit {
         default:
           sender = new EmailSmtpSender(baseConfig);
       }
-      this.cachedSender = { key: provider.key, sender };
+      this.cachedSender = { key: provider.key, fingerprint, sender };
     }
-    return { key: provider.key, sender: this.cachedSender.sender, provider };
+    return this.cachedSender.sender;
+  }
+
+  invalidate(key?: string): void {
+    if (!key || this.cachedSender?.key === key) {
+      this.cachedSender?.sender.close?.();
+      this.cachedSender = null;
+    }
   }
 
   /** 发送邮件（使用当前启用的服务商） */
@@ -123,11 +189,47 @@ export class EmailSenderManager implements OnModuleInit {
   /** 切换到指定服务商（事务内把旧 enabled 置 false，新置 true，清内存缓存） */
   async activate(key: string): Promise<void> {
     await this.smtpRepo.manager.transaction(async (manager) => {
+      await manager.query('SELECT pg_advisory_xact_lock(178409,1)');
+      const provider = await manager.findOne(SmtpProvider, {
+        where: { key: key as SmtpProvider['key'] },
+        lock: { mode: 'pessimistic_write' },
+      });
+      if (!provider)
+        throw new MailDeliveryError('smtp_configuration_invalid', 'failed');
+      if (provider.authMode === 'microsoft_oauth') {
+        if (!this.microsoft)
+          throw new MailDeliveryError(
+            'microsoft_authorization_unavailable',
+            'failed',
+          );
+        await this.microsoft.activationReady(manager, provider);
+        const c = await manager.findOne(MicrosoftSmtpConnection, {
+          where: { providerId: provider.id },
+        });
+        if (
+          !c ||
+          c.status !== 'connected' ||
+          c.configRevision !== provider.configRevision ||
+          !c.refreshEncrypted ||
+          !provider.microsoftClientId ||
+          !provider.microsoftClientSecretEncrypted
+        )
+          throw new MailDeliveryError(
+            'microsoft_authorization_unavailable',
+            'failed',
+          );
+      } else this.senderFor(provider);
       await manager.update(SmtpProvider, { enabled: true }, { enabled: false });
       await manager.update(SmtpProvider, { key }, { enabled: true });
     });
-    this.cachedSender = null;
+    this.invalidate();
+    this.microsoft?.invalidate();
     this.logger.log(`SMTP 服务商已切换至: ${key}`);
+  }
+
+  onApplicationShutdown(): void {
+    this.invalidate();
+    this.microsoft?.invalidate();
   }
 
   /** AES-256-GCM 解密 */

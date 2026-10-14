@@ -6,6 +6,8 @@ import 'package:chatgpt_app_core/db/hi_db_manager.dart';
 import 'package:chatgpt_app_core/model/conversation_model.dart';
 import 'package:chatgpt_app_core/pages/conversation_page.dart';
 import 'package:chatgpt_app_core/pages/agent_task_detail_page.dart';
+import 'package:chatgpt_app_core/pages/agent_workflow_page.dart';
+import 'package:chatgpt_app_core/pages/cloud_workflow_page.dart';
 import 'package:flutter/material.dart';
 
 typedef AgentTaskCenterLoader = Future<AgentTaskCenterBatch> Function({
@@ -285,6 +287,26 @@ class _AgentTaskCenterPageState extends State<AgentTaskCenterPage>
     final entries = _visible;
     return Scaffold(
       appBar: AppBar(title: const Text('Agent 任务中心'), actions: [
+        IconButton(
+            tooltip: '云任务',
+            icon: const Icon(Icons.cloud_outlined),
+            onPressed: _accountChanged
+                ? null
+                : () => Navigator.push<void>(
+                    context,
+                    MaterialPageRoute(
+                        builder: (_) => CloudWorkflowPage(
+                            expectedAccountHash: _accountHash)))),
+        IconButton(
+            tooltip: '多Agent协作记录',
+            icon: const Icon(Icons.groups_outlined),
+            onPressed: _accountChanged
+                ? null
+                : () => Navigator.push<void>(
+                    context,
+                    MaterialPageRoute(
+                        builder: (_) => AgentWorkflowPage(
+                            expectedAccountHash: _accountHash)))),
         IconButton(
             tooltip: '刷新任务',
             onPressed:

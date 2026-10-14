@@ -175,6 +175,7 @@ describe('authentication security regressions', () => {
       tokenVersion: 0,
     };
     const txRepo = {
+      find: jest.fn().mockResolvedValue([]),
       findOne: jest
         .fn()
         .mockImplementation(({ where }: { where: Record<string, unknown> }) => {
@@ -185,7 +186,10 @@ describe('authentication security regressions', () => {
     };
     const transaction = jest.fn(
       async (action: (manager: unknown) => Promise<unknown>) =>
-        action({ getRepository: () => txRepo }),
+        action({
+          query: jest.fn().mockResolvedValue([]),
+          getRepository: () => txRepo,
+        }),
     );
     const resolver = new ChatGptUserResolver({
       manager: { transaction },
@@ -264,15 +268,17 @@ describe('authentication security regressions', () => {
   });
 
   it('JWT authorization follows current user state and token version', async () => {
+    const exp = Math.floor(Date.now() / 1000) + 300;
     const token = jwt.sign(
       {
         userId: 7,
         userName: 'snapshot-name',
         role: 'admin',
         tokenVersion: 3,
+        exp,
       },
       JWT_SECRET,
-      { algorithm: 'HS256', expiresIn: '5m' },
+      { algorithm: 'HS256' },
     );
     const repo = { findOne: jest.fn() };
     const verifier = new TokenAuthenticationService(repo as never);
@@ -288,6 +294,8 @@ describe('authentication security regressions', () => {
       userId: 7,
       userName: 'current-name',
       role: 'user',
+      tokenVersion: 3,
+      expiresAt: exp * 1000,
     });
 
     repo.findOne.mockResolvedValueOnce({
@@ -339,7 +347,19 @@ describe('authentication security regressions', () => {
   });
 
   it('the supported reset flow consumes a code and rotates the password state', async () => {
-    const verifyCode = jest.fn().mockResolvedValue(true);
+    const manager = { queryRunner: { isTransactionActive: true } };
+    const consumeWith = jest.fn(
+      (
+        _channel: string,
+        _identifier: string,
+        _purpose: string,
+        _code: string,
+        action: (
+          manager: unknown,
+          assertCurrent: () => void,
+        ) => Promise<unknown>,
+      ) => action(manager, () => {}),
+    );
     let capturedPasswordHash: string | undefined;
     const updatePassword = jest.fn(
       (_userId: number, newPasswordHash: string): Promise<void> => {
@@ -351,8 +371,11 @@ describe('authentication security regressions', () => {
       findByEmail: jest.fn().mockResolvedValue({ id: 9 }),
       updatePassword,
     };
+    Object.assign(userResolver, {
+      withManager: jest.fn().mockReturnValue(userResolver),
+    });
     const controller = new AuthController(
-      { verifyCode } as never,
+      { consumeWith } as never,
       {} as never,
       {
         userResolver,
@@ -370,12 +393,14 @@ describe('authentication security regressions', () => {
         newPassword: 'new-password-123',
       }),
     ).resolves.toEqual({ code: 0, data: null });
-    expect(verifyCode).toHaveBeenCalledWith(
+    expect(consumeWith).toHaveBeenCalledWith(
       'email',
       'user@example.com',
       'reset_password',
       '123456',
+      expect.any(Function),
     );
+    expect(userResolver).toHaveProperty('withManager', expect.any(Function));
     expect(capturedPasswordHash).toEqual(expect.any(String));
     if (!capturedPasswordHash)
       throw new Error('password hash was not captured');
@@ -393,6 +418,9 @@ describe('authentication security regressions', () => {
       codeHash: await bcrypt.hash('123456', 4),
       expiresAt: new Date(Date.now() + 60_000),
       consumedAt: null,
+      deliveryStatus: 'sent',
+      invalidatedAt: null,
+      invalidationReason: null,
       attempts: 0,
       ipAddress: null,
       note: null,
@@ -403,7 +431,10 @@ describe('authentication security regressions', () => {
       save: jest.fn().mockImplementation((value) => Promise.resolve(value)),
     };
     const transaction = jest.fn((action: (manager: unknown) => unknown) =>
-      action({ getRepository: () => txRepo }),
+      action({
+        query: jest.fn().mockResolvedValue([]),
+        getRepository: () => txRepo,
+      }),
     );
     const codeRepo = {
       manager: { transaction },
@@ -412,7 +443,15 @@ describe('authentication security regressions', () => {
     };
     const service = new VerificationService(
       codeRepo as never,
-      { get: jest.fn().mockResolvedValue({ codeMaxAttempts: 5 }) } as never,
+      {
+        get: jest.fn().mockResolvedValue({
+          codeTtlSeconds: 300,
+          codeResendIntervalSeconds: 60,
+          codeMaxAttempts: 5,
+          codeDailyLimitPerIdentifier: 10,
+          codeHourlyLimitPerIp: 30,
+        }),
+      } as never,
       {} as never,
     );
 
@@ -427,10 +466,12 @@ describe('authentication security regressions', () => {
 
   it('failed verification attempts persist before the public error is thrown', async () => {
     const record = {
-      codeHash: await bcrypt.hash('123456', 4),
-      expiresAt: new Date(Date.now() + 60_000),
+      deliveryStatus: 'sent',
+      invalidatedAt: null,
       consumedAt: null,
       attempts: 0,
+      codeHash: await bcrypt.hash('123456', 4),
+      expiresAt: new Date(Date.now() + 60_000),
     } as VerificationCode;
     const txRepo = {
       findOne: jest.fn().mockResolvedValue(record),
@@ -438,11 +479,22 @@ describe('authentication security regressions', () => {
     };
     const transaction = jest.fn(
       async (action: (manager: unknown) => Promise<unknown>) =>
-        action({ getRepository: () => txRepo }),
+        action({
+          query: jest.fn().mockResolvedValue([]),
+          getRepository: () => txRepo,
+        }),
     );
     const service = new VerificationService(
       { manager: { transaction } } as never,
-      { get: jest.fn().mockResolvedValue({ codeMaxAttempts: 5 }) } as never,
+      {
+        get: jest.fn().mockResolvedValue({
+          codeTtlSeconds: 300,
+          codeResendIntervalSeconds: 60,
+          codeMaxAttempts: 5,
+          codeDailyLimitPerIdentifier: 10,
+          codeHourlyLimitPerIp: 30,
+        }),
+      } as never,
       {} as never,
     );
 

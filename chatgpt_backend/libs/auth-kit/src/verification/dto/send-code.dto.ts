@@ -1,16 +1,7 @@
-import { IsIn, IsString, MaxLength } from 'class-validator';
+import { IsIn } from 'class-validator';
+import { AuthIdentifierDto } from './identifier.dto';
 
-const CHANNELS = ['email', 'sms'] as const;
-const PURPOSES = ['login', 'register', 'bind', 'reset_password'] as const;
-
-export class SendCodeDto {
-  @IsIn(CHANNELS)
-  channel: 'email' | 'sms';
-
-  @IsString()
-  @MaxLength(320)
-  identifier: string;
-
-  @IsIn(PURPOSES)
+export class SendCodeDto extends AuthIdentifierDto {
+  @IsIn(['login', 'register', 'bind', 'reset_password'])
   purpose: 'login' | 'register' | 'bind' | 'reset_password';
 }

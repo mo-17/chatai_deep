@@ -1,7 +1,9 @@
+import 'dart:async';
 import 'dart:convert';
 
 import 'package:chatgpt_app_core/chat/application/web_search_provider.dart';
 import 'package:chatgpt_app_core/chat/domain/message_block.dart';
+import 'package:chatgpt_app_core/chat/domain/chat_request_options.dart';
 import 'package:chatgpt_app_core/dao/chat/chat_service.dart';
 import 'package:openai_flutter/utils/ai_logger.dart';
 
@@ -24,11 +26,15 @@ class SearchIntent {
     try {
       final start = raw.indexOf('{');
       final end = raw.lastIndexOf('}');
-      if (start < 0 || end <= start) return SearchIntent.fallback(fallbackQuery);
+      if (start < 0 || end <= start) {
+        return SearchIntent.fallback(fallbackQuery);
+      }
       final json =
           jsonDecode(raw.substring(start, end + 1)) as Map<String, dynamic>;
       final need = json['needSearch'] as bool? ?? false;
-      if (!need) return const SearchIntent(needSearch: false);
+      if (!need) {
+        return const SearchIntent(needSearch: false);
+      }
       final queries = ((json['queries'] as List?) ?? const [])
           .whereType<String>()
           .map((q) => q.trim())
@@ -70,11 +76,17 @@ class SearchOrchestrator {
   Future<List<WebSearchResult>> run({
     required String prompt,
     required List<Map<String, dynamic>> history,
+    ChatRequestOptions? options,
   }) async {
-    final intent = await analyzeIntent(prompt: prompt, history: history);
-    if (!intent.needSearch) return const [];
+    await _check(options);
+    final intent =
+        await analyzeIntent(prompt: prompt, history: history, options: options);
+    await _check(options);
+    if (!intent.needSearch) {
+      return const [];
+    }
     AILogger.log('web search query count: ${intent.queries.length}');
-    return searchAll(intent.queries);
+    return searchAll(intent.queries, options: options);
   }
 
   /// 意图识别：发正式请求前用一次非流式调用判断要不要联网，
@@ -82,14 +94,28 @@ class SearchOrchestrator {
   Future<SearchIntent> analyzeIntent({
     required String prompt,
     required List<Map<String, dynamic>> history,
+    ChatRequestOptions? options,
   }) async {
     try {
-      final raw = await chatService.chat(
-        prompt: buildIntentPrompt(prompt),
-        history: recentTextHistory(history),
-      );
+      await _check(options);
+      final raw = options == null
+          ? await chatService.chat(
+              prompt: buildIntentPrompt(prompt),
+              history: recentTextHistory(history))
+          : (await chatService.chatWithUsageWithOptions(
+                  prompt: buildIntentPrompt(prompt),
+                  history: recentTextHistory(history),
+                  options: options.copyWith(clearMessagesForAttempt: true)))
+              .content;
+      await _check(options);
       return SearchIntent.parse(raw ?? '', fallbackQuery: prompt);
     } catch (e) {
+      await _check(options);
+      if (e is ChatTransportException &&
+          (e.failureKind == ChatFailureKind.cancelled ||
+              e.failureKind == ChatFailureKind.invalidConfiguration)) {
+        rethrow;
+      }
       AILogger.log('intent analyze failed, fallback to raw query: $e');
       return SearchIntent.fallback(prompt);
     }
@@ -99,13 +125,24 @@ class SearchOrchestrator {
   /// 正文截断由 provider 的 [WebSearchOptions]（用户设置）决定；合并总数
   /// 截到 max([maxTotalResults], 用户配置的单次条数)。
   /// 单条 query 失败不影响其它 query（吞掉错误返回空列表）。
-  Future<List<WebSearchResult>> searchAll(List<String> queries) async {
+  Future<List<WebSearchResult>> searchAll(List<String> queries,
+      {ChatRequestOptions? options}) async {
+    await _check(options);
     final lists = await Future.wait(queries.map(
-      (q) => provider.search(q).catchError((Object e) {
+      (q) => provider
+          .searchWithOptions(q, options: options)
+          .catchError((Object e) async {
+        await _check(options);
+        if (e is ChatTransportException &&
+            (e.failureKind == ChatFailureKind.cancelled ||
+                e.failureKind == ChatFailureKind.invalidConfiguration)) {
+          throw e;
+        }
         AILogger.log('search "$q" failed: $e');
         return <WebSearchResult>[];
       }),
     ));
+    await _check(options);
     final totalCap = provider.options.maxResults > maxTotalResults
         ? provider.options.maxResults
         : maxTotalResults;
@@ -113,12 +150,32 @@ class SearchOrchestrator {
     final merged = <WebSearchResult>[];
     for (final list in lists) {
       for (final r in list) {
-        if (r.url.isEmpty || !seen.add(r.url)) continue;
+        if (r.url.isEmpty || !seen.add(r.url)) {
+          continue;
+        }
         merged.add(r);
-        if (merged.length >= totalCap) return merged;
+        if (merged.length >= totalCap) {
+          return merged;
+        }
       }
     }
     return merged;
+  }
+
+  static Future<void> _check(ChatRequestOptions? options) async {
+    if (options == null) {
+      return;
+    }
+    var aborted = false;
+    options.abortTrigger?.then<void>((_) => aborted = true,
+        onError: (Object _, StackTrace __) => aborted = true);
+    await Future<void>.value();
+    if (aborted || options.dispatchIsCurrent?.call() == false) {
+      throw const ChatTransportException(
+          safeCode: 'cancelled',
+          safeMessage: '搜索已停止',
+          failureKind: ChatFailureKind.cancelled);
+    }
   }
 
   /// 当前本地日期，格式 `yyyy-MM-dd`。意图改写与结果回填都用它锚定「今天」，
@@ -160,7 +217,9 @@ $prompt
   }
 
   static String _textOf(Object? content) {
-    if (content is String) return content;
+    if (content is String) {
+      return content;
+    }
     if (content is List) {
       return content
           .whereType<Map>()
@@ -182,7 +241,9 @@ $prompt
         ..writeln()
         ..writeln('[${i + 1}] ${r.title}')
         ..writeln('来源：${r.url}');
-      if (r.content.isNotEmpty) buf.writeln(r.content);
+      if (r.content.isNotEmpty) {
+        buf.writeln(r.content);
+      }
     }
     buf
       ..writeln()

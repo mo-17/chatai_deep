@@ -3,6 +3,8 @@ import 'dart:convert';
 import 'package:chatgpt_app_core/chat/application/agent_workspace_service.dart';
 import 'package:chatgpt_app_core/db/agent_verification_dao.dart';
 import 'package:flutter/foundation.dart';
+import 'package:crypto/crypto.dart';
+import 'package:sqflite/sqflite.dart';
 
 /// 用户设定的客观条件。工具不能改写或削弱这些条件。
 class TaskAcceptanceCriteria {
@@ -103,11 +105,15 @@ class AgentTaskVerificationReport {
   final int userCreatedAt;
   final int createdAt;
   final List<AgentVerificationCheck> checks;
+
+  /// 验收实际读取的文件与本轮确认来源；最终事务必须重新核对。
+  final Map<String, dynamic>? verifiedSnapshot;
   const AgentTaskVerificationReport(
       {required this.cid,
       required this.userCreatedAt,
       required this.createdAt,
-      required this.checks});
+      required this.checks,
+      this.verifiedSnapshot});
   bool get hasChecks => checks.isNotEmpty;
   bool get isPassed => checks.every((check) => check.passed);
   bool get passed => isPassed;
@@ -123,13 +129,17 @@ class AgentTaskVerificationReport {
         'hasChecks': hasChecks,
         'isPassed': isPassed,
         'summary': summary,
-        'checks': checks.map((check) => check.toJson()).toList()
+        'checks': checks.map((check) => check.toJson()).toList(),
+        if (verifiedSnapshot != null) 'verifiedSnapshot': verifiedSnapshot,
       };
   factory AgentTaskVerificationReport.fromJson(Map<String, dynamic> value) =>
       AgentTaskVerificationReport(
           cid: value['cid'] as int,
           userCreatedAt: value['userCreatedAt'] as int,
           createdAt: value['createdAt'] as int,
+          verifiedSnapshot: value['verifiedSnapshot'] == null
+              ? null
+              : Map<String, dynamic>.from(value['verifiedSnapshot'] as Map),
           checks: (value['checks'] as List)
               .map((check) => AgentVerificationCheck.fromJson(
                   Map<String, dynamic>.from(check as Map)))
@@ -148,9 +158,12 @@ class AgentTaskVerifier {
       required List<int> inputIds,
       required Map<int, int> outputRevisions,
       required TaskAcceptanceCriteria criteria,
-      bool Function()? canCommit}) async {
+      bool Function()? canCommit,
+      Future<void> Function(Transaction)? transactionGuard,
+      Future<void> Function(Future<void> Function())? stableOperation}) async {
     criteria.validate();
     final checks = <AgentVerificationCheck>[];
+    final bindings = <Map<String, dynamic>>[];
     if (criteria.requireFullRead) {
       for (final id in inputIds.toSet()) {
         final file = await workspace.getFile(id);
@@ -252,6 +265,14 @@ class AgentTaskVerifier {
             revision: file.revision));
         continue;
       }
+      bindings.add({
+        'id': file.id,
+        'name': file.name,
+        'kind': file.kind,
+        'revision': file.revision,
+        'contentHash': file.contentHash,
+        'textHash': sha256.convert(utf8.encode(content)).toString(),
+      });
       void add(String label, bool passed, String detail) =>
           checks.add(AgentVerificationCheck(
               label: '$label：${file.name}',
@@ -289,9 +310,20 @@ class AgentTaskVerifier {
         cid: cid,
         userCreatedAt: userCreatedAt,
         createdAt: DateTime.now().millisecondsSinceEpoch,
-        checks: List.unmodifiable(checks));
+        checks: List.unmodifiable(checks),
+        verifiedSnapshot: {
+          'version': 1,
+          'inputIds': inputIds,
+          'criteria': criteria.toJson(),
+          'outputs': {
+            for (final e in outputRevisions.entries) '${e.key}': e.value
+          },
+          'files': bindings,
+        });
     await store.saveReport(cid, userCreatedAt, report.toJson(),
-        canCommit: canCommit);
+        canCommit: canCommit,
+        transactionGuard: transactionGuard,
+        stableOperation: stableOperation);
     return report;
   }
 

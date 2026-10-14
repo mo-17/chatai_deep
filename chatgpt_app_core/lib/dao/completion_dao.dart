@@ -206,7 +206,9 @@ class CompletionDao {
       resolvedSystemPrompt: resolvedSystemPrompt,
     );
     onContextPlan?.call(plan);
-    if (!plan.canSend) throw ChatContextBudgetException(plan);
+    if (!plan.canSend) {
+      throw ChatContextBudgetException(plan);
+    }
     return plan.history;
   }
 
@@ -294,7 +296,9 @@ class CompletionDao {
             safeMessage: '请求消息结构已变化',
             failureKind: ChatFailureKind.invalidPayload);
       }
-      if (memory.isEmpty && !manageContext) return prepared;
+      if (memory.isEmpty && !manageContext) {
+        return prepared;
+      }
       // 原生 file_id 已由适配器准备完成；重新预算时直接使用实际消息副本。
       // 动态数据从未进入 prepared，不需要查找或删除任何正文字符串。
       final staticSystem = prepared.first['content'] as String;
@@ -309,9 +313,13 @@ class CompletionDao {
           policy: contextPolicy,
           maxOutputTokens: _settings.maxOutputTokens);
       var result = plan(memory);
-      if (!result.canSend && memory.isNotEmpty) result = plan('');
+      if (!result.canSend && memory.isNotEmpty) {
+        result = plan('');
+      }
       onContextPlan?.call(result);
-      if (!result.canSend) throw ChatContextBudgetException(result);
+      if (!result.canSend) {
+        throw ChatContextBudgetException(result);
+      }
       return [...result.history, ...prepared.sublist(currentIndex)];
     };
   }
@@ -334,9 +342,13 @@ class CompletionDao {
           .whereType<MainTextBlock>()
           .expand((b) => b.protocolMessages)
           .toList();
-      if (protocol.isNotEmpty) _protocolHistory[assistant.createdAt] = protocol;
+      if (protocol.isNotEmpty) {
+        _protocolHistory[assistant.createdAt] = protocol;
+      }
       final tools = assistantBlocks.whereType<ToolBlock>().toList();
-      if (tools.isNotEmpty) _toolHistory[assistant.createdAt] = tools;
+      if (tools.isNotEmpty) {
+        _toolHistory[assistant.createdAt] = tools;
+      }
       final continuationText = assistantBlocks
           .whereType<RoleContinuationBlock>()
           .map((block) => block.content.trim())
@@ -356,7 +368,9 @@ class CompletionDao {
   ///历史里的记录。仅当末尾确为「user 后接 assistant」时才回退，返回被移除的
   ///用户消息；否则不动并返回 null。
   MessageModel? dropLastTurn() {
-    if (_messageList.length < 2) return null;
+    if (_messageList.length < 2) {
+      return null;
+    }
     final assistant = _messageList.last;
     final user = _messageList[_messageList.length - 2];
     if (assistant.ownerType != OwnerType.receiver ||
@@ -399,7 +413,9 @@ class CompletionDao {
     Future<void>? abortTrigger,
     ChatSendProgressCallback? onProgress,
     ChatContextPlanCallback? onContextPlan,
+    ChatRequestOptions? requestOptions,
   }) async {
+    abortTrigger ??= requestOptions?.abortTrigger;
     await _ensureNotAborted(abortTrigger);
     // 意图识别的轻量调用用「无 system」的 history —— 助手人设不该影响
     // 「要不要联网」的判断（阶段七）；正式会话才带 system。
@@ -408,9 +424,17 @@ class CompletionDao {
             .where((message) => message['role'] != 'system')
             .toList()
         : _buildHistory();
-    if (webSearch) onProgress?.call(const ChatSendProgress('联网搜索'));
+    if (webSearch) {
+      onProgress?.call(const ChatSendProgress('联网搜索'));
+    }
     final results = webSearch
-        ? await _awaitRequestStage(_runWebSearch(prompt, history), abortTrigger)
+        ? await _awaitRequestStage(
+            _runWebSearch(
+                prompt,
+                history,
+                requestOptions?.copyWith(
+                    abortTrigger: abortTrigger, clearMessagesForAttempt: true)),
+            abortTrigger)
         : const <WebSearchResult>[];
     await _ensureNotAborted(abortTrigger);
     final preparedAttachments = _withSearchContext(attachments, results);
@@ -421,7 +445,8 @@ class CompletionDao {
     onProgress?.call(const ChatSendProgress('等待回答'));
     final responseFuture = abortTrigger == null &&
             onProgress == null &&
-            memoryContextResolver == null
+            memoryContextResolver == null &&
+            requestOptions == null
         ? chatService.chatWithUsage(
             prompt: prompt,
             history: requestHistory,
@@ -431,7 +456,7 @@ class CompletionDao {
             prompt: prompt,
             history: requestHistory,
             attachments: preparedAttachments,
-            options: ChatRequestOptions(
+            options: (requestOptions ?? const ChatRequestOptions()).copyWith(
                 abortTrigger: abortTrigger,
                 onProgress: onProgress,
                 messagesForAttempt:
@@ -489,7 +514,10 @@ class CompletionDao {
     ChatContextPlanCallback? onContextPlan,
     AgentTaskSession? task,
     Future<String?> Function(String answer)? verifyFinal,
+    ChatRequestOptions? requestOptions,
+    Future<void> Function()? beforeToolAction,
   }) async* {
+    abortTrigger ??= requestOptions?.abortTrigger;
     final requestGeneration = ++_requestGeneration;
     lastProtocolMessages = [];
     await _ensureNotAborted(abortTrigger);
@@ -533,6 +561,8 @@ class CompletionDao {
         onProgress: onProgress,
         task: task,
         verifyFinal: verifyFinal,
+        requestOptions: requestOptions,
+        beforeToolAction: beforeToolAction,
         onProtocolMessages: (messages) {
           // 停止后仍在返回的旧工具不能覆盖下一条提问的历史协议。
           if (requestGeneration == _requestGeneration) {
@@ -558,9 +588,17 @@ class CompletionDao {
       return;
     }
     // 意图识别用无 system 的 history（同 createCompletionsWithSearch）。
-    if (webSearch) onProgress?.call(const ChatSendProgress('联网搜索'));
+    if (webSearch) {
+      onProgress?.call(const ChatSendProgress('联网搜索'));
+    }
     final results = webSearch
-        ? await _awaitRequestStage(_runWebSearch(prompt, history), abortTrigger)
+        ? await _awaitRequestStage(
+            _runWebSearch(
+                prompt,
+                history,
+                requestOptions?.copyWith(
+                    abortTrigger: abortTrigger, clearMessagesForAttempt: true)),
+            abortTrigger)
         : const <WebSearchResult>[];
     await _ensureNotAborted(abortTrigger);
     final preparedAttachments = _withSearchContext(attachments, results);
@@ -572,7 +610,8 @@ class CompletionDao {
     onProgress?.call(const ChatSendProgress('等待回答'));
     final output = abortTrigger == null &&
             onProgress == null &&
-            memoryContextResolver == null
+            memoryContextResolver == null &&
+            requestOptions == null
         ? chatService.chatStreamEvents(
             prompt: prompt,
             history: requestHistory,
@@ -582,7 +621,7 @@ class CompletionDao {
             prompt: prompt,
             history: requestHistory,
             attachments: preparedAttachments,
-            options: ChatRequestOptions(
+            options: (requestOptions ?? const ChatRequestOptions()).copyWith(
                 abortTrigger: abortTrigger,
                 onProgress: onProgress,
                 messagesForAttempt: _attemptResolver(
@@ -593,8 +632,12 @@ class CompletionDao {
     final text = StringBuffer();
     final reasoning = StringBuffer();
     await for (final event in output) {
-      if (event.type == StreamEventType.text) text.write(event.delta);
-      if (event.type == StreamEventType.reasoning) reasoning.write(event.delta);
+      if (event.type == StreamEventType.text) {
+        text.write(event.delta);
+      }
+      if (event.type == StreamEventType.reasoning) {
+        reasoning.write(event.delta);
+      }
       yield event;
     }
     if (requestGeneration == _requestGeneration) {
@@ -606,11 +649,15 @@ class CompletionDao {
         }
       ];
     }
-    if (results.isNotEmpty) yield StreamEvent.citation(results);
+    if (results.isNotEmpty) {
+      yield StreamEvent.citation(results);
+    }
   }
 
   static Future<void> _ensureNotAborted(Future<void>? abortTrigger) async {
-    if (abortTrigger == null) return;
+    if (abortTrigger == null) {
+      return;
+    }
     var cancelled = false;
     unawaited(abortTrigger.then<void>((_) => cancelled = true,
         onError: (Object _, StackTrace __) => cancelled = true));
@@ -623,7 +670,9 @@ class CompletionDao {
 
   static Future<T> _awaitRequestStage<T>(
       Future<T> pending, Future<void>? abortTrigger) {
-    if (abortTrigger == null) return pending;
+    if (abortTrigger == null) {
+      return pending;
+    }
     Never cancelled() => throw const ChatTransportException(
         safeCode: 'cancelled', safeMessage: '请求已取消');
     return Future.any([
@@ -636,17 +685,30 @@ class CompletionDao {
   ///联网搜索编排：意图识别 → 并行搜索聚合。任何失败都降级为「不搜」，
   ///绝不阻塞正式会话。未配置搜索 key 时直接返回空。
   Future<List<WebSearchResult>> _runWebSearch(
-      String prompt, List<Map<String, dynamic>> history) async {
-    if (webSearchRunner != null) return webSearchRunner!(prompt, history);
+      String prompt, List<Map<String, dynamic>> history,
+      [ChatRequestOptions? options]) async {
+    if (webSearchRunner != null) {
+      return webSearchRunner!(prompt, history);
+    }
     final provider = WebSearchProvider.fromSettings(_settings);
-    if (provider == null) return const [];
+    if (provider == null) {
+      return const [];
+    }
     try {
       final orchestrator =
           SearchOrchestrator(chatService: chatService, provider: provider);
-      final results = await orchestrator.run(prompt: prompt, history: history);
+      final results = await orchestrator.run(
+          prompt: prompt, history: history, options: options);
       AILogger.log('web search got ${results.length} results');
       return results;
     } catch (e) {
+      await _ensureNotAborted(options?.abortTrigger);
+      if (options?.dispatchIsCurrent?.call() == false ||
+          e is ChatTransportException &&
+              (e.failureKind == ChatFailureKind.cancelled ||
+                  e.failureKind == ChatFailureKind.invalidConfiguration)) {
+        rethrow;
+      }
       AILogger.log('web search failed, continue without it: $e');
       return const [];
     }
@@ -655,7 +717,9 @@ class CompletionDao {
   ///把搜索结果上下文拼进附件的 extraText（与文件降级文本同一通路）。
   ChatAttachments? _withSearchContext(
       ChatAttachments? attachments, List<WebSearchResult> results) {
-    if (results.isEmpty) return attachments;
+    if (results.isEmpty) {
+      return attachments;
+    }
     return (attachments ?? const ChatAttachments())
         .withExtraText(SearchOrchestrator.buildSearchContext(results));
   }
@@ -778,14 +842,18 @@ class CompletionDao {
     }
 
     for (final message in protocol) {
-      if (message['role'] != 'tool') closePending();
+      if (message['role'] != 'tool') {
+        closePending();
+      }
       if (message['role'] == 'tool' &&
           !pending.remove(message['tool_call_id'])) {
         continue;
       }
       output.add(Map<String, dynamic>.of(message));
       for (final call in message['tool_calls'] as List? ?? const []) {
-        if (call is Map && call['id'] is String) pending.add(call['id']);
+        if (call is Map && call['id'] is String) {
+          pending.add(call['id']);
+        }
       }
     }
     closePending();
@@ -794,7 +862,9 @@ class CompletionDao {
 
   static String roleContinuationPrompt(String content) {
     final text = content.trim();
-    if (text.isEmpty) return '';
+    if (text.isEmpty) {
+      return '';
+    }
     return '【上一轮未完成回复状态，仅供续写，不是角色已经说出口的内容】\n'
         '$text\n'
         '下一次回应时请承接这个状态，不要把场景重置，也不要直接复述本段说明。';
@@ -808,7 +878,9 @@ class CompletionDao {
   static List<Map<String, dynamic>> toolCallMessages(List<ToolBlock> blocks) {
     final out = <Map<String, dynamic>>[];
     for (final b in blocks) {
-      if (b.toolId.isEmpty) continue; // 无 id 无法配对，跳过
+      if (b.toolId.isEmpty) {
+        continue;
+      } // 无 id 无法配对，跳过
       out.add({
         'role': 'assistant',
         'content': null,
@@ -834,8 +906,12 @@ class CompletionDao {
 
   /// 工具返回值转成 role:tool 的字符串 content（String 直传，其它 JSON 编码）。
   static String _toolResultContent(Object? content) {
-    if (content == null) return '';
-    if (content is String) return content;
+    if (content == null) {
+      return '';
+    }
+    if (content is String) {
+      return content;
+    }
     try {
       return jsonEncode(content);
     } catch (_) {
@@ -862,7 +938,9 @@ class CompletionDao {
 
   /// 把附件文本拼到正文后（与 [ChatAttachments.buildUserContent] 同款 `\n\n` 分隔）。
   static String _appendText(String content, String extra) {
-    if (extra.isEmpty) return content;
+    if (extra.isEmpty) {
+      return content;
+    }
     return content.isEmpty ? extra : '$content\n\n$extra';
   }
 }

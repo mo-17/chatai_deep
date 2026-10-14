@@ -1,3 +1,5 @@
+import 'package:chatgpt_app_core/model/ai_provider.dart';
+import 'package:chatgpt_app_core/chat/application/conversation_generation_service.dart';
 import 'dart:async';
 import 'dart:convert';
 import 'package:chatgpt_app_core/chat/application/composer_prediction_service.dart';
@@ -37,54 +39,10 @@ void main() {
   late HiDBManager storage;
   late AISettingsProvider settings;
   late ThemeProvider theme;
+  late ConversationGenerationService generation;
+  WidgetTester? activeTester;
   late DatabaseFactory? previousFactory;
   const pathChannel = MethodChannel('plugins.flutter.io/path_provider');
-
-  setUpAll(sqfliteFfiInit);
-  setUp(() async {
-    LoginDao.resetHooksForTest();
-    account = "prediction-test-${++sequence}";
-    loginStorage = _GuestStorage(account);
-    mainChat = FakeComposerChat(content: "这是测试回答，单元测试可以验证行为。");
-    predictionChat = FakeComposerChat();
-    temporary = await Directory.systemTemp.createTemp('chatai_page_draft_');
-    previousFactory = databaseFactoryOrNull;
-    databaseFactory = databaseFactoryFfi;
-    await databaseFactory.setDatabasesPath('${temporary.path}/database');
-    TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
-        .setMockMethodCallHandler(pathChannel, (_) async => temporary.path);
-    SharedPreferences.setMockInitialValues({});
-    await HiCache.preInit();
-    await HiCache.getInstance().prefs?.clear();
-    AISettingsDao.resetSecureStateForTest();
-    LoginSdkConfig.install(LoginSdkConfig(
-      baseUrl: 'localhost:3000',
-      headerProvider: () async => const {},
-      syncHeaders: () => const {},
-      routes: LoginRoutes.imooc,
-      responseAdapter: ImoocResponseAdapter(),
-      storage: loginStorage,
-      onLogoutNavigate: () {},
-    ));
-    final ai = AISettings.defaults();
-    await HiCache.getInstance()
-        .setString(AISettingsDao.keyFor(account), jsonEncode(ai.toJson()));
-    settings = AISettingsProvider();
-    theme = ThemeProvider();
-    storage = await HiDBManager.instance(dbName: account);
-  });
-
-  tearDown(() async {
-    await HiDBManager.closeAll();
-    settings.dispose();
-    theme.dispose();
-    LoginSdkConfig.reset();
-    AISettingsDao.resetSecureStateForTest();
-    TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
-        .setMockMethodCallHandler(pathChannel, null);
-    databaseFactory = previousFactory;
-    await temporary.delete(recursive: true);
-  });
 
   Future<void> letIoFinish(WidgetTester tester, {int rounds = 12}) async {
     for (var i = 0; i < rounds; i++) {
@@ -113,23 +71,124 @@ void main() {
     return value as T;
   }
 
-  Future<void> openPage(WidgetTester tester, ConversationModel model) async {
-    await tester.pumpWidget(MultiProvider(
-      providers: [
-        ChangeNotifierProvider<AISettingsProvider>.value(value: settings),
-        ChangeNotifierProvider<ThemeProvider>.value(value: theme),
-      ],
-      child: MaterialApp(
-        home: ConversationPage(
-          key: ValueKey('conversation_${model.cid}'),
-          conversationModel: model,
-          chatService: mainChat,
-          predictionService:
-              ComposerPredictionService(chatFactory: (_) => predictionChat),
-          readAloudService: const NoopReadAloudService(),
-        ),
-      ),
+  void pageTest(String name, Future<void> Function(WidgetTester) body) {
+    testWidgets(name, (tester) async {
+      try {
+        await body(tester);
+      } finally {
+        // 在test自身fake clock仍可pump时结算；tearDown不再推进已结束测试。
+        await finishFuture(
+            tester,
+            Future.wait(generation.runs
+                .where((r) => !r.retired)
+                .map((r) => r.retire('legacy fixture completion'))));
+        expect(generation.runs.every((r) => r.ticket.released), isTrue);
+      }
+    });
+  }
+
+  setUpAll(sqfliteFfiInit);
+  setUp(() async {
+    LoginDao.resetHooksForTest();
+    account = "prediction-test-${++sequence}";
+    loginStorage = _GuestStorage(account);
+    mainChat = FakeComposerChat(content: "这是测试回答，单元测试可以验证行为。");
+    predictionChat = FakeComposerChat();
+    temporary = await Directory.systemTemp.createTemp('chatai_page_draft_');
+    previousFactory = databaseFactoryOrNull;
+    databaseFactory = databaseFactoryFfi;
+    await databaseFactory.setDatabasesPath('${temporary.path}/database');
+    TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+        .setMockMethodCallHandler(pathChannel, (_) async => temporary.path);
+    SharedPreferences.setMockInitialValues({});
+    await HiCache.preInit();
+    await HiCache.getInstance().prefs?.clear();
+    AISettingsDao.resetSecureStateForTest();
+    LoginSdkConfig.install(LoginSdkConfig(
+      baseUrl: 'localhost:3000',
+      headerProvider: () async => const {},
+      syncHeaders: () => const {},
+      routes: LoginRoutes.imooc,
+      responseAdapter: ImoocResponseAdapter(),
+      storage: loginStorage,
+      onLogoutNavigate: () {},
     ));
+    final ai = AISettings.defaults()
+      ..mode = AIMode.local
+      ..activeProviderId = 'fixture'
+      ..providers = [
+        AiProvider(
+            id: 'fixture',
+            name: '合成预测',
+            type: 'openai',
+            enabled: true,
+            apiKey: 'fixture-key',
+            apiHost: 'https://example.invalid',
+            selectedModelId: 'gpt-4o',
+            models: [AiModel(id: 'gpt-4o')])
+      ];
+    await HiCache.getInstance()
+        .setString(AISettingsDao.keyFor(account), jsonEncode(ai.toJson()));
+    settings = AISettingsProvider();
+    theme = ThemeProvider();
+    storage = await HiDBManager.instance(dbName: account);
+    generation = ConversationGenerationService(observeApplication: false);
+  });
+
+  Future<void> cleanup() async {
+    final tester = activeTester;
+    if (tester != null) {
+      await Future.wait(generation.runs
+              .where((r) => !r.retired)
+              .map((r) => r.retire('legacy fixture completion')))
+          .timeout(const Duration(seconds: 8));
+      expect(generation.runs.every((r) => r.ticket.released), isTrue);
+    }
+    generation.dispose();
+    activeTester = null;
+    await HiDBManager.closeAll();
+    settings.dispose();
+    theme.dispose();
+    LoginSdkConfig.reset();
+    AISettingsDao.resetSecureStateForTest();
+    TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+        .setMockMethodCallHandler(pathChannel, null);
+    databaseFactory = previousFactory;
+    await temporary.delete(recursive: true);
+  }
+
+  tearDown(() async {
+    final tester = activeTester;
+    if (tester == null) {
+      await cleanup();
+    } else {
+      final cleaned = await tester.runAsync(() async {
+        await cleanup().timeout(const Duration(seconds: 10));
+        return true;
+      });
+      expect(cleaned, isTrue, reason: '失败路径也必须结算原run并释放票据');
+    }
+  });
+
+  Future<void> openPage(WidgetTester tester, ConversationModel model) async {
+    activeTester = tester;
+    await tester.runAsync(() => tester.pumpWidget(MultiProvider(
+          providers: [
+            ChangeNotifierProvider<AISettingsProvider>.value(value: settings),
+            ChangeNotifierProvider<ThemeProvider>.value(value: theme),
+          ],
+          child: MaterialApp(
+            home: ConversationPage(
+              key: ValueKey('conversation_${model.cid}'),
+              conversationModel: model,
+              generationService: generation,
+              chatService: mainChat,
+              predictionService:
+                  ComposerPredictionService(chatFactory: (_) => predictionChat),
+              readAloudService: const NoopReadAloudService(),
+            ),
+          ),
+        )));
     for (var attempt = 0; attempt < 40; attempt++) {
       await letIoFinish(tester, rounds: 1);
       if (tester
@@ -162,7 +221,11 @@ void main() {
     await openPage(tester, conversation(801, title: '建议测试'));
     await tester.enterText(find.byType(TextField).last, '请解释单元测试。');
     await tester.pump();
-    await tester.tap(find.byIcon(Icons.send));
+    await tester.runAsync(() async {
+      tester
+          .widget<MessageInputWidget>(find.byType(MessageInputWidget))
+          .onSend!();
+    });
     for (var i = 0; i < 100; i++) {
       await letIoFinish(tester, rounds: 1);
       final input =
@@ -173,8 +236,7 @@ void main() {
   }
 
   for (final streaming in [false, true]) {
-    testWidgets('${streaming ? '流式' : '非流式'}成功后只预测一次，用量落库、采纳不发送',
-        (tester) async {
+    pageTest('${streaming ? '流式' : '非流式'}成功后只预测一次，用量落库、采纳不发送', (tester) async {
       await startReply(tester, streaming: streaming);
       expect(mainChat.calls, 1);
       expect(predictionChat.calls, 1);
@@ -202,7 +264,7 @@ void main() {
   }
 
   for (final outcome in ['关闭', '失败', '空回复']) {
-    testWidgets('$outcome不触发预测', (tester) async {
+    pageTest('$outcome不触发预测', (tester) async {
       mainChat.fail = outcome == '失败';
       if (outcome == '空回复') mainChat.content = '';
       await startReply(tester, enabled: outcome != '关闭');
@@ -214,7 +276,7 @@ void main() {
     });
   }
 
-  testWidgets('用户停止回复后不预测，即使模型迟到返回正文', (tester) async {
+  pageTest('用户停止回复后不预测，即使模型迟到返回正文', (tester) async {
     mainChat.pending = Completer<ChatCompletionResult>();
     await startReply(tester, streaming: true);
     expect(predictionChat.calls, 0);
@@ -240,7 +302,7 @@ void main() {
     '切换会话',
     '退出页面'
   ]) {
-    testWidgets('预测期间$action会取消并丢弃迟到结果', (tester) async {
+    pageTest('预测期间$action会取消并丢弃迟到结果', (tester) async {
       predictionChat.pending = Completer<ChatCompletionResult>();
       await startReply(tester);
       expect(predictionChat.calls, 1);

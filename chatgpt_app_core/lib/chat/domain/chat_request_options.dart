@@ -22,6 +22,9 @@ enum ChatFailureKind {
   unknown
 }
 
+/// 仅发送前检查能给出确定证据；连接/响应异常仍保持 unknown。
+enum ChatUnsentReason { configurationRevoked }
+
 /// 传入不含动态记忆的附件准备结果；每次真正发起聊天请求前重新构造副本。
 /// 上传结果只准备一次，重试不能复用上一次解析出的账号数据。
 typedef ChatAttemptMessagesResolver = Future<List<Map<String, dynamic>>>
@@ -59,6 +62,15 @@ final class ChatRequestOptions {
   final void Function(ChatRequestRetry retry)? onRetry;
   final ChatAttemptMessagesResolver? messagesForAttempt;
 
+  /// 最终消息已构造后、每次真实传输尝试前预留协作预算。与动态记忆独立，
+  /// 不替换 messagesForAttempt，也不允许 DB 失败后继续发请求。
+  final Future<void> Function(List<Map<String, dynamic>> messages)?
+      beforeDispatch;
+  final bool Function()? dispatchIsCurrent;
+
+  /// 附件上传也使用原运行身份；此检查不计作聊天 dispatch。
+  final Future<void> Function()? beforeAttachmentUpload;
+
   const ChatRequestOptions({
     this.profile = ChatRequestProfile.standard,
     this.reasoningPolicy = ChatReasoningPolicy.providerDefault,
@@ -74,9 +86,39 @@ final class ChatRequestOptions {
     this.maxRetryDelay = const Duration(seconds: 5),
     this.onRetry,
     this.messagesForAttempt,
+    this.beforeDispatch,
+    this.dispatchIsCurrent,
+    this.beforeAttachmentUpload,
   }) : assert(
           maxOutputTokensOverride == null || maxOutputTokensOverride > 0,
         );
+
+  ChatRequestOptions copyWith({
+    Future<void>? abortTrigger,
+    ChatSendProgressCallback? onProgress,
+    ChatAttemptMessagesResolver? messagesForAttempt,
+    bool clearMessagesForAttempt = false,
+  }) =>
+      ChatRequestOptions(
+          profile: profile,
+          reasoningPolicy: reasoningPolicy,
+          deepSeekReasoningEffort: deepSeekReasoningEffort,
+          abortTrigger: abortTrigger ?? this.abortTrigger,
+          connectTimeout: connectTimeout,
+          minOutputTokens: minOutputTokens,
+          suppressReasoningControl: suppressReasoningControl,
+          maxOutputTokensOverride: maxOutputTokensOverride,
+          onProgress: onProgress ?? this.onProgress,
+          maxAutoRetries: maxAutoRetries,
+          retryBaseDelay: retryBaseDelay,
+          maxRetryDelay: maxRetryDelay,
+          onRetry: onRetry,
+          messagesForAttempt: clearMessagesForAttempt
+              ? null
+              : messagesForAttempt ?? this.messagesForAttempt,
+          beforeDispatch: beforeDispatch,
+          dispatchIsCurrent: dispatchIsCurrent,
+          beforeAttachmentUpload: beforeAttachmentUpload);
 
   Future<List<Map<String, dynamic>>> resolveAttemptMessages(
       List<Map<String, dynamic>> preparedMessages) async {
@@ -97,6 +139,14 @@ final class ChatRequestOptions {
     final messages = await (messagesForAttempt?.call(preparedMessages) ??
         Future.value(preparedMessages));
     check();
+    await beforeDispatch?.call(messages);
+    check();
+    if (dispatchIsCurrent?.call() == false) {
+      throw const ChatTransportException(
+          safeCode: 'cancelled',
+          safeMessage: '任务许可已失效',
+          failureKind: ChatFailureKind.cancelled);
+    }
     return messages;
   }
 }
@@ -114,6 +164,7 @@ final class ChatTransportException implements Exception {
   final bool responseStarted;
   final ChatFailureStage failureStage;
   final ChatFailureKind failureKind;
+  final ChatUnsentReason? unsentReason;
 
   const ChatTransportException({
     this.statusCode,
@@ -123,6 +174,7 @@ final class ChatTransportException implements Exception {
     this.responseStarted = false,
     this.failureStage = ChatFailureStage.unknown,
     this.failureKind = ChatFailureKind.unknown,
+    this.unsentReason,
   });
 
   @override

@@ -1,3 +1,5 @@
+import 'package:chatgpt_app_core/chat/application/conversation_generation_service.dart';
+import 'package:chatgpt_app_core/chat/domain/conversation_generation.dart';
 import 'dart:async';
 import 'package:chatgpt_app_core/db/personal_memory_dao.dart';
 import 'package:chatgpt_app_core/model/personal_memory_model.dart';
@@ -48,10 +50,55 @@ void main() {
   late HiDBManager storage;
   late AISettingsProvider settings;
   late ThemeProvider theme;
+  late ConversationGenerationService generation;
+  WidgetTester? activeTester;
   late _GuestStorage auth;
   String? copied;
   late DatabaseFactory? previousFactory;
   const pathChannel = MethodChannel('plugins.flutter.io/path_provider');
+
+  Future<void> letIoFinish(WidgetTester tester, {int rounds = 12}) async {
+    for (var i = 0; i < rounds; i++) {
+      await tester.runAsync(
+          () => Future<void>.delayed(const Duration(milliseconds: 15)));
+      await tester.pump(const Duration(milliseconds: 30));
+    }
+  }
+
+  Future<T> finishFuture<T>(WidgetTester tester, Future<T> future) async {
+    var finished = false;
+    T? value;
+    Object? failure;
+    future.then((result) {
+      value = result;
+      finished = true;
+    }, onError: (Object error) {
+      failure = error;
+      finished = true;
+    });
+    for (var attempt = 0; attempt < 100 && !finished; attempt++) {
+      await letIoFinish(tester, rounds: 1);
+    }
+    expect(finished, isTrue, reason: '页面 fake clock 与文件 I/O 必须共同推进');
+    if (failure != null) throw failure!;
+    return value as T;
+  }
+
+  void pageTest(String name, Future<void> Function(WidgetTester) body) {
+    testWidgets(name, (tester) async {
+      try {
+        await body(tester);
+      } finally {
+        // 在test自身fake clock仍可pump时结算；tearDown不再推进已结束测试。
+        await finishFuture(
+            tester,
+            Future.wait(generation.runs
+                .where((r) => !r.retired)
+                .map((r) => r.retire('legacy fixture completion'))));
+        expect(generation.runs.every((r) => r.ticket.released), isTrue);
+      }
+    });
+  }
 
   setUpAll(sqfliteFfiInit);
   setUp(() async {
@@ -93,9 +140,20 @@ void main() {
     settings = AISettingsProvider();
     theme = ThemeProvider();
     storage = await HiDBManager.instance(dbName: 'guest');
+    generation = ConversationGenerationService(observeApplication: false);
   });
 
-  tearDown(() async {
+  Future<void> cleanup() async {
+    final tester = activeTester;
+    if (tester != null) {
+      await Future.wait(generation.runs
+              .where((r) => !r.retired)
+              .map((r) => r.retire('legacy fixture completion')))
+          .timeout(const Duration(seconds: 8));
+      expect(generation.runs.every((r) => r.ticket.released), isTrue);
+    }
+    generation.dispose();
+    activeTester = null;
     await AgentTaskExecutor.instance.cancelAll('离线测试清理');
     LoginDao.resetHooksForTest();
     TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
@@ -109,34 +167,20 @@ void main() {
         .setMockMethodCallHandler(pathChannel, null);
     databaseFactory = previousFactory;
     await temporary.delete(recursive: true);
+  }
+
+  tearDown(() async {
+    final tester = activeTester;
+    if (tester == null) {
+      await cleanup();
+    } else {
+      final cleaned = await tester.runAsync(() async {
+        await cleanup().timeout(const Duration(seconds: 10));
+        return true;
+      });
+      expect(cleaned, isTrue, reason: '失败路径也必须结算原run并释放票据');
+    }
   });
-
-  Future<void> letIoFinish(WidgetTester tester, {int rounds = 12}) async {
-    for (var i = 0; i < rounds; i++) {
-      await tester.runAsync(
-          () => Future<void>.delayed(const Duration(milliseconds: 15)));
-      await tester.pump(const Duration(milliseconds: 30));
-    }
-  }
-
-  Future<T> finishFuture<T>(WidgetTester tester, Future<T> future) async {
-    var finished = false;
-    T? value;
-    Object? failure;
-    future.then((result) {
-      value = result;
-      finished = true;
-    }, onError: (Object error) {
-      failure = error;
-      finished = true;
-    });
-    for (var attempt = 0; attempt < 100 && !finished; attempt++) {
-      await letIoFinish(tester, rounds: 1);
-    }
-    expect(finished, isTrue, reason: '页面 fake clock 与文件 I/O 必须共同推进');
-    if (failure != null) throw failure!;
-    return value as T;
-  }
 
   Future<void> openPage(WidgetTester tester, ConversationModel model,
       {FakeComposerChat? chat, ChecklistStateCoordinator? coordinator}) async {
@@ -144,21 +188,23 @@ void main() {
     tester.view.devicePixelRatio = 1;
     addTearDown(tester.view.resetPhysicalSize);
     addTearDown(tester.view.resetDevicePixelRatio);
-    await tester.pumpWidget(MultiProvider(
-      providers: [
-        ChangeNotifierProvider<AISettingsProvider>.value(value: settings),
-        ChangeNotifierProvider<ThemeProvider>.value(value: theme),
-      ],
-      child: MaterialApp(
-        home: ConversationPage(
-          key: ValueKey('conversation_${model.cid}'),
-          conversationModel: model,
-          readAloudService: const NoopReadAloudService(),
-          chatService: chat,
-          checklistCoordinator: coordinator,
-        ),
-      ),
-    ));
+    activeTester = tester;
+    await tester.runAsync(() => tester.pumpWidget(MultiProvider(
+          providers: [
+            ChangeNotifierProvider<AISettingsProvider>.value(value: settings),
+            ChangeNotifierProvider<ThemeProvider>.value(value: theme),
+          ],
+          child: MaterialApp(
+            home: ConversationPage(
+              key: ValueKey('conversation_${model.cid}'),
+              conversationModel: model,
+              generationService: generation,
+              readAloudService: const NoopReadAloudService(),
+              chatService: chat,
+              checklistCoordinator: coordinator,
+            ),
+          ),
+        )));
     for (var attempt = 0; attempt < 40; attempt++) {
       await letIoFinish(tester, rounds: 1);
       if (tester
@@ -232,13 +278,23 @@ void main() {
           .onSend!());
     });
     await finishFuture(tester, sending);
+    final page = tester.widget<ConversationPage>(find.byType(ConversationPage));
+    final run = generation.lookup('guest', page.conversationModel.cid);
+    if (run != null) {
+      await finishFuture(tester, run.finished);
+    } else {
+      final agent = AgentTaskExecutor.instance
+          .lookup(AgentTaskKey('guest', page.conversationModel.cid));
+      expect(agent, isNotNull, reason: '发送须有普通或旧Agent的明确执行身份');
+      await finishFuture(tester, agent!.finished);
+    }
     await letIoFinish(tester);
     expect(tester.takeException(), isNull);
   }
 
   for (final stream in [false, true]) {
     for (final style in [AppVisualStyle.classic, AppVisualStyle.anime]) {
-      testWidgets('${style.name} ${stream ? '流式' : '非流式'} 落盘可勾选、复制、重开，状态不进入历史',
+      pageTest('${style.name} ${stream ? '流式' : '非流式'} 落盘可勾选、复制、重开，状态不进入历史',
           (tester) async {
         await configureFixture(tester, stream: stream);
         theme.setVisualStyle(style);
@@ -310,7 +366,7 @@ void main() {
     }
   }
 
-  testWidgets('真实勾选事务成功返回时下一轮仍生成，UI、复制与重开接纳已保存结果', (tester) async {
+  pageTest('真实勾选事务成功返回时下一轮仍生成，UI、复制与重开接纳已保存结果', (tester) async {
     await configureFixture(tester, stream: false);
     final model = conversation(906);
     final dao =
@@ -379,7 +435,7 @@ void main() {
     await closePage(tester);
   });
 
-  testWidgets('任务模式已保存回复立即显示卡，额外执行器通知不覆盖勾选与协议原文', (tester) async {
+  pageTest('任务模式已保存回复立即显示卡，额外执行器通知不覆盖勾选与协议原文', (tester) async {
     await configureFixture(tester);
     final model = conversation(907, title: '离线任务');
     await tester.runAsync(() async {
@@ -439,7 +495,7 @@ void main() {
     await closePage(tester);
   });
 
-  testWidgets('插入保留草稿与 @引用，仅再次发送才把本地勾选文本加入请求', (tester) async {
+  pageTest('插入保留草稿与 @引用，仅再次发送才把本地勾选文本加入请求', (tester) async {
     await configureFixture(tester, stream: false);
     final raw = '${cardFence(checklistJson())}${cardFence(comparisonJson())}';
     final fake = FakeComposerChat(content: raw);
@@ -488,7 +544,7 @@ void main() {
     await closePage(tester);
   });
 
-  testWidgets('勾选保存失败回滚，输入锁定拒绝过期插入，切会话拒绝旧回调', (tester) async {
+  pageTest('勾选保存失败回滚，输入锁定拒绝过期插入，切会话拒绝旧回调', (tester) async {
     await configureFixture(tester, stream: false);
     final fake = FakeComposerChat(content: cardFence(checklistJson()));
     final model = conversation(903);
@@ -509,9 +565,12 @@ void main() {
     expect(fake.calls, 1);
     fake.pending = Completer<ChatCompletionResult>();
     await tester.enterText(find.byType(TextField).last, '下一轮');
-    final pendingSend = tester
-        .widget<MessageInputWidget>(find.byType(MessageInputWidget))
-        .onSend!();
+    late Future<void> pendingSend;
+    await tester.runAsync(() async {
+      pendingSend = Future<void>.value(tester
+          .widget<MessageInputWidget>(find.byType(MessageInputWidget))
+          .onSend!());
+    });
     await letIoFinish(tester);
     oldView.onInsert!('过期插入');
     expect(
@@ -535,7 +594,7 @@ void main() {
     await closePage(tester);
   });
 
-  testWidgets('账号切换拒绝已捕获的卡片操作，用户正文不开启卡片', (tester) async {
+  pageTest('账号切换拒绝已捕获的卡片操作，用户正文不开启卡片', (tester) async {
     await configureFixture(tester, stream: false);
     final fake = FakeComposerChat(content: cardFence(checklistJson()));
     await openPage(tester, conversation(905), chat: fake);
@@ -577,7 +636,7 @@ void main() {
       }))!;
 
   for (final stream in [false, true]) {
-    testWidgets('个人记忆实际页面${stream ? '流式' : '非流式'}成功落盘才生成pending；重开不回扫，引用不采集',
+    pageTest('个人记忆实际页面${stream ? '流式' : '非流式'}成功落盘才生成pending；重开不回扫，引用不采集',
         (tester) async {
       await configureFixture(tester, stream: stream);
       final personal = await personalForPage(tester);
@@ -615,7 +674,7 @@ void main() {
       expect(fake.calls, 2);
       await closePage(tester);
     });
-    testWidgets('个人记忆页面${stream ? '流式' : '非流式'}失败回复不采集', (tester) async {
+    pageTest('个人记忆页面${stream ? '流式' : '非流式'}失败回复不采集', (tester) async {
       await configureFixture(tester, stream: stream);
       final personal = await personalForPage(tester);
       final fake = FakeComposerChat()..fail = true;
@@ -626,19 +685,19 @@ void main() {
       await closePage(tester);
     });
   }
-  testWidgets('个人记忆页面生成中关闭再开启使已开始轮次失效', (tester) async {
+  pageTest('个人记忆页面生成中关闭再开启使已开始轮次失效', (tester) async {
     await configureFixture(tester, stream: false);
     final personal = await personalForPage(tester);
     final fake = FakeComposerChat()
       ..pending = Completer<ChatCompletionResult>();
     await openPage(tester, conversation(972), chat: fake);
     await tester.enterText(find.byType(TextField).last, '我希望回答详细');
-    late Future<void> sending;
     await tester.runAsync(() async {
-      sending = Future<void>.value(tester
+      tester
           .widget<MessageInputWidget>(find.byType(MessageInputWidget))
-          .onSend!());
+          .onSend!();
     });
+    final run = generation.lookup('guest', 972)!;
     for (var i = 0; i < 40 && fake.calls == 0; i++) {
       await letIoFinish(tester, rounds: 1);
     }
@@ -652,37 +711,77 @@ void main() {
           revision: disabled.revision, enabled: true, suggestionsEnabled: true);
     });
     fake.pending!.complete(const ChatCompletionResult(content: '完成合成回复'));
-    await finishFuture(tester, sending);
+    // 候选收尾属于原run，不能用立即返回的发送回调或页面清理代替完成。
+    await finishFuture(tester, run.finished);
+    expect(run.retired, isFalse);
+    expect(run.stage, ConversationGenerationStage.complete);
+    expect(run.ticket.released, isTrue);
+    expect(run.record!.state, 'complete');
+    final rows = (await tester.runAsync(() =>
+        storage.db.query('tb_messages', where: 'cid=?', whereArgs: [972])))!;
+    expect(rows, hasLength(2));
+    expect(
+        rows.singleWhere(
+            (r) => r['id'] == run.record!.receiverRowId)['content'],
+        '完成合成回复');
+    expect(
+        (await tester.runAsync(() => storage.db.query(
+                'tb_conversation_generation',
+                where: 'runId=?',
+                whereArgs: [run.runId])))!
+            .single['state'],
+        'complete');
+    expect(await tester.runAsync(() => storage.db.query('tb_usage')),
+        hasLength(1));
+    expect(fake.calls, 1);
     expect(await tester.runAsync(personal.list), isEmpty);
     await closePage(tester);
   });
-  testWidgets('个人记忆页面停止挂起回复不采集', (tester) async {
+  pageTest('个人记忆页面停止挂起回复不采集', (tester) async {
     await configureFixture(tester, stream: false);
     final personal = await personalForPage(tester);
     final fake = FakeComposerChat()
       ..pending = Completer<ChatCompletionResult>();
     await openPage(tester, conversation(973), chat: fake);
     await tester.enterText(find.byType(TextField).last, '我希望回答详细');
-    late Future<void> sending;
     await tester.runAsync(() async {
-      sending = Future<void>.value(tester
+      tester
           .widget<MessageInputWidget>(find.byType(MessageInputWidget))
-          .onSend!());
+          .onSend!();
     });
+    final run = generation.lookup('guest', 973)!;
     for (var i = 0; i < 40 && fake.calls == 0; i++) {
       await letIoFinish(tester, rounds: 1);
     }
     expect(fake.calls, 1);
-    tester
+    await tester.runAsync(() async => tester
         .widget<MessageInputWidget>(find.byType(MessageInputWidget))
-        .onStop!();
+        .onStop!());
     await letIoFinish(tester, rounds: 2);
     fake.pending!.complete(const ChatCompletionResult(content: '晚到合成回复'));
-    await finishFuture(tester, sending);
+    await finishFuture(tester, run.finished);
+    expect(run.retired, isFalse);
+    expect(run.stage, ConversationGenerationStage.interrupted);
+    expect(run.ticket.released, isTrue);
+    expect(run.record!.state, 'interrupted');
+    final rows = (await tester.runAsync(() =>
+        storage.db.query('tb_messages', where: 'cid=?', whereArgs: [973])))!;
+    expect(rows.where((r) => r['ownerType'] == OwnerType.sender.toString()),
+        hasLength(1));
+    expect(rows.where((r) => r['content'] == '晚到合成回复'), isEmpty);
+    expect(run.receiver.content, isNot(contains('晚到合成回复')));
+    expect(
+        (await tester.runAsync(() => storage.db.query(
+                'tb_conversation_generation',
+                where: 'runId=?',
+                whereArgs: [run.runId])))!
+            .single['state'],
+        'interrupted');
+    expect(fake.calls, 1);
     expect(await tester.runAsync(personal.list), isEmpty);
     await closePage(tester);
   });
-  testWidgets('个人记忆页面助手落盘失败不采集', (tester) async {
+  pageTest('个人记忆页面助手落盘失败不采集，首次成功保存只建议一次', (tester) async {
     await configureFixture(tester, stream: false);
     final personal = await personalForPage(tester);
     final fake = FakeComposerChat(content: '未保存的合成回复');
@@ -696,18 +795,40 @@ void main() {
     expect(await tester.runAsync(personal.list), isEmpty);
     final rows = await tester.runAsync(() =>
         storage.db.query('tb_messages', where: 'cid = ?', whereArgs: [975]));
-    expect(rows, hasLength(2));
+    // 事务回滚不伪造空assistant行；回复/usage保留在原run等待零请求保存重试。
+    expect(rows, hasLength(1));
     expect(rows!.where((r) => r['content'] == '未保存的合成回复'), isEmpty);
     expect(
         rows.where((r) => r['ownerType'] == 'OwnerType.sender'), hasLength(1));
+    expect(await tester.runAsync(() => storage.db.query('tb_usage')), isEmpty);
+    final run = generation.lookup('guest', 975)!;
+    expect(run.persistencePending, isTrue);
+    expect(run.ticket.released, isFalse);
+    await tester.runAsync(
+        () => storage.db.execute('DROP TRIGGER fail_assistant_insert'));
+    await finishFuture(tester, run.retryPersistence());
+    await finishFuture(tester, run.retryPersistence());
+    expect(fake.calls, 1);
+    expect(
+        await tester.runAsync(() =>
+            storage.db.query('tb_messages', where: 'cid=?', whereArgs: [975])),
+        hasLength(2));
+    expect(await tester.runAsync(() => storage.db.query('tb_usage')),
+        hasLength(1));
+    expect(await tester.runAsync(personal.list), hasLength(1));
+    expect(run.ticket.released, isTrue);
     await closePage(tester);
   });
-  testWidgets('个人记忆页面开启建议后重新生成旧轮次不采集', (tester) async {
+  pageTest('个人记忆页面开启建议后重新生成旧轮次不采集', (tester) async {
     await configureFixture(tester, stream: false);
     final personal = await personalForPage(tester, suggestions: false);
     final fake = FakeComposerChat(content: '用于重新生成的合成回复');
     await openPage(tester, conversation(974), chat: fake);
     await send(tester, '我希望回答详细');
+    final original = generation.lookup('guest', 974)!;
+    final originalRecord = original.record!;
+    expect(original.stage, ConversationGenerationStage.complete);
+    expect(original.ticket.released, isTrue);
     await tester.runAsync(() async {
       final p = await personal.preferences();
       await personal.setPreferences(
@@ -722,12 +843,38 @@ void main() {
     await tester.tap(actions);
     await tester.pump();
     await tester.pump(const Duration(milliseconds: 300));
-    await tester.tap(find.text('重新生成'));
+    await tester.runAsync(() => tester.tap(find.text('重新生成')));
     await tester.pump();
-    for (var i = 0; i < 80 && fake.calls < 2; i++) {
+    for (var i = 0;
+        i < 80 && identical(generation.lookup('guest', 974), original);
+        i++) {
       await letIoFinish(tester, rounds: 1);
     }
-    await letIoFinish(tester);
+    final regenerated = generation.lookup('guest', 974)!;
+    expect(regenerated, isNot(same(original)));
+    expect(regenerated.runId, isNot(original.runId));
+    await finishFuture(tester, regenerated.finished);
+    expect(regenerated.retired, isFalse);
+    expect(regenerated.stage, ConversationGenerationStage.complete);
+    expect(regenerated.ticket.released, isTrue);
+    expect(regenerated.record!.state, 'complete');
+    expect(regenerated.record!.userRowId, originalRecord.userRowId);
+    expect(regenerated.record!.sourceId, originalRecord.sourceId);
+    final rows = (await tester.runAsync(() =>
+        storage.db.query('tb_messages', where: 'cid=?', whereArgs: [974])))!;
+    expect(rows, hasLength(2));
+    expect(rows.where((r) => r['id'] == originalRecord.receiverRowId), isEmpty);
+    expect(
+        rows.singleWhere(
+            (r) => r['id'] == regenerated.record!.receiverRowId)['content'],
+        '用于重新生成的合成回复');
+    expect(
+        (await tester.runAsync(() => storage.db.query(
+                'tb_conversation_generation',
+                where: 'runId=?',
+                whereArgs: [regenerated.runId])))!
+            .single['state'],
+        'complete');
     expect(fake.calls, 2);
     expect(await tester.runAsync(personal.list), isEmpty);
     await closePage(tester);

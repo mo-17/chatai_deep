@@ -113,15 +113,16 @@ class AccountResourceScope {
   static Future<Directory> createManagedDirectory({
     required Directory root,
     Iterable<String> relativeSegments = const [],
+    void Function()? beforeMutation,
   }) async {
     var current = root;
-    await _ensureDirectory(current);
+    await _ensureDirectory(current, beforeMutation: beforeMutation);
     for (final segment in relativeSegments) {
       _validateSegment(segment);
       current = Directory(
         '${current.path}${Platform.pathSeparator}$segment',
       );
-      await _ensureDirectory(current);
+      await _ensureDirectory(current, beforeMutation: beforeMutation);
     }
     return current;
   }
@@ -157,7 +158,8 @@ class AccountResourceScope {
     }
   }
 
-  static Future<void> _ensureDirectory(Directory directory) async {
+  static Future<void> _ensureDirectory(Directory directory,
+      {void Function()? beforeMutation}) async {
     final before = await FileSystemEntity.type(
       directory.path,
       followLinks: false,
@@ -174,6 +176,7 @@ class AccountResourceScope {
       );
     }
     if (before == FileSystemEntityType.notFound) {
+      beforeMutation?.call();
       await directory.create(recursive: true);
     }
     final after = await FileSystemEntity.type(

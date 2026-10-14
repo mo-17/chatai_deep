@@ -29,13 +29,15 @@ import type {
   CreateUserInput,
 } from '../contracts/auth-user.types';
 import { AuthKitJwtGuard } from '../guards/auth-kit-auth.guard';
+import {
+  canonicalIdentifier,
+  verificationClientIp,
+} from '../verification/verification-contract';
 
 const BCRYPT_ROUNDS = 10;
 
 function getClientIp(req: Request): string {
-  const forwarded = req.headers['x-forwarded-for'];
-  if (typeof forwarded === 'string') return forwarded.split(',')[0].trim();
-  return req.ip ?? req.socket.remoteAddress ?? '127.0.0.1';
+  return verificationClientIp(req);
 }
 
 /** 从标识中提取邮箱或手机号，用于 UserResolver */
@@ -89,7 +91,8 @@ export class AuthController {
   @Post('code/send')
   @HttpCode(200)
   async sendCode(@Body() body: SendCodeDto, @Req() req: Request) {
-    const { channel, identifier, purpose } = body;
+    const { channel, identifier: rawIdentifier, purpose } = body;
+    const identifier = canonicalIdentifier(channel, rawIdentifier);
     await this.verificationService.generateAndSendCode(
       channel,
       identifier,
@@ -104,42 +107,29 @@ export class AuthController {
   @Post('login/code')
   @HttpCode(200)
   async loginByCode(@Body() body: VerifyCodeLoginDto) {
-    const { channel, identifier, code } = body;
-    await this.verificationService.verifyCode(
+    const { channel, identifier: rawIdentifier, code } = body;
+    const identifier = canonicalIdentifier(channel, rawIdentifier);
+    const user = await this.verificationService.consumeWith(
       channel,
       identifier,
       'login',
       code,
+      async (manager, assertCurrent) => {
+        const resolver = this.userResolver.withManager(manager);
+        let current = await findIdentifier(resolver, channel, identifier);
+        assertCurrent();
+        if (current?.banned) throw new BadRequestException('账号已被封禁');
+        if (!current) {
+          current = await resolver.createUser({
+            ...resolveIdentifier(channel, identifier),
+            userName: `u_${generateShortId()}`,
+          });
+        }
+        if (channel === 'email') await resolver.markEmailVerified(current.id);
+        else await resolver.markPhoneVerified(current.id);
+        return (await resolver.findById(current.id))!;
+      },
     );
-
-    // 查用户 or 创建
-    let user: AuthUser | null;
-    if (channel === 'email') {
-      user = await this.userResolver.findByEmail(identifier);
-      if (!user) {
-        user = await this.userResolver.createUser({
-          email: identifier,
-          userName: `u_${generateShortId()}`,
-        });
-        await this.userResolver.markEmailVerified(user.id);
-      }
-    } else {
-      const { countryCode, phoneNumber } = resolveIdentifier(
-        channel,
-        identifier,
-      );
-      user = await this.userResolver.findByPhone(countryCode!, phoneNumber!);
-      if (!user) {
-        user = await this.userResolver.createUser({
-          countryCode: countryCode!,
-          phoneNumber: phoneNumber!,
-          userName: `u_${generateShortId()}`,
-        });
-        await this.userResolver.markPhoneVerified(user.id);
-      }
-    }
-
-    if (user.banned) throw new BadRequestException('账号已被封禁');
 
     const token = this.jwtSigner.sign({
       userId: user.id,
@@ -155,7 +145,8 @@ export class AuthController {
   @Post('login/password')
   @HttpCode(200)
   async loginByPassword(@Body() body: LoginPasswordDto) {
-    const { channel, identifier, password } = body;
+    const { channel, identifier: rawIdentifier, password } = body;
+    const identifier = canonicalIdentifier(channel, rawIdentifier);
     let user: AuthUser | null;
     if (channel === 'email') {
       user = await this.userResolver.findByEmail(identifier);
@@ -188,52 +179,32 @@ export class AuthController {
   @Post('register')
   @HttpCode(200)
   async register(@Body() body: AuthRegisterDto) {
-    const { channel, identifier, code, password } = body;
-    await this.verificationService.verifyCode(
+    const { channel, identifier: rawIdentifier, code, password } = body;
+    const identifier = canonicalIdentifier(channel, rawIdentifier);
+    const hashedPassword = password
+      ? await bcrypt.hash(password, BCRYPT_ROUNDS)
+      : undefined;
+    const user = await this.verificationService.consumeWith(
       channel,
       identifier,
       'register',
       code,
+      async (manager, assertCurrent) => {
+        const resolver = this.userResolver.withManager(manager);
+        const existing = await findIdentifier(resolver, channel, identifier);
+        assertCurrent();
+        if (existing) throw new BadRequestException('该账号已注册');
+        const userData: CreateUserInput = {
+          userName: `u_${generateShortId()}`,
+          ...resolveIdentifier(channel, identifier),
+          ...(hashedPassword ? { password: hashedPassword } : {}),
+        };
+        const created = await resolver.createUser(userData);
+        if (channel === 'email') await resolver.markEmailVerified(created.id);
+        else await resolver.markPhoneVerified(created.id);
+        return (await resolver.findById(created.id))!;
+      },
     );
-
-    // 检查是否已存在
-    let existing: AuthUser | null;
-    if (channel === 'email') {
-      existing = await this.userResolver.findByEmail(identifier);
-    } else {
-      const { countryCode, phoneNumber } = resolveIdentifier(
-        channel,
-        identifier,
-      );
-      existing = await this.userResolver.findByPhone(
-        countryCode!,
-        phoneNumber!,
-      );
-    }
-    if (existing) throw new BadRequestException('该账号已注册');
-
-    const hashedPassword = password
-      ? await bcrypt.hash(password, BCRYPT_ROUNDS)
-      : undefined;
-    const userData: CreateUserInput = { userName: `u_${generateShortId()}` };
-    if (channel === 'email') {
-      userData.email = identifier;
-    } else {
-      const { countryCode, phoneNumber } = resolveIdentifier(
-        channel,
-        identifier,
-      );
-      userData.countryCode = countryCode;
-      userData.phoneNumber = phoneNumber;
-    }
-    if (hashedPassword) userData.password = hashedPassword;
-
-    const user = await this.userResolver.createUser(userData);
-    if (channel === 'email') {
-      await this.userResolver.markEmailVerified(user.id);
-    } else {
-      await this.userResolver.markPhoneVerified(user.id);
-    }
 
     const token = this.jwtSigner.sign({
       userId: user.id,
@@ -251,38 +222,46 @@ export class AuthController {
   @UseGuards(AuthKitJwtGuard)
   async bind(
     @Body() body: BindDto,
-    @Req() req: Request & { user?: { userId: number } },
+    @Req()
+    req: Request & {
+      user?: { userId: number; tokenVersion: number; expiresAt?: number };
+    },
   ) {
-    const { channel, identifier, code } = body;
-    await this.verificationService.verifyCode(
+    const { channel, identifier: rawIdentifier, code } = body;
+    const identifier = canonicalIdentifier(channel, rawIdentifier);
+    const principal = req.user;
+    if (!principal || !Number.isSafeInteger(principal.tokenVersion))
+      throw new BadRequestException('登录状态已变化，请重新登录');
+    const originalExpiresAt = principal.expiresAt;
+    const checkAuthorization = (): undefined => {
+      if (originalExpiresAt !== undefined && Date.now() >= originalExpiresAt)
+        throw new BadRequestException('登录状态已变化，请重新登录');
+    };
+    const user = await this.verificationService.consumeWith(
       channel,
       identifier,
       'bind',
       code,
+      async (manager, assertCurrent) => {
+        const resolver = this.userResolver.withManager(manager);
+        const actor = await resolver.findById(principal.userId);
+        assertCurrent();
+        if (
+          !actor ||
+          actor.banned ||
+          actor.tokenVersion !== principal.tokenVersion
+        )
+          throw new BadRequestException('登录状态已变化，请重新登录');
+        await resolver.bindIdentifier(actor.id, {
+          channel,
+          ...resolveIdentifier(channel, identifier),
+        });
+        if (channel === 'email') await resolver.markEmailVerified(actor.id);
+        else await resolver.markPhoneVerified(actor.id);
+        return (await resolver.findById(actor.id))!;
+      },
+      checkAuthorization,
     );
-
-    const userId = req.user?.userId;
-    if (!userId) throw new BadRequestException('未登录');
-
-    const bindParams: {
-      email?: string;
-      countryCode?: string;
-      phoneNumber?: string;
-    } = {};
-    if (channel === 'email') {
-      bindParams.email = identifier;
-    } else {
-      const { countryCode, phoneNumber } = resolveIdentifier(
-        channel,
-        identifier,
-      );
-      bindParams.countryCode = countryCode;
-      bindParams.phoneNumber = phoneNumber;
-    }
-    await this.userResolver.bindIdentifier(userId, { channel, ...bindParams });
-
-    const user = await this.userResolver.findById(userId);
-    if (!user) throw new BadRequestException('用户不存在');
     return { code: 0, data: this.maskUser(user) };
   }
 
@@ -291,28 +270,23 @@ export class AuthController {
   @Post('reset-password')
   @HttpCode(200)
   async resetPassword(@Body() body: ResetPasswordDto) {
-    const { channel, identifier, code, newPassword } = body;
-    await this.verificationService.verifyCode(
+    const { channel, identifier: rawIdentifier, code, newPassword } = body;
+    const identifier = canonicalIdentifier(channel, rawIdentifier);
+    const hashed = await bcrypt.hash(newPassword, BCRYPT_ROUNDS);
+    await this.verificationService.consumeWith(
       channel,
       identifier,
       'reset_password',
       code,
+      async (manager, assertCurrent) => {
+        const resolver = this.userResolver.withManager(manager);
+        const user = await findIdentifier(resolver, channel, identifier);
+        assertCurrent();
+        if (!user) throw new BadRequestException('账号不存在');
+        if (user.banned) throw new BadRequestException('账号已被封禁');
+        await resolver.updatePassword(user.id, hashed);
+      },
     );
-
-    let user: AuthUser | null;
-    if (channel === 'email') {
-      user = await this.userResolver.findByEmail(identifier);
-    } else {
-      const { countryCode, phoneNumber } = resolveIdentifier(
-        channel,
-        identifier,
-      );
-      user = await this.userResolver.findByPhone(countryCode!, phoneNumber!);
-    }
-    if (!user) throw new BadRequestException('账号不存在');
-
-    const hashed = await bcrypt.hash(newPassword, BCRYPT_ROUNDS);
-    await this.userResolver.updatePassword(user.id, hashed);
     return { code: 0, data: null };
   }
 
@@ -332,6 +306,17 @@ export class AuthController {
       },
     };
   }
+}
+
+/** 标识锁先于宿主用户行锁；不同用途也遵循相同顺序。 */
+async function findIdentifier(
+  resolver: IUserResolver,
+  channel: AuthChannel,
+  identifier: string,
+) {
+  if (channel === 'email') return resolver.findByEmail(identifier);
+  const { countryCode, phoneNumber } = resolveIdentifier(channel, identifier);
+  return resolver.findByPhone(countryCode!, phoneNumber!);
 }
 
 /** 生成短 ID */

@@ -1,3 +1,4 @@
+import 'package:chatgpt_app_core/chat/application/conversation_execution_registry.dart';
 import 'package:chatgpt_app_core/db/hi_db_manager.dart';
 import 'package:chatgpt_app_core/db/assistant_dao.dart';
 import 'package:flutter/foundation.dart';
@@ -172,34 +173,41 @@ class ConversationListDao implements IConversationList, ITable {
 
   @override
   Future<void> deleteConversation(ConversationModel model) async {
-    await storage.db.transaction((txn) async {
-      if (model.id == null) {
-        await txn.delete(tableName, where: 'cid = ?', whereArgs: [model.cid]);
-      } else {
-        await txn.delete(tableName, where: 'id = ?', whereArgs: [model.id]);
-      }
-      await txn.delete('tb_messages', where: 'cid = ?', whereArgs: [model.cid]);
-      // 老数据库可能从未开启任务模式；只清理已经存在的派生表。
-      final workspaceTables = await txn.rawQuery(
-          "select name from sqlite_master where type = 'table' and "
-          "name in ('tb_agent_workspace_files', 'tb_agent_workspace_revisions')");
-      if (workspaceTables.length == 2) {
-        await txn.rawDelete(
-            'delete from tb_agent_workspace_revisions where fileId in '
-            '(select id from tb_agent_workspace_files where cid = ?)',
-            [model.cid]);
-      }
-      final existing = await txn
-          .rawQuery("select name from sqlite_master where type = 'table' and "
-              "name in ('tb_agent_task_session', 'tb_chat_semantic_summary', "
-              "'tb_agent_workspace_files', 'tb_agent_task_criteria', "
-              "'tb_agent_verification_turn', 'tb_agent_read_interval', "
-              "'tb_agent_verification_report')");
-      for (final row in existing) {
-        await txn.delete(row['name'] as String,
-            where: 'cid = ?', whereArgs: [model.cid]);
-      }
-    });
+    await ConversationExecutionRegistry.instance.maintainStorage(
+        storage.db,
+        () => storage.db.transaction((txn) async {
+              if (model.id == null) {
+                await txn.delete(tableName,
+                    where: 'cid = ?', whereArgs: [model.cid]);
+              } else {
+                await txn
+                    .delete(tableName, where: 'id = ?', whereArgs: [model.id]);
+              }
+              await txn.delete('tb_messages',
+                  where: 'cid = ?', whereArgs: [model.cid]);
+              // 老数据库可能从未开启任务模式；只清理已经存在的派生表。
+              final workspaceTables = await txn.rawQuery(
+                  "select name from sqlite_master where type = 'table' and "
+                  "name in ('tb_agent_workspace_files', 'tb_agent_workspace_revisions')");
+              if (workspaceTables.length == 2) {
+                await txn.rawDelete(
+                    'delete from tb_agent_workspace_revisions where fileId in '
+                    '(select id from tb_agent_workspace_files where cid = ?)',
+                    [model.cid]);
+              }
+              final existing = await txn.rawQuery(
+                  "select name from sqlite_master where type = 'table' and "
+                  "name in ('tb_agent_task_session', 'tb_chat_semantic_summary', "
+                  "'tb_agent_workspace_files', 'tb_agent_task_criteria', "
+                  "'tb_agent_verification_turn', 'tb_agent_read_interval', "
+                  "'tb_agent_verification_report', 'tb_conversation_generation')");
+              for (final row in existing) {
+                await txn.delete(row['name'] as String,
+                    where: 'cid = ?', whereArgs: [model.cid]);
+              }
+            }),
+        cid: model.cid,
+        reason: '原会话已删除，请求已停止');
   }
 
   @override

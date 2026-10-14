@@ -1,3 +1,4 @@
+import 'package:chatgpt_app_core/chat/application/conversation_generation_service.dart';
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
@@ -18,6 +19,7 @@ import 'package:chatgpt_app_core/db/hi_db_manager.dart';
 import 'package:chatgpt_app_core/db/message_dao.dart';
 import 'package:chatgpt_app_core/model/ai_settings.dart';
 import 'package:chatgpt_app_core/model/ai_provider.dart';
+import 'package:chatgpt_app_core/chat/application/mcp/mcp_types.dart';
 import 'package:chatgpt_app_core/model/conversation_model.dart';
 import 'package:chatgpt_app_core/pages/conversation_page.dart';
 import 'package:chatgpt_app_core/provider/ai_settings_provider.dart';
@@ -39,8 +41,53 @@ void main() {
   late HiDBManager storage;
   late AISettingsProvider settings;
   late ThemeProvider theme;
+  late ConversationGenerationService generation;
+  WidgetTester? activeTester;
   late DatabaseFactory? previousFactory;
   const pathChannel = MethodChannel('plugins.flutter.io/path_provider');
+
+  Future<void> letIoFinish(WidgetTester tester, {int rounds = 12}) async {
+    for (var i = 0; i < rounds; i++) {
+      await tester.runAsync(
+          () => Future<void>.delayed(const Duration(milliseconds: 15)));
+      await tester.pump(const Duration(milliseconds: 30));
+    }
+  }
+
+  Future<T> finishFuture<T>(WidgetTester tester, Future<T> future) async {
+    var finished = false;
+    T? value;
+    Object? failure;
+    future.then((result) {
+      value = result;
+      finished = true;
+    }, onError: (Object error) {
+      failure = error;
+      finished = true;
+    });
+    for (var attempt = 0; attempt < 100 && !finished; attempt++) {
+      await letIoFinish(tester, rounds: 1);
+    }
+    expect(finished, isTrue, reason: '页面 fake clock 与文件 I/O 必须共同推进');
+    if (failure != null) throw failure!;
+    return value as T;
+  }
+
+  void pageTest(String name, Future<void> Function(WidgetTester) body) {
+    testWidgets(name, (tester) async {
+      try {
+        await body(tester);
+      } finally {
+        // 在test自身fake clock仍可pump时结算；tearDown不再推进已结束测试。
+        await finishFuture(
+            tester,
+            Future.wait(generation.runs
+                .where((r) => !r.retired)
+                .map((r) => r.retire('legacy fixture completion'))));
+        expect(generation.runs.every((r) => r.ticket.released), isTrue);
+      }
+    });
+  }
 
   setUpAll(sqfliteFfiInit);
   setUp(() async {
@@ -70,9 +117,20 @@ void main() {
     settings = AISettingsProvider();
     theme = ThemeProvider();
     storage = await HiDBManager.instance(dbName: 'guest');
+    generation = ConversationGenerationService(observeApplication: false);
   });
 
-  tearDown(() async {
+  Future<void> cleanup() async {
+    final tester = activeTester;
+    if (tester != null) {
+      await Future.wait(generation.runs
+              .where((r) => !r.retired)
+              .map((r) => r.retire('legacy fixture completion')))
+          .timeout(const Duration(seconds: 8));
+      expect(generation.runs.every((r) => r.ticket.released), isTrue);
+    }
+    generation.dispose();
+    activeTester = null;
     LoginDao.resetHooksForTest();
     await HiDBManager.closeAll();
     settings.dispose();
@@ -83,55 +141,43 @@ void main() {
         .setMockMethodCallHandler(pathChannel, null);
     databaseFactory = previousFactory;
     await temporary.delete(recursive: true);
+  }
+
+  tearDown(() async {
+    final tester = activeTester;
+    if (tester == null) {
+      await cleanup();
+    } else {
+      final cleaned = await tester.runAsync(() async {
+        await cleanup().timeout(const Duration(seconds: 10));
+        return true;
+      });
+      expect(cleaned, isTrue, reason: '失败路径也必须结算原run并释放票据');
+    }
   });
-
-  Future<void> letIoFinish(WidgetTester tester, {int rounds = 12}) async {
-    for (var i = 0; i < rounds; i++) {
-      await tester.runAsync(
-          () => Future<void>.delayed(const Duration(milliseconds: 15)));
-      await tester.pump(const Duration(milliseconds: 30));
-    }
-  }
-
-  Future<T> finishFuture<T>(WidgetTester tester, Future<T> future) async {
-    var finished = false;
-    T? value;
-    Object? failure;
-    future.then((result) {
-      value = result;
-      finished = true;
-    }, onError: (Object error) {
-      failure = error;
-      finished = true;
-    });
-    for (var attempt = 0; attempt < 100 && !finished; attempt++) {
-      await letIoFinish(tester, rounds: 1);
-    }
-    expect(finished, isTrue, reason: '页面 fake clock 与文件 I/O 必须共同推进');
-    if (failure != null) throw failure!;
-    return value as T;
-  }
 
   Future<void> openPage(WidgetTester tester, ConversationModel model,
       {FakeComposerChat? chat,
       ConversationDraftStore? draftStore,
       ValueChanged<Object>? onPreparationError}) async {
-    await tester.pumpWidget(MultiProvider(
-      providers: [
-        ChangeNotifierProvider<AISettingsProvider>.value(value: settings),
-        ChangeNotifierProvider<ThemeProvider>.value(value: theme),
-      ],
-      child: MaterialApp(
-        home: ConversationPage(
-          key: ValueKey('conversation_${model.cid}'),
-          conversationModel: model,
-          readAloudService: const NoopReadAloudService(),
-          chatService: chat,
-          draftStore: draftStore,
-          onSendPreparationError: onPreparationError,
-        ),
-      ),
-    ));
+    activeTester = tester;
+    await tester.runAsync(() => tester.pumpWidget(MultiProvider(
+          providers: [
+            ChangeNotifierProvider<AISettingsProvider>.value(value: settings),
+            ChangeNotifierProvider<ThemeProvider>.value(value: theme),
+          ],
+          child: MaterialApp(
+            home: ConversationPage(
+              key: ValueKey('conversation_${model.cid}'),
+              conversationModel: model,
+              generationService: generation,
+              readAloudService: const NoopReadAloudService(),
+              chatService: chat,
+              draftStore: draftStore,
+              onSendPreparationError: onPreparationError,
+            ),
+          ),
+        )));
     for (var attempt = 0; attempt < 40; attempt++) {
       await letIoFinish(tester, rounds: 1);
       if (tester
@@ -197,70 +243,127 @@ void main() {
 
   for (final style in [AppVisualStyle.classic, AppVisualStyle.anime]) {
     for (final change in ['selection', 'composing', 'text']) {
-      testWidgets('${style.name}：冻结等待中 $change 变化仅正文编辑取消发送', (tester) async {
+      pageTest('${style.name}：冻结等待中 $change 保留点击快照与后续新草稿', (tester) async {
         await configureFixture(tester);
         theme.setVisualStyle(style);
         final reference = await savedSource(tester, '合成冻结正文');
         final gate = _GateDraftStore(temporary);
-        final errors = <Object>[];
-        final fake = FakeComposerChat(content: '离线回复');
-        await openPage(tester, conversation(920),
-            chat: fake, draftStore: gate, onPreparationError: errors.add);
-        final input =
-            tester.widget<MessageInputWidget>(find.byType(MessageInputWidget));
-        input.onReferencePicked!(reference);
-        await tester.enterText(find.byType(TextField).last, '原始草稿');
-        late Future<void> sending;
+        final oldOverrides = HttpOverrides.current;
+        HttpOverrides.global = null;
+        final server = (await tester
+            .runAsync(() => HttpServer.bind(InternetAddress.loopbackIPv4, 0)))!;
+        var lists = 0;
         await tester.runAsync(() async {
-          sending = Future<void>.value(tester
-              .widget<MessageInputWidget>(find.byType(MessageInputWidget))
-              .onSend!());
+          server.listen((request) async {
+            final body =
+                jsonDecode(await utf8.decoder.bind(request).join()) as Map;
+            if (body['method'] == 'notifications/initialized') {
+              request.response.statusCode = 202;
+            } else {
+              if (body['method'] == 'tools/list') {
+                lists++;
+                // run-owned准备现在直接冻结值；保留旧真实草稿冻结校验，
+                // 同时由实际目录HTTP响应挂住新准备入口（不调用任何工具）。
+                await gate.freezeForSend(text: '原始草稿', references: [reference]);
+              }
+              request.response.headers.contentType = ContentType.json;
+              request.response.write(jsonEncode({
+                'jsonrpc': '2.0',
+                'id': body['id'],
+                'result': body['method'] == 'initialize'
+                    ? {
+                        'protocolVersion': '2024-11-05',
+                        'capabilities': {'tools': {}},
+                        'serverInfo': {'name': 'fixture', 'version': '1'}
+                      }
+                    : {'tools': []}
+              }));
+            }
+            await request.response.close();
+          });
+          await settings.update(settings.settings.clone()
+            ..streamEnabled = true
+            ..mcpServers = [
+              McpServerConfig(
+                  id: 'fixture',
+                  name: 'fixture',
+                  url: 'http://127.0.0.1:${server.port}/',
+                  trusted: true)
+            ]);
         });
-        expect(
-            await finishFuture(
-                tester,
-                Future.any([
-                  gate.frozen.future.then((_) => true),
-                  sending.then((_) => false)
-                ])),
-            isTrue,
-            reason: '发送必须进入真实冻结：$errors');
-        final controller = input.controller!;
-        controller.value = switch (change) {
-          'selection' => controller.value
-              .copyWith(selection: const TextSelection.collapsed(offset: 1)),
-          'composing' => controller.value
-              .copyWith(composing: const TextRange(start: 0, end: 1)),
-          _ => const TextEditingValue(
-              text: '真实新正文', selection: TextSelection.collapsed(offset: 5)),
-        };
-        await tester.pump();
-        gate.release.complete();
-        await finishFuture(tester, sending);
-        await letIoFinish(tester);
-        if (change == 'text') {
-          expect(fake.calls, 0);
-          expect(errors.single, isA<DraftStorageException>());
-          expect(errors.single.toString(), contains('输入已变化'));
-          expect(controller.text, '真实新正文');
-          expect(
-              tester
-                  .widget<MessageInputWidget>(find.byType(MessageInputWidget))
-                  .references,
-              hasLength(1));
-        } else {
+        try {
+          final errors = <Object>[];
+          final fake = FakeComposerChat(content: '离线回复');
+          await openPage(tester, conversation(920),
+              chat: fake, draftStore: gate, onPreparationError: errors.add);
+          final input = tester
+              .widget<MessageInputWidget>(find.byType(MessageInputWidget));
+          input.onReferencePicked!(reference);
+          await tester.enterText(find.byType(TextField).last, '原始草稿');
+          late Future<void> sending;
+          await tester.runAsync(() async {
+            sending = Future<void>.value(tester
+                .widget<MessageInputWidget>(find.byType(MessageInputWidget))
+                .onSend!());
+          });
+          final run = generation.lookup('guest', 920)!;
+          // 入口只提交run；真实冻结和收尾都必须属于这次点击的同一对象。
+          await finishFuture(tester, gate.frozen.future);
+          expect(run.acceptedUser, isNull);
           expect(errors, isEmpty);
+          expect(generation.lookup('guest', 920), same(run));
+          final controller = input.controller!;
+          controller.value = switch (change) {
+            'selection' => controller.value
+                .copyWith(selection: const TextSelection.collapsed(offset: 1)),
+            'composing' => controller.value
+                .copyWith(composing: const TextRange(start: 0, end: 1)),
+            _ => const TextEditingValue(
+                text: '真实新正文', selection: TextSelection.collapsed(offset: 5)),
+          };
+          await tester.pump();
+          gate.release.complete();
+          await finishFuture(tester, sending);
+          await finishFuture(tester, run.finished);
+          await letIoFinish(tester);
           expect(fake.calls, 1);
           expect(fake.prompts.single, '原始草稿');
           expect(
               fake.attachmentsReceived.single!.extraText, contains('合成冻结正文'));
+          expect(errors, isEmpty);
+          if (change == 'text') {
+            expect(controller.text, '真实新正文');
+            final newerDraft = await finishFuture(tester, draftFor(920).load());
+            expect(newerDraft!.text, '真实新正文');
+            expect(
+                tester
+                    .widget<MessageInputWidget>(find.byType(MessageInputWidget))
+                    .references,
+                hasLength(1));
+          } else {
+            expect(errors, isEmpty);
+            expect(fake.calls, 1);
+            expect(fake.prompts.single, '原始草稿');
+            expect(
+                fake.attachmentsReceived.single!.extraText, contains('合成冻结正文'));
+          }
+          expect(lists, 1);
+          await closePage(tester);
+        } finally {
+          if (!gate.release.isCompleted) gate.release.complete();
+          await tester.runAsync(() async {
+            await Future.wait(generation.runs
+                .where((r) => !r.retired)
+                .map((r) => r.retire('freeze fixture cleanup')));
+            await server.close(force: true);
+          });
+          HttpOverrides.global = oldOverrides;
         }
-        await closePage(tester);
       });
     }
   }
 
-  testWidgets('纯历史引用可发送，来源删除后重开上下文与重新生成使用相同快照', (tester) async {
+  pageTest('纯历史引用可发送，来源删除后重开上下文与重新生成使用相同快照', (tester) async {
     await configureFixture(tester);
     final reference = await savedSource(tester, '所选完整历史资料：冻结事实A');
     final model = conversation(901);
@@ -306,7 +409,12 @@ void main() {
         chatList.chatController.initialMessageList.first,
         tester.element(find.text('离线模拟回答').first));
     await tester.pumpAndSettle();
-    await tester.tap(find.text('重新生成'));
+    final firstRun = generation.lookup('guest', 901)!;
+    await tester.runAsync(() => tester.tap(find.text('重新生成')));
+    final retryRun = generation.lookup('guest', 901)!;
+    expect(retryRun, isNot(same(firstRun)));
+    expect(retryRun.input.existingUserRowId, isNotNull);
+    await finishFuture(tester, retryRun.finished);
     await letIoFinish(tester);
     expect(chat.calls, 2);
     expect(chat.attachmentsReceived.last!.extraText,
@@ -323,7 +431,7 @@ void main() {
     await closePage(tester);
   });
 
-  testWidgets('预算降低后重生成不请求模型，保留已有提问和回复', (tester) async {
+  pageTest('预算降低后重生成不请求模型，保留已有提问和回复', (tester) async {
     await configureFixture(tester);
     final reference = await savedSource(tester, '文' * 1200);
     final model = conversation(904);
@@ -358,7 +466,7 @@ void main() {
     await closePage(tester);
   });
 
-  testWidgets('超过草稿128K字符的普通发送仍按配置进入既有请求', (tester) async {
+  pageTest('超过草稿128K字符的普通发送仍按配置进入既有请求', (tester) async {
     await configureFixture(tester);
     final chat = FakeComposerChat(content: '大正文已发送');
     await openPage(tester, conversation(907), chat: chat);
@@ -381,7 +489,7 @@ void main() {
     await closePage(tester);
   });
 
-  testWidgets('350ms内修改文字加历史引用后立即预览，未发送未dispose也保存最新草稿', (tester) async {
+  pageTest('350ms内修改文字加历史引用后立即预览，未发送未dispose也保存最新草稿', (tester) async {
     await configureFixture(tester);
     final original = await tester.runAsync(() =>
         File('${temporary.path}/preview-save.txt').writeAsString('预览文件冻结正文'));
@@ -447,7 +555,7 @@ void main() {
   });
 
   for (final damage in ['删除', '摘要不符']) {
-    testWidgets('附件$damage导致立即预览失败，未发送未dispose仍保存最新文字和不可用标签', (tester) async {
+    pageTest('附件$damage导致立即预览失败，未发送未dispose仍保存最新文字和不可用标签', (tester) async {
       await configureFixture(tester);
       const cid = 910;
       final original = await tester.runAsync(() =>
@@ -501,7 +609,7 @@ void main() {
     });
   }
 
-  testWidgets('失败预览的草稿保存也失败时明确提示，零模型调用并保留不可用标签', (tester) async {
+  pageTest('失败预览的草稿保存也失败时明确提示，零模型调用并保留不可用标签', (tester) async {
     await configureFixture(tester);
     final original = await tester.runAsync(() =>
         File('${temporary.path}/preview-save-failure.txt')
@@ -540,7 +648,7 @@ void main() {
     await closePage(tester);
   });
 
-  testWidgets('预览保存超过草稿字符容量仅提示，仍可预览并合法发送', (tester) async {
+  pageTest('预览保存超过草稿字符容量仅提示，仍可预览并合法发送', (tester) async {
     await configureFixture(tester);
     final original = await tester.runAsync(() =>
         File('${temporary.path}/capacity-preview.txt')
@@ -587,7 +695,7 @@ void main() {
     await closePage(tester);
   });
 
-  testWidgets('延迟托管期间源变化，预览和发送使用同一冻结正文；原文件删除仍可发送', (tester) async {
+  pageTest('延迟托管期间源变化，预览和发送使用同一冻结正文；原文件删除仍可发送', (tester) async {
     await configureFixture(tester);
     final model = conversation(905);
     final chat = FakeComposerChat(content: '离线冻结验收');
@@ -645,7 +753,7 @@ void main() {
     await closePage(tester);
   });
 
-  testWidgets('快速选择发送，托管等待中源被删除时零请求且保留不可用标签', (tester) async {
+  pageTest('快速选择发送，托管等待中源被删除时零请求且保留不可用标签', (tester) async {
     await configureFixture(tester);
     final chat = FakeComposerChat();
     await openPage(tester, conversation(906), chat: chat);
@@ -671,15 +779,35 @@ void main() {
         .onFilesPicked!([original!.path]);
     await tester.pump();
     await finishFuture(tester, started.future);
+    final leaseEntered = Completer<void>(), leaseRelease = Completer<void>();
+    late Future<void> lease;
+    await tester.runAsync(() async {
+      lease = LoginDao.runWithStableAccount(
+          expectedAccountHash: 'guest',
+          action: () async {
+            leaseEntered.complete();
+            await leaseRelease.future;
+          });
+    });
+    await finishFuture(tester, leaseEntered.future);
+    addTearDown(() {
+      if (!leaseRelease.isCompleted) leaseRelease.complete();
+    });
     await tester.runAsync(() async {
       tester
           .widget<MessageInputWidget>(find.byType(MessageInputWidget))
           .onSend!();
       await Future<void>.delayed(const Duration(milliseconds: 30));
     });
+    final submitted = generation.lookup('guest', 906)!;
+    expect(submitted.acceptedUser, isNull);
+    expect(submitted.input.user.content, isEmpty);
     await tester.runAsync(original.delete);
     held = false;
     resolver.complete(temporary.path);
+    leaseRelease.complete();
+    await finishFuture(tester, lease);
+    await finishFuture(tester, submitted.finished);
     await tester.runAsync(
         () => Future<void>.delayed(const Duration(milliseconds: 200)));
     await letIoFinish(tester, rounds: 30);
@@ -698,7 +826,7 @@ void main() {
     await closePage(tester);
   });
 
-  testWidgets('引用字数合并预算超限与不可用引用均零请求、保留草稿', (tester) async {
+  pageTest('引用字数合并预算超限与不可用引用均零请求、保留草稿', (tester) async {
     await configureFixture(tester, maxChars: 1024);
     final reference = await savedSource(tester, '文' * 1100);
     final model = conversation(902);
@@ -742,7 +870,7 @@ void main() {
     await closePage(tester);
   });
 
-  testWidgets('用户消息落库失败保留历史引用快照且不请求模型', (tester) async {
+  pageTest('用户消息落库失败保留历史引用快照且不请求模型', (tester) async {
     await configureFixture(tester);
     final reference = await savedSource(tester, '入库失败仍须保留的快照');
     final model = conversation(903);

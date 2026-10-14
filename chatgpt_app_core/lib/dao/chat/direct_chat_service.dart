@@ -200,6 +200,7 @@ class DirectChatService
     Future<void>? abortTrigger,
     ChatSendProgressCallback? onProgress,
     Map<String, dynamic>? reasoningFields,
+    Future<void> Function()? beforeAttachmentUpload,
   ]) async {
     final messages = <Map<String, dynamic>>[
       ...history,
@@ -214,7 +215,9 @@ class DirectChatService
     final prepared = adapter == null
         ? messages
         : await adapter.prepareMessages(messages,
-            abortTrigger: abortTrigger, onProgress: onProgress);
+            abortTrigger: abortTrigger,
+            onProgress: onProgress,
+            beforeUpload: beforeAttachmentUpload);
     final controlFields = reasoningFields ??
         _reasoningFor(const ChatRequestOptions()).requestFields;
     final thinking = controlFields['thinking'];
@@ -316,7 +319,8 @@ class DirectChatService
         const [],
         options.abortTrigger,
         options.onProgress,
-        reasoning.requestFields);
+        reasoning.requestFields,
+        options.beforeAttachmentUpload);
     await _checkRequestAbort(options.abortTrigger);
     reportChatSendProgress(options.onProgress, const ChatSendProgress('等待回答'));
     final response = await recoverChatRequest(() async {
@@ -460,8 +464,15 @@ class DirectChatService
       chatUrl: _cfg.baseUrl,
     );
     final completion = AICompletion(config);
-    final messages = await _buildMessages(prompt, history, attachments,
-        extraMessages, abortTrigger, onProgress, extraBody);
+    final messages = await _buildMessages(
+        prompt,
+        history,
+        attachments,
+        extraMessages,
+        abortTrigger,
+        onProgress,
+        extraBody,
+        options.beforeAttachmentUpload);
     await _checkRequestAbort(abortTrigger);
     reportChatSendProgress(onProgress, const ChatSendProgress('等待回答'));
     // 工具调用分片按 index 累积，流结束后再发完整 toolCall 事件（阶段六）。

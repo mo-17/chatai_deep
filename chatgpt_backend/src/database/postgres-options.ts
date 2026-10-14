@@ -6,6 +6,11 @@ import {
   VerificationCode,
 } from '../../libs/auth-kit/src';
 
+import {
+  MicrosoftSmtpConnection,
+  MicrosoftSmtpFlow,
+} from '../../libs/auth-kit/src/microsoft/microsoft-smtp.entities';
+
 type PostgresOptions = Extract<DataSourceOptions, { type: 'postgres' }>;
 export type EnvironmentReader = (key: string) => string | undefined;
 
@@ -36,8 +41,11 @@ export function buildPostgresOptions(
       SmtpProvider,
       AuthSettings,
       EmailTemplate,
+      MicrosoftSmtpConnection,
+      MicrosoftSmtpFlow,
     ],
-    logging: read('DB_LOGGING') === 'true' ? ['error', 'warn'] : ['error'],
+    // SQL错误含bind密文，认证/OAuth存储不记录原SQL或参数。
+    logging: false,
     ssl:
       read('DB_SSL') === 'true'
         ? {

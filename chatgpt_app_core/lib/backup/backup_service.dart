@@ -1,3 +1,4 @@
+import 'package:chatgpt_app_core/chat/application/conversation_execution_registry.dart';
 import 'package:chatgpt_app_core/chat/application/story_role_card_context.dart';
 import 'package:chatgpt_app_core/model/story_room_model.dart';
 import 'dart:async';
@@ -509,6 +510,9 @@ class BackupService {
   /// 导入完成后 +1，会话列表等常驻页面监听它重新加载数据
   /// （不强求重启，对应源项目 restore 后 resetAppInitializationState）。
   static final ValueNotifier<int> restoreTick = ValueNotifier<int>(0);
+  // 校验通过后、任何恢复落盘前撤销执行身份；即使后续回滚，也需用户明确继续。
+  // restoreTick仍只在成功后通知页面，不用它代替发送边界的维护栅栏。
+  static int agentExecutionRevision = 0;
 
   final HiDBManager storage;
 
@@ -926,12 +930,14 @@ class BackupService {
   }) =>
       _serializeImport(
         accountHash,
-        () => _importArchiveUnlocked(
-          zipBytes,
-          accountHash: accountHash,
-          mode: mode,
-          accountGuard: accountGuard,
-        ),
+        () => ConversationExecutionRegistry.instance.maintainStorage(
+            storage.db,
+            () => _importArchiveUnlocked(
+                  zipBytes,
+                  accountHash: accountHash,
+                  mode: mode,
+                  accountGuard: accountGuard,
+                )),
       );
 
   Future<BackupRestoreResult> _importArchiveUnlocked(
@@ -1031,6 +1037,13 @@ class BackupService {
         _dedupeStoryPersonas(storyPersonas, warnings);
     final guard = accountGuard;
     if (guard != null) await guard();
+    agentExecutionRevision++;
+    // 云来源是本机派生关联：任何恢复尝试（含回滚/选择性恢复）都撤销旧关联。
+    // 独立于恢复事务，不让失败后相同正文/同行号重新获得旧publication权限。
+    if (await _tableExists(storage.db, 'tb_cloud_sources')) {
+      await storage.db.rawUpdate(
+          'UPDATE tb_cloud_sources SET valid=0,revision=revision+1');
+    }
     if (mode == BackupImportMode.mergeAppend) {
       return _importMergeAppend(
         archive: archive,
@@ -3522,6 +3535,8 @@ class BackupService {
       'tb_agent_verification_turn',
       'tb_agent_task_criteria',
       'tb_agent_task_session',
+      'tb_agent_workflow',
+      'tb_conversation_generation',
       'tb_chat_semantic_summary',
     ]) {
       if (await _tableExists(txn, table)) await txn.delete(table);

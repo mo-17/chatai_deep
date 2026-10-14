@@ -2,6 +2,7 @@ import 'dart:async';
 
 import 'package:chat_message/models/message_model.dart';
 import 'package:chatgpt_app_core/chat/application/agent_background_execution.dart';
+import 'package:chatgpt_app_core/chat/application/agent_execution_channel.dart';
 import 'package:chatgpt_app_core/chat/application/agent_task_session.dart';
 import 'package:chatgpt_app_core/chat/application/agent_workspace_service.dart';
 import 'package:chatgpt_app_core/chat/application/agent_workspace_tools.dart';
@@ -87,6 +88,7 @@ class AgentTaskRun extends ChangeNotifier {
   final ChatBlockStore blocks = ChatBlockStore();
   final Completer<void> _abort = Completer<void>();
   final Completer<void> _finished = Completer<void>();
+  final _channelOwner = AgentExecutionOwner();
   AgentRunPhase phase = AgentRunPhase.queued;
   ChatSendProgress? progress;
   ChatContextPlan? contextPlan;
@@ -553,6 +555,7 @@ class AgentTaskExecutor extends ChangeNotifier with WidgetsBindingObserver {
   static final instance = AgentTaskExecutor();
   static AgentTaskExecutor ensureInitialized() => instance;
   final String Function() currentAccount;
+  final AgentExecutionChannel executionChannel;
   final List<AgentTaskRun> _queue = [];
   final Map<AgentTaskKey, AgentTaskRun> _runs = {};
   final Map<AgentTaskKey, _ConfirmationHost> _hosts = {};
@@ -564,9 +567,11 @@ class AgentTaskExecutor extends ChangeNotifier with WidgetsBindingObserver {
 
   AgentTaskExecutor(
       {String Function()? currentAccount,
+      AgentExecutionChannel? executionChannel,
       bool observeApplication = true,
       this.foreground = true})
-      : currentAccount = currentAccount ?? HiDBManager.getAccountHash {
+      : executionChannel = executionChannel ?? AgentExecutionChannel.instance,
+        currentAccount = currentAccount ?? HiDBManager.getAccountHash {
     if (observeApplication) {
       foreground = WidgetsBinding.instance.lifecycleState == null ||
           WidgetsBinding.instance.lifecycleState == AppLifecycleState.resumed;
@@ -599,6 +604,12 @@ class AgentTaskExecutor extends ChangeNotifier with WidgetsBindingObserver {
     final previous = _runs.remove(prepared.key);
     if (previous != null) _retire(previous);
     final run = AgentTaskRun(prepared);
+    executionChannel.admit(
+        account: run.key.accountHash,
+        cid: run.key.cid,
+        owner: run._channelOwner,
+        storageKey: prepared.messages.storage.db,
+        pause: (reason) => cancel(run.key, reason: reason));
     // 在第一个 await 前保留身份，阻止同会话双击形成两个收费请求。
     _runs[run.key] = run;
     // 工具在启动时捕获此运行的许可；停止/替换后，迟到的异步结果不能
@@ -617,11 +628,13 @@ class AgentTaskExecutor extends ChangeNotifier with WidgetsBindingObserver {
           (_maintenanceAccounts[run.key.accountHash] ?? 0) > 0 ||
           !accountCurrent(run.key) ||
           run._cancelled) {
+        executionChannel.releaseAdmission(run._channelOwner);
         await run._cancelQueued('账户已切换或排队已取消，可继续任务');
       } else {
         _queue.add(run);
       }
     } catch (_) {
+      executionChannel.releaseAdmission(run._channelOwner);
       run._checkpointFailed();
       run.phase = AgentRunPhase.paused;
       if (!run._finished.isCompleted) run._finished.complete();
@@ -656,6 +669,7 @@ class AgentTaskExecutor extends ChangeNotifier with WidgetsBindingObserver {
             (_maintenanceAccounts[run.key.accountHash] ?? 0) > 0 ||
             !foreground ||
             !accountCurrent(run.key)) {
+          executionChannel.releaseAdmission(run._channelOwner);
           await run
               ._cancelQueued(!foreground ? '应用在后台，等待返回前台后明确继续' : '账户已切换，任务已暂停');
           continue;
@@ -663,7 +677,17 @@ class AgentTaskExecutor extends ChangeNotifier with WidgetsBindingObserver {
         _active = run;
         notifyListeners();
         try {
-          await run._execute(this);
+          await executionChannel.run<void>(
+              accountHash: run.key.accountHash,
+              cid: run.key.cid,
+              owner: run._channelOwner,
+              canContinueInBackground: () => run.hasBackgroundLease,
+              action: () => run._execute(this),
+              pause: (reason) async {
+                run.requestPause(reason);
+              });
+        } catch (_) {
+          await run._cancelQueued('该对话已有任务或任务通道已暂停，可明确继续');
         } finally {
           _active = null;
           _trimTerminalRuns();
@@ -679,8 +703,11 @@ class AgentTaskExecutor extends ChangeNotifier with WidgetsBindingObserver {
   Future<void> cancel(AgentTaskKey key, {String reason = '已停止任务，可继续'}) async {
     final run = _runs[key];
     if (run == null || !run.busy) return;
-    if (run.queued && !identical(run, _active)) {
+    if (run.queued) {
       _queue.remove(run);
+      executionChannel.cancelQueued(key.accountHash, key.cid,
+          owner: run._channelOwner);
+      executionChannel.releaseAdmission(run._channelOwner);
       await run._cancelQueued(reason);
     } else {
       run.requestPause(reason);
@@ -692,9 +719,11 @@ class AgentTaskExecutor extends ChangeNotifier with WidgetsBindingObserver {
   /// 覆盖式恢复等操作持有账户维护许可，期间不得入队或启动网络请求。
   Future<T> runWithTasksPaused<T>(
       String accountHash, String reason, Future<T> Function() action) async {
+    executionChannel.holdAccount(accountHash);
     _maintenanceAccounts.update(accountHash, (count) => count + 1,
         ifAbsent: () => 1);
     try {
+      await executionChannel.pauseAccount(accountHash, reason);
       final keys = _runs.values
           .where((run) => run.key.accountHash == accountHash)
           .map((run) => run.key)
@@ -704,6 +733,7 @@ class AgentTaskExecutor extends ChangeNotifier with WidgetsBindingObserver {
       }
       return await action();
     } finally {
+      executionChannel.releaseAccount(accountHash);
       final count = (_maintenanceAccounts[accountHash] ?? 1) - 1;
       if (count <= 0) {
         _maintenanceAccounts.remove(accountHash);
@@ -717,6 +747,7 @@ class AgentTaskExecutor extends ChangeNotifier with WidgetsBindingObserver {
   /// 用户删除对话时先终止并移除运行身份，迟到工具结果不能重建已删除快照。
   Future<void> forget(AgentTaskKey key,
       {String reason = '原对话即将删除，任务已停止'}) async {
+    await executionChannel.pauseConversation(key.accountHash, key.cid, reason);
     await cancel(key, reason: reason);
     final run = _runs.remove(key);
     if (run != null) {
@@ -728,8 +759,10 @@ class AgentTaskExecutor extends ChangeNotifier with WidgetsBindingObserver {
   }
 
   Future<void> cancelAll(String reason) async {
+    executionChannel.holdAll();
     _stoppingAll++;
     try {
+      await executionChannel.pauseAll(reason);
       final keys =
           _runs.values.where((run) => run.busy).map((run) => run.key).toList();
       for (final key in keys) {
@@ -743,6 +776,7 @@ class AgentTaskExecutor extends ChangeNotifier with WidgetsBindingObserver {
       _runs.clear();
       notifyListeners();
     } finally {
+      executionChannel.releaseAll();
       _stoppingAll--;
     }
   }
@@ -805,6 +839,8 @@ class AgentTaskExecutor extends ChangeNotifier with WidgetsBindingObserver {
       return;
     }
     foreground = false;
+    unawaited(executionChannel.enteredBackground(
+        detached: state == AppLifecycleState.detached));
     final active = _active;
     if (active != null &&
         (state == AppLifecycleState.detached ||

@@ -23,6 +23,7 @@ import 'package:flutter/services.dart';
 import 'package:flutter_hi_cache/flutter_hi_cache.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:login_sdk/login_sdk.dart';
+import 'package:login_sdk/dao/login_dao.dart';
 import 'package:provider/provider.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:sqflite_common_ffi/sqflite_ffi.dart';
@@ -426,6 +427,9 @@ class _PageFixture {
   int cid = 873;
 
   Future<void> initialize() async {
+    // 每个 widget 用例都有独立 FakeAsync zone；不能复用上一用例的账号队尾。
+    // 此 fixture 不测试登录切换，真实账号队列回归在 SDK/工作流专用组保留。
+    LoginDao.resetHooksForTest();
     temporary =
         await Directory.systemTemp.createTemp('agent-native-background-');
     previousFactory = databaseFactoryOrNull;
@@ -478,20 +482,26 @@ class _PageFixture {
 
   Future<void> dispose() async {
     if (!release.isCompleted) release.complete();
-    await AgentTaskExecutor.instance.cancelAll('测试结束');
-    await server?.close(force: true);
-    foreground(TestWidgetsFlutterBinding.instance);
-    await HiDBManager.closeAll();
-    settings.dispose();
-    theme.dispose();
-    LoginSdkConfig.reset();
-    AISettingsDao.resetSecureStateForTest();
-    final messenger =
-        TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger;
-    messenger.setMockMethodCallHandler(paths, null);
-    messenger.setMockMethodCallHandler(channel, null);
-    databaseFactory = previousFactory;
-    await temporary.delete(recursive: true);
+    try {
+      // 失败也先释放真实 HTTP，再有界等待执行器；不吞取消超时/原测试异常。
+      await server?.close(force: true);
+      await AgentTaskExecutor.instance
+          .cancelAll('测试结束')
+          .timeout(const Duration(seconds: 5));
+    } finally {
+      foreground(TestWidgetsFlutterBinding.instance);
+      await HiDBManager.closeAll();
+      settings.dispose();
+      theme.dispose();
+      LoginSdkConfig.reset();
+      AISettingsDao.resetSecureStateForTest();
+      final messenger =
+          TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger;
+      messenger.setMockMethodCallHandler(paths, null);
+      messenger.setMockMethodCallHandler(channel, null);
+      databaseFactory = previousFactory;
+      await temporary.delete(recursive: true);
+    }
   }
 
   Future<void> localNetwork(Future<void> Function() body) =>
@@ -604,19 +614,20 @@ class _PageFixture {
         task.dispose();
       }
     });
-    await tester.pumpWidget(MultiProvider(
-        providers: [
-          ChangeNotifierProvider<AISettingsProvider>.value(value: settings),
-          ChangeNotifierProvider<ThemeProvider>.value(value: theme),
-        ],
-        child: MaterialApp(
-            home: ConversationPage(
-          conversationModel: model,
-          readAloudService: const NoopReadAloudService(),
-          resumeAgentTask: taskEnabled,
-          initialTargetCreatedAt: taskEnabled ? 101 : null,
-          backgroundExecution: execution,
-        ))));
+    // Page 自动恢复与 app 级执行器包含真实 I/O，使用存活的 real-async zone。
+    await tester.runAsync(() async => tester.pumpWidget(MultiProvider(
+            providers: [
+              ChangeNotifierProvider<AISettingsProvider>.value(value: settings),
+              ChangeNotifierProvider<ThemeProvider>.value(value: theme),
+            ],
+            child: MaterialApp(
+                home: ConversationPage(
+              conversationModel: model,
+              readAloudService: const NoopReadAloudService(),
+              resumeAgentTask: taskEnabled,
+              initialTargetCreatedAt: taskEnabled ? 101 : null,
+              backgroundExecution: execution,
+            )))));
     await tick(tester, count: 25);
     expect(tester.takeException(), isNull);
   }

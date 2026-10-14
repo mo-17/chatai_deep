@@ -22,6 +22,8 @@ import {
 import * as jwt from 'jsonwebtoken';
 import { randomUUID } from 'crypto';
 import { requireAppSecretKey } from '../security/app-secret';
+import { canonicalIdentifier } from '../verification/verification-contract';
+import { ThirdPartyBindDto } from '../verification/dto/third-party-bind.dto';
 
 /**
  * 第三方登录 DTOs
@@ -30,13 +32,6 @@ interface HuaweiLoginBody {
   mode: 'getAuthCode' | 'quickLogin';
   authCode?: string;
   accessToken?: string;
-}
-
-interface ThirdPartyBindBody {
-  bindTicket: string;
-  channel: 'email' | 'sms';
-  identifier: string;
-  code: string;
 }
 
 interface AppleLoginBody {
@@ -61,12 +56,17 @@ function encodeBindTicket(
   });
 }
 
-/** 解码 bindTicket 得到 userId */
+interface VerifiedBindTicket {
+  readonly userId: number;
+  readonly expiresAt?: number;
+}
+
+/** 首次验签捕获固定 provider/用户及原截止，不从业务后状态补签新授权。 */
 function decodeBindTicket(
   ticket: string,
   provider: 'huawei' | 'apple',
   salt: string,
-): number {
+): VerifiedBindTicket {
   const payload = jwt.verify(ticket, salt, {
     algorithms: ['HS256'],
     audience: 'auth-kit:third-party-bind',
@@ -83,7 +83,10 @@ function decodeBindTicket(
   ) {
     throw new Error('bindTicket claims invalid');
   }
-  return Number(payload.sub);
+  return {
+    userId: Number(payload.sub),
+    ...(payload.exp !== undefined ? { expiresAt: payload.exp * 1000 } : {}),
+  };
 }
 
 /** E.164 解析 */
@@ -172,32 +175,45 @@ export class ThirdPartyController {
   @HttpCode(200)
   @ThirdParty('huawei')
   @UseGuards(ThirdPartyEnabledGuard)
-  async huaweiBindAndLogin(@Body() body: ThirdPartyBindBody) {
-    const { bindTicket, channel, identifier, code } = body;
+  async huaweiBindAndLogin(@Body() body: ThirdPartyBindDto) {
+    const { bindTicket, channel, identifier: rawIdentifier, code } = body;
+    const identifier = canonicalIdentifier(channel, rawIdentifier);
 
     // 解码 bindTicket 得到待绑定用户 ID
-    let userId: number;
+    let authorization: VerifiedBindTicket;
     try {
-      userId = decodeBindTicket(bindTicket, 'huawei', this.bindSalt);
+      authorization = decodeBindTicket(bindTicket, 'huawei', this.bindSalt);
     } catch {
       throw new BadRequestException('bindTicket 无效或已过期，请重新登录');
     }
 
-    await this.verificationService.verifyCode(
+    const { userId, expiresAt } = authorization;
+    const checkAuthorization = (): undefined => {
+      if (expiresAt !== undefined && Date.now() >= expiresAt)
+        throw new BadRequestException('bindTicket 无效或已过期，请重新登录');
+    };
+
+    const user = await this.verificationService.consumeWith(
       channel,
       identifier,
       'bind',
       code,
-    );
-
-    const resolved = resolveIdentifier(channel, identifier);
-    const user = await this.userResolver.bindPendingThirdPartyIdentifier(
-      userId,
-      'huawei',
-      {
-        channel,
-        ...resolved,
+      async (manager, assertCurrent) => {
+        const resolver = this.userResolver.withManager(manager);
+        await resolver.findById(userId); // 同验证码事务中的实际用户行锁。
+        assertCurrent();
+        // 等待用户行锁期间 bindTicket 也可能到期；不能沿用入口校验时间。
+        try {
+          decodeBindTicket(bindTicket, 'huawei', this.bindSalt);
+        } catch {
+          throw new BadRequestException('bindTicket 无效或已过期，请重新登录');
+        }
+        return resolver.bindPendingThirdPartyIdentifier(userId, 'huawei', {
+          channel,
+          ...resolveIdentifier(channel, identifier),
+        });
       },
+      checkAuthorization,
     );
 
     const token = this.jwtSigner.sign({
@@ -249,31 +265,44 @@ export class ThirdPartyController {
   @HttpCode(200)
   @ThirdParty('apple')
   @UseGuards(ThirdPartyEnabledGuard)
-  async appleBindAndLogin(@Body() body: ThirdPartyBindBody) {
-    const { bindTicket, channel, identifier, code } = body;
+  async appleBindAndLogin(@Body() body: ThirdPartyBindDto) {
+    const { bindTicket, channel, identifier: rawIdentifier, code } = body;
+    const identifier = canonicalIdentifier(channel, rawIdentifier);
 
-    let userId: number;
+    let authorization: VerifiedBindTicket;
     try {
-      userId = decodeBindTicket(bindTicket, 'apple', this.bindSalt);
+      authorization = decodeBindTicket(bindTicket, 'apple', this.bindSalt);
     } catch {
       throw new BadRequestException('bindTicket 无效或已过期，请重新登录');
     }
 
-    await this.verificationService.verifyCode(
+    const { userId, expiresAt } = authorization;
+    const checkAuthorization = (): undefined => {
+      if (expiresAt !== undefined && Date.now() >= expiresAt)
+        throw new BadRequestException('bindTicket 无效或已过期，请重新登录');
+    };
+
+    const user = await this.verificationService.consumeWith(
       channel,
       identifier,
       'bind',
       code,
-    );
-
-    const resolved = resolveIdentifier(channel, identifier);
-    const user = await this.userResolver.bindPendingThirdPartyIdentifier(
-      userId,
-      'apple',
-      {
-        channel,
-        ...resolved,
+      async (manager, assertCurrent) => {
+        const resolver = this.userResolver.withManager(manager);
+        await resolver.findById(userId); // 同验证码事务中的实际用户行锁。
+        assertCurrent();
+        // 等待用户行锁期间 bindTicket 也可能到期；不能沿用入口校验时间。
+        try {
+          decodeBindTicket(bindTicket, 'apple', this.bindSalt);
+        } catch {
+          throw new BadRequestException('bindTicket 无效或已过期，请重新登录');
+        }
+        return resolver.bindPendingThirdPartyIdentifier(userId, 'apple', {
+          channel,
+          ...resolveIdentifier(channel, identifier),
+        });
       },
+      checkAuthorization,
     );
 
     const token = this.jwtSigner.sign({

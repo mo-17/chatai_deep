@@ -37,6 +37,25 @@ export class VerificationCode {
   @Column({ type: 'timestamptz', nullable: true, default: null })
   consumedAt: Date | null;
 
+  /** 旧记录不推断投递成功；只有最新 sent 且未失效的记录可验证。 */
+  @Column({ type: 'varchar', length: 20, default: 'legacy' })
+  deliveryStatus: 'legacy' | 'pending' | 'sent' | 'failed' | 'unknown';
+
+  @Column({ type: 'varchar', length: 50, nullable: true })
+  deliveryErrorCode: string | null;
+
+  @Column({ type: 'timestamptz', nullable: true })
+  deliveryDeadlineAt: Date | null;
+
+  @Column({ type: 'timestamptz', nullable: true })
+  sentAt: Date | null;
+
+  @Column({ type: 'timestamptz', nullable: true })
+  invalidatedAt: Date | null;
+
+  @Column({ type: 'varchar', length: 30, nullable: true })
+  invalidationReason: string | null;
+
   /** 校验失败次数，>=5 锁定 */
   @Column({ default: 0 })
   attempts: number;

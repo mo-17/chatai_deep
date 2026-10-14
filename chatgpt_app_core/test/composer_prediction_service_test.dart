@@ -56,8 +56,13 @@ void main() {
         ChatReasoningPolicy.offIfSupported);
     expect(fake.attachmentsReceived.single, isNull);
     expect(jsonEncode(fake.histories.single), isNot(contains('private-image')));
+    // 共享fake现在记录完整dispatch消息（包含辅助请求本身），而非仅history入参。
+    expect(fake.histories.single.first['role'], 'system');
+    expect(fake.histories.single, hasLength(messages.length + 2));
     expect(fake.histories.single.skip(1).map((m) => m['content']),
-        messages.map((m) => m.content));
+        [...messages.map((m) => m.content), '请给出下一条用户消息建议。']);
+    expect(fake.histories.single.last['role'], 'user');
+    expect(fake.prompts.single, '请给出下一条用户消息建议。');
     expect(messages, hasLength(2));
     expect(result.usage.promptTokens, 100);
     final long = List.generate(

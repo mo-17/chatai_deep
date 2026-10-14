@@ -1,13 +1,7 @@
-import { IsIn, IsString, Matches, MaxLength, MinLength } from 'class-validator';
+import { IsString, Matches, MaxLength, MinLength } from 'class-validator';
+import { AuthIdentifierDto } from './identifier.dto';
 
-export class ResetPasswordDto {
-  @IsIn(['email', 'sms'])
-  channel: 'email' | 'sms';
-
-  @IsString()
-  @MaxLength(320)
-  identifier: string;
-
+export class ResetPasswordDto extends AuthIdentifierDto {
   @IsString()
   @Matches(/^\d{6}$/, { message: '验证码为 6 位数字' })
   code: string;

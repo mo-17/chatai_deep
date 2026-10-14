@@ -1,25 +1,18 @@
 import {
-  IsIn,
   IsOptional,
   IsString,
   Matches,
   MaxLength,
   MinLength,
 } from 'class-validator';
+import { AuthIdentifierDto } from './identifier.dto';
 
-export class AuthRegisterDto {
-  @IsIn(['email', 'sms'])
-  channel: 'email' | 'sms';
-
-  @IsString()
-  @MaxLength(320)
-  identifier: string;
-
+export class AuthRegisterDto extends AuthIdentifierDto {
   @IsString()
   @Matches(/^\d{6}$/, { message: '验证码为 6 位数字' })
   code: string;
 
-  /** 密码可选——未给即纯验证码账户 */
+  /** 密码可选，保持已有验证码账户语义。 */
   @IsOptional()
   @IsString()
   @MinLength(1)

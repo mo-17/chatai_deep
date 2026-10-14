@@ -25,6 +25,9 @@ class AISettingsProvider extends ChangeNotifier {
   int _revision = 0;
   int _stateEpoch = 0;
   String _accountHash = LoginDao.getAccountHash() ?? 'guest';
+
+  /// 执行撤权单独通知，quiet save 不重建 UI 也不能保留旧网络许可。
+  final executionChanges = ChangeNotifier();
   AISettings get settings => _settings;
   String get accountHash => _accountHash;
 
@@ -44,6 +47,7 @@ class AISettingsProvider extends ChangeNotifier {
     _settings = loaded;
     _persistedSettings = loaded.clone();
     _accountHash = accountHash;
+    executionChanges.notifyListeners();
     _revision = 0;
     notifyListeners();
   }
@@ -99,6 +103,7 @@ class AISettingsProvider extends ChangeNotifier {
     // 乐观基线必须先前移：紧接着发生的模型/开关操作要基于本次 Key/host
     // 变更构造快照，不能在安全存储 I/O 期间从旧 settings 克隆。
     _settings = commitSnapshot.clone();
+    executionChanges.notifyListeners();
     if (notify) notifyListeners();
     try {
       final persistedSnapshot =

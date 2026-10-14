@@ -21,6 +21,11 @@ import {
   AuthKitAdminGuard,
   AuthKitJwtGuard,
 } from './guards/auth-kit-auth.guard';
+import { AuthKitOptionsModule } from './auth-kit-options.module';
+import {
+  MicrosoftSmtpAdminController,
+  MicrosoftSmtpCallbackController,
+} from './microsoft/microsoft-smtp.controller';
 import { requireAppSecretKey } from './security/app-secret';
 
 export interface AuthKitModuleOptions {
@@ -30,6 +35,7 @@ export interface AuthKitModuleOptions {
   auditLogger?: IAuditLogger;
   /** 凭据加密主密钥，用于加密 smtp_providers.passwordEncrypted */
   appSecretKey: string;
+  microsoftSmtpRedirectUri?: string;
 }
 
 export { AUTH_KIT_OPTIONS } from './auth-kit.tokens';
@@ -60,6 +66,10 @@ export class AuthKitModule {
       },
     };
 
+    const optionsModule = AuthKitOptionsModule.forRoot(
+      asyncOptions.imports ?? [],
+      optionsProvider,
+    );
     return {
       module: AuthKitModule,
       imports: [
@@ -70,18 +80,24 @@ export class AuthKitModule {
           AuthSettings,
           EmailTemplate,
         ]),
-        VerificationModule,
+        optionsModule,
+        VerificationModule.forRoot(optionsModule),
       ],
-      controllers: [AuthController, AdminAuthController, ThirdPartyController],
+      controllers: [
+        AuthController,
+        AdminAuthController,
+        ThirdPartyController,
+        MicrosoftSmtpAdminController,
+        MicrosoftSmtpCallbackController,
+      ],
       providers: [
-        optionsProvider,
         HuaweiService,
         AppleService,
         ThirdPartyEnabledGuard,
         AuthKitJwtGuard,
         AuthKitAdminGuard,
       ],
-      exports: [VerificationModule, TypeOrmModule, AUTH_KIT_OPTIONS],
+      exports: [VerificationModule, TypeOrmModule, AuthKitOptionsModule],
     };
   }
 }

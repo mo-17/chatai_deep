@@ -559,7 +559,8 @@ ChatTransportException _mapBackendTransportFailure(Object error,
         safeMessage: error.safeMessage,
         responseStarted: error.responseStarted || responseStarted,
         failureStage: error.failureStage,
-        failureKind: error.failureKind);
+        failureKind: error.failureKind,
+        unsentReason: error.unsentReason);
   }
   if (error is http.RequestAbortedException) {
     return const ChatTransportException(

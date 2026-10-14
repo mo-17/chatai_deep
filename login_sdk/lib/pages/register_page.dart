@@ -150,7 +150,7 @@ class _RegisterPageState extends State<RegisterPage> {
         purpose: 'register',
       );
     } catch (e) {
-      setState(() => _error = e.toString());
+      if (mounted) setState(() => _error = e.toString());
     }
   }
 
@@ -166,7 +166,7 @@ class _RegisterPageState extends State<RegisterPage> {
     }
     final identifier = _identifierCtrl.text.trim();
     final password = _passwordCtrl.text;
-    if (identifier.isEmpty || _code.length < 4 || password.length < 8) {
+    if (identifier.isEmpty || _code.length != 6 || password.length < 8) {
       setState(() => _error = '请完整填写表单（密码至少 8 位）');
       return;
     }
@@ -386,6 +386,7 @@ class _RegisterPageState extends State<RegisterPage> {
         const SizedBox(height: 10),
         VerificationCodeInput(
           onCompleted: (c) => _code = c,
+          onChanged: (c) => _code = c.length == 6 ? c : '',
           onSendCode: _handleSendCode,
           theme: _themeForInputs,
         ),

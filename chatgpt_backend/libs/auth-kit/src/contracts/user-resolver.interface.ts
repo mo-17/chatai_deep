@@ -1,3 +1,4 @@
+import type { EntityManager } from 'typeorm';
 import {
   AuthUser,
   CreateUserInput,
@@ -10,6 +11,8 @@ import {
  * lib 通过此接口访问用户表，不直接依赖宿主 User 实体。
  */
 export interface IUserResolver {
+  /** 仅绑定已打开的同一事务；不得新开事务或回落全局 repository。 */
+  withManager(manager: EntityManager): IUserResolver;
   /** 按邮箱查找用户 */
   findByEmail(email: string): Promise<AuthUser | null>;
 

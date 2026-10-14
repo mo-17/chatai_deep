@@ -1,8 +1,8 @@
+import 'package:chatgpt_app_core/chat/application/conversation_generation_service.dart';
 import 'dart:async';
 import 'dart:io';
 
 import 'package:chatgpt_app_core/ai_readiness/ai_ready_state.dart';
-import 'package:chat_message/models/message_model.dart';
 import 'package:chatgpt_app_core/backup/backup_service.dart';
 import 'package:chatgpt_app_core/chat/application/assistant_conversation_factory.dart';
 import 'package:chatgpt_app_core/chat/application/tool_registry.dart';
@@ -11,7 +11,6 @@ import 'package:chatgpt_app_core/dao/ai_catalog_dao.dart';
 import 'package:chatgpt_app_core/db/conversation_dao.dart';
 import 'package:chatgpt_app_core/db/favorite_dao.dart';
 import 'package:chatgpt_app_core/db/knowledge_dao.dart';
-import 'package:chatgpt_app_core/db/message_dao.dart';
 import 'package:chatgpt_app_core/db/project_dao.dart';
 import 'package:chatgpt_app_core/model/ai_settings.dart';
 import 'package:chatgpt_app_core/model/assistant_model.dart';
@@ -71,6 +70,11 @@ class _ConversationListPageState extends State<ConversationListPage>
   late ConversationListDao conversationListDao;
   late ProjectDao projectDao;
   final _imagePicker = ImagePicker();
+  final _observedRuns = <ConversationGenerationRun>{};
+  int _summaryRevision = -1;
+  bool _listReady = false, _refreshQueued = false;
+  int _listLoadGeneration = 0;
+  String? _listAccount;
   int? _selectedProjectId;
   bool _uncategorizedOnly = false;
   static const _projectColors = <int>[
@@ -125,6 +129,7 @@ class _ConversationListPageState extends State<ConversationListPage>
   @override
   void initState() {
     super.initState();
+    ConversationGenerationService.instance.addListener(_generationChanged);
     if (widget.skipInitialLoad) return;
     _doInit();
     // 备份导入后重新加载（页面 keepAlive 常驻，不会再走 initState）。
@@ -135,9 +140,62 @@ class _ConversationListPageState extends State<ConversationListPage>
 
   @override
   void dispose() {
+    ConversationGenerationService.instance.removeListener(_generationChanged);
+    for (final run in _observedRuns) {
+      run.removeListener(_runStatusChanged);
+    }
+    _observedRuns.clear();
     BackupService.restoreTick.removeListener(_onRestore);
     AppEvents.conversationsChanged.removeListener(_onRestore);
     super.dispose();
+  }
+
+  void _runStatusChanged() {
+    if (mounted) setState(() {});
+  }
+
+  void _generationChanged() {
+    if (!mounted) return;
+    final service = ConversationGenerationService.instance;
+    final account = HiDBManager.getAccountHash();
+    final current = service.runs
+        .where((r) =>
+            r.scope.account == account && r.scope.identityCurrent && r.busy)
+        .toSet();
+    for (final run in _observedRuns.difference(current)) {
+      run.removeListener(_runStatusChanged);
+    }
+    for (final run in current.difference(_observedRuns)) {
+      run.addListener(_runStatusChanged);
+    }
+    _observedRuns
+      ..clear()
+      ..addAll(current);
+    if (_summaryRevision != service.summaryRevision) {
+      _summaryRevision = service.summaryRevision;
+      _queueSummaryRefresh();
+    }
+    setState(() {});
+  }
+
+  void _queueSummaryRefresh() {
+    if (!_listReady || _refreshQueued) return;
+    _refreshQueued = true;
+    final revision = _summaryRevision;
+    scheduleMicrotask(() async {
+      try {
+        if (mounted && _listAccount == HiDBManager.getAccountHash()) {
+          await _reloadData();
+        }
+      } catch (_) {
+        // 保留上次已读列表，下一次提交事件或手动刷新可重试。
+      } finally {
+        _refreshQueued = false;
+        if (mounted && _summaryRevision != revision) {
+          _queueSummaryRefresh();
+        }
+      }
+    });
   }
 
   void _onRestore() {
@@ -388,7 +446,7 @@ class _ConversationListPageState extends State<ConversationListPage>
     } else {
       model = conversationList[pos - stickConversationList.length];
     }
-    return ConversationWidget(
+    final tile = ConversationWidget(
       model: model,
       onPressed: _jumpToConversation,
       onDelete: _onDelete,
@@ -396,13 +454,40 @@ class _ConversationListPageState extends State<ConversationListPage>
       onAvatar: _editConversationAvatar,
       onStick: _onStick,
     );
+    final run = ConversationGenerationService.instance
+        .lookup(HiDBManager.getAccountHash(), model.cid);
+    if (run == null || !run.busy) return tile;
+    return Column(children: [
+      tile,
+      Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 16),
+          child: Row(children: [
+            Expanded(
+                child: Text(
+                    run.persistencePending
+                        ? '回复待保存'
+                        : run.confirmation != null
+                            ? '等待确认'
+                            : run.progress,
+                    key: ValueKey('ordinary_list_status_${model.cid}'))),
+            TextButton(
+                onPressed: () => run.persistencePending
+                    ? run.retryPersistence()
+                    : run.stop('已从会话列表停止'),
+                child: Text(run.persistencePending ? '重试保存' : '停止'))
+          ]))
+    ]);
   }
 
   void _doInit() async {
+    _listAccount = HiDBManager.getAccountHash();
     final storage =
         await HiDBManager.instance(dbName: HiDBManager.getAccountHash());
     conversationListDao = await ConversationListDao.create(storage);
     projectDao = await ProjectDao.create(storage);
+    if (!mounted || _listAccount != HiDBManager.getAccountHash()) return;
+    _listReady = true;
+    _generationChanged();
     _loadProjects();
     _loadStickData();
     _loadData();
@@ -425,10 +510,17 @@ class _ConversationListPageState extends State<ConversationListPage>
     } else {
       pageIndex = 1;
     }
+    final generation = ++_listLoadGeneration;
+    final account = _listAccount;
     final list = await conversationListDao.getConversationList(
         pageIndex: pageIndex,
         projectId: _selectedProjectId,
         uncategorized: _uncategorizedOnly);
+    if (!mounted ||
+        generation != _listLoadGeneration ||
+        account != HiDBManager.getAccountHash()) {
+      return list;
+    }
     AILogger.log('conversation list count:${list.length}');
     if (loadMore) {
       setState(() {
@@ -502,11 +594,6 @@ class _ConversationListPageState extends State<ConversationListPage>
     return '全部会话';
   }
 
-  static bool _isUsableConversationText(String? value) {
-    final text = value?.trim() ?? '';
-    return text.isNotEmpty && text.toLowerCase() != 'null';
-  }
-
   void _selectProject(int? projectId, {bool uncategorized = false}) {
     setState(() {
       _selectedProjectId = projectId;
@@ -524,61 +611,10 @@ class _ConversationListPageState extends State<ConversationListPage>
             conversationModel: model,
             initialAssistantOpening: initialAssistantOpening,
             initialTargetCreatedAt: initialTargetCreatedAt,
-            conversationUpdate: (updated) => _doUpdate(updated))).then((_) {
+            conversationUpdate: (_) => _reloadData())).then((_) {
       // 从对话详情页返回后立即更新，DB 操作已通过 async factory 保证表就绪
-      _doUpdate(model);
+      if (mounted) unawaited(_reloadData());
     });
-  }
-
-  _doUpdate(ConversationModel model) async {
-    //fix 新建会话，没有聊天消息也会保存的问题
-    final messageDao =
-        await MessageDao.create(conversationListDao.storage, cid: model.cid);
-    final count = await messageDao.getMessageCount();
-    if (!_isUsableConversationText(model.title) ||
-        !_isUsableConversationText(model.lastMessage)) {
-      await _repairConversationSummary(model, messageDao);
-    }
-    if (!_isUsableConversationText(model.title)) return;
-    // 草稿自动保存可能先触发列表重载；返回页拿到的是同 cid 的另一实例。
-    // 按持久化会话标识合并，避免对象身份比较在两种刷新路径间产生重复项。
-    final target =
-        model.stickTime > 0 ? stickConversationList : conversationList;
-    final other =
-        model.stickTime > 0 ? conversationList : stickConversationList;
-    final previousIndex = target.indexWhere((item) => item.cid == model.cid);
-    target.removeWhere((item) => item.cid == model.cid);
-    other.removeWhere((item) => item.cid == model.cid);
-    if (previousIndex < 0) {
-      target.add(model);
-    } else {
-      target.insert(previousIndex.clamp(0, target.length), model);
-    }
-    //触发刷新
-    setState(() {
-      model.messageCount = count;
-    });
-    conversationListDao.saveConversation(model);
-    _loadProjects();
-  }
-
-  Future<void> _repairConversationSummary(
-    ConversationModel model,
-    MessageDao messageDao,
-  ) async {
-    final messages = await messageDao.getAllMessage();
-    final usable = messages
-        .where((message) => _isUsableConversationText(message.content))
-        .toList();
-    if (usable.isEmpty) return;
-    final latest = usable.last;
-    model.lastMessage = latest.content.trim();
-    model.updateAt = latest.createdAt;
-    final firstUser = usable.where((m) => m.ownerType == OwnerType.sender);
-    final titleSource = firstUser.isEmpty ? usable.first : firstUser.first;
-    if (!_isUsableConversationText(model.title)) {
-      model.title = titleSource.content.trim();
-    }
   }
 
   @override

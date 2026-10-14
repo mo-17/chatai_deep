@@ -453,8 +453,14 @@ class PersonalMemoryDao implements IPersonalMemory, ITable {
   }
 
   Future<void> suggestAfterPersist(PersonalMemoryTurn turn,
-          {required int userCreatedAt, required int replyCreatedAt}) =>
-      _bound(() => storage.db.transaction((txn) async {
+          {required int userCreatedAt,
+          required int replyCreatedAt,
+          Future<void> Function(Future<void> Function() action)? stableMutation,
+          Future<void> Function(Transaction txn)? validateSource}) =>
+      (stableMutation ?? _bound<void>)(() =>
+          storage.db.transaction((txn) async {
+            // 运行层在同一事务核登录代次及完整原行，不重新取得新身份。
+            await validateSource?.call(txn);
             final text = PersonalMemoryRules.suggest(turn.rawInput);
             if (text == null) return;
             final prefs = await readPreferences(txn);

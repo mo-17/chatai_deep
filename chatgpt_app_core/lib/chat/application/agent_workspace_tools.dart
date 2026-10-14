@@ -6,6 +6,7 @@ import 'package:chatgpt_app_core/chat/application/agent_workspace_service.dart';
 import 'package:chatgpt_app_core/chat/application/tool_registry.dart';
 import 'package:chatgpt_app_core/db/agent_verification_dao.dart';
 import 'package:chatgpt_app_core/db/hi_db_manager.dart';
+import 'package:sqflite/sqflite.dart';
 
 class AgentWorkspaceTools {
   final int cid;
@@ -14,10 +15,17 @@ class AgentWorkspaceTools {
   final Future<bool> Function(String title, String detail)? confirm;
   int? _userCreatedAt;
   bool Function()? _executionGuard;
+  Future<void> Function(Transaction)? _readTransactionGuard;
+  Future<void> Function(Future<void> Function())? _readStable;
   AgentTaskVerificationReport? lastReport;
 
   /// 执行器绑定固定 run；操作开始时捕获，不能跟随后续同对话任务换身份。
   void bindExecutionGuard(bool Function() guard) => _executionGuard = guard;
+  void bindReadTransactionGuard(Future<void> Function(Transaction) guard,
+      Future<void> Function(Future<void> Function()) stable) {
+    _readTransactionGuard = guard;
+    _readStable = stable;
+  }
 
   AgentWorkspaceTools._(
       {required this.cid,
@@ -111,12 +119,22 @@ class AgentWorkspaceTools {
         cid: report.cid,
         userCreatedAt: report.userCreatedAt,
         createdAt: report.createdAt,
+        verifiedSnapshot: report.verifiedSnapshot,
         checks: List.unmodifiable([...report.checks, ...staleChecks]));
   }
 
   Future<void> beginTurn(int userCreatedAt, List<int> inputIds,
-      {bool resume = false}) async {
-    _executionGuard = null;
+      {bool resume = false,
+      TaskAcceptanceCriteria? criteriaOverride,
+      bool Function()? executionGuard,
+      Future<void> Function(Transaction)? transactionGuard,
+      Future<void> Function(Future<void> Function())? stableOperation}) async {
+    // 在首次 await 前固定本次身份；旧普通调用仍清除上一轮 guard。
+    _executionGuard = executionGuard;
+    _readTransactionGuard = transactionGuard;
+    _readStable = stableOperation;
+    final guard = executionGuard;
+    if (guard?.call() == false) throw StateError('任务已失效');
     if (userCreatedAt <= 0) throw const FormatException('本轮消息标识无效');
     final previous = resume ? await store.loadTurn(cid, userCreatedAt) : null;
     if (previous == null) {
@@ -128,15 +146,24 @@ class AgentWorkspaceTools {
       }
       // 无附件且没有重新设置条件的纯聊天，不继承上一项文件任务的输出要求。
       final useSavedCriteria = ids.isNotEmpty || await store.criteriaArmed(cid);
-      final criteria = useSavedCriteria
-          ? await loadCriteria()
-          : const TaskAcceptanceCriteria();
-      await store.beginTurn(cid, userCreatedAt, {
-        'inputIds': ids,
-        'outputs': <String, dynamic>{},
-        'criteria': criteria.toJson(),
-      });
+      final criteria = criteriaOverride ??
+          (useSavedCriteria
+              ? await loadCriteria()
+              : const TaskAcceptanceCriteria());
+      criteria.validate();
+      await store.beginTurn(
+          cid,
+          userCreatedAt,
+          {
+            'inputIds': ids,
+            'outputs': <String, dynamic>{},
+            'criteria': criteria.toJson(),
+          },
+          canCommit: guard,
+          transactionGuard: transactionGuard,
+          stableOperation: stableOperation);
     }
+    if (guard?.call() == false) throw StateError('任务已失效');
     _userCreatedAt = userCreatedAt;
     lastReport = null;
     if (resume) await loadLatestReport(userCreatedAt: userCreatedAt);
@@ -146,6 +173,9 @@ class AgentWorkspaceTools {
 
   Future<AgentTaskVerificationReport> verify(
       {bool Function()? canCommit}) async {
+    final guard = canCommit ?? _executionGuard;
+    final transactionGuard = _readTransactionGuard;
+    final stable = _readStable;
     final turn = _turn;
     final snapshot = await store.loadTurn(cid, turn);
     if (snapshot == null) throw StateError('找不到本轮验收记录');
@@ -160,7 +190,9 @@ class AgentWorkspaceTools {
       },
       criteria: TaskAcceptanceCriteria.fromJson(
           Map<String, dynamic>.from(snapshot['criteria'] as Map)),
-      canCommit: canCommit,
+      canCommit: guard,
+      transactionGuard: transactionGuard,
+      stableOperation: stable,
     );
     lastReport = report;
     return report;
@@ -263,7 +295,7 @@ class AgentWorkspaceTools {
                   page: _optionalInt(args, 'page'),
                   section: args['section'] as String?,
                   tail: args['tail'] == true);
-              await store.recordRead(
+              Future<void> record() => store.recordRead(
                   cid,
                   turn,
                   _id(args),
@@ -272,7 +304,13 @@ class AgentWorkspaceTools {
                   result['endOffset'] as int,
                   result['totalChars'] as int,
                   includeInput: result['kind'] == 'input',
-                  canCommit: canCommit);
+                  canCommit: canCommit,
+                  transactionGuard: _readTransactionGuard);
+              if (_readStable != null) {
+                await _readStable!(record);
+              } else {
+                await record();
+              }
               lastReport = null;
               final source = LocalSourceCitation.fromToolResult(
                   toolName: 'read_file', content: result, expectedCid: cid);

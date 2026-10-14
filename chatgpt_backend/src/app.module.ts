@@ -1,3 +1,4 @@
+import { logUrl } from './common/auth-log-safety';
 import { Module } from '@nestjs/common';
 import { ConfigModule, ConfigService } from '@nestjs/config';
 import { TypeOrmModule } from '@nestjs/typeorm';
@@ -17,6 +18,7 @@ import { McpModule } from './mcp/mcp.module';
 import { SyncModule } from './sync/sync.module';
 import { SyncV2Module } from './sync-v2/sync-v2.module';
 import { buildPostgresOptions } from './database/postgres-options';
+import { CloudWorkflowModule } from './cloud-workflow/cloud-workflow.module';
 
 @Module({
   imports: [
@@ -34,6 +36,14 @@ import { buildPostgresOptions } from './database/postgres-options';
         redact: {
           paths: [
             'req.headers.authorization',
+            'req.headers.cookie',
+            '*.state',
+            '*.nonce',
+            '*.token',
+            '*.accessToken',
+            '*.refreshToken',
+            '*.clientSecret',
+            '*.code_verifier',
             '*.password',
             '*.apiKey',
             '*.code',
@@ -42,9 +52,10 @@ import { buildPostgresOptions } from './database/postgres-options';
           censor: '[REDACTED]',
         },
         serializers: {
+          err: () => ({ type: 'RequestError', message: 'request_failed' }),
           req: (req: { method: string; url: string; id: unknown }) => ({
             method: req.method,
-            url: req.url,
+            url: logUrl(req.url),
             id: req.id,
           }),
         },
@@ -76,6 +87,7 @@ import { buildPostgresOptions } from './database/postgres-options';
     McpModule,
     SyncModule,
     SyncV2Module,
+    CloudWorkflowModule,
   ],
   providers: [{ provide: APP_GUARD, useClass: ThrottlerGuard }],
 })

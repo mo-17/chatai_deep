@@ -27,32 +27,35 @@ export class PublicAiController {
 
     const providers = await this.providerRepo.find({
       where: { enabled: true },
-      select: ['code', 'displayName'],
+      select: ['id', 'code', 'displayName'],
     });
 
     const models = await this.modelRepo.find({ where: { enabled: true } });
-    const providerMap = new Map(
-      (await this.providerRepo.find()).map((p) => [p.id, p.code]),
-    );
+    const providerMap = new Map(providers.map((p) => [p.id, p.code]));
 
-    const modelList = models.map((m) => ({
-      modelId: m.modelId,
-      displayName: m.displayName,
-      description: m.description,
-      providerCode: providerMap.get(m.providerId) || '',
-      isDefault: m.isDefault,
-      sortOrder: m.sortOrder,
-      // 能力位：客户端在家族启发式之上做加法覆盖（见 ModelCatalog.capabilitiesFor）。
-      supportsVision: m.supportsVision,
-      supportsTool: m.supportsTool,
-      supportsReasoning: m.supportsReasoning,
-      supportsPdf: m.supportsPdf,
-    }));
+    const modelList = models
+      .filter((m) => providerMap.has(m.providerId))
+      .map((m) => ({
+        modelId: m.modelId,
+        displayName: m.displayName,
+        description: m.description,
+        providerCode: providerMap.get(m.providerId) || '',
+        isDefault: m.isDefault,
+        sortOrder: m.sortOrder,
+        // 能力位：客户端在家族启发式之上做加法覆盖（见 ModelCatalog.capabilitiesFor）。
+        supportsVision: m.supportsVision,
+        supportsTool: m.supportsTool,
+        supportsReasoning: m.supportsReasoning,
+        supportsPdf: m.supportsPdf,
+      }));
 
     return {
       code: 0,
       data: {
-        providers,
+        providers: providers.map(({ code, displayName }) => ({
+          code,
+          displayName,
+        })),
         models: modelList,
         default: {
           providerCode: global.defaultProviderCode,

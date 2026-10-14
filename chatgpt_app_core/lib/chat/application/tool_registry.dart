@@ -1,4 +1,5 @@
 import 'dart:convert';
+import 'package:chatgpt_app_core/chat/domain/chat_request_options.dart';
 
 import 'package:chatgpt_app_core/chat/application/builtin_tools.dart';
 import 'package:chatgpt_app_core/chat/application/web_search_provider.dart';
@@ -270,11 +271,15 @@ class ToolRegistry {
     final tools = <ChatTool>[];
     if (selected.contains(webSearchId)) {
       final provider = WebSearchProvider.fromSettings(s);
-      if (provider != null) tools.add(webSearchTool(provider));
+      if (provider != null) {
+        tools.add(webSearchTool(provider, actions: actions));
+      }
     }
     if (selected.contains(calculatorId)) tools.add(BuiltinTools.calculator());
     if (selected.contains(dateTimeId)) tools.add(BuiltinTools.dateTime());
-    if (selected.contains(fetchUrlId)) tools.add(BuiltinTools.fetchUrl());
+    if (selected.contains(fetchUrlId)) {
+      tools.add(BuiltinTools.fetchUrl(executionScope: actions?.executionScope));
+    }
 
     // L3a 只读上下文工具：需要账号数据访问，缺 actions 则跳过。
     if (actions != null && selected.any(_dataToolIds.contains)) {
@@ -320,7 +325,9 @@ class ToolRegistry {
 
   /// 联网搜索工具：复用阶段五的 [WebSearchProvider]（Tavily 等）。
   /// 与意图编排路径互斥使用（见 CompletionDao 的选路决策）。
-  static ChatTool webSearchTool(WebSearchProvider provider) => ChatTool(
+  static ChatTool webSearchTool(WebSearchProvider provider,
+          {ToolActionContext? actions}) =>
+      ChatTool(
         name: 'web_search',
         description: '搜索互联网获取最新信息。当问题涉及新闻、时事、天气、'
             '价格、赛事、最新发布的产品/版本等需要时效性或外部事实的内容时调用。',
@@ -340,7 +347,17 @@ class ToolRegistry {
             return const ToolOutcome(content: '错误：缺少 query 参数');
           }
           // 条数 / 正文截断 / 日期前缀由 provider 的用户配置决定。
-          final results = await provider.search(query);
+          final scope = actions?.executionScope;
+          final results = await provider.searchWithOptions(query,
+              options: scope == null
+                  ? null
+                  : ChatRequestOptions(
+                      abortTrigger: scope.abortTrigger,
+                      beforeAttachmentUpload: scope.beforeRequest,
+                      dispatchIsCurrent: () {
+                        scope.verify();
+                        return true;
+                      }));
           if (results.isEmpty) {
             return const ToolOutcome(content: '没有搜到相关结果');
           }

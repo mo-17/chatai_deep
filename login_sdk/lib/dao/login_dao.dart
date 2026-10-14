@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 
 import 'package:flutter/cupertino.dart';
@@ -18,6 +19,27 @@ final class LoginAuthAttempt {
   bool _consumed = false;
 }
 
+/// 仅撤销尚未取得账号许可的短操作；已经开始的事务仍须自行回滚并结束。
+final class LoginOperationCancellation {
+  final _cancelled = Completer<void>();
+  bool get isCancelled => _cancelled.isCompleted;
+  Future<void> get whenCancelled => _cancelled.future;
+  void cancel() {
+    if (!isCancelled) _cancelled.complete();
+  }
+}
+
+class LoginOperationCancelledException implements Exception {
+  const LoginOperationCancelledException();
+}
+
+/// 只能由账号队列创建，随当前短操作结束失效；不跨 isolate，也不是模型执行许可。
+final class _AccountOperationLease {
+  _AccountOperationLease(this.accountHash);
+  final String? accountHash;
+  bool active = true;
+}
+
 ///登录接口
 class LoginDao {
   /// 同步存储读取的 key。与 [HiCacheTokenStorage._kUserInfo] 保持一致，
@@ -29,6 +51,10 @@ class LoginDao {
   static final List<VoidCallback> _onLoginHooks = [];
   static final List<Future<void> Function()> _onLoginReadyHooks = [];
   static Future<void> _authMutationTail = Future<void>.value();
+  static final Object _leaseZoneKey = Object();
+  static int _queuedAuthOperations = 0;
+  @visibleForTesting
+  static int get debugQueuedAuthOperations => _queuedAuthOperations;
   static int _authAttemptGeneration = 0;
   static bool hooksRegistered = false;
 
@@ -40,18 +66,41 @@ class LoginDao {
   static Future<T> runWithStableAccount<T>({
     required String expectedAccountHash,
     required Future<T> Function() action,
-  }) =>
-      _enqueueAuthOperation<T>(() async {
-        if (getAccountHash() != expectedAccountHash) {
-          throw const LoginAccountChangedException();
-        }
-        final result = await action();
-        // 防御宿主绕过 LoginDao 直接替换 TokenStorage 的情况。
-        if (getAccountHash() != expectedAccountHash) {
-          throw const LoginAccountChangedException();
-        }
-        return result;
-      });
+    LoginOperationCancellation? cancellation,
+  }) {
+    var acquired = false;
+    Future<T> checked() async {
+      if (cancellation?.isCancelled == true) {
+        throw const LoginOperationCancelledException();
+      }
+      acquired = true;
+      if (getAccountHash() != expectedAccountHash) {
+        throw const LoginAccountChangedException();
+      }
+      final result = await action();
+      // 防御宿主绕过 LoginDao 直接替换 TokenStorage 的情况。
+      if (getAccountHash() != expectedAccountHash) {
+        throw const LoginAccountChangedException();
+      }
+      return result;
+    }
+
+    final held = Zone.current[_leaseZoneKey] as _AccountOperationLease?;
+    // 恢复/登出钩子已在同一队列的短许可中；嵌套数据库停止操作使用该真实许可，
+    // 不能再次排到自己的后面。外部 zone 或已结束许可一律重新排队。
+    if (held?.active == true && held!.accountHash == expectedAccountHash) {
+      return checked();
+    }
+    final operation = _enqueueAuthOperation<T>(checked);
+    if (cancellation == null) return operation;
+    return Future.any<T>([
+      operation,
+      cancellation.whenCancelled.then<T>((_) async {
+        if (acquired) return await operation;
+        throw const LoginOperationCancelledException();
+      }),
+    ]);
+  }
 
   ///注册登出钩子，宿主 App 在初始化时调用，用于清理账号态
   static void addLogoutHook(VoidCallback cb) {
@@ -414,11 +463,20 @@ class LoginDao {
   static Future<T> _enqueueAuthOperation<T>(
     Future<T> Function() action,
   ) {
+    _queuedAuthOperations++;
     final ready = _authMutationTail.then<void>(
       (_) {},
       onError: (Object _, StackTrace __) {},
     );
-    final operation = ready.then<T>((_) => action());
+    final operation = ready.then<T>((_) async {
+      _queuedAuthOperations--;
+      final lease = _AccountOperationLease(getAccountHash());
+      try {
+        return await runZoned(action, zoneValues: {_leaseZoneKey: lease});
+      } finally {
+        lease.active = false;
+      }
+    });
     // 队尾只承担排序，不传播上一项错误；调用者仍收到原 operation 的结果。
     _authMutationTail = operation.then<void>(
       (_) {},
@@ -469,6 +527,7 @@ class LoginDao {
     _onLoginHooks.clear();
     _onLoginReadyHooks.clear();
     _authMutationTail = Future<void>.value();
+    _queuedAuthOperations = 0;
     hooksRegistered = false;
   }
 }

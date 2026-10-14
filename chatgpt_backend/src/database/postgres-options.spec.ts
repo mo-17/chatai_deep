@@ -2,6 +2,10 @@ import { EmailTemplate } from '../../libs/auth-kit/src/verification/entities/ema
 import { AuthSettings } from '../../libs/auth-kit/src/verification/entities/auth-settings.entity';
 import { SmtpProvider } from '../../libs/auth-kit/src/verification/entities/smtp-provider.entity';
 import { VerificationCode } from '../../libs/auth-kit/src/verification/entities/verification-code.entity';
+import {
+  MicrosoftSmtpConnection,
+  MicrosoftSmtpFlow,
+} from '../../libs/auth-kit/src/microsoft/microsoft-smtp.entities';
 import { buildPostgresOptions } from './postgres-options';
 
 describe('buildPostgresOptions', () => {
@@ -34,7 +38,7 @@ describe('buildPostgresOptions', () => {
       database: 'prod',
       ssl: { rejectUnauthorized: false },
       extra: { max: 7 },
-      logging: ['error', 'warn'],
+      logging: false,
     });
     expect(options.entities).toEqual([
       '/workspace/dist/src/**/*.entity{.ts,.js}',
@@ -42,6 +46,8 @@ describe('buildPostgresOptions', () => {
       SmtpProvider,
       AuthSettings,
       EmailTemplate,
+      MicrosoftSmtpConnection,
+      MicrosoftSmtpFlow,
     ]);
   });
 
@@ -59,7 +65,7 @@ describe('buildPostgresOptions', () => {
       database: 'chatgpt_flutter',
       ssl: false,
       extra: { max: 10 },
-      logging: ['error'],
+      logging: false,
     });
   });
 });

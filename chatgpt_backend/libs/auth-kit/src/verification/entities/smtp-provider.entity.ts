@@ -16,6 +16,16 @@ export class SmtpProvider {
   @Column({ type: 'varchar', length: 50, unique: true })
   key: 'generic' | 'aliyun_dm' | 'tencent_ses';
 
+  @Column({ type: 'varchar', default: 'password' })
+  authMode: 'password' | 'microsoft_oauth';
+
+  @Column({ type: 'integer', default: 0 }) configRevision: number;
+  @Column({ type: 'integer', nullable: true }) lastTestRevision: number | null;
+  @Column({ type: 'uuid', nullable: true }) microsoftClientId: string | null;
+  @Column({ type: 'text', nullable: true }) microsoftClientSecretEncrypted:
+    | string
+    | null;
+
   /** 展示名 */
   @Column({ type: 'varchar', length: 100 })
   displayName: string;

@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'package:chatgpt_app_core/chat/ui/conversation_generation_routes.dart';
 
 import 'package:chatgpt_app_core/diagnostics/diagnostics_consent_store.dart';
 import 'package:chatgpt_app_core/diagnostics/diagnostics_sink.dart';
@@ -196,6 +197,7 @@ class _MyAppState extends State<MyApp> {
           child: Consumer<ThemeProvider>(builder: (BuildContext context,
               ThemeProvider themeProvider, Widget? child) {
             return MaterialApp(
+              navigatorObservers: [ConversationGenerationRoutes.instance],
               home: widget,
               theme: themeProvider.getTheme(),
               // 经典主题沿用旧 Material 配置，二次元主题使用 Material 3；

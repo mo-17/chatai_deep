@@ -2,6 +2,7 @@ import 'dart:async';
 
 import 'package:chatgpt_app_core/chat/domain/attachment_processing_limits.dart';
 import 'package:chatgpt_app_core/dao/chat/chat_service.dart';
+import 'package:chatgpt_app_core/dao/ai_catalog_dao.dart';
 import 'package:chatgpt_app_core/model/ai_settings.dart';
 import 'package:chatgpt_app_core/pages/ai_health_check_page.dart';
 import 'package:chatgpt_app_core/pages/ai_provider_list_page.dart';
@@ -13,6 +14,7 @@ import 'package:chatgpt_app_core/widget/ai_provider/provider_avatar.dart';
 import 'package:chatgpt_app_core/widget/ai_provider/section_card.dart';
 import 'package:flutter/material.dart';
 import 'package:login_sdk/dao/login_dao.dart';
+import 'package:login_sdk/dao/backend_host.dart';
 import 'package:provider/provider.dart';
 
 /// AI 设置首页（重做）：服务商入口 + 连接模式 + 通用 + 联网搜索，改动即时保存。
@@ -35,6 +37,8 @@ class _AISettingsPageState extends State<AISettingsPage> {
   Timer? _debounce;
 
   bool _obscureSearchKey = true;
+  AiCatalogIdentity? _lastCatalogIdentity;
+  late AIMode _lastMode;
 
   // initState 时缓存，避免 dispose 里再用 context.read。
   late final AISettingsProvider _store = context.read<AISettingsProvider>();
@@ -52,10 +56,56 @@ class _AISettingsPageState extends State<AISettingsPage> {
     _exaKeyCtl = TextEditingController(text: s.exaApiKey);
     _bochaKeyCtl = TextEditingController(text: s.bochaApiKey);
     _zhipuKeyCtl = TextEditingController(text: s.zhipuApiKey);
+    _lastMode = s.mode;
+    _store.addListener(_settingsChanged);
+    ModelCatalog.displayChanges.addListener(_catalogChanged);
+    AiCatalogIdentity.changes.addListener(_identityChanged);
+    BackendConfig.changes.addListener(_identityChanged);
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted && _store.settings.mode == AIMode.backend) {
+        unawaited(_refreshCatalog());
+      }
+    });
+  }
+
+  void _catalogChanged() {
+    if (mounted) setState(() {});
+  }
+
+  void _settingsChanged() {
+    final mode = _store.settings.mode;
+    final entering = mode == AIMode.backend && _lastMode != AIMode.backend;
+    _lastMode = mode;
+    if (entering) unawaited(_refreshCatalog());
+  }
+
+  void _identityChanged() {
+    _catalogChanged();
+    if (_store.settings.mode == AIMode.backend) unawaited(_refreshCatalog());
+  }
+
+  Future<void> _refreshCatalog() async {
+    if (!mounted ||
+        _store.accountHash != _accountHashAtOpen ||
+        (LoginDao.getAccountHash() ?? 'guest') != _accountHashAtOpen) {
+      return;
+    }
+    final identity = AiCatalogIdentity.capture();
+    _lastCatalogIdentity = identity;
+    await ModelCatalog.refreshFromBackend(joinOngoing: true);
+    if (mounted &&
+        identical(_lastCatalogIdentity, identity) &&
+        identity.current) {
+      setState(() {});
+    }
   }
 
   @override
   void dispose() {
+    _store.removeListener(_settingsChanged);
+    ModelCatalog.displayChanges.removeListener(_catalogChanged);
+    AiCatalogIdentity.changes.removeListener(_identityChanged);
+    BackendConfig.changes.removeListener(_identityChanged);
     _debounce?.cancel();
     // 落盘未触发的防抖编辑（结果数/长度/搜索 Key），静默保存避免丢失。
     unawaited(_flushSearch(notify: false, showError: false));
@@ -291,28 +341,44 @@ class _AISettingsPageState extends State<AISettingsPage> {
   Widget _buildBackendModelTile(AISettings s) {
     final tt = Theme.of(context).textTheme;
     final cs = Theme.of(context).colorScheme;
-    return ListTile(
-      contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
-      title: const Text('后端模型'),
-      subtitle: Text(
-        ModelCatalog.remoteAvailable ? '清单来自后端，实时更新' : '本地兜底清单',
-        style: tt.bodySmall?.copyWith(color: cs.onSurfaceVariant),
-      ),
-      trailing: Row(mainAxisSize: MainAxisSize.min, children: [
-        Flexible(
-          child: Text(s.backendModel,
-              style: tt.bodyMedium?.copyWith(color: cs.primary),
-              overflow: TextOverflow.ellipsis),
+    final catalog = ModelCatalog.displaySnapshot;
+    return Column(children: [
+      ListTile(
+        contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
+        title: const Text('后端模型'),
+        subtitle: Text(
+          catalog.message,
+          style: tt.bodySmall?.copyWith(color: cs.onSurfaceVariant),
         ),
-        const SizedBox(width: 4),
-        Icon(Icons.chevron_right_rounded, size: 20, color: cs.onSurfaceVariant),
-      ]),
-      onTap: _pickBackendModel,
-    );
+        trailing: Row(mainAxisSize: MainAxisSize.min, children: [
+          Flexible(
+            child: Text(s.backendModel,
+                style: tt.bodyMedium?.copyWith(color: cs.primary),
+                overflow: TextOverflow.ellipsis),
+          ),
+          const SizedBox(width: 4),
+          Icon(Icons.chevron_right_rounded,
+              size: 20, color: cs.onSurfaceVariant),
+        ]),
+        onTap: _pickBackendModel,
+      ),
+      Align(
+        alignment: Alignment.centerRight,
+        child: TextButton.icon(
+          onPressed:
+              catalog.loading ? null : () => unawaited(_refreshCatalog()),
+          icon: const Icon(Icons.refresh),
+          label: const Text('刷新模型清单'),
+        ),
+      )
+    ]);
   }
 
   Future<void> _pickBackendModel() async {
-    final options = ModelCatalog.backendAll();
+    final identity = AiCatalogIdentity.capture();
+    if (ModelCatalog.displaySnapshot.status == CatalogDisplayStatus.initial) {
+      unawaited(_refreshCatalog());
+    }
     final picked = await showModalBottomSheet<String>(
       context: context,
       showDragHandle: true,
@@ -320,36 +386,45 @@ class _AISettingsPageState extends State<AISettingsPage> {
       shape: const RoundedRectangleBorder(
         borderRadius: BorderRadius.vertical(top: Radius.circular(28)),
       ),
-      builder: (ctx) => SafeArea(
-        child: ListView(
-          shrinkWrap: true,
-          children: [
-            for (final o in options)
-              ListTile(
-                title: Text(o.displayLabel ?? o.id),
-                trailing: o.id == _store.settings.backendModel
-                    ? const Icon(Icons.check_rounded)
-                    : null,
-                onTap: () => Navigator.pop(ctx, o.id),
-              ),
-            ListTile(
-              leading: const Icon(Icons.edit_rounded),
-              title: const Text('自定义模型 id...'),
-              onTap: () => Navigator.pop(ctx, '__custom__'),
-            ),
-          ],
-        ),
-      ),
+      builder: (ctx) => AnimatedBuilder(
+          animation: Listenable.merge([
+            ModelCatalog.displayChanges,
+            AiCatalogIdentity.changes,
+            BackendConfig.changes,
+          ]),
+          builder: (ctx, _) => SafeArea(
+                child: ListView(
+                  shrinkWrap: true,
+                  children: [
+                    ListTile(title: Text(ModelCatalog.displaySnapshot.message)),
+                    for (final o in identity.current
+                        ? ModelCatalog.displaySnapshot.options
+                        : const <ModelOption>[])
+                      ListTile(
+                        title: Text(o.displayLabel ?? o.id),
+                        trailing: o.id == _store.settings.backendModel
+                            ? const Icon(Icons.check_rounded)
+                            : null,
+                        onTap: () => Navigator.pop(ctx, o.id),
+                      ),
+                    ListTile(
+                      leading: const Icon(Icons.edit_rounded),
+                      title: const Text('自定义模型 id...'),
+                      onTap: () => Navigator.pop(ctx, '__custom__'),
+                    ),
+                  ],
+                ),
+              )),
     );
-    if (picked == null) return;
+    if (picked == null || !mounted || !identity.current) return;
     if (picked == '__custom__') {
-      await _customBackendModel();
+      await _customBackendModel(identity);
     } else {
       _patch((s) => s.backendModel = picked);
     }
   }
 
-  Future<void> _customBackendModel() async {
+  Future<void> _customBackendModel(AiCatalogIdentity identity) async {
     final ctl = TextEditingController(text: _store.settings.backendModel);
     final ok = await showDialog<bool>(
       context: context,
@@ -375,7 +450,10 @@ class _AISettingsPageState extends State<AISettingsPage> {
         ],
       ),
     );
-    if (ok == true && ctl.text.trim().isNotEmpty) {
+    if (ok == true &&
+        mounted &&
+        identity.current &&
+        ctl.text.trim().isNotEmpty) {
       _patch((s) => s.backendModel = ctl.text.trim());
     }
   }

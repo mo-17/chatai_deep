@@ -1,3 +1,4 @@
+import 'package:chatgpt_app_core/chat/application/conversation_execution_registry.dart';
 import 'dart:convert';
 
 import 'package:chat_message/models/message_model.dart';
@@ -36,16 +37,27 @@ class ChecklistWriteResult {
 /// 请求历史的有限候选集，与聊天列表的分页展示相互独立。
 class MessageContextCandidates {
   final List<MessageModel> messages;
+  final List<Map<String, Object?>> rawRows;
   final bool hasEarlierMessages;
   final int storedBytes;
   final bool exceededStoredByteBudget;
 
   const MessageContextCandidates({
     required this.messages,
+    this.rawRows = const [],
     required this.hasEarlierMessages,
     required this.storedBytes,
     required this.exceededStoredByteBudget,
   });
+}
+
+/// UI 的已加载范围独立于模型候选预算，使用行游标避免新增/删除造成 offset 漂移。
+class MessageDisplayWindow {
+  final List<Map<String, Object?>> rows;
+  final bool hasEarlierMessages;
+  final int? oldestRowId;
+  const MessageDisplayWindow(
+      this.rows, this.hasEarlierMessages, this.oldestRowId);
 }
 
 ///统一消息表 tb_messages，所有会话的消息存储在同一张表中，通过 cid 区分
@@ -84,17 +96,22 @@ class MessageDao implements IMessage, ITable {
   }
 
   @override
-  Future<int> deleteMessage(int id) {
-    return storage.db.delete(tableName, where: 'id = ?', whereArgs: [id]);
-  }
+  Future<int> deleteMessage(int id) =>
+      ConversationExecutionRegistry.instance.maintainStorage(
+          storage.db,
+          () => storage.db.delete(tableName,
+              where: 'id = ? and cid = ?', whereArgs: [id, cid]),
+          cid: cid,
+          reason: '对话消息正在删除，请求已停止');
 
-  /// 按 createdAt 删除本会话内的一条消息。
-  /// 本次会话内新发送/接收的消息，其内存模型还没有数据库自增 id（id 为 null），
-  /// 无法走 [deleteMessage]；createdAt 在单个会话内唯一，用 cid + createdAt 定位即可。
-  Future<int> deleteMessageByCreatedAt(int createdAt) {
-    return storage.db.delete(tableName,
-        where: 'cid = ? and createdAt = ?', whereArgs: [cid, createdAt]);
-  }
+  /// 删除到事务结束期间封住本 cid 新票据；其它会话继续执行。
+  Future<int> deleteMessageByCreatedAt(int createdAt) =>
+      ConversationExecutionRegistry.instance.maintainStorage(
+          storage.db,
+          () => storage.db.delete(tableName,
+              where: 'cid = ? and createdAt = ?', whereArgs: [cid, createdAt]),
+          cid: cid,
+          reason: '对话消息正在删除，请求已停止');
 
   @override
   Future<List<MessageModel>> getAllMessage() async {
@@ -129,11 +146,45 @@ class MessageDao implements IMessage, ITable {
     return List.from(list.reversed);
   }
 
+  Future<MessageDisplayWindow> loadDisplayWindow(
+      {int? beforeId, int? oldestLoadedId, int pageSize = 15}) async {
+    if (pageSize <= 0 || (beforeId != null && oldestLoadedId != null)) {
+      throw ArgumentError('历史窗口参数无效');
+    }
+    return storage.db.transaction((tx) async {
+      final rows = await tx.query(tableName,
+          where:
+              'cid=?${beforeId != null ? ' and id<?' : oldestLoadedId != null ? ' and id>=?' : ''}',
+          whereArgs: [
+            cid,
+            if (beforeId != null) beforeId,
+            if (oldestLoadedId != null) oldestLoadedId
+          ],
+          orderBy: 'id desc',
+          limit: oldestLoadedId == null ? pageSize : null);
+      final boundary =
+          rows.isEmpty ? (oldestLoadedId ?? beforeId) : rows.last['id'] as int;
+      final earlier = boundary == null
+          ? const <Map<String, Object?>>[]
+          : await tx.query(tableName,
+              columns: const ['id'],
+              where: 'cid=? and id<?',
+              whereArgs: [cid, boundary],
+              limit: 1);
+      return MessageDisplayWindow(
+          List.unmodifiable(
+              rows.reversed.map((r) => Map<String, Object?>.unmodifiable(r))),
+          earlier.isNotEmpty,
+          boundary);
+    });
+  }
+
   /// 先在 SQLite 内测量正文/图片/块的字节数，避免一次反序列化海量 Base64。
   /// 候选按连续的最新范围加载，触及边界时尽量从 user 开始保留完整轮次。
   /// 最新完整 user 轮即使独自超出字节预算仍保留，之后不再累积更早轮次。
   Future<MessageContextCandidates> loadContextCandidates({
     int maxMessages = 1000,
+    bool includeStoredBlocks = false,
     int maxStoredBytes = 8 * 1024 * 1024,
   }) async {
     if (maxMessages <= 0 || maxMessages > 10000) {
@@ -220,22 +271,28 @@ class MessageDao implements IMessage, ITable {
       final rows = await txn.query(
         tableName,
         // blocks 由 getBlocksByCreatedAt 恢复，这里不重复跨进程传输。
-        columns: const [
-          'id',
-          'cid',
-          'content',
-          'createdAt',
-          'ownerName',
-          'ownerType',
-          'avatar',
-          'images',
-        ],
+        columns: includeStoredBlocks
+            ? null
+            : const [
+                'id',
+                'cid',
+                'content',
+                'createdAt',
+                'ownerName',
+                'ownerType',
+                'avatar',
+                'images',
+              ],
         where: 'cid = ? and id >= ? and id <= ?',
         whereArgs: [cid, selected.last['id'], selected.first['id']],
         orderBy: 'id asc',
       );
       return MessageContextCandidates(
         messages: List.unmodifiable(rows.map(MessageModel.fromJson)),
+        rawRows: includeStoredBlocks
+            ? List.unmodifiable(
+                rows.map((r) => Map<String, Object?>.unmodifiable(r)))
+            : const [],
         hasEarlierMessages: hasEarlier,
         storedBytes: storedBytes,
         exceededStoredByteBudget: storedBytes > maxStoredBytes,

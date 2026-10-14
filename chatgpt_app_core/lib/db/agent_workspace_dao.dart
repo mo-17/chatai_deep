@@ -1,4 +1,5 @@
 import 'dart:convert';
+import 'package:sqflite/sqflite.dart';
 
 import 'package:chatgpt_app_core/chat/domain/agent_workspace_file.dart';
 import 'package:chatgpt_app_core/db/hi_db_manager.dart';
@@ -136,8 +137,9 @@ class AgentWorkspaceDao implements IAgentWorkspace, ITable {
     required String note,
     List<Map<String, dynamic>> sections = const [],
     bool Function()? canCommit,
+    Transaction? transaction,
   }) async {
-    return storage.db.transaction((txn) async {
+    Future<AgentWorkspaceFile> save(Transaction txn) async {
       void checkExecution() {
         if (canCommit != null && !canCommit()) {
           throw StateError('任务已停止，工作区未修改');
@@ -187,7 +189,11 @@ class AgentWorkspaceDao implements IAgentWorkspace, ITable {
       // 取消可能发生在任意 SQLite await；提交前拒绝会回滚整份输出事务。
       checkExecution();
       return AgentWorkspaceFile.fromJson({...row, 'id': id});
-    });
+    }
+
+    return transaction != null
+        ? save(transaction)
+        : storage.db.transaction(save);
   }
 
   Map<String, Object?> _metadata(

@@ -23,6 +23,9 @@ jest.mock('./sync/sync.module', () => ({ SyncModule: class SyncModule {} }));
 jest.mock('./sync-v2/sync-v2.module', () => ({
   SyncV2Module: class SyncV2Module {},
 }));
+jest.mock('./cloud-workflow/cloud-workflow.module', () => ({
+  CloudWorkflowModule: class CloudWorkflowModule {},
+}));
 
 import { AppModule } from './app.module';
 

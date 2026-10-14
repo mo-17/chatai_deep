@@ -147,7 +147,7 @@ class _ForgotPasswordPageState extends State<ForgotPasswordPage> {
         purpose: 'reset_password',
       );
     } catch (e) {
-      setState(() => _error = e.toString());
+      if (mounted) setState(() => _error = e.toString());
     }
   }
 
@@ -157,7 +157,7 @@ class _ForgotPasswordPageState extends State<ForgotPasswordPage> {
       setState(() => _error = '请输入邮箱或手机号');
       return;
     }
-    if (_code.length < 4) {
+    if (_code.length != 6) {
       setState(() => _error = '请输入验证码');
       return;
     }
@@ -197,7 +197,7 @@ class _ForgotPasswordPageState extends State<ForgotPasswordPage> {
         if (mounted) Navigator.pop(context);
       });
     } catch (e) {
-      setState(() => _error = e.toString());
+      if (mounted) setState(() => _error = e.toString());
     } finally {
       if (mounted) setState(() => _loading = false);
     }
@@ -463,6 +463,7 @@ class _ForgotPasswordPageState extends State<ForgotPasswordPage> {
         const SizedBox(height: 10),
         VerificationCodeInput(
           onCompleted: (c) => _code = c,
+          onChanged: (c) => _code = c.length == 6 ? c : '',
           onSendCode: _handleSendCode,
           theme: _themeForInputs,
         ),

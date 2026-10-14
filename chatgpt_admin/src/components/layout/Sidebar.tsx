@@ -21,6 +21,7 @@ import {
   KeyRound,
   FileText,
   Lock,
+  Cloud,
 } from 'lucide-react';
 import { clsx } from 'clsx';
 
@@ -31,6 +32,7 @@ const menuItems = [
   { href: '/versions', label: '版本管理', icon: Smartphone },
   { href: '/usage', label: '用量明细', icon: BarChart3 },
   { href: '/ai-chat', label: 'AI 对话', icon: MessageCircle },
+  { href: '/cloud-tasks', label: '我的云任务', icon: Cloud },
 ];
 
 const aiMenuItems = [

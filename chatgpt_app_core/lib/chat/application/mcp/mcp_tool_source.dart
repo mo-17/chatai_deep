@@ -1,4 +1,5 @@
 import 'dart:convert';
+import 'package:chatgpt_app_core/chat/application/mcp/mcp_execution_session.dart';
 
 import 'package:chatgpt_app_core/chat/application/mcp/mcp_backend_client.dart';
 import 'package:chatgpt_app_core/chat/application/mcp/mcp_client.dart';
@@ -132,13 +133,15 @@ class McpToolSource {
     ToolAuditDao? auditDao,
     http.Client? client,
     int? currentProjectId,
+    McpExecutionSession? session,
   }) async {
     return [
       for (final item in await _discoverWithSpec(s,
           confirm: confirm,
           auditDao: auditDao,
           client: client,
-          currentProjectId: currentProjectId))
+          currentProjectId: currentProjectId,
+          session: session))
         item.tool
     ];
   }
@@ -161,6 +164,7 @@ class McpToolSource {
     http.Client? client,
     int? currentProjectId,
     bool ignoreProjectFilter = false,
+    McpExecutionSession? session,
   }) async {
     if (!s.mcpConfigured) return const [];
     final items = <_DiscoveredMcpTool>[];
@@ -172,7 +176,8 @@ class McpToolSource {
         continue;
       }
       try {
-        final info = await _listDirect(server, client: client);
+        final info =
+            await _listDirect(server, client: client, session: session);
         if (server.permission != McpToolPermission.readOnly) {
           for (final spec in info.specs) {
             final bind = McpToolBindSpec(
@@ -187,15 +192,16 @@ class McpToolSource {
               ],
             );
             items.add(_DiscoveredMcpTool(
-              _directTool(server, spec, confirm, auditDao, client, bind),
+              _directTool(
+                  server, spec, confirm, auditDao, client, bind, session),
               bind,
             ));
           }
         }
         // Resources / Prompts（item 7）：按 server 声明的能力暴露只读合成工具。
         if (info.supportsResources) {
-          for (final tool
-              in _resourceTools(server, client, sourceName: server.name)) {
+          for (final tool in _resourceTools(server, client,
+              sourceName: server.name, session: session)) {
             final name = tool.name;
             final bind = McpToolBindSpec(
               name: name,
@@ -210,14 +216,14 @@ class McpToolSource {
             );
             items.add(_DiscoveredMcpTool(
               _auditWrappedTool(tool, bind,
-                  confirm: confirm, auditDao: auditDao),
+                  confirm: confirm, auditDao: auditDao, session: session),
               bind,
             ));
           }
         }
         if (info.supportsPrompts) {
-          for (final tool
-              in _promptTools(server, client, sourceName: server.name)) {
+          for (final tool in _promptTools(server, client,
+              sourceName: server.name, session: session)) {
             final name = tool.name;
             final bind = McpToolBindSpec(
               name: name,
@@ -232,12 +238,14 @@ class McpToolSource {
             );
             items.add(_DiscoveredMcpTool(
               _auditWrappedTool(tool, bind,
-                  confirm: confirm, auditDao: auditDao),
+                  confirm: confirm, auditDao: auditDao, session: session),
               bind,
             ));
           }
         }
       } catch (e) {
+        session?.scope.verify();
+        await session?.scope.beforeRequest();
         AILogger.log('MCP 直连 "${server.id}" 发现工具失败：$e');
       }
     }
@@ -245,7 +253,8 @@ class McpToolSource {
     // 方案 B：后端聚合的 MCP 工具。
     if (s.mcpBackendEnabled) {
       try {
-        final backendTools = await _listBackend(client: client);
+        final backendTools =
+            await _listBackend(client: client, session: session);
         for (final t in backendTools) {
           final bind = McpToolBindSpec(
             name: t.name,
@@ -256,12 +265,14 @@ class McpToolSource {
             readOnly: false,
           );
           items.add(_DiscoveredMcpTool(
-            _backendTool(
-                t, s.mcpBackendTrusted, confirm, auditDao, client, bind),
+            _backendTool(t, s.mcpBackendTrusted, confirm, auditDao, client,
+                bind, session),
             bind,
           ));
         }
       } catch (e) {
+        session?.scope.verify();
+        await session?.scope.beforeRequest();
         AILogger.log('MCP 后端发现工具失败：$e');
       }
     }
@@ -272,19 +283,25 @@ class McpToolSource {
   static Future<_DirectInfo> _listDirect(
     McpServerConfig server, {
     http.Client? client,
+    McpExecutionSession? session,
   }) async {
     final key = '${server.id}|${server.url}';
     final cached = _directCache[key];
-    if (cached != null && cached.fresh) return cached.value;
+    if (session == null && cached != null && cached.fresh) return cached.value;
     // 复用池中连接（免重复握手）；列工具出错则驱逐，下次重连。
-    final c = McpClientPool.acquire(server, client: client);
+    final c = session?.direct(server) ??
+        McpClientPool.acquire(server, client: client);
     try {
       final specs = await c.listTools();
       final info = _DirectInfo(specs, c.supportsResources, c.supportsPrompts);
-      _directCache[key] = _Cached(DateTime.now(), info);
+      if (session == null) _directCache[key] = _Cached(DateTime.now(), info);
       return info;
     } catch (_) {
-      McpClientPool.evict(server);
+      if (session == null) {
+        McpClientPool.evict(server);
+      } else {
+        session.evict(server);
+      }
       rethrow;
     }
   }
@@ -296,6 +313,7 @@ class McpToolSource {
     ToolAuditDao? auditDao,
     http.Client? client,
     McpToolBindSpec bindSpec,
+    McpExecutionSession? session,
   ) {
     final exposedName = _safeName('mcp__${server.id}__${spec.name}');
     return _auditWrappedTool(
@@ -305,12 +323,17 @@ class McpToolSource {
         parameters: spec.inputSchema,
         execute: (args) async {
           // 复用池中已初始化的连接；出错则驱逐，让下一次调用重连。
-          final c = McpClientPool.acquire(server, client: client);
+          final c = session?.direct(server) ??
+              McpClientPool.acquire(server, client: client);
           try {
             final text = await c.callTool(spec.name, args);
             return ToolOutcome(content: text);
           } catch (e) {
-            McpClientPool.evict(server);
+            if (session == null) {
+              McpClientPool.evict(server);
+            } else {
+              session.evict(server);
+            }
             return ToolOutcome(content: 'MCP 工具「${spec.name}」执行失败：$e');
           }
         },
@@ -319,13 +342,14 @@ class McpToolSource {
       confirm: confirm,
       auditDao: auditDao,
       sourceLabel: server.name,
+      session: session,
     );
   }
 
   // ── Resources / Prompts 合成工具（item 7，只读、免确认）──────
   static List<ChatTool> _resourceTools(
       McpServerConfig server, http.Client? client,
-      {String sourceName = ''}) {
+      {String sourceName = '', McpExecutionSession? session}) {
     return [
       ChatTool(
         name: _safeName('mcp__${server.id}__resources_list'),
@@ -333,11 +357,16 @@ class McpToolSource {
             '[MCP·${sourceName.isEmpty ? server.name : sourceName}] 列出该来源可读的资源（uri/名称/类型）。',
         parameters: const {'type': 'object', 'properties': <String, dynamic>{}},
         execute: (args) async {
-          final c = McpClientPool.acquire(server, client: client);
+          final c = session?.direct(server) ??
+              McpClientPool.acquire(server, client: client);
           try {
             return ToolOutcome(content: jsonEncode(await c.listResources()));
           } catch (e) {
-            McpClientPool.evict(server);
+            if (session == null) {
+              McpClientPool.evict(server);
+            } else {
+              session.evict(server);
+            }
             return ToolOutcome(content: '列资源失败：$e');
           }
         },
@@ -356,11 +385,16 @@ class McpToolSource {
         execute: (args) async {
           final uri = (args['uri'] as String? ?? '').trim();
           if (uri.isEmpty) return const ToolOutcome(content: '错误：缺少 uri 参数');
-          final c = McpClientPool.acquire(server, client: client);
+          final c = session?.direct(server) ??
+              McpClientPool.acquire(server, client: client);
           try {
             return ToolOutcome(content: await c.readResource(uri));
           } catch (e) {
-            McpClientPool.evict(server);
+            if (session == null) {
+              McpClientPool.evict(server);
+            } else {
+              session.evict(server);
+            }
             return ToolOutcome(content: '读资源失败：$e');
           }
         },
@@ -370,7 +404,7 @@ class McpToolSource {
 
   static List<ChatTool> _promptTools(
       McpServerConfig server, http.Client? client,
-      {String sourceName = ''}) {
+      {String sourceName = '', McpExecutionSession? session}) {
     return [
       ChatTool(
         name: _safeName('mcp__${server.id}__prompts_list'),
@@ -378,11 +412,16 @@ class McpToolSource {
             '[MCP·${sourceName.isEmpty ? server.name : sourceName}] 列出该来源的提示词模板（名称/说明/参数）。',
         parameters: const {'type': 'object', 'properties': <String, dynamic>{}},
         execute: (args) async {
-          final c = McpClientPool.acquire(server, client: client);
+          final c = session?.direct(server) ??
+              McpClientPool.acquire(server, client: client);
           try {
             return ToolOutcome(content: jsonEncode(await c.listPrompts()));
           } catch (e) {
-            McpClientPool.evict(server);
+            if (session == null) {
+              McpClientPool.evict(server);
+            } else {
+              session.evict(server);
+            }
             return ToolOutcome(content: '列提示词失败：$e');
           }
         },
@@ -404,11 +443,16 @@ class McpToolSource {
           if (name.isEmpty) return const ToolOutcome(content: '错误：缺少 name 参数');
           final promptArgs =
               (args['arguments'] as Map?)?.cast<String, dynamic>() ?? const {};
-          final c = McpClientPool.acquire(server, client: client);
+          final c = session?.direct(server) ??
+              McpClientPool.acquire(server, client: client);
           try {
             return ToolOutcome(content: await c.getPrompt(name, promptArgs));
           } catch (e) {
-            McpClientPool.evict(server);
+            if (session == null) {
+              McpClientPool.evict(server);
+            } else {
+              session.evict(server);
+            }
             return ToolOutcome(content: '取提示词失败：$e');
           }
         },
@@ -418,16 +462,16 @@ class McpToolSource {
 
   // ── 后端 Host（方案 B）──────────────────────────────────
   static Future<List<BackendMcpTool>> _listBackend(
-      {http.Client? client}) async {
+      {http.Client? client, McpExecutionSession? session}) async {
     final cached = _backendCache;
-    if (cached != null && cached.fresh) return cached.value;
-    final c = BackendMcpClient(client: client);
+    if (session == null && cached != null && cached.fresh) return cached.value;
+    final c = session?.backend() ?? BackendMcpClient(client: client);
     try {
       final tools = await c.listTools();
-      _backendCache = _Cached(DateTime.now(), tools);
+      if (session == null) _backendCache = _Cached(DateTime.now(), tools);
       return tools;
     } finally {
-      c.close();
+      if (session == null) c.close();
     }
   }
 
@@ -438,6 +482,7 @@ class McpToolSource {
     ToolAuditDao? auditDao,
     http.Client? client,
     McpToolBindSpec bindSpec,
+    McpExecutionSession? session,
   ) {
     return _auditWrappedTool(
       ChatTool(
@@ -445,14 +490,14 @@ class McpToolSource {
         description: _withSource(tool.description, '后端 MCP'),
         parameters: tool.parameters,
         execute: (args) async {
-          final c = BackendMcpClient(client: client);
+          final c = session?.backend() ?? BackendMcpClient(client: client);
           try {
             final text = await c.callTool(tool.name, args);
             return ToolOutcome(content: text);
           } catch (e) {
             return ToolOutcome(content: 'MCP 工具「${tool.name}」执行失败：$e');
           } finally {
-            c.close();
+            if (session == null) c.close();
           }
         },
       ),
@@ -461,6 +506,7 @@ class McpToolSource {
       auditDao: auditDao,
       trusted: trusted,
       sourceLabel: '后端 MCP',
+      session: session,
     );
   }
 
@@ -499,6 +545,7 @@ class McpToolSource {
     ToolAuditDao? auditDao,
     bool trusted = false,
     String? sourceLabel,
+    McpExecutionSession? session,
   }) {
     final source = sourceLabel ?? bindSpec.sourceServerName;
     return ChatTool(
@@ -506,10 +553,12 @@ class McpToolSource {
       description: tool.description,
       parameters: tool.parameters,
       execute: (args) async {
+        await session?.scope.beforeRequest();
         final needConfirm = !bindSpec.trusted && !trusted && !bindSpec.readOnly;
         final approved = needConfirm
             ? await _confirm(confirm, source, tool.name, args)
             : true;
+        session?.scope.verify();
         if (!approved) {
           await _recordInvocation(
             bindSpec,
@@ -518,20 +567,33 @@ class McpToolSource {
             success: false,
             outcome: _denied.content,
             auditDao: auditDao,
+            session: session,
           );
           return _denied;
         }
         try {
+          await session?.scope.beforeRequest();
           final outcome = await tool.execute(args);
+          session?.scope.verify();
           final success = !outcome.content.contains('失败');
-          await _recordInvocation(
-            bindSpec,
-            args,
-            approved: true,
-            success: success,
-            outcome: outcome.content,
-            auditDao: auditDao,
-          );
+          try {
+            await _recordInvocation(bindSpec, args,
+                approved: true,
+                success: success,
+                outcome: outcome.content,
+                auditDao: auditDao,
+                session: session);
+          } catch (_) {
+            if (session == null) rethrow;
+            // 返回已知结果，不把本地落盘故障改判为外部动作尚未执行。
+            // 原身份失效仍立即拒绝，后续请求不能沿旧账号继续。
+            session.scope.verify();
+            await session.scope.beforeRequest();
+            return ToolOutcome(
+                content: '${outcome.content}\n[本地审计未保存；已收到工具结果，不会自动重做该操作]',
+                webResults: outcome.webResults,
+                localSources: outcome.localSources);
+          }
           return outcome;
         } catch (e) {
           await _recordInvocation(
@@ -541,6 +603,7 @@ class McpToolSource {
             success: false,
             error: '$e',
             auditDao: auditDao,
+            session: session,
           );
           rethrow;
         }
@@ -556,6 +619,7 @@ class McpToolSource {
     String outcome = '',
     String? error,
     ToolAuditDao? auditDao,
+    McpExecutionSession? session,
   }) async {
     final now = DateTime.now();
     _auditTrail.insert(
@@ -574,7 +638,7 @@ class McpToolSource {
       _auditTrail.removeRange(_auditLimit, _auditTrail.length);
     }
     if (auditDao == null) return;
-    await auditDao.record(ToolAuditRecord(
+    final record = ToolAuditRecord(
       toolName: spec.name,
       sourceType: 'mcp',
       sourceId: spec.sourceServerId,
@@ -588,6 +652,12 @@ class McpToolSource {
       resultPreview: _cap(outcome, 500),
       error: error,
       createdAt: now.millisecondsSinceEpoch,
-    ));
+    );
+    if (session == null) {
+      await auditDao.record(record);
+    } else {
+      await session.scope.commit(
+          (tx) => tx.insert(auditDao.tableName, record.toJson()..remove('id')));
+    }
   }
 }

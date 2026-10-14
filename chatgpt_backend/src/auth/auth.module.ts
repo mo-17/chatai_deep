@@ -57,6 +57,7 @@ class ChatGptAuthProvidersModule {}
         jwtSigner,
         accessTokenVerifier,
         appSecretKey: requireAppSecretKey(process.env.APP_SECRET_KEY),
+        microsoftSmtpRedirectUri: process.env.MICROSOFT_SMTP_REDIRECT_URI,
       }),
     }),
   ],

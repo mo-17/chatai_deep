@@ -1,7 +1,46 @@
 import { Injectable, BadRequestException } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository } from 'typeorm';
+import { Repository, Raw, type EntityManager } from 'typeorm';
 import { User } from '../user/user.entity';
+import { canonicalIdentifier } from '../../libs/auth-kit/src/verification/verification-contract';
+
+/** 兼容旧邮箱域名大小写，不修改旧行，也不折叠 local-part/plus alias。 */
+async function emailUser(
+  repo: Repository<User>,
+  value: string,
+  lock = false,
+): Promise<User | null> {
+  const email = canonicalIdentifier('email', value);
+  const options = {
+    where: {
+      email: Raw(
+        (column) =>
+          'substring(' +
+          column +
+          " from 1 for position('@' in " +
+          column +
+          ')) || lower(substring(' +
+          column +
+          " from position('@' in " +
+          column +
+          ') + 1)) = :canonicalEmail',
+        { canonicalEmail: email },
+      ),
+    },
+    take: 2,
+  };
+  const matches = lock
+    ? await repo
+        .createQueryBuilder('user')
+        .setFindOptions(options)
+        .orderBy('user.id', 'ASC')
+        .setLock('pessimistic_write')
+        .getMany()
+    : await repo.find(options);
+  if (matches.length > 1)
+    throw new BadRequestException('历史邮箱记录存在冲突，请联系管理员');
+  return matches[0] ?? null;
+}
 import type {
   IUserResolver,
   AuthUser,
@@ -40,13 +79,28 @@ function defaultAvatar(name: string) {
  */
 @Injectable()
 export class ChatGptUserResolver implements IUserResolver {
+  private transactionBound = false;
+
+  withManager(manager: EntityManager): IUserResolver {
+    if (!manager.queryRunner?.isTransactionActive)
+      throw new BadRequestException('账号操作需要有效事务');
+    const bound = new ChatGptUserResolver(manager.getRepository(User));
+    bound.transactionBound = true;
+    return bound;
+  }
+
+  private lock() {
+    return this.transactionBound
+      ? { mode: 'pessimistic_write' as const }
+      : undefined;
+  }
   constructor(
     @InjectRepository(User)
     private readonly userRepo: Repository<User>,
   ) {}
 
   async findByEmail(email: string): Promise<AuthUser | null> {
-    const user = await this.userRepo.findOne({ where: { email } });
+    const user = await emailUser(this.userRepo, email, this.transactionBound);
     return user ? toAuthUser(user) : null;
   }
 
@@ -56,6 +110,7 @@ export class ChatGptUserResolver implements IUserResolver {
   ): Promise<AuthUser | null> {
     const user = await this.userRepo.findOne({
       where: { countryCode, phoneNumber },
+      lock: this.lock(),
     });
     return user ? toAuthUser(user) : null;
   }
@@ -80,14 +135,17 @@ export class ChatGptUserResolver implements IUserResolver {
   }
 
   async findById(id: number): Promise<AuthUser | null> {
-    const user = await this.userRepo.findOne({ where: { id } });
+    const user = await this.userRepo.findOne({
+      where: { id },
+      lock: this.lock(),
+    });
     return user ? toAuthUser(user) : null;
   }
 
   async createUser(input: CreateUserInput): Promise<AuthUser> {
     const user = this.userRepo.create({
       userName: input.userName ?? `u_${nanoid()}`,
-      email: input.email ?? null,
+      email: input.email ? canonicalIdentifier('email', input.email) : null,
       countryCode: input.countryCode ?? null,
       phoneNumber: input.phoneNumber ?? null,
       password: input.password ?? null,
@@ -137,10 +195,19 @@ export class ChatGptUserResolver implements IUserResolver {
       emailRelay?: string;
     },
   ): Promise<AuthUser> {
-    const user = await this.userRepo.findOne({ where: { id: userId } });
-    if (!user) throw new BadRequestException('用户不存在');
+    const user = await this.userRepo.findOne({
+      where: { id: userId },
+      lock: this.lock(),
+    });
+    if (!user || user.banned)
+      throw new BadRequestException('用户不存在或已被封禁');
 
-    if (params.email !== undefined) user.email = params.email;
+    if (params.email !== undefined) {
+      const existing = await emailUser(this.userRepo, params.email);
+      if (existing && existing.id !== userId)
+        throw new BadRequestException('该邮箱已被其他账号绑定');
+      user.email = canonicalIdentifier('email', params.email);
+    }
     if (params.countryCode !== undefined) user.countryCode = params.countryCode;
     if (params.phoneNumber !== undefined) user.phoneNumber = params.phoneNumber;
     if (params.provider === 'huawei') {
@@ -165,8 +232,7 @@ export class ChatGptUserResolver implements IUserResolver {
       phoneNumber?: string;
     },
   ): Promise<AuthUser> {
-    return this.userRepo.manager.transaction(async (manager) => {
-      const repo = manager.getRepository(User);
+    const action = async (repo: Repository<User>) => {
       const user = await repo.findOne({
         where: { id: userId },
         lock: { mode: 'pessimistic_write' },
@@ -187,13 +253,11 @@ export class ChatGptUserResolver implements IUserResolver {
 
       if (params.channel === 'email') {
         if (!params.email) throw new BadRequestException('邮箱不能为空');
-        const existing = await repo.findOne({
-          where: { email: params.email },
-        });
+        const existing = await emailUser(repo, params.email);
         if (existing && existing.id !== userId) {
           throw new BadRequestException('该邮箱已被其他账号绑定');
         }
-        user.email = params.email;
+        user.email = canonicalIdentifier('email', params.email);
         user.emailVerifiedAt = new Date();
       } else {
         if (!params.countryCode || !params.phoneNumber) {
@@ -215,7 +279,13 @@ export class ChatGptUserResolver implements IUserResolver {
 
       await repo.save(user);
       return toAuthUser(user);
-    });
+    };
+    // consumeWith 传入的 repository 已在验证码事务内，不再创建独立事务。
+    return this.transactionBound
+      ? action(this.userRepo)
+      : this.userRepo.manager.transaction((manager) =>
+          action(manager.getRepository(User)),
+        );
   }
 
   async unbindThirdParty(

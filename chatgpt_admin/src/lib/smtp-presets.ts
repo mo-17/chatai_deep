@@ -116,13 +116,13 @@ export const SMTP_PRESETS: SmtpPreset[] = [
   },
   {
     id: 'outlook',
-    name: 'Outlook / Hotmail',
+    name: '个人 Outlook / Hotmail（OAuth2）',
     group: 'intl',
     host: 'smtp-mail.outlook.com',
     port: 587,
     secure: false,
     usernamePlaceholder: 'yourname@outlook.com',
-    passwordHint: '微软已逐步关停 SMTP 基础认证。若登录失败，请在账号安全设置中生成「应用密码」并使用之。',
+    passwordHint: '个人 Outlook / Hotmail 必须使用 OAuth2：保存微软应用与固定发件地址后授权。企业 Microsoft 365 不适用此个人账号流程。',
   },
   {
     id: 'yahoo',

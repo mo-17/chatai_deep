@@ -14,6 +14,21 @@ import 'package:path_provider/path_provider.dart';
 
 typedef DraftDirectoryResolver = Future<Directory> Function();
 
+/// 只能由原草稿签发；正文相同的新 save 也不能被旧发送清除。
+final class DraftManifestToken {
+  final String _queueKey, _digest;
+  final Object _stamp;
+  DraftManifestToken._(this._queueKey, this._digest, this._stamp);
+}
+
+/// 缺失也是明确捕获的槽位；被替代和读失败不会签发这个 token。
+final class DraftSubmissionToken {
+  final String _queueKey;
+  final String? _digest;
+  final Object _stamp;
+  DraftSubmissionToken._(this._queueKey, this._digest, this._stamp);
+}
+
 /// 草稿与消息历史独立；旧会话不需要迁移，也不会在读取时被改写。
 class ConversationDraft {
   final String text;
@@ -113,6 +128,7 @@ class ConversationDraftStore {
   static final Map<String, Future<void>> _tails = {};
   static final Map<String, Future<void>> _accountTails = {};
   static final Map<String, int> _revisions = {};
+  static final Map<String, Object> _manifestStamps = {};
 
   final String conversationId;
   final String accountHash;
@@ -147,6 +163,139 @@ class ConversationDraftStore {
         capturedAccountHash: accountHash,
         explicitAccountHash: _explicitAccount,
       );
+
+  Object _manifestStamp({bool replace = false}) {
+    if (replace || !_manifestStamps.containsKey(_queueKey)) {
+      _manifestStamps.remove(_queueKey);
+      _manifestStamps[_queueKey] = Object();
+      // 被淘汰的旧 token 失配后保守保留草稿，不恢复执行权。
+      while (_manifestStamps.length > 256) {
+        _manifestStamps.remove(_manifestStamps.keys.first);
+      }
+    }
+    return _manifestStamps[_queueKey]!;
+  }
+
+  Future<String?> _manifestDigest({void Function()? verify}) async {
+    verify?.call();
+    _verifyAccount();
+    final base = await _directoryResolver();
+    verify?.call();
+    _verifyAccount();
+    final root = Directory('${base.path}/$directoryName');
+    await AccountResourceScope.ensureNoLinks(
+        root: root, relativeSegments: [..._segments, 'draft.json']);
+    verify?.call();
+    final file = File('${root.path}/${_segments.join('/')}/draft.json');
+    final type = await FileSystemEntity.type(file.path, followLinks: false);
+    if (type == FileSystemEntityType.notFound) return null;
+    if (type != FileSystemEntityType.file) {
+      throw const DraftStorageException('草稿文件类型异常');
+    }
+    final bytes = await readFileBytesBounded(file,
+        maxBytes: maxManifestBytes, label: '草稿');
+    verify?.call();
+    _verifyAccount();
+    return sha256.convert(bytes).toString();
+  }
+
+  /// 调用时同步捕获写入代次，随后只读取该代次的 manifest。
+  Future<DraftManifestToken?> captureManifest({void Function()? verify}) async {
+    verify?.call();
+    final stamp = _manifestStamp();
+    await _tails[_queueKey];
+    verify?.call();
+    if (!identical(_manifestStamps[_queueKey], stamp)) return null;
+    final digest = await _manifestDigest(verify: verify);
+    if (digest == null || !identical(_manifestStamps[_queueKey], stamp)) {
+      return null;
+    }
+    return DraftManifestToken._(_queueKey, digest, stamp);
+  }
+
+  Future<DraftSubmissionToken?> captureSubmission(
+      {required void Function() verify}) async {
+    verify();
+    final stamp = _manifestStamp();
+    await _tails[_queueKey];
+    verify();
+    if (!identical(_manifestStamps[_queueKey], stamp)) return null;
+    final digest = await _manifestDigest(verify: verify);
+    verify();
+    if (!identical(_manifestStamps[_queueKey], stamp)) return null;
+    return DraftSubmissionToken._(_queueKey, digest, stamp);
+  }
+
+  bool sameSubmission(DraftSubmissionToken a, DraftSubmissionToken b) =>
+      a._queueKey == _queueKey &&
+      b._queueKey == _queueKey &&
+      identical(a._stamp, b._stamp) &&
+      a._digest == b._digest;
+
+  Future<bool> submissionIsCurrent(DraftSubmissionToken token,
+      {required void Function() verify}) async {
+    if (token._queueKey != _queueKey) return false;
+    verify();
+    if (!identical(_manifestStamps[_queueKey], token._stamp)) return false;
+    final digest = await _manifestDigest(verify: verify);
+    verify();
+    return identical(_manifestStamps[_queueKey], token._stamp) &&
+        digest == token._digest;
+  }
+
+  /// 未接受的提交只可填回原槽；新的同文编辑也具有更高优先级。
+  Future<ConversationDraft?> preserveSubmission(DraftSubmissionToken token,
+      {required String text,
+      List<String> images = const [],
+      List<String> files = const [],
+      List<ComposerReference> references = const [],
+      required void Function() verify,
+      required Future<void> abortTrigger,
+      required Future<void> Function(Future<void> Function()) stableMutation}) {
+    verify();
+    if (token._queueKey != _queueKey ||
+        !identical(_manifestStamps[_queueKey], token._stamp)) {
+      return Future.value(null);
+    }
+    return _writeSnapshot(
+        text: text,
+        images: images,
+        files: files,
+        references: references,
+        submission: token,
+        verify: verify,
+        abortTrigger: abortTrigger,
+        stableMutation: stableMutation);
+  }
+
+  /// 发送成功只清原 manifest，附件已由运行独占；新草稿和其附件不受影响。
+  Future<bool> clearCapturedManifest(DraftManifestToken token,
+      {required void Function() verify,
+      Future<void>? abortTrigger,
+      Future<void> Function(Future<void> Function())? stableMutation}) {
+    if (token._queueKey != _queueKey) {
+      throw const DraftStorageException('草稿清理身份不匹配');
+    }
+    verify();
+    if (!identical(_manifestStamps[_queueKey], token._stamp)) {
+      return Future.value(false);
+    }
+    return _mutate((isCurrent) async {
+      verify();
+      if (!isCurrent() ||
+          await _cleanupWait(_manifestDigest(verify: verify), abortTrigger) !=
+              token._digest) {
+        return false;
+      }
+      verify();
+      if (!isCurrent()) return false;
+      await _removeManifest(() {
+        verify();
+        return isCurrent();
+      }, stableMutation: stableMutation, abortTrigger: abortTrigger);
+      return isCurrent();
+    });
+  }
 
   Future<ConversationDraft?> load() async {
     await _tails[_queueKey];
@@ -386,6 +535,10 @@ class ConversationDraftStore {
     List<String> files = const [],
     List<ComposerReference> references = const [],
     bool persist = true,
+    DraftSubmissionToken? submission,
+    void Function()? verify,
+    Future<void>? abortTrigger,
+    Future<void> Function(Future<void> Function())? stableMutation,
     AttachmentProcessingLimits limits = const AttachmentProcessingLimits(),
   }) {
     final effectiveLimits = limits.normalized;
@@ -395,13 +548,28 @@ class ConversationDraftStore {
     final imageSnapshot = List<String>.of(images);
     final fileSnapshot = List<String>.of(files);
     final referenceSnapshot = List<ComposerReference>.of(references);
-    return _mutate((isCurrent) async {
+    return _mutate((revisionCurrent) async {
+      bool isCurrent() {
+        verify?.call();
+        return revisionCurrent();
+      }
+
+      if (!isCurrent()) return null;
+      // 目录、草稿队尾和摘要读取始终在短账号许可外。
+      if (submission != null &&
+          await _cleanupWait(_manifestDigest(verify: verify), abortTrigger) !=
+              submission._digest) {
+        return null;
+      }
       if (!isCurrent()) return null;
       if (text.isEmpty &&
           imageSnapshot.isEmpty &&
           fileSnapshot.isEmpty &&
           referenceSnapshot.isEmpty) {
-        if (persist) await _removeManifest(isCurrent);
+        if (persist) {
+          await _removeManifest(isCurrent,
+              abortTrigger: abortTrigger, stableMutation: stableMutation);
+        }
         return persist
             ? const ConversationDraft(text: '')
             : FrozenComposerDraft._(this, effectiveLimits,
@@ -411,18 +579,20 @@ class ConversationDraftStore {
                 references: const [],
                 missingAttachmentCount: 0);
       }
-      final base = await _directoryResolver();
+      final base = await _cleanupWait(_directoryResolver(), abortTrigger);
       _verifyAccount();
       if (!isCurrent()) return null;
-      return AccountResourceScope.runCapturedAccountMutation(
-        capturedAccountHash: accountHash,
-        explicitAccountHash: _explicitAccount,
+      return _snapshotMutation(
+        stableMutation: stableMutation,
         action: () async {
+          if (!isCurrent()) return null;
           final root = Directory('${base.path}/$directoryName');
+          if (!isCurrent()) return null;
           final directory = await AccountResourceScope.createManagedDirectory(
             root: root,
             relativeSegments: _segments,
           );
+          if (!isCurrent()) return null;
           var total = 0;
           var missing = 0;
           final imageEntries = <Map<String, dynamic>>[];
@@ -543,7 +713,9 @@ class ConversationDraftStore {
           );
           final temporary = File('${directory.path}/.${_randomToken()}.tmp');
           try {
+            if (!isCurrent()) return null;
             await temporary.create(exclusive: true);
+            if (!isCurrent()) return null;
             await temporary.writeAsBytes(encoded, flush: true);
             _verifyAccount();
             if (!isCurrent()) return null;
@@ -564,7 +736,23 @@ class ConversationDraftStore {
           );
         },
       );
+    }, abortTrigger: abortTrigger);
+  }
+
+  Future<T> _snapshotMutation<T>(
+      {required Future<T> Function() action,
+      Future<void> Function(Future<void> Function())? stableMutation}) async {
+    if (stableMutation == null) {
+      return AccountResourceScope.runCapturedAccountMutation(
+          capturedAccountHash: accountHash,
+          explicitAccountHash: _explicitAccount,
+          action: action);
+    }
+    late T value;
+    await stableMutation(() async {
+      value = await action();
     });
+    return value;
   }
 
   /// 默认保留附件副本，正在发送或失败后重试的请求可能仍引用这些路径。
@@ -575,36 +763,56 @@ class ConversationDraftStore {
       });
 
   Future<void> _removeManifest(bool Function() isCurrent,
-      {bool removeAttachments = false}) async {
-    final base = await _directoryResolver();
+      {bool removeAttachments = false,
+      Future<void>? abortTrigger,
+      Future<void> Function(Future<void> Function())? stableMutation}) async {
+    final base = await _cleanupWait(_directoryResolver(), abortTrigger);
     _verifyAccount();
     if (!isCurrent()) return;
-    await AccountResourceScope.runCapturedAccountMutation(
-      capturedAccountHash: accountHash,
-      explicitAccountHash: _explicitAccount,
-      action: () async {
-        final root = Directory('${base.path}/$directoryName');
-        final directory = Directory('${root.path}/${_segments.join('/')}');
-        await AccountResourceScope.ensureNoLinks(
-          root: root,
-          relativeSegments: [..._segments, 'draft.json'],
-        );
+    Future<void> mutation() async {
+      _verifyAccount();
+      if (!isCurrent()) return;
+      final root = Directory('${base.path}/$directoryName');
+      final directory = Directory('${root.path}/${_segments.join('/')}');
+      await AccountResourceScope.ensureNoLinks(
+        root: root,
+        relativeSegments: [..._segments, 'draft.json'],
+      );
+      if (!isCurrent()) return;
+      if (removeAttachments) {
+        if (await FileSystemEntity.type(directory.path, followLinks: false) ==
+            FileSystemEntityType.directory) {
+          await directory.delete(recursive: true);
+        }
+        return;
+      }
+      final manifest = File('${directory.path}/draft.json');
+      if (await FileSystemEntity.type(manifest.path, followLinks: false) ==
+          FileSystemEntityType.file) {
         if (!isCurrent()) return;
-        if (removeAttachments) {
-          if (await FileSystemEntity.type(directory.path, followLinks: false) ==
-              FileSystemEntityType.directory) {
-            await directory.delete(recursive: true);
-          }
-          return;
-        }
-        final manifest = File('${directory.path}/draft.json');
-        if (await FileSystemEntity.type(manifest.path, followLinks: false) ==
-            FileSystemEntityType.file) {
-          await manifest.delete();
-        }
-      },
-    );
+        await manifest.delete();
+      }
+    }
+
+    if (stableMutation != null) {
+      await stableMutation(mutation);
+    } else {
+      await AccountResourceScope.runCapturedAccountMutation(
+          capturedAccountHash: accountHash,
+          explicitAccountHash: _explicitAccount,
+          action: mutation);
+    }
   }
+
+  /// 只用于许可外的目录/只读准备。已取得许可的 mutation 必须真正结算，
+  /// 不能以取消竞速放弃正在持有账号许可的删除操作。
+  Future<T> _cleanupWait<T>(Future<T> value, Future<void>? abort) =>
+      abort == null
+          ? value
+          : Future.any([
+              value,
+              abort.then<T>((_) => throw const DraftStorageException('草稿清理已停止'))
+            ]);
 
   /// 等待当前账号已经排队的写入收尾，调用方可在关闭资源前明确排空。
   Future<void> whenIdle() async {
@@ -613,13 +821,18 @@ class ConversationDraftStore {
     }
   }
 
-  Future<T> _mutate<T>(Future<T> Function(bool Function()) action) {
+  Future<T> _mutate<T>(Future<T> Function(bool Function()) action,
+      {Future<void>? abortTrigger}) {
     final key = _queueKey;
+    _manifestStamp(replace: true);
     final revision = (_revisions[key] ?? 0) + 1;
     _revisions[key] = revision;
     // 同账号的不同会话也串行落盘，空间预算不会被并发导入穿透。
     final previous = _accountTails[_accountToken] ?? Future<void>.value();
+    var started = false, cancelled = false;
     final result = previous.then((_) async {
+      if (cancelled) throw const DraftStorageException('草稿回存已撤销');
+      started = true;
       _verifyAccount();
       return action(() => _revisions[key] == revision);
     });
@@ -637,7 +850,16 @@ class ConversationDraftStore {
     });
     _tails[key] = tail;
     _accountTails[_accountToken] = tail;
-    return result;
+    if (abortTrigger == null) return result;
+    return Future.any([
+      result,
+      abortTrigger.then<T>((_) {
+        cancelled = true;
+        // 已开始的短操作必须结算；取消排队者不能让后继越过仍在运行的前驱。
+        if (started) return result;
+        throw const DraftStorageException('草稿回存等待已撤销');
+      })
+    ]);
   }
 
   Future<Map<String, dynamic>?> _importAttachment(

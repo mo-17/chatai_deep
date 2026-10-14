@@ -12,19 +12,25 @@ final class AttachmentBatchBudget {
   final AttachmentProcessingLimits limits;
   final bool _enforceLimits;
   final Map<String, String> expectedDigests;
+  final Future<AttachmentBatchSnapshot> Function(File source, int maxBytes)?
+      _snapshotFile;
   int _usedBytes = 0;
   int _usedTextCharacters = 0;
 
   AttachmentBatchBudget(
       {AttachmentProcessingLimits limits = const AttachmentProcessingLimits(),
-      Map<String, String> expectedDigests = const {}})
+      Map<String, String> expectedDigests = const {},
+      Future<AttachmentBatchSnapshot> Function(File source, int maxBytes)?
+          snapshotFile})
       : expectedDigests = Map.unmodifiable(expectedDigests),
+        _snapshotFile = snapshotFile,
         limits = limits.normalized,
         _enforceLimits = true;
 
   /// 仅用于已保存消息恢复；单文件读取边界仍由每个处理器执行。
   AttachmentBatchBudget.forHistoricalRetry()
       : expectedDigests = const {},
+        _snapshotFile = null,
         limits = const AttachmentProcessingLimits(),
         _enforceLimits = false;
 
@@ -92,6 +98,19 @@ final class AttachmentBatchBudget {
       {required int maxBytes}) async {
     _checkBytes(await source.length());
     final readLimit = maxBytes < remainingBytes ? maxBytes : remainingBytes;
+    if (_snapshotFile != null) {
+      final snapshot = await _snapshotFile!(source, readLimit);
+      if (snapshot.bytes.length > readLimit) {
+        throw const FormatException('附件快照超过读取上限');
+      }
+      final expected = expectedDigests[source.path];
+      if (expected != null &&
+          sha256.convert(snapshot.bytes).toString() != expected) {
+        throw const FormatException('引用快照校验失败，请重新选择');
+      }
+      consumeBytes(snapshot.bytes.length);
+      return snapshot;
+    }
     final path = await _withReadLimit(
         () => ManagedAttachmentStore.importFile(source, maxBytes: readLimit),
         singleLimit: maxBytes,

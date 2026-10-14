@@ -9,3 +9,9 @@ body {
   margin: 0;
   padding: 0;
 }
+
+/* 认证页的原生受控表单，按钮语义与键盘操作保持一致。 */
+.auth-button { @apply rounded border border-default-300 px-3 py-1.5 text-sm hover:bg-default-100 disabled:opacity-40; }
+.auth-form label { @apply block text-sm; }
+.auth-form input:not([type=checkbox]), .auth-form select, .auth-form textarea { @apply block w-full rounded border border-default-300 bg-content1 px-3 py-2 mt-1; }
+.auth-form input[type=checkbox] { @apply mr-2; }

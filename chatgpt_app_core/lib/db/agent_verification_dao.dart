@@ -60,8 +60,13 @@ class AgentVerificationDao implements ITable {
   }
 
   Future<void> beginTurn(
-      int cid, int userCreatedAt, Map<String, dynamic> snapshot) async {
-    await storage.db.transaction((txn) async {
+      int cid, int userCreatedAt, Map<String, dynamic> snapshot,
+      {bool Function()? canCommit,
+      Future<void> Function(Transaction)? transactionGuard,
+      Future<void> Function(Future<void> Function())? stableOperation}) async {
+    await _guardedWrite(stableOperation, (txn) async {
+      await _checkParent(txn, cid, canCommit);
+      await transactionGuard?.call(txn);
       await txn.delete('tb_agent_read_interval',
           where: 'cid = ? and userCreatedAt = ?',
           whereArgs: [cid, userCreatedAt]);
@@ -78,6 +83,8 @@ class AgentVerificationDao implements ITable {
           conflictAlgorithm: ConflictAlgorithm.replace);
       await txn.update('tb_agent_task_criteria', {'armed': 0},
           where: 'cid = ?', whereArgs: [cid]);
+      _checkExecution(canCommit);
+      await transactionGuard?.call(txn);
     });
   }
 
@@ -123,13 +130,16 @@ class AgentVerificationDao implements ITable {
 
   Future<void> recordRead(int cid, int userCreatedAt, int fileId, int revision,
       int startOffset, int endOffset, int totalChars,
-      {bool includeInput = false, bool Function()? canCommit}) async {
+      {bool includeInput = false,
+      bool Function()? canCommit,
+      Future<void> Function(Transaction)? transactionGuard}) async {
     if (startOffset < 0 || endOffset < startOffset || endOffset > totalChars) {
       throw const FormatException('无效的阅读区间');
     }
     await storage.db.transaction((txn) async {
       await _checkParent(txn, cid, canCommit);
       if (includeInput) {
+        await transactionGuard?.call(txn);
         final rows = await txn.query('tb_agent_verification_turn',
             where: 'cid = ? and userCreatedAt = ?',
             whereArgs: [cid, userCreatedAt],
@@ -157,6 +167,7 @@ class AgentVerificationDao implements ITable {
         'totalChars': totalChars,
       });
       _checkExecution(canCommit);
+      await transactionGuard?.call(txn);
     });
   }
 
@@ -174,9 +185,12 @@ class AgentVerificationDao implements ITable {
 
   Future<void> saveReport(
       int cid, int userCreatedAt, Map<String, dynamic> report,
-      {bool Function()? canCommit}) async {
-    await storage.db.transaction((txn) async {
+      {bool Function()? canCommit,
+      Future<void> Function(Transaction)? transactionGuard,
+      Future<void> Function(Future<void> Function())? stableOperation}) async {
+    await _guardedWrite(stableOperation, (txn) async {
       await _checkParent(txn, cid, canCommit);
+      await transactionGuard?.call(txn);
       await txn.insert(
           tableName,
           {
@@ -187,7 +201,19 @@ class AgentVerificationDao implements ITable {
           },
           conflictAlgorithm: ConflictAlgorithm.replace);
       _checkExecution(canCommit);
+      await transactionGuard?.call(txn);
     });
+  }
+
+  Future<void> _guardedWrite(
+      Future<void> Function(Future<void> Function())? stable,
+      Future<void> Function(Transaction) action) async {
+    Future<void> write() => storage.db.transaction(action);
+    if (stable == null) {
+      await write();
+    } else {
+      await stable(write);
+    }
   }
 
   static void _checkExecution(bool Function()? canCommit) {

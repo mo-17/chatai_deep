@@ -59,7 +59,10 @@ export class AdminAiProviderService {
 
   async delete(id: number) {
     await this.dataSource.transaction(async (manager) => {
-      const provider = await manager.findOne(AiProvider, { where: { id } });
+      const provider = await manager.findOne(AiProvider, {
+        where: { id },
+        lock: { mode: 'pessimistic_write' },
+      });
       if (!provider) throw new NotFoundException('服务商不存在');
       const modelCount = await manager.count(AiModel, {
         where: { providerId: id },

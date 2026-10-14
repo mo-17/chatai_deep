@@ -21,6 +21,7 @@ import 'package:flutter/services.dart';
 import 'package:flutter_hi_cache/flutter_hi_cache.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:login_sdk/login_sdk.dart';
+import 'package:login_sdk/dao/login_dao.dart';
 import 'package:provider/provider.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:sqflite_common_ffi/sqflite_ffi.dart';
@@ -217,6 +218,8 @@ void main() {
     const pathChannel = MethodChannel('plugins.flutter.io/path_provider');
 
     setUp(() async {
+      // 隔离每个 widget 用例的 FakeAsync 账号队尾，不重用已结束 zone。
+      LoginDao.resetHooksForTest();
       temporary =
           await Directory.systemTemp.createTemp('agent-page-lifecycle-');
       previousFactory = databaseFactoryOrNull;
@@ -274,21 +277,23 @@ void main() {
 
     Future<void> open(WidgetTester tester, ConversationModel model,
         {bool resume = false, int target = 101}) async {
-      await tester.pumpWidget(MultiProvider(
-        providers: [
-          ChangeNotifierProvider<AISettingsProvider>.value(value: settings),
-          ChangeNotifierProvider<ThemeProvider>.value(value: theme),
-        ],
-        child: MaterialApp(
-          home: ConversationPage(
-            key: ValueKey('task_${model.cid}_$resume'),
-            conversationModel: model,
-            readAloudService: const NoopReadAloudService(),
-            resumeAgentTask: resume,
-            initialTargetCreatedAt: resume ? target : null,
-          ),
-        ),
-      ));
+      // 初始化/自动恢复使用真实 SQLite、HTTP。让其异步链留在真实 I/O zone，
+      // 避免 testWidgets 结束后全局执行器还引用已停止推进的 FakeAsync 队列。
+      await tester.runAsync(() async => tester.pumpWidget(MultiProvider(
+            providers: [
+              ChangeNotifierProvider<AISettingsProvider>.value(value: settings),
+              ChangeNotifierProvider<ThemeProvider>.value(value: theme),
+            ],
+            child: MaterialApp(
+              home: ConversationPage(
+                key: ValueKey('task_${model.cid}_$resume'),
+                conversationModel: model,
+                readAloudService: const NoopReadAloudService(),
+                resumeAgentTask: resume,
+                initialTargetCreatedAt: resume ? target : null,
+              ),
+            ),
+          )));
       await tick(tester, count: 25);
       expect(tester.takeException(), isNull);
     }

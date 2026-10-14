@@ -47,6 +47,10 @@ export class AuthSettings {
   @Column({ default: 10 })
   codeDailyLimitPerIdentifier: number;
 
+  /** 实际连接 IP 的滚动一小时发送预留上限，跨实例持久生效。 */
+  @Column({ default: 30 })
+  codeHourlyLimitPerIp: number;
+
   @UpdateDateColumn()
   updatedAt: Date;
 }

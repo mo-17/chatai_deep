@@ -12,9 +12,12 @@ import { aiApi } from '@/lib/api/ai';
 const AVATAR_BASE = '/uploads/avatars/';
 
 export default function AiGlobalPage() {
-  const { data: config, isLoading } = useGlobalConfig();
-  const { data: providers } = useProviders();
-  const { data: allModels } = useModels();
+  const configQuery = useGlobalConfig();
+  const { data: config, isLoading } = configQuery;
+  const providersQuery = useProviders();
+  const { data: providers } = providersQuery;
+  const modelsQuery = useModels();
+  const { data: allModels } = modelsQuery;
   const { updateGlobal } = useAiMutations();
 
   const [providerCode, setProviderCode] = useState('');
@@ -76,7 +79,24 @@ export default function AiGlobalPage() {
     [allModels, providerCode],
   );
 
+  const providerValid = enabledProviders.some((p) => p.code === providerCode);
+  const modelValid = filteredModels.some((m) => m.modelId === modelId);
+  const sourcesReady = !!config && !configQuery.isError
+    && !providersQuery.isPending && !providersQuery.isError
+    && !modelsQuery.isPending && !modelsQuery.isError;
+  const canSave = sourcesReady && providerValid && modelValid;
+  const providerHint = providersQuery.isPending ? '服务商清单加载中'
+    : providersQuery.isError ? '服务商清单加载失败，请重试'
+      : !enabledProviders.length ? '暂无可用服务商'
+        : providerCode && !providerValid ? '当前默认服务商不可用，请重新选择' : '';
+  const modelHint = modelsQuery.isPending ? '模型清单加载中'
+    : modelsQuery.isError ? '模型清单加载失败，请重试'
+      : !providerValid ? '请先选择有效服务商'
+        : !filteredModels.length ? '当前服务商暂无可用模型'
+          : modelId && !modelValid ? '当前默认模型不可用，请重新选择' : '';
+
   const handleSave = () => {
+    if (!canSave || updateGlobal.isPending) return;
     updateGlobal.mutate(
       { defaultProviderCode: providerCode, defaultModelId: modelId, catalogPublic },
       {
@@ -92,6 +112,13 @@ export default function AiGlobalPage() {
     return <div className="flex justify-center py-20"><Spinner /></div>;
   }
 
+  if (configQuery.isError || !config) {
+    return <div role="alert" className="max-w-lg space-y-3">
+      <p>全局配置加载失败，请重试</p>
+      <Button onPress={() => { void configQuery.refetch(); }}>重试全局配置</Button>
+    </div>;
+  }
+
   return (
     <div className="max-w-lg">
       <h1 className="text-xl font-bold mb-6">全局 AI 配置</h1>
@@ -101,9 +128,11 @@ export default function AiGlobalPage() {
         <CardBody className="space-y-4">
           <Select
             label="默认服务商"
-            selectedKeys={providerCode ? [providerCode] : []}
+            selectedKeys={providerValid ? [providerCode] : []}
+            placeholder={providerHint || "请选择服务商"}
+            isDisabled={providersQuery.isPending || providersQuery.isError}
             onSelectionChange={(keys) => {
-              const val = Array.from(keys as Set<string>)[0];
+              const val = Array.from(keys as Set<string>)[0] ?? '';
               setProviderCode(val);
               setModelId('');
             }}
@@ -112,19 +141,25 @@ export default function AiGlobalPage() {
               <SelectItem key={p.code}>{p.displayName}</SelectItem>
             ))}
           </Select>
+          {providerHint && <p role="status" className="text-sm text-default-500">{providerHint}</p>}
+          {providersQuery.isError && <Button size="sm" onPress={() => { void providersQuery.refetch(); }}>重试服务商清单</Button>}
 
           <Select
             label="默认模型"
-            selectedKeys={modelId ? [modelId] : []}
+            selectedKeys={modelValid ? [modelId] : []}
+            placeholder={modelHint || "请选择模型"}
             onSelectionChange={(keys) => {
-              setModelId(Array.from(keys as Set<string>)[0]);
+              setModelId(Array.from(keys as Set<string>)[0] ?? '');
             }}
-            isDisabled={!providerCode}
+            isDisabled={!providerValid || modelsQuery.isPending || modelsQuery.isError}
           >
-            {filteredModels.map((m) => (
-              <SelectItem key={m.modelId}>{m.displayName} ({m.modelId})</SelectItem>
-            ))}
+            {filteredModels.map((m) => {
+              const label = `${m.displayName} (${m.modelId})`;
+              return <SelectItem key={m.modelId} textValue={label}>{label}</SelectItem>;
+            })}
           </Select>
+          {modelHint && <p role="status" className="text-sm text-default-500">{modelHint}</p>}
+          {modelsQuery.isError && <Button size="sm" onPress={() => { void modelsQuery.refetch(); }}>重试模型清单</Button>}
 
           <div className="border-t pt-4">
             <Switch
@@ -192,6 +227,7 @@ export default function AiGlobalPage() {
         <Button
           color="primary"
           isLoading={updateGlobal.isPending}
+          isDisabled={!canSave || updateGlobal.isPending}
           onPress={handleSave}
         >
           保存

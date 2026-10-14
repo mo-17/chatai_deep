@@ -1,4 +1,6 @@
 import 'dart:convert';
+import 'package:chatgpt_app_core/chat/application/tool_execution_scope.dart';
+import 'package:chatgpt_app_core/util/app_events.dart';
 
 import 'package:chatgpt_app_core/backup/backup_service.dart';
 import 'package:chatgpt_app_core/chat/application/safe_url_fetcher.dart';
@@ -22,6 +24,7 @@ import 'package:sqflite/sqflite.dart';
 /// 由 UI 层弹框征得用户同意。两者都可注入便于单测。
 class ToolActionContext {
   final Future<HiDBManager> Function() openStorage;
+  final ToolExecutionScope? executionScope;
 
   /// 写操作前的人工确认回调：返回 true 放行、false 拒绝。
   /// **null = 无 UI**：写工具一律拒绝（安全兜底，防提示注入下的静默写入）。
@@ -39,6 +42,7 @@ class ToolActionContext {
 
   const ToolActionContext({
     required this.openStorage,
+    this.executionScope,
     this.confirm,
     this.assistantId,
     this.projectId,
@@ -125,7 +129,10 @@ class BuiltinTools {
 
   // ── 抓取网页正文 ─────────────────────────────────────────
   /// [client] / [resolver] 仅供测试注入；生产路径会把连接固定到已校验的公网 IP。
-  static ChatTool fetchUrl({http.Client? client, HostResolver? resolver}) =>
+  static ChatTool fetchUrl(
+          {http.Client? client,
+          HostResolver? resolver,
+          ToolExecutionScope? executionScope}) =>
       ChatTool(
         name: ToolRegistry.fetchUrlId,
         description: '抓取一个网页 URL 并返回其正文文本（已去除 HTML 标签）。'
@@ -148,6 +155,7 @@ class BuiltinTools {
           }
           try {
             final body = await SafeUrlFetcher(
+              executionScope: executionScope,
               resolver: resolver,
               testClient: client,
             ).fetch(uri);
@@ -194,10 +202,13 @@ class BuiltinTools {
 
   /// 打开账号库并确保四张读表存在（懒建表，空账号也安全）。
   static Future<Database> _readyDb(ToolActionContext ctx) async {
+    await ctx.executionScope?.beforeRequest();
     final storage = await ctx.openStorage();
+    ctx.executionScope?.verify();
     await ConversationListDao.create(storage);
     await MessageDao.create(storage, cid: 0);
     await FavoriteDao.create(storage);
+    await ctx.executionScope?.beforeRequest();
     return storage.db;
   }
 
@@ -456,10 +467,17 @@ class BuiltinTools {
           }
           final storage = await ctx.openStorage();
           final dao = await FavoriteDao.create(storage);
-          await dao.addFavorite(FavoriteModel(
+          final model = FavoriteModel(
               ownerName: 'AI',
               content: content,
-              createdAt: DateTime.now().millisecondsSinceEpoch));
+              createdAt: DateTime.now().millisecondsSinceEpoch);
+          final scope = ctx.executionScope;
+          if (scope == null) {
+            await dao.addFavorite(model);
+          } else {
+            await scope
+                .commit((tx) => tx.insert(dao.tableName, model.toJson()));
+          }
           return const ToolOutcome(content: '已收藏');
         },
       );
@@ -487,12 +505,20 @@ class BuiltinTools {
           final storage = await ctx.openStorage();
           final dao = await ConversationListDao.create(storage);
           final cid = DateTime.now().millisecondsSinceEpoch;
-          await dao.saveConversation(ConversationModel(cid: cid, icon: '')
+          final model = ConversationModel(cid: cid, icon: '')
             ..title = title
             ..stickTime = 0
             ..messageCount = 0
-            ..updateAt = cid);
-          BackupService.restoreTick.value++; // 刷新会话列表
+            ..updateAt = cid;
+          final scope = ctx.executionScope;
+          if (scope == null) {
+            await dao.saveConversation(model);
+            BackupService.restoreTick.value++;
+          } else {
+            await scope
+                .commit((tx) => tx.insert(dao.tableName, model.toJson()));
+            AppEvents.notifyConversationsChanged();
+          }
           return ToolOutcome(content: '已新建会话「$title」（cid=$cid）');
         },
       );
@@ -525,14 +551,21 @@ class BuiltinTools {
           }
           final storage = await ctx.openStorage();
           await ConversationListDao.create(storage); // 确保表存在
-          final count = await storage.db.update(
-            'tb_conversation_list',
-            {'stickTime': stick ? DateTime.now().millisecondsSinceEpoch : 0},
-            where: 'cid = ?',
-            whereArgs: [cid],
-          );
+          final scope = ctx.executionScope;
+          Future<int> update(DatabaseExecutor db) => db.update(
+              'tb_conversation_list',
+              {'stickTime': stick ? DateTime.now().millisecondsSinceEpoch : 0},
+              where: 'cid = ?',
+              whereArgs: [cid]);
+          final count = scope == null
+              ? await update(storage.db)
+              : await scope.commit(update);
           if (count == 0) return ToolOutcome(content: '没有找到会话 #$cid');
-          BackupService.restoreTick.value++;
+          if (scope == null) {
+            BackupService.restoreTick.value++;
+          } else {
+            AppEvents.notifyConversationsChanged();
+          }
           return ToolOutcome(content: '已$action会话 #$cid');
         },
       );
@@ -579,6 +612,17 @@ class BuiltinTools {
               'SHA-256：$codeDigest\n'
               '代码预览：\n${_cap(script.code, 400)}';
           if (!await _confirm(ctx, '运行脚本「$name」', detail)) return _denied;
+          await ctx.executionScope?.beforeRequest();
+          if (ctx.executionScope != null) {
+            await ctx.executionScope!.commit((tx) async {
+              final rows = await tx.query(dao.tableName,
+                  where: 'assistantId=? and name=?', whereArgs: [aid, name]);
+              if (rows.length != 1 || rows.single['code'] != script.code) {
+                throw StateError('脚本内容已变化，请重新确认');
+              }
+            });
+          }
+          ctx.executionScope?.verify();
           final r = await ctx.runJs!(script.code, input);
           if (!r.ok) return ToolOutcome(content: '脚本执行失败：${r.error}');
           return ToolOutcome(content: r.output.isEmpty ? '(脚本无输出)' : r.output);

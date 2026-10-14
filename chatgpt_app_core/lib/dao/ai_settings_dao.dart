@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:convert';
+import 'package:crypto/crypto.dart';
 
 import 'package:chatgpt_app_core/ai_readiness/ai_health_state_guard.dart';
 import 'package:chatgpt_app_core/chat/application/translation_model_probe_cache.dart';
@@ -25,6 +26,44 @@ class AISecretsUnavailableException implements Exception {
 }
 
 class AISettingsDao {
+  // 工具配置的同步失效代次；在相关写入排队/等待前递增，不能借旧快照发工具。
+  // 只切全局当前模型不改变这个授权；凭据不落入 journal，内存比较值也只留 hash。
+  static final _executionRevisions = <String, int>{};
+  static final _executionConfigurations = <String, String>{};
+  static int executionRevisionFor(String account) =>
+      _executionRevisions[account] ?? 0;
+  static String _executionConfiguration(AISettings settings) => sha256
+      .convert(utf8.encode(jsonEncode({
+        'servers': settings.mcpServers.map((s) => s.toJson()).toList(),
+        'backend': settings.mcpBackendEnabled,
+        'trusted': settings.mcpBackendTrusted,
+        'search': settings.webSearchProviderId,
+        'searchKey': settings.activeSearchApiKey,
+      })))
+      .toString();
+  static void bindExecutionConfiguration(String account, AISettings settings) {
+    // 仅为尚无授权记录的账号建立初始许可；clear 的失效记录不能由旧缓存补签。
+    if (!_executionRevisions.containsKey(account)) {
+      _executionConfigurations.putIfAbsent(
+          account, () => _executionConfiguration(settings));
+    }
+  }
+
+  static bool executionConfigurationMatches(
+          String account, AISettings settings) =>
+      _executionConfigurations[account] == _executionConfiguration(settings);
+  static void _invalidateExecution(String account, [AISettings? settings]) {
+    final key = settings == null ? null : _executionConfiguration(settings);
+    if (key == null || key != _executionConfigurations[account]) {
+      _executionRevisions[account] = executionRevisionFor(account) + 1;
+    }
+    if (key == null) {
+      _executionConfigurations.remove(account);
+    } else {
+      _executionConfigurations[account] = key;
+    }
+  }
+
   static const _kOldKey = 'ai_settings_v1';
   static const _secureMarkerField = '_secretStorage';
   static const _secureMarkerValue = 'secure-v1';
@@ -675,6 +714,7 @@ class AISettingsDao {
 
   /// 返回经过持久化边界健康状态校正后，实际写入的权威快照。
   static Future<AISettings> saveFor(String hash, AISettings settings) {
+    _invalidateExecution(hash, settings);
     // UI 会原地编辑 provider；必须在任何 await/排队前固定本次 host+key 快照。
     final snapshot = settings.clone();
     final previous = _saveTails[hash];
@@ -697,6 +737,7 @@ class AISettingsDao {
   /// 在判断为空后覆盖用户刚保存的设置。clear tombstone 代表用户明确清除，
   /// 同样属于权威状态，不能借“缺少有效设置”把游客配置复活。
   static Future<bool> saveForIfAbsent(String hash, AISettings settings) {
+    _invalidateExecution(hash, settings);
     final snapshot = settings.clone();
     final previous = _saveTails[hash];
     final ready = previous?.then<void>(
@@ -890,6 +931,7 @@ class AISettingsDao {
   }
 
   static Future<void> clearFor(String hash) {
+    _invalidateExecution(hash);
     final previous = _saveTails[hash];
     final ready = previous?.then<void>(
           (_) {},
@@ -1212,6 +1254,8 @@ class AISettingsDao {
 
   /// 测试隔离；生产代码不调用。
   static void resetSecureStateForTest() {
+    _executionConfigurations.clear();
+    _executionRevisions.clear();
     _secretStore = null;
     _secretsByAccount.clear();
     _snapshotsByAccount.clear();

@@ -1,4 +1,15 @@
 import 'dart:async';
+import 'package:chatgpt_app_core/chat/application/role_continuation_snapshot.dart';
+import 'package:chatgpt_app_core/chat/application/conversation_composer_preparation.dart';
+import 'package:chatgpt_app_core/chat/application/conversation_generation_service.dart';
+import 'package:chatgpt_app_core/chat/application/conversation_generation_profile.dart';
+import 'package:chatgpt_app_core/chat/application/conversation_generation_scope.dart';
+import 'package:chatgpt_app_core/chat/application/conversation_retry_preparation.dart';
+import 'package:chatgpt_app_core/chat/application/conversation_role_preparation.dart';
+import 'package:chatgpt_app_core/chat/application/conversation_run_tools.dart';
+import 'package:chatgpt_app_core/chat/domain/conversation_generation.dart';
+import 'package:chatgpt_app_core/chat/ui/conversation_generation_routes.dart';
+import 'package:chatgpt_app_core/db/conversation_generation_dao.dart';
 import 'package:chatgpt_app_core/backup/backup_service.dart';
 import 'package:chatgpt_app_core/chat/domain/interactive_card.dart';
 import 'package:chatgpt_app_core/chat/application/checklist_state_coordinator.dart';
@@ -22,6 +33,7 @@ import 'package:chatgpt_app_core/chat/application/composer_prediction_service.da
 import 'package:chatgpt_app_core/chat/application/chat_context_planner.dart';
 import 'package:chatgpt_app_core/chat/application/agent_task_session.dart';
 import 'package:chatgpt_app_core/chat/application/agent_task_executor.dart';
+import 'package:chatgpt_app_core/chat/application/agent_workflow_coordinator.dart';
 import 'package:chatgpt_app_core/chat/application/agent_task_detail_service.dart';
 import 'package:chatgpt_app_core/chat/domain/chat_failure_diagnosis.dart';
 import 'package:chatgpt_app_core/chat/application/agent_background_execution.dart';
@@ -82,6 +94,8 @@ import 'package:chatgpt_app_core/model/assistant_memory_model.dart';
 import 'package:chatgpt_app_core/pages/assistant_profile_page.dart';
 import 'package:chatgpt_app_core/pages/agent_workspace_page.dart';
 import 'package:chatgpt_app_core/pages/agent_task_detail_page.dart';
+import 'package:chatgpt_app_core/pages/agent_workflow_page.dart';
+import 'package:chatgpt_app_core/pages/cloud_workflow_page.dart';
 import 'package:chatgpt_app_core/pages/ai_health_check_page.dart';
 import 'package:chatgpt_app_core/pages/ai_settings_page.dart';
 import 'package:chatgpt_app_core/pages/ai_provider_detail_page.dart';
@@ -117,6 +131,8 @@ enum _ConversationModelTestState { idle, running, success, failure }
 
 enum _ConversationMoreAction {
   taskMode,
+  workflow,
+  cloudWorkflow,
   workspace,
   outline,
   assistantProfile,
@@ -159,6 +175,8 @@ class ConversationPage extends StatefulWidget {
 
   /// 嵌入方或测试可注入传输，默认沿用用户配置。
   final ChatService? chatService;
+  @visibleForTesting
+  final ConversationGenerationService? generationService;
 
   /// 测试可延迟真实事务的返回，验证保存与下一轮发送的时序。
   @visibleForTesting
@@ -184,6 +202,7 @@ class ConversationPage extends StatefulWidget {
     this.readAloudService,
     this.predictionService,
     this.chatService,
+    this.generationService,
     this.checklistCoordinator,
     this.draftStore,
     this.onSendPreparationError,
@@ -230,6 +249,23 @@ class _ConversationPageState extends State<ConversationPage>
   bool _daoTaskMode = false;
   bool get _taskMode => _agentTask?.enabled ?? false;
   bool _isStreaming = false;
+  late final ConversationGenerationService _generations;
+  ConversationGenerationDao? _generationDao;
+  ConversationGenerationRun? _ordinaryRun;
+  final Object _ordinaryHost = Object();
+  bool _ordinaryVisible = false, _ordinaryWholeVisible = false;
+  String? _ordinaryStartedHere, _ordinaryEffectsHandled;
+  String? _ordinaryDraftOwner;
+  int? _consumedDraftRevision, _unrestoredDraftRevision;
+  bool _settingRunDraft = false;
+  int? _ordinaryDraftRevision, _ordinaryRemovedReplyAt;
+  DialogRoute<bool>? _ordinaryDialog;
+  String? _ordinaryDialogId;
+  bool _ordinarySyncScheduled = false;
+  final Map<int, Map<String, Object?>> _generationRows = {};
+  String? _ordinaryRowsCaptured, _ordinaryErrorHandled;
+  bool _draftConversationSaving = false;
+  late final ConversationGenerationScope _pageGenerationIdentity;
   late MessageDao messageDao;
   late FavoriteDao favoriteDao;
   late ConversationListDao conversationListDao;
@@ -261,6 +297,9 @@ class _ConversationPageState extends State<ConversationPage>
 
   /// 已无更早历史：到顶后不再反复空查 DB。
   bool _noMoreHistory = false;
+  int? _historyBeforeId;
+  int _historyReadRevision = 0;
+  bool _reconcilingHistory = false;
   bool _handledInitialTarget = false;
   bool _handledInitialResume = false;
   bool _applicationInBackground = false;
@@ -476,6 +515,349 @@ class _ConversationPageState extends State<ConversationPage>
     setState(() {});
   }
 
+  // 页面订阅运行快照；网络、文件准备和数据库写入均由应用服务持有。
+  void _ordinaryRegistryChanged() {
+    if (!_ready || !_accountCurrent) {
+      _scheduleOrdinarySync();
+      return;
+    }
+    final run = _generations.lookup(_pageAccount, widget.conversationModel.cid);
+    if (run != null &&
+        run.busy &&
+        run.scope.identityCurrent &&
+        !identical(run, _ordinaryRun) &&
+        (widget.conversationModel.id == null ||
+            run.record?.conversationRowId == widget.conversationModel.id)) {
+      _bindOrdinaryRun(run);
+    }
+    _scheduleOrdinarySync();
+  }
+
+  void _bindOrdinaryRun(ConversationGenerationRun run) {
+    if (!identical(_ordinaryRun, run)) {
+      _ordinaryRun?.removeListener(_scheduleOrdinarySync);
+      _ordinaryRun?.detachVisibleHost(_ordinaryHost);
+      _dismissOrdinaryConfirmation();
+      _ordinaryRun = run;
+      run.addListener(_scheduleOrdinarySync);
+    }
+    _scheduleOrdinarySync();
+  }
+
+  void _scheduleOrdinarySync() {
+    if (_ordinarySyncScheduled || !mounted || _disposed) return;
+    _ordinarySyncScheduled = true;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      _ordinarySyncScheduled = false;
+      if (mounted && !_disposed) _syncOrdinaryRun();
+    });
+    WidgetsBinding.instance.ensureVisualUpdate();
+  }
+
+  bool get _ordinaryHostVisible =>
+      _accountCurrent &&
+      !_applicationInBackground &&
+      ((ModalRoute.of(context)?.isCurrent ?? true) ||
+          (_ordinaryDialog?.isCurrent ?? false));
+
+  void _dismissOrdinaryConfirmation() {
+    final route = _ordinaryDialog;
+    _ordinaryDialog = null;
+    _ordinaryDialogId = null;
+    // 已pop的确认框在退出动画中仍持有navigator，但已不在路由历史中。
+    if (route != null && route.isActive) route.navigator?.removeRoute(route);
+  }
+
+  void _syncOrdinaryRun() {
+    if (!_ready) return;
+    if (!_accountCurrent) {
+      _ordinaryRun?.detachVisibleHost(_ordinaryHost);
+      _dismissOrdinaryConfirmation();
+      _ordinaryVisible = false;
+      _ordinaryWholeVisible = false;
+      setState(() {});
+      return;
+    }
+    final run = _ordinaryRun;
+    final visible = _ordinaryHostVisible;
+    if (_ordinaryVisible && !visible) {
+      _ordinaryWholeVisible = false;
+      _invalidatePrediction();
+    }
+    _ordinaryVisible = visible;
+    if (run == null) return;
+    widget.conversationModel.id =
+        run.record?.conversationRowId ?? widget.conversationModel.id;
+    if (visible && run.current) {
+      run.attachVisibleHost(_ordinaryHost);
+    } else {
+      run.detachVisibleHost(_ordinaryHost);
+      _dismissOrdinaryConfirmation();
+    }
+    if (!run.scope.identityCurrent || run.retired) {
+      _isStreaming = false;
+      _sendProgress = null;
+      setState(() {});
+      return;
+    }
+    final source = run.acceptedSourceRow;
+    final user = run.acceptedUser;
+    if (source != null && user != null) {
+      _generationRows[user.createdAt] = source;
+      widget.conversationModel.id = run.record?.conversationRowId;
+      _mergeOrdinaryMessage(user, run.acceptedUserBlocks);
+      if (run.record?.userRowId != null && _ordinaryRemovedReplyAt != null) {
+        final oldAt = _ordinaryRemovedReplyAt!;
+        final old = chatController.initialMessageList
+            .where((m) => m.createdAt == oldAt)
+            .firstOrNull;
+        if (old != null) chatController.deleteMessage(old);
+        _blockStore.removeMessage(chatMessageKey(oldAt));
+        _generationRows.remove(oldAt);
+        _cardRows.remove(oldAt);
+        _ordinaryRemovedReplyAt = null;
+      }
+      if (_ordinaryDraftOwner == run.runId &&
+          _ordinaryDraftRevision != null &&
+          _draftRevision == _ordinaryDraftRevision) {
+        _ordinaryDraftRevision = null;
+        _draftTimer?.cancel();
+        _settingRunDraft = true;
+        _inputController.clear();
+        _settingRunDraft = false;
+        _inputMessage = '';
+        _pendingImages = [];
+        _pendingFiles = [];
+        _references = [];
+        _draftRevision++;
+        _consumedDraftRevision = _draftRevision;
+        _draftOnlyConversation = false;
+      }
+    }
+    final reply = run.receiver;
+    if (run.completion != null || run.record?.receiverRowId != null) {
+      _mergeOrdinaryMessage(reply, run.replyBlocks);
+    }
+    if (run.completion != null) completionDao = run.completion!;
+    if (run.stage == ConversationGenerationStage.complete &&
+        run.record?.receiverRowId != null) {
+      _cardRows[reply.createdAt] = run.record!.receiverRowId!;
+      if (_ordinaryRowsCaptured != run.runId) {
+        _ordinaryRowsCaptured = run.runId;
+        unawaited(_captureOrdinaryReply(run));
+      }
+    }
+    _isStreaming = run.busy;
+    _sendProgress = run.busy ? ChatSendProgress(run.progress) : null;
+    _draftNotice = run.notice.isEmpty ? _draftNotice : run.notice;
+    _contextPlan = run.contextPlan ?? _contextPlan;
+    final error = visible ? run.takePreparationFailure() : null;
+    if (error != null && _ordinaryErrorHandled != run.runId) {
+      _ordinaryErrorHandled = run.runId;
+      widget.onSendPreparationError?.call(error);
+    }
+    setState(() {});
+    if (visible && run.confirmation != null && _ordinaryDialog == null) {
+      unawaited(_showOrdinaryConfirmation(run));
+    }
+    if (run.stage == ConversationGenerationStage.complete &&
+        _ordinaryEffectsHandled != run.runId) {
+      _ordinaryEffectsHandled = run.runId;
+      if (_ordinaryStartedHere == run.runId &&
+          _ordinaryWholeVisible &&
+          visible) {
+        _predictionCompletedTurn = reply.createdAt;
+        _requestPredictionAfterReply();
+        unawaited(_readAloudAssistant(reply.content));
+      }
+    }
+  }
+
+  void _mergeOrdinaryMessage(MessageModel message, List<MessageBlock> blocks) {
+    final existing = chatController.initialMessageList
+        .where((m) => m.createdAt == message.createdAt)
+        .firstOrNull;
+    if (existing == null) {
+      chatController.addMessage(message);
+    } else if (existing.content != message.content ||
+        existing.id != message.id) {
+      chatController.updateMessage(message);
+    }
+    final latest = blocks.map((block) {
+      final old = _blockStore.block(block.id);
+      return block is MainTextBlock &&
+              old is MainTextBlock &&
+              old.content == block.content
+          ? block.copyWith(localCardStates: old.localCardStates)
+          : block;
+    }).toList();
+    _blockStore.seedMessage(chatMessageKey(message.createdAt), latest);
+    _blockStore.commitSeed();
+  }
+
+  Future<void> _captureOrdinaryReply(ConversationGenerationRun run) async {
+    try {
+      final rows = await run.dao.storage.db.query('tb_messages',
+          where: 'id=? and cid=?',
+          whereArgs: [run.record!.receiverRowId, run.input.cid]);
+      if (!_accountCurrent ||
+          !identical(run, _ordinaryRun) ||
+          !run.scope.identityCurrent ||
+          rows.length != 1 ||
+          rows.single['memorySourceId'] != run.receiverId ||
+          rows.single['content'] != run.receiver.content) {
+        return;
+      }
+      _generationRows[run.receiverAt] = Map.unmodifiable(rows.single);
+    } catch (_) {
+      // 可选 UI 快照读取失败不影响已保存结果；重开从数据库重新读取。
+    }
+  }
+
+  Future<void> _showOrdinaryConfirmation(ConversationGenerationRun run) async {
+    final pending = run.confirmation;
+    if (pending == null || !_ordinaryHostVisible || !run.current) return;
+    final route = DialogRoute<bool>(
+        context: context,
+        builder: (ctx) => AlertDialog(
+                title: Text(pending.title),
+                content: SingleChildScrollView(child: Text(pending.detail)),
+                actions: [
+                  TextButton(
+                      onPressed: () => Navigator.pop(ctx, false),
+                      child: const Text('取消')),
+                  FilledButton(
+                      key: const ValueKey('ordinary_confirm_action'),
+                      onPressed: () => Navigator.pop(ctx, true),
+                      child: const Text('确认'))
+                ]));
+    _ordinaryDialog = route;
+    _ordinaryDialogId = pending.id;
+    final answer = await Navigator.of(context).push(route);
+    if (!mounted ||
+        !_accountCurrent ||
+        !identical(_ordinaryRun, run) ||
+        !identical(_ordinaryDialog, route) ||
+        _ordinaryDialogId != pending.id ||
+        !_ordinaryHostVisible) {
+      return;
+    }
+    _ordinaryDialog = null;
+    _ordinaryDialogId = null;
+    await run.answerConfirmation(
+        host: _ordinaryHost,
+        confirmationId: pending.id,
+        accepted: answer == true);
+    _scheduleOrdinarySync();
+  }
+
+  void _startOrdinary(String text,
+      {MessageModel? retryUser, MessageModel? oldReply}) {
+    final dao = _generationDao;
+    if (dao == null || !_accountCurrent || !_ordinaryHostVisible) return;
+    if (!_pageGenerationIdentity.identityCurrent) {
+      HiDialog.showSnackBar(context, '登录或恢复环境已变化，请重新打开会话');
+      return;
+    }
+    ConversationTurnPreparation? preparation;
+    try {
+      final settings = _effective(context.read<AISettingsProvider>().settings);
+      final scope = ConversationGenerationScope(account: _pageAccount);
+      final user = retryUser ??
+          _genMessageModel(ownerType: OwnerType.sender, message: text);
+      final row =
+          retryUser == null ? null : _generationRows[retryUser.createdAt];
+      final replyRow =
+          oldReply == null ? null : _generationRows[oldReply.createdAt];
+      if (retryUser != null &&
+          (row == null ||
+              row['content'] != retryUser.content ||
+              (oldReply != null &&
+                  (replyRow == null ||
+                      replyRow['content'] != oldReply.content)))) {
+        throw StateError('原消息身份尚未就绪，请重新打开会话后重试');
+      }
+      final tools = ConversationRunTools(
+          toolIds: _effectiveToolIds,
+          useTools: _assistant?.useTools ?? true,
+          forceWebSearch:
+              settings.webSearchEnabled && settings.webSearchConfigured);
+      final history = completionDao.currentMessages
+          .where((m) =>
+              retryUser == null ||
+              (m.createdAt != retryUser.createdAt &&
+                  (oldReply == null || m.createdAt != oldReply.createdAt)))
+          .toList();
+      final ConversationTurnPreparation delegate = retryUser == null
+          ? ComposerGenerationPreparation(
+              draftStore: _draftStore,
+              text: text,
+              images: _pendingImages,
+              files: _pendingFiles,
+              references: _references,
+              runTools: tools) as ConversationTurnPreparation
+          : RetryGenerationPreparation(
+              persisted: completionDao.attachmentsForUserMessage(retryUser),
+              userBlocks: MessageBlock.decodeList(row!['blocks'] as String?),
+              runTools: tools);
+      preparation = ConversationRolePreparation(
+          delegate: delegate,
+          conversation: widget.conversationModel,
+          assistant: _assistant,
+          recentMessages: history.map((m) => m.content));
+      final run = _generations.start(
+          scope: scope,
+          dao: dao,
+          profile: ConversationGenerationProfile(settings, _pageAccount),
+          input: ConversationGenerationInput(
+              cid: widget.conversationModel.cid,
+              conversationRowId: widget.conversationModel.id,
+              newConversation: widget.conversationModel.id == null
+                  ? widget.conversationModel
+                  : null,
+              user: user,
+              assistantId: widget.conversationModel.assistantId,
+              roleContinuationEnabled: _assistant != null,
+              existingUserRowId: row?['id'] as int?,
+              existingSourceId: row?['memorySourceId'] as String?,
+              existingSourceRowHash:
+                  row == null ? null : generationSourceRowHash(row),
+              retryReplyRowId: replyRow?['id'] as int?,
+              retryReplyHash:
+                  replyRow == null ? null : generationSourceRowHash(replyRow),
+              receiverName: _aiName,
+              receiverAvatar:
+                  AssistantConversationAvatarResolver.nextMessageAvatar(
+                      _assistant),
+              projectId: widget.conversationModel.projectId,
+              history: history,
+              protocolHistory: completionDao.currentProtocolHistory,
+              fileHistory: completionDao.currentFileHistory,
+              roleContinuationHistory:
+                  completionDao.currentRoleContinuationHistory,
+              toolHistory: completionDao.currentToolHistory,
+              stream: settings.streamEnabled,
+              webSearch:
+                  settings.webSearchEnabled && settings.webSearchConfigured),
+          preparation: preparation,
+          transport: widget.chatService);
+      _ordinaryStartedHere = run.runId;
+      _ordinaryDraftOwner = run.runId;
+      _consumedDraftRevision = null;
+      _ordinaryWholeVisible = _ordinaryHostVisible;
+      _ordinaryDraftRevision = retryUser == null ? _draftRevision : null;
+      _ordinaryRemovedReplyAt = oldReply?.createdAt;
+      _invalidatePrediction();
+      _draftTimer?.cancel();
+      _bindOrdinaryRun(run);
+      _isStreaming = true;
+      setState(() {});
+    } catch (error) {
+      if (preparation != null) unawaited(preparation.release());
+      HiDialog.showSnackBar(context, '$error');
+    }
+  }
+
   AgentTaskRun? _agentRun;
   int? _agentReadAloudAt;
   AgentTaskKey get _taskKey =>
@@ -628,7 +1010,9 @@ class _ConversationPageState extends State<ConversationPage>
   bool _referencePickerOpen = false;
 
   bool get _accountCurrent =>
-      !_disposed && (LoginDao.getAccountHash() ?? 'guest') == _pageAccount;
+      !_disposed &&
+      (LoginDao.getAccountHash() ?? 'guest') == _pageAccount &&
+      _pageGenerationIdentity.identityCurrent;
 
   bool get _predictionEligible =>
       _accountCurrent &&
@@ -636,6 +1020,7 @@ class _ConversationPageState extends State<ConversationPage>
       !_isStreaming &&
       !_taskMode &&
       !_applicationInBackground &&
+      (ModalRoute.of(context)?.isCurrent ?? true) &&
       !_savingReasoningEffort &&
       _predictionSettings.settings.composerPredictionsEnabled &&
       _inputController.text.isEmpty &&
@@ -715,6 +1100,7 @@ class _ConversationPageState extends State<ConversationPage>
   }
 
   void _inputChanged(String text) {
+    if (_settingRunDraft) return;
     if (text.isNotEmpty ||
         (_inputController.value.composing.isValid &&
             !_inputController.value.composing.isCollapsed)) {
@@ -771,7 +1157,12 @@ class _ConversationPageState extends State<ConversationPage>
   }
 
   Future<ConversationDraft?> _saveDraft() async {
-    if (!_draftLoaded || !_accountCurrent) {
+    if (!_draftLoaded ||
+        !_accountCurrent ||
+        _consumedDraftRevision == _draftRevision ||
+        _unrestoredDraftRevision == _draftRevision ||
+        (_ordinaryDraftOwner != null &&
+            _ordinaryDraftRevision == _draftRevision)) {
       return null;
     }
     final revision = _draftRevision;
@@ -870,20 +1261,63 @@ class _ConversationPageState extends State<ConversationPage>
       }
       return;
     }
+    if (_isStreaming) return;
     _markNewDraftConversation(text, images, files, references);
     if (_draftOnlyConversation) {
-      await conversationListDao.saveConversation(widget.conversationModel);
-      AppEvents.notifyConversationsChanged();
+      _draftConversationSaving = true;
+      try {
+        await conversationListDao.saveConversation(widget.conversationModel);
+        AppEvents.notifyConversationsChanged();
+      } finally {
+        _draftConversationSaving = false;
+      }
     }
   }
 
   Future<void> _restoreDraft() async {
     final revision = _draftRevision;
     try {
-      final draft = await _draftStore.load();
-      if (!mounted || !_accountCurrent || revision != _draftRevision) return;
+      ConversationDraft? draft;
+      var settled = false;
+      for (var attempt = 0; attempt < 2; attempt++) {
+        final slot = await _draftStore.captureSubmission(
+            verify: _pageGenerationIdentity.verify);
+        draft = await _draftStore.load();
+        if (!mounted || !_accountCurrent || revision != _draftRevision) return;
+        if (slot == null) continue;
+        final run =
+            _generations.lookup(_pageAccount, widget.conversationModel.cid);
+        final owns = run != null &&
+            identical(run.dao.storage.db, messageDao.storage.db) &&
+            (run.record?.conversationRowId ?? run.input.conversationRowId) ==
+                widget.conversationModel.id &&
+            run.input.assistantId == widget.conversationModel.assistantId &&
+            await run.ownsDraftSubmission(slot);
+        // 读取/归属等待期间可能清理原槽或写入新草稿，不能套用迟到快照。
+        final currentSlot = await _draftStore.submissionIsCurrent(slot,
+            verify: _pageGenerationIdentity.verify);
+        if (!mounted || !_accountCurrent || revision != _draftRevision) return;
+        if (!currentSlot) continue;
+        settled = true;
+        if (owns && run.inputConsumed && widget.initialPrompt.isEmpty) {
+          _consumedDraftRevision = _draftRevision;
+          return;
+        }
+        if (owns && widget.initialPrompt.isEmpty) {
+          _ordinaryDraftOwner = run.runId;
+          _ordinaryDraftRevision = _draftRevision;
+        }
+        break;
+      }
+      if (!settled) {
+        _unrestoredDraftRevision = _draftRevision;
+        _draftNotice = '草稿正在更新，请重新打开；已保存的草稿保留';
+        return;
+      }
       if (draft != null && widget.initialPrompt.isEmpty) {
+        _settingRunDraft = true;
         _inputController.text = draft.text;
+        _settingRunDraft = false;
         _inputMessage = draft.text;
         _pendingImages = draft.imagePaths;
         _pendingFiles = draft.filePaths;
@@ -893,8 +1327,12 @@ class _ConversationPageState extends State<ConversationPage>
             : '已恢复此会话的草稿';
       }
     } catch (_) {
-      if (mounted && _accountCurrent) _draftNotice = '草稿读取失败，已有聊天记录不受影响';
+      if (mounted && _accountCurrent) {
+        _unrestoredDraftRevision = _draftRevision;
+        _draftNotice = '草稿读取失败，已有聊天记录不受影响';
+      }
     } finally {
+      _settingRunDraft = false;
       _draftLoaded = true;
     }
   }
@@ -1477,7 +1915,7 @@ class _ConversationPageState extends State<ConversationPage>
       itemCount: itemCount,
     );
     // 到达最旧的已加载项 -> 加载更早一页。
-    if (edges.atTop && itemCount > 0) _maybeLoadMore();
+    if (_ready && edges.atTop && itemCount > 0) _maybeLoadMore();
     final showTop = !edges.atTop;
     final showBottom = !edges.atBottom;
     if (showTop != _showJumpTop || showBottom != _showJumpBottom) {
@@ -1490,10 +1928,12 @@ class _ConversationPageState extends State<ConversationPage>
 
   /// 加载更早一页（带防抖与「无更多」短路），返回是否真的有新数据。
   Future<bool> _maybeLoadMore() async {
-    if (_isLoadingMore || _noMoreHistory) return false;
+    if (_isLoadingMore || _noMoreHistory || _reconcilingHistory) return false;
     _isLoadingMore = true;
+    final revision = _historyReadRevision;
     try {
       final list = await _loadData(loadMore: true);
+      if (revision != _historyReadRevision) return false;
       if (list.isEmpty) {
         _noMoreHistory = true;
         return false;
@@ -1519,21 +1959,33 @@ class _ConversationPageState extends State<ConversationPage>
     _handledInitialTarget = true;
     await _loadAllHistory();
     if (!mounted) return;
-    final index = chatController.initialMessageList
-        .indexWhere((message) => message.createdAt == target);
-    if (index < 0) {
+    _scrollToCreatedAt(target);
+  }
+
+  void _scrollToCreatedAt(int target,
+      {bool reportMissing = true, bool animate = true}) {
+    if (!chatController.initialMessageList.any((m) => m.createdAt == target)) {
+      if (!reportMissing) return;
       ScaffoldMessenger.of(context)
           .showSnackBar(const SnackBar(content: Text('未找到命中的历史消息')));
       return;
     }
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (!mounted || !_itemScrollController.isAttached) return;
-      _itemScrollController.scrollTo(
-        index: index,
-        alignment: 0.08,
-        duration: const Duration(milliseconds: 350),
-        curve: Curves.easeOut,
-      );
+      final index = chatController.initialMessageList
+          .indexWhere((message) => message.createdAt == target);
+      if (index < 0) return;
+      if (animate) {
+        _itemScrollController.scrollTo(
+          index: index,
+          alignment: 0.08,
+          duration: const Duration(milliseconds: 350),
+          curve: Curves.easeOut,
+        );
+      } else {
+        // 对账替换了列表行，直接恢复锚点，避免双列表过渡重复挂载气泡 key。
+        _itemScrollController.jumpTo(index: index, alignment: 0.08);
+      }
     });
   }
 
@@ -1642,6 +2094,10 @@ class _ConversationPageState extends State<ConversationPage>
             itemBuilder: (_) => [
               _moreMenuItem(_ConversationMoreAction.taskMode,
                   Icons.checklist_rounded, '任务模式'),
+              _moreMenuItem(_ConversationMoreAction.workflow,
+                  Icons.groups_outlined, '多Agent协作'),
+              _moreMenuItem(_ConversationMoreAction.cloudWorkflow,
+                  Icons.cloud_outlined, '云任务'),
               _moreMenuItem(_ConversationMoreAction.workspace,
                   Icons.folder_open_outlined, '文件工作区'),
               _moreMenuItem(
@@ -1699,8 +2155,35 @@ class _ConversationPageState extends State<ConversationPage>
     switch (action) {
       case _ConversationMoreAction.taskMode:
         _openTaskMode();
+      case _ConversationMoreAction.workflow:
+        if (!_ready || !_accountCurrent || _isStreaming) return;
+        _invalidatePrediction();
+        unawaited(Navigator.push<void>(
+            context,
+            MaterialPageRoute(
+                builder: (_) => AgentWorkflowPage(
+                      conversation: ConversationModel.fromJson(
+                          widget.conversationModel.toJson()),
+                      initialTask: _inputController.text,
+                      expectedAccountHash: _pageAccount,
+                    ))).then((_) async {
+          if (!mounted || !_accountCurrent || _isStreaming) return;
+          await _refreshWorkflowHistory();
+        }));
       case _ConversationMoreAction.workspace:
         _openWorkspace();
+      case _ConversationMoreAction.cloudWorkflow:
+        if (!_ready || !_accountCurrent) return;
+        _invalidatePrediction();
+        unawaited(Navigator.push<void>(
+            context,
+            MaterialPageRoute(
+                builder: (_) => CloudWorkflowPage(
+                    cid: widget.conversationModel.cid,
+                    expectedAccountHash: _pageAccount))).then((_) async {
+          if (!mounted || !_accountCurrent || _isStreaming) return;
+          await _refreshWorkflowHistory();
+        }));
       case _ConversationMoreAction.outline:
         _openOutline();
       case _ConversationMoreAction.assistantProfile:
@@ -1712,6 +2195,65 @@ class _ConversationPageState extends State<ConversationPage>
       case _ConversationMoreAction.voicePrefs:
         _openVoicePrefs();
     }
+  }
+
+  Future<void> _refreshWorkflowHistory() async {
+    if (!mounted || !_accountCurrent || !_ready || _isStreaming) return;
+    final list = await _loadData();
+    if (!mounted || !_accountCurrent || _isStreaming) return;
+    final candidates = await messageDao.loadContextCandidates();
+    final blocks = await _loadBlockHistory(candidates.messages);
+    if (!mounted || !_accountCurrent || _isStreaming) return;
+    chatController.loadMoreData(list);
+    final settings = _effective(context.read<AISettingsProvider>().settings);
+    completionDao = CompletionDao(
+        memoryContextResolver: _memoryResolver(),
+        chatService: widget.chatService,
+        manageContext: true,
+        settings: settings,
+        systemPrompt: _daoSystemPrompt,
+        messages: candidates.messages,
+        toolHistory: blocks.$1,
+        fileHistory: blocks.$2,
+        roleContinuationHistory: blocks.$3,
+        protocolHistory: blocks.$4,
+        conversationId: widget.conversationModel.cid,
+        semanticSummaryService: _summaryServiceFor(settings));
+    final rows = await messageDao.storage.db.query('tb_conversation_list',
+        where: 'cid=?', whereArgs: [widget.conversationModel.cid]);
+    if (!mounted || !_accountCurrent || _isStreaming || rows.length != 1) {
+      return;
+    }
+    widget.conversationModel.id = rows.single['id'] as int;
+    widget.conversationModel.title = rows.single['title'] as String?;
+    widget.conversationModel.lastMessage =
+        rows.single['lastMessage'] as String?;
+    widget.conversationModel.updateAt = rows.single['updateAt'] as int?;
+    widget.conversationUpdate?.call(widget.conversationModel);
+    _invalidatePrediction();
+  }
+
+  Timer? _workflowRefreshTimer;
+  int _workflowMessageRevision = 0;
+  void _workflowChanged() {
+    if (!mounted || !_accountCurrent) return;
+    final revision = AgentWorkflowCoordinator.instance
+        .messageRevision(_pageAccount, widget.conversationModel.cid);
+    if (revision == _workflowMessageRevision) return;
+    _workflowRefreshTimer?.cancel();
+    _workflowRefreshTimer = Timer(const Duration(milliseconds: 300), () async {
+      if (!mounted || !_accountCurrent) return;
+      if (!_ready || _isStreaming) {
+        _workflowChanged();
+        return;
+      }
+      try {
+        await _refreshWorkflowHistory();
+        if (mounted && _accountCurrent) _workflowMessageRevision = revision;
+      } catch (_) {
+        // 来源或页面已卸载时不重放；重开时仍从真实数据库读取。
+      }
+    });
   }
 
   String _aiName = '';
@@ -2017,6 +2559,13 @@ class _ConversationPageState extends State<ConversationPage>
   @override
   void initState() {
     super.initState();
+    _generations =
+        widget.generationService ?? ConversationGenerationService.instance;
+    _generations.addListener(_ordinaryRegistryChanged);
+    BackupService.restoreTick.addListener(_scheduleOrdinarySync);
+    ConversationGenerationRoutes.instance.changes
+        .addListener(_scheduleOrdinarySync);
+    AgentWorkflowCoordinator.instance.addListener(_workflowChanged);
     _cardCid = widget.conversationModel.cid;
     _backgroundExecution =
         widget.backgroundExecution ?? PlatformAgentBackgroundExecution.instance;
@@ -2027,6 +2576,8 @@ class _ConversationPageState extends State<ConversationPage>
     WidgetsBinding.instance.addObserver(this);
     _pageAccount = widget.expectedAccountHash ??
         context.read<AISettingsProvider>().accountHash;
+    _pageGenerationIdentity =
+        ConversationGenerationScope(account: _pageAccount);
     _draftOnlyConversation = widget.conversationModel.messageCount == 0 &&
         (widget.conversationModel.lastMessage?.startsWith('[草稿] ') ?? false);
     _prediction =
@@ -2087,6 +2638,15 @@ class _ConversationPageState extends State<ConversationPage>
 
   @override
   void dispose() {
+    _generations.removeListener(_ordinaryRegistryChanged);
+    BackupService.restoreTick.removeListener(_scheduleOrdinarySync);
+    ConversationGenerationRoutes.instance.changes
+        .removeListener(_scheduleOrdinarySync);
+    _ordinaryRun?.removeListener(_scheduleOrdinarySync);
+    _ordinaryRun?.detachVisibleHost(_ordinaryHost);
+    _dismissOrdinaryConfirmation();
+    _workflowRefreshTimer?.cancel();
+    AgentWorkflowCoordinator.instance.removeListener(_workflowChanged);
     WidgetsBinding.instance.removeObserver(this);
     _predictionSettings.removeListener(_invalidatePrediction);
     _prediction.removeListener(_onPredictionChanged);
@@ -2097,7 +2657,8 @@ class _ConversationPageState extends State<ConversationPage>
     if (_agentRun?.busy != true) _stopBackgroundAfterCheckpoint();
     // 快照必须先于 dispose；草稿写入只使用固定账号，不跟随新登录账号。
     if (_draftLoaded && _accountCurrent) {
-      if (_ready &&
+      if (_ordinaryRun?.busy != true &&
+          _ready &&
           _draftOnlyConversation &&
           _inputController.text.trim().isEmpty &&
           _pendingImages.isEmpty &&
@@ -2115,22 +2676,32 @@ class _ConversationPageState extends State<ConversationPage>
             .then((_) => AppEvents.notifyConversationsChanged())
             .catchError((_) {}));
       }
-      _markNewDraftConversation(
-          _inputController.text, _pendingImages, _pendingFiles, _references);
-      if (_draftOnlyConversation) {
+      if (_ordinaryRun?.busy != true) {
+        _markNewDraftConversation(
+            _inputController.text, _pendingImages, _pendingFiles, _references);
+      }
+      if (_ordinaryRun?.busy != true && _draftOnlyConversation) {
         unawaited(conversationListDao
             .saveConversation(widget.conversationModel)
             .then((_) => AppEvents.notifyConversationsChanged())
             .catchError((_) {}));
       }
-      unawaited(_draftStore
-          .save(
-            text: _inputController.text,
-            images: List.from(_pendingImages),
-            files: List.from(_pendingFiles),
-            references: List.from(_references),
-          )
-          .catchError((_) => null));
+      final submittedHere = _ordinaryDraftOwner != null &&
+          _ordinaryDraftRevision != null &&
+          _draftRevision == _ordinaryDraftRevision;
+      // 同一提交由 run 在真实接受/失败收尾时处理；后续编辑仍单独保存。
+      if (!submittedHere &&
+          _consumedDraftRevision != _draftRevision &&
+          _unrestoredDraftRevision != _draftRevision) {
+        unawaited(_draftStore
+            .save(
+              text: _inputController.text,
+              images: List.from(_pendingImages),
+              files: List.from(_pendingFiles),
+              references: List.from(_references),
+            )
+            .catchError((_) => null));
+      }
     }
     if (_taskMode && _isStreaming && _agentRun?.busy != true) {
       _userStopped = true;
@@ -2160,7 +2731,7 @@ class _ConversationPageState extends State<ConversationPage>
     unawaited(_readAloudService.stop());
     _itemPositionsListener.itemPositions.removeListener(_onPositionsChanged);
     _blockStore.dispose();
-    if (_agentRun?.busy != true) _updateConversation();
+    if (_taskMode && _agentRun?.busy != true) _updateConversation();
     _inputController.dispose();
     super.dispose();
     //fix A ScrollController was used after being disposed.
@@ -2176,7 +2747,7 @@ class _ConversationPageState extends State<ConversationPage>
     if (!_accountCurrent) {
       return Scaffold(
         appBar: AppBar(title: const Text('对话')),
-        body: const Center(child: Text('账号已切换，请返回当前账号的对话')),
+        body: const Center(child: Text('登录或会话环境已变化，请返回并重新打开')),
       );
     }
     // 阶段七：助手指定了模型时，能力位用覆盖后的模型算（同 _onSend 的请求路径）。
@@ -2208,6 +2779,12 @@ class _ConversationPageState extends State<ConversationPage>
                       _workspaceTools?.lastReport?.hasChecks == true
                           ? _workspaceTools!.lastReport!.summary
                           : null),
+            if (_ordinaryRun?.persistencePending == true)
+              TextButton.icon(
+                  key: const ValueKey('ordinary_retry_save'),
+                  onPressed: () => _ordinaryRun?.retryPersistence(),
+                  icon: const Icon(Icons.save_outlined),
+                  label: const Text('重试保存回复')),
             ChatSendStatusPanel(
               progress: _sendProgress,
               busy: _isStreaming,
@@ -2930,6 +3507,14 @@ class _ConversationPageState extends State<ConversationPage>
       HiDialog.showSnackBar(context, '有不可用引用，请移除或重新选择后发送');
       return;
     }
+    if (!_taskMode) {
+      if (_draftConversationSaving) {
+        HiDialog.showSnackBar(context, '会话草稿正在保存，请稍后发送');
+        return;
+      }
+      _startOrdinary(inputMessage);
+      return;
+    }
     _invalidatePrediction();
     // 锁覆盖附件准备、持久化及网络等待，停止准备时仍保留输入和草稿。
     _draftTimer?.cancel();
@@ -3640,6 +4225,11 @@ class _ConversationPageState extends State<ConversationPage>
   }
 
   void _stopStream({String reason = '已手动暂停，可从保存的进度继续'}) {
+    final ordinary = _ordinaryRun;
+    if (ordinary?.busy == true) {
+      unawaited(ordinary!.stop(reason));
+      return;
+    }
     _invalidatePrediction();
     if (_agentRun?.busy == true) {
       _dismissToolConfirmation();
@@ -3960,54 +4550,13 @@ class _ConversationPageState extends State<ConversationPage>
     required String mainText,
     required bool hasError,
   }) {
-    final snapshot = _roleContinuationSnapshot(
-      blocks,
-      mainText: mainText,
-      hasError: hasError,
-    );
-    if (snapshot.isEmpty) return blocks;
-    return [
-      ...blocks,
-      RoleContinuationBlock(
-        id: 'blk_${messageKey}_role_continuation',
-        messageId: messageKey,
-        createdAt: receiverCreatedAt,
-        status: MessageBlockStatus.success,
+    return withRoleContinuationSnapshot(blocks,
+        assistantBound: _assistant != null,
+        receiverCreatedAt: receiverCreatedAt,
+        messageKey: messageKey,
         modelId: _effectiveModelId,
-        content: snapshot,
-      ),
-    ];
-  }
-
-  String _roleContinuationSnapshot(
-    List<MessageBlock> blocks, {
-    required String mainText,
-    required bool hasError,
-  }) {
-    if (_assistant == null) return '';
-    if (mainText.trim().isNotEmpty) return '';
-    final thinking = blocks
-        .whereType<ThinkingBlock>()
-        .map((block) => block.content.trim())
-        .where((content) => content.isNotEmpty)
-        .join('\n');
-    if (thinking.isEmpty) return '';
-    final summary = _compactRoleContinuationText(thinking);
-    if (summary.isEmpty) return '';
-    final prefix = hasError ? '上一轮回复中断，' : '上一轮尚未正式开口，';
-    return '$prefix角色已形成的心理/动作状态：$summary';
-  }
-
-  static String _compactRoleContinuationText(String text) {
-    final value = text
-        .replaceAll(RegExp(r'\s+'), ' ')
-        .replaceAll('<<<', '')
-        .replaceAll('>>>', '')
-        .trim();
-    if (value.isEmpty) return '';
-    const maxChars = 240;
-    if (value.characters.length <= maxChars) return value;
-    return '${value.characters.take(maxChars).toString()}...';
+        mainText: mainText,
+        hasError: hasError);
   }
 
   Future<void> _readAloudAssistant(String text) async {
@@ -4328,6 +4877,10 @@ class _ConversationPageState extends State<ConversationPage>
     conversationListDao = await ConversationListDao.create(dbManager);
     messageDao =
         await MessageDao.create(dbManager, cid: widget.conversationModel.cid);
+    _generationDao = await ConversationGenerationDao.create(dbManager);
+    await _generations.initializeStorage(
+        ConversationGenerationScope(account: _pageAccount), _generationDao!);
+    if (!mounted || !_accountCurrent) return;
     usageDao = await UsageDao.create(dbManager);
     usageRecordService = UsageRecordService(usageDao);
     favoriteDao = await FavoriteDao.create(dbManager);
@@ -4409,9 +4962,107 @@ class _ConversationPageState extends State<ConversationPage>
         semanticSummaryService: _summaryServiceFor(_effective(settings)));
     await _restoreDraft();
     if (!mounted || !_accountCurrent) return;
+    _reconcilingHistory = true;
+    _historyReadRevision++;
+    try {
+      final snapshot = await _pageGenerationIdentity.stable(() async {
+        final rows = await messageDao.storage.db.query('tb_conversation_list',
+            where: 'cid=?', whereArgs: [widget.conversationModel.cid]);
+        if (widget.conversationModel.id != null &&
+            (rows.length != 1 ||
+                rows.single['id'] != widget.conversationModel.id ||
+                rows.single['assistantId'] !=
+                    widget.conversationModel.assistantId)) {
+          throw const ConversationGenerationStale();
+        }
+        final display = await messageDao.loadDisplayWindow(
+            oldestLoadedId: _historyBeforeId);
+        final context =
+            await messageDao.loadContextCandidates(includeStoredBlocks: true);
+        return (display, context);
+      });
+      if (!mounted || !_accountCurrent) return;
+      _pageGenerationIdentity.verify();
+      final previous = chatController.initialMessageList.toList();
+      final position = _itemPositionsListener.itemPositions.value
+          .where((p) => p.index >= 0 && p.index < previous.length)
+          .firstOrNull;
+      final anchor = widget.initialTargetCreatedAt ??
+          (position == null ? null : previous[position.index].createdAt);
+      for (final m in previous) {
+        _blockStore.removeMessage(chatMessageKey(m.createdAt));
+      }
+      _generationRows.clear();
+      _cardRows.clear();
+      for (final row in snapshot.$1.rows) {
+        final at = row['createdAt'] as int;
+        _generationRows[at] = row;
+        if (row['blocks'] is String) {
+          _blockStore.seedMessage(chatMessageKey(at),
+              MessageBlock.decodeList(row['blocks'] as String));
+          if (row['ownerType'] == OwnerType.receiver.toString()) {
+            _cardRows[at] = row['id'] as int;
+          }
+        }
+      }
+      _blockStore.commitSeed();
+      chatController.initialMessageList.clear();
+      chatController.pelletShow.clear();
+      final display = snapshot.$1.rows.map(MessageModel.fromJson).toList();
+      _historyBeforeId = snapshot.$1.oldestRowId;
+      _noMoreHistory = !snapshot.$1.hasEarlierMessages;
+      chatController.loadMoreData(display);
+      _showInitialAssistantOpeningIfNeeded(display);
+      if (anchor != null) {
+        _scrollToCreatedAt(anchor,
+            reportMissing: widget.initialTargetCreatedAt != null,
+            animate: false);
+      }
+      _hasEarlierContext = snapshot.$2.hasEarlierMessages;
+      // 模型只读有界候选；UI 已加载旧范围不参与扩张请求预算。
+      final contextBlocks = <String, String>{
+        for (final row in snapshot.$2.rawRows)
+          if (row['blocks'] is String)
+            chatMessageKey(row['createdAt'] as int): row['blocks'] as String
+      };
+      final history = _blockHistoryFromMap(snapshot.$2.messages, contextBlocks);
+      completionDao = CompletionDao(
+          memoryContextResolver: _memoryResolver(),
+          chatService: widget.chatService,
+          manageContext: true,
+          settings: _effective(settings),
+          systemPrompt: _daoSystemPrompt,
+          messages: snapshot.$2.messages,
+          toolHistory: history.$1,
+          fileHistory: history.$2,
+          roleContinuationHistory: history.$3,
+          protocolHistory: history.$4,
+          conversationId: widget.conversationModel.cid,
+          semanticSummaryService: _summaryServiceFor(_effective(settings)));
+    } on ConversationGenerationStale {
+      if (mounted) HiDialog.showSnackBar(context, '会话身份已变化，请重新打开');
+      return;
+    } finally {
+      _reconcilingHistory = false;
+    }
     setState(() => _ready = true);
     if (liveRun != null) _bindAgentRun(liveRun);
-    if (_inputController.text.isNotEmpty) _scheduleDraftSave();
+    final ordinary =
+        _generations.lookup(_pageAccount, widget.conversationModel.cid);
+    if (ordinary != null &&
+        ordinary.busy &&
+        ordinary.scope.identityCurrent &&
+        (widget.conversationModel.id == null ||
+            ordinary.record?.conversationRowId ==
+                widget.conversationModel.id)) {
+      _bindOrdinaryRun(ordinary);
+    }
+    _scheduleOrdinarySync();
+    if (_inputController.text.isNotEmpty &&
+        _ordinaryDraftRevision != _draftRevision &&
+        _unrestoredDraftRevision != _draftRevision) {
+      _scheduleDraftSave();
+    }
     if (widget.resumeAgentTask &&
         liveRun?.busy != true &&
         !_handledInitialResume) {
@@ -4995,15 +5646,37 @@ class _ConversationPageState extends State<ConversationPage>
 
   ///从数据库加载历史聊天记录
   Future<List<MessageModel>> _loadData({loadMore = false}) async {
+    final revision = _historyReadRevision;
     if (loadMore) {
       pageIndex++;
     } else {
       pageIndex = 1;
     }
-    final list = await messageDao.getMessages(pageIndex: pageIndex);
+    final window = await messageDao.loadDisplayWindow(
+        beforeId: loadMore ? _historyBeforeId : null);
+    if (!mounted || !_accountCurrent || revision != _historyReadRevision) {
+      return [];
+    }
+    final raw = window.rows;
+    final list = raw.map(MessageModel.fromJson).toList();
+    _historyBeforeId = window.oldestRowId;
+    _noMoreHistory = !window.hasEarlierMessages;
+    for (final row in raw) {
+      _generationRows[row['createdAt'] as int] = Map.unmodifiable(row);
+    }
     AILogger.log('loaded ${list.length} history messages');
-    // 块化消息系统：从持久化恢复这些消息的块，给 BlockMessageContent 做 seed。
-    await _seedBlocks(list);
+    // UI 正文与块来自同一窗口事务，避免再次异步读取后混入旧分页结果。
+    for (final row in raw) {
+      if (row['blocks'] is String) {
+        final at = row['createdAt'] as int;
+        _blockStore.seedMessage(chatMessageKey(at),
+            MessageBlock.decodeList(row['blocks'] as String));
+        if (row['ownerType'] == OwnerType.receiver.toString()) {
+          _cardRows[at] = row['id'] as int;
+        }
+      }
+    }
+    _blockStore.commitSeed();
     if (loadMore) {
       if (list.isNotEmpty) {
         chatController.loadMoreData(list);
@@ -5043,6 +5716,16 @@ class _ConversationPageState extends State<ConversationPage>
         <int, List<Map<String, dynamic>>>{},
       );
     }
+    return _blockHistoryFromMap(list, blocksMap);
+  }
+
+  (
+    Map<int, List<ToolBlock>>,
+    Map<int, String>,
+    Map<int, String>,
+    Map<int, List<Map<String, dynamic>>>
+  ) _blockHistoryFromMap(
+      List<MessageModel> list, Map<String, String> blocksMap) {
     final tools = <int, List<ToolBlock>>{};
     final files = <int, String>{};
     final continuations = <int, String>{};
@@ -5068,25 +5751,6 @@ class _ConversationPageState extends State<ConversationPage>
       if (continuation.isNotEmpty) continuations[m.createdAt] = continuation;
     }
     return (tools, files, continuations, protocols);
-  }
-
-  /// 从 DB 恢复这批消息的块列表并 seed 进 [ChatBlockStore]。
-  Future<void> _seedBlocks(List<MessageModel> list) async {
-    if (list.isEmpty) return;
-    final blocksMap =
-        await messageDao.getBlocksByCreatedAt(list.map((m) => m.createdAt));
-    if (blocksMap.isEmpty) return;
-    blocksMap.forEach((key, json) {
-      _blockStore.seedMessage(key, MessageBlock.decodeList(json));
-    });
-    for (final message in list) {
-      if (message.ownerType == OwnerType.receiver &&
-          message.id != null &&
-          blocksMap.containsKey(chatMessageKey(message.createdAt))) {
-        _cardRows[message.createdAt] = message.id!;
-      }
-    }
-    _blockStore.commitSeed();
   }
 
   void _updateConversation() {
@@ -5658,6 +6322,11 @@ class _ConversationPageState extends State<ConversationPage>
         !_canStartAIRequest(showPrompt: true)) {
       return;
     }
+    if (!_taskMode && !resumeTask) {
+      _startOrdinary(userMessage.content,
+          retryUser: userMessage, oldReply: oldReply);
+      return;
+    }
     final resumeGeneration = resumeTask ? _agentTask?.generation : null;
     // 重生成/重试不采集旧轮次，不在重开或续跑时补扫。
     _personalMemoryTurn = null;
@@ -5893,10 +6562,24 @@ class _ConversationPageState extends State<ConversationPage>
     try {
       // 本次会话内新消息的内存模型可能没有数据库 id（id 为 null），
       // 此时按 createdAt 删除，避免 message.id! 空断言抛异常导致删除「不生效」。
-      final result = message.id != null
-          ? await messageDao.deleteMessage(message.id!)
-          : await messageDao.deleteMessageByCreatedAt(message.createdAt);
-      if (result > 0) {
+      final result = await _pageGenerationIdentity.stable(() async {
+        final result = message.id != null
+            ? await messageDao.deleteMessage(message.id!)
+            : await messageDao.deleteMessageByCreatedAt(message.createdAt);
+        if (result > 0 &&
+            _generationDao != null &&
+            widget.conversationModel.id != null) {
+          await _generationDao!.refreshSummary(_pageGenerationIdentity,
+              widget.conversationModel.cid, widget.conversationModel.id!);
+        }
+        return result;
+      });
+      if (result > 0 && mounted && _accountCurrent) {
+        _ordinaryRun?.removeListener(_scheduleOrdinarySync);
+        _ordinaryRun?.detachVisibleHost(_ordinaryHost);
+        _ordinaryRun = null;
+        _generationRows.remove(message.createdAt);
+        _cardRows.remove(message.createdAt);
         chatController.deleteMessage(message);
         _blockStore.removeMessage(chatMessageKey(message.createdAt));
         _notifyConversationListUpdate();

@@ -9,6 +9,7 @@ import 'package:chatgpt_app_core/dao/chat/chat_service.dart';
 class FakeComposerChat
     implements
         ChatService,
+        AttemptAwareChatService,
         OptionsAwareNonStreamingChatService,
         OptionsAwareChatService {
   int calls = 0;
@@ -31,13 +32,27 @@ class FakeComposerChat
       required List<Map<String, dynamic>> history,
       ChatAttachments? attachments,
       required ChatRequestOptions options}) async {
+    final messages = await options.resolveAttemptMessages([
+      ...history,
+      {'role': 'user', 'content': prompt}
+    ]);
     calls++;
     prompts.add(prompt);
-    histories.add(history);
+    histories.add(messages);
     requests.add(options);
     attachmentsReceived.add(attachments);
     if (fail) throw StateError('fake failure');
-    if (pending != null) return pending!.future;
+    if (pending != null) {
+      return Future.any([
+        pending!.future,
+        if (options.abortTrigger != null)
+          options.abortTrigger!.then<ChatCompletionResult>((_) =>
+              throw const ChatTransportException(
+                  safeCode: 'cancelled',
+                  safeMessage: '已取消',
+                  failureKind: ChatFailureKind.cancelled)),
+      ]);
+    }
     return ChatCompletionResult(
         content: content,
         promptTokens: 100,

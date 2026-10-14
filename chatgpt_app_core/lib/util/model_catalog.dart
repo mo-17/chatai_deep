@@ -1,5 +1,6 @@
 import 'package:chatgpt_app_core/chat/domain/model_capabilities.dart';
 import 'package:chatgpt_app_core/dao/ai_catalog_dao.dart';
+import 'package:flutter/foundation.dart';
 
 /// 常用模型清单，UI 下拉用。用户也可点「自定义」手填，
 /// 不在清单里的模型不会被拒绝——String 字段直传上游。
@@ -7,11 +8,49 @@ import 'package:chatgpt_app_core/dao/ai_catalog_dao.dart';
 /// 启动时优先读本地缓存（上次从后端拉取的清单），
 /// 异步拉取最新清单覆盖内存；失败/未登录则用硬编码兜底。
 class ModelCatalog {
+  /// 目录展示单独通知，不把缓存或加载状态当作执行许可。
+  static final displayChanges = ValueNotifier<int>(0);
+  static AiCatalogIdentity? _displayIdentity;
+  static CatalogDisplayStatus _displayStatus = CatalogDisplayStatus.initial;
+  static List<ModelOption> _displayModels = const [];
+  static bool _displayHasSnapshot = false;
+  static Future<void>? _inFlight;
+  static AiCatalogIdentity? _inFlightIdentity;
+
+  /// 普通运行的执行撤权通知；不改变模型能力的加法覆盖规则。
+  static final executionChanges = ValueNotifier<int>(0);
+  static AiCatalogIdentity? _executionIdentity;
+  static Set<String>? _executionModels;
+  static int _refreshRevision = 0;
+
+  /// 未取得当前身份目录时继续沿旧代理契约，由服务端核模型；UI 缓存不授予或撤销许可。
+  static bool backendProfileAvailable(String id, {required String account}) {
+    final identity = _executionIdentity;
+    return identity == null ||
+        !identity.current ||
+        identity.account != account ||
+        _executionModels == null ||
+        _executionModels!.contains(id);
+  }
+
+  @visibleForTesting
+  static void resetExecutionForTest() {
+    AiCatalogIdentity.resetForTest();
+    _executionIdentity = null;
+    _executionModels = null;
+    _refreshRevision++;
+    _displayIdentity = null;
+    _displayModels = const [];
+    _displayHasSnapshot = false;
+    _displayStatus = CatalogDisplayStatus.initial;
+    _inFlight = null;
+    _inFlightIdentity = null;
+  }
+
   // 硬编码兜底，永远不删
   static const _hardcodedOpenai = <ModelOption>[
     ModelOption('gpt-3.5-turbo', '便宜快，适合日常对话'),
-    ModelOption('gpt-4o-mini', '小模型，性价比高（推荐）',
-        supportsVision: true),
+    ModelOption('gpt-4o-mini', '小模型，性价比高（推荐）', supportsVision: true),
     ModelOption('gpt-4o', '主力模型，多模态', supportsVision: true),
     ModelOption('gpt-4-turbo', '上一代旗舰'),
     ModelOption('o1-mini', '推理模型（小）'),
@@ -48,6 +87,26 @@ class ModelCatalog {
       ..._deepseek.map((m) => m.withPrefix('🧠 DeepSeek · ')),
       ..._openai.map((m) => m.withPrefix('🤖 OpenAI · ')),
     ];
+  }
+
+  /// 仅设置页使用的当前身份快照；旧账号/地址数据不混入当前下拉。
+  static CatalogDisplaySnapshot get displaySnapshot {
+    final identity = _displayIdentity;
+    final current = AiCatalogIdentity.capture();
+    final fallback = [
+      ..._hardcodedDeepseek.map((m) => m.withPrefix('🧠 DeepSeek · ')),
+      ..._hardcodedOpenai.map((m) => m.withPrefix('🤖 OpenAI · ')),
+    ];
+    if (!current.authenticated) {
+      return CatalogDisplaySnapshot(
+          CatalogDisplayStatus.notAuthenticated, fallback, false);
+    }
+    if (identity == null || !identity.current) {
+      return CatalogDisplaySnapshot(
+          CatalogDisplayStatus.initial, fallback, false);
+    }
+    return CatalogDisplaySnapshot(_displayStatus,
+        _displayHasSnapshot ? _displayModels : fallback, _displayHasSnapshot);
   }
 
   /// 根据 id 查找 label，找不到返回 id 本身
@@ -103,19 +162,93 @@ class ModelCatalog {
     final data = AiCatalogDao.loadFromCache();
     if (data == null) return;
     applyRemote(data);
+    // 无账号/地址归属的旧缓存只供既有兼容用途，不能认作当前 UI 清单。
+    if (AiCatalogDao.loadFromCache(scopedOnly: true) == null) return;
+    _displayIdentity = AiCatalogIdentity.capture();
+    _displayModels = List.unmodifiable(_remoteAll);
+    _displayHasSnapshot = true;
+    _displayStatus = CatalogDisplayStatus.cached;
+    displayChanges.value++;
   }
 
-  /// 异步从后端拉取，失败不报错、不弹窗
-  static Future<void> refreshFromBackend() async {
-    final data = await AiCatalogDao.fetchRemote();
-    if (data == null) return;
+  /// 默认仍建立新 revision；页面可加入同身份在途 GET，避免重复请求。
+  static Future<void> refreshFromBackend({bool joinOngoing = false}) {
+    final identity = AiCatalogIdentity.capture();
+    final active = _inFlight;
+    if (joinOngoing &&
+        active != null &&
+        _inFlightIdentity?.sameAs(identity) == true &&
+        _inFlightIdentity!.current) {
+      return active;
+    }
+    final revision = ++_refreshRevision;
+    late final Future<void> task;
+    task = _refresh(identity, revision).whenComplete(() {
+      if (identical(_inFlight, task)) {
+        _inFlight = null;
+        _inFlightIdentity = null;
+      }
+    });
+    _inFlight = task;
+    _inFlightIdentity = identity;
+    return task;
+  }
+
+  static Future<void> _refresh(AiCatalogIdentity identity, int revision) async {
+    bool current() => identity.current && revision == _refreshRevision;
+    if (_displayIdentity?.sameAs(identity) != true) {
+      _displayModels = const [];
+      _displayHasSnapshot = false;
+    }
+    _displayIdentity = identity;
+    _displayStatus = CatalogDisplayStatus.loading;
+    displayChanges.value++;
+    final result = await AiCatalogDao.fetchRemoteResult(
+        identity: identity, stillCurrent: current);
+    if (!current()) return;
+    final data = result.data;
+    if (result.status != CatalogFetchStatus.success || data == null) {
+      _displayStatus = switch (result.status) {
+        CatalogFetchStatus.notAuthenticated =>
+          CatalogDisplayStatus.notAuthenticated,
+        CatalogFetchStatus.forbidden => CatalogDisplayStatus.forbidden,
+        CatalogFetchStatus.timeout => CatalogDisplayStatus.timeout,
+        CatalogFetchStatus.invalid => CatalogDisplayStatus.invalid,
+        _ => CatalogDisplayStatus.failed,
+      };
+      displayChanges.value++;
+      return;
+    }
+    final models = data['models'];
+    if (models is! List ||
+        models.any((m) => m is! Map || m['modelId'] is! String)) {
+      return;
+    }
     applyRemote(data);
+    if (!current()) return;
+    _executionIdentity = identity;
+    _executionModels = {for (final model in models) model['modelId'] as String};
+    executionChanges.value++;
+    if (!current()) return;
+    _displayModels = List.unmodifiable(_remoteAll);
+    _displayHasSnapshot = true;
+    _displayStatus = models.isEmpty
+        ? CatalogDisplayStatus.empty
+        : CatalogDisplayStatus.success;
+    displayChanges.value++;
   }
 
   // visibleForTesting
   static void applyRemote(Map<String, dynamic> data) {
     final models = data['models'] as List?;
-    if (models == null || models.isEmpty) return;
+    if (models == null) return;
+    if (models.isEmpty) {
+      // 明确成功取得空目录意味着后端没有可用模型；UI 本地兜底照旧，
+      // 但已有运行不能把它误认为网络失败并保留执行许可。
+      _remoteAll = const [];
+      _remoteLoaded = true;
+      return;
+    }
 
     // 按 providerCode 分组
     final openaiList = <ModelOption>[];
@@ -171,6 +304,49 @@ class ModelCatalog {
       _remoteAll = allList;
       _remoteLoaded = true;
     }
+  }
+}
+
+enum CatalogDisplayStatus {
+  initial,
+  cached,
+  loading,
+  success,
+  empty,
+  notAuthenticated,
+  forbidden,
+  timeout,
+  failed,
+  invalid,
+}
+
+class CatalogDisplaySnapshot {
+  final CatalogDisplayStatus status;
+  final List<ModelOption> options;
+  final bool hasSnapshot;
+  const CatalogDisplaySnapshot(this.status, this.options, this.hasSnapshot);
+  bool get loading => status == CatalogDisplayStatus.loading;
+  String get message {
+    final label = switch (status) {
+      CatalogDisplayStatus.initial => '尚未获取后端模型目录',
+      CatalogDisplayStatus.cached => '已缓存的模型清单，请刷新核对',
+      CatalogDisplayStatus.loading => '正在获取后端模型清单',
+      CatalogDisplayStatus.success => '清单来自后端',
+      CatalogDisplayStatus.empty => '服务器当前没有可用模型',
+      CatalogDisplayStatus.notAuthenticated => '请登录后获取后端模型目录',
+      CatalogDisplayStatus.forbidden => '服务器未开放模型目录，请联系管理员',
+      CatalogDisplayStatus.timeout => '获取模型目录超时，请重试',
+      CatalogDisplayStatus.failed => '获取模型目录失败，请重试',
+      CatalogDisplayStatus.invalid => '服务器模型目录格式无效，请重试',
+    };
+    if ([
+      CatalogDisplayStatus.success,
+      CatalogDisplayStatus.empty,
+      CatalogDisplayStatus.notAuthenticated
+    ].contains(status)) {
+      return label;
+    }
+    return '$label · ${hasSnapshot ? "当前显示上次清单" : "当前显示本地兜底清单"}';
   }
 }
 

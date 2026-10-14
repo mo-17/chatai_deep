@@ -1,4 +1,8 @@
 import 'dart:async';
+import 'dart:io';
+import 'dart:typed_data';
+import 'package:chatgpt_app_core/util/account_resource_scope.dart';
+import 'package:chatgpt_app_core/util/bounded_file_reader.dart';
 
 import 'package:chatgpt_app_core/chat/application/file_processor.dart';
 import 'package:chatgpt_app_core/chat/application/office_text_extractor.dart';
@@ -33,6 +37,65 @@ final class RetryAttachmentException implements Exception {
 final class RetryAttachmentRestorer {
   const RetryAttachmentRestorer();
 
+  /// 新路径必须属于捕获账号/独占 generation，旧平铺托管文件仅沿原行授权读取。
+  Future<Uint8List?> _readBoundAccountFile(
+      String? path, String account, Future<void> Function() checkpoint) async {
+    if (path == null || path.isEmpty) return null;
+    final rawRoot = ManagedAttachmentStore.rootDirectory.absolute;
+    if (await FileSystemEntity.type(rawRoot.path, followLinks: false) !=
+        FileSystemEntityType.directory) {
+      return null;
+    }
+    final root = Directory(await rawRoot.resolveSymbolicLinks());
+    var file = File(path).absolute;
+    final rawPrefix = '${rawRoot.path}${Platform.pathSeparator}';
+    if (file.path.startsWith(rawPrefix)) {
+      file = File('${root.path}/${file.path.substring(rawPrefix.length)}');
+    }
+    final prefix = '${root.path}${Platform.pathSeparator}';
+    if (!file.path.startsWith(prefix)) return null;
+    final segments =
+        file.path.substring(prefix.length).split(Platform.pathSeparator);
+    String? digest;
+    if (segments.length == 1) {
+      digest = RegExp(r'^([a-f0-9]{64})(?:\.[a-z0-9]{1,10})?$')
+          .firstMatch(segments.single)
+          ?.group(1);
+    } else if (segments.length == 6 &&
+        segments[0] == 'accounts' &&
+        segments[1] == AccountResourceScope.tokenFor(account) &&
+        segments[2] == 'generations' &&
+        RegExp(r'^[a-f0-9-]{36}$').hasMatch(segments[3]) &&
+        RegExp(r'^[a-f0-9]{64}$').hasMatch(segments[4])) {
+      digest = segments[4];
+    }
+    if (digest == null) return null;
+    try {
+      await AccountResourceScope.ensureNoLinks(
+          root: root, relativeSegments: segments);
+      await checkpoint();
+      final before = await file.stat();
+      if (before.type != FileSystemEntityType.file) return null;
+      final bytes = await readFileBytesBounded(file,
+          maxBytes: FileProcessor.defaultPdfLimit, label: '原 PDF');
+      await checkpoint();
+      await AccountResourceScope.ensureNoLinks(
+          root: root, relativeSegments: segments);
+      final after = await file.stat();
+      if (after.type != before.type ||
+          after.size != before.size ||
+          after.modified != before.modified ||
+          sha256.convert(bytes).toString() != digest) {
+        return null;
+      }
+      return bytes;
+    } on AttachmentProcessingCancelledException {
+      rethrow;
+    } catch (_) {
+      return null;
+    }
+  }
+
   Future<RestoredRetryAttachments> restore({
     required ChatAttachments persisted,
     required List<FileMetadata> files,
@@ -41,7 +104,12 @@ final class RetryAttachmentRestorer {
     ChatSendProgressCallback? onProgress,
     Future<void>? abortTrigger,
     bool Function()? isCancelled,
+    String? accountHash,
+    Future<void> Function()? beforeRead,
   }) async {
+    if ((accountHash == null) != (beforeRead == null)) {
+      throw ArgumentError('账号绑定恢复必须同时提供原运行校验');
+    }
     var aborted = false;
     if (abortTrigger != null) {
       unawaited(abortTrigger.then((_) => aborted = true,
@@ -92,8 +160,13 @@ final class RetryAttachmentRestorer {
       if (persisted.nativeFiles.any((part) => part.filename == file.name)) {
         continue;
       }
-      final bytes = await ManagedAttachmentStore.readManagedBytes(file.path,
-          maxBytes: FileProcessor.defaultPdfLimit);
+      await beforeRead?.call();
+      await checkpoint();
+      final bytes = accountHash == null
+          ? await ManagedAttachmentStore.readManagedBytes(file.path,
+              maxBytes: FileProcessor.defaultPdfLimit)
+          : await _readBoundAccountFile(file.path, accountHash, checkpoint);
+      await beforeRead?.call();
       await checkpoint();
       if (bytes == null || (file.size != null && file.size != bytes.length)) {
         throw RetryAttachmentException(

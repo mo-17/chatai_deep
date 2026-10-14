@@ -73,11 +73,14 @@ class DeepSeekAttachmentAdapter {
     List<Map<String, dynamic>> messages, {
     Future<void>? abortTrigger,
     ChatSendProgressCallback? onProgress,
+    Future<void> Function()? beforeUpload,
   }) async {
     _activePreparations++;
     try {
       final prepared = await _prepareMessages(messages,
-          abortTrigger: abortTrigger, onProgress: onProgress);
+          abortTrigger: abortTrigger,
+          onProgress: onProgress,
+          beforeUpload: beforeUpload);
       // 某一张图已处理完但请求仍在等待其他附件时，也要阻止使用被删除的 ID。
       for (final message in prepared) {
         final content = message['content'];
@@ -109,6 +112,7 @@ class DeepSeekAttachmentAdapter {
     List<Map<String, dynamic>> messages, {
     Future<void>? abortTrigger,
     ChatSendProgressCallback? onProgress,
+    Future<void> Function()? beforeUpload,
   }) async {
     var aborted = false;
     if (abortTrigger != null) {
@@ -140,6 +144,7 @@ class DeepSeekAttachmentAdapter {
               ? await _preparePart(
                   Map<String, dynamic>.from(part),
                   abortTrigger: abortTrigger,
+                  beforeUpload: beforeUpload,
                   onProgress: onProgress == null
                       ? null
                       : (progress) {
@@ -168,6 +173,7 @@ class DeepSeekAttachmentAdapter {
     Map<String, dynamic> part, {
     Future<void>? abortTrigger,
     ChatSendProgressCallback? onProgress,
+    Future<void> Function()? beforeUpload,
   }) async {
     String? dataUri;
     String? filename;
@@ -210,6 +216,7 @@ class DeepSeekAttachmentAdapter {
     final hash = sha256.convert(bytes).toString();
     var id = _uploaded.remove(hash);
     if (id == null) {
+      await beforeUpload?.call();
       final uploaded = await _files.uploadImageBytes(
         bytes,
         filename: filename,

@@ -1,5 +1,5 @@
 import 'dart:io' show Platform;
-import 'package:flutter/foundation.dart' show kIsWeb;
+import 'package:flutter/foundation.dart' show kIsWeb, ValueNotifier;
 import 'package:login_sdk/config/login_sdk_config.dart';
 
 /// 后端 host / scheme 配置。
@@ -17,6 +17,9 @@ import 'package:login_sdk/config/login_sdk_config.dart';
 class BackendConfig {
   BackendConfig._();
 
+  /// 地址改变必须通知应用级运行；没有设置页订阅者也能撤销旧客户端。
+  static final changes = ValueNotifier<int>(0);
+
   static const String _hostOverride =
       String.fromEnvironment('BACKEND_HOST', defaultValue: '');
   static const bool _httpsOverride =
@@ -33,7 +36,11 @@ class BackendConfig {
     return autoDetect();
   }
 
-  static set host(String value) => _hostExplicit = value;
+  static set host(String value) {
+    final changed = host != value;
+    _hostExplicit = value;
+    if (changed) changes.value++;
+  }
 
   /// 是否使用 https。
   static bool get useHttps {
@@ -43,7 +50,11 @@ class BackendConfig {
     return false;
   }
 
-  static set useHttps(bool value) => _useHttpsExplicit = value;
+  static set useHttps(bool value) {
+    final changed = useHttps != value;
+    _useHttpsExplicit = value;
+    if (changed) changes.value++;
+  }
 
   /// 统一构造请求 URI。所有 DAO 都该走这个方法，避免散落 `Uri.http/https`
   /// 造成线上无法切换。

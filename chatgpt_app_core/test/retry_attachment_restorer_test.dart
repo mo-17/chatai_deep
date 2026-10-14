@@ -1,6 +1,8 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
+import 'package:crypto/crypto.dart';
+import 'package:chatgpt_app_core/util/account_resource_scope.dart';
 
 import 'package:chatgpt_app_core/chat/application/file_processor.dart';
 import 'package:chatgpt_app_core/chat/application/retry_attachment_restorer.dart';
@@ -262,5 +264,118 @@ void main() {
         result.attachments.nativeFiles[1].filename);
     expect(result.attachments.nativeFiles[0].dataUri,
         isNot(result.attachments.nativeFiles[1].dataUri));
+  });
+  Future<FileMetadata> generationPdf(String account,
+      {bool corrupt = false}) async {
+    final document = PdfDocument();
+    document.pages.add().graphics.drawString(
+        'generation original', PdfStandardFont(PdfFontFamily.helvetica, 12));
+    final bytes = await document.save();
+    document.dispose();
+    final dir =
+        Directory('${ManagedAttachmentStore.rootDirectory.path}/accounts/'
+            '${AccountResourceScope.tokenFor(account)}/generations/'
+            '12345678-1234-4234-8234-123456789abc/${sha256.convert(bytes)}');
+    await dir.create(recursive: true);
+    final file = await File('${dir.path}/original.pdf')
+        .writeAsBytes(corrupt ? [...bytes, 0] : bytes);
+    return FileMetadata(
+        name: 'original.pdf',
+        path: file.path,
+        mime: 'application/pdf',
+        size: corrupt ? null : bytes.length);
+  }
+
+  test(
+      'captured account generation PDF uses parent digest and original filename',
+      () async {
+    final file = await generationPdf('a');
+    int guards = 0;
+    final result = await restorer.restore(
+        persisted: const ChatAttachments(),
+        files: [file],
+        capabilities: const ModelCapabilities(pdf: true),
+        accountHash: 'a',
+        beforeRead: () async {
+          guards++;
+        });
+    expect(result.attachments.nativeFiles.single.filename, 'original.pdf');
+    expect(guards, 2);
+    expect(
+        base64Decode(
+            result.attachments.nativeFiles.single.dataUri.split(',').last),
+        await File(file.path!).readAsBytes());
+  });
+  for (final which in [
+    'other-account',
+    'digest',
+    'symlink',
+    'unsafe-segment'
+  ]) {
+    test('bound retry rejects $which generation bytes', () async {
+      var file = await generationPdf(which == 'other-account' ? 'b' : 'a',
+          corrupt: which == 'digest');
+      if (which == 'symlink') {
+        final original = File(file.path!);
+        final target = File('${root.path}/external.pdf');
+        await original.copy(target.path);
+        await original.delete();
+        await Link(original.path).create(target.path);
+      }
+      if (which == 'unsafe-segment') {
+        file = FileMetadata(
+            name: file.name,
+            mime: file.mime,
+            path:
+                '${File(file.path!).parent.path}/../${File(file.path!).parent.uri.pathSegments.where((s) => s.isNotEmpty).last}/original.pdf');
+      }
+      await expectLater(
+          restorer.restore(
+              persisted: const ChatAttachments(),
+              files: [file],
+              capabilities: const ModelCapabilities(pdf: true),
+              accountHash: 'a',
+              beforeRead: () async {}),
+          throwsA(isA<RetryAttachmentException>()));
+    });
+  }
+  test('bound legacy digest path remains usable only with original run guard',
+      () async {
+    final file = await pdf('legacy');
+    int guards = 0;
+    final restored = await restorer.restore(
+        persisted: const ChatAttachments(),
+        files: [file],
+        capabilities: const ModelCapabilities(pdf: true),
+        accountHash: 'a',
+        beforeRead: () async {
+          guards++;
+        });
+    expect(restored.attachments.nativeFiles, hasLength(1));
+    expect(guards, 2);
+    await expectLater(
+        restorer.restore(
+            persisted: const ChatAttachments(),
+            files: [file],
+            capabilities: const ModelCapabilities(pdf: true),
+            accountHash: 'a'),
+        throwsArgumentError);
+  });
+  test(
+      'source revoked before or after PDF reading cannot return prepared bytes',
+      () async {
+    final file = await generationPdf('a');
+    int guards = 0;
+    await expectLater(
+        restorer.restore(
+            persisted: const ChatAttachments(),
+            files: [file],
+            capabilities: const ModelCapabilities(pdf: true),
+            accountHash: 'a',
+            beforeRead: () async {
+              if (++guards == 2) throw StateError('source revoked');
+            }),
+        throwsStateError);
+    expect(guards, 2);
   });
 }

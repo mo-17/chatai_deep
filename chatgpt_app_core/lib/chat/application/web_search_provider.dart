@@ -1,8 +1,10 @@
+import 'dart:async';
 import 'dart:convert';
 
 import 'package:chatgpt_app_core/chat/domain/message_block.dart';
 import 'package:chatgpt_app_core/model/ai_settings.dart';
 import 'package:http/http.dart' as http;
+import 'package:chatgpt_app_core/chat/domain/chat_request_options.dart';
 
 /// 联网搜索通用配置。对照源项目 `WebSearchState` 的三项：
 /// searchWithTime / maxResults / contentLimit，由「AI 服务设置」配置。
@@ -50,6 +52,40 @@ abstract class WebSearchProvider {
   /// 执行一次搜索。条数 / 正文截断取 [options]（maxResults / contentLimit）。
   Future<List<WebSearchResult>> search(String query);
 
+  static final _requestZone = Object();
+  Future<List<WebSearchResult>> searchWithOptions(String query,
+      {ChatRequestOptions? options}) {
+    if (options == null) return search(query);
+    return runZoned(() async {
+      await options.beforeAttachmentUpload?.call();
+      await _check(options);
+      final result = await _race(search(query), options);
+      await _check(options);
+      return result;
+    }, zoneValues: {_requestZone: options});
+  }
+
+  static Future<void> _check(ChatRequestOptions? options) async {
+    var aborted = false;
+    options?.abortTrigger?.then<void>((_) => aborted = true,
+        onError: (Object _, StackTrace __) => aborted = true);
+    await Future<void>.value();
+    if (aborted || options?.dispatchIsCurrent?.call() == false) _cancel();
+  }
+
+  static Never _cancel() => throw const ChatTransportException(
+      safeCode: 'cancelled',
+      safeMessage: '搜索已停止',
+      failureKind: ChatFailureKind.cancelled);
+  static Future<T> _race<T>(Future<T> work, ChatRequestOptions? options) =>
+      options?.abortTrigger == null
+          ? work
+          : Future.any([
+              work,
+              options!.abortTrigger!.then<T>((_) => _cancel(),
+                  onError: (Object _, StackTrace __) => _cancel())
+            ]);
+
   /// 工厂：按用户设置创建当前所选服务商；其 key 未配置时返回 null
   /// （调用方据此判断联网搜索是否可用，而不是抛异常）。
   static WebSearchProvider? fromSettings(AISettings s) {
@@ -84,19 +120,32 @@ abstract class WebSearchProvider {
     Map<String, dynamic> body, {
     required String providerName,
   }) async {
+    final request = Zone.current[_requestZone] as ChatRequestOptions?;
+    await request?.beforeAttachmentUpload?.call();
+    await _check(request);
     final client = clientFactory();
+    var closed = false;
+    request?.abortTrigger?.then<void>((_) {
+      if (!closed) client.close();
+    }, onError: (Object _, StackTrace __) {
+      if (!closed) client.close();
+    });
     try {
-      final response = await client
-          .post(uri,
-              headers: {'Content-Type': 'application/json', ...headers},
-              body: jsonEncode(body))
-          .timeout(const Duration(seconds: 15));
+      final response = await _race(
+          client
+              .post(uri,
+                  headers: {'Content-Type': 'application/json', ...headers},
+                  body: jsonEncode(body))
+              .timeout(const Duration(seconds: 15)),
+          request);
+      await _check(request);
       if (response.statusCode != 200) {
         throw Exception('$providerName 搜索失败(${response.statusCode})');
       }
       final text = const Utf8Decoder().convert(response.bodyBytes);
       return jsonDecode(text) as Map<String, dynamic>;
     } finally {
+      closed = true;
       client.close();
     }
   }
@@ -205,9 +254,9 @@ class BochaWebSearchProvider extends WebSearchProvider {
     if (json['code'] != 200) {
       throw Exception('Bocha 搜索失败：${json['msg']}');
     }
-    final raw = ((json['data'] as Map?)?['webPages'] as Map?)?['value']
-            as List? ??
-        const [];
+    final raw =
+        ((json['data'] as Map?)?['webPages'] as Map?)?['value'] as List? ??
+            const [];
     return [
       for (final e in raw.whereType<Map>())
         WebSearchResult(

@@ -30,8 +30,13 @@ class ToolLoopRunner {
 
   final ChatService chatService;
   final ToolRegistry registry;
+  final int toolRoundLimit;
 
-  ToolLoopRunner({required this.chatService, required this.registry});
+  ToolLoopRunner(
+      {required this.chatService,
+      required this.registry,
+      this.toolRoundLimit = maxRounds})
+      : assert(toolRoundLimit >= 0 && toolRoundLimit <= maxRounds);
 
   Stream<StreamEvent> run({
     required String prompt,
@@ -53,6 +58,8 @@ class ToolLoopRunner {
     /// 列表不会随下一轮追加变化；包含最终 assistant 的 reasoning_content。
     FutureOr<void> Function(List<Map<String, dynamic>> messages)?
         onProtocolMessages,
+    ChatRequestOptions? requestOptions,
+    Future<void> Function()? beforeToolAction,
     AgentTaskSession? task,
 
     /// 最终回答保存后执行客观验收；非空提示触发有限纠错。
@@ -114,7 +121,7 @@ class ToolLoopRunner {
     }
     // 首次失败后至多两个额外模型请求；不能用无工具轮盲目尝试修复文件。
     bool correctionBudgetAvailable(int nextRound) =>
-        nextRound < maxRounds &&
+        nextRound < toolRoundLimit &&
         (correctionStartRound == null || nextRound < correctionStartRound! + 2);
     Future<bool> verifyAndContinue(String answer, int round) async {
       if (verifyFinal == null) return false;
@@ -227,7 +234,8 @@ class ToolLoopRunner {
       // DeepSeek 思考模式工具调用要求逐轮原样回传 reasoning_content。
       final reasoningBuf = StringBuffer();
       // 最后一轮不带 tools：模型只能直接作答，回路必然终止。
-      final declarations = round < maxRounds ? registry.declarations : null;
+      final declarations =
+          round < toolRoundLimit ? registry.declarations : null;
       if (declarations == null &&
           verifyFinal != null &&
           !extraMessages.any((message) =>
@@ -254,7 +262,8 @@ class ToolLoopRunner {
           List.unmodifiable(extraMessages), declarations);
       final events = abortTrigger == null &&
               onProgress == null &&
-              messagesForAttempt == null
+              messagesForAttempt == null &&
+              requestOptions == null
           ? chatService.chatStreamEvents(
               prompt: prompt,
               history: roundHistory,
@@ -268,7 +277,7 @@ class ToolLoopRunner {
               attachments: attachments,
               tools: declarations,
               extraMessages: extraMessages,
-              options: ChatRequestOptions(
+              options: (requestOptions ?? const ChatRequestOptions()).copyWith(
                   abortTrigger: abortTrigger,
                   onProgress: onProgress,
                   messagesForAttempt: messagesForAttempt),
@@ -298,7 +307,7 @@ class ToolLoopRunner {
         break; // 模型不再调用工具，正文已输出完毕
       }
       // 硬性保护：已到无 tools 的收尾轮仍收到调用（上游异常），直接终止。
-      if (round >= maxRounds) break;
+      if (round >= toolRoundLimit) break;
 
       AILogger.log('tool round $round: ${calls.length} call(s)');
       extraMessages.add({
@@ -320,6 +329,8 @@ class ToolLoopRunner {
       await task?.checkpoint(extraMessages, round + 1,
           expectedGeneration: taskGeneration);
       for (final c in calls) {
+        ensureRunning();
+        await beforeToolAction?.call();
         ensureRunning();
         onProgress?.call(ChatSendProgress('执行工具', fileName: c.toolName));
         await task?.checkpoint(extraMessages, round + 1,

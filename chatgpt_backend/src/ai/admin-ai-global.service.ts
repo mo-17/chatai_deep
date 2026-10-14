@@ -7,6 +7,7 @@ import { AiGlobalConfig } from './ai-global-config.entity';
 import { AiProvider } from './ai-provider.entity';
 import { AiModel } from './ai-model.entity';
 import { resolveUploadsDir } from '../common/uploads-path';
+import { ProviderCacheService } from './provider-cache.service';
 
 @Injectable()
 export class AdminAiGlobalService {
@@ -17,6 +18,7 @@ export class AdminAiGlobalService {
     private readonly providerRepo: Repository<AiProvider>,
     @InjectRepository(AiModel)
     private readonly modelRepo: Repository<AiModel>,
+    private readonly providerCache: ProviderCacheService,
   ) {}
 
   async get() {
@@ -33,50 +35,54 @@ export class AdminAiGlobalService {
   }
 
   async update(body: Partial<AiGlobalConfig>) {
-    let config = await this.repo.findOne({ where: { id: 1 } });
-    if (!config) {
-      config = await this.repo.save({
-        id: 1,
-        defaultProviderCode: 'deepseek',
-        defaultModelId: 'deepseek-chat',
-        catalogPublic: true,
-      });
-    }
+    const config = await this.repo.findOne({ where: { id: 1 } });
+    // transform 后 DTO 可包含未提交的 undefined 字段，不能覆盖已有默认值。
+    const updates = Object.fromEntries(
+      Object.entries(body).filter(([, value]) => value !== undefined),
+    );
+    const candidate = this.repo.create({
+      id: 1,
+      defaultProviderCode: 'deepseek',
+      defaultModelId: 'deepseek-chat',
+      catalogPublic: true,
+      ...config,
+      ...updates,
+    });
 
-    if (body.defaultProviderCode) {
+    // 仅改默认字段时校验最终组合，目录公开等无关修改不受旧失效默认阻断。
+    if (
+      body.defaultProviderCode !== undefined ||
+      body.defaultModelId !== undefined
+    ) {
+      const code = candidate.defaultProviderCode;
+      const modelId = candidate.defaultModelId;
+      if (
+        typeof code !== 'string' ||
+        !code.trim() ||
+        typeof modelId !== 'string' ||
+        !modelId.trim()
+      ) {
+        throw new BadRequestException('默认服务商和模型不能为空');
+      }
       const provider = await this.providerRepo.findOne({
-        where: { code: body.defaultProviderCode, enabled: true },
+        where: { code, enabled: true },
       });
       if (!provider) {
-        throw new BadRequestException(
-          `服务商 ${body.defaultProviderCode} 不存在或已停用`,
-        );
+        throw new BadRequestException(`服务商 ${code} 不存在或已停用`);
       }
-    }
-
-    if (body.defaultModelId) {
-      const code = body.defaultProviderCode || config.defaultProviderCode;
       const model = await this.modelRepo.findOne({
-        where: { modelId: body.defaultModelId, enabled: true },
+        where: { providerId: provider.id, modelId, enabled: true },
       });
       if (!model) {
         throw new BadRequestException(
-          `模型 ${body.defaultModelId} 不存在或已停用`,
-        );
-      }
-      // 验证该模型所属的 provider 匹配
-      const provider = await this.providerRepo.findOne({
-        where: { id: model.providerId },
-      });
-      if (provider && provider.code !== code) {
-        throw new BadRequestException(
-          `模型 ${body.defaultModelId} 不属于服务商 ${code}`,
+          `服务商 ${code} 下的模型 ${modelId} 不存在或已停用`,
         );
       }
     }
 
-    Object.assign(config, body);
-    return this.repo.save(config);
+    const saved = await this.repo.save(candidate);
+    this.providerCache.invalidate();
+    return saved;
   }
 
   async uploadAvatar(base64: string): Promise<{ avatarUrl: string }> {

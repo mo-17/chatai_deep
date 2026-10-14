@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 import 'dart:typed_data';
+import 'package:chatgpt_app_core/chat/application/tool_execution_scope.dart';
 
 import 'package:chatgpt_app_core/util/public_network_address_policy.dart';
 import 'package:http/http.dart' as http;
@@ -22,12 +23,14 @@ class SafeUrlFetcher {
   static const int maxBodyBytes = 256 * 1024;
   static const Duration timeout = Duration(seconds: 15);
 
+  final ToolExecutionScope? executionScope;
   final HostResolver _resolver;
   final http.Client? _testClient;
   final PinnedSocketStarter _socketStarter;
   final SecurityContext? _securityContext;
 
   SafeUrlFetcher({
+    this.executionScope,
     HostResolver? resolver,
     http.Client? testClient,
     PinnedSocketStarter? socketStarter,
@@ -41,17 +44,24 @@ class SafeUrlFetcher {
     final deadline = DateTime.now().add(timeout);
     var uri = initialUri.replace(fragment: '');
     for (var redirects = 0; redirects <= maxRedirects; redirects++) {
-      final destination = await _validateAndResolve(uri, deadline);
+      final resolving = _validateAndResolve(uri, deadline);
+      final destination = executionScope == null
+          ? await resolving
+          : await executionScope!.wait(resolving);
+      await executionScope?.beforeRequest();
+      executionScope?.verify();
       final ownsClient = _testClient == null;
       final client = _testClient ?? _pinnedClient(destination);
       try {
-        final request = http.Request('GET', uri)
+        final request = http.AbortableRequest('GET', uri,
+            abortTrigger: executionScope?.abortTrigger)
           ..followRedirects = false
           ..maxRedirects = 0
           ..headers['accept'] =
               'text/html,application/xhtml+xml,text/plain,application/json;q=0.8';
+        executionScope?.verifyRequest();
         final response =
-            await client.send(request).timeout(_remaining(deadline));
+            await _wait(client.send(request).timeout(_remaining(deadline)));
 
         if (_isRedirect(response.statusCode)) {
           if (redirects == maxRedirects) {
@@ -80,7 +90,7 @@ class SafeUrlFetcher {
         try {
           while (true) {
             final remaining = _remaining(deadline);
-            if (!await chunks.moveNext().timeout(remaining)) break;
+            if (!await _wait(chunks.moveNext().timeout(remaining))) break;
             final chunk = chunks.current;
             total += chunk.length;
             if (total > maxBodyBytes) {
@@ -98,6 +108,9 @@ class SafeUrlFetcher {
     }
     throw const SafeUrlFetchException('重定向次数过多');
   }
+
+  Future<T> _wait<T>(Future<T> value) =>
+      executionScope == null ? value : executionScope!.wait(value);
 
   Future<_ResolvedDestination> _validateAndResolve(
     Uri uri,

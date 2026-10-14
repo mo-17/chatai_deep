@@ -228,9 +228,9 @@ class _LoginPageState extends State<LoginPage> {
         purpose: 'login',
       );
     } catch (e) {
-      setState(() => _error = e.toString());
+      if (mounted) setState(() => _error = e.toString());
     } finally {
-      setState(() => _loading = false);
+      if (mounted) setState(() => _loading = false);
     }
   }
 
@@ -244,7 +244,7 @@ class _LoginPageState extends State<LoginPage> {
       setState(() => _error = '请输入邮箱地址或手机号');
       return;
     }
-    if (_code.length < 4) {
+    if (_code.length != 6) {
       setState(() => _error = '请输入验证码');
       return;
     }
@@ -801,6 +801,7 @@ class _LoginPageState extends State<LoginPage> {
         ] else ...[
           VerificationCodeInput(
             onCompleted: _onCodeCompleted,
+            onChanged: (c) => _code = c.length == 6 ? c : '',
             onSendCode: _handleSendCode,
             theme: inputsTheme,
           ),

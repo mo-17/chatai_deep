@@ -1,4 +1,5 @@
 import 'dart:convert';
+import 'package:chatgpt_app_core/chat/application/tool_execution_scope.dart';
 
 import 'package:http/http.dart' as http;
 
@@ -22,6 +23,7 @@ class DirectMcpClient {
   static const _protocolVersion = '2025-06-18';
   static const _clientInfo = {'name': 'chatai-flutter-mcp', 'version': '1.0.0'};
 
+  final ToolExecutionScope? executionScope;
   final String url;
   final Map<String, String> headers;
   final Duration timeout;
@@ -40,11 +42,13 @@ class DirectMcpClient {
 
   DirectMcpClient({
     required this.url,
+    this.executionScope,
     this.headers = const {},
     this.timeout = const Duration(seconds: 30),
     http.Client? client,
+    bool closeInjectedClient = false,
   })  : _client = client ?? http.Client(),
-        _ownClient = client == null;
+        _ownClient = client == null || closeInjectedClient;
 
   /// 用完释放底层连接（仅当未注入外部 client 时）。
   void close() {
@@ -151,19 +155,24 @@ class DirectMcpClient {
       'method': method,
       if (params != null) 'params': params,
     };
-    final resp = await _client
-        .post(
-          Uri.parse(url),
-          headers: {
-            'content-type': 'application/json',
-            'accept': 'application/json, text/event-stream',
-            'mcp-protocol-version': _protocolVersion,
-            if (_sessionId != null) 'mcp-session-id': _sessionId!,
-            ...headers,
-          },
-          body: jsonEncode(body),
-        )
-        .timeout(timeout);
+    await executionScope?.beforeRequest();
+    executionScope?.verify();
+    final request = http.AbortableRequest('POST', Uri.parse(url),
+        abortTrigger: executionScope?.abortTrigger)
+      ..headers.addAll({
+        'content-type': 'application/json',
+        'accept': 'application/json, text/event-stream',
+        'mcp-protocol-version': _protocolVersion,
+        if (_sessionId != null) 'mcp-session-id': _sessionId!,
+        ...headers,
+      })
+      ..body = jsonEncode(body);
+    executionScope?.verifyRequest();
+    final response = _client.send(request).then(http.Response.fromStream);
+    final resp = executionScope == null
+        ? await response.timeout(timeout)
+        : await executionScope!.wait(response.timeout(timeout));
+    executionScope?.verify();
 
     final sid = resp.headers['mcp-session-id'];
     if (sid != null && sid.isNotEmpty) _sessionId = sid;

@@ -2,6 +2,10 @@ export interface AuthenticatedPrincipal {
   userId: number;
   userName: string;
   role: string;
+  /** 本次已验证 JWT 的版本，锁后复核时不得用新用户值补签。 */
+  tokenVersion: number;
+  /** 已验证 JWT 有 exp 时保留其原截止；旧无 exp 令牌仍沿普通认证兼容。 */
+  expiresAt?: number;
 }
 
 /**

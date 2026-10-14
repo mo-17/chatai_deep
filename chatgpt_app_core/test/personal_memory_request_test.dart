@@ -61,7 +61,14 @@ class PayloadChat extends FakeComposerChat {
         prompt: prompt,
         history: history,
         attachments: attachments,
-        options: options);
+        // 与真实Direct/Backend一样，工具协议先进入static messages，
+        // 然后由每次dispatch的动态记忆resolver重新预算；不能丢掉extraMessages。
+        options: options.copyWith(messagesForAttempt: (prepared) async {
+          final messages = [...prepared, ...extraMessages];
+          return options.messagesForAttempt == null
+              ? messages
+              : await options.messagesForAttempt!(messages);
+        }));
     if (firstTool && calls == 1) {
       yield StreamEvent.toolCall(
           toolId: 'fixture-call', name: 'fixture', arguments: const {});
