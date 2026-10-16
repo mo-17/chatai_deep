@@ -38,15 +38,19 @@ class AssistantManagementSession {
   Future<AssistantModel> save(
     AssistantModel source, {
     Future<void> Function(AssistantModel)? override,
+    bool Function()? additionallyCurrent,
   }) async {
-    scope.verify();
+    final saveScope = additionallyCurrent == null
+        ? scope
+        : scope.forPage(additionallyCurrent);
+    saveScope.verify();
     final copy = AssistantModel.fromJson(source.toJson());
     if (override != null) {
       await override(copy);
-      scope.verify();
+      saveScope.verify();
       return copy;
     }
-    final result = await AssistantCardPersistence(dao: dao!, scope: scope)
+    final result = await AssistantCardPersistence(dao: dao!, scope: saveScope)
         .save(copy, expected: snapshot);
     snapshot = result.committed.snapshot;
     return result.committed.assistant;
@@ -71,6 +75,7 @@ void acceptSavedAssistant(AssistantModel target, AssistantModel saved) {
     ..defaultVoiceStyle = saved.defaultVoiceStyle
     ..providerId = saved.providerId
     ..model = saved.model
+    ..backendSelection = saved.backendSelection
     ..useTools = saved.useTools
     ..toolIds = saved.toolIds == null ? null : [...saved.toolIds!]
     ..createdAt = saved.createdAt

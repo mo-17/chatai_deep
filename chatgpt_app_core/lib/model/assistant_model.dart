@@ -1,3 +1,4 @@
+import 'package:chatgpt_app_core/chat/domain/backend_selection.dart';
 import 'dart:convert';
 
 import 'package:chatgpt_app_core/chat/application/assistant_example_dialogs.dart';
@@ -58,6 +59,9 @@ class AssistantModel {
   /// 当前生效路径上的模型（见 [applyTo]），能力位随之重算。
   String model;
 
+  /// 独立的后端覆盖；NULL legacy，不改本地模型引用。
+  BackendSelection? backendSelection;
+
   /// 是否允许工具调用（阶段六 ToolLoopRunner 路径）的**总开关**。关闭后一律无
   /// 工具，联网搜索回落阶段五意图编排，与「模型不支持工具」同一条路。
   bool useTools;
@@ -87,6 +91,7 @@ class AssistantModel {
     this.defaultVoiceStyle = '',
     this.providerId = '',
     this.model = '',
+    this.backendSelection,
     this.useTools = true,
     this.toolIds,
     this.createdAt = 0,
@@ -110,6 +115,8 @@ class AssistantModel {
         defaultVoiceStyle: json['defaultVoiceStyle'] as String? ?? '',
         providerId: json['providerId'] as String? ?? '',
         model: json['model'] as String? ?? '',
+        backendSelection:
+            BackendSelection.fromStorage(json['backendSelection']),
         useTools: (json['useTools'] as int? ?? 1) != 0,
         toolIds: _decodeToolIds(json['tools']),
         createdAt: json['createdAt'] as int? ?? 0,
@@ -147,6 +154,7 @@ class AssistantModel {
         'defaultVoiceStyle': defaultVoiceStyle,
         'providerId': providerId,
         'model': model,
+        'backendSelection': backendSelection?.toSqlValue(),
         'useTools': useTools ? 1 : 0,
         // null 保持 null（旧语义）；非 null（含空列表）编码为 JSON 文本。
         'tools': toolIds == null ? null : jsonEncode(toolIds),
@@ -163,8 +171,8 @@ class AssistantModel {
   /// `ChatService.capabilitiesFor(applyTo(s))` 即得到覆盖后的能力位
   /// （effectiveModel 的派生路径见 [AISettings.effectiveModel]）。
   AISettings applyTo(AISettings s) {
-    final pid = providerId.trim();
-    final m = model.trim();
+    final pid = providerId;
+    final m = model;
     if (pid.isEmpty && m.isEmpty) return s;
 
     final next = s.clone();
@@ -175,13 +183,10 @@ class AssistantModel {
     }
 
     if (pid.isNotEmpty) {
-      final hasProvider = next.providers.any((p) => p.id == pid && p.enabled);
-      if (hasProvider) {
-        next.activeProviderId = pid;
-      }
+      next.activeProviderId = pid;
     }
     if (m.isNotEmpty) {
-      next.setActiveModel(m);
+      next.setLocalModelOverride(m);
     }
     return next;
   }

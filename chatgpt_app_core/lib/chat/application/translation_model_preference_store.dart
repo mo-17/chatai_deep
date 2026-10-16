@@ -73,23 +73,44 @@ final class TranslationModelPreferenceStore {
   TranslationModelPreference read(String accountHash) {
     final key = keyFor(accountHash);
     return _visiblePreferences.putIfAbsent(key, () {
+      Object? decoded;
+      Object? raw;
       try {
-        final raw = _storage.read(key);
-        if (raw is! String) return _fallback;
-        final decoded = jsonDecode(raw);
-        if (decoded is! Map) return _fallback;
+        raw = _storage.read(key);
+        if (raw is! String) return _shapeFailure(raw, raw);
+        decoded = jsonDecode(raw);
+        if (decoded is! Map) return _shapeFailure(decoded, raw);
         return TranslationModelPreference.fromJson(
           decoded.cast<String, dynamic>(),
         );
       } catch (_) {
-        return _fallback;
+        return _shapeFailure(decoded, raw);
       }
     });
+  }
+
+  static TranslationModelPreference _shapeFailure(
+          Object? decoded, Object? raw) =>
+      _declaresModern(decoded) || _declaresModern(raw)
+          ? const TranslationModelPreference.unavailable()
+          : _fallback;
+
+  static bool _declaresModern(Object? value) {
+    if (value is Map) {
+      return value.containsKey('version') ||
+          value.containsKey('backendSelection') ||
+          value.values.any(_declaresModern);
+    }
+    if (value is Iterable) return value.any(_declaresModern);
+    return value is String &&
+        (const {'version', 'backendSelection'}.contains(value) ||
+            RegExp(r'"(?:version|backendSelection)"\s*:').hasMatch(value));
   }
 
   Future<void> save(
     TranslationModelPreference preference, {
     required String expectedAccountHash,
+    bool Function()? isOriginalSessionCurrent,
   }) {
     final key = keyFor(expectedAccountHash);
     final previous = _saveTails[key];
@@ -104,6 +125,7 @@ final class TranslationModelPreferenceStore {
               preference,
               expectedAccountHash: expectedAccountHash,
               key: key,
+              isOriginalSessionCurrent: isOriginalSessionCurrent,
             ))
         .whenComplete(() {
       if (identical(_saveTails[key], saving)) _saveTails.remove(key);
@@ -116,7 +138,9 @@ final class TranslationModelPreferenceStore {
     TranslationModelPreference preference, {
     required String expectedAccountHash,
     required String key,
+    bool Function()? isOriginalSessionCurrent,
   }) async {
+    _verifySession(isOriginalSessionCurrent);
     _ensureCurrentAccount(expectedAccountHash);
     // 直接构造器允许 const；落盘前通过公共 JSON 契约做完整字段校验。
     final validated = TranslationModelPreference.fromJson(preference.toJson());
@@ -135,6 +159,7 @@ final class TranslationModelPreferenceStore {
         throw StateError('翻译模型偏好未能持久化');
       }
       _ensureCurrentAccount(expectedAccountHash);
+      _verifySession(isOriginalSessionCurrent);
     } catch (error, stackTrace) {
       _visiblePreferences[key] = previousVisible;
       final restored = await _restoreRaw(key, previousRaw);
@@ -148,6 +173,16 @@ final class TranslationModelPreferenceStore {
     }
 
     _visiblePreferences[key] = validated;
+  }
+
+  void _verifySession(bool Function()? guard) {
+    var current = true;
+    try {
+      current = guard?.call() ?? true;
+    } catch (_) {
+      current = false;
+    }
+    if (!current) throw StateError('翻译设置原会话已变化，拒绝保存旧选择');
   }
 
   void _ensureCurrentAccount(String expectedAccountHash) {

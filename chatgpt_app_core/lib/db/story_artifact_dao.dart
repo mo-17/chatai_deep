@@ -35,7 +35,9 @@ class StoryArtifactDao implements ITable {
     return StoryArtifactDao._(storage);
   }
 
-  Future<int> saveArtifact(StoryArtifactModel model) async {
+  Future<int> saveArtifact(StoryArtifactModel model,
+      {void Function()? validate}) async {
+    if (validate != null) return _saveGeneratedArtifact(model, validate);
     final now = DateTime.now().millisecondsSinceEpoch;
     model.updatedAt = now;
     if (model.id == null) {
@@ -76,6 +78,49 @@ class StoryArtifactDao implements ITable {
       );
     });
     return model.id!;
+  }
+
+  Future<int> _saveGeneratedArtifact(
+      StoryArtifactModel model, void Function() validate) async {
+    final candidate = StoryArtifactModel.fromJson(model.toJson());
+    final now = DateTime.now().millisecondsSinceEpoch;
+    candidate.updatedAt = now;
+    final id = await storage.db.transaction((txn) async {
+      validate();
+      if (candidate.id == null) {
+        candidate.createdAt = now;
+        final id =
+            await txn.insert(tableName, candidate.toJson()..remove('id'));
+        validate();
+        return id;
+      }
+      final rows =
+          await txn.query(tableName, where: 'id=?', whereArgs: [candidate.id]);
+      validate();
+      if (rows.isEmpty) throw StateError('原创作资料已删除');
+      final previous = StoryArtifactModel.fromJson(rows.single);
+      if (previous.title != candidate.title ||
+          previous.content != candidate.content ||
+          previous.status != candidate.status) {
+        await txn.insert(revisionTable, {
+          'artifactId': candidate.id,
+          'title': previous.title,
+          'content': previous.content,
+          'status': previous.status,
+          'createdAt': now
+        });
+        validate();
+      }
+      await txn.update(tableName, candidate.toJson()..remove('id'),
+          where: 'id=?', whereArgs: [candidate.id]);
+      validate();
+      return candidate.id!;
+    });
+    model
+      ..id = id
+      ..createdAt = candidate.createdAt
+      ..updatedAt = candidate.updatedAt;
+    return id;
   }
 
   Future<List<StoryArtifactModel>> getArtifacts(

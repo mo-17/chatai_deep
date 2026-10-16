@@ -1,3 +1,6 @@
+import 'package:chatgpt_app_core/widget/direct_translation_recovery.dart';
+import 'package:chatgpt_app_core/chat/application/translation_retry_policy.dart';
+import 'package:chatgpt_app_core/chat/application/translation_selection_session.dart';
 import 'package:chatgpt_app_core/backup/backup_service.dart';
 import 'package:chatgpt_app_core/chat/application/assistant_operation_scope.dart';
 import 'package:chatgpt_app_core/chat/application/assistant_card_persistence.dart';
@@ -1075,9 +1078,12 @@ class _AssistantListPageState extends State<AssistantListPage> {
             }
             _roleCardImportCoordinator.start(
               plans: importPlans,
-              options: options.withTranslationProfile(handoff.profile),
+              options: options.withTranslationProfile(handoff.profile,
+                  session: handoff.preparedSession),
               settings: handoff.snapshot.settings,
-              scope: scope,
+              scope: handoff.preparedSession == null
+                  ? scope
+                  : scope.forPage(() => handoff.preparedSession!.isCurrent),
             );
           },
         );
@@ -1085,6 +1091,7 @@ class _AssistantListPageState extends State<AssistantListPage> {
         unawaited(_saveTranslationPreferenceAfterStart(
           accepted.selection.result.preference,
           accepted.handoff.snapshot.accountHash,
+          session: accepted.handoff.preparedSession,
         ));
         return;
       }
@@ -1139,6 +1146,7 @@ class _AssistantListPageState extends State<AssistantListPage> {
             sourceTitle: sourceTitle,
             initialOpening: initialOpening,
             requestProfile: handoff.profile,
+            preparedSession: handoff.preparedSession,
             checkEligibility: checkEligibility,
             resolveExecutor:
                 _translationExecutorResolver(handoff.snapshot.settings),
@@ -1151,6 +1159,9 @@ class _AssistantListPageState extends State<AssistantListPage> {
         await TranslationModelPreferenceStore().save(
           accepted.selection.result.preference,
           expectedAccountHash: accepted.handoff.snapshot.accountHash,
+          isOriginalSessionCurrent: accepted.handoff.preparedSession == null
+              ? null
+              : () => accepted.handoff.preparedSession!.isCurrent,
         );
       } catch (_) {
         if (mounted) {
@@ -1227,13 +1238,14 @@ class _AssistantListPageState extends State<AssistantListPage> {
   }
 
   Future<void> _saveTranslationPreferenceAfterStart(
-    TranslationModelPreference preference,
-    String accountHash,
-  ) async {
+      TranslationModelPreference preference, String accountHash,
+      {TranslationSelectionSession? session}) async {
     try {
       await TranslationModelPreferenceStore().save(
         preference,
         expectedAccountHash: accountHash,
+        isOriginalSessionCurrent:
+            session == null ? null : () => session.isCurrent,
       );
     } catch (_) {
       if (mounted) HiDialog.showSnackBar(context, '导入已开始，但翻译模型偏好未能保存');
@@ -1724,6 +1736,11 @@ class _AssistantListPageState extends State<AssistantListPage> {
   Future<void> _showTavernTranslationRecovery(
     StoryTemplateTranslationTaskModel task,
   ) async {
+    if (await showDirectTranslationRecovery(context, task,
+        _tavernTranslationCoordinator, _translationExecutorResolver)) {
+      return;
+    }
+    if (!mounted) return;
     final action = await showModalBottomSheet<String>(
       context: context,
       showDragHandle: true,
@@ -1782,6 +1799,10 @@ class _AssistantListPageState extends State<AssistantListPage> {
       return;
     }
     if (action == 'retry') {
+      if (!_canUseOriginalTranslationProfile(task)) {
+        HiDialog.showSnackBar(context, '原任务的后端服务商无法确认，请保留记录并重新发起翻译');
+        return;
+      }
       final settings = context.read<AISettingsProvider>().settings.clone();
       final environment = TranslationEligibilityEnvironment.current();
       const evaluator = TranslationModelEligibilityEvaluator();
@@ -1800,47 +1821,7 @@ class _AssistantListPageState extends State<AssistantListPage> {
       );
       return;
     }
-    final estimatedRunes = _translationWorkEstimator
-            .tryTotalRunesForTaskSource(task.sourcePayload) ??
-        0;
-    final selected = await _selectTranslationProfile(
-      estimatedRunes: estimatedRunes,
-      title: '更换翻译模型',
-      initialValue: _preferenceFromTask(task),
-    );
-    if (selected == null || !mounted) return;
-    try {
-      final accepted = await runAssistantTranslationPreflightStart(
-        initialValue: selected.result.preference,
-        initialSelection: selected,
-        select: (nextInitial) => _selectTranslationProfile(
-          estimatedRunes: estimatedRunes,
-          title: '更换翻译模型',
-          initialValue: nextInitial,
-        ),
-        probeService: TranslationModelProbeService.shared,
-        onConfigurationChanged: () {
-          if (mounted) HiDialog.showSnackBar(context, '翻译配置已变化，请重新确认');
-        },
-        start: (handoff, checkEligibility) =>
-            _tavernTranslationCoordinator.retry(
-          task,
-          replacementProfile: handoff.profile,
-          checkEligibility: checkEligibility,
-          resolveExecutor:
-              _translationExecutorResolver(handoff.snapshot.settings),
-        ),
-      );
-      if (accepted == null || !mounted) return;
-      await _saveTranslationPreferenceAfterStart(
-        accepted.selection.result.preference,
-        accepted.handoff.snapshot.accountHash,
-      );
-    } on TranslationModelUnavailableException catch (error) {
-      if (mounted) HiDialog.showSnackBar(context, '更换翻译模型失败：${error.message}');
-    } catch (error) {
-      if (mounted) HiDialog.showSnackBar(context, '更换翻译模型失败：$error');
-    }
+    HiDialog.showSnackBar(context, '更换模型需要重新发起翻译，原任务与成果已保留');
   }
 
   TranslationModelPreference? _preferenceFromTask(
@@ -1858,11 +1839,24 @@ class _AssistantListPageState extends State<AssistantListPage> {
             : TranslationModelPreferenceMode.backend,
         providerId: profile.providerId,
         modelId: profile.modelId,
+        backendSelection: profile.backendSelection,
         reasoningPolicy: profile.reasoningPolicy,
       );
     } catch (_) {
       return null;
     }
+  }
+
+  bool _canUseOriginalTranslationProfile(
+      StoryTemplateTranslationTaskModel task) {
+    final preference = _preferenceFromTask(task);
+    if (preference == null) return false;
+    if (preference.mode == TranslationModelPreferenceMode.local) return true;
+    final identity = AiCatalogIdentity.capture();
+    return preference.backendSelection?.matchesScope(
+            accountHash: identity.account ?? '',
+            origin: identity.endpoint.origin) ==
+        true;
   }
 
   bool _canCancelTavernTranslationTask(
@@ -2594,6 +2588,7 @@ class _RoleCardImportCoordinator extends ChangeNotifier {
         incoming,
         settings,
         profile: profile,
+        session: options.selectionSession,
         scope: scope,
         onProgress: onProgress,
       );
@@ -2643,24 +2638,34 @@ class _RoleCardImportCoordinator extends ChangeNotifier {
     AssistantModel assistant,
     AISettings settings, {
     required TranslationRequestProfile profile,
+    TranslationSelectionSession? session,
     required AssistantOperationScope scope,
     RoleCardTranslationProgressCallback? onProgress,
   }) async {
-    final executor = TranslationStreamExecutor(
-      service:
-          ChatService.from(TranslationModelResolver.apply(settings, profile)),
-      profile: profile,
-    );
+    if (profile.mode == TranslationExecutionMode.backend && session == null) {
+      throw const TranslationModelUnavailableException('请重新确认后端服务商与模型');
+    }
+    session?.verify();
+    final executor = session?.executor ??
+        TranslationStreamExecutor(
+          service: ChatService.from(
+              TranslationModelResolver.apply(settings, profile)),
+          profile: profile,
+        );
     final cancellation = TranslationCancellationController();
     try {
       return await AssistantRoleCardTranslationService
           .translateToSimplifiedChinese(
         assistant,
+        retryPolicy: TranslationRetryPolicy(
+            allowAutomaticRecovery: executor.allowsAutomaticRecovery),
         complete: (prompt) async {
           scope.verify();
+          session?.verify();
           final result =
               await executor.complete(prompt, cancellation: cancellation);
           scope.verify();
+          session?.verify();
           return result;
         },
         onProgress: onProgress,
@@ -3023,6 +3028,7 @@ class _RoleCardImportOptions {
   final bool keepDefaultVoice;
   final bool translateToSimplifiedChinese;
   final TranslationRequestProfile? translationProfile;
+  final TranslationSelectionSession? selectionSession;
   final _RoleCardImportConflictMode conflictMode;
 
   const _RoleCardImportOptions({
@@ -3031,18 +3037,20 @@ class _RoleCardImportOptions {
     required this.keepDefaultVoice,
     this.translateToSimplifiedChinese = false,
     this.translationProfile,
+    this.selectionSession,
     this.conflictMode = _RoleCardImportConflictMode.rename,
   });
 
   _RoleCardImportOptions withTranslationProfile(
-    TranslationRequestProfile profile,
-  ) =>
+          TranslationRequestProfile profile,
+          {TranslationSelectionSession? session}) =>
       _RoleCardImportOptions(
         keepTools: keepTools,
         keepModelOverride: keepModelOverride,
         keepDefaultVoice: keepDefaultVoice,
         translateToSimplifiedChinese: true,
         translationProfile: profile,
+        selectionSession: session,
         conflictMode: conflictMode,
       );
 }

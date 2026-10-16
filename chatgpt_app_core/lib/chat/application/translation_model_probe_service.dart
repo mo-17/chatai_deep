@@ -1,3 +1,6 @@
+import 'package:chatgpt_app_core/backup/backup_service.dart';
+import 'package:chatgpt_app_core/dao/ai_catalog_dao.dart';
+import 'package:chatgpt_app_core/chat/domain/backend_selection_error.dart';
 import 'dart:async';
 
 import 'package:chatgpt_app_core/ai_readiness/ai_health_state_guard.dart';
@@ -33,13 +36,27 @@ final class TranslationModelProbeIdentity {
   final String fingerprint;
   final TranslationModelProbeCacheToken cacheToken;
   final AIProviderHealthConfiguration? _localProviderConfiguration;
+  final AiCatalogIdentity? _backendIdentity;
+  final int? _restoreTick, _restoreRevision;
 
   TranslationModelProbeIdentity({
     required this.accountHash,
     required this.fingerprint,
     required this.cacheToken,
     AIProviderHealthConfiguration? localProviderConfiguration,
-  }) : _localProviderConfiguration = localProviderConfiguration;
+    AiCatalogIdentity? backendIdentity,
+    int? restoreTick,
+    int? restoreRevision,
+  })  : _localProviderConfiguration = localProviderConfiguration,
+        _backendIdentity = backendIdentity,
+        _restoreTick = restoreTick,
+        _restoreRevision = restoreRevision;
+
+  bool get _backendCurrent =>
+      _backendIdentity == null ||
+      _backendIdentity!.current &&
+          _restoreTick == BackupService.restoreTick.value &&
+          _restoreRevision == BackupService.agentExecutionRevision;
 }
 
 abstract interface class TranslationModelProbeHandle {
@@ -133,6 +150,13 @@ final class TranslationModelProbeService
     required AISettings settings,
     required TranslationRequestProfile profile,
   }) {
+    if (profile.backendSelection != null &&
+        profile.backendSelection!.accountHash != accountHash) {
+      throw const TranslationModelUnavailableException(
+        '翻译预检账号与原模型选择不匹配',
+        safeCode: 'invalid_backend_selection',
+      );
+    }
     final applied = TranslationModelResolver.apply(settings, profile);
     final isLocal = profile.mode == TranslationExecutionMode.local;
     final localProvider = isLocal ? applied.activeProvider : null;
@@ -146,6 +170,14 @@ final class TranslationModelProbeService
         accountHash: accountHash,
         providerId: localProvider?.id,
       ),
+      backendIdentity:
+          profile.backendSelection == null ? null : AiCatalogIdentity.capture(),
+      restoreTick: profile.backendSelection == null
+          ? null
+          : BackupService.restoreTick.value,
+      restoreRevision: profile.backendSelection == null
+          ? null
+          : BackupService.agentExecutionRevision,
       localProviderConfiguration: localProvider == null
           ? null
           : AIProviderHealthConfiguration.capture(localProvider),
@@ -160,6 +192,7 @@ final class TranslationModelProbeService
     required TranslationRequestProfile profile,
   }) {
     try {
+      if (!identity._backendCurrent) return false;
       final current = identify(
         accountHash: accountHash,
         settings: settings,
@@ -283,7 +316,13 @@ final class TranslationModelProbeService
     required AISettings settings,
     required TranslationRequestProfile profile,
   }) {
-    if (existing.accountHash != current.accountHash ||
+    if (!existing._backendCurrent ||
+        !current._backendCurrent ||
+        (existing._backendIdentity != null &&
+            (current._backendIdentity == null ||
+                !existing._backendIdentity!
+                    .sameAs(current._backendIdentity!))) ||
+        existing.accountHash != current.accountHash ||
         existing.fingerprint != current.fingerprint ||
         !existing.cacheToken.sameAs(current.cacheToken)) {
       return false;
@@ -321,6 +360,10 @@ final class TranslationModelProbeService
         },
       );
       stopwatch.start();
+      if (initialProfile.backendSelection != null) {
+        effectiveProfile =
+            await executor.prepare(cancellation: flight.cancellation);
+      }
       final output = await executor.complete(
         translationProbePrompt,
         cancellation: flight.cancellation,
@@ -349,7 +392,9 @@ final class TranslationModelProbeService
           checkedAt: _now(),
           firstEventMs: firstEventMs,
           totalMs: stopwatch.elapsedMilliseconds,
-          safeErrorCode: probeSafeCode(failure.kind),
+          safeErrorCode: isBackendSelectionError(failure.safeCode)
+              ? failure.safeCode
+              : probeSafeCode(failure.kind),
           reasoningControlSuppressed:
               effectiveProfile.reasoningControlSuppressed,
         );
@@ -386,16 +431,21 @@ final class TranslationModelProbeService
     final completedRecord = record;
     if (completedRecord == null || flight.subscribers.isEmpty) return;
 
-    final canPersist = flight.subscribers.any(
-      (subscriber) => _guardIsCurrent(subscriber.guard),
-    );
-    if (canPersist) {
+    bool canPersist() =>
+        flight.identity._backendCurrent &&
+        flight.subscribers.any(
+          (subscriber) => _guardIsCurrent(subscriber.guard),
+        );
+    if (canPersist()) {
       try {
         await _cache.put(
           completedRecord,
           expectedAccountHash: flight.identity.accountHash,
           providerId: flight.identity._localProviderConfiguration?.providerId,
           expectedToken: flight.identity.cacheToken,
+          // 仅现代后端有原账号/登录代次/origin/restore标签；旧本地终态约定不变。
+          isIdentityCurrent:
+              flight.identity._backendIdentity == null ? null : canPersist,
         );
       } catch (_) {
         // 缓存不可用不能把已脱敏的 provider 探测结果改写成另一种失败。
@@ -405,7 +455,17 @@ final class TranslationModelProbeService
     if (flight.subscribers.isEmpty) return;
     final result = TranslationModelProbeResult(record: completedRecord);
     for (final subscriber in flight.subscribers.toList()) {
-      subscriber.complete(result);
+      if (!flight.identity._backendCurrent) {
+        subscriber.completeError(const TranslationRequestFailure(
+          kind: TranslationFailureKind.invalidRequest,
+          safeCode: 'backend_scope_changed',
+        ));
+      } else if (flight.identity._backendIdentity != null &&
+          !_guardIsCurrent(subscriber.guard)) {
+        subscriber.completeError(_cancelledProbeFailure);
+      } else {
+        subscriber.complete(result);
+      }
     }
     flight.subscribers.clear();
   }

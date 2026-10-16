@@ -7,6 +7,9 @@ import 'package:chatgpt_app_core/ai_readiness/ai_readiness_resolver.dart';
 import 'package:chatgpt_app_core/db/hi_db_manager.dart';
 import 'package:chatgpt_app_core/model/ai_settings.dart';
 import 'package:flutter/foundation.dart';
+import 'package:chatgpt_app_core/dao/ai_catalog_dao.dart';
+import 'package:chatgpt_app_core/util/model_catalog.dart';
+import 'package:login_sdk/dao/backend_host.dart';
 
 typedef AIReadinessStorageOpener = Future<HiDBManager> Function(
   String accountHash,
@@ -45,6 +48,9 @@ final class AIReadinessProvider extends ChangeNotifier {
     AIReadinessStorageOpener? storageOpener,
     AIReadinessEvidenceReader? evidenceReader,
   }) : _onboardingStore = onboardingStore ?? AIOnboardingStore() {
+    ModelCatalog.executionChanges.addListener(_refreshDerived);
+    AiCatalogIdentity.changes.addListener(_refreshDerived);
+    BackendConfig.changes.addListener(_refreshDerived);
     final loader = evidenceLoader ?? AIOnboardingEvidenceLoader();
     final openStorage = storageOpener ?? _defaultOpenStorage;
     _evidenceReader = evidenceReader ??
@@ -53,14 +59,27 @@ final class AIReadinessProvider extends ChangeNotifier {
           required AISettings settings,
           HiDBManager? storage,
         }) async {
-          final accountStorage =
-              storage ?? await openStorage(accountHash);
+          final accountStorage = storage ?? await openStorage(accountHash);
           return loader.load(
             accountHash: accountHash,
             storage: accountStorage,
             settings: settings,
           );
         };
+  }
+
+  AIReadyState _resolve() => resolveAIReadiness(
+      settings: _settings,
+      isGuest: _isGuest,
+      accountHash: _accountHash,
+      origin: BackendConfig.buildUri('/uapi/ai/catalog').origin);
+
+  void _refreshDerived() {
+    if (_disposed || !_initialized) return;
+    final next = _resolve();
+    if (next == _state) return;
+    _state = next;
+    notifyListeners();
   }
 
   static Future<HiDBManager> _defaultOpenStorage(String accountHash) =>
@@ -71,8 +90,7 @@ final class AIReadinessProvider extends ChangeNotifier {
   bool get initialized => _initialized;
 
   bool get showProactiveCard {
-    if (!_initialized ||
-        _onboardingStatus != AIOnboardingStatus.unseen) {
+    if (!_initialized || _onboardingStatus != AIOnboardingStatus.unseen) {
       return false;
     }
     return switch (_state.status) {
@@ -116,7 +134,7 @@ final class AIReadinessProvider extends ChangeNotifier {
     }
 
     if (!_initialized || (!settingsChanged && !guestChanged)) return;
-    final next = resolveAIReadiness(settings: _settings, isGuest: _isGuest);
+    final next = _resolve();
     if (next == _state) return;
     _state = next;
     notifyListeners();
@@ -163,7 +181,7 @@ final class AIReadinessProvider extends ChangeNotifier {
       if (!_isCurrent(epoch, accountHash)) return;
 
       _onboardingStatus = status;
-      _state = resolveAIReadiness(settings: _settings, isGuest: _isGuest);
+      _state = _resolve();
       _initialized = true;
       notifyListeners();
     } catch (_) {
@@ -179,16 +197,14 @@ final class AIReadinessProvider extends ChangeNotifier {
       );
 
   Future<void> dismiss() async {
-    if (!_initialized ||
-        _onboardingStatus != AIOnboardingStatus.unseen) {
+    if (!_initialized || _onboardingStatus != AIOnboardingStatus.unseen) {
       return;
     }
     await _saveOnboardingStatus(AIOnboardingStatus.dismissed);
   }
 
   Future<void> markCompleted() async {
-    if (!_initialized ||
-        _onboardingStatus == AIOnboardingStatus.completed) {
+    if (!_initialized || _onboardingStatus == AIOnboardingStatus.completed) {
       return;
     }
     await _saveOnboardingStatus(AIOnboardingStatus.completed);
@@ -220,6 +236,9 @@ final class AIReadinessProvider extends ChangeNotifier {
 
   @override
   void dispose() {
+    ModelCatalog.executionChanges.removeListener(_refreshDerived);
+    AiCatalogIdentity.changes.removeListener(_refreshDerived);
+    BackendConfig.changes.removeListener(_refreshDerived);
     _disposed = true;
     _epoch++;
     super.dispose();

@@ -1,3 +1,14 @@
+import 'package:chatgpt_app_core/chat/application/direct_failure_recovery.dart';
+import 'package:chatgpt_app_core/chat/application/conversation_generation_scope.dart';
+import 'package:chatgpt_app_core/widget/direct_failure_dialog.dart';
+import 'package:chatgpt_app_core/backup/backup_service.dart';
+import 'package:chatgpt_app_core/chat/application/story_backend_generation_snapshot.dart';
+import 'package:chatgpt_app_core/chat/domain/backend_selection.dart';
+import 'package:chatgpt_app_core/chat/domain/backend_usage_identity.dart';
+import 'package:chatgpt_app_core/chat/domain/chat_request_options.dart';
+import 'package:chatgpt_app_core/chat/domain/model_capabilities.dart';
+import 'package:chatgpt_app_core/dao/ai_catalog_dao.dart';
+import 'package:chatgpt_app_core/widget/backend_selection_picker.dart';
 import 'package:chatgpt_app_core/chat/application/story_role_card_context.dart';
 import 'dart:async';
 import 'dart:convert';
@@ -82,7 +93,41 @@ class _StoryRoomPageState extends State<StoryRoomPage> {
   bool _loading = true;
   bool _savingWebSearch = false;
   late final String _accountHashAtOpen;
+  late final AiCatalogIdentity _backendPageIdentity;
+  late final int _backendPageRestore;
+  late final int _backendPageAgentRevision;
+  StoryBackendGenerationSnapshot? _backendGeneration;
+  bool get _backendPageCurrent =>
+      mounted &&
+      _roomAccountCurrent &&
+      _backendPageIdentity.current &&
+      BackupService.restoreTick.value == _backendPageRestore &&
+      BackupService.agentExecutionRevision == _backendPageAgentRevision;
+  void _verifyBackendPage() {
+    if (!_backendPageCurrent) throw const BackendSelectionEditorExpired();
+  }
+
+  StoryBackendGenerationSnapshot _captureBackend(AISettings global) {
+    _verifyBackendPage();
+    final run = StoryBackendGenerationSnapshot(
+      global: global,
+      room: widget.room,
+      participants: _participants,
+      isCurrent: () =>
+          mounted &&
+          !_stopRequested &&
+          _roomAccountCurrent &&
+          _backendPageIdentity.current &&
+          BackupService.restoreTick.value == _backendPageRestore &&
+          BackupService.agentExecutionRevision == _backendPageAgentRevision,
+    );
+    _backendGeneration = run;
+    return run;
+  }
+
   bool _sending = false;
+  int _directRunRevision = 0;
+  Future<void> Function()? _pendingDirectRecovery;
   bool _stopRequested = false;
   bool _presetTransferBusy = false;
   StreamSubscription<StreamEvent>? _activeReplySub;
@@ -114,7 +159,15 @@ class _StoryRoomPageState extends State<StoryRoomPage> {
   void initState() {
     super.initState();
     _accountHashAtOpen = HiDBManager.getAccountHash();
-    _toolRunner = widget.toolRunner ?? StoryRoomToolRunner();
+    _backendPageIdentity = AiCatalogIdentity.capture();
+    _backendPageRestore = BackupService.restoreTick.value;
+    _backendPageAgentRevision = BackupService.agentExecutionRevision;
+    _toolRunner = widget.toolRunner ??
+        StoryRoomToolRunner(openStorage: () async {
+          final storage =
+              await HiDBManager.instance(dbName: _accountHashAtOpen);
+          return storage;
+        });
     _readAloudController = StoryRoomReadAloudController(
       service: widget.readAloudService,
     )..addListener(_onReadAloudChanged);
@@ -128,7 +181,20 @@ class _StoryRoomPageState extends State<StoryRoomPage> {
 
   @override
   void dispose() {
-    unawaited(_activeReplySub?.cancel());
+    _backendGeneration?.retire();
+    if (_backendGeneration != null &&
+        _activeReplyDone != null &&
+        !_activeReplyDone!.isCompleted) {
+      _activeReplyDone!.complete();
+    }
+    final active = _activeReplySub;
+    if (active != null) {
+      if (_backendGeneration != null) {
+        unawaited(_cancelBackendStream(active));
+      } else {
+        unawaited(active.cancel());
+      }
+    }
     _readAloudController
       ..removeListener(_onReadAloudChanged)
       ..dispose();
@@ -137,12 +203,25 @@ class _StoryRoomPageState extends State<StoryRoomPage> {
     super.dispose();
   }
 
+  Future<void> _cancelBackendStream(StreamSubscription<StreamEvent> sub) async {
+    try {
+      await sub.cancel();
+    } catch (error) {
+      if (error is ChatTransportException && error.safeCode == 'cancelled') {
+        return;
+      }
+      if (mounted) HiDialog.showSnackBar(context, '停止请求时发生错误，请核对生成状态');
+    }
+  }
+
   void _onReadAloudChanged() {
     if (mounted) setState(() {});
   }
 
   Future<void> _load() async {
-    if (!_roomAccountCurrent) return;
+    final backend =
+        context.read<AISettingsProvider>().settings.mode == AIMode.backend;
+    if (!_roomAccountCurrent || (backend && !_backendPageCurrent)) return;
     final db = await HiDBManager.instance(dbName: _accountHashAtOpen);
     final dao = await StoryRoomDao.create(db);
     final usageRecordService = UsageRecordService(await UsageDao.create(db));
@@ -169,7 +248,9 @@ class _StoryRoomPageState extends State<StoryRoomPage> {
       messages,
       room?.regexScriptsJson ?? widget.room.regexScriptsJson,
     );
-    if (!mounted || !_roomAccountCurrent) return;
+    if (!mounted || !_roomAccountCurrent || (backend && !_backendPageCurrent)) {
+      return;
+    }
     setState(() {
       if (room != null) {
         _applyRoomSnapshot(room);
@@ -263,6 +344,7 @@ class _StoryRoomPageState extends State<StoryRoomPage> {
       ..webSearchEnabled = room.webSearchEnabled
       ..modelProviderId = room.modelProviderId
       ..modelId = room.modelId
+      ..backendSelection = room.backendSelection
       ..temperature = room.temperature
       ..topP = room.topP
       ..maxOutputTokens = room.maxOutputTokens
@@ -1546,6 +1628,9 @@ class _StoryRoomPageState extends State<StoryRoomPage> {
   }
 
   Future<void> _regenerateMessage(StoryMessageModel message) async {
+    if (_sending) return;
+    final global = context.read<AISettingsProvider>().settings.clone();
+    StoryBackendGenerationSnapshot? backendRun;
     final speaker = _participantById(message.speakerId);
     if (speaker == null) {
       HiDialog.showSnackBar(context, '原角色已移出或暂停，无法重新生成');
@@ -1559,51 +1644,92 @@ class _StoryRoomPageState extends State<StoryRoomPage> {
       return;
     }
     final restoreKey = widget.room.activeMessageKey;
-    await dao.activateMessage(roomId, parentKey);
-    await _reloadMessages();
-    if (!mounted) return;
-    final userMessage =
-        _messages.reversed.cast<StoryMessageModel?>().firstWhere(
-              (item) => item?.isUser == true,
-              orElse: () => null,
-            );
-    if (userMessage == null) {
-      if (mounted) HiDialog.showSnackBar(context, '找不到触发这条回复的用户消息');
-      if (restoreKey?.isNotEmpty == true) {
-        await dao.activateMessage(roomId, restoreKey!);
-        await _reloadMessages();
+    setState(() {
+      _sending = true;
+      _stopRequested = false;
+    });
+    try {
+      if (global.mode == AIMode.backend) {
+        backendRun = _captureBackend(global);
+        await backendRun.prepareParticipant(speaker);
       }
-      return;
+
+      await dao.activateMessage(roomId, parentKey,
+          validate: backendRun?.verify);
+      await _reloadMessages();
+      if (!mounted) return;
+      final userMessage =
+          _messages.reversed.cast<StoryMessageModel?>().firstWhere(
+                (item) => item?.isUser == true,
+                orElse: () => null,
+              );
+      if (userMessage == null) {
+        if (mounted) HiDialog.showSnackBar(context, '找不到触发这条回复的用户消息');
+        if (restoreKey?.isNotEmpty == true) {
+          await dao.activateMessage(roomId, restoreKey!,
+              validate: backendRun?.verify);
+          await _reloadMessages();
+        }
+        return;
+      }
+      if (!mounted) return;
+      final input = userMessage.content;
+      final history = _messages.last.nodeKey == userMessage.nodeKey
+          ? _messages.sublist(0, _messages.length - 1)
+          : List<StoryMessageModel>.from(_messages);
+      final settings = backendRun == null
+          ? _effectiveSettings(global)
+          : (await backendRun.prepareParticipant(speaker)).settings;
+      final attachmentBundle = await StoryRoomAttachmentService.prepare(
+        imagePaths: userMessage.imagePaths,
+        filePaths: userMessage.filePaths,
+        capabilities: ChatService.capabilitiesFor(settings),
+        limits: settings.attachmentProcessingLimits,
+        fallbackContext: userMessage.attachmentContext,
+        reuseExtractedContext: true,
+      );
+      final reply = await _runSingleSpeakerGeneration(
+        input: input,
+        speaker: speaker,
+        historyMessages: history,
+        attachmentBundle: attachmentBundle,
+        candidateGroupKey: message.candidateGroupKey,
+        backendRun: backendRun,
+        alreadyLocked: true,
+      );
+      if (reply == null && restoreKey?.isNotEmpty == true) {
+        await dao.activateMessage(roomId, restoreKey!,
+            validate: backendRun?.verify);
+      }
+      await _reloadMessages();
+    } catch (error) {
+      if (mounted && _roomAccountCurrent) {
+        HiDialog.showSnackBar(
+            context,
+            backendRun == null
+                ? '请求未完成，请核对原配置'
+                : error is ChatTransportException
+                    ? error.safeMessage
+                    : '生成失败，请检查模型配置并重试');
+      }
+    } finally {
+      backendRun?.retire();
+      if (identical(_backendGeneration, backendRun)) _backendGeneration = null;
+      if (mounted) {
+        setState(() {
+          _sending = false;
+          _generationStatus = '';
+          _stopRequested = false;
+        });
+      }
     }
-    if (!mounted) return;
-    final input = userMessage.content;
-    final history = _messages.last.nodeKey == userMessage.nodeKey
-        ? _messages.sublist(0, _messages.length - 1)
-        : List<StoryMessageModel>.from(_messages);
-    final settings =
-        _effectiveSettings(context.read<AISettingsProvider>().settings);
-    final attachmentBundle = await StoryRoomAttachmentService.prepare(
-      imagePaths: userMessage.imagePaths,
-      filePaths: userMessage.filePaths,
-      capabilities: ChatService.capabilitiesFor(settings),
-      limits: settings.attachmentProcessingLimits,
-      fallbackContext: userMessage.attachmentContext,
-      reuseExtractedContext: true,
-    );
-    final reply = await _runSingleSpeakerGeneration(
-      input: input,
-      speaker: speaker,
-      historyMessages: history,
-      attachmentBundle: attachmentBundle,
-      candidateGroupKey: message.candidateGroupKey,
-    );
-    if (reply == null && restoreKey?.isNotEmpty == true) {
-      await dao.activateMessage(roomId, restoreKey!);
-    }
-    await _reloadMessages();
+    await _showPendingDirectRecovery();
   }
 
   Future<void> _continueMessage(StoryMessageModel message) async {
+    if (_sending) return;
+    final global = context.read<AISettingsProvider>().settings.clone();
+    StoryBackendGenerationSnapshot? backendRun;
     final speaker = _participantById(message.speakerId);
     if (speaker == null) {
       HiDialog.showSnackBar(context, '原角色已移出或暂停，无法继续生成');
@@ -1613,17 +1739,53 @@ class _StoryRoomPageState extends State<StoryRoomPage> {
     final roomId = widget.room.id;
     if (dao == null || roomId == null || message.nodeKey.trim().isEmpty) return;
     final restoreKey = widget.room.activeMessageKey;
-    await dao.activateMessage(roomId, message.nodeKey);
-    await _reloadMessages();
-    final reply = await _runSingleSpeakerGeneration(
-      input: '请从上一段中断处继续，保持相同语气和场景，不要重复已经生成的内容。',
-      speaker: speaker,
-      historyMessages: List<StoryMessageModel>.from(_messages),
-    );
-    if (reply == null && restoreKey?.isNotEmpty == true) {
-      await dao.activateMessage(roomId, restoreKey!);
+    setState(() {
+      _sending = true;
+      _stopRequested = false;
+    });
+    try {
+      if (global.mode == AIMode.backend) {
+        backendRun = _captureBackend(global);
+        await backendRun.prepareParticipant(speaker);
+      }
+
+      await dao.activateMessage(roomId, message.nodeKey,
+          validate: backendRun?.verify);
+      await _reloadMessages();
+      final reply = await _runSingleSpeakerGeneration(
+        backendRun: backendRun,
+        alreadyLocked: true,
+        input: '请从上一段中断处继续，保持相同语气和场景，不要重复已经生成的内容。',
+        speaker: speaker,
+        historyMessages: List<StoryMessageModel>.from(_messages),
+      );
+      if (reply == null && restoreKey?.isNotEmpty == true) {
+        await dao.activateMessage(roomId, restoreKey!,
+            validate: backendRun?.verify);
+      }
+      await _reloadMessages();
+    } catch (error) {
+      if (mounted && _roomAccountCurrent) {
+        HiDialog.showSnackBar(
+            context,
+            backendRun == null
+                ? '请求未完成，请核对原配置'
+                : error is ChatTransportException
+                    ? error.safeMessage
+                    : '生成失败，请检查模型配置并重试');
+      }
+    } finally {
+      backendRun?.retire();
+      if (identical(_backendGeneration, backendRun)) _backendGeneration = null;
+      if (mounted) {
+        setState(() {
+          _sending = false;
+          _generationStatus = '';
+          _stopRequested = false;
+        });
+      }
     }
-    await _reloadMessages();
+    await _showPendingDirectRecovery();
   }
 
   StoryParticipantModel? _participantById(int? id) {
@@ -1633,20 +1795,74 @@ class _StoryRoomPageState extends State<StoryRoomPage> {
     return null;
   }
 
+  Future<void> _showPendingDirectRecovery() async {
+    final offer = _pendingDirectRecovery;
+    _pendingDirectRecovery = null;
+    if (offer != null && mounted && !_sending) {
+      await offer();
+    }
+  }
+
+  Future<void> _offerDirectRoomRecovery(
+      Object error,
+      AISettings original,
+      ConversationGenerationScope scope,
+      Future<void> Function(AISettings, DirectRetryPermit) replay,
+      {ModelCapabilities requiredInput =
+          const ModelCapabilities.none()}) async {
+    final revision = _directRunRevision;
+    final declaration =
+        jsonEncode(widget.room.toJson()..remove('activeMessageKey'));
+    final actors = jsonEncode(_participants.map((p) => p.toJson()).toList());
+    final recovery = DirectFailureRecovery(
+        original: original,
+        scope: scope,
+        currentSettings: () => context.read<AISettingsProvider>().settings,
+        sourceCurrent: () =>
+            mounted &&
+            _roomAccountCurrent &&
+            _backendPageIdentity.current &&
+            _directRunRevision == revision &&
+            jsonEncode(widget.room.toJson()..remove('activeMessageKey')) ==
+                declaration &&
+            jsonEncode(_participants.map((p) => p.toJson()).toList()) == actors,
+        requiredInput: requiredInput,
+        mayHaveBeenProcessed: true,
+        failureCode:
+            error is ChatTransportException ? error.safeCode : 'unknown');
+    final permit = await showDirectFailureDialog(context, recovery);
+    if (permit?.current == true) {
+      final selected = permit!.claim();
+      if (selected != null) {
+        await replay(selected, permit);
+      }
+    }
+  }
+
   Future<StoryMessageModel?> _runSingleSpeakerGeneration({
     required String input,
     required StoryParticipantModel speaker,
     required List<StoryMessageModel> historyMessages,
     StoryRoomAttachmentBundle? attachmentBundle,
     String? candidateGroupKey,
+    StoryBackendGenerationSnapshot? backendRun,
+    bool alreadyLocked = false,
+    AISettings? localOverride,
+    DirectRetryPermit? directPermit,
+    String? fixedPrompt,
+    List<Map<String, dynamic>>? fixedHistory,
   }) async {
     final dao = _dao;
-    if (dao == null || _sending) return null;
+    if (dao == null || (_sending && !alreadyLocked) || _stopRequested) {
+      return null;
+    }
+    directPermit?.verify();
+    if (directPermit == null) _directRunRevision++;
     final settings =
         _effectiveSettings(context.read<AISettingsProvider>().settings);
     setState(() {
       _sending = true;
-      _stopRequested = false;
+      if (!alreadyLocked) _stopRequested = false;
       _generationStatus = '${speaker.name} 正在发言...';
     });
     StoryMessageModel? reply;
@@ -1659,17 +1875,28 @@ class _StoryRoomPageState extends State<StoryRoomPage> {
         historyMessages: historyMessages,
         attachmentBundle: attachmentBundle,
         candidateGroupKey: candidateGroupKey,
+        backendRun: backendRun,
+        localOverride: localOverride,
+        directPermit: directPermit,
+        fixedPrompt: fixedPrompt,
+        fixedHistory: fixedHistory,
       );
     } catch (e) {
-      if (mounted) HiDialog.showSnackBar(context, '生成失败：$e');
-    } finally {
       if (mounted) {
+        HiDialog.showSnackBar(context,
+            e is ChatTransportException ? e.safeMessage : '请求未完成，请核对原配置');
+      }
+    } finally {
+      if (mounted && !alreadyLocked) {
         setState(() {
           _sending = false;
           _generationStatus = '';
           _stopRequested = false;
         });
       }
+    }
+    if (!alreadyLocked) {
+      await _showPendingDirectRecovery();
     }
     return reply;
   }
@@ -1680,8 +1907,10 @@ class _StoryRoomPageState extends State<StoryRoomPage> {
     final action = await showModalBottomSheet<String>(
       context: context,
       showDragHandle: true,
+      isScrollControlled: true,
       builder: (ctx) => SafeArea(
-        child: Column(
+        child: SingleChildScrollView(
+            child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
             ListTile(
@@ -1771,7 +2000,7 @@ class _StoryRoomPageState extends State<StoryRoomPage> {
               onTap: () => Navigator.pop(ctx, 'delete'),
             ),
           ],
-        ),
+        )),
       ),
     );
     if (!mounted || action == null) return;
@@ -1830,6 +2059,20 @@ class _StoryRoomPageState extends State<StoryRoomPage> {
 
   Future<void> _editParticipant(StoryParticipantModel participant) async {
     final global = context.read<AISettingsProvider>().settings;
+    final backend = global.mode == AIMode.backend;
+    BackendSelection? editedSelection;
+    StoryBackendSelectionSnapshot? original;
+    if (backend) {
+      try {
+        _verifyBackendPage();
+        original = await _dao!.participantBackendSnapshot(participant,
+            validate: _verifyBackendPage);
+        _verifyBackendPage();
+      } catch (_) {
+        if (mounted) HiDialog.showSnackBar(context, '原编辑环境已变化，请重新打开');
+        return;
+      }
+    }
     final nameController = TextEditingController(text: participant.name);
     final promptController = TextEditingController(text: participant.prompt);
     final modelController =
@@ -1844,7 +2087,7 @@ class _StoryRoomPageState extends State<StoryRoomPage> {
       text: participant.maxOutputTokens?.toString() ?? '',
     );
     final userVoiceModels = await UserSherpaOnnxTtsModelStore().listModels();
-    if (!mounted) {
+    if (!mounted || (backend && !_backendPageCurrent)) {
       nameController.dispose();
       promptController.dispose();
       modelController.dispose();
@@ -1915,14 +2158,43 @@ class _StoryRoomPageState extends State<StoryRoomPage> {
                   ),
                 ],
                 const SizedBox(height: 12),
-                TextField(
-                  controller: modelController,
-                  decoration: InputDecoration(
-                    labelText: '角色模型覆盖',
-                    hintText: '留空跟随房间设置',
-                    border: storyInputBorder(ctx),
+                if (backend)
+                  ListTile(
+                    key: const ValueKey('story_participant_backend_selection'),
+                    title: const Text('后端服务商与模型'),
+                    subtitle: Text(backendSelectionLabel(
+                        editedSelection ?? participant.backendSelection,
+                        legacyModelId: participant.modelId,
+                        followLabel: '跟随房间')),
+                    onTap: () async {
+                      try {
+                        _verifyBackendPage();
+                        final selected = await pickBackendSelection(ctx,
+                            identity: _backendPageIdentity,
+                            selected:
+                                editedSelection ?? participant.backendSelection,
+                            legacyModelId: participant.modelId,
+                            followLabel: '跟随房间');
+                        _verifyBackendPage();
+                        if (ctx.mounted && selected != null) {
+                          setDialogState(() => editedSelection = selected);
+                        }
+                      } catch (_) {
+                        if (ctx.mounted) {
+                          HiDialog.showSnackBar(ctx, '原编辑环境已变化，请重新打开');
+                        }
+                      }
+                    },
+                  )
+                else
+                  TextField(
+                    controller: modelController,
+                    decoration: InputDecoration(
+                      labelText: '角色模型覆盖',
+                      hintText: '留空跟随房间设置',
+                      border: storyInputBorder(ctx),
+                    ),
                   ),
-                ),
                 const SizedBox(height: 12),
                 TextField(
                   controller: temperatureController,
@@ -2049,6 +2321,29 @@ class _StoryRoomPageState extends State<StoryRoomPage> {
     topPController.dispose();
     maxTokensController.dispose();
     if (saved == null) return;
+    if (backend) {
+      try {
+        _verifyBackendPage();
+        final committed = await _dao!.saveParticipantBackendChecked(
+            participant, editedSelection, original!,
+            validate: _verifyBackendPage,
+            fields: {
+              'name': saved.$1,
+              'prompt': saved.$2,
+              'voiceStyle': saved.$3,
+              'temperature': saved.$6,
+              'topP': saved.$7,
+              'maxOutputTokens': saved.$8
+            });
+        _verifyBackendPage();
+        assert(committed.id == participant.id);
+        await _load();
+        if (mounted) HiDialog.showSnackBar(context, '设置已保存');
+      } catch (_) {
+        if (mounted) HiDialog.showSnackBar(context, '保存失败或原记录已变化，请重新打开');
+      }
+      return;
+    }
     participant.name = saved.$1;
     participant.prompt = saved.$2;
     participant.voiceStyle = saved.$3;
@@ -2233,6 +2528,7 @@ class _StoryRoomPageState extends State<StoryRoomPage> {
           ? null
           : assistant.providerId.trim(),
       modelId: assistant.model.trim().isEmpty ? null : assistant.model.trim(),
+      backendSelection: assistant.backendSelection,
       sortOrder: _participants.length + 1,
     );
   }
@@ -2285,6 +2581,20 @@ class _StoryRoomPageState extends State<StoryRoomPage> {
 
   Future<void> _editRoomModelSettings() async {
     final global = context.read<AISettingsProvider>().settings;
+    final backend = global.mode == AIMode.backend;
+    BackendSelection? editedSelection;
+    StoryBackendSelectionSnapshot? original;
+    if (backend) {
+      try {
+        _verifyBackendPage();
+        original = await _dao!
+            .roomBackendSnapshot(widget.room, validate: _verifyBackendPage);
+        _verifyBackendPage();
+      } catch (_) {
+        if (mounted) HiDialog.showSnackBar(context, '原编辑环境已变化，请重新打开');
+        return;
+      }
+    }
     var providerId = widget.room.modelProviderId?.trim() ?? '';
     final modelController =
         TextEditingController(text: widget.room.modelId ?? '');
@@ -2297,6 +2607,7 @@ class _StoryRoomPageState extends State<StoryRoomPage> {
     final maxTokensController = TextEditingController(
       text: widget.room.maxOutputTokens?.toString() ?? '',
     );
+    if (!mounted) return;
     final saved = await showDialog<(String?, String?, double?, double?, int?)>(
       context: context,
       builder: (ctx) => StatefulBuilder(
@@ -2336,14 +2647,43 @@ class _StoryRoomPageState extends State<StoryRoomPage> {
                     },
                   ),
                 if (global.mode == AIMode.local) const SizedBox(height: 12),
-                TextField(
-                  controller: modelController,
-                  decoration: InputDecoration(
-                    labelText: '模型 ID',
-                    hintText: '留空跟随全局：${global.effectiveModel}',
-                    border: storyInputBorder(ctx),
+                if (backend)
+                  ListTile(
+                    key: const ValueKey('story_room_backend_selection'),
+                    title: const Text('后端服务商与模型'),
+                    subtitle: Text(backendSelectionLabel(
+                        editedSelection ?? widget.room.backendSelection,
+                        legacyModelId: widget.room.modelId,
+                        followLabel: '跟随全局')),
+                    onTap: () async {
+                      try {
+                        _verifyBackendPage();
+                        final selected = await pickBackendSelection(ctx,
+                            identity: _backendPageIdentity,
+                            selected:
+                                editedSelection ?? widget.room.backendSelection,
+                            legacyModelId: widget.room.modelId,
+                            followLabel: '跟随全局');
+                        _verifyBackendPage();
+                        if (ctx.mounted && selected != null) {
+                          setDialogState(() => editedSelection = selected);
+                        }
+                      } catch (_) {
+                        if (ctx.mounted) {
+                          HiDialog.showSnackBar(ctx, '原编辑环境已变化，请重新打开');
+                        }
+                      }
+                    },
+                  )
+                else
+                  TextField(
+                    controller: modelController,
+                    decoration: InputDecoration(
+                      labelText: '模型 ID',
+                      hintText: '留空跟随全局：${global.effectiveModel}',
+                      border: storyInputBorder(ctx),
+                    ),
                   ),
-                ),
                 const SizedBox(height: 12),
                 TextField(
                   controller: temperatureController,
@@ -2435,6 +2775,26 @@ class _StoryRoomPageState extends State<StoryRoomPage> {
     topPController.dispose();
     maxTokensController.dispose();
     if (saved == null) return;
+    if (backend) {
+      try {
+        _verifyBackendPage();
+        final committed = await _dao!.saveRoomBackendChecked(
+            widget.room, editedSelection, original!,
+            validate: _verifyBackendPage,
+            fields: {
+              'temperature': saved.$3,
+              'topP': saved.$4,
+              'maxOutputTokens': saved.$5
+            });
+        _verifyBackendPage();
+        _applyRoomSnapshot(committed);
+        await _load();
+        if (mounted) HiDialog.showSnackBar(context, '设置已保存');
+      } catch (_) {
+        if (mounted) HiDialog.showSnackBar(context, '保存失败或原记录已变化，请重新打开');
+      }
+      return;
+    }
     widget.room
       ..modelProviderId = saved.$1
       ..modelId = saved.$2
@@ -2987,18 +3347,20 @@ class _StoryRoomPageState extends State<StoryRoomPage> {
     if (mounted) setState(() => _persona = persona);
   }
 
-  Future<void> _send() async {
+  Future<void> _send(
+      {AISettings? localOverride,
+      DirectRetryPermit? directPermit,
+      String? fixedInput,
+      StoryRoomAttachmentBundle? fixedBundle}) async {
     if (_sending) return;
     final dao = _dao;
     final manualSpeaker = _selectedParticipant;
-    var input = _inputText.trim();
+    var input = fixedInput ?? _inputText.trim();
     if (dao == null || input.isEmpty) return;
     if (_hasEnabledRegexStage(StoryRegexStage.userInput) &&
         input.length > StoryRegexScriptLimits.maxTextLength) {
-      HiDialog.showSnackBar(
-        context,
-        '输入超过 ${StoryRegexScriptLimits.maxTextLength} 字，暂不能执行 Regex Scripts',
-      );
+      HiDialog.showSnackBar(context,
+          '输入超过 ${StoryRegexScriptLimits.maxTextLength} 字，暂不能执行 Regex Scripts');
       return;
     }
     final manual = !_isTavern || widget.room.replyMode == StoryReplyMode.manual;
@@ -3009,115 +3371,99 @@ class _StoryRoomPageState extends State<StoryRoomPage> {
       HiDialog.showSnackBar(context, '请先添加至少一个角色卡');
       return;
     }
-    final settings =
-        _effectiveSettings(context.read<AISettingsProvider>().settings);
-    final capabilities = ChatService.capabilitiesFor(settings);
-    if (_pendingImages.isNotEmpty && !capabilities.image) {
-      HiDialog.showSnackBar(context, '当前模型不支持图片，请切换多模态模型');
-      return;
-    }
+    final global = context.read<AISettingsProvider>().settings.clone();
+    directPermit?.verify();
+    if (directPermit == null) _directRunRevision++;
+    final directScope =
+        ConversationGenerationScope(account: _accountHashAtOpen);
+    StoryRoomAttachmentBundle? frozenBundle = fixedBundle;
+    var settings = localOverride?.clone() ?? _effectiveSettings(global);
     final pendingImages = List<String>.from(_pendingImages);
     final pendingFiles = List<String>.from(_pendingFiles);
-    if (mounted) {
-      setState(() {
-        // 先锁住发送，避免正则与附件处理期间重复触发下一轮请求。
-        _sending = true;
-        _stopRequested = false;
-        _generationStatus = '正在处理输入规则...';
-      });
-    }
-    final inputRegex = await _runRegex(StoryRegexStage.userInput, input);
-    _reportRegexIssues(inputRegex);
-    input = inputRegex.output.trim();
-    if (input.isEmpty) {
-      if (mounted) {
-        setState(() {
-          _sending = false;
-          _generationStatus = '';
-        });
-        HiDialog.showSnackBar(context, '输入经 Regex Scripts 处理后为空，已取消发送');
-      }
-      return;
-    }
-    if (mounted) {
-      setState(() {
-        _generationStatus = '准备附件...';
-      });
-    }
-    late final StoryRoomAttachmentBundle attachmentBundle;
+    setState(() {
+      _sending = true;
+      _stopRequested = false;
+      _generationStatus = '准备模型...';
+    });
+    StoryBackendGenerationSnapshot? backendRun;
+    PreparedStoryBackendService? roomService;
     try {
-      attachmentBundle = await StoryRoomAttachmentService.prepare(
-        imagePaths: pendingImages,
-        filePaths: pendingFiles,
-        capabilities: capabilities,
-        limits: settings.attachmentProcessingLimits,
-        isCancelled: () => _stopRequested || !mounted,
-      );
-      if (_stopRequested || !mounted) {
-        if (mounted) {
-          setState(() {
-            _sending = false;
-            _generationStatus = '';
-            _stopRequested = false;
-          });
-        }
+      if (localOverride == null && global.mode == AIMode.backend) {
+        backendRun = _captureBackend(global);
+        final prepared = manual
+            ? await backendRun.prepareParticipant(manualSpeaker!)
+            : await backendRun.prepareRoom();
+        settings = prepared.settings;
+        if (!manual) roomService = prepared;
+      }
+      if (!mounted) return;
+      final capabilities = manual && backendRun != null
+          ? (await backendRun.prepareParticipant(manualSpeaker!)).capabilities
+          : roomService?.capabilities ?? ChatService.capabilitiesFor(settings);
+      if (!mounted) return;
+      if (pendingImages.isNotEmpty && !capabilities.image) {
+        HiDialog.showSnackBar(context, '当前模型不支持图片，请切换多模态模型');
         return;
       }
-    } catch (error) {
-      if (mounted) {
-        final stopped = _stopRequested;
-        setState(() {
-          _sending = false;
-          _generationStatus = '';
-          _stopRequested = false;
-        });
-        if (!stopped) HiDialog.showSnackBar(context, '附件检查失败：$error');
+      final inputRegex = await _runRegex(StoryRegexStage.userInput, input);
+      backendRun?.verify();
+      if (!mounted) return;
+      _reportRegexIssues(inputRegex);
+      input = inputRegex.output.trim();
+      if (input.isEmpty) {
+        HiDialog.showSnackBar(context, '输入经 Regex Scripts 处理后为空，已取消发送');
+        return;
       }
-      return;
-    }
-    // 仅在整轮附件通过检查后清理输入，超限或停止仍可删减后重发。
-    if (mounted) {
-      setState(() {
-        _inputText = '';
-        _pendingImages = [];
-        _pendingFiles = [];
-      });
-    }
-    _inputController.clear();
-    final previousMessages = List<StoryMessageModel>.from(_messages);
-    final userMessage = StoryMessageModel(
-      roomId: widget.room.id!,
-      speakerRole: 'user',
-      speakerName: _persona?.name ?? '我',
-      speakerAvatarType: _persona?.avatarType,
-      speakerAvatarValue: _persona?.avatarValue,
-      speakerPersonaKey: _persona?.personaKey,
-      content: input,
-      imagePaths: attachmentBundle.imagePaths,
-      filePaths: attachmentBundle.filePaths,
-      attachmentContext: attachmentBundle.attachmentContext,
-      contextStateAfter: widget.room.worldBookState,
-    );
-    if (mounted) {
+      final attachmentBundle = fixedBundle ??
+          await StoryRoomAttachmentService.prepare(
+              imagePaths: pendingImages,
+              filePaths: pendingFiles,
+              capabilities: capabilities,
+              limits: settings.attachmentProcessingLimits,
+              isCancelled: () => _stopRequested || !mounted);
+      frozenBundle = attachmentBundle;
+      backendRun?.verify();
+      directPermit?.verify();
+      if (_stopRequested || !mounted) return;
+      if (fixedInput == null) {
+        setState(() {
+          _inputText = '';
+          _pendingImages = [];
+          _pendingFiles = [];
+        });
+      }
+      if (fixedInput == null) _inputController.clear();
+      final previousMessages = List<StoryMessageModel>.from(_messages);
+      final userMessage = StoryMessageModel(
+          roomId: widget.room.id!,
+          speakerRole: 'user',
+          speakerName: _persona?.name ?? '我',
+          speakerAvatarType: _persona?.avatarType,
+          speakerAvatarValue: _persona?.avatarValue,
+          speakerPersonaKey: _persona?.personaKey,
+          content: input,
+          imagePaths: attachmentBundle.imagePaths,
+          filePaths: attachmentBundle.filePaths,
+          attachmentContext: attachmentBundle.attachmentContext,
+          contextStateAfter: widget.room.worldBookState);
+      await dao.saveMessage(userMessage, validate: backendRun?.verify);
+      backendRun?.verify();
       setState(() {
         _generationStatus = '准备生成回复...';
         _messages = [..._messages, userMessage];
         _allMessages = [..._allMessages, userMessage];
       });
-    }
-    await dao.saveMessage(userMessage);
-    widget.room.activeMessageKey = userMessage.nodeKey;
-
-    try {
-      final chatService = ChatService.from(settings);
+      widget.room.activeMessageKey = userMessage.nodeKey;
+      final chatService = roomService ?? ChatService.from(settings);
       final speakers = manual
-          ? [if (manualSpeaker != null) manualSpeaker]
+          ? [manualSpeaker!]
           : await _scheduleTavernSpeakers(
               chatService: chatService,
               settings: settings,
               input: input,
               previousMessages: previousMessages,
-            );
+              directPermit: directPermit);
+      backendRun?.verify();
       if (speakers.isEmpty) throw Exception('没有可用角色');
       var workingHistory = List<StoryMessageModel>.from(previousMessages);
       final replies = <StoryMessageModel>[];
@@ -3126,6 +3472,7 @@ class _StoryRoomPageState extends State<StoryRoomPage> {
       final enforceTokenBudget = _isTavern && !manual;
       for (final speaker in speakers) {
         if (_stopRequested) break;
+        backendRun?.verify();
         final remainingTokens = enforceTokenBudget
             ? widget.room.maxAutoTotalTokens - usedCompletionTokens
             : null;
@@ -3134,14 +3481,16 @@ class _StoryRoomPageState extends State<StoryRoomPage> {
           break;
         }
         final reply = await _streamSpeakerReply(
-          dao: dao,
-          settings: settings,
-          input: input,
-          speaker: speaker,
-          historyMessages: workingHistory,
-          attachmentBundle: attachmentBundle,
-          completionTokenLimit: remainingTokens,
-        );
+            dao: dao,
+            settings: settings,
+            input: input,
+            speaker: speaker,
+            historyMessages: workingHistory,
+            attachmentBundle: attachmentBundle,
+            completionTokenLimit: remainingTokens,
+            backendRun: backendRun,
+            localOverride: localOverride,
+            directPermit: directPermit);
         if (reply == null) break;
         replies.add(reply);
         usedCompletionTokens += _lastGeneratedCompletionTokens;
@@ -3150,9 +3499,39 @@ class _StoryRoomPageState extends State<StoryRoomPage> {
       if (stoppedByTokenBudget && mounted) {
         HiDialog.showSnackBar(context, '已达本轮自动发言 Token 上限');
       }
-    } catch (e) {
-      if (mounted) HiDialog.showSnackBar(context, '生成失败：$e');
+    } catch (error) {
+      if (settings.mode == AIMode.local &&
+          _pendingDirectRecovery == null &&
+          !_stopRequested) {
+        final originalInput = input;
+        _pendingDirectRecovery = () => _offerDirectRoomRecovery(
+            error,
+            settings,
+            directScope,
+            (selected, permit) => _send(
+                localOverride: selected,
+                directPermit: permit,
+                fixedInput: originalInput,
+                fixedBundle: frozenBundle),
+            requiredInput: ModelCapabilities(
+                image: frozenBundle?.attachments.images.isNotEmpty ?? false,
+                pdf:
+                    frozenBundle?.attachments.nativeFiles.isNotEmpty ?? false));
+      }
+      if (mounted &&
+          _roomAccountCurrent &&
+          (backendRun == null || _backendPageIdentity.current)) {
+        HiDialog.showSnackBar(
+            context,
+            backendRun == null
+                ? '请求未完成，请核对原配置'
+                : error is ChatTransportException
+                    ? error.safeMessage
+                    : '生成失败，请检查模型配置并重试');
+      }
     } finally {
+      backendRun?.retire();
+      if (identical(_backendGeneration, backendRun)) _backendGeneration = null;
       if (mounted) {
         setState(() {
           _sending = false;
@@ -3161,13 +3540,22 @@ class _StoryRoomPageState extends State<StoryRoomPage> {
         });
       }
     }
+    final offer = _pendingDirectRecovery;
+    _pendingDirectRecovery = null;
+    if (offer != null && mounted) await offer();
   }
 
   void _stopGeneration() {
+    _directRunRevision++;
     _stopRequested = true;
+    _backendGeneration?.retire();
     final sub = _activeReplySub;
     if (sub != null) {
-      unawaited(sub.cancel());
+      if (_backendGeneration != null) {
+        unawaited(_cancelBackendStream(sub));
+      } else {
+        unawaited(sub.cancel());
+      }
     }
     final done = _activeReplyDone;
     if (done != null && !done.isCompleted) {
@@ -3285,6 +3673,7 @@ class _StoryRoomPageState extends State<StoryRoomPage> {
     required AISettings settings,
     required String input,
     required List<StoryMessageModel> previousMessages,
+    DirectRetryPermit? directPermit,
   }) async {
     final candidates = StorySpeakerScheduler.tavernCandidates(_participants);
     final skippedIds = Set<int>.from(_skipNextParticipantIds);
@@ -3370,10 +3759,14 @@ class _StoryRoomPageState extends State<StoryRoomPage> {
           ),
         },
       ];
-      final result = await chatService.chatWithUsage(
-        prompt: prompt,
-        history: history,
-      );
+      final result = await chatService.chatWithUsageWithOptions(
+          prompt: prompt,
+          history: history,
+          options: ChatRequestOptions(
+              beforeDispatch: (_) async {
+                directPermit?.verify();
+              },
+              dispatchIsCurrent: () => directPermit?.current ?? true));
       final response = result.content;
       if (response != null && response.trim().isNotEmpty) {
         await _recordUsage(
@@ -3394,6 +3787,13 @@ class _StoryRoomPageState extends State<StoryRoomPage> {
         maxCount: maxSpeakers,
       );
       if (ids.isEmpty) {
+        if (chatService is UserConfirmedRetryChatService) {
+          throw const ChatTransportException(
+              safeCode: 'protocol_error',
+              safeMessage: '调度响应格式无效，请确认后重新请求',
+              requiresUserConfirmation: true,
+              failureKind: ChatFailureKind.invalidPayload);
+        }
         return [if (forced != null) forced, if (fallback != null) fallback];
       }
       final speakers = <StoryParticipantModel>[];
@@ -3406,7 +3806,11 @@ class _StoryRoomPageState extends State<StoryRoomPage> {
         return [if (forced != null) forced, if (fallback != null) fallback];
       }
       return [if (forced != null) forced, ...speakers];
-    } catch (_) {
+    } catch (error) {
+      if (chatService is PreparedStoryBackendService ||
+          error is ChatTransportException && error.requiresUserConfirmation) {
+        rethrow;
+      }
       return [if (forced != null) forced, if (fallback != null) fallback];
     }
   }
@@ -3428,8 +3832,47 @@ class _StoryRoomPageState extends State<StoryRoomPage> {
     StoryRoomAttachmentBundle? attachmentBundle,
     String? candidateGroupKey,
     int? completionTokenLimit,
+    StoryBackendGenerationSnapshot? backendRun,
+    AISettings? localOverride,
+    DirectRetryPermit? directPermit,
+    String? fixedPrompt,
+    List<Map<String, dynamic>>? fixedHistory,
   }) async {
-    final speakerSettings =
+    directPermit?.verify();
+    final directScope =
+        ConversationGenerationScope(account: _accountHashAtOpen);
+    final originalIdentity = AiCatalogIdentity.capture();
+    final originalConfiguration =
+        jsonEncode(context.read<AISettingsProvider>().settings.toJson());
+    final originalRevision = _directRunRevision;
+    void verifyDirect() {
+      directScope.verify();
+      directPermit?.verify();
+      if (!mounted ||
+          !_roomAccountCurrent ||
+          !originalIdentity.current ||
+          _stopRequested ||
+          _directRunRevision != originalRevision ||
+          jsonEncode(context.read<AISettingsProvider>().settings.toJson()) !=
+              originalConfiguration) {
+        throw const ConversationGenerationStale();
+      }
+    }
+
+    bool directCurrent() {
+      try {
+        verifyDirect();
+        return true;
+      } catch (_) {
+        return false;
+      }
+    }
+
+    final prepared = backendRun == null
+        ? null
+        : await backendRun.prepareParticipant(speaker);
+    final speakerSettings = localOverride?.clone() ??
+        prepared?.settings ??
         StoryParticipantSettingsResolver.apply(settings, speaker);
     if (completionTokenLimit != null && completionTokenLimit > 0) {
       final configured = speakerSettings.maxOutputTokens;
@@ -3446,16 +3889,18 @@ class _StoryRoomPageState extends State<StoryRoomPage> {
       latestInput: input,
       recentMessages: historyMessages,
     );
+    prepared?.verify();
     if (!mounted || _stopRequested) return null;
-    final history = contextResult.applyToHistory(
-      StoryContextBuilder.history(
-        historyMessages,
-        room: widget.room,
-        participants: _participants,
-        speaker: speaker,
-        persona: _persona,
-      ),
-    );
+    final history = fixedHistory ??
+        contextResult.applyToHistory(
+          StoryContextBuilder.history(
+            historyMessages,
+            room: widget.room,
+            participants: _participants,
+            speaker: speaker,
+            persona: _persona,
+          ),
+        );
     final message = StoryMessageModel(
       roomId: widget.room.id!,
       speakerId: speaker.id,
@@ -3485,23 +3930,56 @@ class _StoryRoomPageState extends State<StoryRoomPage> {
     final citationUrls = <String>{};
     Object? streamError;
     final done = Completer<void>();
-    final speakerPrompt = contextResult.inputPrompt.trim().isEmpty
-        ? StoryContextBuilder.promptFor(input: input, speaker: speaker)
-        : contextResult.inputPrompt;
-    final stream = _toolRunner.run(
-      speakerAssistantId: speaker.assistantId,
-      settings: speakerSettings,
-      prompt: speakerPrompt,
-      history: history,
-      attachments: attachmentBundle?.attachments,
-      confirm: _confirmRoomToolAction,
-      forceWebSearch: speakerSettings.webSearchEnabled &&
-          speakerSettings.webSearchConfigured,
-    );
+    final speakerPrompt = fixedPrompt ??
+        (contextResult.inputPrompt.trim().isEmpty
+            ? StoryContextBuilder.promptFor(input: input, speaker: speaker)
+            : contextResult.inputPrompt);
+    final stream = prepared == null
+        ? _toolRunner.run(
+            speakerAssistantId: speaker.assistantId,
+            settings: speakerSettings,
+            requestOptions: ChatRequestOptions(
+                beforeDispatch: (_) async {
+                  verifyDirect();
+                },
+                beforeAttachmentUpload: () async {
+                  verifyDirect();
+                },
+                dispatchIsCurrent: directCurrent),
+            prompt: speakerPrompt,
+            history: history,
+            attachments: attachmentBundle?.attachments,
+            confirm: (title, detail) async {
+              verifyDirect();
+              final ok = await _confirmRoomToolAction(title, detail);
+              verifyDirect();
+              return ok;
+            },
+            forceWebSearch: speakerSettings.webSearchEnabled &&
+                speakerSettings.webSearchConfigured,
+          )
+        : _toolRunner.runPrepared(
+            prepared: prepared,
+            maxOutputTokensOverride: completionTokenLimit == null
+                ? null
+                : speakerSettings.maxOutputTokens,
+            speakerAssistantId: speaker.assistantId,
+            prompt: speakerPrompt,
+            history: history,
+            attachments: attachmentBundle?.attachments,
+            confirm: _confirmRoomToolAction,
+            forceWebSearch: speakerSettings.webSearchEnabled &&
+                speakerSettings.webSearchConfigured,
+          );
     late final StreamSubscription<StreamEvent> sub;
     sub = stream.listen(
       (event) {
         if (_stopRequested) return;
+        if (prepared != null &&
+            (!_backendPageIdentity.current || !_roomAccountCurrent)) {
+          _stopGeneration();
+          return;
+        }
         if (event.type == StreamEventType.usage) {
           hasUsage = true;
           promptTokens += event.promptTokens ?? 0;
@@ -3555,7 +4033,87 @@ class _StoryRoomPageState extends State<StoryRoomPage> {
     if (mounted) {
       setState(() => _streamingMessageCreatedAt.remove(message.createdAt));
     }
-    if (streamError != null) throw streamError!;
+    void verifySettlement() {
+      directScope.verify();
+      if (!mounted || !_roomAccountCurrent || !originalIdentity.current) {
+        throw const ConversationGenerationStale();
+      }
+    }
+
+    Future<void> settleReceivedText() async {
+      message.content = buffer.toString();
+      message.speakerName = '${speaker.name}（请求未完成）';
+      // 撤权仅保留原身份已收文本，不切换活动节点/世界状态。
+      if (message.content.isNotEmpty &&
+          directScope.isCurrent &&
+          mounted &&
+          _roomAccountCurrent &&
+          originalIdentity.current) {
+        await directScope.stable(() => dao.saveMessage(message,
+            validate: verifySettlement, activate: false));
+      }
+    }
+
+    if (prepared == null && !directCurrent()) {
+      await settleReceivedText();
+      throw const ConversationGenerationStale();
+    }
+    if (streamError != null &&
+        !(_stopRequested &&
+            streamError is ChatTransportException &&
+            (streamError as ChatTransportException).safeCode == 'cancelled')) {
+      if (speakerSettings.mode == AIMode.local) {
+        message.content = buffer.toString();
+        message.speakerName = '${speaker.name}（请求未完成）';
+        if (mounted &&
+            _roomAccountCurrent &&
+            _backendPageIdentity.current &&
+            directScope.isCurrent) {
+          try {
+            await dao.saveMessage(message, validate: verifyDirect);
+            verifyDirect();
+          } catch (_) {
+            if (!directCurrent()) await settleReceivedText();
+            rethrow;
+          }
+          final speakerCopy = StoryParticipantModel.fromJson(speaker.toJson());
+          final historyCopy = historyMessages
+              .map((m) => StoryMessageModel.fromJson(m.toJson()))
+              .toList();
+          final frozenHistory =
+              history.map((m) => Map<String, dynamic>.from(m)).toList();
+          _pendingDirectRecovery = () => _offerDirectRoomRecovery(
+                  streamError!, speakerSettings, directScope,
+                  (selected, permit) async {
+                await _runSingleSpeakerGeneration(
+                    input: input,
+                    speaker: speakerCopy,
+                    historyMessages: historyCopy,
+                    attachmentBundle: attachmentBundle,
+                    localOverride: selected,
+                    directPermit: permit,
+                    fixedPrompt: speakerPrompt,
+                    fixedHistory: frozenHistory);
+              },
+                  requiredInput: ModelCapabilities(
+                      image: attachmentBundle?.attachments.images.isNotEmpty ??
+                          false,
+                      pdf: attachmentBundle
+                              ?.attachments.nativeFiles.isNotEmpty ??
+                          false));
+        }
+      }
+      throw streamError!;
+    }
+    void verifyWrite() {
+      if (prepared != null) {
+        _verifyBackendPage();
+      } else {
+        verifyDirect();
+      }
+    }
+
+    verifyWrite();
     for (var index = 0; index < imageEvents.length; index++) {
       try {
         final saved = await StoryRoomImageService.saveEvent(
@@ -3563,6 +4121,7 @@ class _StoryRoomPageState extends State<StoryRoomPage> {
           filename:
               'room_${widget.room.id}_${speaker.id ?? 0}_${message.createdAt}_$index.png',
         );
+        verifyWrite();
         saved?.attachTo(message);
       } catch (error) {
         if (mounted) {
@@ -3590,41 +4149,48 @@ class _StoryRoomPageState extends State<StoryRoomPage> {
       StoryRegexStage.assistantOutput,
       providerText,
     );
+    verifyWrite();
     _reportRegexIssues(outputRegex);
     final text = outputRegex.output.trim();
     message.content = text;
     final nextWorldBookState =
         jsonEncode(contextResult.worldBookState.toJson());
     message.contextStateAfter = nextWorldBookState;
-    await dao.saveMessage(message);
+    verifyWrite();
+    await dao.saveMessage(message, validate: verifyWrite);
     final displayContent = await _buildDisplayContent(
       [message],
       widget.room.regexScriptsJson,
     );
+    verifyWrite();
     if (mounted && displayContent.isNotEmpty) {
       setState(() => _displayContentByNodeKey = {
             ..._displayContentByNodeKey,
             ...displayContent,
           });
     }
-    widget.room.activeMessageKey = message.nodeKey;
     if (widget.room.worldBookState != nextWorldBookState) {
-      widget.room.worldBookState = nextWorldBookState;
-      await dao.saveRoom(widget.room);
+      await dao.updateGeneratedWorldState(widget.room.id!, nextWorldBookState,
+          validate: verifyWrite);
     }
-    await _recordUsage(
-      settings: speakerSettings,
-      prompt: _usagePromptText(
-        history,
-        speakerPrompt,
-      ),
-      completion: providerText,
-      promptTokens: hasUsage ? promptTokens : null,
-      cachedPromptTokens: hasUsage ? cachedPromptTokens : null,
-      completionTokens: hasUsage ? completionTokens : null,
-      estimated: !hasUsage,
-      createdAt: message.createdAt,
-    );
+    verifyWrite();
+    await directScope.stable(() => _recordUsage(
+          settings: speakerSettings,
+          prompt: _usagePromptText(
+            history,
+            speakerPrompt,
+          ),
+          completion: providerText,
+          promptTokens: hasUsage ? promptTokens : null,
+          cachedPromptTokens: hasUsage ? cachedPromptTokens : null,
+          completionTokens: hasUsage ? completionTokens : null,
+          estimated: !hasUsage,
+          createdAt: message.createdAt,
+        ));
+    verifyWrite();
+    // 最后异步写回已复核；页面原声明只在同步结算末尾更新。
+    widget.room.activeMessageKey = message.nodeKey;
+    widget.room.worldBookState = nextWorldBookState;
     _lastGeneratedCompletionTokens = hasUsage && completionTokens > 0
         ? completionTokens
         : providerText.runes.length.clamp(1, 200000).toInt();
@@ -3653,13 +4219,19 @@ class _StoryRoomPageState extends State<StoryRoomPage> {
     required int createdAt,
   }) async {
     final service = _usageRecordService;
-    final modelId = settings.effectiveModel.trim();
+    final modelId = settings.mode == AIMode.backend
+        ? settings.backendSelection?.modelId ?? settings.effectiveModel
+        : settings.effectiveModel.trim();
     if (service == null || modelId.isEmpty) return;
     try {
+      if (settings.mode == AIMode.backend) _verifyBackendPage();
       await service.recordTurn(
         modelId: modelId,
-        providerId:
-            settings.mode == AIMode.local ? settings.activeProviderId : null,
+        providerId: settings.mode == AIMode.local
+            ? settings.activeProviderId
+            : settings.backendSelection?.isPair == true
+                ? backendUsageProviderId(settings.backendSelection!)
+                : null,
         projectId: null,
         cid: null,
         prompt: prompt,

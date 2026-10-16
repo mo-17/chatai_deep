@@ -8,6 +8,7 @@ import 'package:chatgpt_app_core/chat/application/agent_workflow_scope.dart';
 import 'package:chatgpt_app_core/chat/application/agent_workspace_service.dart';
 import 'package:chatgpt_app_core/chat/application/agent_workspace_tools.dart';
 import 'package:chatgpt_app_core/chat/domain/agent_workflow.dart';
+import 'package:chatgpt_app_core/chat/domain/chat_request_options.dart';
 import 'package:chatgpt_app_core/db/agent_workflow_dao.dart';
 import 'package:flutter/foundation.dart';
 import 'package:login_sdk/dao/login_dao.dart';
@@ -20,9 +21,11 @@ class AgentWorkflowCoordinator extends ChangeNotifier {
   final bool Function() foreground;
   final WorkflowServiceResolver? serviceForProfile;
   final Future<bool> Function(WorkflowModelProfile)? profileAvailable;
+  final AgentWorkflowModels Function(AgentWorkflowScope)? modelsFactory;
   final _runs = <String, AgentWorkflowRunner>{};
   final _busy = <String>{};
   final _scopes = <String, AgentWorkflowScope>{};
+  final _preparing = <String>{};
   final notices = <String, String>{};
   final _messageRevisions = <String, int>{};
   final _publishedRows = <String, int>{};
@@ -34,7 +37,8 @@ class AgentWorkflowCoordinator extends ChangeNotifier {
       bool Function()? foreground,
       bool observeApplication = true,
       this.serviceForProfile,
-      this.profileAvailable})
+      this.profileAvailable,
+      this.modelsFactory})
       : channel = channel ?? AgentExecutionChannel.instance,
         background = background ?? PlatformAgentBackgroundExecution.instance,
         foreground =
@@ -61,56 +65,98 @@ class AgentWorkflowCoordinator extends ChangeNotifier {
   AgentWorkflowRunner? lookup(String account, String id) =>
       _runs[key(account, id)];
   bool busy(String account, String id) => _busy.contains(key(account, id));
-  Future<void> start(AgentWorkflowDao dao, AgentWorkflowScope pageScope,
-      AgentWorkflow task) async {
+  Future<void> start(
+      AgentWorkflowDao dao, AgentWorkflowScope pageScope, AgentWorkflow task,
+      {AgentWorkflowModels? preparedModels}) async {
     pageScope.verify();
     if (!foreground()) throw const WorkflowStale('请回前台明确继续');
+    if (!channel.accountAvailable(pageScope.accountHash)) {
+      throw const WorkflowStale('账号正在停止任务，请稍后明确开始');
+    }
     final id = key(pageScope.accountHash, task.id);
     if (_busy.contains(id)) throw const WorkflowStale('任务正在运行');
     _busy.add(id);
     notices.remove(id);
     notifyListeners();
-    final scope = pageScope.fork();
+    final scope = preparedModels?.scope ?? pageScope.fork();
+    if (scope.accountHash != pageScope.accountHash ||
+        scope.loginEpoch != pageScope.loginEpoch ||
+        scope.restoreRevision != pageScope.restoreRevision) {
+      _busy.remove(id);
+      throw const WorkflowStale();
+    }
+    final models = preparedModels ??
+        modelsFactory?.call(scope) ??
+        AgentWorkflowModels(scope);
+    models.captureExecutionContext();
     _scopes[id] = scope;
+    _preparing.add(id);
     AgentWorkflowRunner? runner;
     try {
+      final admission = await dao.steps(task.id);
+      scope.verify();
+      final hasBackend = admission.any((s) => s.profile.mode == 'backend');
+      // 先完成全父任务准备；任何一个失效都不能先领取或先发分析节点。
+      if (hasBackend) await models.prepareWorkflow(admission);
+      models.verifyOriginalScope();
+      final runDao = dao.forExecution(
+          guard: models.verifyOriginalScope,
+          verifyProfile: models.verifyRunProfile);
+      final stopDao = dao.forExecution(guard: models.verifyIdentityForControl);
       final workspace =
           await AgentWorkspaceService.create(dao.storage, cid: task.cid);
-      scope.verify();
+      models.verifyOriginalScope();
       final tools = await AgentWorkspaceTools.create(dao.storage,
           cid: task.cid, workspace: workspace);
-      scope.verify();
-      final models = AgentWorkflowModels(scope);
+      models.verifyOriginalScope();
       runner = AgentWorkflowRunner(
-          dao: dao,
+          dao: runDao,
+          controlDao: stopDao,
+          admissionSteps: admission,
+          executionGuard: models.verifyOriginalScope,
           scope: scope,
           workflow: task,
-          serviceForProfile: serviceForProfile ?? models.service,
-          profileAvailable: profileAvailable ?? models.available,
+          serviceForProfile: hasBackend
+              ? models.serviceForRun
+              : serviceForProfile ?? models.service,
+          profileAvailable: hasBackend
+              ? models.availableForRun
+              : profileAvailable ?? models.available,
           foreground: foreground,
           background: background,
           backgroundEnabled: task.backgroundEnabled,
           priceEstimate: models.estimateCost,
           workspaceTools: tools,
           channel: channel);
+      _preparing.remove(id);
       _runs[id] = runner;
       runner.addListener(notifyListeners);
       await runner.start();
-      if (pageScope.identityCurrent && runner.admissionNotice != null) {
+      if (pageScope.identityCurrent &&
+          models.originalIdentityCurrent &&
+          runner.admissionNotice != null) {
         notices[id] = runner.admissionNotice!;
       }
-      if (scope.isCurrent && runner.workflow.state == WorkflowState.complete) {
-        await publishReply(dao, scope, runner.workflow);
+      if (models.originalScopeCurrent &&
+          runner.workflow.state == WorkflowState.complete) {
+        await publishReply(runDao, scope, runner.workflow);
       }
     } catch (error) {
-      if (pageScope.identityCurrent) {
-        notices[id] =
-            error is WorkflowStale ? error.reason : '执行或成果发布未完成，请刷新后处理；未自动重试请求';
+      if (pageScope.identityCurrent && models.originalIdentityCurrent) {
+        notices[id] = error is WorkflowStale
+            ? error.reason
+            : error is WorkflowConfigurationMissing ||
+                    error is ChatTransportException &&
+                        error.failureKind ==
+                            ChatFailureKind.invalidConfiguration
+                ? '原模型配置不可用，请重新配置；未自动替换模型或重放请求'
+                : '执行或成果发布未完成，请刷新后处理；未自动重试请求';
       }
     } finally {
       if (runner != null) runner.removeListener(notifyListeners);
       _busy.remove(id);
       _scopes.remove(id);
+      _preparing.remove(id);
       notifyListeners();
     }
   }
@@ -172,6 +218,18 @@ class AgentWorkflowCoordinator extends ChangeNotifier {
     scope.verify();
     channel.holdAccount(scope.accountHash);
     try {
+      // _runs 可保留旧代次；准备状态只按当前 _scopes / _preparing 判断。
+      // 已注册运行保留原 channel.pause 路径，不能提前 cancel 使它漏存暂停。
+      for (final entry in _scopes.entries.toList()) {
+        final preparing = entry.value;
+        if (_preparing.contains(entry.key) &&
+            preparing.accountHash == scope.accountHash &&
+            preparing.loginEpoch == scope.loginEpoch &&
+            preparing.restoreRevision == scope.restoreRevision &&
+            preparing.isCurrent) {
+          preparing.cancel();
+        }
+      }
       await channel.pauseAccount(scope.accountHash, '用户停止了全部本机任务');
     } finally {
       channel.releaseAccount(scope.accountHash);

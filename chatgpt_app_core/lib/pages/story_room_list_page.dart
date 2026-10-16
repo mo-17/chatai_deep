@@ -1,3 +1,6 @@
+import 'package:chatgpt_app_core/widget/direct_translation_recovery.dart';
+import 'package:chatgpt_app_core/chat/application/translation_retry_policy.dart';
+import 'package:chatgpt_app_core/dao/ai_catalog_dao.dart';
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
@@ -1064,6 +1067,7 @@ class _StoryRoomListPageState extends State<StoryRoomListPage> {
             _storyTemplateTranslationCoordinator.start(
           template,
           requestProfile: handoff.profile,
+          preparedSession: handoff.preparedSession,
           checkEligibility: checkEligibility,
           resolveExecutor:
               _translationExecutorResolver(handoff.snapshot.settings),
@@ -1074,6 +1078,9 @@ class _StoryRoomListPageState extends State<StoryRoomListPage> {
         await preferenceStore.save(
           accepted.selection.result.preference,
           expectedAccountHash: accepted.handoff.snapshot.accountHash,
+          isOriginalSessionCurrent: accepted.handoff.preparedSession == null
+              ? null
+              : () => accepted.handoff.preparedSession!.isCurrent,
         );
       } catch (_) {
         if (mounted) {
@@ -1095,6 +1102,10 @@ class _StoryRoomListPageState extends State<StoryRoomListPage> {
     StoryTemplateTranslationTaskModel task, {
     TranslationRequestProfile? replacementProfile,
   }) async {
+    if (!_canUseOriginalTranslationProfile(task)) {
+      if (mounted) HiDialog.showSnackBar(context, '原任务的后端服务商无法确认，请保留记录并重新发起翻译');
+      return;
+    }
     final settings = context.read<AISettingsProvider>().settings.clone();
     final environment = TranslationEligibilityEnvironment.current();
     const evaluator = TranslationModelEligibilityEvaluator();
@@ -1117,6 +1128,11 @@ class _StoryRoomListPageState extends State<StoryRoomListPage> {
   Future<void> _showTranslationRecovery(
     StoryTemplateTranslationTaskModel task,
   ) async {
+    if (await showDirectTranslationRecovery(context, task,
+        _storyTemplateTranslationCoordinator, _translationExecutorResolver)) {
+      return;
+    }
+    if (!mounted) return;
     final action = await showModalBottomSheet<String>(
       context: context,
       showDragHandle: true,
@@ -1179,63 +1195,7 @@ class _StoryRoomListPageState extends State<StoryRoomListPage> {
       );
       return;
     }
-    final readSnapshot = _translationSnapshotReader(
-      context.read<AISettingsProvider>(),
-    );
-    final accountHash = readSnapshot().accountHash;
-    final store = TranslationModelPreferenceStore();
-    final initialValue = _preferenceFromTask(task) ?? store.read(accountHash);
-    try {
-      final accepted = await runStoryTranslationPreflightStart(
-        initialValue: initialValue,
-        select: (nextInitial) async {
-          if (!mounted) return null;
-          final result = await showTranslationSettingsDialog(
-            context,
-            readSnapshot: readSnapshot,
-            initialValue: nextInitial,
-            estimatedRunes: _translationWorkEstimator
-                    .tryTotalRunesForTaskSource(task.sourcePayload) ??
-                0,
-            probeService: TranslationModelProbeService.shared,
-            onFixIssue: _fixTranslationIssue,
-            title: '更换翻译模型',
-          );
-          if (result == null || !mounted) return null;
-          return TranslationSettingsSelection(
-            result: result,
-            readSnapshot: readSnapshot,
-          );
-        },
-        probeService: TranslationModelProbeService.shared,
-        onConfigurationChanged: () {
-          if (mounted) HiDialog.showSnackBar(context, '翻译配置已变化，请重新确认');
-        },
-        start: (handoff, checkEligibility) =>
-            _storyTemplateTranslationCoordinator.retry(
-          task,
-          replacementProfile: handoff.profile,
-          checkEligibility: checkEligibility,
-          resolveExecutor:
-              _translationExecutorResolver(handoff.snapshot.settings),
-        ),
-      );
-      if (accepted == null || !mounted) return;
-      try {
-        await store.save(
-          accepted.selection.result.preference,
-          expectedAccountHash: accepted.handoff.snapshot.accountHash,
-        );
-      } catch (_) {
-        if (mounted) {
-          HiDialog.showSnackBar(context, '任务已恢复，但翻译模型偏好未能保存');
-        }
-      }
-    } on TranslationModelUnavailableException catch (error) {
-      if (mounted) HiDialog.showSnackBar(context, '更换翻译模型失败：${error.message}');
-    } catch (error) {
-      if (mounted) HiDialog.showSnackBar(context, '更换翻译模型失败：$error');
-    }
+    HiDialog.showSnackBar(context, '更换模型需要重新发起翻译，原任务与成果已保留');
   }
 
   TranslationSettingsSnapshotReader _translationSnapshotReader(
@@ -1287,11 +1247,24 @@ class _StoryRoomListPageState extends State<StoryRoomListPage> {
             : TranslationModelPreferenceMode.backend,
         providerId: profile.providerId,
         modelId: profile.modelId,
+        backendSelection: profile.backendSelection,
         reasoningPolicy: profile.reasoningPolicy,
       );
     } catch (_) {
       return null;
     }
+  }
+
+  bool _canUseOriginalTranslationProfile(
+      StoryTemplateTranslationTaskModel task) {
+    final preference = _preferenceFromTask(task);
+    if (preference == null) return false;
+    if (preference.mode == TranslationModelPreferenceMode.local) return true;
+    final identity = AiCatalogIdentity.capture();
+    return preference.backendSelection?.matchesScope(
+            accountHash: identity.account ?? '',
+            origin: identity.endpoint.origin) ==
+        true;
   }
 
   bool _canCancelTranslationTask(StoryTemplateTranslationTaskModel task) =>
@@ -1474,6 +1447,9 @@ class _StoryTemplateTranslationCoordinator extends ChangeNotifier {
       final translatedResults = await TavernRoomImportPreparer.prepare(
         payload.results,
         translateToSimplifiedChinese: true,
+        retryPolicy: TranslationRetryPolicy(
+            allowAutomaticRecovery:
+                chatService is! UserConfirmedRetryChatService),
         complete: (prompt) => chatService.chat(
           prompt: prompt,
           history: const [],
@@ -1567,6 +1543,9 @@ class _StoryTemplateTranslationCoordinator extends ChangeNotifier {
           name: templateTitle.trim().isEmpty ? '模板开场' : templateTitle,
           openingMessage: opening,
         ),
+        retryPolicy: TranslationRetryPolicy(
+            allowAutomaticRecovery:
+                chatService is! UserConfirmedRetryChatService),
         complete: (prompt) => chatService.chat(
           prompt: prompt,
           history: const [],

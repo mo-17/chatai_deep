@@ -49,12 +49,14 @@ class SemanticChatSummaryService {
   final SemanticChatSummarizer summarizer;
   final int maxSourceTokens;
   final Duration timeout;
+  final bool pauseOnRequestFailure;
 
   const SemanticChatSummaryService({
     required this.store,
     required this.summarizer,
     this.maxSourceTokens = 10000,
     this.timeout = const Duration(seconds: 25),
+    this.pauseOnRequestFailure = false,
   }) : assert(maxSourceTokens >= 512);
 
   static const _systemPrompt = '你是对话历史压缩器，只整理给定历史资料，不回答问题、'
@@ -68,7 +70,9 @@ class SemanticChatSummaryService {
 
   /// 单独使用 ChatService，显式传空 tools，不经过 MCP/工具注册表或 CompletionDao。
   /// 非正文事件不会保存到摘要，模型即使误发 toolCall 也不会执行。
-  static SemanticChatSummarizer chatSummarizer(ChatService service) =>
+  static SemanticChatSummarizer chatSummarizer(ChatService service,
+          {Future<void> Function()? beforeRequest,
+          bool Function()? isCurrent}) =>
       (request) async {
         final text = StringBuffer();
         await for (final event in service.chatStreamEventsWithOptions(
@@ -79,6 +83,10 @@ class SemanticChatSummaryService {
           tools: const [],
           extraMessages: const [],
           options: ChatRequestOptions(
+            beforeDispatch: (_) async {
+              await beforeRequest?.call();
+            },
+            dispatchIsCurrent: isCurrent,
             abortTrigger: request.abortTrigger,
             reasoningPolicy: ChatReasoningPolicy.offIfSupported,
             maxOutputTokensOverride: request.maxOutputTokens,
@@ -171,12 +179,26 @@ class SemanticChatSummaryService {
         cancelled.future.then<String?>((_) => null),
       ]);
       if (abortObserved || timedOut) {
+        if (timedOut && pauseOnRequestFailure) {
+          throw const ChatTransportException(
+              safeCode: 'timeout',
+              safeMessage: '摘要请求超时，请确认后重新请求',
+              requiresUserConfirmation: true,
+              failureKind: ChatFailureKind.timeout);
+        }
         return SemanticChatSummaryResult(
             sourceFingerprint: fingerprint,
             fallbackReason: timedOut ? 'timeout' : 'cancelled');
       }
       final summary = _parseSummary(raw);
       if (summary == null) {
+        if (pauseOnRequestFailure) {
+          throw const ChatTransportException(
+              safeCode: 'protocol_error',
+              safeMessage: '摘要响应格式无效，请确认后重新请求',
+              requiresUserConfirmation: true,
+              failureKind: ChatFailureKind.invalidPayload);
+        }
         return SemanticChatSummaryResult(
             sourceFingerprint: fingerprint, fallbackReason: 'invalid_summary');
       }
@@ -204,7 +226,17 @@ class SemanticChatSummaryService {
       }
       return SemanticChatSummaryResult(
           summary: summary, sourceFingerprint: fingerprint);
-    } catch (_) {
+    } catch (error) {
+      if (error is ChatTransportException && error.requiresUserConfirmation) {
+        rethrow;
+      }
+      if (pauseOnRequestFailure && !abortObserved) {
+        throw const ChatTransportException(
+            safeCode: 'network_error',
+            safeMessage: '摘要请求未完成，请确认后重新请求',
+            requiresUserConfirmation: true,
+            failureKind: ChatFailureKind.transport);
+      }
       return SemanticChatSummaryResult(
           sourceFingerprint: fingerprint,
           fallbackReason: abortObserved ? 'cancelled' : 'summary_failed');

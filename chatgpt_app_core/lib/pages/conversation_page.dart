@@ -1,3 +1,11 @@
+import 'package:chatgpt_app_core/chat/domain/backend_usage_identity.dart';
+import 'package:chatgpt_app_core/chat/application/direct_failure_recovery.dart';
+import 'package:chatgpt_app_core/widget/direct_failure_dialog.dart';
+import 'package:chatgpt_app_core/chat/application/ordinary_backend_selection.dart';
+import 'package:chatgpt_app_core/chat/domain/backend_selection.dart';
+import 'package:chatgpt_app_core/dao/ai_catalog_dao.dart';
+import 'package:chatgpt_app_core/widget/backend_selection_picker.dart';
+import 'package:login_sdk/dao/backend_host.dart';
 import 'dart:async';
 import 'package:chatgpt_app_core/chat/application/role_continuation_snapshot.dart';
 import 'package:chatgpt_app_core/chat/application/conversation_composer_preparation.dart';
@@ -657,6 +665,12 @@ class _ConversationPageState extends State<ConversationPage>
       widget.onSendPreparationError?.call(error);
     }
     setState(() {});
+    if (visible &&
+        run.stage == ConversationGenerationStage.failed &&
+        run.profile.settings.mode == AIMode.local &&
+        _directRecoveryShown.add(run.runId)) {
+      unawaited(_showOrdinaryDirectFailure(run));
+    }
     if (visible && run.confirmation != null && _ordinaryDialog == null) {
       unawaited(_showOrdinaryConfirmation(run));
     }
@@ -751,17 +765,24 @@ class _ConversationPageState extends State<ConversationPage>
     _scheduleOrdinarySync();
   }
 
-  void _startOrdinary(String text,
-      {MessageModel? retryUser, MessageModel? oldReply}) {
+  ConversationGenerationRun? _startOrdinary(String text,
+      {MessageModel? retryUser,
+      MessageModel? oldReply,
+      AISettings? settingsOverride,
+      DirectRetryPermit? retryPermit,
+      bool preserveReply = false}) {
     final dao = _generationDao;
-    if (dao == null || !_accountCurrent || !_ordinaryHostVisible) return;
+    if (dao == null || !_accountCurrent || !_ordinaryHostVisible) return null;
     if (!_pageGenerationIdentity.identityCurrent) {
       HiDialog.showSnackBar(context, '登录或恢复环境已变化，请重新打开会话');
-      return;
+      return null;
     }
     ConversationTurnPreparation? preparation;
     try {
-      final settings = _effective(context.read<AISettingsProvider>().settings);
+      retryPermit?.verify();
+      if (retryPermit == null) _directRequestRevision++;
+      final settings = settingsOverride?.clone() ??
+          _effective(context.read<AISettingsProvider>().settings);
       final scope = ConversationGenerationScope(account: _pageAccount);
       final user = retryUser ??
           _genMessageModel(ownerType: OwnerType.sender, message: text);
@@ -772,7 +793,8 @@ class _ConversationPageState extends State<ConversationPage>
       if (retryUser != null &&
           (row == null ||
               row['content'] != retryUser.content ||
-              (oldReply != null &&
+              (!preserveReply &&
+                  oldReply != null &&
                   (replyRow == null ||
                       replyRow['content'] != oldReply.content)))) {
         throw StateError('原消息身份尚未就绪，请重新打开会话后重试');
@@ -808,7 +830,9 @@ class _ConversationPageState extends State<ConversationPage>
       final run = _generations.start(
           scope: scope,
           dao: dao,
-          profile: ConversationGenerationProfile(settings, _pageAccount),
+          profile: ConversationGenerationProfile(settings, _pageAccount,
+              additionalCurrent:
+                  retryPermit == null ? null : () => retryPermit.current),
           input: ConversationGenerationInput(
               cid: widget.conversationModel.cid,
               conversationRowId: widget.conversationModel.id,
@@ -822,10 +846,15 @@ class _ConversationPageState extends State<ConversationPage>
               existingSourceId: row?['memorySourceId'] as String?,
               existingSourceRowHash:
                   row == null ? null : generationSourceRowHash(row),
-              retryReplyRowId: replyRow?['id'] as int?,
-              retryReplyHash:
-                  replyRow == null ? null : generationSourceRowHash(replyRow),
-              receiverName: _aiName,
+              retryReplyRowId: preserveReply ? null : replyRow?['id'] as int?,
+              retryReplyHash: preserveReply || replyRow == null
+                  ? null
+                  : generationSourceRowHash(replyRow),
+              receiverName: settingsOverride == null
+                  ? _aiName
+                  : (_assistant?.name.isNotEmpty == true
+                      ? _assistant!.name
+                      : settings.aiDisplayName),
               receiverAvatar:
                   AssistantConversationAvatarResolver.nextMessageAvatar(
                       _assistant),
@@ -840,25 +869,164 @@ class _ConversationPageState extends State<ConversationPage>
               webSearch:
                   settings.webSearchEnabled && settings.webSearchConfigured),
           preparation: preparation,
-          transport: widget.chatService);
+          transport: settingsOverride == null
+              ? widget.chatService
+              : ChatService.from(settings));
       _ordinaryStartedHere = run.runId;
       _ordinaryDraftOwner = run.runId;
       _consumedDraftRevision = null;
       _ordinaryWholeVisible = _ordinaryHostVisible;
       _ordinaryDraftRevision = retryUser == null ? _draftRevision : null;
-      _ordinaryRemovedReplyAt = oldReply?.createdAt;
+      _ordinaryRemovedReplyAt = preserveReply ? null : oldReply?.createdAt;
       _invalidatePrediction();
       _draftTimer?.cancel();
       _bindOrdinaryRun(run);
       _isStreaming = true;
       setState(() {});
+      return run;
     } catch (error) {
       if (preparation != null) unawaited(preparation.release());
-      HiDialog.showSnackBar(context, '$error');
+      HiDialog.showSnackBar(context, '原消息身份或配置尚未就绪，请重新核对后重试');
+    }
+    return null;
+  }
+
+  int _directRequestRevision = 0;
+  bool _directRecoveryPending = false;
+  final Set<String> _directRecoveryShown = {};
+  Future<void> _showAgentDirectFailure(AgentTaskRun? run) async {
+    if (_directRecoveryPending ||
+        !mounted ||
+        !_accountCurrent ||
+        !_ordinaryHostVisible ||
+        _isStreaming) {
+      return;
+    }
+    final at = run?.prepared.user.createdAt ?? _agentTask?.userCreatedAt;
+    final users = chatController.initialMessageList
+        .where((m) => m.createdAt == at && m.ownerType == OwnerType.sender)
+        .toList();
+    if (users.length != 1) return;
+    final user = MessageModel.fromJson(users.single.toJson());
+    final replies = chatController.initialMessageList
+        .where((m) =>
+            m.ownerType == OwnerType.receiver && m.createdAt > user.createdAt)
+        .toList();
+    final original = (run?.prepared.profile?.settings ??
+            _effective(context.read<AISettingsProvider>().settings))
+        .clone()
+      ..mode = AIMode.local;
+    // 冷启动没有 run/profile，仍固定弹窗原 token、登录代次与来源。
+    final dialogIdentity = AiCatalogIdentity.capture();
+    final identity = run?.prepared.scope ?? _pageGenerationIdentity;
+    final revision = _directRequestRevision;
+    _directRecoveryPending = true;
+    final attachments = completionDao.attachmentsForUserMessage(user);
+    final recovery = DirectFailureRecovery(
+        original: original,
+        scope: identity.finalWriteScope(),
+        currentSettings: () => context.read<AISettingsProvider>().settings,
+        sourceCurrent: () =>
+            mounted &&
+            _accountCurrent &&
+            !_applicationInBackground &&
+            (_ordinaryHostVisible || _directRecoveryPending) &&
+            _directRequestRevision == revision &&
+            dialogIdentity.current &&
+            (run?.prepared.profile?.originalLoginCurrent ?? true) &&
+            chatController.initialMessageList.any((m) =>
+                m.createdAt == user.createdAt && m.content == user.content),
+        requiredInput: ModelCapabilities(
+            image: attachments.images.isNotEmpty,
+            pdf: attachments.nativeFiles.isNotEmpty,
+            tool: ChatService.capabilitiesFor(original).tool &&
+                run?.prepared.tools != null),
+        mayHaveBeenProcessed: true,
+        allowOriginalRetry: run?.prepared.profile != null,
+        failureCode: run?.prepared.session.failureDiagnosis?.code ?? 'unknown');
+    try {
+      final permit = await showDirectFailureDialog(context, recovery);
+      if (!mounted || permit == null || !permit.current) return;
+      final selected = permit.claim();
+      if (selected == null) return;
+      await _retryUserMessage(user,
+          oldReply: run?.reply ?? (replies.isEmpty ? null : replies.first),
+          settingsOverride: selected,
+          retryPermit: permit,
+          preserveReply: true);
+    } finally {
+      _directRecoveryPending = false;
+    }
+  }
+
+  Future<void> _showOrdinaryDirectFailure(ConversationGenerationRun run) async {
+    if (_directRecoveryPending ||
+        !mounted ||
+        !_accountCurrent ||
+        !_ordinaryHostVisible ||
+        run.busy ||
+        run.profile.settings.mode != AIMode.local ||
+        !identical(_ordinaryRun, run)) {
+      return;
+    }
+    final accepted = run.acceptedUser;
+    if (accepted == null) {
+      return;
+    }
+    final user = MessageModel.fromJson(accepted.toJson());
+    _directRecoveryPending = true;
+    ConversationGenerationRun? next;
+    bool handoff = false;
+    final expectedRevision = _directRequestRevision;
+    final recovery = DirectFailureRecovery(
+        original: run.profile.settings,
+        scope: run.scope.finalWriteScope(),
+        currentSettings: () => context.read<AISettingsProvider>().settings,
+        sourceCurrent: () =>
+            mounted &&
+            _accountCurrent &&
+            !_applicationInBackground &&
+            (_ordinaryHostVisible || _directRecoveryPending) &&
+            _directRequestRevision == expectedRevision &&
+            run.profile.originalLoginCurrent &&
+            (handoff
+                ? next?.scope.isCurrent == true
+                : run.scope.isCurrent && !run.retired) &&
+            identical(_ordinaryRun, handoff ? next : run) &&
+            chatController.initialMessageList.any((m) =>
+                m.createdAt == user.createdAt && m.content == user.content),
+        requiredInput: ModelCapabilities(
+            image: run.acceptedUserBlocks.any((b) => b is ImageBlock),
+            pdf: completionDao
+                .attachmentsForUserMessage(user)
+                .nativeFiles
+                .isNotEmpty),
+        mayHaveBeenProcessed: (run.record?.attempts ?? 0) > 0 ||
+            run.transportFailure?.unsentReason == null,
+        failureCode: run.transportFailure?.safeCode ?? 'unknown');
+    try {
+      final permit = await showDirectFailureDialog(context, recovery);
+      if (!mounted || permit == null || !permit.current) return;
+      final selected = permit.claim();
+      if (selected == null) return;
+      // 旧输出/终态留在原记录，新generation另建尝试，不删除旧回复。
+      final reply = run.receiver;
+      next = _startOrdinary(user.content,
+          retryUser: user,
+          oldReply: reply,
+          settingsOverride: selected,
+          retryPermit: permit,
+          preserveReply: true);
+      handoff = next != null;
+    } finally {
+      _directRecoveryPending = false;
     }
   }
 
   AgentTaskRun? _agentRun;
+  ConversationGenerationProfile? _taskPreparedProfile;
+  ConversationGenerationScope? _taskPreparedScope;
+  ChatService? _taskPreparedChat;
   int? _agentReadAloudAt;
   AgentTaskKey get _taskKey =>
       AgentTaskKey(_pageAccount, widget.conversationModel.cid);
@@ -934,6 +1102,12 @@ class _ConversationPageState extends State<ConversationPage>
       _taskCheckpointFailed = true;
       HiDialog.showSnackBar(context, run.pauseReason!);
     }
+    if (!run.busy &&
+        run.prepared.settings.mode == AIMode.local &&
+        run.prepared.session.failureDiagnosis != null &&
+        _directRecoveryShown.add('agent:${run.messageKey}')) {
+      unawaited(_showAgentDirectFailure(run));
+    }
     if (!run.busy && reply != null) {
       widget.conversationModel.lastMessage = reply.content;
       widget.conversationModel.updateAt = reply.createdAt;
@@ -956,6 +1130,8 @@ class _ConversationPageState extends State<ConversationPage>
         user: user,
         receiver: _genMessageModel(ownerType: OwnerType.receiver, message: ''),
         settings: settings,
+        profile: _taskPreparedProfile,
+        scope: _taskPreparedScope,
         completion: completionDao,
         messages: messageDao,
         usage: usageRecordService,
@@ -1061,6 +1237,9 @@ class _ConversationPageState extends State<ConversationPage>
     final assistant = _assistant;
     final modelId = widget.conversationModel.modelId;
     final providerId = widget.conversationModel.modelProviderId;
+    final backendSelection = widget.conversationModel.backendSelection;
+    final backendIdentity =
+        settings.mode == AIMode.backend ? AiCatalogIdentity.capture() : null;
     unawaited(_prediction.request(
       completedTurn: turn,
       settings: settings,
@@ -1071,7 +1250,10 @@ class _ConversationPageState extends State<ConversationPage>
           conversationId == widget.conversationModel.cid &&
           identical(assistant, _assistant) &&
           modelId == widget.conversationModel.modelId &&
-          providerId == widget.conversationModel.modelProviderId,
+          providerId == widget.conversationModel.modelProviderId &&
+          identical(
+              backendSelection, widget.conversationModel.backendSelection) &&
+          (backendIdentity?.current ?? true),
       onUsage: (result) async {
         if (!_accountCurrent) return;
         try {
@@ -1350,6 +1532,7 @@ class _ConversationPageState extends State<ConversationPage>
   String? _daoSystemPrompt;
   String? _daoModelProviderId;
   String? _daoModelId;
+  BackendSelection? _daoBackendSelection;
   DeepSeekReasoningEffort? _daoReasoningEffort;
   bool _savingReasoningEffort = false;
   AssistantDao? _assistantDao;
@@ -1398,7 +1581,10 @@ class _ConversationPageState extends State<ConversationPage>
   /// 应用助手的模型覆盖后的设置 —— 能力位与请求构造都用它，
   /// 保证「助手指定了模型时，capabilitiesFor 用覆盖后的模型算」。
   AISettings _effective(AISettings s) {
-    final next = (_assistant?.applyTo(s) ?? s).clone();
+    final ordinaryBackend = s.mode == AIMode.backend;
+    final next = ordinaryBackend
+        ? ordinaryBackendSettings(s, widget.conversationModel, _assistant)
+        : (_assistant?.applyTo(s) ?? s).clone();
     next.deepSeekReasoningEffort =
         widget.conversationModel.deepSeekReasoningEffort;
     if (_taskMode) next.streamEnabled = true;
@@ -1406,18 +1592,17 @@ class _ConversationPageState extends State<ConversationPage>
     if (webSearchOverride != null) {
       next.webSearchEnabled = webSearchOverride;
     }
-    final modelId = widget.conversationModel.modelId?.trim() ?? '';
-    if (modelId.isEmpty) return next;
+    if (ordinaryBackend) return next;
+    final modelId = widget.conversationModel.modelId ?? '';
     if (next.mode == AIMode.backend) {
-      next.backendModel = modelId;
+      if (modelId.isNotEmpty) next.backendModel = modelId;
       return next;
     }
     final providerId = widget.conversationModel.modelProviderId;
-    if (providerId != null &&
-        next.providers.any((p) => p.id == providerId && p.enabled)) {
+    if (providerId != null && providerId.isNotEmpty) {
       next.activeProviderId = providerId;
     }
-    next.setActiveModel(modelId);
+    if (modelId.isNotEmpty) next.setLocalModelOverride(modelId);
     return next;
   }
 
@@ -1456,14 +1641,22 @@ class _ConversationPageState extends State<ConversationPage>
         .join('\n\n');
   }
 
-  SemanticChatSummaryService? _summaryServiceFor(AISettings settings) =>
-      !_taskMode || _summaryDao == null
-          ? null
-          : SemanticChatSummaryService(
-              store: _summaryDao!,
-              summarizer: SemanticChatSummaryService.chatSummarizer(
-                  ChatService.from(settings)),
-            );
+  SemanticChatSummaryService? _summaryServiceFor(AISettings settings) {
+    if (!_taskMode || _summaryDao == null) return null;
+    final transport = _taskPreparedChat ?? ChatService.from(settings);
+    final profile = _taskPreparedProfile;
+    final scope = _taskPreparedScope;
+    return SemanticChatSummaryService(
+        store: _summaryDao!,
+        pauseOnRequestFailure: settings.mode == AIMode.local,
+        summarizer: SemanticChatSummaryService.chatSummarizer(transport,
+            beforeRequest: profile == null || scope == null
+                ? null
+                : () => profile.verify(scope),
+            isCurrent: profile == null || scope == null
+                ? null
+                : () => scope.isCurrent && profile.visiblyCurrent));
+  }
 
   void _openTaskMode() {
     _invalidatePrediction();
@@ -1677,6 +1870,12 @@ class _ConversationPageState extends State<ConversationPage>
         !task.canResume ||
         _isStreaming ||
         _taskExecutor.lookup(_taskKey)?.busy == true) {
+      return;
+    }
+    if (task.backendSelection == null &&
+        (_agentRun?.prepared.settings.mode == AIMode.local ||
+            context.read<AISettingsProvider>().settings.mode == AIMode.local)) {
+      await _showAgentDirectFailure(_agentRun);
       return;
     }
     final userAt = task.userCreatedAt!;
@@ -2339,7 +2538,13 @@ class _ConversationPageState extends State<ConversationPage>
     final effective = _effective(settings);
     final model = effective.effectiveModel;
     final prefix = widget.conversationModel.modelId == null ? '跟随全局' : '当前模型';
-    if (effective.mode == AIMode.backend) return '$prefix：$model';
+    if (effective.mode == AIMode.backend) {
+      final layer = widget.conversationModel.backendSelection;
+      final inherited = layer?.isFollow == true ||
+          (layer == null &&
+              (widget.conversationModel.modelId?.trim().isEmpty ?? true));
+      return '${inherited ? "跟随助手/全局" : "会话模型"}：${backendSelectionLabel(effective.backendSelection, legacyModelId: effective.backendModel)}';
+    }
     return '$prefix：${effective.activeProvider.name} · $model';
   }
 
@@ -2348,7 +2553,9 @@ class _ConversationPageState extends State<ConversationPage>
     final supportsEffort = ReasoningControlAdapter.supportsDeepSeekEffort(
       providerId: effective.mode == AIMode.local
           ? effective.activeProvider.id
-          : 'deepseek',
+          : _taskMode
+              ? 'deepseek'
+              : effective.backendSelection?.providerCode ?? '',
       providerCode: ChatService.providerCodeFor(effective),
       modelId: effective.effectiveModel,
     );
@@ -2754,7 +2961,7 @@ class _ConversationPageState extends State<ConversationPage>
     final caps = ChatService.capabilitiesFor(_effective(settings));
     _aiName = (_assistant?.name.isNotEmpty ?? false)
         ? _assistant!.name
-        : settings.aiDisplayName;
+        : _effective(settings).aiDisplayName;
     // 把块仓库提供给气泡内部的块渲染（BlockMessageContent 用 Selector 精确订阅）。
     return ChangeNotifierProvider<ChatBlockStore>.value(
       value: _blockStore,
@@ -3515,6 +3722,14 @@ class _ConversationPageState extends State<ConversationPage>
       _startOrdinary(inputMessage);
       return;
     }
+    _directRequestRevision++;
+    final capturedTaskSettings =
+        _effective(context.read<AISettingsProvider>().settings);
+    _taskPreparedScope = ConversationGenerationScope(account: _pageAccount);
+    _taskPreparedProfile =
+        ConversationGenerationProfile(capturedTaskSettings, _pageAccount);
+    _taskPreparedChat =
+        widget.chatService ?? ChatService.from(capturedTaskSettings);
     _invalidatePrediction();
     // 锁覆盖附件准备、持久化及网络等待，停止准备时仍保留输入和草稿。
     _draftTimer?.cancel();
@@ -3532,6 +3747,10 @@ class _ConversationPageState extends State<ConversationPage>
     var handedOff = false;
     _personalMemoryTurn = null;
     try {
+      await _taskPreparedProfile!.prepareSelection(_taskPreparedChat!,
+          _taskPreparedScope!, _streamAbortCompleter!.future);
+      await _taskPreparedProfile!.verify(_taskPreparedScope!);
+      if (_sendCancelled) return;
       _personalMemoryTurn = await _personalMemoryDao?.beginTurn(
           cid: widget.conversationModel.cid,
           assistantId: widget.conversationModel.assistantId,
@@ -3543,12 +3762,16 @@ class _ConversationPageState extends State<ConversationPage>
       final assistantSystemPrompt =
           await _assistantSystemPromptForSafely(inputMessage);
       if (_sendCancelled) return;
-      final modelChanged =
+      final modelChanged = (!_taskMode &&
+              rawSettings.mode == AIMode.backend &&
+              !identical(_daoBackendSelection,
+                  widget.conversationModel.backendSelection)) ||
           _daoModelProviderId != widget.conversationModel.modelProviderId ||
-              _daoModelId != widget.conversationModel.modelId ||
-              _daoReasoningEffort !=
-                  widget.conversationModel.deepSeekReasoningEffort;
-      if (rawSettings != _currentSettings ||
+          _daoModelId != widget.conversationModel.modelId ||
+          _daoReasoningEffort !=
+              widget.conversationModel.deepSeekReasoningEffort;
+      if (!identical(completionDao.chatService, _taskPreparedChat) ||
+          rawSettings != _currentSettings ||
           !identical(_assistant, _daoAssistant) ||
           assistantSystemPrompt != _daoSystemPrompt ||
           _daoTaskMode != _taskMode ||
@@ -3558,13 +3781,14 @@ class _ConversationPageState extends State<ConversationPage>
         _daoSystemPrompt = assistantSystemPrompt;
         _daoModelProviderId = widget.conversationModel.modelProviderId;
         _daoModelId = widget.conversationModel.modelId;
+        _daoBackendSelection = widget.conversationModel.backendSelection;
         _daoReasoningEffort = widget.conversationModel.deepSeekReasoningEffort;
         _daoTaskMode = _taskMode;
         completionDao = CompletionDao(
           memoryContextResolver: _memoryResolver(),
-          chatService: widget.chatService,
+          chatService: _taskPreparedChat,
           manageContext: true,
-          settings: _effective(rawSettings),
+          settings: _taskPreparedProfile!.settings,
           systemPrompt: assistantSystemPrompt,
           messages: completionDao.currentMessages,
           toolHistory: completionDao.currentToolHistory,
@@ -3575,7 +3799,7 @@ class _ConversationPageState extends State<ConversationPage>
           semanticSummaryService: _summaryServiceFor(_effective(rawSettings)),
         );
       }
-      final settings = _effective(rawSettings);
+      final settings = _taskPreparedProfile!.settings;
       final caps = ChatService.capabilitiesFor(settings);
       final frozen =
           await _freezeReferences(settings.attachmentProcessingLimits);
@@ -3713,8 +3937,10 @@ class _ConversationPageState extends State<ConversationPage>
       }
       accepted = true;
       if (_taskMode) {
-        await _agentTask!
-            .begin(userAt: userModel.createdAt, input: inputMessage);
+        await _agentTask!.begin(
+            userAt: userModel.createdAt,
+            input: inputMessage,
+            backendSelection: _taskPreparedProfile?.backendSelection);
         await _workspaceTools!.beginTurn(userModel.createdAt, [
           for (final meta in processed.metas)
             if (meta.workspaceFileId != null) meta.workspaceFileId!
@@ -3989,6 +4215,8 @@ class _ConversationPageState extends State<ConversationPage>
               context.read<AISettingsProvider>().settings,
             ),
             isGuest: LoginDao.isGuest(),
+            accountHash: _pageAccount,
+            origin: BackendConfig.buildUri('/uapi/ai/catalog').origin,
           )
         : readiness.state;
     final decision = resolveAISendGuard(
@@ -4225,6 +4453,7 @@ class _ConversationPageState extends State<ConversationPage>
   }
 
   void _stopStream({String reason = '已手动暂停，可从保存的进度继续'}) {
+    _directRequestRevision++;
     final ordinary = _ordinaryRun;
     if (ordinary?.busy == true) {
       unawaited(ordinary!.stop(reason));
@@ -4786,7 +5015,9 @@ class _ConversationPageState extends State<ConversationPage>
 
     final providerId = settings.mode == AIMode.local
         ? settings.activeProviderId
-        : widget.conversationModel.modelProviderId;
+        : settings.backendSelection?.isPair == true
+            ? backendUsageProviderId(settings.backendSelection!)
+            : null;
 
     try {
       await usageRecordService.recordTurn(
@@ -4939,6 +5170,7 @@ class _ConversationPageState extends State<ConversationPage>
     _daoSystemPrompt = await _assistantSystemPromptForSafely('');
     _daoModelProviderId = widget.conversationModel.modelProviderId;
     _daoModelId = widget.conversationModel.modelId;
+    _daoBackendSelection = widget.conversationModel.backendSelection;
     _daoReasoningEffort = widget.conversationModel.deepSeekReasoningEffort;
     _daoTaskMode = _taskMode;
     // 从持久化块恢复工具调用历史（遗留项 2）+ 附件文本历史（遗留项 6），
@@ -5191,6 +5423,10 @@ class _ConversationPageState extends State<ConversationPage>
     _invalidatePrediction();
     if (!_ready || !_accountCurrent || _isStreaming) return;
     final rawSettings = context.read<AISettingsProvider>().settings;
+    if (rawSettings.mode == AIMode.backend && !_taskMode) {
+      await _switchBackendSelection();
+      return;
+    }
     final picked = rawSettings.mode == AIMode.backend
         ? await _pickBackendModel(rawSettings)
         : await _pickConfiguredLocalModel(rawSettings);
@@ -5540,6 +5776,55 @@ class _ConversationPageState extends State<ConversationPage>
         ),
       TranslationModelPreferenceMode.backend => null,
     };
+  }
+
+  Future<void> _switchBackendSelection() async {
+    final model = widget.conversationModel;
+    final scope = _pageGenerationIdentity.finalWriteScope();
+    final identity = AiCatalogIdentity.capture();
+    void check() {
+      scope.verify();
+      if (!mounted ||
+          !_ready ||
+          !_accountCurrent ||
+          _isStreaming ||
+          !identity.current ||
+          !identity.authenticated ||
+          identity.account != _pageAccount ||
+          !identical(model, widget.conversationModel) ||
+          context.read<AISettingsProvider>().settings.mode != AIMode.backend) {
+        throw const BackendSelectionEditorExpired();
+      }
+    }
+
+    try {
+      check();
+      final snapshot = await conversationListDao.backendSelectionSnapshot(model,
+          validate: check);
+      if (!mounted) return;
+      check();
+      final picked = await pickBackendSelection(context,
+          identity: identity,
+          selected: model.backendSelection,
+          legacyModelId: model.modelId,
+          followLabel: '跟随助手 / 全局');
+      if (picked == null) return;
+      check();
+      await scope.stable(() => conversationListDao.saveBackendSelectionChecked(
+          model, picked, snapshot,
+          validate: check));
+      if (!mounted) return;
+      check();
+      setState(() {
+        model.backendSelection = picked;
+        model.hadChanged = true;
+      });
+      HiDialog.showSnackBar(context, '已保存当前会话后端选择');
+    } catch (error) {
+      if (mounted && _accountCurrent) {
+        HiDialog.showSnackBar(context, '原会话或编辑环境已变化，请重新打开会话后选择');
+      }
+    }
   }
 
   Widget _backendModelTestStatus(
@@ -6314,19 +6599,64 @@ class _ConversationPageState extends State<ConversationPage>
   }
 
   Future<void> _retryUserMessage(MessageModel userMessage,
-      {MessageModel? oldReply, bool resumeTask = false}) async {
+      {MessageModel? oldReply,
+      bool resumeTask = false,
+      bool preserveReply = false,
+      AISettings? settingsOverride,
+      DirectRetryPermit? retryPermit}) async {
     if (!_ready ||
         !_accountCurrent ||
         _isStreaming ||
         _savingReasoningEffort ||
-        !_canStartAIRequest(showPrompt: true)) {
+        (retryPermit == null && !_canStartAIRequest(showPrompt: true))) {
+      return;
+    }
+    if (retryPermit == null &&
+        oldReply != null &&
+        _blockStore
+            .blocksFor(chatMessageKey(oldReply.createdAt))
+            .any((b) => b is ErrorBlock) &&
+        _effective(context.read<AISettingsProvider>().settings).mode ==
+            AIMode.local) {
+      if (_taskMode) {
+        await _showAgentDirectFailure(_agentRun);
+      } else if (_ordinaryRun case final run?) {
+        await _showOrdinaryDirectFailure(run);
+      }
       return;
     }
     if (!_taskMode && !resumeTask) {
       _startOrdinary(userMessage.content,
-          retryUser: userMessage, oldReply: oldReply);
+          retryUser: userMessage,
+          oldReply: oldReply,
+          settingsOverride: settingsOverride,
+          retryPermit: retryPermit,
+          preserveReply: preserveReply);
       return;
     }
+    retryPermit?.verify();
+    if (retryPermit == null) _directRequestRevision++;
+    final capturedTaskSettings = settingsOverride?.clone() ??
+        _effective(context.read<AISettingsProvider>().settings);
+    if (resumeTask &&
+        (_agentTask?.backendSelection != null ||
+            capturedTaskSettings.mode == AIMode.backend)) {
+      final pair = _agentTask?.backendSelection;
+      if (pair == null || !pair.isPair) {
+        HiDialog.showSnackBar(context, '旧任务原服务商无法证明，请明确创建新请求');
+        return;
+      }
+      capturedTaskSettings.mode = AIMode.backend;
+      capturedTaskSettings.backendSelection = pair;
+    }
+    _taskPreparedScope = ConversationGenerationScope(account: _pageAccount);
+    _taskPreparedProfile = ConversationGenerationProfile(
+        capturedTaskSettings, _pageAccount,
+        additionalCurrent:
+            retryPermit == null ? null : () => retryPermit.current);
+    _taskPreparedChat = settingsOverride == null
+        ? widget.chatService ?? ChatService.from(capturedTaskSettings)
+        : ChatService.from(capturedTaskSettings);
     final resumeGeneration = resumeTask ? _agentTask?.generation : null;
     // 重生成/重试不采集旧轮次，不在重开或续跑时补扫。
     _personalMemoryTurn = null;
@@ -6343,7 +6673,11 @@ class _ConversationPageState extends State<ConversationPage>
       _sendProgress = const ChatSendProgress('准备重试');
     });
     try {
-      final rawSettings = context.read<AISettingsProvider>().settings;
+      await _taskPreparedProfile!.prepareSelection(_taskPreparedChat!,
+          _taskPreparedScope!, _streamAbortCompleter!.future);
+      await _taskPreparedProfile!.verify(_taskPreparedScope!);
+      if (_sendCancelled) return;
+      final rawSettings = capturedTaskSettings;
       final systemPrompt = await _assistantSystemPromptForSafely(
           userMessage.content,
           resumeTask: resumeTask,
@@ -6351,10 +6685,10 @@ class _ConversationPageState extends State<ConversationPage>
                   .currentFileHistory[userMessage.createdAt]?.isNotEmpty ??
               false);
       if (_sendCancelled) return;
-      final settings = _effective(rawSettings);
+      final settings = _taskPreparedProfile!.settings;
       final candidate = CompletionDao(
         memoryContextResolver: _memoryResolver(),
-        chatService: widget.chatService,
+        chatService: _taskPreparedChat,
         manageContext: true,
         settings: settings,
         systemPrompt: systemPrompt,
@@ -6488,7 +6822,7 @@ class _ConversationPageState extends State<ConversationPage>
         }
       }
       // 检查成功后才替换旧回复；提问行始终沿用，重试不会复制提问。
-      if (oldReply != null) {
+      if (oldReply != null && !preserveReply) {
         await messageDao.deleteMessageByCreatedAt(oldReply.createdAt);
         if (!_accountCurrent) return;
         chatController.deleteMessage(oldReply);
@@ -6500,6 +6834,7 @@ class _ConversationPageState extends State<ConversationPage>
       _daoAssistant = _assistant;
       _daoModelProviderId = widget.conversationModel.modelProviderId;
       _daoModelId = widget.conversationModel.modelId;
+      _daoBackendSelection = widget.conversationModel.backendSelection;
       _daoReasoningEffort = widget.conversationModel.deepSeekReasoningEffort;
       _daoTaskMode = _taskMode;
       _lastUserModel = userMessage;
@@ -6508,7 +6843,8 @@ class _ConversationPageState extends State<ConversationPage>
         await _agentTask!.begin(
             userAt: userMessage.createdAt,
             input: userMessage.content,
-            resume: resumeTask);
+            resume: resumeTask,
+            backendSelection: _taskPreparedProfile?.backendSelection);
         await _workspaceTools!
             .beginTurn(userMessage.createdAt, inputIds, resume: resumeTask);
       }

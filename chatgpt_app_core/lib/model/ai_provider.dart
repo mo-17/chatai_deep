@@ -183,13 +183,10 @@ class AiProvider {
 
   AiProvider copy() => AiProvider.fromJson(toJson());
 
-  /// 实际生效的模型 id：优先选中项，否则取首个模型，再否则空串。
+  /// 显式引用失效时仍保留；仅真正未选择且唯一的配置可以兼容。
   String get effectiveModelId {
-    if (selectedModelId.isNotEmpty &&
-        models.any((m) => m.id == selectedModelId)) {
-      return selectedModelId;
-    }
-    return models.isNotEmpty ? models.first.id : selectedModelId;
+    if (selectedModelId.isNotEmpty) return selectedModelId;
+    return models.length == 1 ? models.single.id : '';
   }
 
   /// 能力探测用的 providerCode（对照 [ModelCapabilities.heuristic] 关注的取值）。

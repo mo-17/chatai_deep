@@ -331,8 +331,8 @@ void main() {
           () async {
         await _page(tester);
         expect(ModelCatalog.displaySnapshot.hasSnapshot, owned);
-        expect(find.textContaining(owned ? '当前显示上次清单' : '当前显示本地兜底清单'),
-            findsWidgets);
+        expect(
+            find.textContaining(owned ? '当前显示上次清单' : '获取模型目录失败'), findsWidgets);
         await tester.tap(find.text('后端模型'));
         await _pump(tester);
         expect(find.textContaining('legacy-other'), findsNothing);
@@ -354,12 +354,12 @@ void main() {
         await tester.tap(find.text('后端模型'));
         await _pump(tester);
         await tester.pumpAndSettle();
-        await tester.ensureVisible(find.text('自定义模型 id...'));
-        await tester.tap(find.text('自定义模型 id...'));
+        await tester.ensureVisible(find.text('自定义服务商与模型...'));
+        await tester.tap(find.text('自定义服务商与模型...'));
         await tester.pumpAndSettle();
         await tester.enterText(
-            find.descendant(
-                of: find.byType(AlertDialog), matching: find.byType(TextField)),
+            find.byKey(const ValueKey('backend_provider_code')), 'deepseek');
+        await tester.enterText(find.byKey(const ValueKey('backend_model_id')),
             'custom-original-scope');
         if (change == 'origin') {
           BackendConfig.host = 'new-catalog.synthetic.invalid';
@@ -372,8 +372,11 @@ void main() {
         await tester.runAsync(() => Future<void>.delayed(Duration.zero));
         await _pump(tester);
         expect(p.writes - writes, change == 'none' ? 1 : 0);
-        expect(p.settings.backendModel,
-            change == 'none' ? 'custom-original-scope' : 'deepseek-chat');
+        expect(p.settings.backendModel, 'deepseek-chat');
+        expect(p.settings.backendSelection?.modelId,
+            change == 'none' ? 'custom-original-scope' : null);
+        expect(p.settings.backendSelection?.providerCode,
+            change == 'none' ? 'deepseek' : null);
         if (change == 'none') {
           expect(HiCache.getInstance().get(AISettingsDao.keyFor('a')),
               contains('custom-original-scope'));

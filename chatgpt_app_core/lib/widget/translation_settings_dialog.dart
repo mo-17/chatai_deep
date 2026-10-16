@@ -1,3 +1,8 @@
+import 'package:chatgpt_app_core/chat/application/translation_selection_session.dart';
+import 'package:chatgpt_app_core/chat/application/translation_stream_executor.dart';
+import 'package:chatgpt_app_core/chat/domain/backend_selection.dart';
+import 'package:chatgpt_app_core/chat/domain/backend_selection_error.dart';
+import 'package:chatgpt_app_core/widget/backend_selection_picker.dart';
 import 'dart:async';
 
 import 'package:chatgpt_app_core/chat/application/reasoning_control_adapter.dart';
@@ -18,6 +23,7 @@ final class TranslationSettingsResult {
   final TranslationModelProbeIdentity identity;
   final TranslationSettingsEvidenceSignature evidenceSignature;
   final bool warningsAcknowledged;
+  final TranslationSelectionSession? preparedSession;
 
   const TranslationSettingsResult({
     required this.preference,
@@ -25,6 +31,7 @@ final class TranslationSettingsResult {
     required this.identity,
     required this.evidenceSignature,
     required this.warningsAcknowledged,
+    this.preparedSession,
   });
 }
 
@@ -124,10 +131,12 @@ typedef TranslationSettingsSnapshotReader = TranslationSettingsSnapshot
 final class TranslationSettingsHandoff {
   final TranslationSettingsSnapshot snapshot;
   final TranslationRequestProfile profile;
+  final TranslationSelectionSession? preparedSession;
 
   const TranslationSettingsHandoff({
     required this.snapshot,
     required this.profile,
+    this.preparedSession,
   });
 }
 
@@ -225,10 +234,7 @@ TranslationSettingsHandoff? resolveTranslationSettingsHandoff({
 }) {
   try {
     final snapshot = readSnapshot();
-    final profile = TranslationModelResolver.snapshot(
-      snapshot.settings,
-      result.preference,
-    );
+    final profile = _profileForConfirmedResult(result, snapshot);
     const evaluator = TranslationModelEligibilityEvaluator();
     final eligibility = evaluator.evaluateProfile(
       settings: snapshot.settings,
@@ -259,7 +265,13 @@ TranslationSettingsHandoff? resolveTranslationSettingsHandoff({
       return null;
     }
     return TranslationSettingsHandoff(
-      snapshot: snapshot,
+      snapshot: result.preparedSession == null
+          ? snapshot
+          : TranslationSettingsSnapshot(
+              settings: result.preparedSession!.settings.clone(),
+              accountHash: snapshot.accountHash,
+              eligibilityEnvironment: snapshot.eligibilityEnvironment),
+      preparedSession: result.preparedSession,
       profile: probeService.applyCachedEvidence(
         accountHash: snapshot.accountHash,
         settings: snapshot.settings,
@@ -283,10 +295,7 @@ TranslationEligibilityResult Function(TranslationRequestProfile profile)
         (profile) {
           try {
             final snapshot = readSnapshot();
-            final currentProfile = TranslationModelResolver.snapshot(
-              snapshot.settings,
-              result.preference,
-            );
+            final currentProfile = _profileForConfirmedResult(result, snapshot);
             const evaluator = TranslationModelEligibilityEvaluator();
             final eligibility = evaluator.evaluateProfile(
               settings: snapshot.settings,
@@ -329,6 +338,27 @@ TranslationEligibilityResult Function(TranslationRequestProfile profile)
             return _configurationChangedResult;
           }
         };
+
+TranslationRequestProfile _profileForConfirmedResult(
+    TranslationSettingsResult result, TranslationSettingsSnapshot snapshot) {
+  final run = result.preparedSession;
+  if (run != null) {
+    run.verify();
+    if (translationSelectionInputKey(snapshot.settings, run.sourcePreference) !=
+        run.inputKey) {
+      throw const TranslationModelUnavailableException('翻译配置已变化，请重新确认',
+          safeCode: 'configurationChanged');
+    }
+    return run.profile;
+  }
+  final profile =
+      TranslationModelResolver.snapshot(snapshot.settings, result.preference);
+  if (profile.mode == TranslationExecutionMode.backend) {
+    throw const TranslationModelUnavailableException('请重新确认后端服务商与模型',
+        safeCode: 'configurationChanged');
+  }
+  return profile;
+}
 
 const _configurationChangedResult = TranslationEligibilityResult([
   TranslationEligibilityIssue(
@@ -390,17 +420,29 @@ class _TranslationSettingsDialogState
   TranslationModelProbeRecord? _displayRecord;
   TranslationModelProbeIdentity? _displayRecordIdentity;
   String? _notice;
+  late final TranslationSelectionScope _selectionScope;
+  final _prepareCancellation = TranslationCancellationController();
+  TranslationSelectionSession? _preparedSession;
+  Future<TranslationSelectionSession>? _preparation;
+  String? _preparationKey;
+  bool _preparing = false;
 
   @override
   void initState() {
     super.initState();
-    final settings = widget.readSnapshot().settings;
-    _selected = _targetExists(settings, widget.initialValue)
-        ? widget.initialValue
-        : const TranslationModelPreference(
-            mode: TranslationModelPreferenceMode.followGlobal,
-            reasoningPolicy: ChatReasoningPolicy.offIfSupported,
-          );
+    final first = widget.readSnapshot();
+    _selectionScope = TranslationSelectionScope(
+        accountHash: first.accountHash,
+        currentAccount: () => widget.readSnapshot().accountHash);
+    final settings = first.settings;
+    _selected =
+        widget.initialValue.mode == TranslationModelPreferenceMode.backend ||
+                _targetExists(settings, widget.initialValue)
+            ? widget.initialValue
+            : const TranslationModelPreference(
+                mode: TranslationModelPreferenceMode.followGlobal,
+                reasoningPolicy: ChatReasoningPolicy.offIfSupported,
+              );
     // 每次任务默认优先快速翻译；模型选择会被记住，但是否关闭 Thinking
     // 由本次任务显式确认，不继承旧任务可能采用的 provider default。
     _disableThinking = true;
@@ -410,6 +452,7 @@ class _TranslationSettingsDialogState
   void dispose() {
     _activeProbe?.cancel();
     _activeProbe = null;
+    _prepareCancellation.cancel();
     super.dispose();
   }
 
@@ -421,7 +464,7 @@ class _TranslationSettingsDialogState
     final usesBackend = _usesBackend(settings, _selected);
     final supportsThinkingControl = decision.supported;
     final effectiveSwitch = supportsThinkingControl && _disableThinking;
-    final running = _activeProbe != null;
+    final running = _activeProbe != null || _preparing;
     final issue = view.eligibility.primaryIssue;
     return AlertDialog(
       key: const ValueKey('translation_settings_dialog'),
@@ -440,7 +483,8 @@ class _TranslationSettingsDialogState
             OutlinedButton.icon(
               key: const ValueKey('translation_model_button'),
               icon: const Icon(Icons.smart_toy_outlined),
-              label: Text(_selectionLabel(settings, _selected)),
+              label: Text(_selectionLabel(settings, _selected,
+                  backendPair: view.profile?.backendSelection)),
               onPressed: running ? null : _pickModel,
             ),
             const SizedBox(height: 8),
@@ -578,9 +622,19 @@ class _TranslationSettingsDialogState
       eligibilityFor: (preference) => _viewFor(preference).eligibility,
       probeFor: (preference) => _viewFor(preference).record,
       includeUnavailable: true,
+      backendIdentity: _selectionScope.identity,
     );
     if (!mounted || picked == null) return;
+    if (!_selectionScope.accountCurrent ||
+        (_usesBackend(snapshot.settings, picked) &&
+            !_selectionScope.backendCurrent)) {
+      setState(() => _notice = '账号、登录或后端来源已变化，请重新打开翻译设置');
+      return;
+    }
     setState(() {
+      _preparedSession = null;
+      _preparation = null;
+      _preparationKey = null;
       _selected = picked;
       _disableThinking = true;
       _displayRecord = null;
@@ -590,6 +644,7 @@ class _TranslationSettingsDialogState
   }
 
   Future<void> _testModel() async {
+    if (!await _prepareCurrentBackend()) return;
     final before = _currentView();
     final beforeIdentity = before.identity;
     if (!before.eligibility.canStart ||
@@ -691,6 +746,7 @@ class _TranslationSettingsDialogState
   Future<void> _confirmTranslation() async {
     var forceConfigurationConfirmation = false;
     while (mounted) {
+      if (!await _prepareCurrentBackend()) return;
       final before = _currentView();
       final profile = before.profile;
       final identity = before.identity;
@@ -706,9 +762,12 @@ class _TranslationSettingsDialogState
       if (forceConfigurationConfirmation) {
         reasons.insert(0, '翻译配置已变化，请重新确认');
       }
-      final acknowledged = reasons.isNotEmpty;
+      // 唯一解析只确认可用性；旧选择仍须由用户看见并明确确认服务商与模型。
+      final resolvedBackendPair = _resolvedLegacyPairForConfirmation();
+      final acknowledged = reasons.isNotEmpty || resolvedBackendPair != null;
       if (acknowledged) {
-        final confirmed = await _showTranslationWarning(reasons);
+        final confirmed = await _showTranslationWarning(reasons,
+            resolvedBackendPair: resolvedBackendPair);
         if (!mounted || !confirmed) return;
       }
 
@@ -736,16 +795,46 @@ class _TranslationSettingsDialogState
         setState(() => _notice = '翻译配置已变化，请重新确认');
         continue;
       }
-      final evidenced = widget.probeService.applyCachedEvidence(
+      var evidenced = widget.probeService.applyCachedEvidence(
         accountHash: refreshed.snapshot.accountHash,
         settings: refreshed.snapshot.settings,
         profile: refreshedProfile,
       );
-      if (!mounted) return;
+      if (_preparedSession != null) {
+        try {
+          _preparedSession = await _preparedSession!
+              .withEvidence(evidenced, _prepareCancellation);
+          _preparedSession!.verify();
+          evidenced = _preparedSession!.profile;
+          final latest = _currentView();
+          if (latest.evidenceSignature == null ||
+              !evidenceSignature.sameAs(latest.evidenceSignature!) ||
+              translationSelectionInputKey(
+                      latest.snapshot.settings, latest.preference) !=
+                  _preparedSession!.inputKey) {
+            setState(() => _notice = '翻译配置已变化，请重新确认');
+            continue;
+          }
+        } catch (_) {
+          if (mounted) setState(() => _notice = '翻译配置已变化，请重新确认');
+          return;
+        }
+      }
+      if (!mounted || !_selectionScope.accountCurrent) return;
+      var declared = _preferenceWithReasoning(refreshed.snapshot.settings);
+      if (declared.mode == TranslationModelPreferenceMode.backend &&
+          _preparedSession != null) {
+        declared = TranslationModelPreference(
+            mode: declared.mode,
+            modelId: evidenced.modelId,
+            reasoningPolicy: declared.reasoningPolicy,
+            backendSelection: evidenced.backendSelection);
+      }
       Navigator.pop(
         context,
         TranslationSettingsResult(
-          preference: _preferenceWithReasoning(refreshed.snapshot.settings),
+          preference: declared,
+          preparedSession: _preparedSession,
           profile: evidenced,
           identity: refreshed.identity!,
           evidenceSignature: refreshed.evidenceSignature!,
@@ -780,12 +869,28 @@ class _TranslationSettingsDialogState
       ) ??
       false;
 
-  Future<bool> _showTranslationWarning(List<String> reasons) async =>
+  BackendSelection? _resolvedLegacyPairForConfirmation() {
+    final prepared = _preparedSession;
+    if (prepared == null) return null;
+    final source = prepared.sourcePreference;
+    final legacy = (source.mode == TranslationModelPreferenceMode.backend &&
+            source.backendSelection == null) ||
+        (source.mode == TranslationModelPreferenceMode.followGlobal &&
+            prepared.settings.backendSelection == null);
+    return legacy ? prepared.profile.backendSelection : null;
+  }
+
+  Future<bool> _showTranslationWarning(List<String> reasons,
+          {BackendSelection? resolvedBackendPair}) async =>
       await showDialog<bool>(
         context: context,
         builder: (warningContext) => AlertDialog(
-          title: const Text('继续翻译？'),
-          content: Text(reasons.join('\n')),
+          title: Text(resolvedBackendPair == null ? '继续翻译？' : '确认后端翻译模型'),
+          content: Text([
+            if (resolvedBackendPair != null)
+              '本次翻译将使用：${backendSelectionLabel(resolvedBackendPair)}',
+            ...reasons,
+          ].join('\n')),
           actions: [
             TextButton(
               key: const ValueKey('translation_warning_back'),
@@ -805,16 +910,20 @@ class _TranslationSettingsDialogState
   Future<void> _fixIssue(TranslationEligibilityIssue issue) async {
     await widget.onFixIssue?.call(issue);
     if (!mounted) return;
-    final repairedSnapshot = widget.readSnapshot();
+    final repaired = widget.readSnapshot();
     setState(() {
-      if (issue.repairTarget ==
+      // 用户明确点击“改用本地直连”的修复动作后才切换，读取/失败不会自动回退。
+      if (_selectionScope.accountCurrent &&
+          issue.repairTarget ==
               TranslationEligibilityRepairTarget.requestModeSettings &&
           _selected.mode == TranslationModelPreferenceMode.backend &&
-          repairedSnapshot.settings.mode == AIMode.local) {
+          repaired.settings.mode == AIMode.local) {
         _selected = TranslationModelPreference(
-          mode: TranslationModelPreferenceMode.followGlobal,
-          reasoningPolicy: _selected.reasoningPolicy,
-        );
+            mode: TranslationModelPreferenceMode.followGlobal,
+            reasoningPolicy: _selected.reasoningPolicy);
+        _preparedSession = null;
+        _preparation = null;
+        _preparationKey = null;
       }
       _displayRecord = null;
       _displayRecordIdentity = null;
@@ -835,47 +944,78 @@ class _TranslationSettingsDialogState
     TranslationSettingsSnapshot? snapshot,
   }) {
     final currentSnapshot = snapshot ?? widget.readSnapshot();
-    final normalizedPreference = normalizeTranslationModelPreference(
-      currentSnapshot.settings,
-      preference,
-    );
-    const evaluator = TranslationModelEligibilityEvaluator();
-    final eligibility = evaluator.evaluatePreference(
-      settings: currentSnapshot.settings,
-      preference: normalizedPreference,
-      environment: currentSnapshot.eligibilityEnvironment,
-    );
+    var normalizedPreference = preference;
+    var eligibility = const TranslationEligibilityResult();
     TranslationRequestProfile? profile;
     TranslationModelProbeIdentity? identity;
     TranslationModelProbeRecord? record;
     try {
-      profile = TranslationModelResolver.snapshot(
-          currentSnapshot.settings, normalizedPreference);
+      normalizedPreference = normalizeTranslationModelPreference(
+          currentSnapshot.settings, preference);
+      const evaluator = TranslationModelEligibilityEvaluator();
+      eligibility = evaluator.evaluatePreference(
+          settings: currentSnapshot.settings,
+          preference: normalizedPreference,
+          environment: currentSnapshot.eligibilityEnvironment);
+      if (!eligibility.canStart) {
+        return _SelectionView(
+            snapshot: currentSnapshot,
+            preference: normalizedPreference,
+            profile: null,
+            identity: null,
+            eligibility: eligibility,
+            record: null);
+      }
+      final backend =
+          _usesBackend(currentSnapshot.settings, normalizedPreference);
+      if (!_selectionScope.accountCurrent ||
+          backend && !_selectionScope.backendCurrent) {
+        throw const TranslationModelUnavailableException(
+            '账号、登录或后端来源已变化，请重新打开翻译设置',
+            safeCode: 'backend_scope_changed');
+      }
+      final prepared = _preparedSession;
+      profile = prepared != null &&
+              prepared.isCurrent &&
+              prepared.inputKey ==
+                  translationSelectionInputKey(
+                      currentSnapshot.settings, normalizedPreference)
+          ? prepared.profile
+          : TranslationModelResolver.snapshot(
+              currentSnapshot.settings, normalizedPreference);
+      eligibility = evaluator.evaluateProfile(
+          settings: currentSnapshot.settings,
+          profile: profile,
+          environment: currentSnapshot.eligibilityEnvironment);
       identity = widget.probeService.identify(
-        accountHash: currentSnapshot.accountHash,
-        settings: currentSnapshot.settings,
-        profile: profile,
-      );
+          accountHash: currentSnapshot.accountHash,
+          settings: currentSnapshot.settings,
+          profile: profile);
       record = widget.probeService.lookup(
-        accountHash: currentSnapshot.accountHash,
-        settings: currentSnapshot.settings,
-        profile: profile,
-      );
+          accountHash: currentSnapshot.accountHash,
+          settings: currentSnapshot.settings,
+          profile: profile);
       final displayIdentity = _displayRecordIdentity;
       if (record == null &&
           displayIdentity != null &&
-          widget.probeService.isIdentityCurrent(
-            displayIdentity,
-            accountHash: currentSnapshot.accountHash,
-            settings: currentSnapshot.settings,
-            profile: profile,
-          )) {
+          widget.probeService.isIdentityCurrent(displayIdentity,
+              accountHash: currentSnapshot.accountHash,
+              settings: currentSnapshot.settings,
+              profile: profile)) {
         record = _displayRecord;
       }
     } catch (_) {
       profile = null;
       identity = null;
       record = null;
+      eligibility = const TranslationEligibilityResult([
+        TranslationEligibilityIssue(
+          level: TranslationEligibilityLevel.blocked,
+          code: TranslationEligibilityCode.configurationChanged,
+          message: '原翻译选择不可用于当前账号或地址，请重新选择',
+          actionLabel: '重新选择模型',
+        )
+      ]);
     }
     return _SelectionView(
       snapshot: currentSnapshot,
@@ -887,7 +1027,55 @@ class _TranslationSettingsDialogState
     );
   }
 
+  Future<bool> _prepareCurrentBackend() async {
+    final before = _currentView();
+    final profile = before.profile;
+    if (profile == null || !before.eligibility.canStart) return false;
+    if (profile.mode != TranslationExecutionMode.backend) {
+      return _selectionScope.accountCurrent;
+    }
+    final key = translationSelectionInputKey(
+        before.snapshot.settings, before.preference);
+    if (_preparedSession?.inputKey == key && _preparedSession!.isCurrent) {
+      return true;
+    }
+    try {
+      setState(() => _preparing = true);
+      if (_preparationKey != key) {
+        _preparationKey = key;
+        _preparation = TranslationSelectionSession.prepare(
+            scope: _selectionScope,
+            settings: before.snapshot.settings,
+            preference: before.preference,
+            profile: profile,
+            cancellation: _prepareCancellation);
+      }
+      final prepared = await _preparation!;
+      if (!mounted) return false;
+      prepared.verify();
+      final current = _currentView();
+      if (translationSelectionInputKey(
+              current.snapshot.settings, current.preference) !=
+          key) {
+        throw const TranslationModelUnavailableException('翻译配置已变化，请重新确认',
+            safeCode: 'configurationChanged');
+      }
+      setState(() => _preparedSession = prepared);
+      return true;
+    } catch (error) {
+      if (mounted) {
+        setState(() => _notice = error is TranslationRequestFailure
+            ? backendSelectionMessages[error.safeCode] ?? '后端模型确认失败，请重新选择'
+            : '翻译配置已变化，请重新选择或重新打开设置');
+      }
+      return false;
+    } finally {
+      if (mounted) setState(() => _preparing = false);
+    }
+  }
+
   TranslationModelPreference _preferenceWithReasoning(AISettings settings) {
+    if (_selected.isUnavailable) return _selected;
     final decision = _reasoningDecision(settings, _selected);
     return normalizeTranslationModelPreference(
       settings,
@@ -923,6 +1111,7 @@ class _TranslationSettingsDialogState
         mode: value.mode,
         providerId: value.providerId,
         modelId: value.modelId,
+        backendSelection: value.backendSelection,
         reasoningPolicy: reasoningPolicy,
       );
 
@@ -993,14 +1182,17 @@ class _TranslationSettingsDialogState
   }
 
   static String _selectionLabel(
-    AISettings settings,
-    TranslationModelPreference value,
-  ) {
+      AISettings settings, TranslationModelPreference value,
+      {BackendSelection? backendPair}) {
+    if (value.isUnavailable) return '原翻译模型偏好无法识别，请重新选择';
     switch (value.mode) {
       case TranslationModelPreferenceMode.followGlobal:
+        if (settings.mode == AIMode.backend) {
+          return '跟随全局：${backendSelectionLabel(settings.backendSelection ?? backendPair, legacyModelId: settings.backendModel)}';
+        }
         return '跟随全局：${settings.effectiveModel}';
       case TranslationModelPreferenceMode.backend:
-        return '后端代理：${value.modelId}';
+        return '后端代理：${backendSelectionLabel(value.backendSelection ?? backendPair, legacyModelId: value.modelId)}';
       case TranslationModelPreferenceMode.local:
         final provider = _provider(settings, value.providerId);
         return '${provider?.name ?? value.providerId} / ${value.modelId}';

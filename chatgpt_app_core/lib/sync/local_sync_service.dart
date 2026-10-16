@@ -6,6 +6,7 @@ import 'package:chatgpt_app_core/chat/application/assistant_role_card_asset_stor
 import 'package:chatgpt_app_core/chat/application/assistant_role_card_service.dart';
 import 'package:chatgpt_app_core/chat/application/story_tavern_preset_transfer.dart';
 import 'package:chatgpt_app_core/capability/product_capabilities.dart';
+import 'package:chatgpt_app_core/chat/domain/backend_selection_transfer.dart';
 import 'package:chatgpt_app_core/db/assistant_dao.dart';
 import 'package:chatgpt_app_core/db/db_migration.dart';
 import 'package:chatgpt_app_core/db/hi_db_manager.dart';
@@ -179,9 +180,11 @@ class LocalSyncService {
 
   Future<SyncMergeResult> applyRemoteChanges(
       Iterable<SyncChange> remoteChanges) async {
+    final incoming = remoteChanges
+        .map(_normalizeStoryChange)
+        .map(_validateSelectionChange)
+        .toList(growable: false);
     await _ensureTables();
-    final incoming =
-        remoteChanges.map(_normalizeStoryChange).toList(growable: false);
     final accepted = <SyncChange>[];
     final rejectedStale = <SyncChange>[];
     final conflicts = <String>[];
@@ -226,11 +229,25 @@ class LocalSyncService {
           continue;
         }
         final payload = _payloadForApply(remote);
+        if (remote.op == SyncOp.upsert &&
+            BackendSelectionTransfer.entities.contains(remote.entity) &&
+            current != null &&
+            current['backendSelection'] != null &&
+            payload['backendSelection'] == null) {
+          // 缺字段和显式 NULL 都是旧客户端未声明；不能清掉现代 pair/follow。
+          payload.remove('backendSelection');
+        }
+        final comparedPayload = Map<String, dynamic>.from(payload);
+        if (BackendSelectionTransfer.entities.contains(remote.entity) &&
+            current != null &&
+            !comparedPayload.containsKey('backendSelection')) {
+          comparedPayload['backendSelection'] = current['backendSelection'];
+        }
         if (currentUpdatedAt == remote.updatedAt &&
             current != null &&
             !_samePayload(
               current,
-              payload,
+              comparedPayload,
               spec.idColumns,
               ignoreRoleCardAssets: remote.entity == 'assistant',
               ignorePersonaAvatar: remote.entity == 'story_persona',
@@ -532,6 +549,19 @@ class LocalSyncService {
       payload['roleCardAssets'] = '[]';
     }
     return payload;
+  }
+
+  static SyncChange _validateSelectionChange(SyncChange change) {
+    if (change.op != SyncOp.upsert ||
+        !BackendSelectionTransfer.entities.contains(change.entity)) {
+      return change;
+    }
+    return SyncChange(
+        entity: change.entity,
+        id: change.id,
+        op: change.op,
+        updatedAt: change.updatedAt,
+        payload: BackendSelectionTransfer.row(change.payload));
   }
 
   static SyncChange _normalizeStoryChange(SyncChange change) {
@@ -1239,7 +1269,9 @@ class _SyncEntitySpec {
       id: idOf(row),
       op: SyncOp.upsert,
       updatedAt: updatedAtOf(row),
-      payload: Map<String, dynamic>.from(row),
+      payload: BackendSelectionTransfer.entities.contains(entity)
+          ? BackendSelectionTransfer.row(row)
+          : Map<String, dynamic>.from(row),
     );
   }
 

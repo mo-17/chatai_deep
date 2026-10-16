@@ -1,3 +1,9 @@
+import 'dart:convert';
+import 'package:sqflite_common_ffi/sqflite_ffi.dart' show DatabaseExecutor;
+import 'package:chatgpt_app_core/chat/application/backend_selection_probe.dart';
+import 'package:chatgpt_app_core/chat/domain/backend_selection.dart';
+import 'package:chatgpt_app_core/chat/domain/translation_request_profile.dart';
+import 'package:chatgpt_app_core/chat/domain/agent_workflow.dart';
 import 'package:chatgpt_app_core/chat/application/tavern_room_import_finalizer.dart';
 import 'package:chatgpt_app_core/db/hi_db_manager.dart';
 import 'package:chatgpt_app_core/db/schema_guard.dart';
@@ -35,14 +41,19 @@ final class _TavernRoomCompletionResult {
 class StoryTemplateTranslationTaskDao implements ITable {
   final HiDBManager storage;
 
+  /// 仅创建时固定；旧调用可无标签使用原 API，但不能进入新的首次绑定。
+  final String? bindingAccountHash;
+
   @override
   String tableName = 'tb_story_template_translation_task';
 
-  StoryTemplateTranslationTaskDao._(this.storage);
+  StoryTemplateTranslationTaskDao._(this.storage, this.bindingAccountHash);
 
-  static Future<StoryTemplateTranslationTaskDao> create(
-    HiDBManager storage,
-  ) async {
+  static Future<StoryTemplateTranslationTaskDao> create(HiDBManager storage,
+      {String? accountHash}) async {
+    if (accountHash != null && accountHash.trim().isEmpty) {
+      throw ArgumentError('翻译任务数据库账号无效');
+    }
     await storage.db.execute(
       'create table if not exists tb_story_template_translation_task ('
       'id integer primary key autoincrement, '
@@ -89,7 +100,7 @@ class StoryTemplateTranslationTaskDao implements ITable {
       'create index if not exists tb_story_template_translation_task_lease_idx '
       'on tb_story_template_translation_task(status, nextRunAt, leaseUntil)',
     );
-    return StoryTemplateTranslationTaskDao._(storage);
+    return StoryTemplateTranslationTaskDao._(storage, accountHash);
   }
 
   Future<int> saveTask(StoryTemplateTranslationTaskModel model) async {
@@ -109,6 +120,133 @@ class StoryTemplateTranslationTaskDao implements ITable {
     return model.id!;
   }
 
+  Future<void> saveConfirmedDirectCopy(
+      StoryTemplateTranslationTaskModel original,
+      StoryTemplateTranslationTaskModel copy,
+      {required String accountHash,
+      required void Function() verify}) async {
+    if (bindingAccountHash == null ||
+        bindingAccountHash != accountHash ||
+        original.id == null ||
+        copy.id != null) {
+      throw StateError('原任务账号未得到确认');
+    }
+    await storage.db.transaction((txn) async {
+      verify();
+      final rows = await txn.query(tableName,
+          where: 'id=?', whereArgs: [original.id], limit: 1);
+      verify();
+      if (rows.isEmpty ||
+          rows.single['updatedAt'] != original.updatedAt ||
+          rows.single['status'] != original.status ||
+          rows.single['requestProfile'] != original.requestProfile ||
+          rows.single['sourcePayload'] != original.sourcePayload) {
+        throw StateError('原任务已变化，请重新核对');
+      }
+      copy.updatedAt = DateTime.now().millisecondsSinceEpoch;
+      final data = copy.toJson()..remove('id');
+      final id = await txn.insert(tableName, data);
+      verify();
+      copy.id = id;
+    });
+  }
+
+  Future<Map<String, Object?>?> backendBindingSnapshot(int id) async {
+    final rows = await storage.db
+        .query(tableName, where: 'id=?', whereArgs: [id], limit: 1);
+    return rows.isEmpty ? null : Map.unmodifiable(rows.single);
+  }
+
+  static bool unstartedForBackendBinding(Map<String, Object?> row) {
+    final log = row['log'] as String? ?? '';
+    return row['status'] == StoryTemplateTranslationTaskStatus.queued &&
+        row['attempts'] == 0 &&
+        row['leaseOwner'] == null &&
+        row['leaseUntil'] == null &&
+        row['nextRunAt'] == null &&
+        row['outputTemplateId'] == null &&
+        row['outputRoomId'] == null &&
+        (row['checkpointVersion'] == 0 || row['checkpointVersion'] == 1) &&
+        ['progress', 'roleIndex', 'fieldIndex', 'fieldProgress']
+            .every((key) => row[key] == 0) &&
+        ['partialPayload', 'fieldPayload', 'chunkPayload', 'error']
+            .every((key) => row[key] == null || row[key] == '') &&
+        (log.isEmpty || log == '已创建中文副本任务' || log == '已创建酒馆房间翻译任务');
+  }
+
+  Future<StoryTemplateTranslationTaskModel> bindLegacyBackendProfile(
+      BackendSelectionBindingScope scope,
+      {required Map<String, Object?> expected,
+      required BackendSelection selection,
+      DateTime? now}) {
+    verifyBackendBindingScope(scope);
+    return _bindLegacyBackendProfile(scope,
+        expected: Map.unmodifiable(expected), selection: selection, now: now);
+  }
+
+  void verifyBackendBindingScope(BackendSelectionBindingScope scope) {
+    scope.verify();
+    if (bindingAccountHash == null || bindingAccountHash != scope.accountHash) {
+      throw const WorkflowStale('翻译任务数据库账号不匹配，不能绑定');
+    }
+  }
+
+  Future<StoryTemplateTranslationTaskModel> _bindLegacyBackendProfile(
+          BackendSelectionBindingScope scope,
+          {required Map<String, Object?> expected,
+          required BackendSelection selection,
+          DateTime? now}) =>
+      scope.stable(() => storage.db.transaction((tx) async {
+            verifyBackendBindingScope(scope);
+            final rows = await tx.query(tableName,
+                where: 'id=?', whereArgs: [expected['id']], limit: 1);
+            if (rows.length != 1 ||
+                !mapEquals(rows.single, expected) ||
+                !unstartedForBackendBinding(rows.single)) {
+              throw const WorkflowStale('翻译任务已有执行证据或原快照已变化，不能重新绑定');
+            }
+            final row = rows.single;
+            final decoded = jsonDecode(row['requestProfile'] as String);
+            if (decoded is! Map<String, dynamic>) {
+              throw const FormatException('旧翻译快照无效');
+            }
+            final original = TranslationRequestProfile.fromJson(decoded);
+            if (original.mode != TranslationExecutionMode.backend ||
+                original.version != 1 ||
+                original.backendSelection != null) {
+              throw const WorkflowStale('不是待绑定的旧后端快照');
+            }
+            scope.verifyPair(selection, original.modelId);
+            final profile = TranslationRequestProfile(
+                mode: original.mode,
+                modelId: original.modelId,
+                reasoningPolicy: original.reasoningPolicy,
+                reasoningControlSuppressed: original.reasoningControlSuppressed,
+                backendSelection: selection);
+            final oldUpdatedAt = row['updatedAt'] as int;
+            final timestamp = _timestamp(now);
+            final changed = await tx.update(
+                tableName,
+                {
+                  'requestProfile': jsonEncode(profile.toJson()),
+                  'updatedAt':
+                      timestamp > oldUpdatedAt ? timestamp : oldUpdatedAt + 1
+                },
+                where:
+                    'id=? AND status=? AND updatedAt=? AND requestProfile=? AND attempts=0',
+                whereArgs: [
+                  row['id'],
+                  row['status'],
+                  oldUpdatedAt,
+                  row['requestProfile']
+                ]);
+            if (changed != 1) throw const WorkflowStale();
+            final finalRows = await tx.query(tableName,
+                where: 'id=?', whereArgs: [row['id']], limit: 1);
+            scope.verify();
+            return StoryTemplateTranslationTaskModel.fromJson(finalRows.single);
+          }));
+
   /// 在任务尚未被领取且持久化版本仍与调用方快照一致时保存。
   ///
   /// 前台与后台 isolate 都可能持有同一任务的旧对象；因此 claim 前的修改必须同时
@@ -120,6 +258,7 @@ class StoryTemplateTranslationTaskDao implements ITable {
     required int expectedUpdatedAt,
     bool requireDue = false,
     DateTime? now,
+    void Function()? verify,
   }) async {
     final taskId = model.id;
     if (taskId == null) return false;
@@ -129,22 +268,31 @@ class StoryTemplateTranslationTaskDao implements ITable {
     final data = model.toJson()
       ..remove('id')
       ..['updatedAt'] = updatedAt;
-    final changed = await storage.db.update(
-      tableName,
-      data,
-      where: 'id = ? AND status = ? AND updatedAt = ? AND '
-          '(leaseOwner IS NULL OR trim(leaseOwner) = ? OR '
-          'leaseUntil IS NULL OR leaseUntil <= ?)'
-          '${requireDue ? ' AND (nextRunAt IS NULL OR nextRunAt <= ?)' : ''}',
-      whereArgs: [
-        taskId,
-        expectedStatus,
-        expectedUpdatedAt,
-        '',
-        timestamp,
-        if (requireDue) timestamp,
-      ],
-    );
+    Future<int> update(DatabaseExecutor db) => db.update(
+          tableName,
+          data,
+          where: 'id = ? AND status = ? AND updatedAt = ? AND '
+              '(leaseOwner IS NULL OR trim(leaseOwner) = ? OR '
+              'leaseUntil IS NULL OR leaseUntil <= ?)'
+              '${requireDue ? ' AND (nextRunAt IS NULL OR nextRunAt <= ?)' : ''}',
+          whereArgs: [
+            taskId,
+            expectedStatus,
+            expectedUpdatedAt,
+            '',
+            timestamp,
+            if (requireDue) timestamp,
+          ],
+        );
+    final changed = verify == null
+        ? await update(storage.db)
+        : await storage.db.transaction((tx) async {
+            verify();
+            final changed = await update(tx);
+            verify();
+            return changed;
+          });
+    verify?.call();
     if (changed != 1) return false;
     model.updatedAt = updatedAt;
     return true;
@@ -156,30 +304,82 @@ class StoryTemplateTranslationTaskDao implements ITable {
     required String leaseOwner,
     required Duration leaseDuration,
     DateTime? now,
+    int? expectedUpdatedAt,
+    void Function()? verifyDirectConfirmation,
   }) async {
     _validateLease(leaseOwner, leaseDuration);
     final timestamp = _timestamp(now);
     final leaseUntil = timestamp + leaseDuration.inMilliseconds;
-    final changed = await storage.db.rawUpdate(
-      'update $tableName set status = ?, leaseOwner = ?, leaseUntil = ?, '
-      'attempts = coalesce(attempts, 0) + 1, nextRunAt = null, updatedAt = ? '
-      'where id = ? AND ((status IN (?, ?) AND '
-      '(nextRunAt IS NULL OR nextRunAt <= ?)) OR '
-      '(status = ? AND (leaseUntil IS NULL OR leaseUntil <= ?)))',
-      [
-        StoryTemplateTranslationTaskStatus.running,
-        leaseOwner,
-        leaseUntil,
-        timestamp,
-        taskId,
-        StoryTemplateTranslationTaskStatus.queued,
-        StoryTemplateTranslationTaskStatus.retryable,
-        timestamp,
-        StoryTemplateTranslationTaskStatus.running,
-        timestamp,
-      ],
-    );
-    return changed == 1;
+    verifyDirectConfirmation?.call();
+    return storage.db.transaction((tx) async {
+      verifyDirectConfirmation?.call();
+      final rows = await tx.query(tableName,
+          where: 'id=?', whereArgs: [taskId], limit: 1);
+      verifyDirectConfirmation?.call();
+      if (rows.isEmpty) return false;
+      final row = rows.single;
+      if (expectedUpdatedAt != null && row['updatedAt'] != expectedUpdatedAt) {
+        return false;
+      }
+      final awaiting = row['status'] ==
+          StoryTemplateTranslationTaskStatus.awaitingConfirmation;
+      if (awaiting && verifyDirectConfirmation == null) return false;
+      final raw = row['requestProfile'];
+      bool modern = false;
+      try {
+        final decoded =
+            raw is String && raw.isNotEmpty ? jsonDecode(raw) : null;
+        if (decoded is Map &&
+            (decoded.containsKey('backendSelection') ||
+                decoded.containsKey('version') && decoded['version'] != 1)) {
+          modern = true;
+          final profile = TranslationRequestProfile.fromJson(
+              decoded.cast<String, dynamic>());
+          if (profile.mode != TranslationExecutionMode.backend ||
+              profile.version != 2) {
+            return false;
+          }
+        }
+      } catch (_) {
+        if (modern ||
+            raw is String &&
+                RegExp(r'"(?:version|backendSelection)"\s*:').hasMatch(raw)) {
+          return false;
+        }
+      }
+      if (modern && expectedUpdatedAt == null) return false;
+      final oldUpdatedAt = row['updatedAt'] as int? ?? 0;
+      final stamp = expectedUpdatedAt != null && timestamp <= oldUpdatedAt
+          ? oldUpdatedAt + 1
+          : timestamp;
+      final changed = await tx.rawUpdate(
+        'update $tableName set status = ?, leaseOwner = ?, leaseUntil = ?, '
+        'attempts = coalesce(attempts, 0) + 1, nextRunAt = null, updatedAt = ? '
+        'where id = ? AND ((status IN (?, ?, ?) AND '
+        '(nextRunAt IS NULL OR nextRunAt <= ?)) OR '
+        '(status = ? AND (leaseUntil IS NULL OR leaseUntil <= ?))) '
+        'AND updatedAt IS ? AND requestProfile IS ?',
+        [
+          StoryTemplateTranslationTaskStatus.running,
+          leaseOwner,
+          leaseUntil,
+          stamp,
+          taskId,
+          StoryTemplateTranslationTaskStatus.queued,
+          StoryTemplateTranslationTaskStatus.retryable,
+          verifyDirectConfirmation == null
+              ? StoryTemplateTranslationTaskStatus.queued
+              : StoryTemplateTranslationTaskStatus.awaitingConfirmation,
+          timestamp,
+          StoryTemplateTranslationTaskStatus.running,
+          timestamp,
+          row['updatedAt'],
+          row['requestProfile'],
+        ],
+      );
+      verifyDirectConfirmation?.call();
+      return changed == 1;
+    });
   }
 
   /// 续租；任务已被其他运行器接管或租约已到期时返回 false。
@@ -291,6 +491,7 @@ class StoryTemplateTranslationTaskDao implements ITable {
     final whereArgs = <Object?>[
       taskId,
       StoryTemplateTranslationTaskStatus.queued,
+      StoryTemplateTranslationTaskStatus.awaitingConfirmation,
       StoryTemplateTranslationTaskStatus.retryable,
       StoryTemplateTranslationTaskStatus.running,
       StoryTemplateTranslationTaskStatus.failed,
@@ -306,7 +507,7 @@ class StoryTemplateTranslationTaskDao implements ITable {
         'nextRunAt': null,
         'updatedAt': timestamp,
       },
-      where: 'id = ? AND status IN (?, ?, ?, ?, ?)$ownerWhere',
+      where: 'id = ? AND status IN (?, ?, ?, ?, ?, ?)$ownerWhere',
       whereArgs: whereArgs,
     );
     return changed == 1;
@@ -320,10 +521,12 @@ class StoryTemplateTranslationTaskDao implements ITable {
     required StoryTemplateModel outputTemplate,
     required String leaseOwner,
     DateTime? now,
+    VoidCallback? verifyCompletion,
   }) async {
     final taskId = task.id;
     if (taskId == null || leaseOwner.trim().isEmpty) return null;
     await StoryTemplateDao.create(storage);
+    verifyCompletion?.call();
     final timestamp = _timestamp(now);
     final completionStatus =
         task.status == StoryTemplateTranslationTaskStatus.completedWithWarnings
@@ -344,6 +547,7 @@ class StoryTemplateTranslationTaskDao implements ITable {
               current.status ==
                   StoryTemplateTranslationTaskStatus.completedWithWarnings) &&
           current.outputTemplateId != null) {
+        verifyCompletion?.call();
         return _TemplateCompletionResult(
           outputTemplateId: current.outputTemplateId!,
           status: current.status,
@@ -393,6 +597,7 @@ class StoryTemplateTranslationTaskDao implements ITable {
         ],
       );
       if (completed != 1) throw StateError('完成翻译任务时租约状态异常');
+      verifyCompletion?.call();
       return _TemplateCompletionResult(
         outputTemplateId: outputTemplateId,
         status: completionStatus,
@@ -422,11 +627,13 @@ class StoryTemplateTranslationTaskDao implements ITable {
     required TavernRoomImportBundle bundle,
     required String leaseOwner,
     DateTime? now,
+    VoidCallback? verifyCompletion,
   }) async {
     final taskId = task.id;
     if (taskId == null || leaseOwner.trim().isEmpty) return null;
     await StoryTemplateDao.create(storage);
     await StoryRoomDao.create(storage);
+    verifyCompletion?.call();
     final timestamp = _timestamp(now);
     final completionStatus = bundle.hasRetainedOriginal
         ? StoryTemplateTranslationTaskStatus.completedWithWarnings
@@ -453,6 +660,7 @@ class StoryTemplateTranslationTaskDao implements ITable {
         final outputTemplateId = current.outputTemplateId;
         final outputRoomId = current.outputRoomId;
         if (outputTemplateId == null || outputRoomId == null) return null;
+        verifyCompletion?.call();
         return _TavernRoomCompletionResult(
           completion: TavernRoomImportCompletion(
             outputTemplateId: outputTemplateId,
@@ -540,6 +748,7 @@ class StoryTemplateTranslationTaskDao implements ITable {
       if (completed != 1) {
         throw StateError('完成 Tavern 翻译任务时租约状态异常');
       }
+      verifyCompletion?.call();
       return _TavernRoomCompletionResult(
         completion: TavernRoomImportCompletion(
           outputTemplateId: outputTemplateId,

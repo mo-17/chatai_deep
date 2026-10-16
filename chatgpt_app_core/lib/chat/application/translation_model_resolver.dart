@@ -1,3 +1,5 @@
+import 'package:chatgpt_app_core/chat/domain/backend_selection.dart';
+import 'package:chatgpt_app_core/dao/ai_catalog_dao.dart';
 import 'package:chatgpt_app_core/chat/application/reasoning_control_adapter.dart';
 import 'package:chatgpt_app_core/chat/domain/chat_request_options.dart';
 import 'package:chatgpt_app_core/chat/domain/translation_request_profile.dart';
@@ -80,6 +82,7 @@ final class TranslationModelResolver {
           return _backendProfile(
             settings.backendModel,
             validated.reasoningPolicy,
+            selection: settings.backendSelection,
           );
         }
         return _localProfile(
@@ -99,6 +102,7 @@ final class TranslationModelResolver {
         return _backendProfile(
           validated.modelId,
           validated.reasoningPolicy,
+          selection: validated.backendSelection,
         );
     }
   }
@@ -109,7 +113,9 @@ final class TranslationModelResolver {
     TranslationModelPreference preference,
   ) {
     try {
-      return snapshot(settings, preference);
+      final profile = snapshot(settings, preference);
+      // 此旧接口无法证明任务尚未发送，不能用新明确选择重签历史任务。
+      return profile.backendSelection == null ? profile : null;
     } on TranslationModelUnavailableException {
       return null;
     } on FormatException {
@@ -140,9 +146,11 @@ final class TranslationModelResolver {
         provider.selectedModelId = profile.modelId;
         return next;
       case TranslationExecutionMode.backend:
+        _verifyBackendSelection(profile.backendSelection);
         _requireModelId(profile.modelId, scope: '后端');
         final next = current.clone();
         next.mode = AIMode.backend;
+        next.backendSelection = profile.backendSelection;
         next.backendModel = profile.modelId;
         return next;
     }
@@ -171,15 +179,34 @@ final class TranslationModelResolver {
 
   static TranslationRequestProfile _backendProfile(
     String? modelId,
-    ChatReasoningPolicy reasoningPolicy,
-  ) {
-    final resolvedModel = _requireModelId(modelId, scope: '后端');
+    ChatReasoningPolicy reasoningPolicy, {
+    BackendSelection? selection,
+  }) {
+    _verifyBackendSelection(selection);
+    final resolvedModel =
+        _requireModelId(selection?.modelId ?? modelId, scope: '后端');
     return TranslationRequestProfile(
       mode: TranslationExecutionMode.backend,
-      modelId: resolvedModel,
+      modelId: selection?.modelId ?? resolvedModel,
+      backendSelection: selection,
       reasoningPolicy: reasoningPolicy,
       reasoningControlSuppressed: false,
     );
+  }
+
+  static void _verifyBackendSelection(BackendSelection? selection) {
+    if (selection == null) return;
+    final identity = AiCatalogIdentity.capture();
+    if (!identity.authenticated ||
+        !selection.isPair ||
+        !selection.matchesScope(
+            accountHash: identity.account ?? '',
+            origin: identity.endpoint.origin)) {
+      throw const TranslationModelUnavailableException(
+        '原后端选择不可用于当前账号或地址，请重新选择',
+        safeCode: 'invalid_backend_selection',
+      );
+    }
   }
 
   static AiProvider _requireLocalProvider(

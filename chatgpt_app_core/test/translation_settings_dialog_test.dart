@@ -384,7 +384,7 @@ void main() {
     expect(gateway.startCalls, 1);
   });
 
-  testWidgets('账号在警告确认期间变化时必须为新 identity 再确认一次', (tester) async {
+  testWidgets('账号在警告确认期间变化时旧弹窗不得认领新 identity', (tester) async {
     final settings = _settings();
     var accountHash = 'account-a';
     final gateway = _FakeProbeGateway();
@@ -415,15 +415,15 @@ void main() {
 
     expect(result, isNull);
     expect(find.text('翻译配置已变化，请重新确认'), findsOneWidget);
+    expect(find.byKey(const ValueKey('translation_warning_continue')),
+        findsNothing);
     expect(
-      find.byKey(const ValueKey('translation_warning_continue')),
-      findsOneWidget,
-    );
-    await tester.tap(
-      find.byKey(const ValueKey('translation_warning_continue')),
-    );
-    await tester.pumpAndSettle();
-    expect(result?.identity.accountHash, 'account-b');
+        tester
+            .widget<FilledButton>(
+                find.byKey(const ValueKey('translation_settings_confirm')))
+            .onPressed,
+        isNull);
+    expect(gateway.startCalls, 0);
   });
 
   testWidgets('blocked 模型不能测试或开始，并可触发精确修复动作', (tester) async {

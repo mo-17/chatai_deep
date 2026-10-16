@@ -1,3 +1,4 @@
+import 'package:chatgpt_app_core/chat/domain/backend_selection.dart';
 import 'dart:async';
 
 import 'package:chatgpt_app_core/chat/domain/attachment_processing_limits.dart';
@@ -11,6 +12,7 @@ import 'package:chatgpt_app_core/theme/app_visual_theme.dart';
 import 'package:chatgpt_app_core/util/hi_dialog.dart';
 import 'package:chatgpt_app_core/util/model_catalog.dart';
 import 'package:chatgpt_app_core/widget/ai_provider/provider_avatar.dart';
+import 'package:chatgpt_app_core/widget/ai_provider/backend_model_selection_tile.dart';
 import 'package:chatgpt_app_core/widget/ai_provider/section_card.dart';
 import 'package:flutter/material.dart';
 import 'package:login_sdk/dao/login_dao.dart';
@@ -339,39 +341,74 @@ class _AISettingsPageState extends State<AISettingsPage> {
 
   /// 后端模式：后端模型选择。
   Widget _buildBackendModelTile(AISettings s) {
-    final tt = Theme.of(context).textTheme;
-    final cs = Theme.of(context).colorScheme;
     final catalog = ModelCatalog.displaySnapshot;
-    return Column(children: [
-      ListTile(
-        contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
-        title: const Text('后端模型'),
-        subtitle: Text(
-          catalog.message,
-          style: tt.bodySmall?.copyWith(color: cs.onSurfaceVariant),
-        ),
-        trailing: Row(mainAxisSize: MainAxisSize.min, children: [
-          Flexible(
-            child: Text(s.backendModel,
-                style: tt.bodyMedium?.copyWith(color: cs.primary),
-                overflow: TextOverflow.ellipsis),
-          ),
-          const SizedBox(width: 4),
-          Icon(Icons.chevron_right_rounded,
-              size: 20, color: cs.onSurfaceVariant),
-        ]),
-        onTap: _pickBackendModel,
-      ),
-      Align(
-        alignment: Alignment.centerRight,
-        child: TextButton.icon(
-          onPressed:
-              catalog.loading ? null : () => unawaited(_refreshCatalog()),
-          icon: const Icon(Icons.refresh),
-          label: const Text('刷新模型清单'),
-        ),
-      )
-    ]);
+    return BackendModelSelectionTile(
+      selectionLabel: _backendSelectionLabel(s),
+      catalogMessage: _backendCatalogMessage(),
+      loading: catalog.loading,
+      onSelect: _pickBackendModel,
+      onRefresh: () => unawaited(_refreshCatalog()),
+    );
+  }
+
+  String _backendCatalogMessage() {
+    final snapshot = ModelCatalog.displaySnapshot;
+    if (!snapshot.hasSnapshot) {
+      return switch (snapshot.status) {
+        CatalogDisplayStatus.notAuthenticated => '请登录后选择后端服务商与模型',
+        CatalogDisplayStatus.forbidden => '服务器未开放模型目录，请联系管理员或明确填写服务商与模型',
+        CatalogDisplayStatus.timeout => '获取模型目录超时，请刷新重试或明确填写服务商与模型',
+        CatalogDisplayStatus.failed => '获取模型目录失败，请刷新重试或明确填写服务商与模型',
+        CatalogDisplayStatus.invalid => '模型目录格式无效，请刷新或明确填写服务商与模型',
+        CatalogDisplayStatus.loading => '正在加载服务商与模型清单…',
+        _ => '模型清单未能确认，请刷新重试或明确填写服务商与模型',
+      };
+    }
+    if (snapshot.options.isNotEmpty && _backendOptions().isEmpty) {
+      return '上次清单缺少完整服务商信息，请刷新或明确填写';
+    }
+    return snapshot.message;
+  }
+
+  String _backendSelectionLabel(AISettings settings) {
+    final selection = settings.backendSelection;
+    if (selection == null) return '待确认服务商 · ${settings.backendModel}';
+    if (!selection.isPair) return '原选择无法识别，请重新选择';
+    final identity = AiCatalogIdentity.capture();
+    final matches = ModelCatalog.displaySnapshot.options
+        .where((o) =>
+            o.providerCode == selection.providerCode &&
+            o.id == selection.modelId)
+        .toList();
+    final label = matches.length == 1
+        ? matches.single.backendLabel
+        : '${selection.providerCode} · ${selection.modelId}';
+    if (!selection.matchesScope(
+        accountHash: identity.account ?? '',
+        origin: identity.endpoint.origin)) {
+      return '$label（其它账号或地址）';
+    }
+    if (!ModelCatalog.backendProfileAvailable(selection.modelId!,
+        account: identity.account ?? '',
+        providerCode: selection.providerCode)) {
+      return '$label（已删除或停用，请重新选择）';
+    }
+    return label;
+  }
+
+  List<ModelOption> _backendOptions() {
+    final snapshot = ModelCatalog.displaySnapshot;
+    if (!snapshot.hasSnapshot) return const [];
+    final seen = <String>{};
+    for (final o in snapshot.options) {
+      if (o.providerCode == null ||
+          o.providerCode!.trim().isEmpty ||
+          o.id.trim().isEmpty ||
+          !seen.add(o.pairKey)) {
+        return const [];
+      }
+    }
+    return snapshot.options;
   }
 
   Future<void> _pickBackendModel() async {
@@ -379,7 +416,7 @@ class _AISettingsPageState extends State<AISettingsPage> {
     if (ModelCatalog.displaySnapshot.status == CatalogDisplayStatus.initial) {
       unawaited(_refreshCatalog());
     }
-    final picked = await showModalBottomSheet<String>(
+    final picked = await showModalBottomSheet<_BackendModelChoice>(
       context: context,
       showDragHandle: true,
       isScrollControlled: true,
@@ -396,65 +433,76 @@ class _AISettingsPageState extends State<AISettingsPage> {
                 child: ListView(
                   shrinkWrap: true,
                   children: [
-                    ListTile(title: Text(ModelCatalog.displaySnapshot.message)),
+                    ListTile(title: Text(_backendCatalogMessage())),
+                    ListTile(
+                        title: Text(
+                            '当前选择：${_backendSelectionLabel(_store.settings)}')),
                     for (final o in identity.current
-                        ? ModelCatalog.displaySnapshot.options
+                        ? _backendOptions()
                         : const <ModelOption>[])
                       ListTile(
-                        title: Text(o.displayLabel ?? o.id),
-                        trailing: o.id == _store.settings.backendModel
+                        key: ValueKey(o.pairKey),
+                        title: Text(o.backendLabel),
+                        trailing: o.providerCode ==
+                                    _store.settings.backendSelection
+                                        ?.providerCode &&
+                                o.id ==
+                                    _store.settings.backendSelection?.modelId
                             ? const Icon(Icons.check_rounded)
                             : null,
-                        onTap: () => Navigator.pop(ctx, o.id),
+                        onTap: identity.authenticated
+                            ? () => Navigator.pop(ctx, _BackendPairChoice(o))
+                            : null,
                       ),
                     ListTile(
                       leading: const Icon(Icons.edit_rounded),
-                      title: const Text('自定义模型 id...'),
-                      onTap: () => Navigator.pop(ctx, '__custom__'),
+                      title: const Text('自定义服务商与模型...'),
+                      onTap: identity.authenticated
+                          ? () =>
+                              Navigator.pop(ctx, const _BackendCustomChoice())
+                          : null,
                     ),
                   ],
                 ),
               )),
     );
     if (picked == null || !mounted || !identity.current) return;
-    if (picked == '__custom__') {
-      await _customBackendModel(identity);
-    } else {
-      _patch((s) => s.backendModel = picked);
+    if (picked is _BackendPairChoice) {
+      await _saveBackendPair(
+          identity, picked.option.providerCode!, picked.option.id);
+    } else if (picked is _BackendCustomChoice) {
+      final value = await showDialog<_BackendCustomPair>(
+          context: context,
+          builder: (_) => _BackendPairDialog(
+              providerCode:
+                  _store.settings.backendSelection?.providerCode ?? '',
+              modelId: _store.settings.backendSelection?.modelId ??
+                  _store.settings.backendModel));
+      if (value != null) {
+        await _saveBackendPair(identity, value.providerCode, value.modelId);
+      }
     }
   }
 
-  Future<void> _customBackendModel(AiCatalogIdentity identity) async {
-    final ctl = TextEditingController(text: _store.settings.backendModel);
-    final ok = await showDialog<bool>(
-      context: context,
-      builder: (dialogContext) => AlertDialog(
-        title: const Text('自定义模型'),
-        content: TextField(
-          controller: ctl,
-          autofocus: true,
-          decoration: InputDecoration(
-            hintText: '输入模型 id',
-            border: AppVisualTheme.of(dialogContext).isAnime
-                ? null
-                : const OutlineInputBorder(),
-          ),
-        ),
-        actions: [
-          TextButton(
-              onPressed: () => Navigator.pop(context, false),
-              child: const Text('取消')),
-          TextButton(
-              onPressed: () => Navigator.pop(context, true),
-              child: const Text('确定')),
-        ],
-      ),
-    );
-    if (ok == true &&
-        mounted &&
-        identity.current &&
-        ctl.text.trim().isNotEmpty) {
-      _patch((s) => s.backendModel = ctl.text.trim());
+  Future<void> _saveBackendPair(
+      AiCatalogIdentity identity, String providerCode, String modelId) async {
+    if (!mounted ||
+        !identity.current ||
+        !identity.authenticated ||
+        _store.accountHash != identity.account ||
+        _store.settings.mode != AIMode.backend) {
+      return;
+    }
+    final next = _store.settings.clone()
+      ..backendSelection = BackendSelection.pair(
+          providerCode: providerCode,
+          modelId: modelId,
+          accountHash: identity.account!,
+          origin: identity.endpoint.origin);
+    final saved = await _persistSettings(next, showError: false);
+    if (!saved && mounted && identity.current) {
+      ScaffoldMessenger.of(context)
+          .showSnackBar(const SnackBar(content: Text('后端选择未保存，请稍后重试')));
     }
   }
 
@@ -1186,6 +1234,81 @@ class _AttachmentLimitDialogState extends State<_AttachmentLimitDialog> {
             },
             child: const Text('保存'),
           ),
+        ],
+      );
+}
+
+sealed class _BackendModelChoice {
+  const _BackendModelChoice();
+}
+
+final class _BackendPairChoice extends _BackendModelChoice {
+  final ModelOption option;
+  const _BackendPairChoice(this.option);
+}
+
+final class _BackendCustomChoice extends _BackendModelChoice {
+  const _BackendCustomChoice();
+}
+
+final class _BackendCustomPair {
+  final String providerCode, modelId;
+  const _BackendCustomPair(this.providerCode, this.modelId);
+}
+
+class _BackendPairDialog extends StatefulWidget {
+  final String providerCode, modelId;
+  const _BackendPairDialog({required this.providerCode, required this.modelId});
+  @override
+  State<_BackendPairDialog> createState() => _BackendPairDialogState();
+}
+
+class _BackendPairDialogState extends State<_BackendPairDialog> {
+  late final _provider = TextEditingController(text: widget.providerCode);
+  late final _model = TextEditingController(text: widget.modelId);
+  bool _invalid = false;
+  @override
+  void dispose() {
+    _provider.dispose();
+    _model.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) => AlertDialog(
+        title: const Text('自定义服务商与模型'),
+        content: Column(mainAxisSize: MainAxisSize.min, children: [
+          TextField(
+              key: const ValueKey('backend_provider_code'),
+              controller: _provider,
+              decoration: InputDecoration(
+                  labelText: '服务商 code',
+                  errorText: _invalid && _provider.text.trim().isEmpty
+                      ? '请输入服务商 code'
+                      : null)),
+          TextField(
+              key: const ValueKey('backend_model_id'),
+              controller: _model,
+              decoration: InputDecoration(
+                  labelText: '模型 id',
+                  errorText: _invalid && _model.text.trim().isEmpty
+                      ? '请输入模型 id'
+                      : null)),
+        ]),
+        actions: [
+          TextButton(
+              onPressed: () => Navigator.pop(context), child: const Text('取消')),
+          TextButton(
+              onPressed: () {
+                if (_provider.text.trim().isEmpty ||
+                    _model.text.trim().isEmpty) {
+                  setState(() => _invalid = true);
+                  return;
+                }
+                Navigator.pop(
+                    context, _BackendCustomPair(_provider.text, _model.text));
+              },
+              child: const Text('确定')),
         ],
       );
 }

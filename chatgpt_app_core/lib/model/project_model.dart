@@ -1,3 +1,4 @@
+import 'package:chatgpt_app_core/chat/domain/backend_selection.dart';
 import 'dart:convert';
 
 /// 对话项目分组模型。
@@ -11,6 +12,9 @@ class ProjectModel {
   int updatedAt;
   String? defaultProviderId;
   String? defaultModelId;
+
+  /// 独立的后端覆盖；NULL legacy，不改本地模型引用。
+  BackendSelection? backendSelection;
   int? defaultAssistantId;
   bool? defaultUseWebSearch;
   List<String>? defaultToolIds;
@@ -26,6 +30,7 @@ class ProjectModel {
     this.sortOrder = 0,
     this.defaultProviderId,
     this.defaultModelId,
+    this.backendSelection,
     this.defaultAssistantId,
     this.defaultUseWebSearch,
     this.defaultToolIds,
@@ -43,6 +48,8 @@ class ProjectModel {
         sortOrder: json['sortOrder'] ?? 0,
         defaultProviderId: json['defaultProviderId'],
         defaultModelId: json['defaultModelId'],
+        backendSelection:
+            BackendSelection.fromStorage(json['backendSelection']),
         defaultAssistantId: json['defaultAssistantId'],
         defaultUseWebSearch: _boolOf(json['defaultUseWebSearch']),
         defaultToolIds: _decodeToolIds(json['defaultToolIds']),
@@ -60,6 +67,7 @@ class ProjectModel {
     data['sortOrder'] = sortOrder;
     data['defaultProviderId'] = defaultProviderId;
     data['defaultModelId'] = defaultModelId;
+    data['backendSelection'] = backendSelection?.toSqlValue();
     data['defaultAssistantId'] = defaultAssistantId;
     data['defaultUseWebSearch'] =
         defaultUseWebSearch == null ? null : (defaultUseWebSearch! ? 1 : 0);

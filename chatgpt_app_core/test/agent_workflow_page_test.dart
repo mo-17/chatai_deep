@@ -247,7 +247,7 @@ void main() {
       expect(tester.takeException(), null);
     });
   }
-  testWidgets('冷启动running有未完成attempt显示暂停且零请求，明确继续不重做unknown', (tester) async {
+  testWidgets('冷启动unknown任务明确继续只打开确认，取消仍保留unknown且零请求', (tester) async {
     await tester.runAsync(setup);
     addTearDown(() => close(tester));
     final running = await tester.runAsync(() async {
@@ -271,7 +271,17 @@ void main() {
     await tester.ensureVisible(find.text('明确继续'));
     await tester.runAsync(() => tester.tap(find.text('明确继续')));
     await _until(
-        tester, () => find.textContaining('上次请求结果不明').evaluate().isNotEmpty);
+        tester,
+        () => find
+            .byKey(const ValueKey('direct_recovery_cancel'))
+            .evaluate()
+            .isNotEmpty);
+    expect(find.textContaining('上游可能已处理或计费'), findsOneWidget);
+    final before = (await tester.runAsync(() => dao.read(running.id)))!.toRow();
+    await tester.tap(find.byKey(const ValueKey('direct_recovery_cancel')));
+    await tester.pumpAndSettle();
+    expect(
+        (await tester.runAsync(() => dao.read(running.id)))!.toRow(), before);
     expect(transport.requests, isEmpty);
     final attempts =
         await tester.runAsync(() => dao.attemptHistory(running.id));

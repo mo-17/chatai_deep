@@ -1,3 +1,4 @@
+import 'package:chatgpt_app_core/chat/application/direct_failure_recovery.dart';
 import 'dart:async';
 import 'dart:convert';
 
@@ -13,6 +14,11 @@ import 'package:chatgpt_app_core/chat/application/translation_model_eligibility.
 import 'package:chatgpt_app_core/chat/application/translation_model_resolver.dart';
 import 'package:chatgpt_app_core/chat/application/translation_retry_policy.dart';
 import 'package:chatgpt_app_core/chat/application/translation_stream_executor.dart';
+import 'package:chatgpt_app_core/chat/application/translation_selection_session.dart';
+import 'package:chatgpt_app_core/chat/application/legacy_backend_profile_binding.dart';
+import 'package:chatgpt_app_core/chat/application/backend_selection_probe.dart';
+import 'package:chatgpt_app_core/chat/application/agent_workflow_scope.dart';
+import 'package:chatgpt_app_core/chat/domain/backend_selection_error.dart';
 import 'package:chatgpt_app_core/chat/application/translation_work_estimator.dart';
 import 'package:chatgpt_app_core/chat/domain/translation_request_profile.dart';
 import 'package:chatgpt_app_core/db/hi_db_manager.dart';
@@ -23,6 +29,8 @@ import 'package:chatgpt_app_core/model/ai_settings.dart';
 import 'package:chatgpt_app_core/model/story_template_model.dart';
 import 'package:chatgpt_app_core/model/story_template_translation_task_model.dart';
 import 'package:flutter/foundation.dart';
+import 'package:login_sdk/dao/login_dao.dart';
+import 'package:login_sdk/dao/header_util.dart';
 
 typedef TranslationExecutorResolver = TranslationStreamExecutor Function(
   TranslationRequestProfile profile,
@@ -170,7 +178,8 @@ class StoryTemplateTranslationCoordinator extends ChangeNotifier {
     _cleanupRunState(previous);
 
     try {
-      final taskDao = await StoryTemplateTranslationTaskDao.create(storage);
+      final taskDao = await StoryTemplateTranslationTaskDao.create(storage,
+          accountHash: accountHash);
       if (!_isEpochCurrent(transitionEpoch)) return;
       final templateDao = await StoryTemplateDao.create(storage);
       if (!_isEpochCurrent(transitionEpoch)) return;
@@ -208,6 +217,7 @@ class StoryTemplateTranslationCoordinator extends ChangeNotifier {
     required TranslationRequestProfile requestProfile,
     required TranslationProfileEligibilityCheck checkEligibility,
     required TranslationExecutorResolver resolveExecutor,
+    TranslationSelectionSession? preparedSession,
   }) async {
     final context = _requireContext();
     final payload = StoryRoomTemplatePayload.fromTemplate(template);
@@ -215,6 +225,9 @@ class StoryTemplateTranslationCoordinator extends ChangeNotifier {
       throw const FormatException('酒馆模板至少需要一个角色');
     }
     _requireEligible(requestProfile, checkEligibility);
+    final backendScope =
+        _newBackendScope(context, requestProfile, preparedSession);
+    final legacyScope = _newLegacyScope(context, requestProfile, backendScope);
     final sourceTitle = template.sourceTitle.trim().isEmpty
         ? template.title
         : template.sourceTitle;
@@ -231,13 +244,21 @@ class StoryTemplateTranslationCoordinator extends ChangeNotifier {
     task.log = _appendLog(task.log, '已创建中文副本任务');
     await context.taskDao.saveTask(task);
     if (!_isContextCurrent(context)) return;
+    preparedSession?.verify();
     _trackTask(context, task);
     _tasks = [task, ..._tasks];
     notifyListeners();
     unawaited(
       StoryTemplateBackgroundScheduler.schedule(context.accountHash),
     );
-    unawaited(_run(context, task, checkEligibility, resolveExecutor));
+    unawaited(_run(
+        context,
+        task,
+        _executionEligibility(preparedSession, checkEligibility),
+        resolveExecutor,
+        backendScope: backendScope,
+        legacyBindingScope: legacyScope,
+        preparedExecutor: preparedSession?.executor));
   }
 
   Future<void> startTavernRoomImport(
@@ -247,12 +268,16 @@ class StoryTemplateTranslationCoordinator extends ChangeNotifier {
     required TranslationRequestProfile requestProfile,
     required TranslationProfileEligibilityCheck checkEligibility,
     required TranslationExecutorResolver resolveExecutor,
+    TranslationSelectionSession? preparedSession,
   }) async {
     if (results.isEmpty) {
       throw const FormatException('酒馆房间导入至少需要一个角色');
     }
     _requireEligible(requestProfile, checkEligibility);
     final context = _requireContext();
+    final backendScope =
+        _newBackendScope(context, requestProfile, preparedSession);
+    final legacyScope = _newLegacyScope(context, requestProfile, backendScope);
     final payload = StoryRoomTemplatePayload(
       results: results,
       initialOpening: initialOpening.trim(),
@@ -271,30 +296,76 @@ class StoryTemplateTranslationCoordinator extends ChangeNotifier {
     task.log = _appendLog(task.log, '已创建酒馆房间翻译任务');
     await context.taskDao.saveTask(task);
     if (!_isContextCurrent(context)) return;
+    preparedSession?.verify();
     _trackTask(context, task);
     _tasks = [task, ..._tasks];
     notifyListeners();
     unawaited(
       StoryTemplateBackgroundScheduler.schedule(context.accountHash),
     );
-    unawaited(_run(context, task, checkEligibility, resolveExecutor));
+    unawaited(_run(
+        context,
+        task,
+        _executionEligibility(preparedSession, checkEligibility),
+        resolveExecutor,
+        backendScope: backendScope,
+        legacyBindingScope: legacyScope,
+        preparedExecutor: preparedSession?.executor));
   }
+
+  String? ownerAccountFor(StoryTemplateTranslationTaskModel task) =>
+      _contextForTask(task)?.accountHash;
+  int? ownerEpochFor(StoryTemplateTranslationTaskModel task) =>
+      _contextForTask(task)?.epoch;
+  bool ownerContextCurrent(String account, int epoch) =>
+      _binding != null &&
+      _binding!.accountHash == account &&
+      _binding!.epoch == epoch &&
+      _isContextCurrent(_binding!);
 
   Future<void> retry(
     StoryTemplateTranslationTaskModel task, {
     TranslationRequestProfile? replacementProfile,
+    DirectRetryPermit? directPermit,
     required TranslationProfileEligibilityCheck checkEligibility,
     required TranslationExecutorResolver resolveExecutor,
   }) async {
     final context = _contextForTask(task);
     if (context == null || !task.canRetry || task.id == null) return;
+    if (!_backendTask(task) &&
+        (task.attempts > 0 ||
+            task.status ==
+                StoryTemplateTranslationTaskStatus.awaitingConfirmation ||
+            task.stage == '人工确认新请求')) {
+      if (directPermit == null || replacementProfile != null) {
+        throw StateError('直连失败须明确确认新尝试；更换配置请新建任务');
+      }
+      directPermit.verify();
+    }
     if (replacementProfile != null) {
       _requireEligible(replacementProfile, checkEligibility);
+    }
+    TranslationSelectionScope? backendScope;
+    if (_backendTask(task)) {
+      final original = _readProfile(task);
+      if (replacementProfile != null || original.backendSelection == null) {
+        throw const TranslationModelUnavailableException(
+            '原后端选择无法证明，不能替换或补签，请保留任务记录',
+            safeCode: 'invalid_backend_selection');
+      }
+      backendScope = _newBackendScope(context, original, null);
+      backendScope!.verifyBackend();
+      _requireEligible(original, checkEligibility);
+    } else if (replacementProfile?.mode == TranslationExecutionMode.backend) {
+      throw const TranslationModelUnavailableException('不能为旧任务替换后端模型',
+          safeCode: 'invalid_backend_selection');
     }
     final expectedStatus = task.status;
     final expectedUpdatedAt = task.updatedAt;
     final updated = _cloneTask(task);
-    updated.status = StoryTemplateTranslationTaskStatus.queued;
+    updated.status = directPermit == null
+        ? StoryTemplateTranslationTaskStatus.queued
+        : StoryTemplateTranslationTaskStatus.awaitingConfirmation;
     updated
       ..leaseOwner = null
       ..leaseUntil = null
@@ -311,6 +382,7 @@ class StoryTemplateTranslationCoordinator extends ChangeNotifier {
       updated,
       expectedStatus: expectedStatus,
       expectedUpdatedAt: expectedUpdatedAt,
+      verify: directPermit?.verify,
     );
     if (!_isContextCurrent(context)) return;
     if (!saved) {
@@ -320,10 +392,60 @@ class StoryTemplateTranslationCoordinator extends ChangeNotifier {
     if (!_replaceOwnedTask(context, task, updated)) return;
     final key = _runKey(context, updated.id!);
     _cancelledRuns.remove(key);
-    unawaited(
-      StoryTemplateBackgroundScheduler.schedule(context.accountHash),
-    );
-    unawaited(_run(context, updated, checkEligibility, resolveExecutor));
+    if (directPermit == null) {
+      unawaited(StoryTemplateBackgroundScheduler.schedule(context.accountHash));
+    }
+    unawaited(_run(context, updated, checkEligibility, resolveExecutor,
+        backendScope: backendScope, directPermit: directPermit));
+  }
+
+  Future<void> startConfirmedDirectCopy(
+    StoryTemplateTranslationTaskModel original, {
+    required TranslationRequestProfile requestProfile,
+    required DirectRetryPermit directPermit,
+    required TranslationProfileEligibilityCheck checkEligibility,
+    required TranslationExecutorResolver resolveExecutor,
+  }) async {
+    final context = _contextForTask(original);
+    if (context == null ||
+        original.id == null ||
+        _readProfile(original).mode != TranslationExecutionMode.local ||
+        requestProfile.mode != TranslationExecutionMode.local) {
+      throw StateError('原直连任务未得到确认');
+    }
+    directPermit.verify();
+    _requireEligible(requestProfile, checkEligibility);
+    final task = StoryTemplateTranslationTaskModel(
+        templateId: original.templateId,
+        sourceTitle: original.sourceTitle,
+        sourcePayload: original.sourcePayload,
+        outputTitle: original.outputTitle,
+        taskKind: original.taskKind,
+        roleTotal: original.roleTotal,
+        checkpointVersion: original.checkpointVersion,
+        requestProfile: jsonEncode(requestProfile.toJson()),
+        status: StoryTemplateTranslationTaskStatus.awaitingConfirmation,
+        stage: '人工确认新请求');
+    await directPermit.stable(() async {
+      final current = await context.taskDao.getTask(original.id!);
+      directPermit.verify();
+      if (current == null ||
+          current.updatedAt != original.updatedAt ||
+          current.status != original.status ||
+          current.sourcePayload != original.sourcePayload ||
+          current.requestProfile != original.requestProfile) {
+        throw StateError('原任务已变化，请重新核对');
+      }
+      await context.taskDao.saveConfirmedDirectCopy(original, task,
+          accountHash: context.accountHash, verify: directPermit.verify);
+      directPermit.verify();
+    });
+    if (!_isContextCurrent(context)) return;
+    _trackTask(context, task);
+    _tasks = [task, ..._tasks];
+    notifyListeners();
+    unawaited(_run(context, task, checkEligibility, resolveExecutor,
+        directPermit: directPermit));
   }
 
   Future<void> cancel(StoryTemplateTranslationTaskModel task) async {
@@ -495,8 +617,22 @@ class StoryTemplateTranslationCoordinator extends ChangeNotifier {
     var legacyFallbackResolved = legacyRequestProfile != null;
     for (final task in recoverable) {
       if (!_isContextCurrent(context)) break;
+      // 先排除需要新确认的直连，不能为它写自动恢复提示或领取租约。
+      if (!_backendTask(task) &&
+          (task.attempts > 0 ||
+              task.status ==
+                  StoryTemplateTranslationTaskStatus.awaitingConfirmation ||
+              task.stage == '人工确认新请求')) {
+        continue;
+      }
       final id = task.id;
       if (id == null || _runningRuns.contains(_runKey(context, id))) {
+        continue;
+      }
+      // 后端恢复先校验原快照并准备同一 transport，不能先写恢复日志破坏首次绑定证据。
+      if (resolveExecutor != null && _backendTask(task)) {
+        await _run(context, task, checkEligibility, resolveExecutor,
+            onClaimed: () => resumed++);
         continue;
       }
       final expectedStatus = task.status;
@@ -512,7 +648,8 @@ class StoryTemplateTranslationCoordinator extends ChangeNotifier {
           }
         }
         if (!_isContextCurrent(context)) break;
-        if (legacyFallback == null) {
+        if (legacyFallback == null ||
+            legacyFallback.mode == TranslationExecutionMode.backend) {
           updated
             ..status = StoryTemplateTranslationTaskStatus.needsConfiguration
             ..stage = '需要选择翻译模型'
@@ -631,18 +768,145 @@ class StoryTemplateTranslationCoordinator extends ChangeNotifier {
     _runSettlements.removeWhere((key, _) => belongsToContext(key));
   }
 
+  static TranslationRequestProfile _readProfile(
+      StoryTemplateTranslationTaskModel task) {
+    final decoded = jsonDecode(task.requestProfile);
+    if (decoded is! Map<String, dynamic>) throw const FormatException('翻译快照无效');
+    return TranslationRequestProfile.fromJson(decoded);
+  }
+
+  TranslationProfileEligibilityCheck _executionEligibility(
+      TranslationSelectionSession? session,
+      TranslationProfileEligibilityCheck original) {
+    if (session == null) return original;
+    // 确认之后的任务属于已固定快照；全局设置变化不再重算本次选择。
+    return (profile) {
+      session.verify();
+      return const TranslationModelEligibilityEvaluator().evaluateProfile(
+          settings: session.settings,
+          profile: profile,
+          environment: TranslationEligibilityEnvironment.current());
+    };
+  }
+
+  static bool _backendTask(StoryTemplateTranslationTaskModel task) {
+    bool declared(Object? value, int depth) {
+      if (depth > 6) {
+        return true;
+      }
+      if (value is Map) {
+        return value['mode'] == 'backend' ||
+            value.containsKey('backendSelection') ||
+            (value.containsKey('version') && value['version'] != 1);
+      }
+      if (value is List) {
+        return value.any((v) => declared(v, depth + 1));
+      }
+      if (value is String) {
+        try {
+          return declared(jsonDecode(value), depth + 1);
+        } catch (_) {
+          return false;
+        }
+      }
+      return false;
+    }
+
+    try {
+      final decoded = jsonDecode(task.requestProfile);
+      if (declared(decoded, 0)) {
+        return true;
+      }
+      if (decoded is Map) {
+        return false;
+      }
+    } catch (_) {/* 明确现代损坏形状仍拒绝，不能进入 legacy callback。 */}
+    return RegExp(r'"(?:backendSelection|version)"\s*:')
+        .hasMatch(task.requestProfile);
+  }
+
+  TranslationSelectionScope? _newBackendScope(
+      _TranslationBindingContext context,
+      TranslationRequestProfile profile,
+      TranslationSelectionSession? session) {
+    if (profile.mode != TranslationExecutionMode.backend) return null;
+    if (session != null) {
+      session.verify();
+      if (session.scope.accountHash != context.accountHash ||
+          jsonEncode(session.profile.toJson()) !=
+              jsonEncode(profile.toJson())) {
+        throw const TranslationModelUnavailableException('预检与原任务模型快照不一致',
+            safeCode: 'invalid_backend_selection');
+      }
+      return session.scope;
+    }
+    return TranslationSelectionScope(
+        accountHash: context.accountHash,
+        currentAccount: () => LoginDao.getAccountHash() ?? 'guest');
+  }
+
+  BackendSelectionBindingScope? _newLegacyScope(
+      _TranslationBindingContext context,
+      TranslationRequestProfile profile,
+      TranslationSelectionScope? original) {
+    if (profile.mode != TranslationExecutionMode.backend ||
+        profile.backendSelection != null ||
+        original?.backendCurrent != true) {
+      return null;
+    }
+    return BackendSelectionBindingScope.capture(
+        AgentWorkflowScope(accountHash: context.accountHash));
+  }
+
+  Future<void> _pauseBeforeClaim(_TranslationBindingContext context,
+      StoryTemplateTranslationTaskModel task, String code) async {
+    if (!_isContextCurrent(context)) return;
+    final updated = _cloneTask(task)
+      ..status = StoryTemplateTranslationTaskStatus.needsConfiguration
+      ..stage = '需要确认原翻译模型'
+      ..detail = '原服务商、来源或模型不可用，请保留任务记录';
+    if (updated.error.isEmpty) updated.error = code;
+    final saved = await context.taskDao.saveTaskIfUnclaimed(updated,
+        expectedStatus: task.status,
+        expectedUpdatedAt: task.updatedAt,
+        requireDue: true);
+    if (!_isContextCurrent(context)) return;
+    if (saved) {
+      _replaceOwnedTask(context, task, updated);
+    } else {
+      await _reloadAuthoritativeTask(context, task);
+    }
+  }
+
   Future<void> _run(
     _TranslationBindingContext context,
     StoryTemplateTranslationTaskModel task,
     TranslationProfileEligibilityCheck checkEligibility,
     TranslationExecutorResolver? resolveExecutor, {
     StoryTemplateTranslationCall? legacyComplete,
+    TranslationSelectionScope? backendScope,
+    BackendSelectionBindingScope? legacyBindingScope,
+    TranslationStreamExecutor? preparedExecutor,
+    VoidCallback? onClaimed,
+    DirectRetryPermit? directPermit,
   }) async {
     final id = task.id;
     if (id == null ||
         !_isContextCurrent(context) ||
         !_isTaskOwnedByContext(context, task)) {
       return;
+    }
+    if (!_backendTask(task) &&
+        (task.attempts > 0 ||
+            task.status ==
+                StoryTemplateTranslationTaskStatus.awaitingConfirmation ||
+            task.stage == '人工确认新请求')) {
+      if (directPermit == null) return;
+      try {
+        directPermit.verify();
+      } catch (_) {
+        return;
+      }
     }
     final taskDao = context.taskDao;
     final templateDao = context.templateDao;
@@ -651,16 +915,104 @@ class StoryTemplateTranslationCoordinator extends ChangeNotifier {
     final settlement = Completer<void>();
     _runSettlements[key] = settlement.future;
     final leaseOwner = '$_workerId:${context.epoch}:$id';
+    final cancellation = TranslationCancellationController();
+    _cancellations[key] = cancellation;
     try {
+      var selectedTask = task;
+      TranslationStreamExecutor? backendExecutor;
+      TranslationRequestProfile? fixedBackendProfile;
+      if (_backendTask(task)) {
+        try {
+          // 先固定并核对原 scope；即使 profile 损坏也不能向已切换账号的旧库写状态。
+          backendScope ??= TranslationSelectionScope(
+              accountHash: context.accountHash,
+              currentAccount: () => LoginDao.getAccountHash() ?? 'guest');
+          backendScope.verifyBackend();
+          final original = _readProfile(task);
+          final authoritative = await taskDao.getTask(id);
+          backendScope.verifyBackend();
+          if (_claimStopReason(context, key) != null ||
+              cancellation.isCancelled) {
+            return;
+          }
+          if (authoritative == null ||
+              authoritative.updatedAt != task.updatedAt ||
+              authoritative.requestProfile != task.requestProfile) {
+            await _reloadAuthoritativeTask(context, task);
+            return;
+          }
+          if (original.backendSelection == null) {
+            // 只有本次创建前捕获的原来源可授权 v1 绑定；重开旧行没有来源证据。
+            if (legacyBindingScope == null) {
+              throw const TranslationModelUnavailableException(
+                  '旧任务缺少原服务商或来源证据，请保留记录并重新发起',
+                  safeCode: 'invalid_backend_selection');
+            }
+            selectedTask = await LegacyBackendProfileBinding(
+                    probe: BackendSelectionProbeClient(headers: () {
+              backendScope!.verifyBackend();
+              return {
+                ...hiHeaders(),
+                'Authorization': 'Bearer ${LoginDao.getBoardingPass()!}'
+              };
+            }).resolve)
+                .translation(taskDao, legacyBindingScope, id);
+            backendScope.verifyBackend();
+            if (!_replaceOwnedTask(context, task, selectedTask)) return;
+          }
+          final profile = _readProfile(selectedTask);
+          _requireEligible(profile, checkEligibility);
+          backendExecutor = preparedExecutor ?? resolveExecutor?.call(profile);
+          if (backendExecutor == null) {
+            throw const TranslationModelUnavailableException('后端翻译执行器不可用',
+                safeCode: 'invalid_backend_selection');
+          }
+          final fixed =
+              await backendExecutor.prepare(cancellation: cancellation);
+          backendScope.verifyBackend();
+          if (_claimStopReason(context, key) != null ||
+              cancellation.isCancelled) {
+            return;
+          }
+          if (jsonEncode(fixed.toJson()) != jsonEncode(profile.toJson())) {
+            throw const TranslationModelUnavailableException('执行器与原任务模型快照不一致',
+                safeCode: 'invalid_backend_selection');
+          }
+          _requireEligible(fixed, checkEligibility);
+          fixedBackendProfile = fixed;
+        } catch (error) {
+          if (_claimStopReason(context, key) == null &&
+              !cancellation.isCancelled &&
+              (backendScope == null || backendScope.backendCurrent)) {
+            await _pauseBeforeClaim(
+                context,
+                selectedTask,
+                error is BackendSelectionProbeFailure &&
+                        isBackendSelectionError(error.safeCode)
+                    ? error.safeCode
+                    : error is TranslationRequestFailure &&
+                            isBackendSelectionError(error.safeCode)
+                        ? error.safeCode
+                        : 'invalid_backend_selection');
+          }
+          return;
+        }
+      }
+      directPermit?.verify();
       final claimed = await taskDao.claimTask(
         id,
         leaseOwner: leaseOwner,
         leaseDuration: _leaseDuration,
+        verifyDirectConfirmation: directPermit?.verify,
+        expectedUpdatedAt: backendExecutor == null && directPermit == null
+            ? null
+            : selectedTask.updatedAt,
       );
       if (!claimed) {
-        await _reloadAuthoritativeTask(context, task);
+        await _reloadAuthoritativeTask(context, selectedTask);
         return;
       }
+      onClaimed?.call();
       final claimedTask = await taskDao.getTask(id);
       if (claimedTask == null) return;
       _trackTask(context, claimedTask);
@@ -680,7 +1032,7 @@ class StoryTemplateTranslationCoordinator extends ChangeNotifier {
         );
         return;
       }
-      TranslationStreamExecutor? executor;
+      TranslationStreamExecutor? executor = backendExecutor;
       if (resolveExecutor != null) {
         try {
           final decoded = jsonDecode(claimedTask.requestProfile);
@@ -689,7 +1041,10 @@ class StoryTemplateTranslationCoordinator extends ChangeNotifier {
             Map<String, dynamic>.from(decoded),
           );
           _requireEligible(profile, checkEligibility);
-          executor = resolveExecutor(profile);
+          executor ??= resolveExecutor(profile);
+          if (directPermit != null) {
+            executor.bindDirectRetryPermit(directPermit);
+          }
         } on TranslationModelUnavailableException catch (error) {
           stopReason = _claimStopReason(context, key);
           if (stopReason != null) {
@@ -761,9 +1116,18 @@ class StoryTemplateTranslationCoordinator extends ChangeNotifier {
         );
         return;
       }
-      final cancellation = TranslationCancellationController();
-      _cancellations[key] = cancellation;
       if (_lifecycleCancelledRuns.contains(key)) cancellation.cancel();
+      void verifyExecution() {
+        if (cancellation.isCancelled ||
+            _claimStopReason(context, key) != null) {
+          throw const RoleCardTranslationCancelled();
+        }
+        backendScope?.verifyBackend();
+        if (backendExecutor != null) {
+          _requireEligible(fixedBackendProfile!, checkEligibility);
+        }
+      }
+
       await StoryTemplateTranslationTaskRunner(
         taskDao: taskDao,
         templateDao: templateDao,
@@ -773,6 +1137,7 @@ class StoryTemplateTranslationCoordinator extends ChangeNotifier {
         executor: executor,
         complete: legacyComplete,
         cancellation: cancellation,
+        verifyExecution: backendExecutor == null ? null : verifyExecution,
         isCancelled: () =>
             claimedTask.status ==
                 StoryTemplateTranslationTaskStatus.cancelled ||
@@ -1064,6 +1429,7 @@ class StoryTemplateTranslationTaskRunner {
   final VoidCallback? onChanged;
   @visibleForTesting
   final Future<void> Function()? beforeFinalCommit;
+  final VoidCallback? verifyExecution;
   Future<void> _writes = Future<void>.value();
   Timer? _heartbeat;
   bool _leaseLost = false;
@@ -1087,6 +1453,7 @@ class StoryTemplateTranslationTaskRunner {
     bool Function()? isLifecycleCancelled,
     this.onChanged,
     this.beforeFinalCommit,
+    this.verifyExecution,
   })  : assert(executor != null || complete != null),
         cancellation = cancellation ?? TranslationCancellationController(),
         useChunkCheckpoints = useChunkCheckpoints ?? executor != null,
@@ -1143,6 +1510,9 @@ class StoryTemplateTranslationTaskRunner {
           [sourceRole],
           translateToSimplifiedChinese: true,
           complete: _completeWithCancellation,
+          retryPolicy: TranslationRetryPolicy(
+              allowAutomaticRecovery:
+                  executor?.allowsAutomaticRecovery ?? false),
           initialTranslatedFields: {
             0: _resumeFieldCheckpoint(scope: 'role', roleIndex: index),
           },
@@ -1225,6 +1595,9 @@ class StoryTemplateTranslationTaskRunner {
             .translateToSimplifiedChinese(
           AssistantModel(name: '模板开场', openingMessage: opening),
           complete: _completeWithCancellation,
+          retryPolicy: TranslationRetryPolicy(
+              allowAutomaticRecovery:
+                  executor?.allowsAutomaticRecovery ?? false),
           initialTranslatedFields: _resumeFieldCheckpoint(
             scope: 'opening',
             roleIndex: source.results.length,
@@ -1323,14 +1696,17 @@ class StoryTemplateTranslationTaskRunner {
         );
         final callback = beforeFinalCommit;
         if (callback != null) await callback();
+        _throwIfCancelled();
         final completion = await taskDao.completeWithTavernRoom(
           completionTask,
           bundle: bundle,
           leaseOwner: leaseOwner,
+          verifyCompletion: verifyExecution,
         );
         if (completion == null) {
           throw const _StoryTemplateTranslationLeaseLost();
         }
+        _throwIfCancelled();
         _publishCompletion(completionTask);
       } else {
         final copy = outputPayload.toTemplate(
@@ -1351,14 +1727,17 @@ class StoryTemplateTranslationTaskRunner {
         completionTask.log = _appendLog(task.log, '中文副本已保存：$title');
         final callback = beforeFinalCommit;
         if (callback != null) await callback();
+        _throwIfCancelled();
         final outputId = await taskDao.completeWithTemplate(
           completionTask,
           outputTemplate: copy,
           leaseOwner: leaseOwner,
+          verifyCompletion: verifyExecution,
         );
         if (outputId == null) {
           throw const _StoryTemplateTranslationLeaseLost();
         }
+        _throwIfCancelled();
         _publishCompletion(completionTask);
       }
       onChanged?.call();
@@ -1386,13 +1765,27 @@ class StoryTemplateTranslationTaskRunner {
     } on TranslationWorkPaused catch (paused) {
       if (!await _tryFlush()) return;
       task
-        ..status = StoryTemplateTranslationTaskStatus.failed
-        ..stage = '已暂停，可重试'
+        ..status = isBackendSelectionError(paused.failure.safeCode)
+            ? StoryTemplateTranslationTaskStatus.needsConfiguration
+            : StoryTemplateTranslationTaskStatus.failed
+        ..stage = isBackendSelectionError(paused.failure.safeCode)
+            ? '原后端模型不可用'
+            : '已暂停，可继续原任务'
         ..detail = StoryTemplateTranslationTaskDao.taskCheckpointDetail(task)
         ..error = paused.failure.safeCode;
-      task.log = _appendLog(task.log, '翻译已暂停，可更换模型后重试');
+      task.log = _appendLog(task.log, '翻译已暂停，保留原任务模型与检查点');
       _queueSave(releaseLease: true);
       if (!await _tryFlush()) return;
+    } on TranslationModelUnavailableException catch (error) {
+      task
+        ..status = StoryTemplateTranslationTaskStatus.needsConfiguration
+        ..stage = '原后端模型不可用'
+        ..detail = StoryTemplateTranslationTaskDao.taskCheckpointDetail(task)
+        ..error = isBackendSelectionError(error.safeCode)
+            ? error.safeCode
+            : 'invalid_backend_selection';
+      _queueSave(releaseLease: true);
+      await _tryFlush();
     } on RoleCardTranslationCancelled {
       if (_leaseLost) return;
       if (isLifecycleCancelled() && !isCancelled()) {
@@ -1723,6 +2116,7 @@ class StoryTemplateTranslationTaskRunner {
     if (isCancelled() || cancellation.isCancelled) {
       throw const RoleCardTranslationCancelled();
     }
+    verifyExecution?.call();
   }
 
   void _startHeartbeat() {

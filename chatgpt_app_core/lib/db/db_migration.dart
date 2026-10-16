@@ -16,6 +16,18 @@ class DbMigration {
     await _ensureFavorites(db);
     await _ensureUsage(db);
     await _ensureToolAudit(db);
+    // 不提前创建故事表；已有业务表打开时也可重复补齐独立后端列。
+    final storyTables = await db.rawQuery(
+      "select name from sqlite_master where type='table' and name in (?, ?)",
+      ['tb_story_room', 'tb_story_participant'],
+    );
+    for (final row in storyTables) {
+      await SchemaGuard.ensureColumns(
+        db,
+        table: row['name'] as String,
+        columns: const {'backendSelection': 'text'},
+      );
+    }
   }
 
   static Future<void> migrateLegacyMessageTables(Database db) async {
@@ -74,7 +86,7 @@ class DbMigration {
         ', messageCount integer, lastMessage text, stickTime integer'
         ', assistantId integer, projectId integer'
         ', avatarType text, avatarValue text'
-        ', modelProviderId text, modelId text, webSearchEnabled integer'
+        ', modelProviderId text, modelId text, backendSelection text, webSearchEnabled integer'
         ', toolIds text, speechInputEnabled integer, readAloudEnabled integer'
         ', voiceLocale text, voiceRate real, voiceStyle text'
         ', readAloudTriggerMode text'
@@ -89,6 +101,7 @@ class DbMigration {
         'avatarValue': 'text',
         'modelProviderId': 'text',
         'modelId': 'text',
+        'backendSelection': 'text',
         'webSearchEnabled': 'integer',
         'toolIds': 'text',
         'speechInputEnabled': 'integer',
@@ -114,7 +127,7 @@ class DbMigration {
     await db.execute(
         'create table if not exists tb_project (id integer primary key autoincrement'
         ', name text not null, icon text, color integer, sortOrder integer'
-        ', defaultProviderId text, defaultModelId text, defaultAssistantId integer'
+        ', defaultProviderId text, defaultModelId text, backendSelection text, defaultAssistantId integer'
         ', defaultUseWebSearch integer, defaultToolIds text'
         ', createdAt integer, updatedAt integer);');
     await SchemaGuard.ensureColumns(
@@ -124,6 +137,7 @@ class DbMigration {
         'icon': 'text',
         'defaultProviderId': 'text',
         'defaultModelId': 'text',
+        'backendSelection': 'text',
         'defaultAssistantId': 'integer',
         'defaultUseWebSearch': 'integer',
         'defaultToolIds': 'text',
@@ -152,7 +166,7 @@ class DbMigration {
   static Future<void> _ensureAssistants(Database db) async {
     await db.execute(
         'create table if not exists tb_assistant (id integer primary key autoincrement'
-        ', name text, emoji text, prompt text, providerId text, model text, useTools integer'
+        ', name text, emoji text, prompt text, providerId text, model text, backendSelection text, useTools integer'
         ', tools text, createdAt integer, updatedAt integer);');
     await SchemaGuard.ensureColumns(
       db,
@@ -160,6 +174,7 @@ class DbMigration {
       columns: const {
         'tools': 'text',
         'providerId': 'text',
+        'backendSelection': 'text',
       },
     );
   }

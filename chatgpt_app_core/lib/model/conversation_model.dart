@@ -1,3 +1,4 @@
+import 'package:chatgpt_app_core/chat/domain/backend_selection.dart';
 import 'dart:convert';
 import 'package:chatgpt_app_core/chat/domain/deepseek_reasoning_effort.dart';
 
@@ -29,6 +30,9 @@ class ConversationModel {
 
   ///会话级模型覆盖。null = 跟随全局/助手设置。
   String? modelId;
+
+  /// 独立的后端覆盖；NULL legacy，不改本地模型引用。
+  BackendSelection? backendSelection;
 
   ///会话级联网搜索覆盖。null = 跟随全局设置。
   bool? webSearchEnabled;
@@ -84,6 +88,7 @@ class ConversationModel {
       this.avatarValue,
       this.modelProviderId,
       this.modelId,
+      this.backendSelection,
       this.webSearchEnabled,
       this.deepSeekReasoningEffort,
       this.toolIds,
@@ -113,6 +118,8 @@ class ConversationModel {
           avatarValue: json['avatarValue'],
           modelProviderId: json['modelProviderId'],
           modelId: json['modelId'],
+          backendSelection:
+              BackendSelection.fromStorage(json['backendSelection']),
           webSearchEnabled: _boolOf(json['webSearchEnabled']),
           deepSeekReasoningEffort:
               DeepSeekReasoningEffort.parse(json['deepSeekReasoningEffort']),
@@ -143,6 +150,7 @@ class ConversationModel {
     data['avatarValue'] = avatarValue;
     data['modelProviderId'] = modelProviderId;
     data['modelId'] = modelId;
+    data['backendSelection'] = backendSelection?.toSqlValue();
     data['webSearchEnabled'] =
         webSearchEnabled == null ? null : (webSearchEnabled! ? 1 : 0);
     data['deepSeekReasoningEffort'] = deepSeekReasoningEffort?.wireValue;

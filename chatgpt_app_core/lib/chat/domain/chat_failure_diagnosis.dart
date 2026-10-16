@@ -1,4 +1,5 @@
 import 'package:chatgpt_app_core/chat/domain/chat_request_options.dart';
+import 'package:chatgpt_app_core/chat/domain/backend_selection_error.dart';
 
 enum ChatFailureAction {
   retry,
@@ -26,7 +27,8 @@ final class ChatFailureDiagnosis {
 
   String get diagnosticReference => '${failureStage.name}/${failureKind.name}';
 
-  static const _storedCodes = {
+  static final _storedCodes = {
+    ...backendSelectionMessages.keys,
     'authentication_error',
     'insufficient_balance',
     'model_not_found',
@@ -85,65 +87,75 @@ final class ChatFailureDiagnosis {
                       ? ChatFailureKind.state
                       : ChatFailureKind.unknown);
     }
-    final code = const {'first_event_timeout', 'idle_timeout', 'total_timeout'}
-            .contains(error.safeCode)
+    final code = (isBackendSelectionError(error.safeCode) ||
+            const {'first_event_timeout', 'idle_timeout', 'total_timeout'}
+                .contains(error.safeCode))
         ? error.safeCode
         : chatFailureCodeForStatus(error.statusCode) ?? error.safeCode;
-    final diagnosis = switch (code) {
-      'authentication_error' || 'api_key_missing' => const ChatFailureDiagnosis(
-          'authentication_error',
-          '身份验证失败',
-          '检查服务商 API Key、权限或登录状态',
-          ChatFailureAction.configureProvider),
-      'insufficient_balance' => const ChatFailureDiagnosis(
-          'insufficient_balance',
-          '服务商余额不足',
-          '前往服务商检查余额或切换可用服务商',
-          ChatFailureAction.checkBalance),
-      'model_not_found' => const ChatFailureDiagnosis(
-          'model_not_found',
-          '模型或 API 路由不存在',
-          '检查模型名称与 API 地址，刷新模型列表',
-          ChatFailureAction.chooseModel),
-      'invalid_request' ||
-      'unknown_parameter' ||
-      'unsupported_parameter' ||
-      'unsupported_reasoning_control' =>
-        const ChatFailureDiagnosis('invalid_request', '请求参数不受支持或无效',
-            '检查模型能力、推理等级、附件及输入预算', ChatFailureAction.checkInput),
-      'rate_limited' => const ChatFailureDiagnosis(
-          'rate_limited', '请求过于频繁', '等待服务商限流恢复后再试', ChatFailureAction.retry),
-      'server_error' => const ChatFailureDiagnosis(
-          'server_error', '服务商暂时异常', '稍后重试或切换服务商', ChatFailureAction.retry),
-      'timeout' ||
-      'connect_timeout' ||
-      'first_event_timeout' ||
-      'idle_timeout' ||
-      'total_timeout' =>
-        const ChatFailureDiagnosis('timeout', '网络请求超时', '检查网络与代理，部分回复已保留；可手动继续',
-            ChatFailureAction.retry),
-      'network_error' => const ChatFailureDiagnosis('network_error', '网络连接失败',
-          '检查网络、代理与服务地址后重试', ChatFailureAction.retry),
-      'invalid_endpoint' => const ChatFailureDiagnosis(
-          'invalid_endpoint',
-          'API 地址无效',
-          '在 AI 服务设置中检查完整的 HTTP 或 HTTPS 地址',
-          ChatFailureAction.configureProvider),
-      'invalid_response' => const ChatFailureDiagnosis(
-          'invalid_response',
-          '服务返回了无法解析的响应',
-          '检查 API 地址与模型兼容性，已收到的内容不会自动重发',
-          ChatFailureAction.configureProvider),
-      'attachment_upload_failed' => const ChatFailureDiagnosis(
-          'attachment_upload_failed',
-          '附件上传失败',
-          '检查文件与网络后重新选择附件',
-          ChatFailureAction.checkInput),
-      'cancelled' => const ChatFailureDiagnosis(
-          'cancelled', '请求已取消', '任务可从已保存的进度手动继续', ChatFailureAction.none),
-      _ => const ChatFailureDiagnosis('request_failed', '请求失败，原因暂未确定',
-          '请检查 AI 服务设置或稍后手动重试', ChatFailureAction.retry),
-    };
+    final diagnosis = isBackendSelectionError(code)
+        ? ChatFailureDiagnosis(
+            code,
+            backendSelectionMessages[code]!,
+            code == 'catalog_not_public'
+                ? '联系管理员开放目录，或明确配置服务商和模型'
+                : '请检查并重新选择原服务商和模型',
+            code == 'catalog_not_public'
+                ? ChatFailureAction.configureProvider
+                : ChatFailureAction.chooseModel)
+        : switch (code) {
+            'authentication_error' ||
+            'api_key_missing' =>
+              const ChatFailureDiagnosis('authentication_error', '身份验证失败',
+                  '检查服务商 API Key、权限或登录状态', ChatFailureAction.configureProvider),
+            'insufficient_balance' => const ChatFailureDiagnosis(
+                'insufficient_balance',
+                '服务商余额不足',
+                '前往服务商检查余额或切换可用服务商',
+                ChatFailureAction.checkBalance),
+            'model_not_found' => const ChatFailureDiagnosis(
+                'model_not_found',
+                '模型或 API 路由不存在',
+                '检查模型名称与 API 地址，刷新模型列表',
+                ChatFailureAction.chooseModel),
+            'invalid_request' ||
+            'unknown_parameter' ||
+            'unsupported_parameter' ||
+            'unsupported_reasoning_control' =>
+              const ChatFailureDiagnosis('invalid_request', '请求参数不受支持或无效',
+                  '检查模型能力、推理等级、附件及输入预算', ChatFailureAction.checkInput),
+            'rate_limited' => const ChatFailureDiagnosis('rate_limited',
+                '请求过于频繁', '等待服务商限流恢复后再试', ChatFailureAction.retry),
+            'server_error' => const ChatFailureDiagnosis('server_error',
+                '服务商暂时异常', '稍后重试或切换服务商', ChatFailureAction.retry),
+            'timeout' ||
+            'connect_timeout' ||
+            'first_event_timeout' ||
+            'idle_timeout' ||
+            'total_timeout' =>
+              const ChatFailureDiagnosis('timeout', '网络请求超时',
+                  '检查网络与代理，部分回复已保留；可手动继续', ChatFailureAction.retry),
+            'network_error' => const ChatFailureDiagnosis('network_error',
+                '网络连接失败', '检查网络、代理与服务地址后重试', ChatFailureAction.retry),
+            'invalid_endpoint' => const ChatFailureDiagnosis(
+                'invalid_endpoint',
+                'API 地址无效',
+                '在 AI 服务设置中检查完整的 HTTP 或 HTTPS 地址',
+                ChatFailureAction.configureProvider),
+            'invalid_response' => const ChatFailureDiagnosis(
+                'invalid_response',
+                '服务返回了无法解析的响应',
+                '检查 API 地址与模型兼容性，已收到的内容不会自动重发',
+                ChatFailureAction.configureProvider),
+            'attachment_upload_failed' => const ChatFailureDiagnosis(
+                'attachment_upload_failed',
+                '附件上传失败',
+                '检查文件与网络后重新选择附件',
+                ChatFailureAction.checkInput),
+            'cancelled' => const ChatFailureDiagnosis(
+                'cancelled', '请求已取消', '任务可从已保存的进度手动继续', ChatFailureAction.none),
+            _ => const ChatFailureDiagnosis('request_failed', '请求失败，原因暂未确定',
+                '请检查 AI 服务设置或稍后手动重试', ChatFailureAction.retry),
+          };
     return ChatFailureDiagnosis(diagnosis.code, diagnosis.message,
         diagnosis.suggestion, diagnosis.action,
         statusCode: error.statusCode,

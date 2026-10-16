@@ -1,5 +1,6 @@
 import 'dart:convert';
 import 'package:crypto/crypto.dart';
+import 'package:chatgpt_app_core/chat/domain/backend_selection.dart';
 
 enum WorkflowState {
   queued,
@@ -25,13 +26,45 @@ class WorkflowModelProfile {
   final String mode;
   final String providerId;
   final String modelId;
-  const WorkflowModelProfile(this.mode, this.providerId, this.modelId);
-  Map<String, dynamic> toJson() => {
-        'mode': mode,
-        'providerId': providerId,
-        'modelId': modelId,
-      };
+  final BackendSelection? backendSelection;
+  const WorkflowModelProfile(this.mode, this.providerId, this.modelId)
+      : backendSelection = null;
+  WorkflowModelProfile.backend(BackendSelection selection)
+      : mode = 'backend',
+        providerId = 'backend',
+        modelId = selection.modelId ?? '',
+        backendSelection = selection {
+    if (!selection.isPair) throw const FormatException('协作后端模型选择无效');
+  }
+  String? get providerCode => backendSelection?.providerCode;
+  String get selectionKey => jsonEncode(backendSelection == null
+      ? [mode, providerId, modelId]
+      : [mode, backendSelection!.pairKey]);
+  Map<String, dynamic> toJson() => backendSelection != null
+      ? {
+          'version': 1,
+          'mode': 'backend',
+          'backendSelection': backendSelection!.toSafeJson(),
+        }
+      : {
+          'mode': mode,
+          'providerId': providerId,
+          'modelId': modelId,
+        };
   factory WorkflowModelProfile.fromJson(Map<String, dynamic> value) {
+    if (value.containsKey('version') || value.containsKey('backendSelection')) {
+      if (value.length != 3 ||
+          value['version'] != 1 ||
+          value['mode'] != 'backend' ||
+          !value.keys.every({'version', 'mode', 'backendSelection'}.contains)) {
+        throw const FormatException('协作后端模型配置版本或字段无效');
+      }
+      final selection = BackendSelection.fromStorage(value['backendSelection']);
+      if (selection == null || !selection.isPair) {
+        throw const FormatException('协作后端模型选择无效');
+      }
+      return WorkflowModelProfile.backend(selection);
+    }
     if (value.keys
             .toSet()
             .difference({'mode', 'providerId', 'modelId'}).isNotEmpty ||

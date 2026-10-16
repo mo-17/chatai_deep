@@ -1,5 +1,6 @@
 import 'package:chatgpt_app_core/chat/domain/model_capabilities.dart';
 import 'package:chatgpt_app_core/dao/ai_catalog_dao.dart';
+import 'dart:convert';
 import 'package:flutter/foundation.dart';
 
 /// 常用模型清单，UI 下拉用。用户也可点「自定义」手填，
@@ -21,16 +22,21 @@ class ModelCatalog {
   static final executionChanges = ValueNotifier<int>(0);
   static AiCatalogIdentity? _executionIdentity;
   static Set<String>? _executionModels;
+  static Set<String>? _executionPairs;
+  static List<ModelOption>? _backendExecutionOptions;
   static int _refreshRevision = 0;
 
   /// 未取得当前身份目录时继续沿旧代理契约，由服务端核模型；UI 缓存不授予或撤销许可。
-  static bool backendProfileAvailable(String id, {required String account}) {
+  static bool backendProfileAvailable(String id,
+      {required String account, String? providerCode}) {
     final identity = _executionIdentity;
     return identity == null ||
         !identity.current ||
         identity.account != account ||
         _executionModels == null ||
-        _executionModels!.contains(id);
+        (providerCode == null
+            ? _executionModels!.contains(id)
+            : _executionPairs!.contains(jsonEncode([providerCode, id])));
   }
 
   @visibleForTesting
@@ -38,6 +44,8 @@ class ModelCatalog {
     AiCatalogIdentity.resetForTest();
     _executionIdentity = null;
     _executionModels = null;
+    _executionPairs = null;
+    _backendExecutionOptions = null;
     _refreshRevision++;
     _displayIdentity = null;
     _displayModels = const [];
@@ -119,17 +127,47 @@ class ModelCatalog {
 
   /// 跨清单按 modelId 查 [ModelOption]（远程优先，再本地兜底），找不到返回 null。
   /// 供能力探测拿 providerCode / supportsVision，不影响下拉展示。
-  static ModelOption? optionFor(String modelId) {
-    for (final o in _remoteAll) {
-      if (o.id == modelId) return o;
+  static ModelOption? optionFor(String modelId, {String? providerCode}) {
+    final remote = _remoteAll
+        .where((o) =>
+            o.id == modelId &&
+            (providerCode == null || o.providerCode == providerCode))
+        .toList();
+    if (remote.isNotEmpty) return remote.length == 1 ? remote.single : null;
+    final local = [..._openai, ..._deepseek]
+        .where((o) =>
+            o.id == modelId &&
+            (providerCode == null ||
+                o.providerCode == null ||
+                o.providerCode == providerCode))
+        .toList();
+    return local.length == 1 ? local.single : null;
+  }
+
+  /// 后端仅从当前身份成功快照叠加 exact pair；缓存/未解析 legacy 不借位。
+  static ModelCapabilities backendCapabilitiesFor(String modelId,
+      {String? providerCode, String? accountHash, String? origin}) {
+    final caps =
+        ModelCapabilities.heuristic(modelId, providerCode: providerCode);
+    final identity = _executionIdentity;
+    if (providerCode == null ||
+        identity == null ||
+        !identity.current ||
+        accountHash != identity.account ||
+        origin != identity.endpoint.origin ||
+        _backendExecutionOptions == null) {
+      return caps;
     }
-    for (final o in _openai) {
-      if (o.id == modelId) return o;
-    }
-    for (final o in _deepseek) {
-      if (o.id == modelId) return o;
-    }
-    return null;
+    final options = _backendExecutionOptions!
+        .where((o) => o.id == modelId && o.providerCode == providerCode)
+        .toList();
+    if (options.length != 1) return caps;
+    final option = options.single;
+    return caps.copyWith(
+        image: caps.image || option.supportsVision,
+        tool: caps.tool || option.supportsTool,
+        reasoning: caps.reasoning || option.supportsReasoning,
+        pdf: caps.pdf || option.supportsPdf);
   }
 
   /// 阶段三统一能力探测入口：把「按前缀/家族启发式」与「远程清单显式下发的
@@ -144,7 +182,7 @@ class ModelCatalog {
   ///   故以启发式为下限，避免迁移后存量模型丢能力。
   static ModelCapabilities capabilitiesFor(String modelId,
       {String? providerCode}) {
-    final option = optionFor(modelId);
+    final option = optionFor(modelId, providerCode: providerCode);
     final code = providerCode ?? option?.providerCode;
     var caps = ModelCapabilities.heuristic(modelId, providerCode: code);
     if (option == null) return caps;
@@ -220,14 +258,22 @@ class ModelCatalog {
       return;
     }
     final models = data['models'];
-    if (models is! List ||
-        models.any((m) => m is! Map || m['modelId'] is! String)) {
+    if (!_validBackendRows(models)) {
+      _displayStatus = CatalogDisplayStatus.invalid;
+      displayChanges.value++;
       return;
     }
     applyRemote(data);
     if (!current()) return;
     _executionIdentity = identity;
-    _executionModels = {for (final model in models) model['modelId'] as String};
+    _executionModels = {
+      for (final model in models as List) model['modelId'] as String
+    };
+    _executionPairs = {
+      for (final model in models)
+        jsonEncode([model['providerCode'], model['modelId']])
+    };
+    _backendExecutionOptions = List.unmodifiable(_remoteAll);
     executionChanges.value++;
     if (!current()) return;
     _displayModels = List.unmodifiable(_remoteAll);
@@ -236,6 +282,35 @@ class ModelCatalog {
         ? CatalogDisplayStatus.empty
         : CatalogDisplayStatus.success;
     displayChanges.value++;
+  }
+
+  static bool _validBackendRows(Object? raw) {
+    if (raw is! List) return false;
+    final seen = <String>{};
+    for (final row in raw) {
+      if (row is! Map ||
+          row['modelId'] is! String ||
+          (row['modelId'] as String).trim().isEmpty ||
+          row['providerCode'] is! String ||
+          (row['providerCode'] as String).trim().isEmpty) {
+        return false;
+      }
+      for (final key in ['description', 'displayName']) {
+        if (row[key] != null && row[key] is! String) return false;
+      }
+      for (final key in [
+        'supportsVision',
+        'supportsTool',
+        'supportsReasoning',
+        'supportsPdf'
+      ]) {
+        if (row[key] != null && row[key] is! bool) return false;
+      }
+      if (!seen.add(jsonEncode([row['providerCode'], row['modelId']]))) {
+        return false;
+      }
+    }
+    return true;
   }
 
   // visibleForTesting
@@ -250,6 +325,15 @@ class ModelCatalog {
       return;
     }
 
+    final providerNames = <String, String>{};
+    final providers = data['providers'];
+    if (providers is List) {
+      for (final p in providers) {
+        if (p is Map && p['code'] is String && p['displayName'] is String) {
+          providerNames[p['code'] as String] = p['displayName'] as String;
+        }
+      }
+    }
     // 按 providerCode 分组
     final openaiList = <ModelOption>[];
     final deepseekList = <ModelOption>[];
@@ -266,6 +350,7 @@ class ModelCatalog {
         m['description'] as String?,
         displayLabel: '${m['displayName']} · ${m['modelId']}',
         providerCode: code,
+        providerDisplayName: providerNames[code],
         supportsVision: supportsVision,
         supportsTool: supportsTool,
         supportsReasoning: supportsReasoning,
@@ -355,6 +440,10 @@ class ModelOption {
   final String? hint;
   final String? displayLabel;
   final String? providerCode;
+  final String? providerDisplayName;
+  String get backendLabel =>
+      '${providerDisplayName ?? providerCode ?? "未知服务商"} ($providerCode) · $id';
+  String get pairKey => jsonEncode([providerCode, id]);
 
   // 后端 catalog 下发的能力位（默认 false）。与家族启发式做「加法覆盖」，
   // 详见 [ModelCatalog.capabilitiesFor]。
@@ -368,6 +457,7 @@ class ModelOption {
     this.hint, {
     this.displayLabel,
     this.providerCode,
+    this.providerDisplayName,
     this.supportsVision = false,
     this.supportsTool = false,
     this.supportsReasoning = false,
@@ -377,6 +467,7 @@ class ModelOption {
   ModelOption withPrefix(String prefix) => ModelOption(id, hint,
       displayLabel: '$prefix$id',
       providerCode: providerCode,
+      providerDisplayName: providerDisplayName,
       supportsVision: supportsVision,
       supportsTool: supportsTool,
       supportsReasoning: supportsReasoning,

@@ -1,3 +1,6 @@
+import 'package:chatgpt_app_core/chat/application/direct_failure_recovery.dart';
+import 'package:chatgpt_app_core/chat/domain/backend_selection.dart';
+import 'package:chatgpt_app_core/chat/domain/backend_selection_error.dart';
 import 'dart:async';
 
 import 'package:chatgpt_app_core/chat/domain/chat_request_options.dart';
@@ -26,12 +29,14 @@ final class TranslationRequestFailure implements Exception {
   final int? statusCode;
   final Duration? retryAfter;
   final String safeCode;
+  final bool requiresUserConfirmation;
 
   const TranslationRequestFailure({
     required this.kind,
     this.statusCode,
     this.retryAfter,
     required this.safeCode,
+    this.requiresUserConfirmation = false,
   });
 
   @override
@@ -152,7 +157,21 @@ final class TranslationStreamExecutor {
   final Duration _idleTimeout;
   final Duration _totalTimeout;
   final int? _maxOutputTokensOverride;
+  DirectRetryPermit? _directPermit;
+  void bindDirectRetryPermit(DirectRetryPermit permit) {
+    if (_started ||
+        _active ||
+        _profile.mode != TranslationExecutionMode.local) {
+      throw StateError('确认许可只能绑定未开始的直连新执行器');
+    }
+    permit.verify();
+    _directPermit = permit;
+  }
+
   bool _active = false;
+  bool _started = false;
+  Future<TranslationRequestProfile>? _preparation;
+  BackendSelection? _preparedPair;
 
   TranslationStreamExecutor({
     required ChatService service,
@@ -171,6 +190,93 @@ final class TranslationStreamExecutor {
         _maxOutputTokensOverride =
             validateMaxOutputTokensOverride(maxOutputTokensOverride);
 
+  /// 新逻辑运行/首次任务写入前显式准备；不用于重签已发送的旧任务。
+  /// 同一个 executor/profile/transport 共用一次解析，每位等待者独立取消。
+  bool get allowsAutomaticRecovery =>
+      _profile.mode != TranslationExecutionMode.local;
+
+  Future<TranslationRequestProfile> prepare({
+    required TranslationCancellationToken cancellation,
+  }) async {
+    if (cancellation.isCancelled) throw _cancelledFailure;
+    if (_profile.mode == TranslationExecutionMode.backend &&
+        _started &&
+        _preparation == null) {
+      throw const TranslationRequestFailure(
+        kind: TranslationFailureKind.invalidRequest,
+        safeCode: 'invalid_backend_selection',
+      );
+    }
+    try {
+      final shared = _preparation ??= _prepareOnce();
+      final profile = await Future.any<TranslationRequestProfile>([
+        shared,
+        cancellation.whenCancelled.then<TranslationRequestProfile>(
+          (_) => throw _cancelledFailure,
+          onError: (Object _, StackTrace __) => throw _cancelledFailure,
+        ),
+      ]);
+      if (cancellation.isCancelled) throw _cancelledFailure;
+      _verifyPreparedPair();
+      return profile;
+    } catch (error) {
+      throw _mapFailure(error, sawEvent: false);
+    }
+  }
+
+  Future<TranslationRequestProfile> _prepareOnce() async {
+    if (_profile.mode == TranslationExecutionMode.local) return _profile;
+    final service = _service;
+    if (service is! BackendSelectionPreparingChatService) {
+      throw const TranslationRequestFailure(
+        kind: TranslationFailureKind.invalidRequest,
+        safeCode: 'invalid_backend_selection',
+      );
+    }
+    try {
+      final pair = await (service as BackendSelectionPreparingChatService)
+          .prepareBackendSelection();
+      final original = _profile.backendSelection;
+      if (pair.modelId != _profile.modelId ||
+          original != null && original.pairKey != pair.pairKey) {
+        throw const TranslationRequestFailure(
+          kind: TranslationFailureKind.invalidRequest,
+          safeCode: 'invalid_backend_selection',
+        );
+      }
+      (service as BackendSelectionPreparingChatService)
+          .verifyPreparedBackendSelection(pair);
+      _profile = TranslationRequestProfile(
+        mode: _profile.mode,
+        modelId: _profile.modelId,
+        reasoningPolicy: _profile.reasoningPolicy,
+        reasoningControlSuppressed: _profile.reasoningControlSuppressed,
+        backendSelection: pair,
+      );
+      _preparedPair = pair;
+      _verifyPreparedPair();
+      return _profile;
+    } catch (error) {
+      throw _mapFailure(error, sawEvent: false);
+    }
+  }
+
+  void _verifyPreparedPair() {
+    if (_profile.backendSelection == null) return;
+    final pair = _preparedPair;
+    final service = _service;
+    if (pair == null ||
+        service is! BackendSelectionPreparingChatService ||
+        pair.pairKey != _profile.backendSelection!.pairKey) {
+      throw const TranslationRequestFailure(
+        kind: TranslationFailureKind.invalidRequest,
+        safeCode: 'invalid_backend_selection',
+      );
+    }
+    (service as BackendSelectionPreparingChatService)
+        .verifyPreparedBackendSelection(pair);
+  }
+
   Future<String> complete(
     String prompt, {
     required TranslationCancellationToken cancellation,
@@ -187,19 +293,41 @@ final class TranslationStreamExecutor {
     _active = true;
     try {
       if (cancellation.isCancelled) throw _cancelledFailure;
+      try {
+        _verifyPreparedPair();
+      } catch (e) {
+        throw _mapFailure(e, sawEvent: false);
+      }
 
       var negotiatedReasoningControl = false;
       while (true) {
         final attemptProfile = _profile;
         try {
-          return await _runAttempt(
+          _started = true;
+          final value = await _runAttempt(
             prompt,
             profile: attemptProfile,
             cancellation: cancellation,
             onPhase: onPhase,
             onFirstEvent: onFirstEvent,
           );
+          // finish() 已等待 abort/socket observers；只复核成功结果，不覆盖已定失败。
+          try {
+            _verifyPreparedPair();
+          } catch (error) {
+            throw _mapFailure(error, sawEvent: true);
+          }
+          return value;
         } on TranslationRequestFailure catch (failure) {
+          if (attemptProfile.mode == TranslationExecutionMode.local &&
+              failure.kind != TranslationFailureKind.cancelled) {
+            throw TranslationRequestFailure(
+                kind: failure.kind,
+                statusCode: failure.statusCode,
+                retryAfter: failure.retryAfter,
+                safeCode: failure.safeCode,
+                requiresUserConfirmation: true);
+          }
           final canSuppressReasoning = failure.kind ==
                   TranslationFailureKind.unsupportedReasoningControl &&
               attemptProfile.reasoningPolicy ==
@@ -211,13 +339,13 @@ final class TranslationStreamExecutor {
           negotiatedReasoningControl = true;
           final suppressed = attemptProfile.suppressReasoningControl();
           try {
+            _verifyPreparedPair();
             await onProfileChanged?.call(suppressed);
+            _verifyPreparedPair();
             await _onProfileChanged?.call(suppressed);
-          } catch (_) {
-            throw const TranslationRequestFailure(
-              kind: TranslationFailureKind.network,
-              safeCode: 'request_failed',
-            );
+            _verifyPreparedPair();
+          } catch (error) {
+            throw _mapFailure(error, sawEvent: false);
           }
           _profile = suppressed;
           if (cancellation.isCancelled) throw _cancelledFailure;
@@ -349,6 +477,7 @@ final class TranslationStreamExecutor {
         fail(_cancelledFailure);
         return result.future;
       }
+      _directPermit?.verify();
       final stream = _service.chatStreamEventsWithOptions(
         prompt: prompt,
         history: const [],
@@ -360,6 +489,13 @@ final class TranslationStreamExecutor {
           minOutputTokens: 2048,
           suppressReasoningControl: profile.reasoningControlSuppressed,
           maxOutputTokensOverride: _maxOutputTokensOverride,
+          beforeDispatch: (_) async {
+            _directPermit?.verify();
+            _verifyPreparedPair();
+            await Future<void>.value();
+            _directPermit?.verify();
+            _verifyPreparedPair();
+          },
         ),
       );
       subscription = stream.listen(
@@ -367,6 +503,12 @@ final class TranslationStreamExecutor {
           if (terminal) return;
           if (cancellation.isCancelled) {
             fail(_cancelledFailure);
+            return;
+          }
+          try {
+            _verifyPreparedPair();
+          } catch (e) {
+            fail(_mapFailure(e, sawEvent: sawEvent));
             return;
           }
           if (!sawEvent) {
@@ -416,6 +558,12 @@ final class TranslationStreamExecutor {
             fail(_cancelledFailure);
             return;
           }
+          try {
+            _verifyPreparedPair();
+          } catch (e) {
+            fail(_mapFailure(e, sawEvent: sawEvent));
+            return;
+          }
           if (output.toString().trim().isEmpty) {
             fail(const TranslationRequestFailure(
               kind: TranslationFailureKind.invalidOutput,
@@ -439,7 +587,8 @@ const _cancelledFailure = TranslationRequestFailure(
   safeCode: 'cancelled',
 );
 
-const _knownTransportCodes = {
+final _knownTransportCodes = {
+  ...backendSelectionMessages.keys,
   'cancelled',
   'timeout',
   'network_error',
@@ -479,6 +628,13 @@ TranslationRequestFailure _mapFailure(
   final retryAfter = _safeRetryAfter(error.retryAfter);
   final safeCode = _safeTransportCode(error.safeCode);
 
+  if (isBackendSelectionError(safeCode)) {
+    return TranslationRequestFailure(
+      kind: TranslationFailureKind.invalidRequest,
+      statusCode: statusCode,
+      safeCode: safeCode,
+    );
+  }
   if (safeCode == 'cancelled') {
     return TranslationRequestFailure(
       kind: TranslationFailureKind.cancelled,

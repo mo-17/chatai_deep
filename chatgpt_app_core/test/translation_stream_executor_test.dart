@@ -618,7 +618,8 @@ void main() {
       }
     });
 
-    test('unsupported Thinking control is persisted before one clean retry',
+    test(
+        'local unsupported Thinking pauses without profile write or automatic clean retry',
         () async {
       final order = <String>[];
       final service = FakeTranslationChatService(
@@ -649,41 +650,28 @@ void main() {
         totalTimeout: const Duration(milliseconds: 120),
       );
 
-      final result = await executor.complete(
-        'prompt',
-        cancellation: TranslationCancellationController(),
-        onProfileChanged: (profile) async {
-          order.add('profile:start');
-          expect(profile.reasoningControlSuppressed, isTrue);
-          expect(service.requests.first.abortObserved, isTrue);
-          expect(service.activeSubscriptions, 0);
-          await Future<void>.delayed(const Duration(milliseconds: 2));
-          order.add('profile:end');
-        },
-      );
-
-      expect(result, '已翻译');
-      expect(order, [
-        'request:0',
-        'profile:start',
-        'profile:end',
-        'request:1',
-      ]);
-      expect(service.requests, hasLength(2));
-      expect(service.requests[0].options.suppressReasoningControl, isFalse);
-      expect(service.requests[1].options.suppressReasoningControl, isTrue);
+      await expectLater(
+          executor.complete('prompt',
+              cancellation: TranslationCancellationController(),
+              onProfileChanged: (_) async {
+            order.add('unexpected profile write');
+          }),
+          throwsA(
+              _failure(TranslationFailureKind.unsupportedReasoningControl)));
+      expect(order, ['request:0']);
+      expect(service.requests, hasLength(1));
+      expect(service.requests.single.options.suppressReasoningControl, isFalse);
       expect(
-        identical(
-          service.requests[0].options.abortTrigger,
-          service.requests[1].options.abortTrigger,
-        ),
-        isFalse,
-      );
+          (await executor.prepare(
+                  cancellation: TranslationCancellationController()))
+              .reasoningControlSuppressed,
+          isFalse);
       expect(
           service.requests.every((request) => request.abortObserved), isTrue);
     });
 
-    test('failed profile persistence does not commit suppression in memory',
+    test(
+        'local failure skips suppression persistence; explicit next call keeps original profile',
         () async {
       final service = FakeTranslationChatService([
         (request) => request.errorAfter(
@@ -718,7 +706,7 @@ void main() {
           'first',
           cancellation: TranslationCancellationController(),
         ),
-        throwsA(_failure(TranslationFailureKind.network)),
+        throwsA(_failure(TranslationFailureKind.unsupportedReasoningControl)),
       );
       final second = await executor.complete(
         'second',
@@ -765,7 +753,8 @@ void main() {
       await firstExpectation;
     });
 
-    test('a failed suppressed retry never negotiates a third request',
+    test(
+        'local unsupported control never negotiates an automatic second request',
         () async {
       final service = FakeTranslationChatService([
         (request) => request.errorAfter(
@@ -796,7 +785,7 @@ void main() {
         ),
       );
 
-      expect(service.requests, hasLength(2));
+      expect(service.requests, hasLength(1));
       expect(
           service.requests.every((request) => request.abortObserved), isTrue);
       expect(service.activeSubscriptions, 0);

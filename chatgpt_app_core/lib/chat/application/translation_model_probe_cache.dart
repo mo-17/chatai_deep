@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:convert';
+import 'package:chatgpt_app_core/chat/domain/backend_selection_error.dart';
 
 import 'package:flutter_hi_cache/flutter_hi_cache.dart';
 import 'package:login_sdk/dao/login_dao.dart';
@@ -155,7 +156,9 @@ final class TranslationModelProbeRecord {
   }
 
   static bool _isAllowedSafeErrorCode(String? code) =>
-      code == null || _allowedSafeErrorCodes.contains(code);
+      code == null ||
+      _allowedSafeErrorCodes.contains(code) ||
+      isBackendSelectionError(code);
 
   static int? _optionalInt(Object? raw, String field) {
     if (raw == null) return null;
@@ -231,6 +234,7 @@ final class TranslationModelProbeCache {
     required String expectedAccountHash,
     required String? providerId,
     required TranslationModelProbeCacheToken expectedToken,
+    bool Function()? isIdentityCurrent,
   }) {
     _validateProviderId(providerId);
     final validated = TranslationModelProbeRecord.fromJson(record.toJson());
@@ -244,6 +248,7 @@ final class TranslationModelProbeCache {
       providerId,
     );
     return _enqueue<bool>(key, () async {
+      if (!_identityCurrent(isIdentityCurrent)) return false;
       _ensureCurrentAccount(expectedAccountHash);
       if (invalidationPendingAtEnqueue ||
           _providerInvalidationPending(expectedAccountHash, providerId)) {
@@ -276,8 +281,10 @@ final class TranslationModelProbeCache {
         envelope,
         previousRaw: previousRaw,
         expectedAccountHash: expectedAccountHash,
+        isIdentityCurrent: isIdentityCurrent,
       );
-      if (_providerInvalidationPending(expectedAccountHash, providerId) ||
+      if (!_identityCurrent(isIdentityCurrent) ||
+          _providerInvalidationPending(expectedAccountHash, providerId) ||
           _runtimeProviderGenerationFor(expectedAccountHash, providerId) !=
               runtimeGenerationAtEnqueue) {
         final restored = await _restoreRaw(key, previousRaw);
@@ -514,9 +521,13 @@ final class TranslationModelProbeCache {
     _ProbeEnvelope envelope, {
     required Object? previousRaw,
     String? expectedAccountHash,
+    bool Function()? isIdentityCurrent,
   }) async {
     final preferences = HiCache.getInstance().prefs;
     if (preferences == null) throw StateError('HiCache 尚未初始化');
+    if (!_identityCurrent(isIdentityCurrent)) {
+      throw StateError('原模型预检身份已失效，拒绝写入缓存');
+    }
     try {
       final persisted = await preferences.setString(
         key,
@@ -526,12 +537,23 @@ final class TranslationModelProbeCache {
       if (expectedAccountHash != null) {
         _ensureCurrentAccount(expectedAccountHash);
       }
+      if (!_identityCurrent(isIdentityCurrent)) {
+        throw StateError('原模型预检身份已失效，拒绝写入缓存');
+      }
     } catch (error, stackTrace) {
       final restored = await _restoreRaw(key, previousRaw);
       if (!restored) {
         throw StateError('翻译模型预检缓存写入失败且旧值回滚未持久化');
       }
       Error.throwWithStackTrace(error, stackTrace);
+    }
+  }
+
+  static bool _identityCurrent(bool Function()? guard) {
+    try {
+      return guard?.call() ?? true;
+    } catch (_) {
+      return false;
     }
   }
 

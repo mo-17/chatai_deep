@@ -1,4 +1,5 @@
 import 'package:chatgpt_app_core/chat/domain/chat_attachments.dart';
+import 'package:chatgpt_app_core/chat/domain/backend_selection.dart';
 import 'package:chatgpt_app_core/chat/domain/chat_request_options.dart';
 import 'package:chatgpt_app_core/chat/domain/model_capabilities.dart';
 import 'package:chatgpt_app_core/chat/domain/stream_event.dart';
@@ -87,6 +88,7 @@ abstract class ChatService {
     if (s.mode == AIMode.backend) return BackendChatService(s);
     // 把本地服务商 code（'openai'/'deepseek'）一并传入，供能力探测按厂商区分。
     return DirectChatService(s.activeLocal,
+        configurationValid: s.localSelectionValid,
         providerId: s.activeProvider.id,
         providerCode: providerCodeFor(s),
         maxOutputTokens: s.maxOutputTokens,
@@ -97,17 +99,33 @@ abstract class ChatService {
 
   /// providerCode 派生规则的唯一出处：本地模式用激活服务商的 code，
   /// 后端模式不传（由 ModelCatalog 按 modelId 从清单反查）。
-  static String? providerCodeFor(AISettings s) =>
-      s.mode == AIMode.local ? s.activeProviderCode : null;
+  static String? providerCodeFor(AISettings s) => s.mode == AIMode.local
+      ? s.activeProviderCode
+      : s.backendSelection?.providerCode;
 
   /// 从 [AISettings] 直接算能力位（与 `ChatService.from(s).capabilities` 同源）。
   /// UI 在 build 里同步调用它即可随 settings 变化实时刷新入口开关。
   static ModelCapabilities capabilitiesFor(AISettings s) =>
-      ModelCatalog.capabilitiesFor(
-        s.effectiveModel,
-        providerCode: providerCodeFor(s),
-      );
+      s.mode == AIMode.backend
+          ? ModelCatalog.backendCapabilitiesFor(s.effectiveModel,
+              providerCode: providerCodeFor(s),
+              accountHash: s.backendSelection?.accountHash,
+              origin: s.backendSelection?.origin)
+          : ModelCatalog.capabilitiesFor(
+              s.effectiveModel,
+              providerCode: providerCodeFor(s),
+            );
 }
+
+/// 同一次普通运行从实际 transport 取得固定 pair，不另行解析或返回凭据。
+abstract interface class BackendSelectionPreparingChatService {
+  Future<BackendSelection> prepareBackendSelection(
+      {Future<void>? abortTrigger});
+  void verifyPreparedBackendSelection(BackendSelection pair);
+}
+
+/// 可选标记，不把新成员强加给既有local/fake接口。
+abstract interface class UserConfirmedRetryChatService {}
 
 /// 可选的 options-aware transport 能力。
 ///

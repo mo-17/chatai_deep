@@ -1,3 +1,4 @@
+import 'package:chatgpt_app_core/chat/domain/backend_usage_identity.dart';
 import 'package:chatgpt_app_core/db/hi_db_manager.dart';
 import 'package:chatgpt_app_core/db/usage_dao.dart';
 import 'package:chatgpt_app_core/model/ai_settings.dart';
@@ -50,7 +51,7 @@ class UsageStatsExportFormatter {
       ..writeln('估算成本：${snapshot.totalCost.toStringAsFixed(4)}')
       ..writeln('数据来源：${snapshot.hasEstimated ? '含估算' : '真实 usage'}');
     _writeSection(buffer, '按模型', snapshot.byModel);
-    _writeSection(buffer, '按服务商', snapshot.byProvider);
+    _writeSection(buffer, '按服务商', snapshot.byProvider, providerLabels: true);
     _writeSection(buffer, '按日期', snapshot.byDate);
     _writeSection(buffer, '按项目', snapshot.byProject);
     _writeSection(buffer, '按会话', snapshot.byConversation);
@@ -60,8 +61,9 @@ class UsageStatsExportFormatter {
   static void _writeSection(
     StringBuffer buffer,
     String title,
-    List<UsageAggregate> items,
-  ) {
+    List<UsageAggregate> items, {
+    bool providerLabels = false,
+  }) {
     buffer
       ..writeln()
       ..writeln('[$title]');
@@ -71,7 +73,7 @@ class UsageStatsExportFormatter {
     }
     for (final item in items) {
       buffer.writeln(
-        '${item.key}：调用 ${item.calls} 次，'
+        '${providerLabels ? usageProviderLabel(item.key) : item.key}：调用 ${item.calls} 次，'
         '输入 ${item.promptTokens}，缓存输入 ${item.cachedPromptTokens}，'
         '未缓存输入 ${item.uncachedPromptTokens}，输出 ${item.completionTokens}，'
         '总计 ${item.totalTokens}，成本 ${item.cost.toStringAsFixed(4)}'
@@ -197,7 +199,9 @@ class _UsageStatsPageState extends State<UsageStatsPage> {
                     children: [
                       _AggregateList(items: data.byModel, emptyText: '暂无模型用量'),
                       _AggregateList(
-                          items: data.byProvider, emptyText: '暂无服务商用量'),
+                          items: data.byProvider,
+                          emptyText: '暂无服务商用量',
+                          providerLabels: true),
                       _AggregateList(items: data.byDate, emptyText: '暂无日期用量'),
                       _AggregateList(
                           items: data.byProject, emptyText: '暂无项目用量'),
@@ -401,7 +405,11 @@ class _AggregateList extends StatelessWidget {
   final List<UsageAggregate> items;
   final String emptyText;
 
-  const _AggregateList({required this.items, required this.emptyText});
+  final bool providerLabels;
+  const _AggregateList(
+      {required this.items,
+      required this.emptyText,
+      this.providerLabels = false});
 
   @override
   Widget build(BuildContext context) {
@@ -437,7 +445,7 @@ class _AggregateList extends StatelessWidget {
   Widget _tile(BuildContext context, UsageAggregate item) {
     final visual = AppVisualTheme.of(context);
     return ListTile(
-      title: Text(item.key),
+      title: Text(providerLabels ? usageProviderLabel(item.key) : item.key),
       subtitle: Text(
         '调用 ${item.calls} 次 · 输入 ${item.promptTokens} · 缓存 ${item.cachedPromptTokens} · 未缓存 ${item.uncachedPromptTokens} · 输出 ${item.completionTokens}',
       ),

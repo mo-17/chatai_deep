@@ -1,3 +1,6 @@
+import 'package:chatgpt_app_core/chat/domain/backend_selection.dart';
+import 'package:chatgpt_app_core/dao/ai_catalog_dao.dart';
+import 'package:chatgpt_app_core/widget/backend_selection_picker.dart';
 import 'dart:async';
 import 'dart:io';
 
@@ -75,6 +78,10 @@ class _AssistantEditPageState extends State<AssistantEditPage> {
   ///模型覆盖（'' = 跟随全局设置）。
   String _providerId = '';
   String _model = '';
+  BackendSelection? _backendSelection;
+  AiCatalogIdentity? _backendEditIdentity;
+  bool _backendSelectionEdited = false;
+  bool _localSelectionEdited = false;
   String _defaultVoiceStyle = '';
   String? _avatarType;
   String? _avatarValue;
@@ -125,6 +132,7 @@ class _AssistantEditPageState extends State<AssistantEditPage> {
             AssistantRoleCardService.memoryBookForRuntime(a?.memoryBook ?? ''));
     _providerId = a?.providerId ?? '';
     _model = a?.model ?? '';
+    _backendSelection = a?.backendSelection;
     _defaultVoiceStyle = a?.defaultVoiceStyle ?? '';
     _avatarType = a?.avatarType;
     _avatarValue = a?.avatarValue;
@@ -757,6 +765,7 @@ class _AssistantEditPageState extends State<AssistantEditPage> {
               if (v == null) return;
               setState(() {
                 _providerId = v;
+                _localSelectionEdited = true;
                 if (_model.isNotEmpty &&
                     !_modelInCurrentProvider(v, settings)) {
                   _model = '';
@@ -1001,6 +1010,14 @@ class _AssistantEditPageState extends State<AssistantEditPage> {
   ///本地模式 -> 当前服务商清单），保证覆盖的模型与服务商兼容。
   Widget _buildModelDropdown() {
     final settings = context.watch<AISettingsProvider>().settings;
+    if (settings.mode == AIMode.backend) {
+      return ListTile(
+          key: const ValueKey('assistant_backend_selection'),
+          title: const Text('助手后端选择'),
+          subtitle: Text(backendSelectionLabel(_backendSelection,
+              legacyModelId: _model, followLabel: '跟随全局')),
+          onTap: _saving ? null : _pickBackendOverride);
+    }
     final options = _modelOptionsOfActiveProvider(settings);
 
     final items = <DropdownMenuItem<String>>[
@@ -1039,13 +1056,44 @@ class _AssistantEditPageState extends State<AssistantEditPage> {
               if (v == '__custom__') {
                 _showCustomModelDialog();
               } else if (v != null) {
-                setState(() => _model = v);
+                setState(() {
+                  _model = v;
+                  _localSelectionEdited = true;
+                });
               }
             },
           ),
         ),
       ),
     );
+  }
+
+  Future<void> _pickBackendOverride() async {
+    try {
+      final session = await _session;
+      if (!mounted) return;
+      if (session == null || _backendEditIdentity == null) {
+        throw const AssistantOperationExpired();
+      }
+      session.scope.verify();
+      final identity = _backendEditIdentity!;
+      if (identity.account != session.scope.accountHash || !identity.current) {
+        throw const BackendSelectionEditorExpired();
+      }
+      final selected = await pickBackendSelection(context,
+          identity: identity,
+          selected: _backendSelection,
+          legacyModelId: _model,
+          followLabel: '跟随全局');
+      session.scope.verify();
+      if (!mounted || !identity.current || selected == null) return;
+      setState(() {
+        _backendSelection = selected;
+        _backendSelectionEdited = true;
+      });
+    } catch (error) {
+      if (mounted) HiDialog.showSnackBar(context, '编辑环境已变化，请重新打开助手编辑');
+    }
   }
 
   void _showCustomModelDialog() async {
@@ -1068,13 +1116,19 @@ class _AssistantEditPageState extends State<AssistantEditPage> {
         ],
       ),
     );
-    if (result != null) setState(() => _model = result);
+    if (result != null && mounted) {
+      setState(() {
+        _model = result;
+        _localSelectionEdited = true;
+      });
+    }
   }
 
   Future<AssistantManagementSession?> _openSession() async {
     try {
       _scope = (widget.operationScope ?? AssistantOperationScope.capture())
           .forPage(() => mounted);
+      _backendEditIdentity = AiCatalogIdentity.capture();
       return await AssistantManagementSession.open(
           source: widget.assistant,
           scope: _scope!,
@@ -1123,6 +1177,8 @@ class _AssistantEditPageState extends State<AssistantEditPage> {
       HiDialog.showSnackBar(context, '请输入助手名称');
       return;
     }
+    final editingLocal =
+        context.read<AISettingsProvider>().settings.mode == AIMode.local;
     setState(() => _saving = true);
     try {
       final session = await _session;
@@ -1160,13 +1216,25 @@ class _AssistantEditPageState extends State<AssistantEditPage> {
         ..defaultVoiceStyle = _defaultVoiceStyle.trim()
         ..avatarType = _avatarType
         ..avatarValue = _avatarValue
-        ..providerId = settingsAwareProviderId()
-        ..model = _model.trim()
         ..useTools = _useTools
         ..toolIds = _toolIds.toList();
+      // 后端编辑只声明新业务字段；共享旧model/providerId仍属于本地/legacy。
+      if (_backendSelectionEdited) {
+        model.backendSelection = _backendSelection;
+      }
+      if (editingLocal && (!_backendSelectionEdited || _localSelectionEdited)) {
+        model.providerId = settingsAwareProviderId();
+        model.model = _model.trim();
+      }
       AssistantRoleCardService.exportTavernV2Json(model);
       AssistantRoleCardService.exportJson(model);
-      final saved = await session.save(model, override: widget.saveAssistant);
+      final saved = await session.save(model,
+          override: widget.saveAssistant,
+          additionallyCurrent: _backendSelectionEdited
+              ? () =>
+                  _backendEditIdentity?.current == true &&
+                  _backendEditIdentity?.account == session.scope.accountHash
+              : null);
       // 已提交的头像从自有临时集合移出；页面已离开也不能删除有效文件。
       _ownedAvatarPaths.remove(saved.avatarValue);
       await _discardOwnedAvatars();

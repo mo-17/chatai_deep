@@ -1,3 +1,7 @@
+import 'dart:convert';
+import 'dart:math' as math;
+import 'package:chatgpt_app_core/db/schema_guard.dart';
+import 'package:chatgpt_app_core/chat/domain/backend_selection.dart';
 import 'package:chatgpt_app_core/db/hi_db_manager.dart';
 import 'package:chatgpt_app_core/db/table_name.dart';
 import 'package:chatgpt_app_core/model/story_persona_model.dart';
@@ -49,21 +53,25 @@ class StoryRoomDao implements ITable {
         ', maxAutoTotalTokens integer default ${StoryRoomSchedulingLimits.defaultMaxAutoTotalTokens}'
         ', publicContext text, worldBookState text, roleCardContextJson text'
         ', promptConfigJson text, quickRepliesJson text, regexScriptsJson text, tavernPresetJson text, personaKey text'
-        ', webSearchEnabled integer, modelProviderId text, modelId text'
+        ', webSearchEnabled integer, modelProviderId text, modelId text, backendSelection text'
         ', temperature real, topP real, maxOutputTokens integer'
         ', activeMessageKey text'
         ', tavernChatMetadataJson text'
         ', createdAt integer, updatedAt integer)');
     await _ensureRoomColumns(storage);
+    await SchemaGuard.ensureColumns(storage.db,
+        table: roomTable, columns: const {'backendSelection': 'text'});
     await storage.db.execute(
         'create table if not exists tb_story_participant (id integer primary key autoincrement'
         ', roomId integer not null, assistantId integer, role text, name text'
         ', prompt text, avatarType text, avatarValue text'
-        ', voiceStyle text, modelProviderId text, modelId text'
+        ', voiceStyle text, modelProviderId text, modelId text, backendSelection text'
         ', temperature real, topP real, maxOutputTokens integer'
         ', participantKey text not null, stateSummary text'
         ', sortOrder integer, enabled integer, createdAt integer, updatedAt integer)');
     await _ensureParticipantColumns(storage);
+    await SchemaGuard.ensureColumns(storage.db,
+        table: participantTable, columns: const {'backendSelection': 'text'});
     await storage.db.execute(
         'create index if not exists tb_story_participant_room_idx on tb_story_participant(roomId, sortOrder)');
     await storage.db.execute(
@@ -272,6 +280,141 @@ class StoryRoomDao implements ITable {
     });
   }
 
+  Future<StoryBackendSelectionSnapshot> roomBackendSnapshot(
+          StoryRoomModel model,
+          {required void Function() validate}) =>
+      _backendSnapshot(roomTable, model.toJson(), validate);
+  Future<StoryBackendSelectionSnapshot> participantBackendSnapshot(
+          StoryParticipantModel model,
+          {required void Function() validate}) =>
+      _backendSnapshot(participantTable, model.toJson(), validate);
+  Future<StoryBackendSelectionSnapshot> _backendSnapshot(String table,
+      Map<String, dynamic> model, void Function() validate) async {
+    validate();
+    final expected = StoryBackendSelectionSnapshot._(table, model);
+    final rows = await storage.db
+        .query(table, where: expected.where, whereArgs: expected.args);
+    validate();
+    if (rows.length != 1 ||
+        expected.declaration !=
+            StoryBackendSelectionSnapshot._declaration(rows.single)) {
+      throw const StoryBackendSelectionStale();
+    }
+    return expected._withRow(rows.single);
+  }
+
+  Future<StoryRoomModel> saveRoomBackendChecked(StoryRoomModel model,
+          BackendSelection? selection, StoryBackendSelectionSnapshot expected,
+          {required void Function() validate,
+          Map<String, Object?> fields = const {}}) async =>
+      StoryRoomModel.fromJson(await _saveBackend(
+          roomTable, model.toJson(), selection, expected, validate, fields));
+  Future<StoryParticipantModel> saveParticipantBackendChecked(
+          StoryParticipantModel model,
+          BackendSelection? selection,
+          StoryBackendSelectionSnapshot expected,
+          {required void Function() validate,
+          Map<String, Object?> fields = const {}}) async =>
+      StoryParticipantModel.fromJson(await _saveBackend(participantTable,
+          model.toJson(), selection, expected, validate, fields));
+  Future<Map<String, Object?>> _saveBackend(
+      String table,
+      Map<String, dynamic> model,
+      BackendSelection? selection,
+      StoryBackendSelectionSnapshot expected,
+      void Function() validate,
+      Map<String, Object?> fields) async {
+    if (selection != null && !selection.isValid) {
+      throw const FormatException('后端选择格式无效');
+    }
+    final allowed = table == roomTable
+        ? const {'temperature', 'topP', 'maxOutputTokens'}
+        : const {
+            'name',
+            'prompt',
+            'voiceStyle',
+            'temperature',
+            'topP',
+            'maxOutputTokens'
+          };
+    if (fields.keys.any((k) => !allowed.contains(k))) {
+      throw const FormatException('设置字段无效');
+    }
+    for (final entry in fields.entries) {
+      final value = entry.value;
+      if (entry.key == 'temperature' || entry.key == 'topP') {
+        if (value != null &&
+            (value is! num ||
+                !value.isFinite ||
+                value < 0 ||
+                value > (entry.key == 'topP' ? 1 : 2))) {
+          throw const FormatException('生成参数无效');
+        }
+      } else if (entry.key == 'maxOutputTokens') {
+        if (value != null && (value is! int || value < 0)) {
+          throw const FormatException('生成参数无效');
+        }
+      } else if (value is! String ||
+          (entry.key == 'name' && value.trim().isEmpty)) {
+        throw const FormatException('角色资料无效');
+      }
+    }
+    // 未编辑selection只更新明确字段，原NULL/follow/pair/未知原文都不被覆盖。
+    final patch = Map<String, Object?>.of(fields);
+    if (selection != null) patch['backendSelection'] = selection.toSqlValue();
+    return storage.db.transaction((txn) async {
+      validate();
+      if (table != expected.table || !expected.matchesModel(model)) {
+        throw const StoryBackendSelectionStale();
+      }
+      final rows = await txn.query(table,
+          where: expected.where, whereArgs: expected.args);
+      validate();
+      if (rows.length != 1 || !expected.matchesRow(rows.single)) {
+        throw const StoryBackendSelectionStale();
+      }
+      final timestamp = math.max(DateTime.now().millisecondsSinceEpoch,
+          (rows.single['updatedAt'] as int? ?? 0) + 1);
+      final changed = await txn.update(
+          table, {...patch, 'updatedAt': timestamp},
+          where: expected.where, whereArgs: expected.args);
+      validate();
+      if (changed != 1) throw const StoryBackendSelectionStale();
+      final saved = await txn.query(table,
+          where: expected.where, whereArgs: expected.args);
+      validate();
+      return saved.single;
+    });
+  }
+
+  Future<void> updateRoomGeneratedContext(
+      int roomId, String context, String cards,
+      {void Function()? validate}) async {
+    await storage.db.transaction((txn) async {
+      validate?.call();
+      await txn.update(
+          roomTable,
+          {
+            'publicContext': context,
+            'roleCardContextJson': cards,
+            'updatedAt': DateTime.now().millisecondsSinceEpoch
+          },
+          where: 'id=?',
+          whereArgs: [roomId]);
+      validate?.call();
+    });
+  }
+
+  Future<void> updateGeneratedWorldState(int roomId, String state,
+      {required void Function() validate}) async {
+    await storage.db.transaction((txn) async {
+      validate();
+      await txn.update(roomTable, {'worldBookState': state},
+          where: 'id=?', whereArgs: [roomId]);
+      validate();
+    });
+  }
+
   Future<int> saveRoom(StoryRoomModel model) async {
     model.updatedAt = DateTime.now().millisecondsSinceEpoch;
     final data = model.toJson()..remove('id');
@@ -280,6 +423,7 @@ class StoryRoomDao implements ITable {
       model.id = id;
       return id;
     }
+    BackendSelection.preserveLegacyUpdate(data);
     await storage.db
         .update(tableName, data, where: 'id = ?', whereArgs: [model.id]);
     return model.id!;
@@ -521,6 +665,7 @@ class StoryRoomDao implements ITable {
       model.id = id;
       return id;
     }
+    BackendSelection.preserveLegacyUpdate(data);
     await storage.db.update(
       participantTable,
       data,
@@ -553,8 +698,10 @@ class StoryRoomDao implements ITable {
     await storage.db.delete(participantTable, where: 'id = ?', whereArgs: [id]);
   }
 
-  Future<int> saveMessage(StoryMessageModel model) {
+  Future<int> saveMessage(StoryMessageModel model,
+      {void Function()? validate, bool activate = true}) {
     return storage.db.transaction((txn) async {
+      validate?.call();
       final now = DateTime.now().millisecondsSinceEpoch;
       model.updatedAt = now;
       if (model.parentNodeKey == null) {
@@ -618,12 +765,16 @@ class StoryRoomDao implements ITable {
           whereArgs: [id],
         );
       }
-      await txn.update(
-        tableName,
-        {'activeMessageKey': model.nodeKey, 'updatedAt': now},
-        where: 'id = ?',
-        whereArgs: [model.roomId],
-      );
+      // 原许可撤销后的已收文本可留作未完成记录，不切换活动上下文。
+      if (activate) {
+        await txn.update(
+          tableName,
+          {'activeMessageKey': model.nodeKey, 'updatedAt': now},
+          where: 'id = ?',
+          whereArgs: [model.roomId],
+        );
+      }
+      validate?.call();
       return id;
     });
   }
@@ -676,8 +827,10 @@ class StoryRoomDao implements ITable {
     );
   }
 
-  Future<bool> activateMessage(int roomId, String nodeKey) async {
+  Future<bool> activateMessage(int roomId, String nodeKey,
+      {void Function()? validate}) async {
     return storage.db.transaction((txn) async {
+      validate?.call();
       final messages = await txn.query(
         messageTable,
         columns: ['contextStateAfter', 'roleStatesAfter'],
@@ -704,6 +857,7 @@ class StoryRoomDao implements ITable {
         where: 'id = ?',
         whereArgs: [roomId],
       );
+      validate?.call();
       return true;
     });
   }
@@ -922,4 +1076,56 @@ class StoryRoomDao implements ITable {
       );
     }
   }
+}
+
+/// 身份由调用方原编辑scope验证；这里只给原行与房间归属CAS，不补签账号。
+class StoryBackendSelectionSnapshot {
+  final String table;
+  final Map<String, dynamic> _model;
+  final Map<String, Object?>? _row;
+  StoryBackendSelectionSnapshot._(this.table, Map<String, dynamic> model,
+      [Map<String, Object?>? row])
+      : _model = Map.unmodifiable(model),
+        _row = row == null ? null : Map.unmodifiable(row) {
+    if (model['id'] is! int || (model['id'] as int) <= 0) {
+      throw const StoryBackendSelectionStale();
+    }
+    if (table == StoryRoomDao.participantTable &&
+        (model['roomId'] is! int ||
+            model['participantKey'] is! String ||
+            (model['participantKey'] as String).trim().isEmpty)) {
+      throw const StoryBackendSelectionStale();
+    }
+  }
+  StoryBackendSelectionSnapshot _withRow(Map<String, Object?> row) =>
+      StoryBackendSelectionSnapshot._(table, _model, row);
+  String get where => table == StoryRoomDao.participantTable
+      ? 'id=? and roomId=? and participantKey=?'
+      : 'id=?';
+  List<Object?> get args => table == StoryRoomDao.participantTable
+      ? [_model['id'], _model['roomId'], _model['participantKey']]
+      : [_model['id']];
+  String get declaration => _declaration(_model);
+  bool matchesModel(Map<String, dynamic> model) =>
+      _text(model) == _text(_model);
+  bool matchesRow(Map<String, Object?> row) =>
+      _row != null && _text(row) == _text(_row!);
+  static String _declaration(Map<String, Object?> row) => jsonEncode([
+        row['id'],
+        row['roomId'],
+        row['participantKey'],
+        row['backendSelection'],
+        row['modelProviderId'],
+        row['modelId']
+      ]);
+  static String _text(Map<String, Object?> row) {
+    final keys = row.keys.toList()..sort();
+    return jsonEncode({for (final key in keys) key: row[key]});
+  }
+}
+
+class StoryBackendSelectionStale implements Exception {
+  const StoryBackendSelectionStale();
+  @override
+  String toString() => '原房间或角色已变化，请重新打开选择';
 }

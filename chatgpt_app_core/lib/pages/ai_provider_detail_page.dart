@@ -474,9 +474,6 @@ class _AiProviderDetailPageState extends State<AiProviderDetailPage> {
     p.models.removeWhere((m) => m.id == modelId);
     _modelTestStates.remove(modelId);
     _modelTestErrors.remove(modelId);
-    if (p.selectedModelId == modelId) {
-      p.selectedModelId = p.models.isNotEmpty ? p.models.first.id : '';
-    }
     unawaited(_persistProvider(p));
   }
 
@@ -985,7 +982,9 @@ class _AiProviderDetailPageState extends State<AiProviderDetailPage> {
       AiProvider p, AiModel m, ColorScheme cs, TextTheme tt) {
     final visual = AppVisualTheme.of(context);
     final selected = p.selectedModelId == m.id ||
-        (p.selectedModelId.isEmpty && p.models.first.id == m.id);
+        (p.selectedModelId.isEmpty &&
+            p.models.length == 1 &&
+            p.models.single.id == m.id);
     final persistedState = switch (m.lastTestStatus) {
       'success' => _TestState.success,
       'failure' => _TestState.failure,

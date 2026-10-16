@@ -1,4 +1,5 @@
 import 'dart:convert';
+import 'package:chatgpt_app_core/chat/domain/backend_selection.dart';
 
 import 'package:chatgpt_app_core/chat/application/tool_registry.dart';
 import 'package:chatgpt_app_core/chat/domain/chat_failure_diagnosis.dart';
@@ -72,6 +73,9 @@ class AgentTaskSession extends ChangeNotifier {
   int? userCreatedAt;
   int nextRound = 0;
   int generation = 0;
+  Object? _backendRequestSelection;
+  BackendSelection? get backendSelection =>
+      BackendSelection.fromStorage(_backendRequestSelection);
   bool needsContinuation = false;
   String? pauseReason;
   ChatFailureDiagnosis? failureDiagnosis;
@@ -100,6 +104,7 @@ class AgentTaskSession extends ChangeNotifier {
       userCreatedAt = value['userCreatedAt'] as int?;
       nextRound = value['nextRound'] as int? ?? 0;
       generation = value['generation'] as int? ?? 0;
+      _backendRequestSelection = value['backendRequestSelection'];
       needsContinuation = value['needsContinuation'] == true;
       pauseReason = value['pauseReason'] as String?;
       failureDiagnosis =
@@ -147,6 +152,8 @@ class AgentTaskSession extends ChangeNotifier {
         'userCreatedAt': userCreatedAt,
         'nextRound': nextRound,
         'generation': generation,
+        if (_backendRequestSelection != null)
+          'backendRequestSelection': _backendRequestSelection,
         'needsContinuation': needsContinuation,
         if (pauseReason != null) 'pauseReason': pauseReason,
         if (failureDiagnosis != null)
@@ -193,7 +200,16 @@ class AgentTaskSession extends ChangeNotifier {
   }
 
   Future<void> begin(
-      {required int userAt, required String input, bool resume = false}) async {
+      {required int userAt,
+      required String input,
+      bool resume = false,
+      BackendSelection? backendSelection}) async {
+    if (!resume) {
+      _backendRequestSelection = backendSelection?.toSafeJson();
+    } else if (backendSelection != null &&
+        this.backendSelection?.pairKey != backendSelection.pairKey) {
+      throw StateError('旧任务原服务商未得到证明，请创建新请求');
+    }
     generation++;
     if (!resume || userCreatedAt != userAt || prompt != input) {
       todos = const [];

@@ -33,6 +33,8 @@ import 'package:chatgpt_app_core/widget/translation_settings_dialog.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:sqflite_common_ffi/sqflite_ffi.dart';
+import 'package:login_sdk/login_sdk.dart';
+import 'support/backend_pair_tokens.dart';
 
 void main() {
   test('Story production repair seam routes guest and backend endpoint',
@@ -1455,10 +1457,17 @@ void main() {
           StoryTemplateTranslationTaskStatus.completed);
     });
 
-    test('限流会保存当前分块、释放租约并保留 nextRunAt', () async {
+    test('直连限流保留检查点和租约释放，但不自动排期下一请求', () async {
       final templateDao = await StoryTemplateDao.create(storage);
       const secretSource = 'SOURCE_TEXT_MUST_NOT_APPEAR_IN_LOG';
       final task = StoryTemplateTranslationTaskModel(
+        requestProfile: jsonEncode(TranslationRequestProfile(
+                mode: TranslationExecutionMode.local,
+                providerId: 'fixture',
+                modelId: 'fixture',
+                reasoningPolicy: ChatReasoningPolicy.providerDefault,
+                reasoningControlSuppressed: false)
+            .toJson()),
         sourceTitle: 'Rate limited',
         sourcePayload: jsonEncode(StoryRoomTemplatePayload(results: [
           AssistantRoleCardImportResult(
@@ -1477,7 +1486,7 @@ void main() {
         ),
         isTrue,
       );
-      final before = DateTime.now().millisecondsSinceEpoch;
+      var calls = 0;
 
       await StoryTemplateTranslationTaskRunner(
         taskDao: taskDao,
@@ -1485,20 +1494,24 @@ void main() {
         task: task,
         leaseOwner: owner,
         useChunkCheckpoints: true,
-        complete: (_) async => throw const TranslationRequestFailure(
-          kind: TranslationFailureKind.rateLimited,
-          statusCode: 429,
-          retryAfter: Duration(seconds: 30),
-          safeCode: 'rate_limited',
-        ),
+        complete: (_) async {
+          calls++;
+          throw const TranslationRequestFailure(
+            kind: TranslationFailureKind.rateLimited,
+            statusCode: 429,
+            retryAfter: Duration(seconds: 30),
+            safeCode: 'rate_limited',
+          );
+        },
         isCancelled: () => false,
       ).run();
 
       final stored = await taskDao.getTask(task.id!);
-      expect(stored?.status, StoryTemplateTranslationTaskStatus.retryable);
+      expect(stored?.status, StoryTemplateTranslationTaskStatus.failed);
       expect(stored?.leaseOwner, isNull);
       expect(stored?.leaseUntil, isNull);
-      expect(stored?.nextRunAt, greaterThan(before));
+      expect(stored?.nextRunAt, isNull);
+      expect(calls, 1);
       expect(stored?.chunkPayload, isNotEmpty);
       expect(stored?.error, 'rate_limited');
       expect(stored?.log, isNot(contains(secretSource)));
@@ -2737,7 +2750,7 @@ void main() {
       expect(executorCalls, 1);
     });
 
-    test('更换模型重试保留分块和字段检查点', () async {
+    test('后端历史拒绝替换并原样保留分块和字段检查点', () async {
       final oldProfile = TranslationRequestProfile(
         mode: TranslationExecutionMode.backend,
         modelId: 'slow-model',
@@ -2769,27 +2782,31 @@ void main() {
       final coordinator = StoryTemplateTranslationCoordinator();
       await coordinator.initialize(storage, accountHash: 'test');
 
-      await coordinator.retry(
-        coordinator.tasks.single,
-        replacementProfile: replacement,
-        checkEligibility: _allowTranslationProfile,
-        resolveExecutor: (_) {
-          throw const TranslationModelUnavailableException('测试暂停');
-        },
-      );
-      await _waitUntil(() =>
-          coordinator.tasks.single.status ==
-          StoryTemplateTranslationTaskStatus.needsConfiguration);
-
+      final before = (await taskDao.getTask(task.id!))!.toJson();
+      var executorCalls = 0;
+      await expectLater(
+          coordinator.retry(
+            coordinator.tasks.single,
+            replacementProfile: replacement,
+            checkEligibility: _allowTranslationProfile,
+            resolveExecutor: (_) {
+              executorCalls++;
+              throw StateError('must not replace old backend snapshot');
+            },
+          ),
+          throwsA(isA<TranslationModelUnavailableException>().having(
+              (e) => e.safeCode, 'safeCode', 'invalid_backend_selection')));
+      expect(executorCalls, 0);
       final stored = await taskDao.getTask(task.id!);
       expect(stored?.chunkPayload, chunkPayload);
       expect(stored?.fieldPayload, task.fieldPayload);
-      expect(stored?.progress, greaterThanOrEqualTo(0.73));
+      expect(stored?.progress, 0.73);
+      expect(stored?.toJson(), before);
       expect(
         TranslationRequestProfile.fromJson(
           Map<String, dynamic>.from(jsonDecode(stored!.requestProfile) as Map),
         ).modelId,
-        'fast-model',
+        'slow-model',
       );
     });
 
@@ -2838,7 +2855,20 @@ void main() {
           ]));
     });
 
-    test('失效 legacy fallback 只暂停旧任务且现代快照继续完成', () async {
+    test('失效 legacy fallback 暂停而未登录后端 v1 保留原行零领取', () async {
+      // 此用例没有登录；新身份边界用合成空 token，避免触发平台默认存储。
+      final tokens = PairTokens()
+        ..account = 'test'
+        ..token = '';
+      LoginSdkConfig.install(LoginSdkConfig(
+          baseUrl: 'fixture.invalid',
+          headerProvider: () async => {},
+          syncHeaders: () => {},
+          routes: LoginRoutes.imooc,
+          responseAdapter: ImoocResponseAdapter(),
+          storage: tokens,
+          onLogoutNavigate: () {}));
+      addTearDown(LoginSdkConfig.reset);
       final settings = AISettings(
         mode: AIMode.local,
         providers: [
@@ -2917,16 +2947,17 @@ void main() {
       final storedModern = await taskDao.getTask(modern.id!);
       final outputs = await StoryTemplateDao.create(storage)
           .then((dao) => dao.getTemplates());
-      expect(resumed, 1);
+      expect(resumed, 0);
       expect(legacyResolutions, 1);
       expect(storedLegacy?.status,
           StoryTemplateTranslationTaskStatus.needsConfiguration);
       expect(storedLegacy?.error, 'legacy_profile_missing');
-      expect(
-          storedModern?.status, StoryTemplateTranslationTaskStatus.completed);
-      expect(executedProfiles, hasLength(1));
-      expect(executedProfiles.single.modelId, 'backend-modern');
-      expect(outputs, hasLength(1));
+      expect(storedModern?.status, StoryTemplateTranslationTaskStatus.queued);
+      expect(executedProfiles, isEmpty);
+      expect(storedModern?.requestProfile, modern.requestProfile);
+      expect(storedModern?.attempts, 0);
+      expect(storedModern?.toJson(), modern.toJson());
+      expect(outputs, isEmpty);
     });
   });
 }

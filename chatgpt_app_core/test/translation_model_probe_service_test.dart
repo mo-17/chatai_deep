@@ -819,7 +819,7 @@ void main() {
     );
   });
 
-  test('suppression evidence is cached when the no-parameter retry fails',
+  test('local probe makes one request and cannot invent suppression evidence',
       () async {
     final cache = TranslationModelProbeCache(now: () => now);
     final fake = FakeTranslationChatService([
@@ -846,24 +846,24 @@ void main() {
         )
         .result;
 
-    expect(fake.requestAttempts, 2);
+    expect(fake.requestAttempts, 1);
     expect(fake.requests.first.options.suppressReasoningControl, isFalse);
-    expect(fake.requests.last.options.suppressReasoningControl, isTrue);
+    expect(fake.requests.last.options.suppressReasoningControl, isFalse);
     expect(result.record.status, TranslationModelProbeStatus.failed);
-    expect(result.record.safeErrorCode, 'network_unreachable');
-    expect(result.record.reasoningControlSuppressed, isTrue);
+    expect(result.record.safeErrorCode, 'unsupported_api');
+    expect(result.record.reasoningControlSuppressed, isFalse);
     final cached = service.lookup(
       accountHash: 'guest',
       settings: settings,
       profile: profile,
     );
-    expect(cached?.reasoningControlSuppressed, isTrue);
+    expect(cached?.reasoningControlSuppressed, isFalse);
     final applied = service.applyCachedEvidence(
       accountHash: 'guest',
       settings: settings,
       profile: profile,
     );
-    expect(applied.reasoningControlSuppressed, isTrue);
+    expect(applied.reasoningControlSuppressed, isFalse);
 
     final raw = HiCache.getInstance().get(
       TranslationModelProbeCache.keyFor('guest'),

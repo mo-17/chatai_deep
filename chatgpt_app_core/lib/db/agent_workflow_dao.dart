@@ -1,4 +1,7 @@
 import 'dart:convert';
+import 'package:flutter/foundation.dart';
+import 'package:chatgpt_app_core/chat/application/backend_selection_probe.dart';
+import 'package:chatgpt_app_core/chat/domain/backend_selection.dart';
 import 'package:chatgpt_app_core/chat/application/agent_task_verifier.dart';
 import 'package:chatgpt_app_core/chat/application/agent_workflow_scope.dart';
 import 'package:chatgpt_app_core/chat/domain/agent_workflow.dart';
@@ -30,9 +33,18 @@ class AgentWorkflowDao implements IAgentWorkflowStore, ITable {
   final HiDBManager storage;
   final String accountHash;
   final int Function() now;
+  final void Function()? _executionGuard;
+  final void Function(WorkflowModelProfile)? _profileGuard;
   @override
   String tableName = workflows;
-  AgentWorkflowDao._(this.storage, this.accountHash, this.now);
+  AgentWorkflowDao._(this.storage, this.accountHash, this.now,
+      [this._executionGuard, this._profileGuard]);
+
+  /// 每个原运行单独的句柄，不修改共享 DAO 或账号全局状态。
+  AgentWorkflowDao forExecution(
+          {required void Function() guard,
+          void Function(WorkflowModelProfile)? verifyProfile}) =>
+      AgentWorkflowDao._(storage, accountHash, now, guard, verifyProfile);
   static Future<AgentWorkflowDao> create(HiDBManager storage,
       {required String accountHash, int Function()? now}) async {
     if (accountHash.trim().isEmpty) {
@@ -125,16 +137,27 @@ class AgentWorkflowDao implements IAgentWorkflowStore, ITable {
   }
 
   Future<T> _transaction<T>(
-      AgentWorkflowScope scope, Future<T> Function(Transaction tx) action) {
+      AgentWorkflowScope scope, Future<T> Function(Transaction tx) action,
+      {void Function()? finalGuard}) {
     if (scope.accountHash != accountHash) {
       throw const WorkflowStale('任务数据库账号不匹配');
     }
-    return scope.stable(() => storage.db.transaction((tx) async {
-          scope.verify();
-          final result = await action(tx);
-          scope.verify();
-          return result;
-        }));
+    return scope.stable(() async {
+      _executionGuard?.call();
+      final result = await storage.db.transaction((tx) async {
+        scope.verify();
+        _executionGuard?.call();
+        final value = await action(tx);
+        scope.verify();
+        _executionGuard?.call();
+        finalGuard?.call();
+        return value;
+      });
+      // 同一原守卫也贯穿事务 Future 返回；这里不能撤回已完成的 COMMIT。
+      _executionGuard?.call();
+      finalGuard?.call();
+      return result;
+    });
   }
 
   static String _conversationHash(Map<String, Object?> row) =>
@@ -186,6 +209,128 @@ class AgentWorkflowDao implements IAgentWorkflowStore, ITable {
           whereArgs: [parentId],
           orderBy: 'createdAt,attemptId');
 
+  /// 只接受尚未开始的整个父任务；不能逐步绑定后先发出一部分。
+  static bool unstartedForBackendBinding(
+      AgentWorkflow parent, List<WorkflowStep> steps) {
+    final row = parent.toRow();
+    return row['state'] == 'queued' &&
+        row['leaseId'] == null &&
+        row['deadlineAt'] == null &&
+        row['activeStepId'] == null &&
+        row['verificationJson'] == null &&
+        row['reason'] == null &&
+        [
+          'dispatches',
+          'reservedTokens',
+          'actualInputTokens',
+          'actualOutputTokens',
+          'usageUnknown',
+          'costUnknown',
+          'reworks'
+        ].every((key) => row[key] == 0) &&
+        row['estimatedCost'] == null &&
+        steps.length == 3 &&
+        steps.map((s) => s.role).toSet().containsAll(WorkflowRole.values) &&
+        steps.every((step) {
+          final s = step.toRow();
+          return s['state'] == 'queued' &&
+              s['inputHash'] == null &&
+              s['checkpoint'] == null &&
+              s['resultHash'] == null &&
+              s['result'] == '' &&
+              s['toolRounds'] == 0 &&
+              s['cycles'] == 0;
+        });
+  }
+
+  Future<AgentWorkflow> bindLegacyBackendProfiles(
+    BackendSelectionBindingScope scope, {
+    required AgentWorkflow expected,
+    required List<WorkflowStep> expectedSteps,
+    required Map<String, BackendSelection> resolved,
+  }) {
+    if (scope.accountHash != accountHash) throw const WorkflowStale();
+    final originalSteps = List<WorkflowStep>.unmodifiable(expectedSteps);
+    final pairs = Map<String, BackendSelection>.unmodifiable(resolved);
+    return scope.stable(() => storage.db.transaction((tx) async {
+          scope.verify();
+          final parents = await tx
+              .query(workflows, where: 'parentId=?', whereArgs: [expected.id]);
+          final rows = await tx.query(stepTable,
+              where: 'parentId=?',
+              whereArgs: [expected.id],
+              orderBy: 'ordinal');
+          if (parents.length != 1 ||
+              !mapEquals(parents.single, expected.toRow()) ||
+              rows.length != originalSteps.length ||
+              !unstartedForBackendBinding(AgentWorkflow(parents.single),
+                  rows.map(WorkflowStep.new).toList())) {
+            throw const WorkflowStale('任务已有执行证据或原快照已变化，不能重新绑定');
+          }
+          for (var i = 0; i < rows.length; i++) {
+            if (!mapEquals(rows[i], originalSteps[i].toRow())) {
+              throw const WorkflowStale();
+            }
+          }
+          for (final table in [attempts, publications, outputPublications]) {
+            if ((await tx.query(table,
+                    where: 'parentId=?', whereArgs: [expected.id], limit: 1))
+                .isNotEmpty) {
+              throw const WorkflowStale('任务已有请求或发布历史，不能重新绑定');
+            }
+          }
+          await _sourceValid(tx, parents.single);
+          final required = <String>{};
+          for (final step in rows.map(WorkflowStep.new)) {
+            final profile = step.profile;
+            if (profile.mode != 'backend') continue;
+            if (profile.backendSelection != null) {
+              scope.verifyPair(profile.backendSelection!, profile.modelId);
+            } else {
+              if (profile.providerId != 'backend') {
+                throw const WorkflowStale('旧后端配置不是可识别哨兵');
+              }
+              required.add(step.id);
+              final selection = pairs[step.id];
+              if (selection == null) throw const WorkflowStale('必须一次绑定全部旧后端节点');
+              scope.verifyPair(selection, profile.modelId);
+            }
+          }
+          if (required.isEmpty || !setEquals(required, pairs.keys.toSet())) {
+            throw const WorkflowStale();
+          }
+          for (final row in rows) {
+            final selection = pairs[row['stepId']];
+            if (selection == null) continue;
+            final changed = await tx.update(
+                stepTable,
+                {
+                  'profile': jsonEncode(
+                      WorkflowModelProfile.backend(selection).toJson()),
+                  'revision': (row['revision'] as int) + 1,
+                },
+                where: 'stepId=? AND revision=? AND profile=?',
+                whereArgs: [row['stepId'], row['revision'], row['profile']]);
+            if (changed != 1) throw const WorkflowStale();
+          }
+          final old = parents.single;
+          final timestamp = now();
+          final stamp = timestamp > (old['updatedAt'] as int)
+              ? timestamp
+              : (old['updatedAt'] as int) + 1;
+          final revision = (old['revision'] as int) + 1;
+          final changed = await tx.update(
+              workflows, {'updatedAt': stamp, 'revision': revision},
+              where: 'parentId=? AND revision=?',
+              whereArgs: [expected.id, expected.revision]);
+          if (changed != 1) throw const WorkflowStale();
+          final finalRows = await tx
+              .query(workflows, where: 'parentId=?', whereArgs: [expected.id]);
+          scope.verify();
+          return AgentWorkflow(finalRows.single);
+        }));
+  }
+
   Future<AgentWorkflow> createFromSource(AgentWorkflowScope scope,
           {required int cid,
           int? userRowId,
@@ -193,6 +338,9 @@ class AgentWorkflowDao implements IAgentWorkflowStore, ITable {
           int? newUserCreatedAt,
           ConversationModel? conversationIfMissing,
           String? expectedConversationFingerprint,
+          AgentWorkflow? confirmedOriginal,
+          List<WorkflowStep>? confirmedSteps,
+          bool endConfirmedOriginal = false,
           required Map<WorkflowRole, WorkflowModelProfile> profiles,
           List<int> inputFileIds = const [],
           List<WorkflowInputRef>? expectedInputs,
@@ -202,6 +350,38 @@ class AgentWorkflowDao implements IAgentWorkflowStore, ITable {
           bool backgroundEnabled = false,
           WorkflowBudget budget = const WorkflowBudget()}) =>
       _transaction(scope, (tx) async {
+        if (confirmedOriginal != null) {
+          final old = await tx.query(workflows,
+              where: 'parentId=?', whereArgs: [confirmedOriginal.id]);
+          final steps = await tx.query(stepTable,
+              where: 'parentId=?',
+              whereArgs: [confirmedOriginal.id],
+              orderBy: 'ordinal');
+          if (old.length != 1 ||
+              jsonEncode(old.single) != jsonEncode(confirmedOriginal.toRow()) ||
+              confirmedSteps == null ||
+              jsonEncode(steps) !=
+                  jsonEncode(confirmedSteps.map((s) => s.toRow()).toList())) {
+            throw const WorkflowStale('原任务已变化，请重新确认');
+          }
+          await _sourceValid(tx, old.single);
+          // 只有弹窗明确同意结束旧协作的入口才能释放每会话唯一活动槽。
+          // 新父任务插入失败时同事务回滚；未知attempt、节点结果和预算不修改。
+          if (endConfirmedOriginal &&
+              !const ['complete', 'failed', 'cancelled']
+                  .contains(old.single['state'])) {
+            if (!const ['paused', 'needsConfiguration', 'budgetExhausted']
+                .contains(old.single['state'])) {
+              throw const WorkflowStale('原协作仍在运行，请先停止并重新确认');
+            }
+            await _update(tx, old.single, {
+              'state': 'cancelled',
+              'reason': '${old.single['reason'] ?? ''}；用户明确结束原协作并新建请求',
+              'leaseId': null,
+              'activeStepId': null,
+            });
+          }
+        }
         budget.validate();
         validateAcceptance(acceptance,
             inputCount: inputFileIds.length,
@@ -428,39 +608,72 @@ class AgentWorkflowDao implements IAgentWorkflowStore, ITable {
   }
 
   Future<AgentWorkflow> claim(
-          AgentWorkflowScope scope, String parentId, int revision) =>
-      _transaction(scope, (tx) async {
-        final rows = await tx.query(workflows,
-            where: 'parentId=? AND revision=?',
-            whereArgs: [parentId, revision]);
-        if (rows.length != 1 ||
-            !const ['queued', 'paused', 'needsConfiguration']
-                .contains(rows.single['state'])) {
-          throw const WorkflowStale();
-        }
-        await _sourceValid(tx, rows.single);
-        final unknown = await tx.query(attempts,
-            where: "parentId=? AND state IN ('dispatched','unknown')",
-            whereArgs: [parentId],
-            limit: 1);
-        if (unknown.isNotEmpty) {
-          throw const WorkflowStale('上次请求结果不明，不能自动重放');
-        }
-        for (final step in await tx
-            .query(stepTable, where: 'parentId=?', whereArgs: [parentId])) {
-          final checkpoint = WorkflowStep(step).checkpoint;
-          if (checkpoint?['executingToolId'] != null) {
-            throw const WorkflowStale('上次工具结果未保存，禁止自动重复');
+      AgentWorkflowScope scope, String parentId, int revision,
+      {List<WorkflowStep>? expectedSteps}) {
+    final snapshot = expectedSteps == null
+        ? null
+        : List<WorkflowStep>.unmodifiable(expectedSteps);
+    final prepared = <WorkflowModelProfile>[];
+    return _transaction(scope, (tx) async {
+      final rows = await tx.query(workflows,
+          where: 'parentId=? AND revision=?', whereArgs: [parentId, revision]);
+      if (rows.length != 1 ||
+          !const ['queued', 'paused', 'needsConfiguration']
+              .contains(rows.single['state'])) {
+        throw const WorkflowStale();
+      }
+      await _sourceValid(tx, rows.single);
+      final unknown = await tx.query(attempts,
+          where: "parentId=? AND state IN ('dispatched','unknown')",
+          whereArgs: [parentId],
+          limit: 1);
+      if (unknown.isNotEmpty) {
+        throw const WorkflowStale('上次请求结果不明，不能自动重放');
+      }
+      final steps = await tx.query(stepTable,
+          where: 'parentId=?', whereArgs: [parentId], orderBy: 'ordinal');
+      if (steps.any((s) => WorkflowStep(s).profile.backendSelection != null) &&
+          (snapshot == null ||
+              snapshot.length != steps.length ||
+              steps.length != 3 ||
+              !List.generate(steps.length,
+                      (i) => mapEquals(steps[i], snapshot[i].toRow()))
+                  .every((v) => v))) {
+        throw const WorkflowStale('原父任务节点快照已变化');
+      }
+      for (var i = 0; i < steps.length; i++) {
+        final step = steps[i];
+        final profile = WorkflowStep(step).profile;
+        if (profile.backendSelection != null) {
+          if (_executionGuard == null ||
+              _profileGuard == null ||
+              snapshot == null ||
+              snapshot.length != steps.length ||
+              !mapEquals(step, snapshot[i].toRow())) {
+            throw const WorkflowStale('原节点快照或后端准备许可已变化');
           }
+          _profileGuard!(profile);
+          prepared.add(profile);
         }
-        return _update(tx, rows.single, {
-          'state': 'running',
-          'reason': null,
-          'leaseId': generateUuidV4(),
-          'deadlineAt': rows.single['deadlineAt'] ??
-              now() + (rows.single['durationMs'] as int)
-        });
+        final checkpoint = WorkflowStep(step).checkpoint;
+        if (checkpoint?['executingToolId'] != null) {
+          throw const WorkflowStale('上次工具结果未保存，禁止自动重复');
+        }
+      }
+      return _update(tx, rows.single, {
+        'state': 'running',
+        'reason': null,
+        'leaseId': generateUuidV4(),
+        'deadlineAt': rows.single['deadlineAt'] ??
+            now() + (rows.single['durationMs'] as int)
       });
+    }, finalGuard: () {
+      for (final p in prepared) {
+        _profileGuard!(p);
+      }
+    });
+  }
+
   Future<AgentWorkflow> beginStep(
           AgentWorkflowScope scope, WorkflowFence fence, String stepId,
           {required String inputHash,
@@ -511,62 +724,84 @@ class AgentWorkflowDao implements IAgentWorkflowStore, ITable {
         });
       });
   Future<WorkflowReservation> reserveDispatch(
-          AgentWorkflowScope scope, WorkflowFence fence, String stepId,
-          {required String inputHash,
-          required int estimatedInput,
-          int outputTokens = WorkflowBudget.outputTokens}) =>
-      _transaction(scope, (tx) async {
-        final w = await _require(tx, fence);
-        if (w['activeStepId'] != stepId ||
-            estimatedInput < 1 ||
-            outputTokens < 1 ||
-            outputTokens > WorkflowBudget.outputTokens) {
-          throw const WorkflowStale();
+      AgentWorkflowScope scope, WorkflowFence fence, String stepId,
+      {required String inputHash,
+      required int estimatedInput,
+      int outputTokens = WorkflowBudget.outputTokens,
+      WorkflowModelProfile? expectedProfile}) {
+    WorkflowModelProfile? prepared;
+    return _transaction(scope, (tx) async {
+      final w = await _require(tx, fence);
+      if (w['activeStepId'] != stepId ||
+          estimatedInput < 1 ||
+          outputTokens < 1 ||
+          outputTokens > WorkflowBudget.outputTokens) {
+        throw const WorkflowStale();
+      }
+      final node = await tx.query(stepTable,
+          where: 'parentId=? AND stepId=?',
+          whereArgs: [fence.parentId, stepId]);
+      if (node.length != 1) throw const WorkflowStale();
+      final profile = WorkflowStep(node.single).profile;
+      if (profile.backendSelection != null) {
+        if (_executionGuard == null ||
+            _profileGuard == null ||
+            expectedProfile == null ||
+            jsonEncode(profile.toJson()) !=
+                jsonEncode(expectedProfile.toJson())) {
+          throw const WorkflowStale('原节点模型或准备许可已变化');
         }
-        final pending = await tx.query(attempts,
-            where: "parentId=? AND state='dispatched'",
-            whereArgs: [fence.parentId],
-            limit: 1);
-        if (pending.isNotEmpty) {
-          throw const WorkflowStale('上次请求尚未结束');
-        }
-        final exhausted =
-            (w['dispatches'] as int) >= (w['maxDispatches'] as int) ||
-                (w['reservedTokens'] as int) + estimatedInput + outputTokens >
-                    (w['estimatedTokenLimit'] as int) ||
-                now() >= (w['deadlineAt'] as int);
-        if (exhausted) {
-          await tx.rawUpdate(
-              "UPDATE $stepTable SET state='paused',revision=revision+1 WHERE stepId=?",
-              [stepId]);
-          return WorkflowReservation(
-              await _update(tx, w, {
-                'state': 'budgetExhausted',
-                'reason': '请求次数、累计估算Token或任务时限已到；需明确追加预算',
-                'leaseId': null,
-                'activeStepId': null
-              }),
-              null);
-        }
-        final id = generateUuidV4();
-        await tx.insert(attempts, {
-          'attemptId': id,
-          'parentId': fence.parentId,
-          'stepId': stepId,
-          'leaseId': fence.leaseId,
-          'state': 'dispatched',
-          'inputHash': inputHash,
-          'estimatedInput': estimatedInput,
-          'reservedOutput': outputTokens,
-          'createdAt': now()
-        });
-        final next = await _update(tx, w, {
-          'dispatches': (w['dispatches'] as int) + 1,
-          'reservedTokens':
-              (w['reservedTokens'] as int) + estimatedInput + outputTokens
-        });
-        return WorkflowReservation(next, id);
+        _profileGuard!(profile);
+        prepared = profile;
+      }
+      final pending = await tx.query(attempts,
+          where: "parentId=? AND state='dispatched'",
+          whereArgs: [fence.parentId],
+          limit: 1);
+      if (pending.isNotEmpty) {
+        throw const WorkflowStale('上次请求尚未结束');
+      }
+      final exhausted =
+          (w['dispatches'] as int) >= (w['maxDispatches'] as int) ||
+              (w['reservedTokens'] as int) + estimatedInput + outputTokens >
+                  (w['estimatedTokenLimit'] as int) ||
+              now() >= (w['deadlineAt'] as int);
+      if (exhausted) {
+        await tx.rawUpdate(
+            "UPDATE $stepTable SET state='paused',revision=revision+1 WHERE stepId=?",
+            [stepId]);
+        return WorkflowReservation(
+            await _update(tx, w, {
+              'state': 'budgetExhausted',
+              'reason': '请求次数、累计估算Token或任务时限已到；需明确追加预算',
+              'leaseId': null,
+              'activeStepId': null
+            }),
+            null);
+      }
+      final id = generateUuidV4();
+      await tx.insert(attempts, {
+        'attemptId': id,
+        'parentId': fence.parentId,
+        'stepId': stepId,
+        'leaseId': fence.leaseId,
+        'state': 'dispatched',
+        'inputHash': inputHash,
+        'estimatedInput': estimatedInput,
+        'reservedOutput': outputTokens,
+        'createdAt': now()
       });
+      final next = await _update(tx, w, {
+        'dispatches': (w['dispatches'] as int) + 1,
+        'reservedTokens':
+            (w['reservedTokens'] as int) + estimatedInput + outputTokens
+      });
+      return WorkflowReservation(next, id);
+    }, finalGuard: () {
+      if (prepared != null) _profileGuard!(prepared!);
+    });
+  }
+
   Future<void> verifyCurrent(AgentWorkflowScope scope, WorkflowFence fence) =>
       _transaction(scope, (tx) async {
         await _require(tx, fence);

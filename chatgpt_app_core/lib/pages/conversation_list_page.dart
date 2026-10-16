@@ -1,3 +1,6 @@
+import 'dart:convert';
+import 'package:chatgpt_app_core/chat/application/assistant_operation_scope.dart';
+import 'package:chatgpt_app_core/widget/backend_selection_picker.dart';
 import 'package:chatgpt_app_core/chat/application/conversation_generation_service.dart';
 import 'dart:async';
 import 'dart:io';
@@ -74,6 +77,7 @@ class _ConversationListPageState extends State<ConversationListPage>
   int _summaryRevision = -1;
   bool _listReady = false, _refreshQueued = false;
   int _listLoadGeneration = 0;
+  int _projectLoadGeneration = 0;
   String? _listAccount;
   int? _selectedProjectId;
   bool _uncategorizedOnly = false;
@@ -381,23 +385,77 @@ class _ConversationListPageState extends State<ConversationListPage>
 
   ///创建新的会话。先选助手（阶段七）：没有任何助手时选择器零打扰直接放行。
   void _createConversation() async {
-    final project = _currentProject;
+    final originalProject = _currentProject;
+    final backend =
+        context.read<AISettingsProvider>().settings.mode == AIMode.backend;
+    final project = backend && originalProject != null
+        ? ProjectModel.fromJson(originalProject.toJson())
+        : originalProject;
+    final projectId = _uncategorizedOnly ? null : _selectedProjectId;
+    final identity = backend ? AiCatalogIdentity.capture() : null;
+    final scope = backend
+        ? AssistantOperationScope.capture(pageIsCurrent: () => mounted)
+        : null;
+    bool seedCurrent() =>
+        !backend ||
+        (identity!.current &&
+            scope!.isCurrent &&
+            _listAccount == identity.account &&
+            projectId == (_uncategorizedOnly ? null : _selectedProjectId) &&
+            (project == null ||
+                jsonEncode(project.toJson()) ==
+                    jsonEncode(_currentProject?.toJson())));
+    if (!seedCurrent()) return;
+    void checkSeed() {
+      if (!mounted || !seedCurrent()) {
+        throw const BackendSelectionEditorExpired();
+      }
+    }
+
+    ProjectBackendSelectionSnapshot? expectedSeed;
+    if (backend && project != null) {
+      try {
+        expectedSeed = await projectDao.backendSelectionSnapshot(project,
+            validate: checkSeed);
+      } catch (_) {
+        if (mounted && seedCurrent()) {
+          HiDialog.showSnackBar(context, '原项目已变化，请重新新建会话');
+        }
+        return;
+      }
+      if (!mounted || !seedCurrent()) return;
+    }
     final pick = await showAssistantPicker(context,
         selectedId: project?.defaultAssistantId);
-    if (pick == null || !mounted) return; // 用户取消
+    if (pick == null || !mounted || !seedCurrent()) return; // 用户取消/原seed失效
     final cid = DateTime.now().millisecondsSinceEpoch;
     final avatar = AiCatalogDao.avatarUrl();
     final assistant = pick.assistant;
     final opening = await _chooseAssistantOpening(assistant);
-    if (opening == null || !mounted) return;
+    if (opening == null || !mounted || !seedCurrent()) return;
+    if (expectedSeed != null) {
+      try {
+        await projectDao.verifyBackendSeedChecked(project!, expectedSeed,
+            validate: checkSeed);
+      } catch (_) {
+        if (mounted && seedCurrent()) {
+          HiDialog.showSnackBar(context, '原项目已变化，请重新新建会话');
+        }
+        return;
+      }
+      if (!mounted || !seedCurrent()) return;
+    }
     _jumpToConversation(
         AssistantConversationFactory.create(
             cid: cid,
             icon: avatar,
             assistant: assistant,
-            projectId: _uncategorizedOnly ? null : _selectedProjectId,
+            projectId: backend
+                ? projectId
+                : (_uncategorizedOnly ? null : _selectedProjectId),
             modelProviderId: project?.defaultProviderId,
             modelId: project?.defaultModelId,
+            backendSelection: project?.backendSelection,
             webSearchEnabled: project?.defaultUseWebSearch,
             toolIds: project?.defaultToolIds),
         initialAssistantOpening: opening);
@@ -535,7 +593,16 @@ class _ConversationListPageState extends State<ConversationListPage>
   }
 
   Future<List<ProjectModel>> _loadProjects() async {
+    final generation = ++_projectLoadGeneration;
+    final account = _listAccount;
+    final identity = AiCatalogIdentity.capture();
     final list = await projectDao.getProjects(withCounts: true);
+    if (!mounted ||
+        generation != _projectLoadGeneration ||
+        account != HiDBManager.getAccountHash() ||
+        !identity.current) {
+      return list;
+    }
     setState(() {
       projectList = list;
     });
@@ -828,7 +895,16 @@ class _ConversationListPageState extends State<ConversationListPage>
         onTap: () => _renameProject(project),
       ),
       PopupMenuItem(
-        child: const Text('默认模型'),
+        child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+          const Text('默认模型'),
+          if (context.read<AISettingsProvider>().settings.mode ==
+              AIMode.backend)
+            Text(
+                backendSelectionLabel(project.backendSelection,
+                    legacyModelId: project.defaultModelId,
+                    followLabel: '新会话跟随助手 / 全局'),
+                style: Theme.of(context).textTheme.bodySmall),
+        ]),
         onTap: () => _setProjectDefaultModel(project),
       ),
       PopupMenuItem(
@@ -872,9 +948,11 @@ class _ConversationListPageState extends State<ConversationListPage>
 
   Future<void> _setProjectDefaultModel(ProjectModel project) async {
     final settings = context.read<AISettingsProvider>().settings;
-    final picked = settings.mode == AIMode.backend
-        ? await _pickProjectBackendModel(project, settings)
-        : await _pickProjectLocalModel(project, settings);
+    if (settings.mode == AIMode.backend) {
+      await _setProjectBackendSelection(project);
+      return;
+    }
+    final picked = await _pickProjectLocalModel(project, settings);
     if (!mounted || picked == null) return;
     project
       ..defaultProviderId = picked.providerId
@@ -1098,36 +1176,56 @@ class _ConversationListPageState extends State<ConversationListPage>
     );
   }
 
-  Future<({String? providerId, String? modelId})?> _pickProjectBackendModel(
-      ProjectModel project, AISettings settings) {
-    final controller = TextEditingController(
-        text: project.defaultModelId ?? settings.backendModel);
-    return showDialog<({String? providerId, String? modelId})>(
-      context: context,
-      builder: (ctx) => AlertDialog(
-        title: const Text('项目默认模型'),
-        content: TextField(
-          controller: controller,
-          autofocus: true,
-          decoration: const InputDecoration(hintText: '模型 ID'),
-        ),
-        actions: [
-          TextButton(
-              onPressed: () => Navigator.pop(ctx), child: const Text('取消')),
-          TextButton(
-              onPressed: () =>
-                  Navigator.pop(ctx, (providerId: null, modelId: null)),
-              child: const Text('跟随全局')),
-          FilledButton(
-              onPressed: () {
-                final model = controller.text.trim();
-                Navigator.pop(ctx,
-                    model.isEmpty ? null : (providerId: null, modelId: model));
-              },
-              child: const Text('保存')),
-        ],
-      ),
-    );
+  Future<void> _setProjectBackendSelection(ProjectModel project) async {
+    final identity = AiCatalogIdentity.capture();
+    final scope = AssistantOperationScope.capture(pageIsCurrent: () => mounted);
+    void checkContext() {
+      scope.verify();
+      if (!_listReady ||
+          !identity.current ||
+          !identity.authenticated ||
+          identity.account != _listAccount ||
+          context.read<AISettingsProvider>().settings.mode != AIMode.backend) {
+        throw const BackendSelectionEditorExpired();
+      }
+    }
+
+    void check() {
+      checkContext();
+      if (!projectList.any((p) =>
+          p.id == project.id &&
+          jsonEncode(p.toJson()) == jsonEncode(project.toJson()))) {
+        throw const ProjectBackendSelectionStale();
+      }
+    }
+
+    try {
+      check();
+      final snapshot =
+          await projectDao.backendSelectionSnapshot(project, validate: check);
+      if (!mounted) return;
+      check();
+      final picked = await pickBackendSelection(context,
+          identity: identity,
+          selected: project.backendSelection,
+          legacyModelId: project.defaultModelId,
+          followLabel: '新会话跟随助手 / 全局');
+      if (picked == null) return;
+      check();
+      final saved = await scope.runStable(() =>
+          projectDao.saveBackendSelectionChecked(project, picked, snapshot,
+              validate: check));
+      checkContext();
+      project.backendSelection = saved.backendSelection;
+      project.updatedAt = saved.updatedAt;
+      await _loadProjects();
+      if (!mounted || !scope.isCurrent || !identity.current) return;
+      HiDialog.showSnackBar(context, '已保存项目新会话后端选择；已有会话保持原选择');
+    } catch (_) {
+      if (mounted && _listAccount == identity.account && identity.current) {
+        HiDialog.showSnackBar(context, '原项目或编辑环境已变化，请重新打开项目选择');
+      }
+    }
   }
 
   Future<void> _deleteProject(ProjectModel project) async {

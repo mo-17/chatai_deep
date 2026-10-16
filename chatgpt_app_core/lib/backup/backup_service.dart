@@ -15,7 +15,7 @@ import 'package:chatgpt_app_core/chat/application/assistant_role_card_asset_stor
 import 'package:chatgpt_app_core/chat/application/story_tavern_preset_transfer.dart';
 import 'package:chatgpt_app_core/chat/domain/message_block.dart';
 import 'package:chatgpt_app_core/chat/domain/agent_workspace_file.dart';
-import 'package:chatgpt_app_core/chat/domain/translation_request_profile.dart';
+import 'package:chatgpt_app_core/chat/domain/backend_selection_transfer.dart';
 import 'package:chatgpt_app_core/dao/ai_settings_dao.dart';
 import 'package:chatgpt_app_core/db/assistant_dao.dart';
 import 'package:chatgpt_app_core/db/agent_workspace_dao.dart';
@@ -543,7 +543,8 @@ class BackupService {
     // 表是 DAO 懒建的：先确保 schema 就绪（含 assistantId 列 ALTER），
     // 全新账号没建过的表导出为空列表而不是报错。
     await _ensureSchema(includeSkillCatalog: false);
-    final conversations = await storage.db.query('tb_conversation_list');
+    final conversations = BackendSelectionTransfer.rows(
+        await storage.db.query('tb_conversation_list'));
     final messages = [
       for (final row in await storage.db.query('tb_messages'))
         Map<String, Object?>.from(row)
@@ -552,13 +553,15 @@ class BackupService {
       row['blocks'] = _sanitizeReferenceBlocks(row['blocks'] as String?);
     }
     final workspace = await readWorkspaceRows(storage);
-    final assistants = await storage.db.query('tb_assistant');
+    final assistants =
+        BackendSelectionTransfer.rows(await storage.db.query('tb_assistant'));
     final hasSkillCatalog = await _tableExists(storage.db, 'tb_skill_catalog');
     final skillCatalog =
         await readSkillCatalogRows(storage, assistants: assistants);
     final rawAssistantMemories = await storage.db.query('tb_assistant_memory');
     final favorites = await storage.db.query('tb_favorite');
-    final projects = await storage.db.query('tb_project');
+    final projects =
+        BackendSelectionTransfer.rows(await storage.db.query('tb_project'));
     final knowledgeDocs = await storage.db.query('tb_kb_doc');
     final knowledgeChunks = await storage.db.query('tb_kb_chunk');
     final projectKnowledge = await storage.db.query('tb_project_kb');
@@ -568,8 +571,10 @@ class BackupService {
     final exportedStoryTemplateTranslationTasks =
         _sanitizeTranslationTasksForExport(storyTemplateTranslationTasks);
     final storyPersonas = await storage.db.query('tb_story_persona');
-    final storyRooms = await storage.db.query('tb_story_room');
-    final storyParticipants = await storage.db.query('tb_story_participant');
+    final storyRooms =
+        BackendSelectionTransfer.rows(await storage.db.query('tb_story_room'));
+    final storyParticipants = BackendSelectionTransfer.rows(
+        await storage.db.query('tb_story_participant'));
     final storyMessages = await storage.db.query('tb_story_message');
     final storyArtifacts = await storage.db.query('tb_story_artifact');
     final storyArtifactRevisions =
@@ -620,6 +625,8 @@ class BackupService {
       }
     }
 
+    final settingsForExport = exportedSettings.toJson();
+    BackendSelectionTransfer.settings(settingsForExport);
     final entries = <String, List<int>>{
       _kConversations: _jsonBytes(conversations),
       _kMessages: _jsonBytes(messages),
@@ -644,7 +651,7 @@ class BackupService {
       _kStoryMessages: _jsonBytes(storyMessages),
       _kStoryArtifacts: _jsonBytes(storyArtifacts),
       _kStoryArtifactRevisions: _jsonBytes(storyArtifactRevisions),
-      _kSettings: _jsonBytes(exportedSettings.toJson()),
+      _kSettings: _jsonBytes(settingsForExport),
       for (final entry in avatarFiles.entries)
         '$_kAvatarPrefix${entry.key}': entry.value,
       for (final entry in attachmentFiles.entries)
@@ -1041,8 +1048,29 @@ class BackupService {
     // 云来源是本机派生关联：任何恢复尝试（含回滚/选择性恢复）都撤销旧关联。
     // 独立于恢复事务，不让失败后相同正文/同行号重新获得旧publication权限。
     if (await _tableExists(storage.db, 'tb_cloud_sources')) {
-      await storage.db.rawUpdate(
-          'UPDATE tb_cloud_sources SET valid=0,revision=revision+1');
+      await storage.db
+          .rawUpdate('UPDATE tb_cloud_sources SET valid=0,revision=revision+1');
+    }
+    // 只校验当前模式真正消费的选择/profile；局部恢复不新增无关阻断。
+    if (mode == BackupImportMode.overwriteAll ||
+        mode == BackupImportMode.mergeAppend ||
+        mode == BackupImportMode.projectConversationsOnly) {
+      BackendSelectionTransfer.validateRows(projects);
+      BackendSelectionTransfer.validateRows(conversations);
+    }
+    if (mode == BackupImportMode.overwriteAll ||
+        mode == BackupImportMode.mergeAppend ||
+        mode == BackupImportMode.assistantsOnly) {
+      BackendSelectionTransfer.validateRows(assistants);
+    }
+    if (mode == BackupImportMode.overwriteAll ||
+        mode == BackupImportMode.mergeAppend) {
+      BackendSelectionTransfer.validateRows(storyRooms);
+      BackendSelectionTransfer.validateRows(storyParticipants);
+      for (final row in storyTemplateTranslationTasks) {
+        row['requestProfile'] =
+            BackendSelectionTransfer.translationProfile(row['requestProfile']);
+      }
     }
     if (mode == BackupImportMode.mergeAppend) {
       return _importMergeAppend(
@@ -2517,8 +2545,10 @@ class BackupService {
       throw const FormatException('AI 设置格式不合法');
     }
     try {
+      final value = Map<String, dynamic>.from(settingsJson);
+      BackendSelectionTransfer.settings(value);
       final settings = AISettings.fromJson(
-        Map<String, dynamic>.from(settingsJson),
+        value,
       );
       AISettingsDao.validateSettings(settings);
       return stripImportedMcpAuthorizations(settings);
@@ -3338,19 +3368,8 @@ class BackupService {
     return row;
   }
 
-  static String _sanitizeTranslationRequestProfile(Object? raw) {
-    try {
-      if (raw is! String || raw.trim().isEmpty) return '';
-      final decoded = jsonDecode(raw);
-      if (decoded is! Map) return '';
-      final profile = TranslationRequestProfile.fromJson(
-        Map<String, dynamic>.from(decoded),
-      );
-      return jsonEncode(profile.toJson());
-    } catch (_) {
-      return '';
-    }
-  }
+  static Object? _sanitizeTranslationRequestProfile(Object? raw) =>
+      BackendSelectionTransfer.translationProfile(raw, export: true);
 
   static Map<String, dynamic> _sanitizeStoryTemplateForExport(
     Map<String, Object?> source,

@@ -5,6 +5,8 @@ abstract final class StoryTemplateTranslationTaskKind {
 
 abstract final class StoryTemplateTranslationTaskStatus {
   static const queued = 'queued';
+  // 持久确认边界：提示文字变化或进程重建不能授权一次新直连。
+  static const awaitingConfirmation = 'awaitingConfirmation';
   static const running = 'running';
   static const retryable = 'retryable';
   static const completed = 'completed';
@@ -14,6 +16,7 @@ abstract final class StoryTemplateTranslationTaskStatus {
   static const cancelled = 'cancelled';
 
   static bool canRetry(String status) =>
+      status == awaitingConfirmation ||
       status == retryable ||
       status == needsConfiguration ||
       status == failed ||
@@ -27,6 +30,8 @@ abstract final class StoryTemplateTranslationTaskStatus {
 
   static String labelOf(String status) {
     switch (status) {
+      case awaitingConfirmation:
+        return '等待人工确认';
       case queued:
         return '等待中';
       case running:

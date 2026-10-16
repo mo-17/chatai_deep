@@ -160,6 +160,7 @@ class ConversationGenerationRun extends ChangeNotifier {
   final ConversationTurnPreparation preparation;
   final ConversationGenerationService service;
   final ChatService? transport;
+  late final ChatService _chat;
   final ChatBlockStore blocks = ChatBlockStore();
   final _abort = Completer<void>(), _finished = Completer<void>();
   late final ConversationExecutionTicket ticket;
@@ -171,6 +172,7 @@ class ConversationGenerationRun extends ChangeNotifier {
   CompletionDao? completion;
   ChatContextPlan? contextPlan;
   Object? preparationFailure;
+  ChatTransportException? transportFailure;
   bool _preparationFailureObserved = false;
   Object? takePreparationFailure() {
     if (_preparationFailureObserved || preparationFailure == null) return null;
@@ -225,6 +227,8 @@ class ConversationGenerationRun extends ChangeNotifier {
   String? _finalBlocks, _finalText;
   ConversationGenerationRun._(this.service, this.scope, this.dao, this.profile,
       this.input, this.preparation, this._abandoned, this.transport) {
+    // 构造时固定 transport 的原身份；任何异步准备后都不重新捕获。
+    _chat = transport ?? service.createChat(profile.settings);
     receiverAt = service.nextMessageTime(input.user.createdAt);
     dispatcher = StreamDispatcher(blocks, chatMessageKey(receiverAt),
         modelId: profile.modelId);
@@ -387,6 +391,9 @@ class ConversationGenerationRun extends ChangeNotifier {
 
   Future<void> _execute() async {
     try {
+      await scope.wait(
+          profile.prepareSelection(_chat, scope, abortTrigger), abortTrigger);
+      verify();
       await scope.wait(profile.verify(scope), abortTrigger);
       verify();
       record = await _write(() => dao.begin(scope,
@@ -459,7 +466,7 @@ class ConversationGenerationRun extends ChangeNotifier {
         }
       }
       verify();
-      final chat = transport ?? service.createChat(profile.settings.clone());
+      final chat = _chat;
       if (chat is! AttemptAwareChatService ||
           chat is! OptionsAwareChatService ||
           chat is! OptionsAwareNonStreamingChatService) {
@@ -543,6 +550,7 @@ class ConversationGenerationRun extends ChangeNotifier {
       _finalStage = ConversationGenerationStage.complete;
       await _persistFinal();
     } catch (error) {
+      transportFailure = error is ChatTransportException ? error : null;
       if (acceptedUser == null) preparationFailure = error;
       if (error is ConversationRetirementStale) {
         service._forgetRetirement(_abandoned);
@@ -698,7 +706,7 @@ class ConversationGenerationRun extends ChangeNotifier {
     _finalBlocks ??= MessageBlock.encodeList(_blocks());
     if (_hasUsage || (record?.attempts ?? 0) > 0) {
       final rate = profile.settings.usageCostConfig.rateFor(
-          providerId: profile.providerId,
+          providerId: profile.usageProviderId,
           modelId: profile.modelId,
           at: DateTime.fromMillisecondsSinceEpoch(receiverAt));
       final estimate = UsageCostEstimator.estimateTurn(
@@ -711,7 +719,7 @@ class ConversationGenerationRun extends ChangeNotifier {
           _hasCompletionUsage ? _completionTokens : estimate.completionTokens;
       _finalUsage ??= UsageRecord(
           modelId: profile.modelId,
-          providerId: profile.providerId,
+          providerId: profile.usageProviderId,
           projectId: input.projectId,
           cid: input.cid,
           promptTokens: prompt,

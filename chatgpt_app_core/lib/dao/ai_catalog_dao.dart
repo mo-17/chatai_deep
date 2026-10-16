@@ -115,14 +115,21 @@ class AiCatalogDao {
       return const CatalogFetchResult(CatalogFetchStatus.notAuthenticated);
     }
 
+    final client = http.Client();
     try {
       final uri = scope.endpoint;
       final headers = <String, String>{
         'Content-Type': 'application/json',
         'Authorization': 'Bearer $token',
       };
-      final response = await http
-          .get(uri, headers: headers)
+      // 目录只能由原后端提供；跳转响应按失败处理，不能认作原身份快照。
+      final request = http.Request('GET', uri)
+        ..headers.addAll(headers)
+        ..followRedirects = false;
+      final response = await (() async {
+        final streamed = await client.send(request);
+        return http.Response.fromStream(streamed);
+      })()
           .timeout(const Duration(seconds: 15));
 
       if (!valid()) return const CatalogFetchResult(CatalogFetchStatus.stale);
@@ -171,6 +178,8 @@ class AiCatalogDao {
     } catch (_) {
       AILogger.log('AiCatalogDao: catalog request failed');
       return const CatalogFetchResult(CatalogFetchStatus.failed);
+    } finally {
+      client.close();
     }
   }
 }

@@ -35,20 +35,29 @@ final class AISendGuardDecision {
 /// 主聊天发送的 fail-closed 策略。
 ///
 /// - 已验证可用、或配置完整但尚未验证：允许首轮请求；
-/// - grandfathered 旧账号：保留升级前行为，不新增强制阻断；
+/// - grandfathered 旧账号：保留 legacy/local 行为，明确现代后端选择失效仍阻断；
 /// - 缺配置、已知连接失败、游客选择后端或尚未完成账号初始化：阻断并给出
 ///   明确修复动作。
 AISendGuardDecision resolveAISendGuard({
   required AIReadyState state,
   required AIOnboardingStatus onboardingStatus,
 }) {
+  // 这些原因仅由现代后端 pair 核验产生，旧账号兼容不能覆盖明确失效。
+  if (const {
+    'invalid_backend_selection',
+    'backend_scope_changed',
+    'model_unavailable',
+  }.contains(state.reasonCode)) {
+    return AISendGuardDecision.block(
+        state.reasonCode, AISendGuardAction.configure);
+  }
+
   if (onboardingStatus == AIOnboardingStatus.grandfathered) {
     return const AISendGuardDecision.allow('legacy_account_passthrough');
   }
 
   return switch (state.status) {
-    AIReadyStatus.ready =>
-      const AISendGuardDecision.allow('readiness_ready'),
+    AIReadyStatus.ready => const AISendGuardDecision.allow('readiness_ready'),
     AIReadyStatus.configuredUnverified =>
       const AISendGuardDecision.allow('configured_first_send'),
     AIReadyStatus.loading => const AISendGuardDecision.block(

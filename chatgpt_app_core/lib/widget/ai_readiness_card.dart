@@ -90,6 +90,8 @@ String _needsSetupTitle(String reasonCode) => switch (reasonCode) {
       'missing_api_key' => '添加服务商 API Key',
       'missing_api_host' => '补充 API 地址',
       'missing_model' => '选择一个可用模型',
+      'invalid_backend_selection' || 'backend_scope_changed' => '重新选择后端服务商与模型',
+      'model_unavailable' => '原后端模型已删除或停用',
       _ => '完成 AI 服务配置',
     };
 
@@ -98,6 +100,9 @@ String _needsSetupMessage(String reasonCode) => switch (reasonCode) {
       'missing_api_key' => '你的 Key 只保存在当前账号的安全存储中，不会写入普通配置。',
       'missing_api_host' => '请填写兼容 OpenAI 的 API 地址，系统预设也可以恢复默认地址。',
       'missing_model' => '为当前服务商选择或添加一个模型 ID。',
+      'invalid_backend_selection' => '原后端选择无法识别，请明确选择服务商与模型。',
+      'backend_scope_changed' => '原选择属于其它账号或后端地址，请在当前环境明确重新选择。',
+      'model_unavailable' => '原服务商或模型已删除、停用，请重新选择；不会自动改用其它模型。',
       _ => '配置服务商、API Key 与模型后即可开始对话。',
     };
 
@@ -147,9 +152,8 @@ class AIReadinessCard extends StatelessWidget {
                     Text(
                       presentation.message,
                       style: Theme.of(context).textTheme.bodyMedium?.copyWith(
-                            color: Theme.of(context)
-                                .colorScheme
-                                .onSurfaceVariant,
+                            color:
+                                Theme.of(context).colorScheme.onSurfaceVariant,
                           ),
                     ),
                   ],

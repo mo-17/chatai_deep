@@ -1,3 +1,14 @@
+import 'package:chatgpt_app_core/chat/application/direct_failure_recovery.dart';
+import 'package:chatgpt_app_core/chat/application/conversation_generation_scope.dart';
+import 'package:chatgpt_app_core/chat/domain/model_capabilities.dart';
+import 'package:chatgpt_app_core/widget/direct_failure_dialog.dart';
+import 'dart:convert';
+import 'package:chatgpt_app_core/chat/domain/chat_request_options.dart';
+import 'package:chatgpt_app_core/backup/backup_service.dart';
+import 'package:chatgpt_app_core/chat/application/story_backend_generation_snapshot.dart';
+import 'package:chatgpt_app_core/chat/domain/backend_usage_identity.dart';
+import 'package:chatgpt_app_core/dao/ai_catalog_dao.dart';
+import 'package:chatgpt_app_core/widget/backend_selection_picker.dart';
 import 'package:chatgpt_app_core/chat/application/story_role_card_context.dart';
 import 'dart:async';
 import 'dart:io';
@@ -33,12 +44,28 @@ class StoryWorkbenchPage extends StatefulWidget {
 
 class _StoryWorkbenchPageState extends State<StoryWorkbenchPage> {
   StoryArtifactDao? _dao;
+  late final String _accountAtOpen;
+  late final AiCatalogIdentity _backendPageIdentity;
+  late final int _restoreAtOpen;
+  late final int _agentRevisionAtOpen;
+  StoryBackendGenerationSnapshot? _backendRun;
+  void _verifyBackendPage() {
+    if (!mounted ||
+        HiDBManager.getAccountHash() != _accountAtOpen ||
+        !_backendPageIdentity.current ||
+        (BackupService.restoreTick.value != _restoreAtOpen ||
+            BackupService.agentExecutionRevision != _agentRevisionAtOpen)) {
+      throw const BackendSelectionEditorExpired();
+    }
+  }
+
   StoryRoomDao? _roomDao;
   UsageRecordService? _usageRecordService;
   List<StoryArtifactModel> _artifacts = const [];
   String? _filterType;
   bool _loading = true;
   StoryAiWorkflowKind? _runningWorkflow;
+  int _directRunRevision = 0;
   String _workflowStatus = '';
   bool _stopRequested = false;
   StreamSubscription<StreamEvent>? _activeWorkflowSub;
@@ -47,18 +74,54 @@ class _StoryWorkbenchPageState extends State<StoryWorkbenchPage> {
   @override
   void initState() {
     super.initState();
+    _accountAtOpen = HiDBManager.getAccountHash();
+    _backendPageIdentity = AiCatalogIdentity.capture();
+    _restoreAtOpen = BackupService.restoreTick.value;
+    _agentRevisionAtOpen = BackupService.agentExecutionRevision;
     _load();
   }
 
   @override
   void dispose() {
-    unawaited(_activeWorkflowSub?.cancel());
+    _backendRun?.retire();
+    if (_backendRun != null &&
+        _activeWorkflowDone != null &&
+        !_activeWorkflowDone!.isCompleted) {
+      _activeWorkflowDone!.complete();
+    }
+    final active = _activeWorkflowSub;
+    if (active != null) {
+      if (_backendRun != null) {
+        unawaited(_cancelBackendStream(active));
+      } else {
+        unawaited(active.cancel());
+      }
+    }
     super.dispose();
   }
 
+  Future<void> _cancelBackendStream(StreamSubscription<StreamEvent> sub) async {
+    try {
+      await sub.cancel();
+    } catch (error) {
+      if (error is ChatTransportException && error.safeCode == 'cancelled') {
+        return;
+      }
+      if (mounted) HiDialog.showSnackBar(context, '停止请求时发生错误，请核对生成状态');
+    }
+  }
+
   Future<void> _load() async {
-    final storage =
-        await HiDBManager.instance(dbName: HiDBManager.getAccountHash());
+    final backend =
+        context.read<AISettingsProvider>().settings.mode == AIMode.backend;
+    if (backend &&
+        (!_backendPageIdentity.current ||
+            (BackupService.restoreTick.value != _restoreAtOpen ||
+                BackupService.agentExecutionRevision !=
+                    _agentRevisionAtOpen))) {
+      return;
+    }
+    final storage = await HiDBManager.instance(dbName: _accountAtOpen);
     final dao = await StoryArtifactDao.create(storage);
     final roomDao = await StoryRoomDao.create(storage);
     final usageRecordService =
@@ -67,7 +130,15 @@ class _StoryWorkbenchPageState extends State<StoryWorkbenchPage> {
       widget.room.id!,
       type: _filterType,
     );
-    if (!mounted) return;
+    if (!mounted ||
+        HiDBManager.getAccountHash() != _accountAtOpen ||
+        (backend &&
+            (!_backendPageIdentity.current ||
+                (BackupService.restoreTick.value != _restoreAtOpen ||
+                    BackupService.agentExecutionRevision !=
+                        _agentRevisionAtOpen)))) {
+      return;
+    }
     setState(() {
       _dao = dao;
       _roomDao = roomDao;
@@ -388,29 +459,104 @@ class _StoryWorkbenchPageState extends State<StoryWorkbenchPage> {
     await _load();
   }
 
-  Future<void> _runWorkflow(StoryAiWorkflowKind kind) async {
+  Future<void> _runWorkflow(StoryAiWorkflowKind kind,
+      {AISettings? localOverride,
+      DirectRetryPermit? directPermit,
+      StoryAiWorkflowRequest? fixedRequest}) async {
     if (_runningWorkflow != null || _dao == null) return;
+    directPermit?.verify();
+    final scope = ConversationGenerationScope(account: _accountAtOpen);
+    if (directPermit == null) _directRunRevision++;
+    final revision = _directRunRevision;
+    final declaration = jsonEncode(widget.room.toJson());
+    final originalIdentity = AiCatalogIdentity.capture();
+    final originalConfiguration =
+        jsonEncode(context.read<AISettingsProvider>().settings.toJson());
+    void verifyDirect() {
+      scope.verify();
+      directPermit?.verify();
+      if (!mounted ||
+          !originalIdentity.current ||
+          _directRunRevision != revision ||
+          jsonEncode(context.read<AISettingsProvider>().settings.toJson()) !=
+              originalConfiguration ||
+          jsonEncode(widget.room.toJson()) != declaration) {
+        throw const ConversationGenerationStale();
+      }
+    }
+
+    bool directCurrent() {
+      try {
+        verifyDirect();
+        return true;
+      } catch (_) {
+        return false;
+      }
+    }
+
+    void verifyReceived() {
+      scope.verify();
+      if (!mounted ||
+          !originalIdentity.current ||
+          _directRunRevision != revision) {
+        throw const ConversationGenerationStale();
+      }
+    }
+
+    void verifySettled() {
+      verifyReceived();
+      if (jsonEncode(context.read<AISettingsProvider>().settings.toJson()) !=
+          originalConfiguration) {
+        throw const ConversationGenerationStale();
+      }
+    }
+
+    Object? localFailure;
+    StoryAiWorkflowRequest? requestSnapshot;
+    var dispatched = false;
     setState(() {
       _runningWorkflow = kind;
       _workflowStatus = '${StoryAiWorkflowService.titleFor(kind)}准备中...';
       _stopRequested = false;
     });
+    final global = context.read<AISettingsProvider>().settings.clone();
+    final roomCopy = StoryRoomModel.fromJson(widget.room.toJson());
+    var settings = localOverride?.clone() ??
+        StoryRoomSettingsResolver.apply(roomCopy, global);
+    StoryBackendGenerationSnapshot? backendRun;
+    PreparedStoryBackendService? prepared;
     try {
+      if (localOverride == null && global.mode == AIMode.backend) {
+        _verifyBackendPage();
+        backendRun = StoryBackendGenerationSnapshot(
+          global: global,
+          room: roomCopy,
+          participants: [],
+          isCurrent: () =>
+              mounted &&
+              !_stopRequested &&
+              _backendPageIdentity.current &&
+              BackupService.restoreTick.value == _restoreAtOpen &&
+              BackupService.agentExecutionRevision == _agentRevisionAtOpen,
+        );
+        _backendRun = backendRun;
+        prepared = await backendRun.prepareRoom();
+        settings = prepared.settings;
+      }
       final artifacts = await _dao!.getArtifacts(widget.room.id!);
       if (!mounted) return;
       if (_stopRequested) return;
-      final settings = StoryRoomSettingsResolver.apply(
-        widget.room,
-        context.read<AISettingsProvider>().settings,
-      );
-      final request = StoryAiWorkflowService.prepare(
-        kind: kind,
-        room: widget.room,
-        artifacts: artifacts,
-        participants: await _roomDao?.getParticipants(widget.room.id!,
-                includeDisabled: true) ??
-            const [],
-      );
+      prepared?.verify();
+      final request = fixedRequest ??
+          StoryAiWorkflowService.prepare(
+            kind: kind,
+            room: roomCopy,
+            artifacts: artifacts,
+            participants: await _roomDao?.getParticipants(widget.room.id!,
+                    includeDisabled: true) ??
+                const [],
+          );
+      requestSnapshot = request;
       final buffer = StringBuffer();
       var promptTokens = 0;
       var cachedPromptTokens = 0;
@@ -420,14 +566,29 @@ class _StoryWorkbenchPageState extends State<StoryWorkbenchPage> {
       final done = Completer<void>();
       final createdAt = DateTime.now().millisecondsSinceEpoch;
       setState(() => _workflowStatus = '${request.title}中...');
-      final stream = ChatService.from(settings).chatStreamEvents(
+      prepared?.verify();
+      directPermit?.verify();
+      dispatched = true;
+      final stream =
+          (prepared ?? ChatService.from(settings)).chatStreamEventsWithOptions(
         prompt: request.prompt,
+        options: ChatRequestOptions(
+            beforeDispatch: (_) async {
+              if (prepared == null) verifyDirect();
+            },
+            dispatchIsCurrent: () => prepared != null || directCurrent()),
         history: request.history,
       );
       late final StreamSubscription<StreamEvent> sub;
       sub = stream.listen(
         (event) {
           if (_stopRequested) return;
+          if (prepared != null &&
+              (!_backendPageIdentity.current ||
+                  HiDBManager.getAccountHash() != _accountAtOpen)) {
+            _stopWorkflow();
+            return;
+          }
           if (event.type == StreamEventType.usage) {
             hasUsage = true;
             promptTokens += event.promptTokens ?? 0;
@@ -457,8 +618,25 @@ class _StoryWorkbenchPageState extends State<StoryWorkbenchPage> {
       if (identical(_activeWorkflowSub, sub)) _activeWorkflowSub = null;
       if (identical(_activeWorkflowDone, done)) _activeWorkflowDone = null;
 
+      if (prepared != null) _verifyBackendPage();
+      if (streamError != null && settings.mode == AIMode.local) {
+        localFailure = streamError;
+      }
       final content = buffer.toString().trim();
       if (content.isNotEmpty) {
+        if (prepared == null && !directCurrent()) {
+          // 原配置撤销后允许原身份查看/复制已收文本，不能保存资料或改变上下文。
+          verifyReceived();
+          await _previewWorkflowResult(
+              request: request,
+              content: content,
+              stopped: true,
+              createdAt: createdAt,
+              validateLocal: verifyReceived,
+              readOnly: true);
+          return;
+        }
+        if (prepared == null) verifyDirect();
         await _recordWorkflowUsage(
           settings: settings,
           request: request,
@@ -475,18 +653,39 @@ class _StoryWorkbenchPageState extends State<StoryWorkbenchPage> {
           await _previewWorkflowResult(
             request: request,
             content: content,
-            stopped: _stopRequested,
+            stopped: _stopRequested || streamError != null,
             createdAt: createdAt,
+            backendScope: global.mode == AIMode.backend,
+            validateLocal: prepared == null ? verifyDirect : null,
+            validateSettled: prepared == null ? verifySettled : null,
           );
         }
       } else if (streamError != null && mounted) {
-        HiDialog.showSnackBar(context, '生成失败：$streamError');
+        HiDialog.showSnackBar(
+            context,
+            global.mode != AIMode.backend
+                ? '请求未完成，请核对原配置'
+                : streamError is ChatTransportException
+                    ? (streamError as ChatTransportException).safeMessage
+                    : '生成失败，请检查模型配置并重试');
       } else if (!_stopRequested && mounted) {
         HiDialog.showSnackBar(context, 'AI 未返回可保存的内容');
       }
     } catch (error) {
-      if (mounted) HiDialog.showSnackBar(context, '生成失败：$error');
+      if (settings.mode == AIMode.local) localFailure = error;
+      if (mounted &&
+          (global.mode != AIMode.backend || _backendPageIdentity.current)) {
+        HiDialog.showSnackBar(
+            context,
+            global.mode != AIMode.backend
+                ? '请求未完成，请核对原配置'
+                : error is ChatTransportException
+                    ? error.safeMessage
+                    : '生成失败，请检查模型配置并重试');
+      }
     } finally {
+      backendRun?.retire();
+      if (identical(_backendRun, backendRun)) _backendRun = null;
       if (mounted) {
         setState(() {
           _runningWorkflow = null;
@@ -495,13 +694,52 @@ class _StoryWorkbenchPageState extends State<StoryWorkbenchPage> {
         });
       }
     }
+    if (localFailure != null &&
+        mounted &&
+        scope.isCurrent &&
+        _directRunRevision == revision &&
+        _backendPageIdentity.current &&
+        requestSnapshot != null) {
+      final recovery = DirectFailureRecovery(
+          original: settings,
+          scope: scope,
+          currentSettings: () => context.read<AISettingsProvider>().settings,
+          sourceCurrent: () =>
+              mounted &&
+              _backendPageIdentity.current &&
+              _directRunRevision == revision &&
+              jsonEncode(widget.room.toJson()) == declaration,
+          requiredInput: const ModelCapabilities.none(),
+          mayHaveBeenProcessed: dispatched,
+          failureCode: localFailure is ChatTransportException
+              ? localFailure.safeCode
+              : 'unknown');
+      final permit = await showDirectFailureDialog(context, recovery);
+      if (permit?.current == true) {
+        final selected = permit!.claim();
+        if (selected != null) {
+          await _runWorkflow(kind,
+              localOverride: selected,
+              directPermit: permit,
+              fixedRequest: requestSnapshot);
+        }
+      }
+    }
   }
 
   void _stopWorkflow() {
+    _directRunRevision++;
     if (_runningWorkflow == null) return;
     _stopRequested = true;
+    _backendRun?.retire();
     final sub = _activeWorkflowSub;
-    if (sub != null) unawaited(sub.cancel());
+    if (sub != null) {
+      if (_backendRun != null) {
+        unawaited(_cancelBackendStream(sub));
+      } else {
+        unawaited(sub.cancel());
+      }
+    }
     final done = _activeWorkflowDone;
     if (done != null && !done.isCompleted) done.complete();
     if (mounted) setState(() => _workflowStatus = '正在停止...');
@@ -518,13 +756,19 @@ class _StoryWorkbenchPageState extends State<StoryWorkbenchPage> {
     required int createdAt,
   }) async {
     final recorder = _usageRecordService;
-    final modelId = settings.effectiveModel.trim();
+    final modelId = settings.mode == AIMode.backend
+        ? settings.backendSelection?.modelId ?? settings.effectiveModel
+        : settings.effectiveModel.trim();
     if (recorder == null || modelId.isEmpty) return;
     try {
+      if (settings.mode == AIMode.backend) _verifyBackendPage();
       await recorder.recordTurn(
         modelId: modelId,
-        providerId:
-            settings.mode == AIMode.local ? settings.activeProviderId : null,
+        providerId: settings.mode == AIMode.local
+            ? settings.activeProviderId
+            : settings.backendSelection?.isPair == true
+                ? backendUsageProviderId(settings.backendSelection!)
+                : null,
         projectId: null,
         cid: null,
         prompt: request.usagePrompt,
@@ -546,8 +790,19 @@ class _StoryWorkbenchPageState extends State<StoryWorkbenchPage> {
     required String content,
     required bool stopped,
     required int createdAt,
+    bool backendScope = false,
+    void Function()? validateLocal,
+    void Function()? validateSettled,
+    bool readOnly = false,
   }) async {
+    void verify() {
+      if (backendScope) _verifyBackendPage();
+      validateLocal?.call();
+    }
+
+    verify();
     final artifacts = await _dao?.getArtifacts(widget.room.id!) ?? _artifacts;
+    verify();
     if (!mounted) return;
     final maxOrder = artifacts.fold<int>(
       0,
@@ -566,25 +821,36 @@ class _StoryWorkbenchPageState extends State<StoryWorkbenchPage> {
       builder: (ctx) => _StoryWorkflowResultDialog(
         initial: initial,
         stopped: stopped,
+        readOnly: readOnly,
       ),
     );
-    if (artifact == null) return;
-    await _dao?.saveArtifact(artifact);
-    await _syncRoomContext();
+    if (artifact == null || readOnly) return;
+    verify();
+    await _dao?.saveArtifact(artifact, validate: verify);
+    await _syncRoomContext(validate: verify);
+    if (backendScope) _verifyBackendPage();
+    validateSettled?.call();
     await _load();
+    if (backendScope) _verifyBackendPage();
+    validateSettled?.call();
     if (mounted) HiDialog.showSnackBar(context, '已保存为创作资料');
   }
 
-  Future<void> _syncRoomContext() async {
+  Future<void> _syncRoomContext({void Function()? validate}) async {
+    validate?.call();
     final dao = _dao;
     final roomDao = _roomDao;
     if (dao == null || roomDao == null) return;
     final all = await dao.getArtifacts(widget.room.id!);
     final participants =
         await roomDao.getParticipants(widget.room.id!, includeDisabled: true);
+    validate?.call();
     final next =
         StoryRoleCardContext.withArtifacts(widget.room, participants, all);
-    await roomDao.saveRoom(next);
+    await roomDao.updateRoomGeneratedContext(
+        widget.room.id!, next.publicContext, next.roleCardContextJson,
+        validate: validate);
+    validate?.call();
     widget.room.publicContext = next.publicContext;
     widget.room.roleCardContextJson = next.roleCardContextJson;
   }
@@ -632,11 +898,12 @@ class _StoryWorkbenchPageState extends State<StoryWorkbenchPage> {
 
 class _StoryWorkflowResultDialog extends StatefulWidget {
   final StoryArtifactModel initial;
-  final bool stopped;
+  final bool stopped, readOnly;
 
   const _StoryWorkflowResultDialog({
     required this.initial,
     required this.stopped,
+    this.readOnly = false,
   });
 
   @override
@@ -707,20 +974,21 @@ class _StoryWorkflowResultDialogState
           onPressed: () => Navigator.pop(context),
           child: const Text('关闭'),
         ),
-        FilledButton(
-          onPressed: () {
-            final title = _titleController.text.trim();
-            final content = _contentController.text.trim();
-            if (title.isEmpty || content.isEmpty) return;
-            Navigator.pop(
-              context,
-              widget.initial
-                ..title = title
-                ..content = content,
-            );
-          },
-          child: const Text('保存为资料'),
-        ),
+        if (!widget.readOnly)
+          FilledButton(
+            onPressed: () {
+              final title = _titleController.text.trim();
+              final content = _contentController.text.trim();
+              if (title.isEmpty || content.isEmpty) return;
+              Navigator.pop(
+                context,
+                widget.initial
+                  ..title = title
+                  ..content = content,
+              );
+            },
+            child: const Text('保存为资料'),
+          ),
       ],
     );
   }

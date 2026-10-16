@@ -1,3 +1,6 @@
+import 'dart:convert';
+import 'package:chatgpt_app_core/dao/ai_catalog_dao.dart';
+import 'package:chatgpt_app_core/widget/backend_selection_picker.dart';
 import 'package:chatgpt_app_core/capability/model_picker_presenter.dart';
 import 'package:chatgpt_app_core/chat/application/translation_model_eligibility.dart';
 import 'package:chatgpt_app_core/chat/application/translation_model_probe_cache.dart';
@@ -21,6 +24,7 @@ Future<TranslationModelPreference?> showConfiguredAiModelPickerSheet(
   bool includeUnavailable = false,
   bool includeFollowGlobal = true,
   TranslationExecutionMode? onlyMode,
+  AiCatalogIdentity? backendIdentity,
 }) =>
     showModalBottomSheet<TranslationModelPreference>(
       context: context,
@@ -34,6 +38,7 @@ Future<TranslationModelPreference?> showConfiguredAiModelPickerSheet(
         includeUnavailable: includeUnavailable,
         includeFollowGlobal: includeFollowGlobal,
         onlyMode: onlyMode,
+        backendIdentity: backendIdentity ?? AiCatalogIdentity.capture(),
       ),
     );
 
@@ -49,6 +54,7 @@ class _ConfiguredAiModelPickerSheet extends StatefulWidget {
   final bool includeUnavailable;
   final bool includeFollowGlobal;
   final TranslationExecutionMode? onlyMode;
+  final AiCatalogIdentity backendIdentity;
 
   const _ConfiguredAiModelPickerSheet({
     required this.settings,
@@ -58,6 +64,7 @@ class _ConfiguredAiModelPickerSheet extends StatefulWidget {
     required this.includeUnavailable,
     required this.includeFollowGlobal,
     required this.onlyMode,
+    required this.backendIdentity,
   });
 
   @override
@@ -83,12 +90,13 @@ class _ConfiguredAiModelPickerSheetState
     final providers = _providers(widget.settings, widget.includeUnavailable);
     final showLocal = widget.onlyMode != TranslationExecutionMode.backend;
     final showBackend = widget.onlyMode != TranslationExecutionMode.local;
-    final backendModel = widget.settings.backendModel.trim();
+    final backendModel = widget.settings.backendSelection?.modelId ??
+        widget.settings.backendModel;
     final hasVisibleLocal = providers.any(
       (provider) => _visibleModels(provider, query).isNotEmpty,
     );
     final hasBackend = showBackend &&
-        backendModel.isNotEmpty &&
+        backendModel.trim().isNotEmpty &&
         (query.isEmpty || '后端代理 $backendModel'.toLowerCase().contains(query)) &&
         (_filter == ConversationModelPickerFilter.all ||
             _filter == ConversationModelPickerFilter.available);
@@ -157,18 +165,29 @@ class _ConfiguredAiModelPickerSheetState
                 ),
               ),
             if (widget.includeFollowGlobal) const Divider(height: 1),
+            if (showBackend)
+              ListTile(
+                  key: const ValueKey('configured_backend_pair_picker'),
+                  leading: const Icon(Icons.cloud_outlined),
+                  title: const Text('后端服务商与模型…'),
+                  onTap: _pickBackendPair),
             if (hasBackend)
               ListTile(
-                key: ValueKey('configured_model_backend_$backendModel'),
+                key: ValueKey(jsonEncode([
+                  'backend',
+                  widget.settings.backendSelection?.providerCode,
+                  backendModel
+                ])),
                 leading: const Icon(Icons.cloud_outlined),
                 title: Text(backendModel),
                 subtitle: _selectionSubtitle(
                   _normalized(TranslationModelPreference(
                     mode: TranslationModelPreferenceMode.backend,
                     modelId: backendModel,
+                    backendSelection: widget.settings.backendSelection,
                     reasoningPolicy: ChatReasoningPolicy.offIfSupported,
                   )),
-                  '后端代理',
+                  '后端代理 · ${backendSelectionLabel(widget.settings.backendSelection, legacyModelId: backendModel)}',
                   providerId: 'backend',
                   modelId: backendModel,
                 ),
@@ -180,6 +199,7 @@ class _ConfiguredAiModelPickerSheetState
                   _normalized(TranslationModelPreference(
                     mode: TranslationModelPreferenceMode.backend,
                     modelId: backendModel,
+                    backendSelection: widget.settings.backendSelection,
                     reasoningPolicy: ChatReasoningPolicy.offIfSupported,
                   )),
                 ),
@@ -386,7 +406,36 @@ class _ConfiguredAiModelPickerSheetState
 
   bool _isSelectedBackend(String modelId) =>
       widget.selected.mode == TranslationModelPreferenceMode.backend &&
-      widget.selected.modelId == modelId;
+      widget.selected.modelId == modelId &&
+      widget.selected.backendSelection?.pairKey ==
+          widget.settings.backendSelection?.pairKey;
+
+  Future<void> _pickBackendPair() async {
+    try {
+      final pair = await pickBackendSelection(context,
+          identity: widget.backendIdentity,
+          selected: widget.selected.backendSelection,
+          legacyModelId:
+              widget.selected.modelId ?? widget.settings.backendModel,
+          followLabel: '跟随全局设置');
+      if (!mounted || pair == null) return;
+      final preference = pair.isFollow
+          ? const TranslationModelPreference(
+              mode: TranslationModelPreferenceMode.followGlobal,
+              reasoningPolicy: ChatReasoningPolicy.offIfSupported)
+          : TranslationModelPreference(
+              mode: TranslationModelPreferenceMode.backend,
+              modelId: pair.modelId,
+              backendSelection: pair,
+              reasoningPolicy: ChatReasoningPolicy.offIfSupported);
+      Navigator.pop(context, preference);
+    } catch (_) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(content: Text('账号或后端来源已变化，请重新打开模型选择')));
+      }
+    }
+  }
 
   TranslationModelPreference _normalized(
     TranslationModelPreference preference,

@@ -193,7 +193,7 @@ class AISettingsProvider extends ChangeNotifier {
     await _commit(next, expectedAccountHash: expectedAccountHash);
   }
 
-  /// 启用/禁用某服务商。禁用的若恰是当前激活项，则自动切到另一启用项。
+  /// 启用/禁用某服务商。保留当前失效引用，等待用户明确重新选择。
   Future<void> toggleProvider(
     String id,
     bool enabled, {
@@ -203,10 +203,6 @@ class AISettingsProvider extends ChangeNotifier {
     final idx = next.providers.indexWhere((p) => p.id == id);
     if (idx < 0) return;
     next.providers[idx].enabled = enabled;
-    if (!enabled && next.activeProviderId == id) {
-      final fallback = next.providers.where((p) => p.enabled).toList();
-      if (fallback.isNotEmpty) next.activeProviderId = fallback.first.id;
-    }
     await _commit(next, expectedAccountHash: expectedAccountHash);
   }
 
@@ -241,7 +237,7 @@ class AISettingsProvider extends ChangeNotifier {
     await _commit(next, expectedAccountHash: expectedAccountHash);
   }
 
-  /// 删除服务商（仅自定义可删）。若删的是当前激活项则回退。
+  /// 删除服务商（仅自定义可删）。当前引用保留，不自动换项。
   Future<void> removeProvider(
     String id, {
     String? expectedAccountHash,
@@ -250,12 +246,6 @@ class AISettingsProvider extends ChangeNotifier {
     final target = next.providers.where((p) => p.id == id);
     if (target.isEmpty || target.first.isSystem) return;
     next.providers.removeWhere((p) => p.id == id);
-    if (next.activeProviderId == id) {
-      final fallback = next.providers.where((p) => p.enabled).toList();
-      next.activeProviderId = fallback.isNotEmpty
-          ? fallback.first.id
-          : (next.providers.isNotEmpty ? next.providers.first.id : '');
-    }
     await _commit(next, expectedAccountHash: expectedAccountHash);
   }
 

@@ -18,8 +18,9 @@ abstract final class TranslationModelProbeFingerprint {
     final applied = TranslationModelResolver.apply(settings, profile);
     final isLocal = profile.mode == TranslationExecutionMode.local;
     final providerId = isLocal ? applied.activeProvider.id : 'backend';
-    final providerCode =
-        isLocal ? applied.activeProvider.providerCode : 'backend';
+    final providerCode = isLocal
+        ? applied.activeProvider.providerCode
+        : profile.backendSelection?.providerCode ?? 'backend';
     final Uri endpointUri;
     final int? explicitPort;
     if (isLocal) {
@@ -54,6 +55,8 @@ abstract final class TranslationModelProbeFingerprint {
       'modelId': profile.modelId,
       'endpoint': effectiveEndpoint,
       'reasoningPolicy': profile.reasoningPolicy.name,
+      if (profile.backendSelection != null)
+        'backendSelection': profile.backendSelection!.toSafeJson(),
     });
     return sha256.convert(utf8.encode(canonical)).toString();
   }

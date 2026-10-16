@@ -1,4 +1,7 @@
 import 'dart:async';
+import 'package:chatgpt_app_core/chat/application/backend_request_selection.dart';
+import 'package:chatgpt_app_core/chat/domain/backend_selection.dart';
+import 'package:chatgpt_app_core/chat/domain/backend_selection_error.dart';
 import 'dart:convert';
 import 'dart:io';
 
@@ -13,7 +16,6 @@ import 'package:chatgpt_app_core/chat/domain/model_capabilities.dart';
 import 'package:chatgpt_app_core/chat/domain/stream_event.dart';
 import 'package:chatgpt_app_core/dao/chat/chat_service.dart';
 import 'package:chatgpt_app_core/model/ai_settings.dart';
-import 'package:chatgpt_app_core/util/hi_const.dart';
 import 'package:chatgpt_app_core/util/model_catalog.dart';
 import 'package:http/http.dart' as http;
 import 'package:login_sdk/config/login_sdk_config.dart';
@@ -24,24 +26,61 @@ import 'package:openai_flutter/utils/ai_logger.dart';
 class BackendChatService
     implements
         ChatService,
+        BackendSelectionPreparingChatService,
         AttemptAwareChatService,
         OptionsAwareChatService,
         OptionsAwareNonStreamingChatService {
   final AISettings _settings;
 
-  BackendChatService(this._settings);
+  final _BackendLoginSession? _loginSession;
+  late final BackendRequestSelection _selection;
+  BackendChatService(AISettings settings)
+      : _settings = settings.clone(),
+        _loginSession = _BackendLoginSession.tryCapture() {
+    _selection = BackendRequestSelection(_settings);
+  }
+
+  /// a2 可在首次派发前调用并直接固定进运行 profile；不返回 token。
+  @override
+  Future<BackendSelection> prepareBackendSelection(
+      {Future<void>? abortTrigger}) async {
+    try {
+      final pair = await _selection.prepare(abortTrigger: abortTrigger);
+      _selection.verify();
+      _settings.backendSelection = pair;
+      return pair;
+    } on ChatTransportException catch (error) {
+      if (error.safeCode == 'authentication_error' &&
+          error.statusCode == 401 &&
+          error.failureStage == ChatFailureStage.response &&
+          _loginSession != null) {
+        _scheduleExpiredSessionLogout(_loginSession!);
+      }
+      rethrow;
+    }
+  }
+
+  @override
+  void verifyPreparedBackendSelection(BackendSelection pair) {
+    _selection.verify();
+    if (pair.pairKey != _selection.fixedPair?.pairKey) {
+      throw const ChatTransportException(
+          safeCode: 'invalid_backend_selection',
+          safeMessage: '后端模型选择格式无效，请重新选择服务商和模型',
+          failureKind: ChatFailureKind.invalidConfiguration);
+    }
+  }
 
   Map<String, dynamic> _reasoningFields(ChatRequestOptions options,
       {bool includeDefaultPolicy = false}) {
     final effort =
         options.deepSeekReasoningEffort ?? _settings.deepSeekReasoningEffort;
-    final catalogProvider =
-        ModelCatalog.optionFor(_settings.effectiveModel)?.providerCode;
+    final catalogProvider = _selection.fixedPair?.providerCode;
     // 目录缺失时只允许精确的 DeepSeek 双模式名称，由后端再核对最终服务商。
     final supportsEffort = ReasoningControlAdapter.supportsDeepSeekEffort(
-      providerId: catalogProvider ?? 'deepseek',
+      providerId: catalogProvider ?? '',
       providerCode: catalogProvider,
-      modelId: _settings.effectiveModel,
+      modelId: _selection.modelId,
     );
     final policy = options.suppressReasoningControl
         ? ChatReasoningPolicy.providerDefault
@@ -76,8 +115,10 @@ class BackendChatService
 
   @override
   ModelCapabilities get capabilities =>
-      // 后端模式不知道厂商，交给清单按 modelId 反查 providerCode + supportsVision。
-      ModelCatalog.capabilitiesFor(_settings.effectiveModel);
+      ModelCatalog.backendCapabilitiesFor(_selection.modelId,
+          providerCode: _settings.backendSelection?.providerCode,
+          accountHash: _settings.backendSelection?.accountHash,
+          origin: _settings.backendSelection?.origin);
 
   /// 组装当前轮消息：附件（图片/原生文件/降级文本）收敛进 user content；
   /// [extraMessages]（工具回灌）追加在 user 之后。
@@ -88,14 +129,13 @@ class BackendChatService
     ChatAttachments? attachments, [
     List<Map<String, dynamic>> extraMessages = const [],
   ]) {
-    final model = _settings.effectiveModel;
-    final catalogProvider = ModelCatalog.optionFor(model)?.providerCode;
+    final model = _selection.modelId;
+    final catalogProvider = _selection.fixedPair?.providerCode;
     // 模型名只是客户端的候选判断；自有后端还会按最终解析的 provider 再过滤。
     // 目录明确归属其他服务商时提前移除，未知目录的 DeepSeek V4 交给后端决定。
-    final preserveReasoning =
-        (catalogProvider == null || catalogProvider == 'deepseek') &&
-            (ModelCapabilities.isDeepSeekVisionModel(model) ||
-                model.trim().toLowerCase() == 'deepseek-v4-pro');
+    final preserveReasoning = catalogProvider == 'deepseek' &&
+        (ModelCapabilities.isDeepSeekVisionModel(model) ||
+            model.trim().toLowerCase() == 'deepseek-v4-pro');
     final messages = [
       ...history,
       {
@@ -156,6 +196,7 @@ class BackendChatService
         history: history,
         attachments: attachments,
         options: options,
+        timeout: options.nonStreamingTimeout ?? const Duration(seconds: 15),
       );
 
   Future<ChatCompletionResult> _completeWithUsage({
@@ -183,12 +224,15 @@ class BackendChatService
     required ChatRequestOptions options,
     required Duration timeout,
   }) async {
+    await prepareBackendSelection(abortTrigger: options.abortTrigger);
     final maxTokens = _maxTokensFor(options);
-    final uri = BackendConst.buildUri('/uapi/chat/completions');
+    final uri = _selection.endpoint('/uapi/chat/completions');
     final messages = await options
         .resolveAttemptMessages(_buildMessages(prompt, history, attachments));
+    _selection.verify();
     final body = {
-      'model': _settings.effectiveModel,
+      'model': _selection.modelId,
+      'providerCode': _selection.fixedPair!.providerCode,
       'messages': messages,
       // 0 = 不限制：不带 max_tokens，用上游默认（避免长回复被截断）。
       if (maxTokens != null) 'max_tokens': maxTokens,
@@ -200,7 +244,7 @@ class BackendChatService
       if (options.profile != ChatRequestProfile.standard)
         'request_profile': _requestProfile(options.profile),
     };
-    final loginSession = _BackendLoginSession.capture();
+    final loginSession = _loginSession!;
     final token = loginSession.token;
     final headers = <String, String>{
       'Content-Type': 'application/json',
@@ -214,6 +258,7 @@ class BackendChatService
       try {
         final request = http.AbortableRequest('POST', uri,
             abortTrigger: options.abortTrigger)
+          ..followRedirects = false
           ..headers.addAll(headers)
           ..body = jsonEncode(body);
         return await () async {
@@ -371,11 +416,14 @@ class BackendChatService
     final maxTokens = _maxTokensFor(options);
     final httpClient = http.Client();
     try {
-      final uri = BackendConst.buildUri('/uapi/chat/completions/stream');
+      await prepareBackendSelection(abortTrigger: options.abortTrigger);
+      final uri = _selection.endpoint('/uapi/chat/completions/stream');
       final messages = await options.resolveAttemptMessages(
           _buildMessages(prompt, history, attachments, extraMessages));
+      _selection.verify();
       final body = {
-        'model': _settings.effectiveModel,
+        'model': _selection.modelId,
+        'providerCode': _selection.fixedPair!.providerCode,
         'messages': messages,
         if (maxTokens != null) 'max_tokens': maxTokens,
         if (_settings.temperature != null) 'temperature': _settings.temperature,
@@ -384,13 +432,14 @@ class BackendChatService
         'request_profile': _requestProfile(options.profile),
         ..._reasoningFields(options, includeDefaultPolicy: true),
       };
-      final loginSession = _BackendLoginSession.capture();
+      final loginSession = _loginSession!;
       final token = loginSession.token;
       final request = http.AbortableRequest(
         'POST',
         uri,
         abortTrigger: options.abortTrigger,
       )
+        ..followRedirects = false
         ..headers.addAll({
           'Content-Type': 'application/json',
           'Authorization': 'Bearer ${token ?? ''}',
@@ -523,6 +572,15 @@ const _expiredBackendLoginFailure = ChatTransportException(
 class _BackendLoginSession {
   const _BackendLoginSession(this.storage, this.token, this.accountHash);
 
+  static _BackendLoginSession? tryCapture() {
+    if (!backendIdentityCanBeCaptured()) return null;
+    try {
+      return _BackendLoginSession.capture();
+    } catch (_) {
+      return null;
+    }
+  }
+
   factory _BackendLoginSession.capture() {
     final storage = LoginSdkConfig.instance.storage;
     return _BackendLoginSession(storage, storage.readTokenSync(),
@@ -614,7 +672,8 @@ ChatTransportException _mapBackendTransportFailure(Object error,
   );
 }
 
-const _safeBackendCodes = {
+final _safeBackendCodes = {
+  ...backendSelectionMessages.keys,
   'unsupported_reasoning_control',
   'first_event_timeout',
   'idle_timeout',
@@ -736,6 +795,8 @@ String _safeCodeForBackendStatus(int statusCode) =>
     chatFailureCodeForStatus(statusCode) ?? 'request_failed';
 
 String _safeBackendMessage(String safeCode) {
+  final selectionMessage = backendSelectionMessages[safeCode];
+  if (selectionMessage != null) return selectionMessage;
   switch (safeCode) {
     case 'unsupported_reasoning_control':
       return '上游不支持推理控制';

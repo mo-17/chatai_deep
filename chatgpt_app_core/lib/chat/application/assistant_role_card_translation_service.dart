@@ -1,3 +1,4 @@
+import 'package:chatgpt_app_core/chat/domain/chat_request_options.dart';
 import 'dart:convert';
 
 import 'package:chatgpt_app_core/chat/application/role_card_translation_fields.dart';
@@ -119,6 +120,9 @@ class AssistantRoleCardTranslationService {
     } on RoleCardTranslationCancelled {
       rethrow;
     } on TranslationRequestFailure catch (failure) {
+      if (failure.requiresUserConfirmation) {
+        throw TranslationWorkPaused(failure: failure);
+      }
       if (failure.kind == TranslationFailureKind.cancelled) {
         throw const RoleCardTranslationCancelled();
       }
@@ -157,7 +161,15 @@ class AssistantRoleCardTranslationService {
         retryPolicy: retryPolicy,
       );
       return applyTranslatedFields(assistant, translated);
-    } catch (_) {
+    } catch (error) {
+      if (!retryPolicy.allowAutomaticRecovery ||
+          error is ChatTransportException && error.requiresUserConfirmation) {
+        throw const TranslationWorkPaused(
+            failure: TranslationRequestFailure(
+                kind: TranslationFailureKind.invalidOutput,
+                safeCode: 'direct_confirmation_required',
+                requiresUserConfirmation: true));
+      }
       onProgress?.call(RoleCardTranslationProgress(
         field: 'wholeCard',
         fieldLabel: '整卡',

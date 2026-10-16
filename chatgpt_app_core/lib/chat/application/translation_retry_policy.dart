@@ -18,8 +18,11 @@ final class TranslationRetryDecision {
 
 final class TranslationRetryPolicy {
   final Random? _random;
+  final bool allowAutomaticRecovery;
 
-  const TranslationRetryPolicy({Random? random}) : _random = random;
+  const TranslationRetryPolicy(
+      {Random? random, this.allowAutomaticRecovery = true})
+      : _random = random;
 
   TranslationRetryDecision decide({
     required TranslationRequestFailure failure,
@@ -29,6 +32,11 @@ final class TranslationRetryPolicy {
     required DateTime now,
   }) {
     final attempt = categoryAttempt < 0 ? 0 : categoryAttempt;
+    if ((!allowAutomaticRecovery || failure.requiresUserConfirmation) &&
+        failure.kind != TranslationFailureKind.cancelled) {
+      return const TranslationRetryDecision(
+          action: TranslationRetryAction.pause);
+    }
     switch (failure.kind) {
       case TranslationFailureKind.cancelled:
         return const TranslationRetryDecision(

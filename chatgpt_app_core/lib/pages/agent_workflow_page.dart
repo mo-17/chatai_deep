@@ -3,21 +3,29 @@ import 'package:chatgpt_app_core/backup/backup_service.dart';
 import 'package:chatgpt_app_core/chat/application/agent_task_verifier.dart';
 import 'package:chatgpt_app_core/chat/application/agent_workflow_coordinator.dart';
 import 'package:chatgpt_app_core/chat/application/agent_workflow_models.dart';
+import 'package:chatgpt_app_core/chat/application/conversation_generation_scope.dart';
+import 'package:chatgpt_app_core/chat/application/direct_failure_recovery.dart';
+import 'package:chatgpt_app_core/chat/domain/model_capabilities.dart';
+import 'package:chatgpt_app_core/provider/ai_settings_provider.dart';
+import 'package:chatgpt_app_core/widget/direct_failure_dialog.dart';
 import 'package:chatgpt_app_core/chat/application/agent_workflow_scope.dart';
 import 'package:chatgpt_app_core/chat/application/agent_workspace_service.dart';
 import 'package:chatgpt_app_core/chat/application/agent_workspace_tools.dart';
 import 'package:chatgpt_app_core/chat/domain/agent_workflow.dart';
 import 'package:chatgpt_app_core/chat/domain/agent_workspace_file.dart';
 import 'package:chatgpt_app_core/dao/ai_settings_dao.dart';
+import 'package:chatgpt_app_core/dao/ai_catalog_dao.dart';
 import 'package:chatgpt_app_core/db/agent_workflow_dao.dart';
 import 'package:chatgpt_app_core/db/hi_db_manager.dart';
 import 'package:chatgpt_app_core/model/ai_settings.dart';
 import 'package:chatgpt_app_core/model/conversation_model.dart';
 import 'package:chatgpt_app_core/widget/app_visual_widgets.dart';
+import 'package:chatgpt_app_core/widget/backend_selection_picker.dart';
 import 'package:chatgpt_app_core/pages/cloud_workflow_page.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:login_sdk/dao/login_dao.dart';
+import 'package:login_sdk/config/login_sdk_config.dart';
 
 String workflowRoleLabel(WorkflowRole r) => switch (r) {
       WorkflowRole.analysis => '分析',
@@ -82,7 +90,10 @@ class _AgentWorkflowPageState extends State<AgentWorkflowPage> {
   List<WorkflowStep> _nodes = [];
   List<WorkflowModelChoice> _choices = [];
   final _profiles = <WorkflowRole, WorkflowModelProfile>{};
+  final _pickerRevisions = <WorkflowRole, int>{};
   final _selected = <int>{};
+  late final AiCatalogIdentity _backendIdentity;
+  late final Object _backendStorage;
   final _refs = <int, WorkflowInputRef>{};
   List<AgentWorkspaceFile> _files = [];
   TaskAcceptanceCriteria _criteria = const TaskAcceptanceCriteria();
@@ -94,6 +105,8 @@ class _AgentWorkflowPageState extends State<AgentWorkflowPage> {
   @override
   void initState() {
     super.initState();
+    _backendIdentity = AiCatalogIdentity.capture();
+    _backendStorage = LoginSdkConfig.instance.storage;
     final account = widget.expectedAccountHash ?? LoginDao.getAccountHash();
     if (account != null) {
       _scope = widget.scope ?? AgentWorkflowScope(accountHash: account);
@@ -133,7 +146,17 @@ class _AgentWorkflowPageState extends State<AgentWorkflowPage> {
 
   void _check() {
     if (!_current) throw const WorkflowStale('页面已过期，请重新打开');
+    if (_profiles.values.any((p) => p.mode == 'backend') && !_backendCurrent) {
+      throw const WorkflowStale('后端来源或登录身份已变化，请重新打开');
+    }
   }
+
+  bool get _backendCurrent =>
+      _current &&
+      _backendIdentity.current &&
+      _backendIdentity.authenticated &&
+      _backendIdentity.account == _scope?.accountHash &&
+      identical(_backendStorage, LoginSdkConfig.instance.storage);
 
   Future<void> _load({bool more = false}) async {
     final generation = ++_generation;
@@ -165,9 +188,18 @@ class _AgentWorkflowPageState extends State<AgentWorkflowPage> {
         final settings = await (widget.loadSettings?.call() ??
             AISettingsDao.loadForAsync(_scope!.accountHash));
         _check();
-        _choices = AgentWorkflowModels.choices(settings);
+        if (settings.mode == AIMode.backend && !_backendCurrent) {
+          throw const WorkflowStale('后端来源或登录身份已变化，请重新打开');
+        }
+        _choices = AgentWorkflowModels.choices(settings,
+            backendIdentity: _backendCurrent ? _backendIdentity : null);
         for (final r in WorkflowRole.values) {
-          if (_choices.isNotEmpty) _profiles[r] = _choices.first.profile;
+          // 保留新建本地任务的既有预设；后端三职责须各自明确选择，不取首项替代。
+          if (settings.mode == AIMode.local &&
+              _choices.any((c) => c.profile.mode == 'local')) {
+            _profiles[r] =
+                _choices.firstWhere((c) => c.profile.mode == 'local').profile;
+          }
         }
         _criteria = await _tools!.loadCriteria();
         _criteriaArmed =
@@ -238,52 +270,143 @@ class _AgentWorkflowPageState extends State<AgentWorkflowPage> {
     }
   }
 
-  void _launch(AgentWorkflow task) {
-    unawaited(_coordinator.start(_dao!, _scope!, task).then((_) async {
+  void _launch(AgentWorkflow task, {AgentWorkflowModels? preparedModels}) {
+    unawaited(_coordinator
+        .start(_dao!, _scope!, task, preparedModels: preparedModels)
+        .then((_) async {
       if (_current) await _load();
     }));
   }
 
-  Future<void> _submit() => _action(() async {
+  Future<void> _submit(
+          {Map<WorkflowRole, WorkflowModelProfile>? confirmedProfiles,
+          AgentWorkflow? originalTask,
+          List<WorkflowStep>? originalSteps,
+          DirectRetryPermit? directPermit,
+          AISettings? confirmedSettings}) =>
+      _action(() async {
         _check();
-        if (!_enabled || _profiles.length != 3 || _task.text.trim().isEmpty) {
+        directPermit?.verify();
+        final profiles = confirmedProfiles ?? _profiles;
+        final taskText = originalTask?.task ?? _task.text;
+        final inputs =
+            originalTask?.inputs ?? [for (final id in _selected) _refs[id]!];
+        if (originalTask == null && !_enabled ||
+            profiles.length != 3 ||
+            taskText.trim().isEmpty) {
           throw const FormatException('请启用本次协作、填写任务并选择三个模型');
         }
-        final models =
-            AgentWorkflowModels(_scope!, settings: widget.loadSettings);
+        final models = AgentWorkflowModels(_scope!.fork(),
+            settings: confirmedSettings == null
+                ? widget.loadSettings
+                : () async => confirmedSettings.clone(),
+            additionalVerify: directPermit?.verify);
+        models.captureExecutionContext();
         var canReadInputs = false;
-        for (final p in _profiles.values) {
-          if (!await models.available(p)) {
+        for (final p in profiles.values) {
+          final service = p.mode == 'backend'
+              ? await models.prepareBackend(p)
+              : await models.service(p);
+          if (p.mode != 'backend' && !await models.available(p)) {
             throw const FormatException('所选模型不可用，请先配置服务');
           }
           _check();
-          canReadInputs =
-              (await models.service(p)).capabilities.tool || canReadInputs;
+          canReadInputs = service.capabilities.tool || canReadInputs;
         }
-        final acceptance = _selected.isEmpty && !_criteriaArmed
-            ? const TaskAcceptanceCriteria(requireFullRead: false)
-            : _criteria;
+        final acceptance = originalTask != null
+            ? TaskAcceptanceCriteria.fromJson(originalTask.acceptance)
+            : _selected.isEmpty && !_criteriaArmed
+                ? const TaskAcceptanceCriteria(requireFullRead: false)
+                : _criteria;
         AgentWorkflowDao.validateAcceptance(acceptance,
-            inputCount: _selected.length, canReadInputs: canReadInputs);
-        final w = await _dao!.createFromSource(_scope!,
-            cid: widget.conversation!.cid,
-            newTask: _task.text,
+            inputCount: inputs.length, canReadInputs: canReadInputs);
+        final createDao = _dao!.forExecution(guard: models.verifyOriginalScope);
+        final w = await createDao.createFromSource(_scope!,
+            cid: originalTask?.cid ?? widget.conversation!.cid,
+            newTask: taskText,
             newUserCreatedAt: DateTime.now().microsecondsSinceEpoch ~/ 1000,
-            conversationIfMissing:
-                ConversationModel.fromJson(widget.conversation!.toJson()),
+            conversationIfMissing: widget.conversation == null
+                ? null
+                : ConversationModel.fromJson(widget.conversation!.toJson()),
             expectedConversationFingerprint: _conversationFingerprint,
+            confirmedOriginal: originalTask,
+            confirmedSteps: originalSteps,
+            endConfirmedOriginal: originalTask != null && directPermit != null,
             backgroundEnabled: _background,
-            profiles: Map.from(_profiles),
-            inputFileIds: _selected.toList(),
-            expectedInputs: [for (final id in _selected) _refs[id]!],
+            profiles: Map.from(profiles),
+            inputFileIds: inputs.map((i) => i.fileId).toList(),
+            expectedInputs: inputs,
             acceptance: acceptance,
             canReadInputs: canReadInputs,
-            grantedTools:
-                _selected.isEmpty ? {} : AgentWorkflowDao.readOnlyTools);
+            grantedTools: inputs.isEmpty ? {} : AgentWorkflowDao.readOnlyTools);
         _check();
         _parentId = w.id;
+        models.verifyOriginalScope();
+        _launch(w, preparedModels: models);
+      });
+
+  Future<void> _continue(AgentWorkflow w) async {
+    final nodes = List<WorkflowStep>.from(_nodes);
+    final local = nodes.where((s) => s.profile.mode == 'local').toList();
+    if (!_needsDirectConfirmation(nodes)) {
+      await _action(() async {
         _launch(w);
       });
+      return;
+    }
+    if (_acting || !_current || _running) return;
+    final current = await (widget.loadSettings?.call() ??
+        AISettingsDao.loadForAsync(_scope!.accountHash));
+    if (!mounted ||
+        !_current ||
+        _detail?.id != w.id ||
+        _detail?.revision != w.revision) {
+      return;
+    }
+    final selectedStep = local.firstWhere(
+        (s) => s.state != WorkflowState.complete,
+        orElse: () => local.first);
+    final original = current.clone()
+      ..mode = AIMode.local
+      ..activeProviderId = selectedStep.profile.providerId;
+    original.setLocalModelOverride(selectedStep.profile.modelId);
+    var handedOff = false;
+    final recovery = DirectFailureRecovery(
+        original: original,
+        scope: ConversationGenerationScope(
+            account: _scope!.accountHash,
+            currentAccount: _scope!.currentAccount,
+            currentEpoch: _scope!.currentLoginEpoch,
+            currentRestore: _scope!.currentRestoreRevision),
+        currentSettings: () =>
+            AISettingsProvider.instance?.accountHash == _scope!.accountHash
+                ? AISettingsProvider.instance!.settings
+                : current,
+        sourceCurrent: () =>
+            _current &&
+            _backendIdentity.current &&
+            identical(_backendStorage, LoginSdkConfig.instance.storage) &&
+            (handedOff ||
+                _detail?.id == w.id && _detail?.revision == w.revision),
+        requiredInput: ModelCapabilities(tool: w.inputs.isNotEmpty),
+        mayHaveBeenProcessed: w.dispatches > 0 || w.usageUnknown,
+        failureCode: w.reason ?? 'unknown');
+    final permit = await showDirectFailureDialog(context, recovery,
+        requestNotice: '确认后明确结束原协作并新建任务，从分析重新开始；旧未知尝试、已用预算和输出保留，可能重复处理并增加费用。');
+    if (!mounted || !_current || permit == null || !permit.current) return;
+    final settings = permit.claim();
+    if (settings == null) return;
+    handedOff = true;
+    final profiles = {for (final s in nodes) s.role: s.profile};
+    profiles[selectedStep.role] = WorkflowModelProfile(
+        'local', settings.activeProvider.id, settings.effectiveModel);
+    await _submit(
+        confirmedProfiles: profiles,
+        originalTask: w,
+        originalSteps: nodes,
+        directPermit: permit,
+        confirmedSettings: settings);
+  }
 
   Future<void> _select(AgentWorkspaceFile file, bool selected) =>
       _action(() async {
@@ -302,6 +425,10 @@ class _AgentWorkflowPageState extends State<AgentWorkflowPage> {
       });
   Future<void> _addBudget() async {
     final task = _detail!;
+    if (_needsDirectConfirmation(_nodes)) {
+      await _continue(task);
+      return;
+    }
     final ok = await showDialog<bool>(
         context: context,
         builder: (ctx) => AlertDialog(
@@ -323,6 +450,13 @@ class _AgentWorkflowPageState extends State<AgentWorkflowPage> {
       _check();
       _launch(w);
     });
+  }
+
+  bool _needsDirectConfirmation(List<WorkflowStep> nodes) {
+    final pending =
+        nodes.where((s) => s.state != WorkflowState.complete).toList();
+    // 已完成本地节点不使后端恢复或纯成果保存变成另一次直连运行。
+    return pending.isNotEmpty && pending.first.profile.mode == 'local';
   }
 
   Future<void> _saveResult() async {
@@ -436,24 +570,39 @@ class _AgentWorkflowPageState extends State<AgentWorkflowPage> {
         for (final r in WorkflowRole.values)
           Padding(
               padding: const EdgeInsets.symmetric(vertical: 6),
-              child: DropdownButtonFormField<String>(
-                  key: ValueKey('workflow-profile-${r.name}'),
-                  initialValue: _profiles[r] == null
-                      ? null
-                      : '${_profiles[r]!.mode}:${_profiles[r]!.providerId}:${_profiles[r]!.modelId}',
-                  isExpanded: true,
-                  decoration:
-                      InputDecoration(labelText: '${workflowRoleLabel(r)}模型'),
-                  items: [
-                    for (final c in _choices)
-                      DropdownMenuItem(
-                          value: c.key,
-                          child: Text(c.label, overflow: TextOverflow.ellipsis))
-                  ],
-                  onChanged: _acting
-                      ? null
-                      : (v) => setState(() => _profiles[r] =
-                          _choices.singleWhere((c) => c.key == v).profile))),
+              child: KeyedSubtree(
+                  key: ValueKey(
+                      'workflow-picker-${r.name}-${_pickerRevisions[r] ?? 0}'),
+                  child: DropdownButtonFormField<String>(
+                      key: ValueKey('workflow-profile-${r.name}'),
+                      initialValue: _profiles[r]?.selectionKey,
+                      isExpanded: true,
+                      decoration: InputDecoration(
+                          labelText: '${workflowRoleLabel(r)}模型'),
+                      items: [
+                        for (final c in _choices)
+                          DropdownMenuItem(
+                              value: c.key,
+                              child: Text(c.label,
+                                  overflow: TextOverflow.ellipsis))
+                      ],
+                      onChanged: _acting
+                          ? null
+                          : (v) {
+                              final picked = _choices
+                                  .singleWhere((c) => c.key == v)
+                                  .profile;
+                              if (picked.mode == 'backend' &&
+                                  !_backendCurrent) {
+                                setState(() {
+                                  _pickerRevisions.update(r, (v) => v + 1,
+                                      ifAbsent: () => 1);
+                                  _error = '后端来源或登录身份已变化，请重新打开';
+                                });
+                                return;
+                              }
+                              setState(() => _profiles[r] = picked);
+                            }))),
         const Text('只使用本次正文与勾选的文本输入。不会读取其他对话、个人/助手记忆或角色卡元数据；不授权网络、MCP或写工具。'),
         if (_criteriaArmed || _selected.isNotEmpty)
           Text(
@@ -505,7 +654,7 @@ class _AgentWorkflowPageState extends State<AgentWorkflowPage> {
             tilePadding: EdgeInsets.zero,
             title: Text(
                 '${workflowRoleLabel(n.role)} · ${workflowStateLabel(n.state)}'),
-            subtitle: Text('${n.profile.modelId} · 工具轮数 ${n.toolRounds}/2'),
+            subtitle: Text('${n.profile.mode == 'backend' ? backendSelectionLabel(n.profile.backendSelection, legacyModelId: n.profile.modelId) : n.profile.modelId} · 工具轮数 ${n.toolRounds}/2'),
             children: [
               SelectableText(n.result.isEmpty ? '尚无已提交结果' : n.result)
             ]),
@@ -529,11 +678,7 @@ class _AgentWorkflowPageState extends State<AgentWorkflowPage> {
             const [WorkflowState.paused, WorkflowState.needsConfiguration]
                 .contains(w.state))
           FilledButton(
-              onPressed: _acting || !_current
-                  ? null
-                  : () => _action(() async {
-                        _launch(w);
-                      }),
+              onPressed: _acting || !_current ? null : () => _continue(w),
               child: const Text('明确继续')),
         if (!_running &&
             const [WorkflowState.paused, WorkflowState.budgetExhausted]

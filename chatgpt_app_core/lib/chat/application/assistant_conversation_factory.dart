@@ -2,6 +2,7 @@ import 'package:chatgpt_app_core/chat/application/assistant_conversation_avatar_
 import 'package:chatgpt_app_core/chat/application/assistant_role_card_service.dart';
 import 'package:chatgpt_app_core/model/assistant_model.dart';
 import 'package:chatgpt_app_core/model/conversation_model.dart';
+import 'package:chatgpt_app_core/chat/domain/backend_selection.dart';
 
 /// 从助手生成新会话的字段映射，供会话列表、角色卡导入后的启动入口复用。
 class AssistantConversationFactory {
@@ -12,6 +13,7 @@ class AssistantConversationFactory {
     int? projectId,
     String? modelProviderId,
     String? modelId,
+    BackendSelection? backendSelection,
     bool? webSearchEnabled,
     List<String>? toolIds,
   }) {
@@ -27,6 +29,7 @@ class AssistantConversationFactory {
       projectId: projectId,
       modelProviderId: modelProviderId,
       modelId: modelId,
+      backendSelection: backendSelection,
       voiceStyle: voiceStyle == null || voiceStyle.isEmpty ? null : voiceStyle,
       webSearchEnabled: webSearchEnabled,
       toolIds: toolIds,

@@ -28,10 +28,12 @@ import 'package:openai_flutter/model/ai_stream_chunk.dart';
 class DirectChatService
     implements
         ChatService,
+        UserConfirmedRetryChatService,
         AttemptAwareChatService,
         OptionsAwareChatService,
         OptionsAwareNonStreamingChatService {
   final ProviderConfig _cfg;
+  final bool _configurationValid;
 
   final DeepSeekAttachmentAdapter? _injectedAttachmentAdapter;
   final String? _previewAccountHash;
@@ -112,6 +114,7 @@ class DirectChatService
 
   DirectChatService(
     ProviderConfig cfg, {
+    bool configurationValid = true,
     String? providerId,
     String? providerCode,
     int maxOutputTokens = 0,
@@ -121,7 +124,8 @@ class DirectChatService
     DeepSeekAttachmentAdapter? attachmentAdapter,
     String? previewAccountHash,
     DeepSeekFilePreviewStore? previewStore,
-  })  : _cfg = ProviderConfig(
+  })  : _configurationValid = configurationValid,
+        _cfg = ProviderConfig(
           apiKey: cfg.apiKey,
           baseUrl: cfg.baseUrl,
           model: cfg.model,
@@ -181,6 +185,15 @@ class DirectChatService
       ModelCatalog.capabilitiesFor(_cfg.model, providerCode: _providerCode);
 
   void _ensureApiKey() {
+    if (!_configurationValid) {
+      throw const ChatTransportException(
+          safeCode: 'direct_configuration_unavailable',
+          safeMessage: '原服务商或模型已失效，请明确重新选择',
+          failureStage: ChatFailureStage.prepare,
+          failureKind: ChatFailureKind.invalidConfiguration,
+          unsentReason: ChatUnsentReason.configurationRevoked,
+          requiresUserConfirmation: true);
+    }
     if (_cfg.apiKey.trim().isEmpty) {
       throw const ChatTransportException(
           safeCode: 'api_key_missing',
@@ -343,7 +356,7 @@ class DirectChatService
                 reasoningControlAttached: reasoning.requestFields.isNotEmpty),
             stack);
       }
-    }, options: options);
+    }, options: options.copyWith(maxAutoRetries: 0));
     if (response.choices?.isEmpty ?? true) {
       throw const ChatTransportException(
           safeCode: 'invalid_response',
@@ -502,7 +515,8 @@ class DirectChatService
       }
     }
 
-    await for (final chunk in recoverChatStream(request, options: options)) {
+    await for (final chunk in recoverChatStream(request,
+        options: options.copyWith(maxAutoRetries: 0))) {
       switch (chunk.kind) {
         case AIStreamKind.reasoning:
           yield StreamEvent.reasoning(chunk.text);
@@ -541,7 +555,23 @@ Future<void> _checkRequestAbort(Future<void>? abortTrigger) async {
   if (aborted) throw http.RequestAbortedException();
 }
 
-ChatTransportException _mapTransportFailure(
+ChatTransportException _mapTransportFailure(Object error,
+    {required bool reasoningControlAttached}) {
+  final e = _classifyTransportFailure(error,
+      reasoningControlAttached: reasoningControlAttached);
+  return ChatTransportException(
+      statusCode: e.statusCode,
+      retryAfter: e.retryAfter,
+      safeCode: e.safeCode,
+      safeMessage: e.safeMessage,
+      responseStarted: e.responseStarted,
+      failureStage: e.failureStage,
+      failureKind: e.failureKind,
+      unsentReason: e.unsentReason,
+      requiresUserConfirmation: e.failureKind != ChatFailureKind.cancelled);
+}
+
+ChatTransportException _classifyTransportFailure(
   Object error, {
   required bool reasoningControlAttached,
 }) {

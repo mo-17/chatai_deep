@@ -1,3 +1,4 @@
+import 'package:chatgpt_app_core/chat/domain/chat_request_options.dart';
 import 'dart:async';
 
 import 'package:chat_message/models/message_model.dart';
@@ -17,6 +18,8 @@ import 'package:chatgpt_app_core/chat/domain/chat_send_progress.dart';
 import 'package:chatgpt_app_core/chat/domain/message_block.dart';
 import 'package:chatgpt_app_core/chat/domain/stream_event.dart';
 import 'package:chatgpt_app_core/dao/completion_dao.dart';
+import 'package:chatgpt_app_core/chat/application/conversation_generation_profile.dart';
+import 'package:chatgpt_app_core/chat/application/conversation_generation_scope.dart';
 import 'package:chatgpt_app_core/db/hi_db_manager.dart';
 import 'package:chatgpt_app_core/db/message_dao.dart';
 import 'package:chatgpt_app_core/model/ai_settings.dart';
@@ -49,7 +52,10 @@ class PreparedAgentRun {
   final ConversationModel conversation;
   final MessageModel user;
   final MessageModel receiver;
-  final AISettings settings;
+  final AISettings _settings;
+  final ConversationGenerationProfile? profile;
+  final ConversationGenerationScope? scope;
+  AISettings get settings => profile?.settings ?? _settings.clone();
   final CompletionDao completion;
   final MessageDao messages;
   final UsageRecordService usage;
@@ -68,6 +74,8 @@ class PreparedAgentRun {
       required this.user,
       required this.receiver,
       required AISettings settings,
+      this.profile,
+      this.scope,
       required this.completion,
       required this.messages,
       required this.usage,
@@ -80,7 +88,7 @@ class PreparedAgentRun {
       this.webSearch = false,
       this.hasAssistant = false})
       : conversation = ConversationModel.fromJson(conversation.toJson()),
-        settings = AISettings.fromJson(settings.toJson());
+        _settings = AISettings.fromJson(settings.toJson());
 }
 
 class AgentTaskRun extends ChangeNotifier {
@@ -179,6 +187,35 @@ class AgentTaskRun extends ChangeNotifier {
     }
   }
 
+  Future<void> _verifyProfile(AgentTaskExecutor owner) async {
+    if (_cancelled || _retired || !owner.accountCurrent(key)) {
+      throw const ChatTransportException(
+          safeCode: 'cancelled',
+          safeMessage: '任务已停止',
+          failureKind: ChatFailureKind.cancelled);
+    }
+    final profile = prepared.profile;
+    final scope = prepared.scope;
+    if (prepared.settings.mode == AIMode.backend &&
+        (profile == null || scope == null)) {
+      throw const ChatTransportException(
+          safeCode: 'invalid_backend_selection',
+          safeMessage: '旧任务没有可证明的原服务商，请明确创建新请求',
+          failureKind: ChatFailureKind.invalidConfiguration);
+    }
+    if (profile != null && scope != null) {
+      await scope.wait(profile.verify(scope), _abort.future);
+      if (_cancelled || _retired || !owner.accountCurrent(key)) {
+        throw const ChatTransportException(
+            safeCode: 'cancelled',
+            safeMessage: '任务已停止',
+            failureKind: ChatFailureKind.cancelled);
+      }
+      final pair = profile.backendSelection;
+      if (pair != null) prepared.completion.bindPreparedBackendSelection(pair);
+    }
+  }
+
   Future<void> _execute(AgentTaskExecutor owner) async {
     if (_cancelled || !owner.accountCurrent(key)) {
       await _cancelQueued(pauseReason ?? '账户已切换，任务已暂停');
@@ -192,9 +229,17 @@ class AgentTaskRun extends ChangeNotifier {
         requestPause('原对话已删除');
         return;
       }
+      if (prepared.profile != null && prepared.scope != null) {
+        await prepared.scope!.wait(
+            prepared.profile!.prepareSelection(prepared.completion.chatService,
+                prepared.scope!, _abort.future),
+            _abort.future);
+      }
+      await _verifyProfile(owner);
       await prepared.session.begin(
           userAt: prepared.user.createdAt,
           input: prepared.user.content,
+          backendSelection: prepared.profile?.backendSelection,
           resume: true);
       if (_cancelled || !owner.accountCurrent(key)) return;
       if (!owner.foreground) {
@@ -253,6 +298,15 @@ class AgentTaskRun extends ChangeNotifier {
       _subscription = prepared.completion
           .streamCompletionEvents(
         prompt: prepared.user.content,
+        requestOptions: ChatRequestOptions(
+            abortTrigger: _abort.future,
+            beforeDispatch: (_) => _verifyProfile(owner),
+            beforeAttachmentUpload: () => _verifyProfile(owner),
+            dispatchIsCurrent: () =>
+                !_cancelled &&
+                !_retired &&
+                owner.accountCurrent(key) &&
+                (prepared.scope?.isCurrent ?? true)),
         attachments: prepared.attachments.isEmpty ? null : prepared.attachments,
         abortTrigger: _abort.future,
         webSearch: prepared.webSearch,
@@ -507,7 +561,7 @@ class AgentTaskRun extends ChangeNotifier {
           modelId: prepared.settings.effectiveModel,
           providerId: prepared.settings.mode == AIMode.local
               ? prepared.settings.activeProviderId
-              : prepared.conversation.modelProviderId,
+              : prepared.profile?.usageProviderId,
           projectId: prepared.conversation.projectId,
           cid: key.cid,
           prompt: prepared.user.content,

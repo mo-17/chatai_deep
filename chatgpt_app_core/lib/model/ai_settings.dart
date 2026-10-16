@@ -1,3 +1,4 @@
+import 'package:chatgpt_app_core/chat/domain/backend_selection.dart';
 import 'package:chatgpt_app_core/chat/application/mcp/mcp_types.dart';
 import 'package:chatgpt_app_core/chat/domain/attachment_processing_limits.dart';
 import 'package:chatgpt_app_core/chat/domain/deepseek_reasoning_effort.dart';
@@ -307,6 +308,13 @@ class AISettings {
   String activeProviderId;
 
   String backendModel;
+  BackendSelection? _backendSelection;
+  BackendSelection? get backendSelection => _backendSelection;
+  set backendSelection(BackendSelection? value) {
+    _backendSelection = BackendSelection.fromStorage(value?.toStorageJson(),
+        allowFollow: false);
+  }
+
   bool streamEnabled;
 
   /// 可选的下一条消息建议；会产生独立模型用量，旧设置默认关闭。
@@ -400,6 +408,7 @@ class AISettings {
     required this.providers,
     required this.activeProviderId,
     required this.backendModel,
+    BackendSelection? backendSelection,
     required this.streamEnabled,
     required this.resetOnLogout,
     this.composerPredictionsEnabled = false,
@@ -429,7 +438,10 @@ class AISettings {
     this.mcpBackendEnabled = false,
     this.mcpBackendTrusted = false,
     UsageCostConfig? usageCostConfig,
-  })  : mcpServers = mcpServers ?? [],
+  })  : _backendSelection = BackendSelection.fromStorage(
+            backendSelection?.toStorageJson(),
+            allowFollow: false),
+        mcpServers = mcpServers ?? [],
         usageCostConfig = usageCostConfig ?? UsageCostConfig.builtinDefaults;
 
   factory AISettings.defaults() => AISettings(
@@ -481,6 +493,8 @@ class AISettings {
       providers: providers,
       activeProviderId: activeId,
       backendModel: j['backendModel'] as String? ?? 'deepseek-chat',
+      backendSelection: BackendSelection.fromStorage(j['backendSelection'],
+          allowFollow: false),
       streamEnabled: j['streamEnabled'] as bool? ?? true,
       composerPredictionsEnabled: j['composerPredictionsEnabled'] == true,
       resetOnLogout: j['resetOnLogout'] as bool? ?? true,
@@ -553,6 +567,8 @@ class AISettings {
         'providers': providers.map((p) => p.toJson()).toList(),
         'activeProviderId': activeProviderId,
         'backendModel': backendModel,
+        if (backendSelection != null)
+          'backendSelection': backendSelection!.toStorageJson(),
         'streamEnabled': streamEnabled,
         'composerPredictionsEnabled': composerPredictionsEnabled,
         'resetOnLogout': resetOnLogout,
@@ -590,16 +606,17 @@ class AISettings {
   /// 保证 provider 监听方的 identity 比较能感知变化。
   AISettings clone() => AISettings.fromJson(toJson());
 
-  /// 当前激活的服务商。找不到时回退首个启用 / 首个 / 兜底空壳。
+  /// 显式失效引用不能落到另一家；真正未设置时仅兼容唯一启用项。
   AiProvider get activeProvider {
     for (final p in providers) {
       if (p.id == activeProviderId) return p;
     }
-    for (final p in providers) {
-      if (p.enabled) return p;
+    if (activeProviderId.isEmpty) {
+      final enabled = enabledProviders;
+      if (enabled.length == 1) return enabled.single;
     }
-    if (providers.isNotEmpty) return providers.first;
-    return AiProvider(id: 'none', type: 'openai', name: '未配置');
+    return AiProvider(
+        id: 'none', type: 'openai', name: '原配置不可用', enabled: false);
   }
 
   /// 启用中的服务商（UI「可切换」清单）。
@@ -634,9 +651,33 @@ class AISettings {
     p.selectedModelId = m;
   }
 
+  /// 继承层只保留原声明，不能通过给另一家添模型来伪造可用覆盖。
+  void setLocalModelOverride(String model) {
+    if (model.isEmpty) return;
+    for (final p in providers) {
+      if (p.id == activeProviderId) {
+        p.selectedModelId = model;
+        return;
+      }
+    }
+  }
+
+  bool get localSelectionValid {
+    final p = activeProvider;
+    final model = p.effectiveModelId;
+    return p.enabled &&
+        model.trim().isNotEmpty &&
+        p.models.any((m) => m.id == model);
+  }
+
   /// 当前实际要发给上游的模型名。
-  String get effectiveModel =>
-      mode == AIMode.backend ? backendModel : activeProvider.effectiveModelId;
+  String get effectiveModel => mode == AIMode.backend
+      ? backendSelection == null
+          ? backendModel
+          : backendSelection!.isPair
+              ? backendSelection!.modelId!
+              : ''
+      : activeProvider.effectiveModelId;
 
   /// 当前所选联网搜索服务商的 API Key。
   String get activeSearchApiKey {
@@ -667,17 +708,13 @@ class AISettings {
     if (mode == AIMode.local) {
       return activeProvider.name;
     }
-    // 后端模式：按模型名前缀判断。
-    final m = backendModel.toLowerCase();
-    if (m.startsWith('gpt-') ||
-        m.startsWith('o1-') ||
-        m.startsWith('chatgpt-')) {
-      return 'ChatGPT';
+    if (backendSelection != null) {
+      return backendSelection!.isPair
+          ? '后端 ${backendSelection!.providerCode} · ${backendSelection!.modelId}'
+          : '后端配置不可用';
     }
-    if (m.startsWith('deepseek-')) {
-      return 'DeepSeek';
-    }
-    return 'AI';
+    // 未解析legacy只展示原引用，不能据此推导服务商。
+    return '后端 · $backendModel';
   }
 
   static AIMode _parseMode(String? s) {

@@ -50,6 +50,10 @@ final class ChatRequestOptions {
   final DeepSeekReasoningEffort? deepSeekReasoningEffort;
   final Future<void>? abortTrigger;
   final Duration connectTimeout;
+
+  /// 后端非流式单次网络响应期限；null保留chatWithUsage的15秒默认。
+  /// chat显式期限沿此选项传递，仍经过原scope与dispatch检查。
+  final Duration? nonStreamingTimeout;
   final int? minOutputTokens;
   final bool suppressReasoningControl;
   final int? maxOutputTokensOverride;
@@ -77,6 +81,7 @@ final class ChatRequestOptions {
     this.deepSeekReasoningEffort,
     this.abortTrigger,
     this.connectTimeout = const Duration(seconds: 20),
+    this.nonStreamingTimeout,
     this.minOutputTokens,
     this.suppressReasoningControl = false,
     this.maxOutputTokensOverride,
@@ -94,6 +99,7 @@ final class ChatRequestOptions {
         );
 
   ChatRequestOptions copyWith({
+    int? maxAutoRetries,
     Future<void>? abortTrigger,
     ChatSendProgressCallback? onProgress,
     ChatAttemptMessagesResolver? messagesForAttempt,
@@ -105,11 +111,12 @@ final class ChatRequestOptions {
           deepSeekReasoningEffort: deepSeekReasoningEffort,
           abortTrigger: abortTrigger ?? this.abortTrigger,
           connectTimeout: connectTimeout,
+          nonStreamingTimeout: nonStreamingTimeout,
           minOutputTokens: minOutputTokens,
           suppressReasoningControl: suppressReasoningControl,
           maxOutputTokensOverride: maxOutputTokensOverride,
           onProgress: onProgress ?? this.onProgress,
-          maxAutoRetries: maxAutoRetries,
+          maxAutoRetries: maxAutoRetries ?? this.maxAutoRetries,
           retryBaseDelay: retryBaseDelay,
           maxRetryDelay: maxRetryDelay,
           onRetry: onRetry,
@@ -166,6 +173,9 @@ final class ChatTransportException implements Exception {
   final ChatFailureKind failureKind;
   final ChatUnsentReason? unsentReason;
 
+  /// 本地直连失败只能由可见原作用域中的用户确认新增尝试。
+  final bool requiresUserConfirmation;
+
   const ChatTransportException({
     this.statusCode,
     this.retryAfter,
@@ -175,6 +185,7 @@ final class ChatTransportException implements Exception {
     this.failureStage = ChatFailureStage.unknown,
     this.failureKind = ChatFailureKind.unknown,
     this.unsentReason,
+    this.requiresUserConfirmation = false,
   });
 
   @override

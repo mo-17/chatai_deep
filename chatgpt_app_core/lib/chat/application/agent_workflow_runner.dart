@@ -29,6 +29,9 @@ class _ReviewRejected implements Exception {}
 /// 首期基础入口为纯文本、零自动重试；工具断点/权限接口供后续页面接线复用。
 class AgentWorkflowRunner extends ChangeNotifier {
   final AgentWorkflowDao dao;
+  final AgentWorkflowDao? controlDao;
+  final List<WorkflowStep>? admissionSteps;
+  final void Function()? executionGuard;
   final AgentWorkflowScope scope;
   final WorkflowServiceResolver serviceForProfile;
   final Future<bool> Function(WorkflowModelProfile) profileAvailable;
@@ -62,19 +65,30 @@ class AgentWorkflowRunner extends ChangeNotifier {
       this.backgroundEnabled = true,
       this.workspaceTools,
       this.priceEstimate,
+      this.controlDao,
+      this.admissionSteps,
+      this.executionGuard,
       AgentExecutionChannel? channel})
       : channel = channel ?? AgentExecutionChannel.instance;
 
   bool get hasBackgroundLease => _runId != null && background.isActive(_runId!);
-  bool get canDispatch =>
-      !_stopped &&
-      scope.isCurrent &&
-      channel.accountAvailable(scope.accountHash) &&
-      workflow.state == WorkflowState.running &&
-      (foreground() || hasBackgroundLease);
+  bool get canDispatch {
+    try {
+      executionGuard?.call();
+    } catch (_) {
+      return false;
+    }
+    return !_stopped &&
+        scope.isCurrent &&
+        channel.accountAvailable(scope.accountHash) &&
+        workflow.state == WorkflowState.running &&
+        (foreground() || hasBackgroundLease);
+  }
+
   WorkflowFence get _fence => WorkflowFence.of(workflow);
   void _guard() {
     scope.verify();
+    executionGuard?.call();
     if (!canDispatch) throw const WorkflowStale('已停止或后台许可失效');
   }
 
@@ -86,8 +100,18 @@ class AgentWorkflowRunner extends ChangeNotifier {
 
   Future<void> _refresh() async {
     if (!scope.identityCurrent) return;
+    try {
+      executionGuard?.call();
+    } catch (_) {
+      return;
+    }
     final loaded = await dao.steps(workflow.id);
     if (!scope.identityCurrent) return;
+    try {
+      executionGuard?.call();
+    } catch (_) {
+      return;
+    }
     nodes = List.unmodifiable(loaded);
     notifyListeners();
     // 完成计数来自已保存节点；职责阶段为固定白名单，不把任务/模型正文写通知。
@@ -151,8 +175,8 @@ class AgentWorkflowRunner extends ChangeNotifier {
                       live.revision == workflow.revision) &&
               live.state != WorkflowState.complete &&
               live.state != WorkflowState.cancelled) {
-            workflow =
-                await dao.stop(control, live.id, live.revision, reason: reason);
+            workflow = await (controlDao ?? dao)
+                .stop(control, live.id, live.revision, reason: reason);
           }
         });
       } on WorkflowStale {
@@ -165,11 +189,13 @@ class AgentWorkflowRunner extends ChangeNotifier {
   Future<void> _execute() async {
     try {
       scope.verify();
+      executionGuard?.call();
       if (_stopped || !foreground()) {
         await pause('排队期间应用进入后台，请回前台明确继续');
         return;
       }
-      workflow = await dao.claim(scope, workflow.id, workflow.revision);
+      workflow = await dao.claim(scope, workflow.id, workflow.revision,
+          expectedSteps: admissionSteps);
       _claimedLease = workflow.leaseId;
       _guard();
       if (backgroundEnabled) {
@@ -308,7 +334,11 @@ class AgentWorkflowRunner extends ChangeNotifier {
             await pause('任务来源或运行状态已变化，迟到结果未保存');
           }
         } else if (workflow.state == WorkflowState.running &&
-            (error is WorkflowConfigurationMissing || _configurationMissing)) {
+            (error is WorkflowConfigurationMissing ||
+                _configurationMissing ||
+                error is ChatTransportException &&
+                    error.failureKind ==
+                        ChatFailureKind.invalidConfiguration)) {
           workflow = await dao.stop(scope, workflow.id, workflow.revision,
               state: WorkflowState.needsConfiguration,
               reason: '原模型配置不可用，请重新配置；未自动替换模型');
@@ -433,7 +463,8 @@ class AgentWorkflowRunner extends ChangeNotifier {
             final reservation = await dao.reserveDispatch(
                 scope, _fence, node.id,
                 inputHash: workflowHash(jsonEncode(messages)),
-                estimatedInput: ChatContextPlanner.estimateMessages(messages));
+                estimatedInput: ChatContextPlanner.estimateMessages(messages),
+                expectedProfile: node.profile);
             workflow = reservation.workflow;
             if (!reservation.allowed) throw _BudgetStopped();
             _attemptId = reservation.attemptId;

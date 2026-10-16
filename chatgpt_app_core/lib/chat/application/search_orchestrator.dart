@@ -22,15 +22,24 @@ class SearchIntent {
   /// - 允许 ```json 围栏 / JSON 前后混杂说明文字（取首个 `{` 到末个 `}`）；
   /// - needSearch=true 但 queries 为空时回退用原问题；
   /// - 任何解析失败都 fallback 为直接搜原问题。
-  factory SearchIntent.parse(String raw, {required String fallbackQuery}) {
+  factory SearchIntent.parse(String raw,
+      {required String fallbackQuery, bool strict = false}) {
     try {
       final start = raw.indexOf('{');
       final end = raw.lastIndexOf('}');
       if (start < 0 || end <= start) {
+        if (strict) throw const FormatException('意图响应格式无效');
         return SearchIntent.fallback(fallbackQuery);
       }
       final json =
           jsonDecode(raw.substring(start, end + 1)) as Map<String, dynamic>;
+      if (strict &&
+          (json['needSearch'] is! bool ||
+              json['needSearch'] == true &&
+                  (json['queries'] is! List ||
+                      (json['queries'] as List).any((q) => q is! String)))) {
+        throw const FormatException('意图响应格式无效');
+      }
       final need = json['needSearch'] as bool? ?? false;
       if (!need) {
         return const SearchIntent(needSearch: false);
@@ -45,6 +54,13 @@ class SearchIntent {
         queries: queries.isEmpty ? [fallbackQuery] : queries,
       );
     } catch (_) {
+      if (strict) {
+        throw const ChatTransportException(
+            safeCode: 'protocol_error',
+            safeMessage: '意图响应格式无效，请明确选择后再请求',
+            requiresUserConfirmation: true,
+            failureKind: ChatFailureKind.unknown);
+      }
       return SearchIntent.fallback(fallbackQuery);
     }
   }
@@ -108,11 +124,14 @@ class SearchOrchestrator {
                   options: options.copyWith(clearMessagesForAttempt: true)))
               .content;
       await _check(options);
-      return SearchIntent.parse(raw ?? '', fallbackQuery: prompt);
+      return SearchIntent.parse(raw ?? '',
+          fallbackQuery: prompt,
+          strict: chatService is UserConfirmedRetryChatService);
     } catch (e) {
       await _check(options);
       if (e is ChatTransportException &&
-          (e.failureKind == ChatFailureKind.cancelled ||
+          (e.requiresUserConfirmation ||
+              e.failureKind == ChatFailureKind.cancelled ||
               e.failureKind == ChatFailureKind.invalidConfiguration)) {
         rethrow;
       }

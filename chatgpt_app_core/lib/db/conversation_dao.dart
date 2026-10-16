@@ -1,3 +1,5 @@
+import 'dart:convert';
+import 'package:chatgpt_app_core/chat/domain/backend_selection.dart';
 import 'package:chatgpt_app_core/chat/application/conversation_execution_registry.dart';
 import 'package:chatgpt_app_core/db/hi_db_manager.dart';
 import 'package:chatgpt_app_core/db/assistant_dao.dart';
@@ -127,7 +129,7 @@ class ConversationListDao implements IConversationList, ITable {
         ', messageCount	integer, lastMessage	text, stickTime	integer'
         ', assistantId	integer, projectId integer'
         ', avatarType text, avatarValue text'
-        ', modelProviderId text, modelId text, webSearchEnabled integer'
+        ', modelProviderId text, modelId text, backendSelection text, webSearchEnabled integer'
         ', deepSeekReasoningEffort text'
         ', toolIds text, speechInputEnabled integer, readAloudEnabled integer'
         ', voiceLocale text, voiceRate real, voiceStyle text'
@@ -146,6 +148,7 @@ class ConversationListDao implements IConversationList, ITable {
         'avatarValue': 'text',
         'modelProviderId': 'text',
         'modelId': 'text',
+        'backendSelection': 'text',
         'webSearchEnabled': 'integer',
         'deepSeekReasoningEffort': 'text',
         'toolIds': 'text',
@@ -238,8 +241,27 @@ class ConversationListDao implements IConversationList, ITable {
 
   @override
   Future<int?> saveConversation(ConversationModel model) async {
-    final id = await storage.db.insert(tableName, model.toJson(),
-        conflictAlgorithm: ConflictAlgorithm.replace);
+    final data = model.toJson();
+    final id = await storage.db.transaction((txn) async {
+      // REPLACE 同时可能命中 id/cid；先核对身份，不能合并另一会话的选择。
+      final existing = await txn.query(tableName,
+          columns: ['id', 'cid', 'backendSelection'],
+          where: model.id == null ? 'cid = ?' : 'cid = ? or id = ?',
+          whereArgs: model.id == null ? [model.cid] : [model.cid, model.id],
+          limit: 2);
+      if (existing.any((row) => row['cid'] != model.cid)) {
+        throw StateError('会话标识不一致，请刷新后重试');
+      }
+      // 未声明的 NULL 从实际 cid 冲突行保留，包括旧 id 已不存在的对象。
+      if (data['backendSelection'] == null) {
+        if (existing.isNotEmpty &&
+            existing.single['backendSelection'] != null) {
+          data['backendSelection'] = existing.single['backendSelection'];
+        }
+      }
+      return txn.insert(tableName, data,
+          conflictAlgorithm: ConflictAlgorithm.replace);
+    });
     model.id = id;
     return id;
   }
@@ -272,6 +294,7 @@ class ConversationListDao implements IConversationList, ITable {
             !mapEquals(existing.single, expectedConversation)) {
           throw const AssistantMutationStale();
         }
+        BackendSelection.preserveLegacyUpdate(data);
         if (await txn.update(tableName, data,
                 where: 'id = ?', whereArgs: [expectedConversation['id']]) !=
             1) {
@@ -336,6 +359,55 @@ class ConversationListDao implements IConversationList, ITable {
         tableName, {'avatarType': avatarType, 'avatarValue': avatarValue},
         where: model.id == null ? 'cid = ?' : 'id = ?',
         whereArgs: [model.id ?? model.cid]);
+  }
+
+  /// 选择器前读取原行，不把 stale id/cid 或旧选择补签为新快照。
+  Future<ConversationBackendSelectionSnapshot> backendSelectionSnapshot(
+      ConversationModel model,
+      {required void Function() validate}) async {
+    validate();
+    final rows = await storage.db.query(tableName,
+        where: model.id == null ? 'cid=?' : 'id=? and cid=?',
+        whereArgs: model.id == null ? [model.cid] : [model.id, model.cid]);
+    validate();
+    if (model.id == null) {
+      if (rows.isNotEmpty) throw const ConversationBackendSelectionStale();
+      return ConversationBackendSelectionSnapshot(model, null);
+    }
+    if (rows.length != 1) throw const ConversationBackendSelectionStale();
+    final snapshot = ConversationBackendSelectionSnapshot(model, rows.single);
+    if (!snapshot.modelUnchanged(model)) {
+      throw const ConversationBackendSelectionStale();
+    }
+    return snapshot;
+  }
+
+  /// 只更新backendSelection；modal/网络不持事务，末次await后复核原身份。
+  Future<void> saveBackendSelectionChecked(ConversationModel model,
+      BackendSelection selection, ConversationBackendSelectionSnapshot expected,
+      {required void Function() validate}) async {
+    if (!selection.isValid) throw const FormatException('后端选择格式无效');
+    await storage.db.transaction((txn) async {
+      validate();
+      if (!expected.modelUnchanged(model)) {
+        throw const ConversationBackendSelectionStale();
+      }
+      final rows =
+          await txn.query(tableName, where: 'cid=?', whereArgs: [expected.cid]);
+      validate();
+      if (expected.row == null) {
+        if (rows.isNotEmpty) throw const ConversationBackendSelectionStale();
+        return;
+      }
+      if (rows.length != 1 || !expected.matchesRow(rows.single)) {
+        throw const ConversationBackendSelectionStale();
+      }
+      final changed = await txn.update(
+          tableName, {'backendSelection': selection.toSqlValue()},
+          where: 'id=? and cid=?', whereArgs: [expected.id, expected.cid]);
+      validate();
+      if (changed != 1) throw const ConversationBackendSelectionStale();
+    });
   }
 
   @override
@@ -679,4 +751,40 @@ class ConversationListDao implements IConversationList, ITable {
       .where((term) => term.isNotEmpty)
       .map((term) => '$term*')
       .join(' ');
+}
+
+/// 原行CAS也保留未知原文；不把本地providerId解释成backend code。
+class ConversationBackendSelectionSnapshot {
+  final int? id;
+  final int cid;
+  final Map<String, Object?>? row;
+  final String _modelFields;
+  ConversationBackendSelectionSnapshot(
+      ConversationModel model, Map<String, Object?>? source)
+      : id = model.id,
+        cid = model.cid,
+        row = source == null ? null : Map.unmodifiable(source),
+        _modelFields = _selectionFields(source ?? model.toJson());
+  bool modelUnchanged(ConversationModel model) =>
+      model.id == id &&
+      model.cid == cid &&
+      _selectionFields(model.toJson()) == _modelFields;
+  bool matchesRow(Map<String, Object?> current) =>
+      row != null && _rowText(current) == _rowText(row!);
+  static String _selectionFields(Map<String, dynamic> row) => jsonEncode([
+        row['assistantId'],
+        row['modelProviderId'],
+        row['modelId'],
+        row['backendSelection']
+      ]);
+  static String _rowText(Map<String, Object?> row) {
+    final keys = row.keys.toList()..sort();
+    return jsonEncode({for (final key in keys) key: row[key]});
+  }
+}
+
+class ConversationBackendSelectionStale implements Exception {
+  const ConversationBackendSelectionStale();
+  @override
+  String toString() => '原会话或模型选择已变化，请重新打开选择器';
 }

@@ -1,19 +1,46 @@
 import 'package:chatgpt_app_core/ai_readiness/ai_ready_state.dart';
 import 'package:chatgpt_app_core/model/ai_settings.dart';
+import 'package:chatgpt_app_core/util/model_catalog.dart';
 
-/// 仅根据当前设置和登录模式推导 AI 可用状态，不读写任何持久化数据。
+/// 同步核当前设置、原账号/来源和成功目录快照；不读写持久化数据。
 AIReadyState resolveAIReadiness({
   required AISettings settings,
   required bool isGuest,
+  String? accountHash,
+  String? origin,
 }) {
   if (settings.mode == AIMode.backend) {
-    final modelId = settings.backendModel.trim();
+    final selection = settings.backendSelection;
+    final modelId = selection == null
+        ? settings.backendModel.trim()
+        : selection.modelId ?? '';
     if (isGuest) {
       return AIReadyState(
         status: AIReadyStatus.backendRequiresLogin,
         reasonCode: 'backend_login_required',
         modelId: modelId.isEmpty ? null : modelId,
       );
+    }
+    if (selection != null) {
+      final reason = !selection.isPair
+          ? 'invalid_backend_selection'
+          : accountHash == null ||
+                  origin == null ||
+                  !selection.matchesScope(
+                      accountHash: accountHash, origin: origin)
+              ? 'backend_scope_changed'
+              : !ModelCatalog.backendProfileAvailable(modelId,
+                      account: accountHash,
+                      providerCode: selection.providerCode)
+                  ? 'model_unavailable'
+                  : null;
+      if (reason != null) {
+        return AIReadyState(
+            status: AIReadyStatus.needsSetup,
+            reasonCode: reason,
+            providerId: selection.providerCode,
+            modelId: modelId);
+      }
     }
     if (modelId.isEmpty) {
       return const AIReadyState(
@@ -26,6 +53,7 @@ AIReadyState resolveAIReadiness({
     return AIReadyState(
       status: AIReadyStatus.configuredUnverified,
       reasonCode: 'model_unverified',
+      providerId: selection?.providerCode,
       modelId: modelId,
     );
   }
@@ -66,6 +94,14 @@ AIReadyState resolveAIReadiness({
       reasonCode: 'missing_model',
       providerId: providerId,
     );
+  }
+
+  if (!settings.localSelectionValid) {
+    return AIReadyState(
+        status: AIReadyStatus.needsSetup,
+        reasonCode: 'missing_model',
+        providerId: providerId,
+        modelId: modelId);
   }
 
   // 只认当前实际生效模型的测试结果。其它 provider 或同 provider 中未选模型

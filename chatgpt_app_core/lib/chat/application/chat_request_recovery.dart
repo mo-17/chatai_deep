@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'package:chatgpt_app_core/chat/domain/backend_selection_error.dart';
 
 import 'package:chatgpt_app_core/chat/domain/chat_request_options.dart';
 import 'package:chatgpt_app_core/chat/domain/chat_send_progress.dart';
@@ -87,7 +88,9 @@ int _limit(ChatRequestOptions options) => (options.maxAutoRetries ??
 bool _mayRetry(Object error, int attempts, ChatRequestOptions options) {
   if (attempts >= _limit(options) ||
       error is! ChatTransportException ||
-      error.responseStarted) {
+      error.responseStarted ||
+      error.requiresUserConfirmation ||
+      isBackendSelectionError(error.safeCode)) {
     return false;
   }
   if (const {

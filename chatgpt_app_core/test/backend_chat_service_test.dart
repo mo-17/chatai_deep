@@ -51,6 +51,20 @@ void main() {
     BackendConfig.host = '${server.address.host}:${server.port}';
     BackendConfig.useHttps = false;
     server.listen((request) async {
+      if (request.method == 'GET' &&
+          request.uri.path == '/uapi/ai/model-selection') {
+        final model = request.uri.queryParameters['modelId']!;
+        request.response.headers.contentType = ContentType.json;
+        request.response.write(jsonEncode({
+          'code': 0,
+          'data': {
+            'providerCode': model.startsWith('gpt-') ? 'openai' : 'deepseek',
+            'modelId': model
+          }
+        }));
+        await request.response.close();
+        return;
+      }
       final body = jsonDecode(await utf8.decoder.bind(request).join())
           as Map<String, dynamic>;
       bodies.add(body);
@@ -992,6 +1006,19 @@ final class _DelayedSseServer {
     final lateWriteAttempted = Completer<void>();
     final responses = <HttpResponse>[];
     server.listen((request) async {
+      if (request.method == 'GET' &&
+          request.uri.path == '/uapi/ai/model-selection') {
+        request.response.headers.contentType = ContentType.json;
+        request.response.write(jsonEncode({
+          'code': 0,
+          'data': {
+            'providerCode': 'deepseek',
+            'modelId': request.uri.queryParameters['modelId']
+          }
+        }));
+        await request.response.close();
+        return;
+      }
       await request.drain<void>();
       final response = request.response;
       responses.add(response);

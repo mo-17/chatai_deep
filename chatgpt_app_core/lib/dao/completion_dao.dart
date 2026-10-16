@@ -10,6 +10,7 @@ import 'package:chatgpt_app_core/chat/application/tool_loop_runner.dart';
 import 'package:chatgpt_app_core/chat/application/tool_registry.dart';
 import 'package:chatgpt_app_core/chat/application/web_search_provider.dart';
 import 'package:chatgpt_app_core/chat/domain/chat_attachments.dart';
+import 'package:chatgpt_app_core/chat/domain/backend_selection.dart';
 import 'package:chatgpt_app_core/chat/domain/chat_request_options.dart';
 import 'package:chatgpt_app_core/chat/domain/chat_send_progress.dart';
 import 'package:chatgpt_app_core/chat/domain/message_block.dart';
@@ -98,7 +99,7 @@ class CompletionDao {
         contextPolicy = contextPolicy ??
             ChatContextPolicy(
                 inputBudgetTokens: settings.effectiveContextInputBudgetTokens),
-        _settings = settings,
+        _settings = settings.clone(),
         _systemPrompt = systemPrompt?.trim() ?? '',
         // 防御性拷贝成可增删的 growable 列表：调用方常把上一个 dao 的
         // `currentMessages`（List.unmodifiable）传进来重建，若直接持有该引用，
@@ -138,6 +139,23 @@ class CompletionDao {
 
   ///当前生效模型的能力探测结果（阶段三）。UI 据此开关图片/PDF/工具入口。
   ModelCapabilities get capabilities => chatService.capabilities;
+
+  void bindPreparedBackendSelection(BackendSelection pair) {
+    final service = chatService;
+    if (_settings.mode != AIMode.backend ||
+        service is! BackendSelectionPreparingChatService ||
+        pair.modelId != _settings.effectiveModel ||
+        (_settings.backendSelection != null &&
+            _settings.backendSelection!.pairKey != pair.pairKey)) {
+      throw const ChatTransportException(
+          safeCode: 'invalid_backend_selection',
+          safeMessage: '任务模型选择无效，请明确重新选择',
+          failureKind: ChatFailureKind.invalidConfiguration);
+    }
+    (service as BackendSelectionPreparingChatService)
+        .verifyPreparedBackendSelection(pair);
+    _settings.backendSelection = pair;
+  }
 
   /// 预览本轮实际发送的历史副本，不写库，也不会改动 currentMessages。
   ChatContextPlan previewContext({
@@ -705,7 +723,8 @@ class CompletionDao {
       await _ensureNotAborted(options?.abortTrigger);
       if (options?.dispatchIsCurrent?.call() == false ||
           e is ChatTransportException &&
-              (e.failureKind == ChatFailureKind.cancelled ||
+              (e.requiresUserConfirmation ||
+                  e.failureKind == ChatFailureKind.cancelled ||
                   e.failureKind == ChatFailureKind.invalidConfiguration)) {
         rethrow;
       }

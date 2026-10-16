@@ -1,3 +1,4 @@
+import 'package:chatgpt_app_core/chat/domain/backend_selection.dart';
 import 'dart:convert';
 import 'dart:math';
 
@@ -28,6 +29,7 @@ class StoryRoomModel {
   bool? webSearchEnabled;
   String? modelProviderId;
   String? modelId;
+  BackendSelection? backendSelection;
   double? temperature;
   double? topP;
   int? maxOutputTokens;
@@ -59,6 +61,7 @@ class StoryRoomModel {
     this.webSearchEnabled,
     this.modelProviderId,
     this.modelId,
+    this.backendSelection,
     this.temperature,
     this.topP,
     this.maxOutputTokens,
@@ -99,6 +102,8 @@ class StoryRoomModel {
         webSearchEnabled: _nullableBool(json['webSearchEnabled']),
         modelProviderId: json['modelProviderId'] as String?,
         modelId: json['modelId'] as String?,
+        backendSelection:
+            BackendSelection.fromStorage(json['backendSelection']),
         temperature: _safeTemperatureValue(json['temperature']),
         topP: _safeTopPValue(json['topP']),
         maxOutputTokens: (json['maxOutputTokens'] as num?)?.toInt(),
@@ -131,6 +136,7 @@ class StoryRoomModel {
             webSearchEnabled == null ? null : (webSearchEnabled! ? 1 : 0),
         'modelProviderId': modelProviderId,
         'modelId': modelId,
+        'backendSelection': backendSelection?.toSqlValue(),
         'temperature': temperature,
         'topP': topP,
         'maxOutputTokens': maxOutputTokens,
@@ -307,6 +313,7 @@ class StoryParticipantModel {
   String? voiceStyle;
   String? modelProviderId;
   String? modelId;
+  BackendSelection? backendSelection;
   double? temperature;
   double? topP;
   int? maxOutputTokens;
@@ -329,6 +336,7 @@ class StoryParticipantModel {
     this.voiceStyle,
     this.modelProviderId,
     this.modelId,
+    this.backendSelection,
     this.temperature,
     this.topP,
     this.maxOutputTokens,
@@ -357,6 +365,8 @@ class StoryParticipantModel {
         voiceStyle: json['voiceStyle'] as String?,
         modelProviderId: json['modelProviderId'] as String?,
         modelId: json['modelId'] as String?,
+        backendSelection:
+            BackendSelection.fromStorage(json['backendSelection']),
         temperature: _safeTemperatureValue(json['temperature']),
         topP: _safeTopPValue(json['topP']),
         maxOutputTokens: (json['maxOutputTokens'] as num?)?.toInt(),
@@ -380,6 +390,7 @@ class StoryParticipantModel {
         'voiceStyle': voiceStyle,
         'modelProviderId': modelProviderId,
         'modelId': modelId,
+        'backendSelection': backendSelection?.toSqlValue(),
         'temperature': temperature,
         'topP': topP,
         'maxOutputTokens': maxOutputTokens,

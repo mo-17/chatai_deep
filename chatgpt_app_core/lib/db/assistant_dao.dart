@@ -1,3 +1,4 @@
+import 'package:chatgpt_app_core/chat/domain/backend_selection.dart';
 import 'dart:convert';
 
 import 'package:crypto/crypto.dart';
@@ -38,7 +39,7 @@ class AssistantDao implements IAssistant, ITable {
         ', prompt text, description text'
         ', openingMessage text, exampleDialogs text, memoryBook text, worldBookJson text, roleCardAssets text'
         ', defaultVoiceStyle text'
-        ', providerId text, model text'
+        ', providerId text, model text, backendSelection text'
         ', useTools integer, tools text, createdAt integer, updatedAt integer);');
     // 兼容旧表：仅补齐真实缺失的助手字段。
     await SchemaGuard.ensureColumns(
@@ -47,6 +48,7 @@ class AssistantDao implements IAssistant, ITable {
       columns: const {
         'tools': 'text',
         'providerId': 'text',
+        'backendSelection': 'text',
         'description': 'text',
         'openingMessage': 'text',
         'exampleDialogs': 'text',
@@ -133,6 +135,7 @@ class AssistantDao implements IAssistant, ITable {
         candidate.id = await txn.insert(tableName, data);
       } else {
         final data = candidate.toJson()..remove('id');
+        BackendSelection.preserveLegacyUpdate(data);
         final changed = await txn.update(tableName, data,
             where: 'id = ? and updatedAt is ?',
             whereArgs: [expected.id, current?['updatedAt']]);
@@ -141,8 +144,8 @@ class AssistantDao implements IAssistant, ITable {
       if (validateBeforeCommit != null) await validateBeforeCommit(txn);
       final rows = await txn.query(tableName,
           where: 'id = ?', whereArgs: [candidate.id], limit: 1);
-      return AssistantMutationResult(
-          candidate, AssistantRowSnapshot(rows.single));
+      return AssistantMutationResult(AssistantModel.fromJson(rows.single),
+          AssistantRowSnapshot(rows.single));
     });
   }
 
@@ -180,8 +183,10 @@ class AssistantDao implements IAssistant, ITable {
       AILogger.log('assistant created: ${model.name}#$id');
       return id;
     }
-    await storage.db.update(tableName, model.toJson(),
-        where: 'id = ?', whereArgs: [model.id]);
+    final data = model.toJson();
+    BackendSelection.preserveLegacyUpdate(data);
+    await storage.db
+        .update(tableName, data, where: 'id = ?', whereArgs: [model.id]);
     AILogger.log('assistant updated: ${model.name}#${model.id}');
     return model.id;
   }
