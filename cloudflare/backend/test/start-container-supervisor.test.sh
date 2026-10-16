@@ -20,7 +20,7 @@ trap cleanup EXIT
 
 cat >"$fake_bin/tigrisfs" <<'EOF'
 #!/bin/sh
-trap 'echo tigris-term >>"$FAKE_LOG"; exit 0' TERM INT
+trap 'trap "" TERM INT; echo tigris-term >>"$FAKE_LOG"; exit 0' TERM INT
 echo "tigris-start $*" >>"$FAKE_LOG"
 remaining="${FAKE_TIGRIS_LIFETIME:-2}"
 while [ "$remaining" -gt 0 ]; do
@@ -43,7 +43,8 @@ case "${1:-}" in
     exit 0
     ;;
   *main.js)
-    trap 'echo backend-term >>"$FAKE_LOG"; exit 0' TERM INT
+    # supervisor 的信号转发和最终清理都可发送 TERM，退出确认只记一次。
+    trap 'trap "" TERM INT; echo backend-term >>"$FAKE_LOG"; exit 0' TERM INT
     echo backend-start >>"$FAKE_LOG"
     while true; do sleep 1; done
     ;;

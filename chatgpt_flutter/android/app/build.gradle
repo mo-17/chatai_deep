@@ -131,7 +131,7 @@ android {
 
     signingConfigs {
         if (chatgptDistribution == 'store') {
-            store {
+            create('store') {
                 storeFile file(storeKeystorePath)
                 storePassword storeKeystorePassword
                 keyAlias storeKeyAlias
@@ -143,7 +143,7 @@ android {
     buildTypes {
         release {
             if (chatgptDistribution == 'store') {
-                signingConfig signingConfigs.store
+                signingConfig signingConfigs.getByName('store')
             } else {
                 // 历史 direct 包使用 debug 证书；拿到并固定历史私钥前不能替换。
                 signingConfig signingConfigs.debug

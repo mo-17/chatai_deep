@@ -243,7 +243,8 @@ jobs:
             -keysize 2048 \
             -validity 1 \
             -dname "CN=CI, OU=CI, O=ChatAI Deep, L=CI, ST=CI, C=US"
-          flutter build apk --release --no-pub \
+          # 3.35 的 --no-pub 会跳过 release 插件注册表再生成，残留 integration_test。
+          flutter build apk --release \
             --dart-define=APP_DISTRIBUTION=store \
             --dart-define=BACKEND_HOST=api.example.com \
             --dart-define=BACKEND_HTTPS=true
