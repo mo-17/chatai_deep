@@ -194,6 +194,7 @@ jobs:
           # 原生入口和较慢磁盘上的等待先行验证，失败可立即给出可读日志。
           flutter test --no-pub --concurrency=1 --fail-fast \
             test/js_runtime_service_test.dart \
+            test/agent_task_lifecycle_test.dart \
             test/conversation_page_draft_integration_test.dart \
             test/conversation_reference_page_test.dart
           # 多个资源/备份测试会替换进程级 resolver，串行运行避免相互污染。

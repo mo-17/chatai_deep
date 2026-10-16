@@ -7,6 +7,7 @@ import 'package:chatgpt_app_core/chat/domain/backend_selection.dart';
 import 'package:login_sdk/dao/backend_host.dart';
 import 'package:chatgpt_app_core/chat/application/agent_task_session.dart';
 import 'package:chatgpt_app_core/chat/application/agent_task_executor.dart';
+import 'package:chatgpt_app_core/chat/application/conversation_draft_store.dart';
 import 'package:chatgpt_app_core/chat/application/read_aloud_service.dart';
 import 'package:chatgpt_app_core/dao/ai_settings_dao.dart';
 import 'package:chatgpt_app_core/db/conversation_dao.dart';
@@ -291,6 +292,57 @@ void main() {
       }
     }
 
+    Future<void> finishFuture(WidgetTester tester, Future<void> future) async {
+      var finished = false;
+      Object? failure;
+      future.then((_) {
+        finished = true;
+      }, onError: (Object error) {
+        failure = error;
+        finished = true;
+      });
+      for (var attempt = 0; attempt < 400 && !finished; attempt++) {
+        await tick(tester, count: 1);
+      }
+      expect(finished, isTrue, reason: '任务结算必须同时推进真实 I/O 和页面时钟');
+      if (failure != null) throw failure!;
+      await tester.pump();
+      await tester.pump();
+    }
+
+    Future<void> finishTask(WidgetTester tester, int cid,
+        {AgentTaskRun? previous}) async {
+      AgentTaskRun? run;
+      for (var attempt = 0; attempt < 400; attempt++) {
+        run = AgentTaskExecutor.instance.lookup(AgentTaskKey('guest', cid));
+        if (run != null && !identical(run, previous)) break;
+        await tick(tester, count: 1);
+      }
+      expect(run, isNotNull, reason: '显式恢复必须创建本次任务');
+      expect(run, isNot(same(previous)), reason: '不能把上次暂停任务视为恢复完成');
+      await finishFuture(tester, run!.finished);
+    }
+
+    void pageTest(String name, Future<void> Function(WidgetTester) body) {
+      testWidgets(name, (tester) async {
+        try {
+          await body(tester);
+        } finally {
+          // 失败时也在当前 FakeAsync 仍可推进时结算，不能留到 tearDown 再等。
+          await tester
+              .runAsync(() => tester.pumpWidget(const SizedBox.shrink()));
+          await finishFuture(
+              tester, AgentTaskExecutor.instance.cancelAll('测试结束'));
+          await finishFuture(
+              tester,
+              ConversationDraftStore(
+                  conversationId: '0',
+                  accountHash: 'guest',
+                  directoryResolver: () async => temporary).whenIdle());
+        }
+      });
+    }
+
     Future<void> open(WidgetTester tester, ConversationModel model,
         {bool resume = false, int target = 101}) async {
       // 初始化/自动恢复使用真实 SQLite、HTTP。让其异步链留在真实 I/O zone，
@@ -310,7 +362,16 @@ void main() {
               ),
             ),
           )));
-      await tick(tester, count: 25);
+      for (var attempt = 0; attempt < 400; attempt++) {
+        await tick(tester, count: 1);
+        final input =
+            tester.widget<MessageInputWidget>(find.byType(MessageInputWidget));
+        if (input.enable || input.isStreaming) break;
+      }
+      final input =
+          tester.widget<MessageInputWidget>(find.byType(MessageInputWidget));
+      expect(input.enable || input.isStreaming, isTrue,
+          reason: '等待初始化完成或显式恢复已开始');
       expect(tester.takeException(), isNull);
     }
 
@@ -358,7 +419,7 @@ void main() {
     }
 
     for (final leaveConversation in [false]) {
-      testWidgets(
+      pageTest(
           leaveConversation
               ? '真实 SSE 离开对话保存部分回复，普通重开不请求，显式恢复继续'
               : '真实 SSE 在后台暂停保存部分回复，普通重开不请求，显式恢复继续', (tester) async {
@@ -407,7 +468,7 @@ void main() {
             await tick(tester, count: 1);
           }
           expect(requests, hasLength(1));
-          for (var attempt = 0; attempt < 40; attempt++) {
+          for (var attempt = 0; attempt < 400; attempt++) {
             if (find
                 .textContaining('PARTIAL', findRichText: true)
                 .evaluate()
@@ -442,6 +503,11 @@ void main() {
                 .handleAppLifecycleStateChanged(AppLifecycleState.paused);
           }
           await tick(tester);
+          await finishFuture(
+              tester,
+              AgentTaskExecutor.instance
+                  .lookup(const AgentTaskKey('guest', 73))!
+                  .finished);
           snapshot = await tester.runAsync(
               () async => (await AgentTaskDao.create(storage)).read(73));
           expect(snapshot!['status'], 'paused');
@@ -469,7 +535,10 @@ void main() {
           expect(requests, hasLength(1), reason: '查看任务不能自动再次计费');
           await tester.pumpWidget(const SizedBox.shrink());
           await tick(tester);
+          final previous = AgentTaskExecutor.instance
+              .lookup(const AgentTaskKey('guest', 73));
           await open(tester, model, resume: true);
+          await finishTask(tester, 73, previous: previous);
           expect(requests, hasLength(2));
           snapshot = await tester.runAsync(
               () async => (await AgentTaskDao.create(storage)).read(73));
@@ -489,7 +558,7 @@ void main() {
       });
     }
 
-    testWidgets('后台移除待确认写入弹窗，回到前台不能误写成果', (tester) async {
+    pageTest('后台移除待确认写入弹窗，回到前台不能误写成果', (tester) async {
       await localNetwork(() async {
         final server = await tester
             .runAsync(() => HttpServer.bind(InternetAddress.loopbackIPv4, 0));
@@ -528,6 +597,11 @@ void main() {
         final model = await tester
             .runAsync(() => seedPausedTask(cid: 74, protocol: const []));
         await open(tester, model!, resume: true);
+        for (var attempt = 0;
+            attempt < 400 && find.byType(AlertDialog).evaluate().isEmpty;
+            attempt++) {
+          await tick(tester, count: 1);
+        }
         expect(find.byType(AlertDialog), findsOneWidget);
         tester.binding
             .handleAppLifecycleStateChanged(AppLifecycleState.inactive);
@@ -536,6 +610,11 @@ void main() {
         tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.hidden);
         tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.paused);
         await tick(tester);
+        await finishFuture(
+            tester,
+            AgentTaskExecutor.instance
+                .lookup(const AgentTaskKey('guest', 74))!
+                .finished);
         expect(find.byType(AlertDialog), findsNothing);
         tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.hidden);
         tester.binding
@@ -559,7 +638,7 @@ void main() {
       });
     });
 
-    testWidgets('普通重开和过期定位不执行；显式恢复可重放已完成回答且无需网络', (tester) async {
+    pageTest('普通重开和过期定位不执行；显式恢复可重放已完成回答且无需网络', (tester) async {
       final model = await tester.runAsync(() => seedPausedTask(
             cid: 71,
             protocol: [
@@ -588,6 +667,7 @@ void main() {
       await tick(tester);
 
       await open(tester, model, resume: true);
+      await finishTask(tester, model.cid);
       snapshot = await tester.runAsync(
           () async => (await AgentTaskDao.create(storage)).read(model.cid));
       expect(snapshot!['status'], 'complete');
@@ -603,7 +683,7 @@ void main() {
       await tick(tester);
     });
 
-    testWidgets('没有任务的旧对话，即使请求恢复也不新增消息或启动请求', (tester) async {
+    pageTest('没有任务的旧对话，即使请求恢复也不新增消息或启动请求', (tester) async {
       final model = ConversationModel(
           cid: 72, icon: '', title: '旧对话', speechInputEnabled: false);
       await tester.runAsync(() async {
