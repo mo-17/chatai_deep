@@ -38,7 +38,7 @@ void main() {
       test('${backend ? 'Backend' : 'Direct'} 独立三节点真实POST/工具验收与父预算$budget',
           () async {
         LoginDao.resetHooksForTest();
-        PersonalMemoryTestAccount('a').install();
+        _AuthenticatedAccount('a').install();
         sqfliteFfiInit();
         final storage = HiDBManager.test(await databaseFactoryFfi.openDatabase(
             inMemoryDatabasePath,
@@ -120,6 +120,18 @@ void main() {
             sizeBytes: 20);
         final posts = <Map<String, dynamic>>[];
         server.listen((request) async {
+          if (request.uri.path == '/uapi/ai/model-selection') {
+            request.response.headers.contentType = ContentType.json;
+            request.response.write(jsonEncode({
+              'code': 0,
+              'data': {
+                'providerCode': 'openai',
+                'modelId': request.uri.queryParameters['modelId']
+              }
+            }));
+            await request.response.close();
+            return;
+          }
           final body =
               (jsonDecode(await utf8.decoder.bind(request).join()) as Map)
                   .cast<String, dynamic>();
@@ -237,4 +249,11 @@ void main() {
     const path = String.fromEnvironment('CHATAI_WORKFLOW_HTTP_EVIDENCE');
     if (path.isNotEmpty) await File(path).writeAsString(jsonEncode(evidence));
   });
+}
+
+class _AuthenticatedAccount extends PersonalMemoryTestAccount {
+  _AuthenticatedAccount(super.account);
+
+  @override
+  String? readTokenSync() => 'synthetic-workflow-access-token';
 }

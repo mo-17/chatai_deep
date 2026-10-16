@@ -2,6 +2,7 @@ import 'dart:convert';
 import 'dart:io';
 
 import 'package:chatgpt_app_core/chat/domain/chat_request_options.dart';
+import 'package:chatgpt_app_core/chat/domain/backend_selection.dart';
 import 'package:chatgpt_app_core/chat/domain/stream_event.dart';
 import 'package:chatgpt_app_core/dao/chat/backend_chat_service.dart';
 import 'package:chatgpt_app_core/dao/chat/chat_service.dart';
@@ -57,13 +58,18 @@ void main() {
       apiKey: 'test-key',
       baseUrl: 'http://${server.address.host}:${server.port}/chat',
       model: 'test-model'));
-  BackendChatService backend() =>
-      BackendChatService(AISettings.defaults()..mode = AIMode.backend);
+  BackendChatService backend() => BackendChatService(AISettings.defaults()
+    ..mode = AIMode.backend
+    ..backendSelection = BackendSelection.pair(
+        providerCode: 'deepseek',
+        modelId: 'deepseek-chat',
+        accountHash: 'guest',
+        origin: BackendConfig.buildUri('/uapi/chat/completions').origin));
 
   for (final viaBackend in [false, true]) {
     for (final streaming in [false, true]) {
       test(
-          '${viaBackend ? '代理' : '直连'}${streaming ? '流式' : '非流式'}无响应503后只重试当前请求，保留结果与usage',
+          '${viaBackend ? '代理' : '直连'}${streaming ? '流式' : '非流式'}503重试策略正确且保留结果与usage',
           () async {
         respond = (request) async {
           if (requests == 1) {
@@ -82,8 +88,23 @@ void main() {
           }
           await request.response.close();
         };
-        final service =
+        var service =
             viaBackend ? backend() as ChatService : direct() as ChatService;
+        if (!viaBackend) {
+          final failed = streaming
+              ? service
+                  .chatStreamEventsWithOptions(
+                      prompt: 'test', history: const [], options: fast)
+                  .drain<void>()
+              : service.chatWithUsageWithOptions(
+                  prompt: 'test', history: const [], options: fast);
+          await expectLater(
+              failed,
+              throwsA(isA<ChatTransportException>()
+                  .having((e) => e.statusCode, 'status', 503)));
+          expect(requests, 1, reason: '直连失败不自动重放；后续调用模拟显式新请求');
+          service = direct();
+        }
         if (streaming) {
           final events = await service
               .chatStreamEventsWithOptions(

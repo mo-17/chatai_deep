@@ -1,0 +1,17 @@
+{
+  "engine": "sherpa-onnx-matcha",
+  "name": "matcha-icefall-zh-baker",
+  "locale": "zh-CN",
+  "speaker": "female",
+  "acousticModel": "matcha-icefall-zh-baker/model-steps-3.onnx",
+  "vocoder": "vocos-22khz-univ.onnx",
+  "tokens": "matcha-icefall-zh-baker/tokens.txt",
+  "lexicon": "matcha-icefall-zh-baker/lexicon.txt",
+  "ruleFsts": [
+    "matcha-icefall-zh-baker/phone.fst",
+    "matcha-icefall-zh-baker/date.fst",
+    "matcha-icefall-zh-baker/number.fst"
+  ],
+  "dictDir": "matcha-icefall-zh-baker/dict",
+  "sampleRate": 22050
+}

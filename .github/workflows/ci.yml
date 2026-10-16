@@ -193,6 +193,13 @@ jobs:
           flutter analyze --no-pub
           # 多个资源/备份测试会替换进程级 resolver，串行运行避免相互污染。
           flutter test --no-pub --concurrency=1
+      - name: Cache bundled offline speech models
+        uses: actions/cache@v4
+        with:
+          path: chatgpt_flutter/assets/sherpa_onnx/matcha-icefall-zh-baker
+          key: bundled-tts-${{ hashFiles('tool/prepare_bundled_tts.py', 'tool/tts/manifest.json') }}
+      - name: Prepare bundled offline speech models
+        run: python3 tool/prepare_bundled_tts.py
       - name: Android shell gates
         working-directory: chatgpt_flutter
         run: |

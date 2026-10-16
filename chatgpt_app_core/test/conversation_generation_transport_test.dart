@@ -117,6 +117,7 @@ void main() {
 
   ConversationGenerationRun start(
       {bool stream = true,
+      int userAt = 10,
       bool personalMemory = false,
       ToolRegistry? tools,
       ChatAttachments attachments = const ChatAttachments(),
@@ -149,7 +150,7 @@ void main() {
             user: MessageModel(
                 ownerType: OwnerType.sender,
                 content: 'SYNTHETIC_INPUT',
-                createdAt: 10),
+                createdAt: userAt),
             stream: stream),
         preparation: ReadyConversationTurn(PreparedConversationTurn(
             prompt: 'SYNTHETIC_INPUT',
@@ -187,6 +188,16 @@ void main() {
       if (request.uri.path == '/uapi/ai/catalog') {
         request.response.headers.contentType = ContentType.json;
         request.response.write(jsonEncode({'code': 0, 'data': catalogData}));
+        await request.response.close();
+      } else if (request.uri.path == '/uapi/ai/model-selection') {
+        request.response.headers.contentType = ContentType.json;
+        request.response.write(jsonEncode({
+          'code': 0,
+          'data': {
+            'providerCode': 'openai',
+            'modelId': request.uri.queryParameters['modelId']
+          }
+        }));
         await request.response.close();
       } else {
         await requestHandler(request);
@@ -299,7 +310,7 @@ void main() {
   for (final backend in [false, true]) {
     for (final stream in [false, true]) {
       test(
-          '${backend ? 'Backend' : 'Direct'} lifecycle options retain fresh memory on 503 retry stream=$stream',
+          '${backend ? 'Backend' : 'Direct'} 再次请求读取最新记忆，直连必须显式发起 stream=$stream',
           () async {
         if (backend) {
           settings.mode = AIMode.backend;
@@ -330,8 +341,17 @@ void main() {
             respond(request);
           }
         });
-        final run = start(stream: stream, personalMemory: true);
+        var run = start(stream: stream, personalMemory: true);
         await run.finished.timeout(const Duration(seconds: 5));
+        if (!backend) {
+          expect(run.stage, ConversationGenerationStage.failed);
+          expect(requests, hasLength(1), reason: '直连 503 不自动重试');
+          expect(run.record!.attempts, 1);
+          service.dispose();
+          // 模拟用户明确发起一个新请求，原失败记录不能被自动重试覆盖。
+          run = start(stream: stream, personalMemory: true, userAt: 11);
+          await run.finished.timeout(const Duration(seconds: 5));
+        }
         expect(run.stage, ConversationGenerationStage.complete);
         expect(requests, hasLength(2));
         expect(
@@ -339,8 +359,13 @@ void main() {
         expect(jsonEncode(requests.last),
             isNot(contains('SYNTHETIC_MEMORY_SENTINEL')));
         expect(jsonEncode(requests.last), contains('SYNTHETIC_INPUT'));
-        expect(run.record!.attempts, 2);
-        expect(await storage.db.query('tb_usage'), hasLength(1));
+        expect(run.record!.attempts, backend ? 2 : 1);
+        final usage = await storage.db.query('tb_usage', orderBy: 'id');
+        expect(usage, hasLength(backend ? 1 : 2));
+        if (!backend) {
+          expect(usage.first['estimated'], 1, reason: '保留可能已计费的原失败请求，不能用新请求覆盖');
+        }
+        expect(usage.last['estimated'], 0);
         evidence.add({
           'case': '${backend ? 'backend' : 'direct'}-$stream-memory-retry',
           'posts': requests.toList(),

@@ -78,7 +78,7 @@ class MessageDao implements IMessage, ITable {
         'create table if not exists tb_messages (id integer primary key autoincrement'
         ', cid integer not null, content text, createdAt integer'
         ', ownerName text, ownerType text, avatar text'
-        ', images text, blocks text)');
+        ', images text, blocks text, memorySourceId text)');
     await storage.db.execute(
         'create index if not exists tb_messages_cid_id_idx on tb_messages(cid, id desc)');
     // 兼容旧表：缺少 images / blocks 时自动新增（块化消息系统）。

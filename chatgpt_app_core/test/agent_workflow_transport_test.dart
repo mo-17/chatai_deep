@@ -8,6 +8,7 @@ import 'package:chatgpt_app_core/chat/application/agent_execution_channel.dart';
 import 'package:chatgpt_app_core/chat/application/agent_workflow_runner.dart';
 import 'package:chatgpt_app_core/chat/application/agent_workflow_scope.dart';
 import 'package:chatgpt_app_core/chat/domain/agent_workflow.dart';
+import 'package:chatgpt_app_core/chat/domain/backend_selection.dart';
 import 'package:chatgpt_app_core/chat/domain/chat_request_options.dart';
 import 'package:chatgpt_app_core/dao/chat/backend_chat_service.dart';
 import 'package:chatgpt_app_core/dao/chat/chat_service.dart';
@@ -54,7 +55,13 @@ void main() {
           budget: WorkflowBudget(maxDispatches: budget));
   ChatService service(bool backend, {String model = 'analysis'}) {
     if (backend) {
-      final settings = AISettings.defaults()..mode = AIMode.backend;
+      final settings = AISettings.defaults()
+        ..mode = AIMode.backend
+        ..backendSelection = BackendSelection.pair(
+            providerCode: 'fixture',
+            modelId: model,
+            accountHash: 'a',
+            origin: 'http://${server.address.host}:${server.port}');
       settings.backendModel = model;
       return BackendChatService(settings);
     }
@@ -115,7 +122,7 @@ void main() {
     sqfliteFfiInit();
     epoch = 1;
     restore = 0;
-    auth = PersonalMemoryTestAccount('a')..install();
+    auth = _AuthenticatedAccount('a')..install();
     storage = HiDBManager.test(await databaseFactoryFfi.openDatabase(
         inMemoryDatabasePath,
         options: OpenDatabaseOptions(singleInstance: false)));
@@ -228,7 +235,7 @@ void main() {
     for (final stream in [false, true]) {
       final label = '$mode-${stream ? 'stream' : 'nonstream'}';
       for (final limit in [1, 2]) {
-        test('$label 503真实retry逐次预留，预算$limit且动态resolver保留', () async {
+        test('$label 503按传输策略处理，预算$limit且动态resolver保留', () async {
           respond = (r) async {
             if (bodies.length == 1) {
               r.response.statusCode = 503;
@@ -279,7 +286,14 @@ void main() {
                 }
               },
               dispatchIsCurrent: () => captured.isCurrent);
-          if (limit == 1) {
+          if (!backend) {
+            await expectLater(
+                request(service(false), stream, options),
+                throwsA(isA<ChatTransportException>()
+                    .having((e) => e.statusCode, 'status', 503)));
+            expect(bodies, hasLength(1), reason: '直连失败须显式确认，不能自动重发');
+            expect(w.state, WorkflowState.running);
+          } else if (limit == 1) {
             await expectLater(
                 request(service(backend), stream, options), throwsA(anything));
             expect(w.state, WorkflowState.budgetExhausted);
@@ -294,11 +308,11 @@ void main() {
             expect(bodies, hasLength(2));
             expect(jsonEncode(bodies.last), contains('dynamic-2'));
           }
-          expect(hooks, 2);
-          expect(resolvers, 2);
-          expect(w.dispatches, limit);
+          expect(hooks, backend ? 2 : 1);
+          expect(resolvers, backend ? 2 : 1);
+          expect(w.dispatches, backend ? limit : 1);
           expect(jsonEncode(bodies.first), contains('dynamic-1'));
-          expect((await dao.attemptHistory(w.id)).length, limit);
+          expect((await dao.attemptHistory(w.id)).length, backend ? limit : 1);
           evidence['$label-retry-limit$limit'] = {
             'bodies': bodies,
             'hooks': hooks,
@@ -396,6 +410,13 @@ void main() {
       }
     }
   }
+}
+
+class _AuthenticatedAccount extends PersonalMemoryTestAccount {
+  _AuthenticatedAccount(super.account);
+
+  @override
+  String? readTokenSync() => 'synthetic-workflow-access-token';
 }
 
 class _NoBackground implements AgentBackgroundExecution {

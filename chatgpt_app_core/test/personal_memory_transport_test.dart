@@ -5,6 +5,8 @@ import 'dart:io';
 import 'package:chatgpt_app_core/chat/application/conversation_memory_context.dart';
 import 'package:chatgpt_app_core/chat/application/deepseek_attachment_adapter.dart';
 import 'package:chatgpt_app_core/chat/domain/chat_attachments.dart';
+import 'package:chatgpt_app_core/chat/domain/backend_selection.dart';
+import 'package:chatgpt_app_core/chat/domain/chat_request_options.dart';
 import 'package:chatgpt_app_core/dao/chat/backend_chat_service.dart';
 import 'package:chatgpt_app_core/dao/chat/chat_service.dart';
 import 'package:chatgpt_app_core/dao/chat/direct_chat_service.dart';
@@ -79,7 +81,7 @@ void main() {
 
   setUp(() async {
     sqfliteFfiInit();
-    auth = PersonalMemoryTestAccount('a')..install();
+    auth = _AuthenticatedAccount('a')..install();
     storage = HiDBManager.test(await databaseFactoryFfi.openDatabase(
         inMemoryDatabasePath,
         options: OpenDatabaseOptions(singleInstance: false)));
@@ -110,7 +112,7 @@ void main() {
     for (final stream in [false, true]) {
       final label =
           '${backend ? 'backend' : 'direct'}-${stream ? 'stream' : 'nonstream'}';
-      test('$label 503退避期间关闭：真正第二次HTTP不含记忆', () async {
+      test('$label 失败后关闭记忆：再次HTTP读取最新偏好，直连不自动重试', () async {
         final retry = Completer<void>();
         server.listen((request) async {
           bodies.add(jsonDecode(await utf8.decoder.bind(request).join())
@@ -126,7 +128,13 @@ void main() {
         });
         final ChatService service;
         if (backend) {
-          service = BackendChatService(AISettings.defaults());
+          service = BackendChatService(AISettings.defaults()
+            ..mode = AIMode.backend
+            ..backendSelection = BackendSelection.pair(
+                providerCode: 'deepseek',
+                modelId: 'deepseek-chat',
+                accountHash: 'a',
+                origin: 'http://${server.address.host}:${server.port}'));
         } else {
           service = direct();
         }
@@ -143,9 +151,23 @@ void main() {
                 .toList()
             : dao.createCompletionsWithSearch(
                 prompt: '重试合成', onProgress: progress);
-        await retry.future.timeout(const Duration(seconds: 5));
-        await enabled(false);
-        await result.timeout(const Duration(seconds: 5));
+        if (backend) {
+          await retry.future.timeout(const Duration(seconds: 5));
+          await enabled(false);
+          await result.timeout(const Duration(seconds: 5));
+        } else {
+          await expectLater(
+              result,
+              throwsA(isA<ChatTransportException>()
+                  .having((e) => e.statusCode, 'status', 503)));
+          expect(bodies, hasLength(1), reason: '直连失败等待用户决定，不自动重试');
+          await enabled(false);
+          final confirmed = completion(direct());
+          await (stream
+                  ? confirmed.streamCompletionEvents(prompt: '重试合成').toList()
+                  : confirmed.createCompletionsWithSearch(prompt: '重试合成'))
+              .timeout(const Duration(seconds: 5));
+        }
         expect(bodies, hasLength(2));
         expect(jsonEncode(bodies.first), contains('合成偏好'));
         expect(jsonEncode(bodies.last), isNot(contains('合成偏好')));
@@ -209,27 +231,32 @@ void main() {
       evidence['upload-${stream ? 'stream' : 'nonstream'}'] = bodies;
     });
   }
-  test('503后切账号：旧实例不会发送第二次HTTP', () async {
-    final retry = Completer<void>();
+  test('直连503响应前切账号：旧实例不会发送第二次HTTP', () async {
+    final arrived = Completer<void>(), release = Completer<void>();
     server.listen((request) async {
       bodies.add(jsonDecode(await utf8.decoder.bind(request).join())
           as Map<String, dynamic>);
       request.response.statusCode = 503;
       request.response.write('{}');
+      arrived.complete();
+      await release.future;
       await request.response.close();
     });
-    final pending = completion(direct()).createCompletionsWithSearch(
-        prompt: '账号合成',
-        onProgress: (p) {
-          if (p.label.startsWith('等待重试') && !retry.isCompleted) {
-            retry.complete();
-          }
-        });
+    final pending =
+        completion(direct()).createCompletionsWithSearch(prompt: '账号合成');
     final assertion = expectLater(pending, throwsA(anything));
-    await retry.future.timeout(const Duration(seconds: 5));
+    await arrived.future.timeout(const Duration(seconds: 5));
     auth.account = 'b';
+    release.complete();
     await assertion;
     expect(bodies, hasLength(1));
     evidence['account-switch'] = {'requests': bodies.length};
   });
+}
+
+class _AuthenticatedAccount extends PersonalMemoryTestAccount {
+  _AuthenticatedAccount(super.account);
+
+  @override
+  String? readTokenSync() => 'synthetic-memory-access-token';
 }

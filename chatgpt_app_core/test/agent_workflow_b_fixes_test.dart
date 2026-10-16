@@ -47,7 +47,7 @@ class _Auth implements TokenStorage {
   @override
   Future<Map<String, dynamic>> readProfile() async => readProfileSync();
   @override
-  String readTokenSync() => 'guest-mode';
+  String readTokenSync() => 'synthetic-workflow-access-token';
   @override
   Future<String> readToken() async => readTokenSync();
   @override
@@ -235,6 +235,18 @@ void main() {
             });
         final posts = <Map<String, dynamic>>[];
         server.listen((request) async {
+          if (request.uri.path == '/uapi/ai/model-selection') {
+            request.response.headers.contentType = ContentType.json;
+            request.response.write(jsonEncode({
+              'code': 0,
+              'data': {
+                'providerCode': 'openai',
+                'modelId': request.uri.queryParameters['modelId']
+              }
+            }));
+            await request.response.close();
+            return;
+          }
           final body =
               (jsonDecode(await utf8.decoder.bind(request).join()) as Map)
                   .cast<String, dynamic>();

@@ -1,6 +1,7 @@
 import 'dart:convert';
 import 'package:chatgpt_app_core/chat/application/story_room_tool_runner.dart';
 import 'package:chatgpt_app_core/chat/domain/chat_attachments.dart';
+import 'package:chatgpt_app_core/chat/domain/chat_request_options.dart';
 import 'package:chatgpt_app_core/chat/domain/stream_event.dart';
 import 'package:chatgpt_app_core/db/story_room_dao.dart';
 import 'dart:io';
@@ -315,6 +316,7 @@ class _RecordingRunner extends StoryRoomToolRunner {
       ChatAttachments? attachments,
       StoryRoomToolConfirm? confirm,
       int? projectId,
+      ChatRequestOptions? requestOptions,
       bool forceWebSearch = false}) async* {
     flags.add(forceWebSearch);
     settingsReceived.add(settings.clone());

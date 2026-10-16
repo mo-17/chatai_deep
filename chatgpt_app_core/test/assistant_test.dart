@@ -334,14 +334,16 @@ void main() {
       expect(s.activeProviderId, 'deepseek');
     });
 
-    test('本地模式：不存在的 providerId 回落到全局服务商', () {
+    test('本地模式：不存在的 providerId 保留原始覆盖供校验拒绝', () {
       final s = AISettings.defaults();
       s.activeProviderId = s.providers.last.id;
       final before = s.activeProviderId;
       final a = AssistantModel(name: 'a', providerId: 'ghost', model: 'x-gpt');
       final next = a.applyTo(s);
-      expect(next.activeProviderId, before);
-      expect(next.effectiveModel, isNotEmpty);
+      expect(next.activeProviderId, 'ghost');
+      expect(next.effectiveModel, isEmpty);
+      expect(next.localSelectionValid, isFalse);
+      expect(s.activeProviderId, before);
     });
 
     test('后端模式：覆盖 backendModel', () {
@@ -351,11 +353,12 @@ void main() {
       expect(s.backendModel, 'deepseek-chat');
     });
 
-    test('无覆盖（空串/空白）时原样返回同一实例', () {
+    test('无覆盖时返回同一实例，空白模型保留供校验拒绝', () {
       final s = AISettings.defaults();
       expect(identical(AssistantModel(name: 'a').applyTo(s), s), isTrue);
-      expect(identical(AssistantModel(name: 'a', model: '  ').applyTo(s), s),
-          isTrue);
+      final invalid = AssistantModel(name: 'a', model: '  ').applyTo(s);
+      expect(identical(invalid, s), isFalse);
+      expect(invalid.effectiveModel, '  ');
     });
 
     test('能力位联动：覆盖为 gpt-4o 后 capabilitiesFor 算出 vision', () {

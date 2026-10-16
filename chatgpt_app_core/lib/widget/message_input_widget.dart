@@ -334,6 +334,8 @@ class _MessageInputWidgetState extends State<MessageInputWidget> {
           );
           setState(() => _showSend = text.isNotEmpty);
         },
+        // 锁定的 7.x 插件尚无 SpeechListenOptions.localeId，保留兼容入口。
+        // ignore: deprecated_member_use
         localeId: localeId,
       );
       if (!mounted || !widget.editingEnabled || revision != _editingRevision) {

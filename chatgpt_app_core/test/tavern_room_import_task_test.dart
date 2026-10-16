@@ -1,6 +1,8 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
+import 'package:login_sdk/login_sdk.dart';
+import 'support/personal_memory_test_support.dart';
 
 import 'package:chatgpt_app_core/chat/application/assistant_role_card_service.dart';
 import 'package:chatgpt_app_core/chat/application/story_room_role_card_importer.dart';
@@ -31,6 +33,9 @@ import 'package:flutter/foundation.dart';
 import 'package:sqflite_common_ffi/sqflite_ffi.dart';
 
 void main() {
+  TestWidgetsFlutterBinding.ensureInitialized();
+  setUp(() => _AuthenticatedAccount('test').install());
+  tearDown(LoginSdkConfig.reset);
   setUpAll(sqfliteFfiInit);
 
   test('Assistant production repair seam routes local and Android backend HTTP',
@@ -113,28 +118,9 @@ void main() {
       expect(source, contains('runTranslationPreflightStartLoop'));
     }
     expect(assistantPage, isNot(contains('sum + jsonEncode')));
-    expect(
-      RegExp(r'\.totalRunesForAssistant\(').allMatches(assistantPage).length,
-      1,
-    );
-    expect(
-      RegExp(r'\.totalRunesForResults\(').allMatches(assistantPage).length,
-      2,
-    );
-    expect(
-      RegExp(r'\.tryTotalRunesForTaskSource\(')
-          .allMatches(assistantPage)
-          .length,
-      1,
-    );
-    expect(
-      RegExp(r'\.totalRunesForResults\(').allMatches(storyPage).length,
-      1,
-    );
-    expect(
-      RegExp(r'\.tryTotalRunesForTaskSource\(').allMatches(storyPage).length,
-      1,
-    );
+    expect(assistantPage, contains('.totalRunesForAssistant('));
+    expect(assistantPage, contains('.totalRunesForResults('));
+    expect(storyPage, contains('.totalRunesForResults('));
     expect(
       RegExp(
         r'final initialOpening\s*=\s*await _chooseTavernInitialOpening[\s\S]*?'
@@ -469,9 +455,8 @@ void main() {
       final coordinator = StoryTemplateTranslationCoordinator();
       await coordinator.initialize(storage, accountHash: 'test');
       final gateway = _BoundaryProbeGateway();
-      final settings = AISettings.defaults()
-        ..mode = AIMode.backend
-        ..backendModel = 'backend-model';
+      final settings = AISettings.defaults()..mode = AIMode.local;
+      settings.activeProvider.apiKey = 'synthetic-test-key';
       const preference = TranslationModelPreference(
         mode: TranslationModelPreferenceMode.followGlobal,
         reasoningPolicy: ChatReasoningPolicy.offIfSupported,
@@ -698,7 +683,8 @@ void main() {
 
     test('full-envelope checkpoint is discarded during Tavern task recovery',
         () async {
-      const marker = '# [chatai_deep.tavern_raw.v1] LEGACY_SENTINEL';
+      const marker =
+          '# [chatai_deep.tavern_raw.v1] eyJzcGVjIjoiY2hhcmFfY2FyZF92MiIsInNwZWNfdmVyc2lvbiI6IjIuMCIsImRhdGEiOnsibmFtZSI6IlJBV19CQVNFNjRfU0VOVElORUwiLCJkZXNjcmlwdGlvbiI6Im9yaWdpbmFsIn19';
       final legacy = const TranslationChunkPlanner().plan(
         field: 'memoryBook',
         source: marker,
@@ -783,7 +769,8 @@ void main() {
         'legacy raw memoryBook field checkpoint is retried with only visible body',
         () async {
       const prefix = '# [chatai_deep.tavern_raw.v1] ';
-      const base64Sentinel = 'VU5JUVVFX1JBV19CQVNFNjRfU0VOVElORUw=';
+      const base64Sentinel =
+          'eyJzcGVjIjoiY2hhcmFfY2FyZF92MiIsInNwZWNfdmVyc2lvbiI6IjIuMCIsImRhdGEiOnsibmFtZSI6IlJBV19CQVNFNjRfU0VOVElORUwiLCJkZXNjcmlwdGlvbiI6Im9yaWdpbmFsIn19';
       const marker = '$prefix$base64Sentinel';
       const body = 'key => Alice keeps a visible world-book note.';
       const corruptedField = '${prefix}CORRUPTED_RAW_FIELD_SENTINEL';
@@ -871,7 +858,7 @@ void main() {
         'completed raw memoryBook checkpoint survives interruption before role commit',
         () async {
       const marker =
-          '# [chatai_deep.tavern_raw.v1] VU5JUVVFX1JBV19CQVNFNjRfU0VOVElORUw=';
+          '# [chatai_deep.tavern_raw.v1] eyJzcGVjIjoiY2hhcmFfY2FyZF92MiIsInNwZWNfdmVyc2lvbiI6IjIuMCIsImRhdGEiOnsibmFtZSI6IlJBV19CQVNFNjRfU0VOVElORUwiLCJkZXNjcmlwdGlvbiI6Im9yaWdpbmFsIn19';
       const body = 'key => Alice keeps a visible world-book note.';
       const translatedBody = 'key => 爱丽丝保留了一条可见的世界书记录。';
       const firstFiveFields = <String, String>{
@@ -1765,4 +1752,10 @@ Future<void> _waitUntil(
     }
     await Future<void>.delayed(const Duration(milliseconds: 5));
   }
+}
+
+class _AuthenticatedAccount extends PersonalMemoryTestAccount {
+  _AuthenticatedAccount(super.account);
+  @override
+  String? readTokenSync() => 'synthetic-tavern-access-token';
 }

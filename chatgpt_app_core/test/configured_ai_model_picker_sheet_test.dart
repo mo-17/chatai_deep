@@ -1,3 +1,4 @@
+import 'dart:convert';
 import 'package:chatgpt_app_core/chat/domain/chat_request_options.dart';
 import 'package:chatgpt_app_core/chat/application/translation_model_eligibility.dart';
 import 'package:chatgpt_app_core/chat/application/translation_model_probe_cache.dart';
@@ -10,6 +11,10 @@ import 'package:flutter_test/flutter_test.dart';
 
 void main() {
   testWidgets('未传预检 readers 时保持已配置列表和旧健康状态', (tester) async {
+    tester.view.physicalSize = const Size(1000, 2400);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
     final settings = _settings();
     final before = settings.toJson();
     TranslationModelPreference? result;
@@ -38,7 +43,7 @@ void main() {
 
     expect(find.byKey(const ValueKey('configured_model_follow_global')),
         findsOneWidget);
-    expect(find.byKey(const ValueKey('configured_model_backend_backend-fast')),
+    expect(find.byKey(ValueKey(jsonEncode(['backend', null, 'backend-fast']))),
         findsOneWidget);
     expect(find.text('Fast model'), findsOneWidget);
     expect(find.text('Failed model'), findsOneWidget);
@@ -70,6 +75,10 @@ void main() {
 
   testWidgets('预检列表展示全部模型并按 blocked warning failed verified unverified 排序状态',
       (tester) async {
+    tester.view.physicalSize = const Size(1000, 2400);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
     final settings = _preflightSettings();
     var readerCalls = 0;
     await tester.pumpWidget(MaterialApp(
@@ -163,6 +172,10 @@ void main() {
   });
 
   testWidgets('后端行返回当前后端模型且可隐藏跟随全局', (tester) async {
+    tester.view.physicalSize = const Size(1000, 2400);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
     final settings = _settings();
     TranslationModelPreference? result;
     await tester.pumpWidget(MaterialApp(
@@ -201,6 +214,10 @@ void main() {
 
   testWidgets('不支持 reasoning-control 的候选用正式 providerDefault profile 查 badge',
       (tester) async {
+    tester.view.physicalSize = const Size(1000, 2400);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
     final settings = AISettings(
       mode: AIMode.local,
       providers: [

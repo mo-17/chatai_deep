@@ -95,7 +95,7 @@ void main() {
 
   setUp(() async {
     LoginDao.resetHooksForTest();
-    auth = PersonalMemoryTestAccount('a')..install();
+    auth = _AuthenticatedAccount('a')..install();
     epoch = 1;
     restore = 0;
     server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
@@ -119,6 +119,18 @@ void main() {
     posts = [];
     respond = success;
     server.listen((r) async {
+      if (r.uri.path == '/uapi/ai/model-selection') {
+        r.response.headers.contentType = ContentType.json;
+        r.response.write(jsonEncode({
+          'code': 0,
+          'data': {
+            'providerCode': 'openai',
+            'modelId': r.uri.queryParameters['modelId']
+          }
+        }));
+        await r.response.close();
+        return;
+      }
       posts.add((jsonDecode(await utf8.decoder.bind(r).join()) as Map)
           .cast<String, dynamic>());
       await respond(r);
@@ -291,6 +303,13 @@ void main() {
       });
     }
   }
+}
+
+class _AuthenticatedAccount extends PersonalMemoryTestAccount {
+  _AuthenticatedAccount(super.account);
+
+  @override
+  String? readTokenSync() => 'synthetic-workflow-access-token';
 }
 
 class _Secrets implements SecureKeyValueStore {

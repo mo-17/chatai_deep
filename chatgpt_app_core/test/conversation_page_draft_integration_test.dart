@@ -3,6 +3,8 @@ import 'dart:io';
 
 import 'package:chat_message/models/message_model.dart';
 import 'package:chatgpt_app_core/chat/application/conversation_draft_store.dart';
+import 'package:chatgpt_app_core/chat/application/conversation_generation_service.dart';
+import 'package:chatgpt_app_core/chat/application/attachment_batch_budget.dart';
 import 'package:chatgpt_app_core/chat/application/read_aloud_service.dart';
 import 'package:chatgpt_app_core/chat/domain/deepseek_reasoning_effort.dart';
 import 'package:chatgpt_app_core/dao/ai_settings_dao.dart';
@@ -21,6 +23,7 @@ import 'package:flutter/services.dart';
 import 'package:flutter_hi_cache/flutter_hi_cache.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:login_sdk/login_sdk.dart';
+import 'package:login_sdk/dao/login_dao.dart';
 import 'package:provider/provider.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:sqflite_common_ffi/sqflite_ffi.dart';
@@ -36,6 +39,7 @@ void main() {
 
   setUpAll(sqfliteFfiInit);
   setUp(() async {
+    LoginDao.resetHooksForTest();
     temporary = await Directory.systemTemp.createTemp('chatai_page_draft_');
     previousFactory = databaseFactoryOrNull;
     databaseFactory = databaseFactoryFfi;
@@ -124,6 +128,8 @@ void main() {
         break;
       }
     }
+    // enable 先于草稿恢复开放；等待真实文件 I/O 和账号队列完成。
+    await letIoFinish(tester);
     expect(tester.takeException(), isNull);
   }
 
@@ -159,7 +165,7 @@ void main() {
       )),
     ));
     await tester.pumpAndSettle();
-    expect(find.text('账号已切换，请返回当前账号的对话'), findsOneWidget);
+    expect(find.text('登录或会话环境已变化，请返回并重新打开'), findsOneWidget);
     expect(find.text('旧账号的私有任务标题'), findsNothing);
     expect(find.text('旧账号草稿内容'), findsNothing);
     expect(find.byType(MessageInputWidget), findsNothing);
@@ -228,6 +234,7 @@ void main() {
     addTearDown(tester.view.resetPhysicalSize);
     addTearDown(tester.view.resetDevicePixelRatio);
     final ai = settings.settings.clone()..activeProviderId = 'deepseek';
+    ai.activeProvider.models.add(AiModel(id: 'deepseek-v4-flash-vision-exp'));
     ai.setActiveModel('deepseek-v4-flash-vision-exp');
     await tester.runAsync(() => settings.update(ai));
     await openPage(tester, conversation(105));
@@ -388,7 +395,13 @@ void main() {
       expect(input.controller!.text, '保留这条待发送问题');
       expect(input.pendingFiles, hasLength(2));
       expect(input.isStreaming, isFalse);
-      expect(find.textContaining('总字数'), findsWidgets);
+      expect(find.text('请求未完成，可查看错误后明确重试'), findsWidgets);
+      final run =
+          ConversationGenerationService.instance.lookup('guest', model.cid)!;
+      expect(
+          run.preparationFailure,
+          isA<AttachmentBatchLimitException>()
+              .having((error) => error.toString(), '附件预算原因', contains('总字数')));
       expect(noNetwork.clients, 0);
       final count = await tester.runAsync(() async =>
           (await MessageDao.create(storage, cid: model.cid)).getMessageCount());

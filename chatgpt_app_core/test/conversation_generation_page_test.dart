@@ -1,3 +1,4 @@
+import 'package:chatgpt_app_core/chat/domain/backend_selection.dart';
 import 'package:chatgpt_app_core/util/model_catalog.dart';
 import 'package:chatgpt_app_core/backup/backup_service.dart';
 import 'package:chatgpt_app_core/dao/chat/direct_chat_service.dart';
@@ -1316,6 +1317,15 @@ void main() {
             if (backend) {
               ai.mode = AIMode.backend;
               ai.backendModel = 'gpt-4o';
+              final identity = LoginSdkConfig.instance.storage as _Guest;
+              identity.token = 'synthetic-page-access-token';
+              identity.profile!['guest'] = false;
+              ai.backendSelection = BackendSelection.pair(
+                  providerCode: 'openai',
+                  modelId: 'gpt-4o',
+                  accountHash: 'guest',
+                  origin:
+                      BackendConfig.buildUri('/uapi/chat/completions').origin);
             } else {
               ai.activeProvider.apiHost =
                   'http://127.0.0.1:${loop.server.port}/v1';
@@ -1503,6 +1513,14 @@ void main() {
               'http://127.0.0.1:${loop.server.port}/v1';
           BackendConfig.host = '127.0.0.1:${loop.server.port}';
           BackendConfig.useHttps = false;
+          if (backend) {
+            next.backendSelection = BackendSelection.pair(
+                providerCode: 'openai',
+                modelId: 'gpt-4o',
+                accountHash: 'a',
+                origin:
+                    BackendConfig.buildUri('/uapi/chat/completions').origin);
+          }
           await t.runAsync(() => settings.update(next));
           service.dispose();
           service = ConversationGenerationService(
@@ -1706,6 +1724,14 @@ void main() {
             BackupService.debugImportFailureInjector = null;
             if (control.startsWith('login')) {
               final account = LoginDao.getAccountHash()!;
+              if (backend) {
+                next.backendSelection = BackendSelection.pair(
+                    providerCode: 'openai',
+                    modelId: 'gpt-4o',
+                    accountHash: account,
+                    origin: BackendConfig.buildUri('/uapi/chat/completions')
+                        .origin);
+              }
               await HiCache.getInstance().setString(
                   AISettingsDao.keyFor(account), jsonEncode(next.toJson()));
               await settings.load();
@@ -1881,6 +1907,15 @@ void main() {
             BackendConfig.useHttps = false;
             ai.mode = AIMode.backend;
             ai.backendModel = 'gpt-4o';
+            final identity = LoginSdkConfig.instance.storage as _Guest;
+            identity.token = 'synthetic-page-access-token';
+            identity.profile!['guest'] = false;
+            ai.backendSelection = BackendSelection.pair(
+                providerCode: 'openai',
+                modelId: 'gpt-4o',
+                accountHash: 'guest',
+                origin:
+                    BackendConfig.buildUri('/uapi/chat/completions').origin);
           } else {
             ai.providers.firstWhere((p) => p.id == 'fixture').apiHost =
                 'http://127.0.0.1:${server.port}/v1';

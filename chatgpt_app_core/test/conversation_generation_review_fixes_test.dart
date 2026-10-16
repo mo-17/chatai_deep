@@ -127,7 +127,19 @@ void main() {
       Future<void> Function(HttpRequest) handler) async {
     final s = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
     servers.add(s);
-    s.listen(handler);
+    s.listen((request) async {
+      if (request.uri.path == '/uapi/ai/model-selection') {
+        await jsonResponse(request, {
+          'code': 0,
+          'data': {
+            'providerCode': 'openai',
+            'modelId': request.uri.queryParameters['modelId']
+          }
+        });
+        return;
+      }
+      await handler(request);
+    });
     return s;
   }
 

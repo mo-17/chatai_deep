@@ -3,6 +3,8 @@ import 'dart:convert';
 import 'dart:io';
 
 import 'package:chat_message/models/message_model.dart';
+import 'package:chatgpt_app_core/chat/domain/backend_selection.dart';
+import 'package:login_sdk/dao/backend_host.dart';
 import 'package:chatgpt_app_core/chat/application/agent_task_session.dart';
 import 'package:chatgpt_app_core/chat/application/agent_task_executor.dart';
 import 'package:chatgpt_app_core/chat/application/read_aloud_service.dart';
@@ -215,9 +217,13 @@ void main() {
     late AISettingsProvider settings;
     late ThemeProvider theme;
     late DatabaseFactory? previousFactory;
+    late String previousHost;
+    late bool previousHttps;
     const pathChannel = MethodChannel('plugins.flutter.io/path_provider');
 
     setUp(() async {
+      previousHost = BackendConfig.host;
+      previousHttps = BackendConfig.useHttps;
       // 隔离每个 widget 用例的 FakeAsync 账号队尾，不重用已结束 zone。
       LoginDao.resetHooksForTest();
       temporary =
@@ -240,7 +246,15 @@ void main() {
         storage: _GuestStorage(),
         onLogoutNavigate: () {},
       ));
-      final ai = AISettings.defaults()..activeProviderId = 'deepseek';
+      // 生命周期用已认证后端任务验证断点重放；直连恢复需要另行确认新请求。
+      final ai = AISettings.defaults()
+        ..activeProviderId = 'deepseek'
+        ..mode = AIMode.backend
+        ..backendSelection = BackendSelection.pair(
+            providerCode: 'deepseek',
+            modelId: 'deepseek-flash',
+            accountHash: 'guest',
+            origin: BackendConfig.buildUri('/uapi/chat/completions').origin);
       ai.setActiveModel('deepseek-flash');
       await HiCache.getInstance()
           .setString(AISettingsDao.keyFor('guest'), jsonEncode(ai.toJson()));
@@ -258,6 +272,8 @@ void main() {
         await HiDBManager.closeAll();
         settings.dispose();
         theme.dispose();
+        BackendConfig.host = previousHost;
+        BackendConfig.useHttps = previousHttps;
         LoginSdkConfig.reset();
         AISettingsDao.resetSecureStateForTest();
         TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
@@ -315,7 +331,10 @@ void main() {
       final session =
           AgentTaskSession(cid: cid, store: await AgentTaskDao.create(storage));
       await session.setEnabled(true);
-      await session.begin(userAt: 101, input: '读取资料并生成报告');
+      await session.begin(
+          userAt: 101,
+          input: '读取资料并生成报告',
+          backendSelection: settings.settings.backendSelection);
       await session.checkpoint(protocol, 1);
       await session.pause('应用进入后台');
       session.dispose();
@@ -327,10 +346,14 @@ void main() {
             createHttpClient: _LocalHttpOverrides().createHttpClient);
 
     Future<void> configureLocalServer(HttpServer server) async {
-      final ai = settings.settings.clone()..mode = AIMode.local;
-      ai.activeProvider.apiKey = 'local-test-only';
-      ai.activeProvider.apiHost =
-          'http://${server.address.host}:${server.port}/v1';
+      BackendConfig.host = '${server.address.host}:${server.port}';
+      BackendConfig.useHttps = false;
+      final ai = settings.settings.clone()..mode = AIMode.backend;
+      ai.backendSelection = BackendSelection.pair(
+          providerCode: 'deepseek',
+          modelId: 'deepseek-flash',
+          accountHash: 'guest',
+          origin: BackendConfig.buildUri('/uapi/chat/completions').origin);
       await settings.update(ai);
     }
 
@@ -646,8 +669,8 @@ final class _GuestStorage implements TokenStorage {
   static const profile = <String, dynamic>{
     'userName': '游客',
     'accountHash': 'guest',
-    'guest': true,
-    'boardingPass': 'guest-mode',
+    'guest': false,
+    'boardingPass': 'synthetic-lifecycle-access-token',
     'avatar': '',
   };
   @override
@@ -659,7 +682,7 @@ final class _GuestStorage implements TokenStorage {
   @override
   Future<String?> readToken() async => readTokenSync();
   @override
-  String? readTokenSync() => 'guest-mode';
+  String? readTokenSync() => 'synthetic-lifecycle-access-token';
   @override
   Future<void> writeProfile(
       {required String token,
