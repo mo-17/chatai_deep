@@ -22,7 +22,6 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: pnpm/action-setup@v4
-        with: { version: 10 }
       - uses: actions/setup-node@v4
         with: { node-version: 22, cache: 'pnpm' }
       - run: pnpm install --frozen-lockfile
@@ -172,32 +171,32 @@ jobs:
       - name: OpenAI SDK gates
         working-directory: openai_flutter
         run: |
-          flutter pub get
+          flutter pub get --no-example
           flutter analyze --no-pub
           flutter test --no-pub
       - name: Login SDK gates
         working-directory: login_sdk
         run: |
-          flutter pub get
+          flutter pub get --no-example
           flutter analyze --no-pub
           flutter test --no-pub
       - name: Downloader gates
         working-directory: hi_download
         run: |
-          flutter pub get
+          flutter pub get --no-example
           flutter analyze --no-pub
           flutter test --no-pub
       - name: Shared app core gates
         working-directory: chatgpt_app_core
         run: |
-          flutter pub get
+          flutter pub get --no-example
           flutter analyze --no-pub
           # 多个资源/备份测试会替换进程级 resolver，串行运行避免相互污染。
           flutter test --no-pub --concurrency=1
       - name: Android shell gates
         working-directory: chatgpt_flutter
         run: |
-          flutter pub get
+          flutter pub get --no-example
           flutter analyze --no-pub
           flutter test --no-pub
           flutter build apk --debug --no-pub
