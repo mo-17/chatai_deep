@@ -103,6 +103,9 @@ void main() {
     }
     expect(finished, isTrue, reason: '页面 fake clock 与文件 I/O 必须共同推进');
     if (failure != null) throw failure!;
+    // 服务通知在 post-frame 中同步页面，下一帧才重建输入栏。
+    await tester.pump();
+    await tester.pump();
     return value as T;
   }
 
