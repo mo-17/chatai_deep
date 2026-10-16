@@ -42,6 +42,9 @@ class _LoginPageState extends State<LoginPage> {
   final _passwordCtrl = TextEditingController();
   CountryCode _countryCode = supportedCountries[0];
   String _code = '';
+  int _codeSendRevision = 0;
+  late (String, String) _codeSendIdentity;
+  bool _sendingCode = false;
   bool _loading = false;
   int _loginAttempt = 0;
   LoginAuthAttempt? _activeAuthAttempt;
@@ -69,6 +72,8 @@ class _LoginPageState extends State<LoginPage> {
     _huaweiService = widgetDependencies?.huaweiLoginService ??
         configuredDependencies?.huaweiLoginService ??
         HuaweiLoginUnavailable();
+    _codeSendIdentity = _currentCodeSendIdentity;
+    _identifierCtrl.addListener(_onCodeIdentityChanged);
   }
 
   static const _lightTheme = AuthKitTheme(
@@ -143,7 +148,7 @@ class _LoginPageState extends State<LoginPage> {
   // ---- Actions ----
 
   int? _beginLoginAttempt() {
-    if (_loading || !mounted) return null;
+    if (_loading || _sendingCode || !mounted) return null;
     final attempt = ++_loginAttempt;
     setState(() {
       _loading = true;
@@ -209,16 +214,46 @@ class _LoginPageState extends State<LoginPage> {
   String get _fullPhoneIdentifier =>
       '${_countryCode.dialCode} ${_identifierCtrl.text.trim()}';
 
-  Future<void> _handleSendCode() async {
+  (String, String) get _currentCodeSendIdentity => (
+        _tab,
+        _tab == 'email' ? _identifierCtrl.text.trim() : _fullPhoneIdentifier,
+      );
+
+  // 每次身份编辑推进代次，A→B→A 也不能接收旧发送结果。
+  void _syncCodeSendIdentity() {
+    final identity = _currentCodeSendIdentity;
+    if (identity == _codeSendIdentity) return;
+    _codeSendIdentity = identity;
+    _codeSendRevision++;
+    _code = '';
+    _error = null;
+    _sendingCode = false;
+  }
+
+  void _onCodeIdentityChanged() {
+    if (mounted && _currentCodeSendIdentity != _codeSendIdentity) {
+      setState(_syncCodeSendIdentity);
+    }
+  }
+
+  bool _ownsCodeSend(int revision) =>
+      mounted &&
+      revision == _codeSendRevision &&
+      (ModalRoute.of(context)?.isCurrent ?? false);
+
+
+  Future<bool> _handleSendCode() async {
+    if (_loading || _sendingCode) return false;
     final identifier = _identifierCtrl.text.trim();
     if (identifier.isEmpty) {
       setState(() => _error = '请输入邮箱地址或手机号');
-      return;
+      return false;
     }
     final channel = _tab == 'email' ? 'email' : 'sms';
     final fullId = channel == 'sms' ? _fullPhoneIdentifier : identifier;
+    final revision = _codeSendRevision;
     setState(() {
-      _loading = true;
+      _sendingCode = true;
       _error = null;
     });
     try {
@@ -227,10 +262,14 @@ class _LoginPageState extends State<LoginPage> {
         identifier: fullId,
         purpose: 'login',
       );
+      return _ownsCodeSend(revision);
     } catch (e) {
-      if (mounted) setState(() => _error = e.toString());
+      if (_ownsCodeSend(revision)) setState(() => _error = e.toString());
+      return false;
     } finally {
-      if (mounted) setState(() => _loading = false);
+      if (mounted && revision == _codeSendRevision) {
+        setState(() => _sendingCode = false);
+      }
     }
   }
 
@@ -685,7 +724,10 @@ class _LoginPageState extends State<LoginPage> {
   Widget _buildTabItem(String key, String label) {
     final active = _tab == key;
     return GestureDetector(
-      onTap: () => setState(() => _tab = key),
+      onTap: () => setState(() {
+        _tab = key;
+        _syncCodeSendIdentity();
+      }),
       child: Container(
         padding: const EdgeInsets.symmetric(vertical: 10),
         decoration: BoxDecoration(
@@ -732,6 +774,10 @@ class _LoginPageState extends State<LoginPage> {
     final active = _emailMode == key;
     return GestureDetector(
       onTap: () => setState(() {
+        if (_emailMode != key) {
+          _codeSendRevision++;
+          _sendingCode = false;
+        }
         _emailMode = key;
         _code = '';
       }),
@@ -775,7 +821,10 @@ class _LoginPageState extends State<LoginPage> {
             children: [
               CountryCodePicker(
                 selected: _countryCode,
-                onChanged: (cc) => setState(() => _countryCode = cc),
+                onChanged: (cc) => setState(() {
+                  _countryCode = cc;
+                  _syncCodeSendIdentity();
+                }),
                 theme: inputsTheme,
               ),
               const SizedBox(width: 8),
@@ -800,9 +849,10 @@ class _LoginPageState extends State<LoginPage> {
           ),
         ] else ...[
           VerificationCodeInput(
+            key: ValueKey(_codeSendRevision),
             onCompleted: _onCodeCompleted,
             onChanged: (c) => _code = c.length == 6 ? c : '',
-            onSendCode: _handleSendCode,
+            onSendCodeAsync: _handleSendCode,
             theme: inputsTheme,
           ),
         ],
@@ -812,7 +862,7 @@ class _LoginPageState extends State<LoginPage> {
           width: double.infinity,
           height: _theme.inputHeight,
           child: ElevatedButton(
-            onPressed: _loading
+            onPressed: _loading || _sendingCode
                 ? null
                 : () {
                     if (!_agreementChecked) {
@@ -921,7 +971,7 @@ class _LoginPageState extends State<LoginPage> {
   }
 
   Widget _buildHelperLinks() {
-    final linksEnabled = !_loading;
+    final linksEnabled = !_loading && !_sendingCode;
     final disabledColor = _p.cardSub.withValues(alpha: 0.45);
 
     return Padding(

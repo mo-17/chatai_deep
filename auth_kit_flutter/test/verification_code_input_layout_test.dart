@@ -37,28 +37,51 @@ void main() {
           scale: config.scale,
           material3: config.material3);
       expect(tester.takeException(), isNull);
-      for (var i = 0; i < 6; i++) {
-        await tester.enterText(_fields.at(i), '${i + 1}');
-        await tester.pump();
-        final editable = tester
-            .state<EditableTextState>(find.descendant(
-                of: _fields.at(i), matching: find.byType(EditableText)))
-            .renderEditable;
-        expect(editable.size.height,
-            greaterThanOrEqualTo(editable.preferredLineHeight),
-            reason: 'digit line must fit its clipped viewport');
-        final caret =
-            editable.getLocalRectForCaret(const TextPosition(offset: 1));
+      expect(_fields, findsOneWidget);
+      await tester.enterText(_fields, '123456');
+      await tester.pump();
+      final editable = tester
+          .state<EditableTextState>(
+              find.descendant(of: _fields, matching: find.byType(EditableText)))
+          .renderEditable;
+      final digitPainter = TextPainter(
+          text: TextSpan(
+              text: '0',
+              style: tester
+                  .widget<TextField>(_fields)
+                  .style!
+                  .copyWith(letterSpacing: 0)),
+          textDirection: TextDirection.ltr,
+          textScaler: editable.textScaler)
+        ..layout();
+      expect(editable.size.height,
+          greaterThanOrEqualTo(editable.preferredLineHeight),
+          reason: 'digit line must fit its clipped viewport');
+      for (var i = 0; i <= 6; i++) {
+        final caret = editable.getLocalRectForCaret(TextPosition(offset: i));
         expect(caret.top, greaterThanOrEqualTo(-1));
         expect(caret.bottom, lessThanOrEqualTo(editable.size.height + 1));
+        expect(caret.left, greaterThanOrEqualTo(-1));
+        expect(caret.right, lessThanOrEqualTo(editable.size.width + 2));
       }
       expect(tester.takeException(), isNull);
       final inputRect = tester.getRect(find.byType(VerificationCodeInput));
       for (var i = 0; i < 6; i++) {
-        final field = tester.getRect(_fields.at(i));
-        expect(field.left, greaterThanOrEqualTo(inputRect.left - 1));
-        expect(field.right, lessThanOrEqualTo(inputRect.right + 1));
+        final cell =
+            tester.getRect(find.byKey(ValueKey('verification-code-cell-$i')));
+        expect(cell.left, greaterThanOrEqualTo(inputRect.left - 1));
+        expect(cell.right, lessThanOrEqualTo(inputRect.right + 1));
+        final boxes = editable.getBoxesForSelection(
+            TextSelection(baseOffset: i, extentOffset: i + 1));
+        expect(boxes, hasLength(1));
+        // 选区 TextBox 包含字符后的字距，不能将其中点当作数字中点。
+        final box = boxes.single.toRect();
+        final glyphCenter = editable.localToGlobal(
+            Offset(box.left + digitPainter.width / 2, box.center.dy));
+        expect(glyphCenter.dx, closeTo(cell.center.dx, 2));
+        expect(cell.height, greaterThanOrEqualTo(editable.preferredLineHeight));
       }
+      digitPainter.dispose();
     });
   }
   testWidgets(
@@ -67,24 +90,22 @@ void main() {
     final completions = <String>[];
     await _mount(tester, completed: completions.add);
     for (var i = 0; i < 6; i++) {
-      await tester.enterText(_fields.at(i), '${i + 1}');
+      await tester.enterText(_fields, '123456'.substring(0, i + 1));
       await tester.pump();
-      final next = tester.widget<TextField>(_fields.at(i < 5 ? i + 1 : 5));
-      expect(next.focusNode!.hasFocus, isTrue);
+      expect(tester.widget<TextField>(_fields).focusNode!.hasFocus, isTrue);
     }
     expect(completions, ['123456']);
-    await tester.enterText(_fields.last, '');
+    await tester.enterText(_fields, '12345');
     await tester.pump();
-    expect(tester.widget<TextField>(_fields.last).controller!.text, isEmpty);
-    expect(tester.widget<TextField>(_fields.last).focusNode!.hasFocus, isTrue);
+    expect(tester.widget<TextField>(_fields).controller!.text, '12345');
+    expect(tester.widget<TextField>(_fields).focusNode!.hasFocus, isTrue);
     expect(completions, hasLength(1));
-    await tester.enterText(_fields.last, '0');
+    await tester.enterText(_fields, '123450');
     await tester.pump();
     expect(completions, ['123456', '123450']);
     expect(tester.takeException(), isNull);
   });
-  testWidgets(
-      'whole-code paste retains the existing one-digit-per-field contract',
+  testWidgets('whole-code paste fills all six visual positions',
       (tester) async {
     final completions = <String>[];
     await _mount(tester, completed: completions.add);
@@ -92,11 +113,9 @@ void main() {
     tester.testTextInput.updateEditingValue(const TextEditingValue(
         text: '246810', selection: TextSelection.collapsed(offset: 6)));
     await tester.pump();
-    final values = List.generate(
-        6, (i) => tester.widget<TextField>(_fields.at(i)).controller!.text);
-    expect(values, ['2', '', '', '', '', '']);
-    expect(tester.widget<TextField>(_fields.at(1)).focusNode!.hasFocus, isTrue);
-    expect(completions, isEmpty);
+    expect(tester.widget<TextField>(_fields).controller!.text, '246810');
+    expect(tester.widget<TextField>(_fields).focusNode!.hasFocus, isTrue);
+    expect(completions, ['246810']);
     expect(tester.takeException(), isNull);
   });
 }

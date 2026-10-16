@@ -34,6 +34,8 @@ class _ForgotPasswordPageState extends State<ForgotPasswordPage> {
   final _identifierCtrl = TextEditingController();
   CountryCode _countryCode = supportedCountries[0];
   String _code = '';
+  int _codeSendRevision = 0;
+  late (String, String) _codeSendIdentity;
 
   // Step 2 fields
   final _newPasswordCtrl = TextEditingController();
@@ -58,6 +60,8 @@ class _ForgotPasswordPageState extends State<ForgotPasswordPage> {
     super.initState();
     _activeStyle = widget.style;
     _activeBgVariant = widget.bgVariant;
+    _codeSendIdentity = _currentCodeSendIdentity;
+    _identifierCtrl.addListener(_onCodeIdentityChanged);
   }
 
   static const _lightTheme = AuthKitTheme(
@@ -116,6 +120,33 @@ class _ForgotPasswordPageState extends State<ForgotPasswordPage> {
   String get _fullPhoneIdentifier =>
       '${_countryCode.dialCode} ${_identifierCtrl.text.trim()}';
 
+  (String, String) get _currentCodeSendIdentity => (
+        _tab,
+        _tab == 'email' ? _identifierCtrl.text.trim() : _fullPhoneIdentifier,
+      );
+
+  // 每次身份编辑推进代次，A→B→A 也不能接收旧发送结果。
+  void _syncCodeSendIdentity() {
+    final identity = _currentCodeSendIdentity;
+    if (identity == _codeSendIdentity) return;
+    _codeSendIdentity = identity;
+    _codeSendRevision++;
+    _code = '';
+    _error = null;
+  }
+
+  void _onCodeIdentityChanged() {
+    if (mounted && _currentCodeSendIdentity != _codeSendIdentity) {
+      setState(_syncCodeSendIdentity);
+    }
+  }
+
+  bool _ownsCodeSend(int revision) =>
+      mounted &&
+      revision == _codeSendRevision &&
+      (ModalRoute.of(context)?.isCurrent ?? false);
+
+
   String _maskedIdentifier() {
     final id = _submittedIdentifier ?? '';
     if (_submittedChannel == 'email' && id.contains('@')) {
@@ -131,14 +162,15 @@ class _ForgotPasswordPageState extends State<ForgotPasswordPage> {
     return '***';
   }
 
-  Future<void> _handleSendCode() async {
+  Future<bool> _handleSendCode() async {
     final identifier = _identifierCtrl.text.trim();
     if (identifier.isEmpty) {
       setState(() => _error = '请输入邮箱或手机号');
-      return;
+      return false;
     }
     final channel = _tab == 'email' ? 'email' : 'sms';
     final fullId = channel == 'sms' ? _fullPhoneIdentifier : identifier;
+    final revision = _codeSendRevision;
     setState(() => _error = null);
     try {
       await AuthDaoBridge.instance.sendCode(
@@ -146,8 +178,10 @@ class _ForgotPasswordPageState extends State<ForgotPasswordPage> {
         identifier: fullId,
         purpose: 'reset_password',
       );
+      return _ownsCodeSend(revision);
     } catch (e) {
-      if (mounted) setState(() => _error = e.toString());
+      if (_ownsCodeSend(revision)) setState(() => _error = e.toString());
+      return false;
     }
   }
 
@@ -462,9 +496,10 @@ class _ForgotPasswordPageState extends State<ForgotPasswordPage> {
         _buildIdentifierInput(),
         const SizedBox(height: 10),
         VerificationCodeInput(
+          key: ValueKey(_codeSendRevision),
           onCompleted: (c) => _code = c,
           onChanged: (c) => _code = c.length == 6 ? c : '',
-          onSendCode: _handleSendCode,
+          onSendCodeAsync: _handleSendCode,
           theme: _themeForInputs,
         ),
         const SizedBox(height: 14),
@@ -606,6 +641,7 @@ class _ForgotPasswordPageState extends State<ForgotPasswordPage> {
       onTap: () => setState(() {
         _tab = key;
         _identifierCtrl.clear();
+        _syncCodeSendIdentity();
       }),
       child: Container(
         padding: const EdgeInsets.symmetric(vertical: 10),
@@ -641,7 +677,10 @@ class _ForgotPasswordPageState extends State<ForgotPasswordPage> {
       children: [
         CountryCodePicker(
           selected: _countryCode,
-          onChanged: (cc) => setState(() => _countryCode = cc),
+          onChanged: (cc) => setState(() {
+            _countryCode = cc;
+            _syncCodeSendIdentity();
+          }),
           theme: _themeForInputs,
         ),
         const SizedBox(width: 8),

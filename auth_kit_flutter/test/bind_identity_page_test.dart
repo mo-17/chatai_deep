@@ -59,10 +59,8 @@ void main() {
         of: find.byType(VerificationCodeInput),
         matching: find.byType(TextField),
       );
-      expect(codeFields, findsNWidgets(6));
-      for (var index = 0; index < 6; index++) {
-        await tester.enterText(codeFields.at(index), '${index + 1}');
-      }
+      expect(codeFields, findsOneWidget);
+      await tester.enterText(codeFields, '123456');
       await tester.pump();
       await bindRequestStarted.future;
 
@@ -144,14 +142,12 @@ void main() {
         of: find.byType(VerificationCodeInput),
         matching: find.byType(TextField),
       );
-      expect(codeFields, findsNWidgets(6));
-      for (var index = 0; index < 6; index++) {
-        await tester.enterText(codeFields.at(index), '${index + 1}');
-      }
+      expect(codeFields, findsOneWidget);
+      await tester.enterText(codeFields, '123456');
       await tester.pump();
       await bindRequestStarted.future;
 
-      await tester.enterText(codeFields.last, '9');
+      await tester.enterText(codeFields, '123459');
       await tester.pump();
       bindResponse.complete(http.Response(
         jsonEncode({

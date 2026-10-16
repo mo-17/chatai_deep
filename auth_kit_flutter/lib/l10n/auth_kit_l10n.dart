@@ -3,6 +3,7 @@ abstract class AuthKitL10n {
   String get loginCodeTab;
   String get loginPasswordTab;
   String get sendCode;
+  String get sendingCode => '发送中';
   String get resendCode;
   String get codeSent;
   String get enterCode;

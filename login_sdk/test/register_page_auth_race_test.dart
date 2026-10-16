@@ -54,17 +54,16 @@ void main() {
         ));
 
         final allFields = find.byType(TextField);
-        expect(allFields, findsNWidgets(8));
+        expect(allFields, findsNWidgets(3));
         await tester.enterText(allFields.first, 'late@example.com');
+        await tester.pump();
 
         final codeFields = find.descendant(
           of: find.byType(VerificationCodeInput),
           matching: find.byType(TextField),
         );
-        expect(codeFields, findsNWidgets(6));
-        for (var index = 0; index < 6; index++) {
-          await tester.enterText(codeFields.at(index), '${index + 1}');
-        }
+        expect(codeFields, findsOneWidget);
+        await tester.enterText(codeFields, '123456');
         await tester.enterText(allFields.last, 'password-123');
 
         final agreement = find.textContaining(

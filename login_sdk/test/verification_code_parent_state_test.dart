@@ -91,15 +91,14 @@ Future<GlobalKey<NavigatorState>> _mount(
   }
   await tester.enterText(
       find.byType(TextField).first, 'person@synthetic.invalid');
+  await tester.pump();
   return key;
 }
 
 Finder _codes() => find.descendant(
     of: find.byType(VerificationCodeInput), matching: find.byType(TextField));
 Future<void> _fillCode(WidgetTester tester) async {
-  for (var i = 0; i < 6; i++) {
-    await tester.enterText(_codes().at(i), '${i + 1}');
-  }
+  await tester.enterText(_codes(), '123456');
   await tester.pump();
 }
 
@@ -200,7 +199,7 @@ void main() {
         }
         if (kind == 'login') await _agree(tester);
         await _fillCode(tester);
-        await tester.enterText(_codes().last, '');
+        await tester.enterText(_codes(), '12345');
         await _press(
             tester,
             kind == 'register'
@@ -212,7 +211,7 @@ void main() {
         expect(dao.loginCodes, isEmpty);
         expect(requests, isEmpty);
         expect(find.byType(VerificationCodeInput), findsOneWidget);
-        await tester.enterText(_codes().last, '6');
+        await tester.enterText(_codes(), '123456');
         await _press(
             tester,
             kind == 'register'
@@ -244,7 +243,7 @@ void main() {
       final observer = _Navigation();
       try {
         final key = await _mount(tester, page(kind), observer);
-        final resend = find.text('重新发送');
+        final resend = find.text('发送验证码');
         await tester.ensureVisible(resend);
         await tester.tap(resend);
         await _pump(tester);
@@ -272,7 +271,7 @@ void main() {
         (tester) async {
       try {
         await _mount(tester, page(kind), _Navigation());
-        final resend = find.text('重新发送');
+        final resend = find.text('发送验证码');
         await tester.ensureVisible(resend);
         await tester.tap(resend);
         await _pump(tester);

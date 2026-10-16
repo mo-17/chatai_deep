@@ -22,7 +22,7 @@ void main() {
       expect(input, findsOneWidget);
       final fields =
           find.descendant(of: input, matching: find.byType(TextField));
-      expect(fields, findsNWidgets(6));
+      expect(fields, findsOneWidget);
       await tester.ensureVisible(fields.first);
       await tester.enterText(fields.first, '8');
       await tester.pump();
@@ -34,7 +34,8 @@ void main() {
           greaterThanOrEqualTo(editable.preferredLineHeight));
       final rect = tester.getRect(input);
       for (var i = 0; i < 6; i++) {
-        final cell = tester.getRect(fields.at(i));
+        final cell =
+            tester.getRect(find.byKey(ValueKey('verification-code-cell-$i')));
         expect(cell.left, greaterThanOrEqualTo(rect.left - 1));
         expect(cell.right, lessThanOrEqualTo(rect.right + 1));
       }

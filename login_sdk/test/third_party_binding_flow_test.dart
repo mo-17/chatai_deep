@@ -382,10 +382,8 @@ Future<void> _submitBinding(
     of: find.byType(VerificationCodeInput),
     matching: find.byType(TextField),
   );
-  expect(codeFields, findsNWidgets(6));
-  for (var index = 0; index < 6; index++) {
-    await tester.enterText(codeFields.at(index), '${index + 1}');
-  }
+  expect(codeFields, findsOneWidget);
+  await tester.enterText(codeFields, '123456');
 }
 
 Future<void> _pumpUntil(

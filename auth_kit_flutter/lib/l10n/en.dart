@@ -5,6 +5,7 @@ class En extends AuthKitL10n {
   @override String get loginCodeTab => 'Code Login';
   @override String get loginPasswordTab => 'Password Login';
   @override String get sendCode => 'Send Code';
+  @override String get sendingCode => 'Sending';
   @override String get resendCode => 'Resend';
   @override String get codeSent => 'Code Sent';
   @override String get enterCode => 'Enter verification code';
