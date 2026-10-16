@@ -7,11 +7,20 @@ import {
   IsIn,
   Min,
   Max,
+  Matches,
+  ValidateIf,
 } from 'class-validator';
 
 export class CompletionBodyDto {
   @IsString()
+  @Matches(/\S/)
   model: string;
+
+  // 缺字段兼容旧请求；显式 null/空白不允许退回 legacy。
+  @ValidateIf((_object, value: unknown) => value !== undefined)
+  @IsString()
+  @Matches(/\S/)
+  providerCode?: string;
 
   @IsArray()
   messages: Record<string, unknown>[];

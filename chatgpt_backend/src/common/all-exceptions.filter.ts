@@ -3,11 +3,16 @@ import {
   Catch,
   ArgumentsHost,
   HttpException,
+  UnauthorizedException,
   Logger,
 } from '@nestjs/common';
 import { isAuthPath, logUrl } from './auth-log-safety';
 import { MICROSOFT_CLIENT_ID_INVALID } from '../../libs/auth-kit/src/controllers/admin-auth.dto';
 import { Request, Response } from 'express';
+import {
+  SafeUpstreamException,
+  safeUpstreamPayloadFromError,
+} from '../chat/upstream-error';
 
 interface AuthFeedback {
   message: string;
@@ -132,6 +137,17 @@ export class AllExceptionsFilter implements ExceptionFilter {
     const res = ctx.getResponse<Response>();
     const req = ctx.getRequest<Request>();
 
+    const pathname = req.url.split('?')[0];
+    // 仅此安全边界镜像 Express 既有匹配规则；不改变全局路由行为。
+    const matchedPath = pathname.toLowerCase().replace(/\/$/, '');
+    const selectionPath =
+      matchedPath === '/uapi/ai/model-selection' ||
+      matchedPath === '/uapi/chat/completions' ||
+      matchedPath === '/uapi/chat/completions/stream';
+    const conversationPath =
+      /^\/uapi\/chat\/conversations(?:\/[^/]+(?:\/messages)?)?$/.test(
+        matchedPath,
+      );
     const authPath = isAuthPath(req.url),
       url = logUrl(req.url);
     const isHttp = exception instanceof HttpException;
@@ -139,6 +155,68 @@ export class AllExceptionsFilter implements ExceptionFilter {
     const body = isHttp
       ? exception.getResponse()
       : { message: '服务器内部错误' };
+
+    // 精确类型才保留安全业务分类；未知SQL/网络异常与ValidationPipe值均隐藏。
+    if (
+      !authPath &&
+      (selectionPath || exception instanceof SafeUpstreamException)
+    ) {
+      const safe = safeUpstreamPayloadFromError(
+        isHttp ? exception : new HttpException('', status),
+      );
+      this.logger.error(
+        {
+          err: 'model_request_failed',
+          method: req.method,
+          url: pathname,
+          status,
+        },
+        `${req.method} ${pathname} -> ${status}`,
+      );
+      res.status(status).json({
+        ...safe,
+        ...(selectionPath && exception instanceof UnauthorizedException
+          ? { authError: true }
+          : {}),
+      });
+      return;
+    }
+
+    if (!authPath && conversationPath) {
+      const safeCode =
+        status === 401
+          ? 'authentication_error'
+          : status === 403
+            ? 'chat_permission_denied'
+            : status === 400
+              ? 'invalid_request'
+              : status === 404
+                ? 'conversation_unavailable'
+                : 'conversation_request_failed';
+      const message =
+        status === 401
+          ? '未登录或登录已过期'
+          : status === 403
+            ? '需要管理员权限'
+            : status === 400
+              ? '请求参数无效'
+              : status === 404
+                ? '会话不存在或不可访问'
+                : '会话请求未完成，请重新读取记录后再操作';
+      this.logger.error(
+        {
+          err: 'conversation_request_failed',
+          method: req.method,
+          url: pathname,
+          status,
+        },
+        `${req.method} ${pathname} -> ${status}`,
+      );
+      res
+        .status(status)
+        .json({ code: -1, statusCode: status, safeCode, message });
+      return;
+    }
 
     const payload =
       typeof body === 'object'

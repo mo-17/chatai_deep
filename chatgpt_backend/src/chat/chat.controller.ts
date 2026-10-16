@@ -10,6 +10,7 @@ import {
   Res,
   UseGuards,
   HttpCode,
+  ParseIntPipe,
 } from '@nestjs/common';
 import type { Response } from 'express';
 import type { AuthenticatedRequest } from '../auth/jwt.guard';
@@ -17,6 +18,11 @@ import { JwtGuard } from '../auth/jwt.guard';
 import { AdminGuard } from '../auth/admin.guard';
 import { ChatService } from './chat.service';
 import { CompletionBodyDto } from './dto/completion-body.dto';
+import { SaveMessagesDto } from './dto/save-messages.dto';
+import {
+  CreateConversationDto,
+  UpdateConversationDto,
+} from './dto/conversation-body.dto';
 import { safeUpstreamPayloadFromError } from './upstream-error';
 
 @Controller('uapi/chat')
@@ -29,7 +35,7 @@ export class ChatController {
   @UseGuards(AdminGuard)
   async listConversations(@Req() req: AuthenticatedRequest) {
     const data = await this.svc.listConversations(req.user!.userId);
-    return { code: 0, data };
+    return { code: 0, data, ownerId: req.user!.userId };
   }
 
   @Post('conversations')
@@ -37,11 +43,12 @@ export class ChatController {
   @UseGuards(AdminGuard)
   async createConversation(
     @Req() req: AuthenticatedRequest,
-    @Body() body: { model: string },
+    @Body() body: CreateConversationDto,
   ) {
     const data = await this.svc.createConversation(
       req.user!.userId,
-      body.model || '',
+      body.model,
+      body.providerCode,
     );
     return { code: 0, data };
   }
@@ -50,14 +57,10 @@ export class ChatController {
   @UseGuards(AdminGuard)
   async updateConversation(
     @Req() req: AuthenticatedRequest,
-    @Param('id') id: string,
-    @Body() body: { title: string },
+    @Param('id', ParseIntPipe) id: number,
+    @Body() body: UpdateConversationDto,
   ) {
-    await this.svc.updateConversation(
-      req.user!.userId,
-      parseInt(id),
-      body.title,
-    );
+    await this.svc.updateConversation(req.user!.userId, id, body);
     return { code: 0, data: null };
   }
 
@@ -65,9 +68,9 @@ export class ChatController {
   @UseGuards(AdminGuard)
   async deleteConversation(
     @Req() req: AuthenticatedRequest,
-    @Param('id') id: string,
+    @Param('id', ParseIntPipe) id: number,
   ) {
-    await this.svc.deleteConversation(req.user!.userId, parseInt(id));
+    await this.svc.deleteConversation(req.user!.userId, id);
     return { code: 0, data: null };
   }
 
@@ -75,21 +78,29 @@ export class ChatController {
 
   @Get('conversations/:id/messages')
   @UseGuards(AdminGuard)
-  async listMessages(@Param('id') id: string) {
-    const data = await this.svc.listMessages(parseInt(id));
-    return { code: 0, data };
+  async listMessages(
+    @Req() req: AuthenticatedRequest,
+    @Param('id', ParseIntPipe) id: number,
+  ) {
+    const data = await this.svc.listMessages(req.user!.userId, id);
+    return { code: 0, data, ownerId: req.user!.userId, conversationId: id };
   }
 
   @Post('conversations/:id/messages')
   @HttpCode(200)
   @UseGuards(AdminGuard)
   async saveMessages(
-    @Param('id') id: string,
-    @Body()
-    body: { messages: { role: 'user' | 'assistant'; content: string }[] },
+    @Req() req: AuthenticatedRequest,
+    @Param('id', ParseIntPipe) id: number,
+    @Body() body: SaveMessagesDto,
   ) {
-    await this.svc.saveMessages(parseInt(id), body.messages || []);
-    return { code: 0, data: null };
+    await this.svc.saveMessages(req.user!.userId, id, body.messages);
+    return {
+      code: 0,
+      data: null,
+      ownerId: req.user!.userId,
+      conversationId: id,
+    };
   }
 
   // --- Completions ---

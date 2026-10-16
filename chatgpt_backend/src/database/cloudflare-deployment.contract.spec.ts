@@ -88,7 +88,7 @@ describe('Cloudflare backend deployment contract', () => {
   it('CI 明确断言 compiled migration 结果，并给 supervisor gate 设置超时', () => {
     const workflow = readRepoFile('.github/workflows/ci.yml');
 
-    expect(workflow).toContain("grep -Fq 'Applied 9 migration(s)'");
+    expect(workflow).toContain("grep -Fq 'Applied 10 migration(s)'");
     expect(workflow).toContain("grep -Fq 'No migrations are pending'");
     expect(workflow).toContain(
       'timeout 60s pnpm backend:cloudflare:supervisor-test',

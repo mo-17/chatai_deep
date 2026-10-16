@@ -107,6 +107,15 @@ describe('AdminAiGlobalService default pair and cache', () => {
       model(15, 3, 'disabled-provider-model'),
     ]);
     cache = new ProviderCacheService();
+    Object.assign(models, {
+      manager: {
+        transaction: (_isolation: string, run: (manager: unknown) => unknown) =>
+          run({
+            getRepository: (entity: unknown) =>
+              entity === AiProvider ? providers : models,
+          }),
+      },
+    });
     module = await Test.createTestingModule({
       providers: [
         AdminAiGlobalService,
@@ -252,22 +261,21 @@ describe('AdminAiGlobalService default pair and cache', () => {
     expect(configs.save).toHaveBeenCalledTimes(1);
   });
 
-  it('successful save immediately changes the real resolver cached fallback', async () => {
-    expect((await chat.resolveProvider('unmapped-synthetic-model')).code).toBe(
-      'a',
-    );
-    // 保留请求的 modelId；此次仅更新全局配置，不调用上游。
+  it('successful save invalidates cache while unmapped models remain unavailable', async () => {
+    cache.set('model:unmapped-synthetic-model', providers.rows[0]);
     await update({ defaultProviderCode: 'b', defaultModelId: 'b-only' });
-    expect((await chat.resolveProvider('unmapped-synthetic-model')).code).toBe(
-      'b',
-    );
-    expect(cache.get('model:unmapped-synthetic-model')?.code).toBe('b');
+    expect(cache.get('model:unmapped-synthetic-model')).toBeNull();
+    await expect(
+      chat.resolveProvider('unmapped-synthetic-model'),
+    ).rejects.toMatchObject({
+      statusCode: 409,
+      safeCode: 'model_unavailable',
+    });
+    expect((await chat.resolveProvider('b-only', 'b')).code).toBe('b');
   });
 
-  it('failed save retains both configuration and the cached fallback', async () => {
-    expect((await chat.resolveProvider('unmapped-synthetic-model')).code).toBe(
-      'a',
-    );
+  it('failed save retains configuration and cache but cache cannot rescue an unmapped model', async () => {
+    cache.set('model:unmapped-synthetic-model', providers.rows[0]);
     const before = structuredClone(configs.rows);
     configs.failSave = true;
     await expect(
@@ -275,8 +283,12 @@ describe('AdminAiGlobalService default pair and cache', () => {
     ).rejects.toThrow('synthetic save failure');
     expect(configs.rows).toEqual(before);
     expect(cache.get('model:unmapped-synthetic-model')?.code).toBe('a');
-    expect((await chat.resolveProvider('unmapped-synthetic-model')).code).toBe(
-      'a',
-    );
+    await expect(
+      chat.resolveProvider('unmapped-synthetic-model'),
+    ).rejects.toMatchObject({
+      statusCode: 409,
+      safeCode: 'model_unavailable',
+    });
+    expect((await chat.resolveProvider('shared-id', 'a')).code).toBe('a');
   });
 });

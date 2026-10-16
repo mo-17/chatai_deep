@@ -1,6 +1,10 @@
 import { GatewayTimeoutException, HttpException } from '@nestjs/common';
 
 export type SafeUpstreamCode =
+  | 'model_ambiguous'
+  | 'model_unavailable'
+  | 'provider_unavailable'
+  | 'catalog_not_public'
   | 'unsupported_reasoning_control'
   | 'first_event_timeout'
   | 'idle_timeout'
@@ -22,6 +26,10 @@ export interface SafeUpstreamPayload {
 }
 
 const SAFE_UPSTREAM_CODES = new Set<SafeUpstreamCode>([
+  'model_ambiguous',
+  'model_unavailable',
+  'provider_unavailable',
+  'catalog_not_public',
   'unsupported_reasoning_control',
   'first_event_timeout',
   'idle_timeout',
@@ -158,6 +166,14 @@ function buildSafeUpstreamPayload(
 
 function safeMessageForCode(code: SafeUpstreamCode): string {
   switch (code) {
+    case 'model_ambiguous':
+      return '该模型属于多个服务商，请明确选择服务商和模型';
+    case 'model_unavailable':
+      return '所选模型已删除或停用，请重新选择服务商和模型';
+    case 'provider_unavailable':
+      return '所选服务商已删除、停用或未配置凭据，请联系管理员或重新选择';
+    case 'catalog_not_public':
+      return '模型清单暂不对外开放，请联系管理员开放清单或明确配置服务商和模型';
     case 'unsupported_reasoning_control':
       return '上游不支持推理控制';
     case 'first_event_timeout':

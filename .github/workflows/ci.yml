@@ -33,7 +33,7 @@ jobs:
         run: |
           set -o pipefail
           pnpm --filter chatgpt_backend migration:run:prod | tee /tmp/migration-prod.log
-          grep -Fq 'Applied 9 migration(s)' /tmp/migration-prod.log
+          grep -Fq 'Applied 10 migration(s)' /tmp/migration-prod.log
         env:
           DB_HOST: localhost
           DB_PORT: '5432'

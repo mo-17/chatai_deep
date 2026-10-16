@@ -117,15 +117,25 @@ function repository<T extends ObjectLiteral>(
 function createService(selectedProvider = provider()) {
   const usageSave = jest.fn().mockResolvedValue(undefined);
   const usageRepo = repository<Usage>({ save: usageSave });
+  const resolvedModel = Object.assign(new AiModel(), {
+    providerId: selectedProvider.id,
+    enabled: true,
+  });
   const modelRepo = repository<AiModel>({
-    findOne: jest
-      .fn()
-      .mockResolvedValue(
-        Object.assign(new AiModel(), { providerId: selectedProvider.id }),
-      ),
+    find: jest.fn().mockResolvedValue([resolvedModel]),
+    findOne: jest.fn().mockResolvedValue(resolvedModel),
   });
   const providerRepo = repository<AiProvider>({
     findOne: jest.fn().mockResolvedValue(selectedProvider),
+  });
+  Object.assign(modelRepo, {
+    manager: {
+      transaction: (_isolation: string, run: (manager: unknown) => unknown) =>
+        run({
+          getRepository: (entity: unknown) =>
+            entity === AiProvider ? providerRepo : modelRepo,
+        }),
+    },
   });
   const service = new ChatService(
     usageRepo,

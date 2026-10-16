@@ -9,6 +9,7 @@ import { AiProvider } from './ai-provider.entity';
 import { AiModel } from './ai-model.entity';
 import { ChatService } from '../chat/chat.service';
 import { ProviderCacheService } from './provider-cache.service';
+import { SafeUpstreamException } from '../chat/upstream-error';
 
 @Injectable()
 export class AdminAiProviderService {
@@ -80,21 +81,36 @@ export class AdminAiProviderService {
   }
 
   async testConnection(id: number) {
-    const provider = await this.repo.findOne({ where: { id } });
-    if (!provider) throw new NotFoundException('服务商不存在');
-
-    // 找该 provider 下的默认模型
-    const defaultModel = await this.modelRepo.findOne({
-      where: { providerId: id, isDefault: true, enabled: true },
-    });
-    let model = defaultModel?.modelId;
-    if (!model) {
-      if (provider.code === 'openai') model = 'gpt-4o-mini';
-      else if (provider.code === 'deepseek') model = 'deepseek-chat';
-    }
-    if (!model) {
-      throw new BadRequestException('该服务商下没有模型，无法测试连接');
-    }
+    // 默认数量、归属与 provider 可用性来自同一快照；网络请求在事务完成后。
+    const { provider, model } = await this.dataSource.transaction(
+      'REPEATABLE READ',
+      async (manager) => {
+        const provider = await manager
+          .getRepository(AiProvider)
+          .findOne({ where: { id } });
+        if (!provider) throw new NotFoundException('服务商不存在');
+        const defaults = await manager.getRepository(AiModel).find({
+          where: { providerId: id, isDefault: true },
+        });
+        if (
+          defaults.length !== 1 ||
+          !defaults[0].enabled ||
+          typeof defaults[0].modelId !== 'string' ||
+          !/\S/.test(defaults[0].modelId)
+        ) {
+          throw new BadRequestException(
+            '该服务商默认模型无效，请明确设置一个可用默认模型',
+          );
+        }
+        if (!provider.enabled || !provider.apiKey?.trim()) {
+          throw new SafeUpstreamException({
+            statusCode: 409,
+            safeCode: 'provider_unavailable',
+          });
+        }
+        return { provider, model: defaults[0].modelId };
+      },
+    );
 
     const start = Date.now();
     try {

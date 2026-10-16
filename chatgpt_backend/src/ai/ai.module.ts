@@ -13,7 +13,12 @@ import { AdminAiGlobalController } from './admin-ai-global.controller';
 import { AdminAiGlobalService } from './admin-ai-global.service';
 import { ChatModule } from '../chat/chat.module';
 
+import { ModelSelectionController } from './model-selection.controller';
+
 import { PublicAiController } from './public-ai.controller';
+import { AdminModelSyncController } from './admin-model-sync.controller';
+import { AdminModelSyncService } from './admin-model-sync.service';
+import { ModelCatalogTransport } from './model-discovery';
 
 @Module({
   imports: [
@@ -25,6 +30,8 @@ import { PublicAiController } from './public-ai.controller';
     AdminAiModelController,
     AdminAiGlobalController,
     PublicAiController,
+    ModelSelectionController,
+    AdminModelSyncController,
   ],
   providers: [
     AiSeedService,
@@ -32,6 +39,8 @@ import { PublicAiController } from './public-ai.controller';
     AdminAiProviderService,
     AdminAiModelService,
     AdminAiGlobalService,
+    AdminModelSyncService,
+    ModelCatalogTransport,
   ],
   exports: [
     ProviderCacheService,

@@ -1,6 +1,10 @@
-import { Injectable, BadGatewayException } from '@nestjs/common';
+import {
+  BadRequestException,
+  Injectable,
+  NotFoundException,
+} from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository } from 'typeorm';
+import { Repository, type EntityManager } from 'typeorm';
 import type { Response } from 'express';
 import { Usage } from './usage.entity';
 import { Conversation } from './conversation.entity';
@@ -9,6 +13,7 @@ import { AiProvider } from '../ai/ai-provider.entity';
 import { AiModel } from '../ai/ai-model.entity';
 import { AiGlobalConfig } from '../ai/ai-global-config.entity';
 import { ProviderCacheService } from '../ai/provider-cache.service';
+import type { UpdateConversationDto } from './dto/conversation-body.dto';
 import {
   resolveReasoningControl,
   type ReasoningEffort,
@@ -27,6 +32,7 @@ import {
 
 export interface CompletionBody {
   model: string;
+  providerCode?: string;
   messages: Record<string, unknown>[];
   max_tokens?: number;
   temperature?: number;
@@ -82,48 +88,144 @@ export class ChatService {
     return this.convRepo.find({
       where: { userId },
       order: { updatedAt: 'DESC' },
-      select: ['id', 'title', 'model', 'updatedAt', 'createdAt'],
+      select: [
+        'id',
+        'title',
+        'model',
+        'providerCode',
+        'updatedAt',
+        'createdAt',
+      ],
     });
   }
 
-  async createConversation(userId: number, model: string) {
-    const conv = this.convRepo.create({ userId, model, title: '' });
+  async createConversation(
+    userId: number,
+    model: string,
+    providerCode?: string,
+  ) {
+    if (typeof model !== 'string' || !/\S/.test(model)) {
+      throw new BadRequestException('请求参数无效');
+    }
+    if (providerCode !== undefined) {
+      await this.resolveProvider(model, providerCode);
+    }
+    const conv = this.convRepo.create({
+      userId,
+      model,
+      providerCode: providerCode ?? null,
+      title: '',
+    });
     return this.convRepo.save(conv);
   }
 
-  async updateConversation(userId: number, id: number, title: string) {
-    await this.convRepo.update({ id, userId }, { title });
+  async updateConversation(
+    userId: number,
+    id: number,
+    body: UpdateConversationDto,
+  ) {
+    const existing = await this.convRepo.findOne({
+      where: { id, userId },
+      select: ['id'],
+    });
+    if (!existing) throw new NotFoundException('会话不存在');
+    const changes: Partial<Conversation> = {};
+    if (body.title !== undefined) changes.title = body.title;
+    if (body.model !== undefined || body.providerCode !== undefined) {
+      if (
+        typeof body.model !== 'string' ||
+        !/\S/.test(body.model) ||
+        typeof body.providerCode !== 'string' ||
+        !/\S/.test(body.providerCode)
+      ) {
+        throw new BadRequestException('请求参数无效');
+      }
+      await this.resolveProvider(body.model, body.providerCode);
+      changes.model = body.model;
+      changes.providerCode = body.providerCode;
+    }
+    if (Object.keys(changes).length === 0) return;
+    const result = await this.convRepo.update({ id, userId }, changes);
+    if (result.affected !== 1) throw new NotFoundException('会话不存在');
+  }
+
+  private withOwnedConversation<T>(
+    userId: number,
+    id: number,
+    lock: 'pessimistic_read' | 'pessimistic_write',
+    action: (manager: EntityManager, conversation: Conversation) => Promise<T>,
+  ): Promise<T> {
+    if (!Number.isSafeInteger(id) || id <= 0) {
+      throw new BadRequestException('请求参数无效');
+    }
+    return this.convRepo.manager.transaction(async (manager) => {
+      // 不先查子表；原私有owner合同固定在同一parent锁与短事务。
+      const parent = await manager.findOne(Conversation, {
+        where: { id, userId },
+        select: ['id'],
+        lock: { mode: lock },
+      });
+      if (!parent) throw new NotFoundException('会话不存在或不可访问');
+      return action(manager, parent);
+    });
   }
 
   async deleteConversation(userId: number, id: number) {
-    await this.msgRepo.delete({ conversationId: id });
-    await this.convRepo.delete({ id, userId });
+    return this.withOwnedConversation(
+      userId,
+      id,
+      'pessimistic_write',
+      async (manager) => {
+        // 原FK的CASCADE与条件parent删除同事务；失败不能先删别人的子行。
+        const result = await manager.delete(Conversation, { id, userId });
+        if (result.affected !== 1)
+          throw new NotFoundException('会话不存在或不可访问');
+      },
+    );
   }
 
   // --- Message CRUD ---
 
-  async listMessages(conversationId: number) {
-    return this.msgRepo.find({
-      where: { conversationId },
-      order: { id: 'ASC' },
-      select: ['role', 'content'],
-    });
+  async listMessages(userId: number, conversationId: number) {
+    return this.withOwnedConversation(
+      userId,
+      conversationId,
+      'pessimistic_read',
+      (manager, parent) =>
+        manager.find(Message, {
+          where: { conversationId: parent.id },
+          order: { id: 'ASC' },
+          select: ['role', 'content'],
+        }),
+    );
   }
 
   async saveMessages(
+    userId: number,
     conversationId: number,
     msgs: { role: 'user' | 'assistant'; content: string }[],
   ) {
-    const entities = msgs.map((m) =>
-      this.msgRepo.create({ conversationId, ...m }),
+    return this.withOwnedConversation(
+      userId,
+      conversationId,
+      'pessimistic_write',
+      async (manager, parent) => {
+        const entities = msgs.map((m) =>
+          manager.create(Message, {
+            conversationId: parent.id,
+            role: m.role,
+            content: m.content,
+          }),
+        );
+        return manager.save(Message, entities);
+      },
     );
-    return this.msgRepo.save(entities);
   }
 
   // --- Non-streaming completion ---
 
   async complete(userId: number, body: CompletionBody) {
-    const provider = await this.resolveProvider(body.model);
+    const provider = await this.resolveProvider(body.model, body.providerCode);
     const data = await this.callUpstream(provider, body);
 
     if (data.usage) {
@@ -197,7 +299,7 @@ export class ChatService {
     res: Response,
     clientSignal: AbortSignal = new AbortController().signal,
   ) {
-    const provider = await this.resolveProvider(body.model);
+    const provider = await this.resolveProvider(body.model, body.providerCode);
     assertProviderAvailable(provider);
     if (clientSignal.aborted) return;
 
@@ -350,62 +452,82 @@ export class ChatService {
     }
   }
 
-  async resolveProvider(model: string): Promise<AiProvider> {
-    // 1. Check cache
-    const cacheKey = `model:${model}`;
-    const cached = this.providerCache.get(cacheKey);
-    if (cached) return cached;
-
-    // 2. 精确匹配 ai_models 表
-    const modelRow = await this.modelRepo.findOne({
-      where: { modelId: model, enabled: true },
-    });
-    if (modelRow) {
-      const provider = await this.providerRepo.findOne({
-        where: { id: modelRow.providerId },
+  /** 每次发送/解析均以当前数据库为准；旧 model-only 缓存不证明归属或可用性。 */
+  async resolveProvider(
+    model: string,
+    providerCode?: string,
+  ): Promise<AiProvider> {
+    if (
+      typeof model !== 'string' ||
+      !/\S/.test(model) ||
+      (providerCode !== undefined &&
+        (typeof providerCode !== 'string' || !/\S/.test(providerCode)))
+    ) {
+      throw new SafeUpstreamException({
+        statusCode: 400,
+        safeCode: 'invalid_request',
       });
-      if (provider) {
-        this.providerCache.set(cacheKey, provider);
-        return provider;
-      }
     }
 
-    // 3. 按 modelPrefixes 前缀匹配
-    const providers = await this.providerRepo.find({
-      where: { enabled: true },
-      order: { sortOrder: 'DESC' },
-    });
-    for (const p of providers) {
-      if (p.modelPrefixes) {
-        const prefixes = p.modelPrefixes
-          .split(',')
-          .map((s) => s.trim())
-          .filter(Boolean);
-        for (const prefix of prefixes) {
-          if (model.startsWith(prefix)) {
-            this.providerCache.set(cacheKey, p);
-            return p;
+    // 两次 SELECT 必须读取同一快照，避免拼接从未同时有效的配置。
+    // 无网络操作留在事务内；提交与释放失败均向上传递，不能带旧对象发出请求。
+    return this.modelRepo.manager.transaction(
+      'REPEATABLE READ',
+      async (manager) => {
+        const providerRepo = manager.getRepository(AiProvider);
+        const modelRepo = manager.getRepository(AiModel);
+        if (providerCode !== undefined) {
+          const provider = await providerRepo.findOne({
+            where: { code: providerCode },
+          });
+          if (!providerUsable(provider)) {
+            throw new SafeUpstreamException({
+              statusCode: 409,
+              safeCode: 'provider_unavailable',
+            });
           }
+          const row = await modelRepo.findOne({
+            where: { providerId: provider.id, modelId: model },
+          });
+          if (!row || !row.enabled) {
+            throw new SafeUpstreamException({
+              statusCode: 409,
+              safeCode: 'model_unavailable',
+            });
+          }
+          return provider;
         }
-      }
-    }
 
-    // 4. 兜底：全局默认 provider
-    const global = await this.globalRepo.findOne({ where: { id: 1 } });
-    const defaultCode = global?.defaultProviderCode || 'deepseek';
-    const fallback = await this.providerRepo.findOne({
-      where: { code: defaultCode },
-    });
-    if (!fallback) {
-      throw new BadGatewayException('没有可用的 AI 服务商');
-    }
-
-    console.warn(
-      `model "${model}" 未匹配任何 provider，fallback to default provider: ${defaultCode}`,
+        // legacy 必须统计全部同名行，停用/孤立行仍可能是原用户选择。
+        const rows = await modelRepo.find({ where: { modelId: model } });
+        if (rows.length > 1) {
+          throw new SafeUpstreamException({
+            statusCode: 409,
+            safeCode: 'model_ambiguous',
+          });
+        }
+        const row = rows[0];
+        const provider = row?.enabled
+          ? await providerRepo.findOne({ where: { id: row.providerId } })
+          : null;
+        if (!providerUsable(provider)) {
+          throw new SafeUpstreamException({
+            statusCode: 409,
+            safeCode: 'model_unavailable',
+          });
+        }
+        return provider;
+      },
     );
-    this.providerCache.set(cacheKey, fallback);
-    return fallback;
   }
+}
+
+function providerUsable(provider: AiProvider | null): provider is AiProvider {
+  return (
+    !!provider?.enabled &&
+    typeof provider.apiKey === 'string' &&
+    provider.apiKey.trim().length > 0
+  );
 }
 
 function prepareUpstreamRequest(
