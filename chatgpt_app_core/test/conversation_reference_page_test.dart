@@ -178,7 +178,8 @@ void main() {
             ),
           ),
         )));
-    for (var attempt = 0; attempt < 40; attempt++) {
+    // 初始化涉及真实 SQLite I/O；CI 上不能依赖固定的短等待。
+    for (var attempt = 0; attempt < 400; attempt++) {
       await letIoFinish(tester, rounds: 1);
       if (tester
           .widget<MessageInputWidget>(find.byType(MessageInputWidget))
@@ -186,7 +187,11 @@ void main() {
         break;
       }
     }
-    await letIoFinish(tester);
+    expect(
+      tester.widget<MessageInputWidget>(find.byType(MessageInputWidget)).enable,
+      isTrue,
+      reason: '等待页面完成数据库和草稿初始化后才能操作',
+    );
     expect(tester.takeException(), isNull);
   }
 

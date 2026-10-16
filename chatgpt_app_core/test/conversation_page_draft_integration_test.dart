@@ -120,7 +120,8 @@ void main() {
         ),
       ),
     ));
-    for (var attempt = 0; attempt < 40; attempt++) {
+    // 初始化会创建多个 SQLite 表并恢复草稿，CI 磁盘完成时间不固定。
+    for (var attempt = 0; attempt < 400; attempt++) {
       await letIoFinish(tester, rounds: 1);
       if (tester
           .widget<MessageInputWidget>(find.byType(MessageInputWidget))
@@ -128,8 +129,11 @@ void main() {
         break;
       }
     }
-    // enable 先于草稿恢复开放；等待真实文件 I/O 和账号队列完成。
-    await letIoFinish(tester);
+    expect(
+      tester.widget<MessageInputWidget>(find.byType(MessageInputWidget)).enable,
+      isTrue,
+      reason: '等待页面完成数据库和草稿初始化后才能操作',
+    );
     expect(tester.takeException(), isNull);
   }
 
