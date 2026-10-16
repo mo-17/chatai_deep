@@ -10,9 +10,10 @@ import 'package:flutter_js/flutter_js.dart';
 /// JS 运行时封装（QuickJS via flutter_js）。给技能里的 `scripts/*.js` 提供一个
 /// **纯计算沙箱**：无文件系统、无网络、无进程访问，只能做字符串/数据处理。
 ///
-/// 仅启用 flutter_js 的 QuickJS 平台（Android/Windows/Linux），因为它同时提供
-/// 原生 timeout 与 heap memoryLimit。Apple 的 JavaScriptCore 没有可用 heap cap，
-/// 即使外层 isolate 可超时也无法保证 OOM containment，因此暂时 fail closed。
+/// 仅启用能提供原生 timeout 与 heap memoryLimit 的平台。
+/// flutter_js 0.8.7 的 Linux bridge 缺少 jsSetMemoryLimit，且 jsNewRuntime
+/// 未接收 timeout；Apple 的 JSC 也无 heap cap。外层 isolate 无法中断阻塞的
+/// 原生执行，因此这些平台暂时 fail closed，不能只靠外层 timeout 宣称安全。
 class JsRuntimeService {
   static const defaultTimeout = Duration(seconds: 2);
   static const defaultMaxCodeChars = 128 * 1024;
@@ -57,7 +58,7 @@ class JsRuntimeService {
     required bool isWindows,
     required bool isLinux,
   }) =>
-      !isWeb && !isIOS && !isMacOS && (isAndroid || isWindows || isLinux);
+      !isWeb && !isIOS && !isMacOS && !isLinux && (isAndroid || isWindows);
 
   /// 执行一段脚本。[input] 会以全局变量 `INPUT`（字符串）注入，脚本可读取；
   /// 约定脚本的输出为「最后一个表达式的字符串值」或脚本自行 `JSON.stringify`。

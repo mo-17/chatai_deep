@@ -1,3 +1,5 @@
+import 'dart:io';
+
 import 'package:chatgpt_app_core/skill/js_runtime_service.dart';
 import 'package:flutter_test/flutter_test.dart';
 
@@ -40,6 +42,18 @@ void main() {
     );
     expect(
       JsRuntimeService.supportsPlatform(
+        isWeb: false,
+        isAndroid: false,
+        isIOS: false,
+        isMacOS: false,
+        isWindows: false,
+        isLinux: true,
+      ),
+      isFalse,
+      reason: 'Linux 随包 bridge 缺少原生内存和超时保障，必须 fail closed',
+    );
+    expect(
+      JsRuntimeService.supportsPlatform(
         isWeb: true,
         isAndroid: true,
         isIOS: false,
@@ -50,6 +64,13 @@ void main() {
       isFalse,
     );
   });
+
+  test('Linux 不加载不兼容 bridge，也不尝试执行脚本', () async {
+    const service = JsRuntimeService();
+    final result = await service.run('while (true) {}');
+    expect(result.ok, isFalse);
+    expect(result.error, '当前平台不支持执行 JS 脚本');
+  }, skip: !Platform.isLinux);
 
   test('合法脚本在隔离运行时中读取 INPUT，且不暴露 fetch', () async {
     const service = JsRuntimeService(timeout: Duration(seconds: 2));
