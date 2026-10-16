@@ -186,6 +186,7 @@ void main() {
         break;
       }
     }
+    await letIoFinish(tester);
     expect(tester.takeException(), isNull);
   }
 
@@ -379,6 +380,7 @@ void main() {
           .onSend!();
     });
     await letIoFinish(tester);
+    await finishFuture(tester, generation.lookup('guest', 901)!.finished);
     expect(chat.calls, 1);
     expect(chat.attachmentsReceived.single!.extraText, contains('冻结事实A'));
     expect(chat.attachmentsReceived.single!.extraText,
@@ -426,6 +428,7 @@ void main() {
           .onSend!();
     });
     await letIoFinish(tester);
+    await finishFuture(tester, generation.lookup('guest', 901)!.finished);
     expect(chat.calls, 3);
     expect(chat.histories.last.toString(), contains('冻结事实A'));
     await closePage(tester);
@@ -447,6 +450,7 @@ void main() {
           .onSend!();
     });
     await letIoFinish(tester);
+    await finishFuture(tester, generation.lookup('guest', 904)!.finished);
     expect(chat.calls, 1);
     final before = await tester.runAsync(() => storage.db.query('tb_messages',
         where: 'cid = ?', whereArgs: [904], orderBy: 'id'));
