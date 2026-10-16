@@ -30,7 +30,14 @@ jobs:
           cache: true
       - name: Resolve Flutter dependencies
         working-directory: chatgpt_flutter
-        run: flutter pub get
+        run: flutter pub get --no-example
+      - name: Cache bundled offline speech models
+        uses: actions/cache@v4
+        with:
+          path: chatgpt_flutter/assets/sherpa_onnx/matcha-icefall-zh-baker
+          key: bundled-tts-${{ hashFiles('tool/prepare_bundled_tts.py', 'tool/tts/manifest.json') }}
+      - name: Prepare bundled offline speech models
+        run: python3 tool/prepare_bundled_tts.py
       - name: Enable KVM
         run: |
           echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' \
