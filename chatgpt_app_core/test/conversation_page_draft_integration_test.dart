@@ -98,7 +98,7 @@ void main() {
       failure = error;
       finished = true;
     });
-    for (var attempt = 0; attempt < 100 && !finished; attempt++) {
+    for (var attempt = 0; attempt < 400 && !finished; attempt++) {
       await letIoFinish(tester, rounds: 1);
     }
     expect(finished, isTrue, reason: '页面 fake clock 与文件 I/O 必须共同推进');
@@ -389,7 +389,11 @@ void main() {
             .widget<MessageInputWidget>(find.byType(MessageInputWidget))
             .onSend!();
       });
-      await letIoFinish(tester, rounds: 10);
+      await finishFuture(
+          tester,
+          ConversationGenerationService.instance
+              .lookup('guest', model.cid)!
+              .finished);
       final input =
           tester.widget<MessageInputWidget>(find.byType(MessageInputWidget));
       expect(input.controller!.text, '保留这条待发送问题');

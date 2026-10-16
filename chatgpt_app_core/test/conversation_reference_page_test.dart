@@ -65,7 +65,7 @@ void main() {
       failure = error;
       finished = true;
     });
-    for (var attempt = 0; attempt < 100 && !finished; attempt++) {
+    for (var attempt = 0; attempt < 400 && !finished; attempt++) {
       await letIoFinish(tester, rounds: 1);
     }
     expect(finished, isTrue, reason: '页面 fake clock 与文件 I/O 必须共同推进');
@@ -483,6 +483,7 @@ void main() {
           .onSend!();
     });
     await letIoFinish(tester);
+    await finishFuture(tester, generation.lookup('guest', 907)!.finished);
     expect(chat.calls, 1);
     expect(chat.prompts.single.length, text.length);
     expect(chat.prompts.single == text, isTrue);
@@ -690,6 +691,7 @@ void main() {
           .onSend!();
     });
     await letIoFinish(tester);
+    await finishFuture(tester, generation.lookup('guest', 909)!.finished);
     expect(chat.calls, 1);
     expect(chat.prompts.single == text, isTrue);
     await closePage(tester);

@@ -190,9 +190,28 @@ jobs:
         working-directory: chatgpt_app_core
         run: |
           flutter pub get --no-example
+          # flutter test 不经过 Linux 应用打包，显式提供插件随包的 QuickJS 库。
+          QUICKJS_LIB_DIR=$(python3 - <<'PY'
+          import json
+          from pathlib import Path
+          from urllib.parse import unquote, urljoin, urlparse
+          config = Path('.dart_tool/package_config.json').resolve()
+          packages = json.loads(config.read_text())['packages']
+          package = next(p for p in packages if p['name'] == 'flutter_js')
+          root = Path(unquote(urlparse(urljoin(config.as_uri(), package['rootUri'])).path))
+          print(root / 'linux/shared')
+          PY
+          )
+          test -f "$QUICKJS_LIB_DIR/libquickjs_c_bridge_plugin.so"
+          export LD_LIBRARY_PATH="$QUICKJS_LIB_DIR${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
           flutter analyze --no-pub
+          # 原生入口和较慢磁盘上的等待先行验证，失败可立即给出可读日志。
+          flutter test --no-pub --concurrency=1 --fail-fast \
+            test/js_runtime_service_test.dart \
+            test/conversation_page_draft_integration_test.dart \
+            test/conversation_reference_page_test.dart
           # 多个资源/备份测试会替换进程级 resolver，串行运行避免相互污染。
-          flutter test --no-pub --concurrency=1
+          flutter test --no-pub --concurrency=1 --fail-fast
       - name: Cache bundled offline speech models
         uses: actions/cache@v4
         with:
