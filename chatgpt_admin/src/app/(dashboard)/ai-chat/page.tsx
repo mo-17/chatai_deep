@@ -16,7 +16,7 @@ import ChatMessage from '@/components/ai-chat/chat-message';
 import PromptInput from '@/components/ai-chat/prompt-input';
 import { useChatService } from '@/hooks/useChatService';
 import { useAuthStore } from '@/store/authStore';
-import { aiApi } from '@/lib/api/ai';
+import { captureChatScope, chatScopeCurrent } from '@/lib/chat/scope';
 
 export default function AiChatPage() {
   const {
@@ -31,36 +31,57 @@ export default function AiChatPage() {
     renameConversation,
     sendMessage,
     cancelRequest,
+    selectionKey: model,
+    selectionLabel: modelLabel,
+    choices: models,
+    metadataStatus,
+    metadataError,
+    canSend,
+    contextKey,
+    chooseSelection,
+    refreshMetadata,
+    refreshConversations,
   } = useChatService();
 
   const admin = useAuthStore((s) => s.admin);
   const [prompt, setPrompt] = useState('');
   const [sidebarOpen, setSidebarOpen] = useState(false);
-  const [model, setModel] = useState('');
-  const [models, setModels] = useState<{ key: string; label: string }[]>([]);
   const [listening, setListening] = useState(false);
   const [speechSupported, setSpeechSupported] = useState(false);
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const recognitionRef = useRef<any>(null);
   const promptBeforeSpeech = useRef('');
   const listeningRef = useRef(false);
+  const currentPrompt = useRef(prompt);
+  useEffect(() => {
+    currentPrompt.current = prompt;
+  }, [prompt]);
   const scrollRef = useRef<HTMLDivElement>(null);
 
   // 初始化语音识别
   useEffect(() => {
     const SpeechRecognition =
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
+      (window as any).SpeechRecognition ||
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      (window as any).webkitSpeechRecognition;
     if (!SpeechRecognition) return;
     // eslint-disable-next-line react-hooks/set-state-in-effect
     setSpeechSupported(true);
 
+    let scope;
+    try {
+      scope = captureChatScope();
+    } catch {
+      return;
+    }
     const recognition = new SpeechRecognition();
     recognition.lang = 'zh-CN';
     recognition.interimResults = true;
 
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     recognition.onresult = (event: any) => {
+      if (!chatScopeCurrent(scope)) return;
       // 从 0 遍历全部 results，保证间隔后的识别追加而非覆盖
       let transcript = '';
       for (let i = 0; i < event.results.length; i++) {
@@ -70,14 +91,15 @@ export default function AiChatPage() {
     };
 
     recognition.onend = () => {
-      if (listeningRef.current) {
+      if (chatScopeCurrent(scope) && listeningRef.current) {
         // 续接前更新基准值，避免覆盖已识别内容
         // console.log('recognition.onend');
-        setPrompt((prev) => {
-          promptBeforeSpeech.current = prev;
-          return prev;
-        });
-        try { recognition.start(); } catch { setListening(false); }
+        promptBeforeSpeech.current = currentPrompt.current;
+        try {
+          recognition.start();
+        } catch {
+          setListening(false);
+        }
       } else {
         setListening(false);
       }
@@ -85,12 +107,14 @@ export default function AiChatPage() {
 
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     recognition.onerror = (event: any) => {
+      if (!chatScopeCurrent(scope)) return;
       if (event?.error === 'aborted' && listeningRef.current) {
-        setPrompt((prev) => {
-          promptBeforeSpeech.current = prev;
-          return prev;
-        });
-        try { recognition.start(); } catch { setListening(false); }
+        promptBeforeSpeech.current = currentPrompt.current;
+        try {
+          recognition.start();
+        } catch {
+          setListening(false);
+        }
       } else {
         listeningRef.current = false;
         setListening(false);
@@ -98,7 +122,14 @@ export default function AiChatPage() {
     };
 
     recognitionRef.current = recognition;
-  }, []);
+    return () => {
+      listeningRef.current = false;
+      recognition.onresult = null;
+      recognition.onend = null;
+      recognition.onerror = null;
+      recognition.stop();
+    };
+  }, [contextKey]);
 
   const toggleMic = () => {
     if (listening) {
@@ -113,39 +144,18 @@ export default function AiChatPage() {
     }
   };
 
-  // 从 AI 配置中加载模型列表和默认模型
+  // 账号范围变化清空输入与语音；旧识别结果不能写进新会话。
   useEffect(() => {
-    (async () => {
-      try {
-        const [modelData, globalConfig] = await Promise.all([
-          aiApi.listModels({ enabled: 'true' }),
-          aiApi.getGlobal(),
-        ]);
-        const list = (modelData?.list || []).map((m) => ({
-          key: m.modelId,
-          label: m.displayName || m.modelId,
-        }));
-        setModels(list);
-        // 优先恢复上次选择的模型，其次全局默认模型，最后第一个可用模型
-        const saved = localStorage.getItem('ai-chat-model');
-        const preferred =
-          (saved && list.find((m) => m.key === saved)?.key) ||
-          list.find((m) => m.key === globalConfig?.defaultModelId)?.key ||
-          list[0]?.key ||
-          '';
-        if (preferred) setModel(preferred);
-      } catch {
-        // 加载失败时保留空列表
-      }
-    })();
-  }, []);
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    setPrompt('');
+    listeningRef.current = false;
+    recognitionRef.current?.stop();
+    setListening(false);
+  }, [contextKey]);
 
   const handleModelChange = (keys: Set<string>) => {
-    const val = Array.from(keys)[0];
-    if (val) {
-      setModel(val);
-      localStorage.setItem('ai-chat-model', val);
-    }
+    const value = Array.from(keys)[0];
+    if (value) void chooseSelection(value);
   };
 
   // 自动滚动到底部
@@ -158,12 +168,12 @@ export default function AiChatPage() {
   const activeConv = conversations.find((c) => c.id === activeId) || null;
 
   const handleSend = () => {
-    if (!prompt.trim() || isLoading || !model) return;
+    if (!prompt.trim() || isLoading || !canSend) return;
     if (!activeId) {
       const id = newConversation();
-      sendMessage(prompt.trim(), model, id);
+      void sendMessage(prompt.trim(), model || undefined, id);
     } else {
-      sendMessage(prompt.trim(), model);
+      void sendMessage(prompt.trim(), model || undefined);
     }
     setPrompt('');
   };
@@ -211,7 +221,9 @@ export default function AiChatPage() {
               }}
               onDelete={deleteConversation}
               onRename={renameConversation}
-              user={admin ? { name: admin.userName, avatar: admin.avatar } : null}
+              user={
+                admin ? { name: admin.userName, avatar: admin.avatar } : null
+              }
             />
           </div>
         </div>
@@ -237,27 +249,73 @@ export default function AiChatPage() {
               {activeConv?.title || 'AI 对话'}
             </div>
             <div className="text-small text-default-500 truncate leading-5 font-normal">
-              {models.find((m) => m.key === model)?.label || model || '未选择'}
+              {modelLabel}
             </div>
           </div>
 
-          {/* Model selector */}
-          <Select
-            aria-label="选择模型"
-            className="w-[180px]"
-            disabledKeys={models.length === 0 ? ['loading'] : []}
-            selectedKeys={model ? [model] : []}
-            size="sm"
-            onSelectionChange={(keys) => handleModelChange(keys as Set<string>)}
-          >
-            {models.length === 0 ? (
-              <SelectItem key="loading">加载中...</SelectItem>
-            ) : (
-              models.map((m) => (
-                <SelectItem key={m.key}>{m.label}</SelectItem>
-              ))
-            )}
-          </Select>
+          <div className="flex items-center gap-2">
+            <Select
+              aria-label="选择模型"
+              className="w-[260px]"
+              size="sm"
+              isDisabled={isLoading}
+              disabledKeys={[
+                ...(model && !models.some((m) => m.key === model)
+                  ? [model]
+                  : []),
+                'status',
+              ]}
+              selectedKeys={model ? [model] : []}
+              onSelectionChange={(keys) =>
+                handleModelChange(keys as Set<string>)
+              }
+            >
+              {[
+                ...models.map((m) => (
+                  <SelectItem key={m.key} textValue={m.label}>
+                    {m.label}
+                  </SelectItem>
+                )),
+                ...(model && !models.some((m) => m.key === model)
+                  ? [
+                      <SelectItem key={model} textValue={modelLabel}>
+                        {modelLabel}
+                      </SelectItem>,
+                    ]
+                  : []),
+                ...(models.length === 0
+                  ? [
+                      <SelectItem
+                        key="status"
+                        textValue={
+                          metadataStatus === 'loading'
+                            ? '加载中'
+                            : metadataStatus === 'failed'
+                              ? '清单读取失败'
+                              : '暂无可用模型'
+                        }
+                      >
+                        {metadataStatus === 'loading'
+                          ? '加载中'
+                          : metadataStatus === 'failed'
+                            ? '清单读取失败'
+                            : '暂无可用模型'}
+                      </SelectItem>,
+                    ]
+                  : []),
+              ]}
+            </Select>
+            <Button
+              size="sm"
+              variant="light"
+              onPress={() => {
+                void refreshMetadata();
+                void refreshConversations();
+              }}
+            >
+              刷新清单与记录
+            </Button>
+          </div>
         </header>
 
         {/* Messages */}
@@ -296,11 +354,13 @@ export default function AiChatPage() {
               <ChatMessage
                 key={idx}
                 avatar=""
-                name={msg.role === 'user' ? (admin?.userName || 'Me') : 'AI'}
+                name={msg.role === 'user' ? admin?.userName || 'Me' : 'AI'}
                 message={msg.content}
                 isAI={msg.role === 'assistant'}
                 time={
-                  idx === messages.length - 1 && isLoading && msg.role === 'assistant'
+                  idx === messages.length - 1 &&
+                  isLoading &&
+                  msg.role === 'assistant'
                     ? '输入中...'
                     : undefined
                 }
@@ -310,6 +370,11 @@ export default function AiChatPage() {
               />
             ))}
 
+            {metadataError && (
+              <p role="status" className="text-danger text-small">
+                清单读取失败：{metadataError}。可手动刷新。
+              </p>
+            )}
             {error && (
               <div className="text-center text-danger text-small py-2">
                 错误: {error}
@@ -329,12 +394,16 @@ export default function AiChatPage() {
               <PromptInput
                 classNames={{
                   innerWrapper: 'items-center',
-                  input: 'text-medium data-[has-start-content=true]:ps-0 data-[has-start-content=true]:pe-0',
+                  input:
+                    'text-medium data-[has-start-content=true]:ps-0 data-[has-start-content=true]:pe-0',
                 }}
                 endContent={
                   <div className="flex gap-2">
                     {speechSupported && (
-                      <Tooltip showArrow content={listening ? '停止' : '语音输入'}>
+                      <Tooltip
+                        showArrow
+                        content={listening ? '停止' : '语音输入'}
+                      >
                         <Button
                           isIconOnly
                           color={listening ? 'danger' : 'default'}
@@ -343,7 +412,9 @@ export default function AiChatPage() {
                           onPress={toggleMic}
                         >
                           <Mic
-                            className={listening ? 'text-white' : 'text-default-500'}
+                            className={
+                              listening ? 'text-white' : 'text-default-500'
+                            }
                             size={20}
                           />
                         </Button>
@@ -366,7 +437,7 @@ export default function AiChatPage() {
                           isIconOnly
                           className="bg-default-foreground opacity-100 w-[30px] h-[30px] min-w-[30px] self-center"
                           color={!prompt ? 'default' : 'primary'}
-                          isDisabled={!prompt}
+                          isDisabled={!prompt || !canSend}
                           radius="full"
                           variant={!prompt ? 'flat' : 'solid'}
                           onPress={handleSend}

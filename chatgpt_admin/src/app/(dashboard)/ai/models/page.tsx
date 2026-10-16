@@ -9,10 +9,13 @@ import {
 import { Pencil, Trash2, Circle, CheckCircle } from 'lucide-react';
 import { useModels, useProviders, useAiMutations } from '@/hooks/useAi';
 import { ModelForm } from '@/components/ai/ModelForm';
+import { ModelSyncDialog } from '@/components/ai/ModelSyncDialog';
+import { useQueryClient } from '@tanstack/react-query';
 import type { AiModel } from '@/types/ai';
 import type { ModelForm as ModelFormType } from '@/schemas/ai';
 
 export default function AiModelsPage() {
+  const queryClient = useQueryClient();
   const { data: providers } = useProviders();
   const {
     createModel, updateModel, deleteModel, setDefaultModel,
@@ -34,6 +37,8 @@ export default function AiModelsPage() {
   const [deleteId, setDeleteId] = useState<number | null>(null);
   const [enabledSwitches, setEnabledSwitches] = useState<Set<number>>(new Set());
   const [defaultRadios, setDefaultRadios] = useState<Set<number>>(new Set());
+  const [syncProviderId, setSyncProviderId] = useState<number | null>(null);
+  const syncProvider = providers?.find(p => p.id === syncProviderId);
 
   const handleKeywordChange = useCallback(
     (val: string) => {
@@ -107,7 +112,10 @@ export default function AiModelsPage() {
     <div className="space-y-4">
       <div className="flex justify-between items-center">
         <h1 className="text-xl font-bold">模型管理</h1>
-        <Button color="primary" onPress={() => setIsCreate(true)}>新增模型</Button>
+        <div className="flex gap-2">
+          <Button variant="flat" isDisabled={!providers?.some(p => String(p.id) === filters.providerId)} onPress={() => setSyncProviderId(Number(filters.providerId))}>同步模型</Button>
+          <Button color="primary" onPress={() => setIsCreate(true)}>新增模型</Button>
+        </div>
       </div>
 
       {/* Filters */}
@@ -259,6 +267,7 @@ export default function AiModelsPage() {
       </Table>
 
       {/* Create Modal */}
+      {syncProvider && <ModelSyncDialog key={syncProvider.id} provider={syncProvider} onClose={() => setSyncProviderId(null)} onRefresh={() => { void queryClient.invalidateQueries({ queryKey: ['ai', 'models'] }); }} />}
       <ModelForm
         open={isCreate}
         isCreate
