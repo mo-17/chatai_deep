@@ -121,7 +121,14 @@ describe('AdminAiGlobalService default pair and cache', () => {
       providers: [
         AdminAiGlobalService,
         ChatService,
-      { provide: AccessService, useValue: { admit: (_id: number, body: unknown) => Promise.resolve({ id: null, body }), finish: async () => {} } },
+        {
+          provide: AccessService,
+          useValue: {
+            admit: (_id: number, body: unknown) =>
+              Promise.resolve({ id: null, body }),
+            finish: async () => {},
+          },
+        },
         { provide: ProviderCacheService, useValue: cache },
         { provide: getRepositoryToken(AiGlobalConfig), useValue: configs },
         { provide: getRepositoryToken(AiProvider), useValue: providers },

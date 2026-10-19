@@ -145,7 +145,11 @@ function createService(selectedProvider = provider()) {
     modelRepo,
     repository<AiGlobalConfig>(),
     new ProviderCacheService(),
-    { admit: (_id: number, body: unknown) => Promise.resolve({ id: null, body }), finish: async () => {} } as never,
+    {
+      admit: (_id: number, body: unknown) =>
+        Promise.resolve({ id: null, body }),
+      finish: async () => {},
+    } as never,
   );
   return { service, usageSave };
 }

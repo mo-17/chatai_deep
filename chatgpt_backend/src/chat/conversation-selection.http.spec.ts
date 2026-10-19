@@ -135,7 +135,14 @@ describe('R2a conversation selection actual guarded HTTP, synthetic repositories
       controllers: [ChatController],
       providers: [
         ChatService,
-      { provide: AccessService, useValue: { admit: (_id: number, body: unknown) => Promise.resolve({ id: null, body }), finish: async () => {} } },
+        {
+          provide: AccessService,
+          useValue: {
+            admit: (_id: number, body: unknown) =>
+              Promise.resolve({ id: null, body }),
+            finish: async () => {},
+          },
+        },
         ProviderCacheService,
         TokenAuthenticationService,
         { provide: getRepositoryToken(Conversation), useValue: convRepo },

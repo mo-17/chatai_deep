@@ -197,7 +197,14 @@ owned('R4a owner CRUD: actual AdminGuard HTTP and private PostgreSQL', () => {
     };
     const providers = [
       ChatService,
-      { provide: AccessService, useValue: { admit: (_id: number, body: unknown) => Promise.resolve({ id: null, body }), finish: async () => {} } },
+      {
+        provide: AccessService,
+        useValue: {
+          admit: (_id: number, body: unknown) =>
+            Promise.resolve({ id: null, body }),
+          finish: async () => {},
+        },
+      },
       ProviderCacheService,
       TokenAuthenticationService,
       ...[

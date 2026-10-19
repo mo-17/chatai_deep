@@ -206,7 +206,14 @@ describe('R1 exact provider/model routing using owned loopback HTTP', () => {
       controllers: [ChatController, ...selectionControllers()],
       providers: [
         ChatService,
-      { provide: AccessService, useValue: { admit: (_id: number, body: unknown) => Promise.resolve({ id: null, body }), finish: async () => {} } },
+        {
+          provide: AccessService,
+          useValue: {
+            admit: (_id: number, body: unknown) =>
+              Promise.resolve({ id: null, body }),
+            finish: async () => {},
+          },
+        },
         TokenAuthenticationService,
         { provide: ProviderCacheService, useValue: cache },
         { provide: getRepositoryToken(AiProvider), useValue: providers },
