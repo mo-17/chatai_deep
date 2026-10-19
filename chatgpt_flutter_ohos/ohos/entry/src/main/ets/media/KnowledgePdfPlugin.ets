@@ -7,12 +7,14 @@ import { pdfService } from '@kit.PDFKit';
 /** 使用与 Android/iOS 相同的原件预览通道；单次仅渲染一页，不接收 provider URI。 */
 export default class KnowledgePdfPlugin implements FlutterPlugin, MethodCallHandler {
   private context: common.UIAbilityContext;
+  private applicationContext: common.Context | null = null;
   private channel: MethodChannel | null = null;
   private generation = 0;
   private busy = false;
   constructor(context: common.UIAbilityContext) { this.context = context; }
   getUniqueClassName(): string { return 'ChataiDeepKnowledgePdfPlugin'; }
   onAttachedToEngine(binding: FlutterPluginBinding): void {
+    this.applicationContext = binding.getApplicationContext();
     this.channel = new MethodChannel(binding.getBinaryMessenger(), 'aipu/knowledge-pdf');
     this.channel.setMethodCallHandler(this);
   }
@@ -35,7 +37,11 @@ export default class KnowledgePdfPlugin implements FlutterPlugin, MethodCallHand
   }
   private async input(path: string): Promise<fs.File> {
     if (typeof path !== 'string' || path.includes('\0') || path.includes('\\')) throw new Error('Invalid PDF path');
-    const root = [this.context.filesDir, this.context.cacheDir, this.context.tempDir].find(
+    const roots = [this.context.filesDir, this.context.cacheDir, this.context.tempDir];
+    if (this.applicationContext !== null) {
+      roots.push(this.applicationContext.filesDir, this.applicationContext.cacheDir, this.applicationContext.tempDir);
+    }
+    const root = roots.find(
       (value: string) => path.startsWith(`${value}/`));
     if (root === undefined) throw new Error('PDF outside sandbox');
     let current = root;

@@ -1,5 +1,6 @@
 import 'package:chatgpt_app_core/db/assistant_dao.dart';
 import 'package:chatgpt_app_core/db/conversation_dao.dart';
+import 'package:chatgpt_app_core/db/conversation_generation_dao.dart';
 import 'package:chatgpt_app_core/db/db_migration.dart';
 import 'package:chatgpt_app_core/db/hi_db_manager.dart';
 import 'package:chatgpt_app_core/db/message_dao.dart';
@@ -35,8 +36,45 @@ void main() {
     await AssistantDao.create(storage);
     await UsageDao.create(storage);
     await StoryTemplateTranslationTaskDao.create(storage);
+    await ConversationGenerationDao.create(storage);
+    await ConversationGenerationDao.create(storage);
 
     expect(recordingDb.alterStatements, isEmpty);
+  });
+
+  test('生成记录旧表补齐重试列，保留原记录且重复初始化不触发异常 SQL', () async {
+    final db = await databaseFactoryFfi.openDatabase(inMemoryDatabasePath);
+    addTearDown(db.close);
+    await db.execute('''create table tb_conversation_generation (
+      runId text primary key, cid integer not null, conversationRowId integer not null,
+      assistantId integer, sourceId text not null, sourceHash text not null,
+      sourceRowHash text, userRowId integer, receiverId text not null unique,
+      receiverAt integer not null, receiverRowId integer, usageRowId integer,
+      revision integer not null, state text not null, reason text not null default '',
+      attempts integer not null default 0, finalHash text, updatedAt integer not null)''');
+    await db.insert('tb_conversation_generation', {
+      'runId': 'legacy',
+      'cid': 1,
+      'conversationRowId': 1,
+      'sourceId': 'source',
+      'sourceHash': 'hash',
+      'receiverId': 'reply',
+      'receiverAt': 1,
+      'revision': 0,
+      'state': 'completed',
+      'updatedAt': 1,
+    });
+    final recording = _RecordingDatabase(db);
+    final storage = HiDBManager.test(recording);
+    await ConversationGenerationDao.create(storage);
+    final row = (await db.query('tb_conversation_generation')).single;
+    expect(row['runId'], 'legacy');
+    expect(row['retryReplyRemoved'], 0);
+    expect(row['retryReplyRowId'], isNull);
+    expect(row['retryReplyHash'], isNull);
+    recording.executedStatements.clear();
+    await ConversationGenerationDao.create(storage);
+    expect(recording.alterStatements, isEmpty);
   });
 
   test('旧版 schema 缺失的列仍会被集中迁移补齐', () async {

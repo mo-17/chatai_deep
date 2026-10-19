@@ -2,27 +2,41 @@ const test=require('node:test');
 const assert=require('node:assert/strict');
 const load=require('./support/native_plugin_loader.cjs');
 const tick=()=>new Promise(resolve=>setImmediate(resolve));
-function fixture({input=3,output=3,mediaOutput=output,activation}={}) {
+function fixture({input=3,output=3,mediaOutput=output,preflightMediaOutput=mediaOutput,activation,connected=true}={}) {
   const listeners=new Map(),changes=[];let active=false,selected={deviceType:0},lost=0;
-  const audio={DeviceType:{INVALID:0,WIRED_HEADSET:3,USB_HEADSET:22,BLUETOOTH_SCO:7},
-    DeviceUsage:{CALL_INPUT_DEVICES:8},SourceType:{SOURCE_TYPE_VOICE_RECOGNITION:1},
+  const audio={DeviceType:{INVALID:0,WIRED_HEADSET:3,USB_HEADSET:22,BLUETOOTH_SCO:7,BLUETOOTH_A2DP:8},
+    DeviceUsage:{MEDIA_INPUT_DEVICES:2},DeviceFlag:{ALL_DEVICES_FLAG:3},SourceType:{SOURCE_TYPE_VOICE_RECOGNITION:1},
     AudioSessionScene:{AUDIO_SESSION_SCENE_VOICE_COMMUNICATION:2,AUDIO_SESSION_SCENE_MEDIA:0},AudioConcurrencyMode:{CONCURRENCY_MIX_WITH_OTHERS:1},
     AudioSessionStateChangeHint:{AUDIO_SESSION_STATE_CHANGE_HINT_PAUSE:1,AUDIO_SESSION_STATE_CHANGE_HINT_STOP:2,AUDIO_SESSION_STATE_CHANGE_HINT_TIME_OUT_STOP:3},
     StreamUsage:{STREAM_USAGE_MUSIC:1,STREAM_USAGE_VOICE_COMMUNICATION:2}};
+  const device=(type,role)=>({id:type*2+role,deviceType:type,deviceRole:role});
   const session={on:(k,fn)=>listeners.set(k,fn),off:k=>listeners.delete(k),
     setAudioSessionScene:scene=>changes.push(['scene',scene]),
     async activateAudioSession(strategy){changes.push(['activate',strategy.concurrencyMode]);if(activation)await activation;active=true;},
     async deactivateAudioSession(){active=false;changes.push(['deactivate']);},isAudioSessionActivated:()=>active,
-    getAvailableDevices:()=>[{deviceType:input}],getSelectedMediaInputDevice:()=>selected,
+    getAvailableDevices:usage=>{assert.equal(usage,2);return [device(input,1)];},getSelectedMediaInputDevice:()=>selected,
     async selectMediaInputDevice(d){selected=d;changes.push(['input',d.deviceType]);},
     async clearSelectedMediaInputDevice(){selected={deviceType:0};changes.push(['clear']);}};
-  const routing={async getPreferredInputDeviceForCapturerInfo(){return [{deviceType:input}];},
-    async getPreferOutputDeviceForRendererInfo(info){return [{deviceType:info.usage===1?mediaOutput:output}];}};
+  const routing={async getPreferredInputDeviceForCapturerInfo(){return [device(input,1)];},
+    async getDevices(flag){assert.equal(flag,3);return connected?[device(input,1),device(output,2),device(mediaOutput,2),device(preflightMediaOutput,2)]:[];},
+    async getPreferOutputDeviceForRendererInfo(info){return [device(info.usage===1?(active?mediaOutput:preflightMediaOutput):output,2)];}};
   audio.getAudioManager=()=>({getRoutingManager:()=>routing,getSessionManager:()=>session});
   const f=load('../speech/VoiceAudioPlugin',{'@kit.AudioKit':{audio}});
   f.plugin.onLost=()=>lost++;
-  return {...f,listeners,changes,session,get active(){return active;},get lost(){return lost;}};
+  return {...f,listeners,changes,session,get active(){return active;},get lost(){return lost;},set connected(value){connected=value;}};
 }
+test('系统关闭耳机音频时不得激活通信会话强行重选，正常 A2DP 到 SCO 仍可双工',async()=>{
+  const disabled=fixture({input:7,output:7,mediaOutput:7,preflightMediaOutput:2});
+  assert.equal((await disabled.call('prepareHeadset')).safeDuplex,false);
+  assert.ok(!disabled.changes.some(change=>change[0]==='activate'));
+  const allowed=fixture({input:7,output:7,mediaOutput:7,preflightMediaOutput:8});
+  assert.equal((await allowed.call('prepareHeadset')).safeDuplex,true);await allowed.call('release');
+});
+test('首选路由和可用列表残留旧耳机时，实时连接清单阻止误开及继续双工',async()=>{
+  const missing=fixture({connected:false});assert.equal((await missing.call('prepareHeadset')).safeDuplex,false);assert.equal(missing.active,false);
+  const removed=fixture();assert.equal((await removed.call('prepareHeadset')).safeDuplex,true);
+  removed.connected=false;assert.equal(await removed.call('headsetConnected'),false);await tick();assert.equal(removed.lost,1);assert.equal(removed.active,false);
+});
 test('有线/USB/SCO 确认三条首选路由后开放双工，释放恢复输入与焦点',async()=>{
   for(const type of [3,22,7]) {
     const f=fixture({input:type,output:type});
@@ -54,24 +68,34 @@ test('准备期间取消不能迟到打开双工，重复释放不抢占其他�
   assert.equal(f.active,false);await f.call('release');assert.equal(f.active,false);
 });
 
-function playback({create,release}={}) {
+function playback({create,release,applicationContext}={}) {
   const events=new Map(),handles=new Set();let released=0,played=0;
-  const player={on:(k,fn)=>events.set(k,fn),async release(){released++;if(release)await release();},async prepare(){},async play(){played++;}};
+  const player={on:(k,fn)=>events.set(k,k==='stateChange'?state=>{player.state=state;fn(state);}:fn),async release(){released++;if(release)await release();},async prepare(){},async play(){played++;}};
+  Object.defineProperty(player,'audioInterruptMode',{set(value){assert.equal(player.state,'prepared','中断模式必须在 prepared 后设置');player.interruptMode=value;}});
   const f=load('../speech/TtsPlaybackPlugin',{
     '@kit.MediaKit':{media:{async createAVPlayer(){if(create)await create;return player;}}},
     '@kit.AudioKit':{audio:{StreamUsage:{STREAM_USAGE_VOICE_COMMUNICATION:2,STREAM_USAGE_MUSIC:1},InterruptMode:{SHARE_MODE:0},InterruptHint:{INTERRUPT_HINT_PAUSE:2,INTERRUPT_HINT_STOP:3}}},
     '@kit.CoreFileKit':{fileIo:{OpenMode:{READ_ONLY:1,NOFOLLOW:2},openSync(){const file={fd:8};handles.add(file);return file;},statSync(){return {isFile:()=>true,size:100};},closeSync(file){handles.delete(file);}}},
     './VoiceAudioPlugin':{},
-  },{cacheDir:'/cache'});
+  },{cacheDir:'/cache'},{applicationContext});
   f.plugin.route={active:true};
   return {...f,events,handles,player,get released(){return released;},get played(){return played;}};
 }
 const playArgs={id:'123_1',path:'/cache/tts_audio_cache/baker/a.wav'};
+test('应用缓存与 Ability 缓存不同时，只允许两个上下文的语音缓存子目录',async()=>{
+  const f=playback({applicationContext:{cacheDir:'/application/cache'}});
+  const p=f.call('play',{...playArgs,path:'/application/cache/tts_audio_cache/a.wav'});await tick();
+  f.events.get('stateChange')('completed');await p;assert.equal(f.handles.size,0);
+  for(const path of ['/application/cache/other/a.wav','/application/cache-other/tts_audio_cache/a.wav','/application/cache/tts_audio_cache/../a.wav']) {
+    await assert.rejects(f.call('play',{...playArgs,path}),{code:'playback_error'});
+  }
+});
 test('AVPlayer 等待实际播放完成，使用通信流并关闭文件资源',async()=>{
   const f=playback();let done=false;
   const pending=f.call('play',playArgs).then(()=>done=true);await tick();
   f.events.get('stateChange')('initialized');assert.equal(f.player.audioRendererInfo.usage,2);
-  f.events.get('stateChange')('prepared');await tick();assert.equal(f.played,1);assert.equal(done,false);
+  assert.equal(f.player.interruptMode,undefined);
+  f.events.get('stateChange')('prepared');await tick();assert.equal(f.player.interruptMode,0);assert.equal(f.played,1);assert.equal(done,false);
   f.events.get('stateChange')('completed');await pending;
   assert.equal(f.released,1);assert.equal(f.handles.size,0);assert.equal(f.timers.size,0);
 });

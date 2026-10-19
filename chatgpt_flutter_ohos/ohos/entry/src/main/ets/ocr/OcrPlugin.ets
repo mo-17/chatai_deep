@@ -8,6 +8,7 @@ import { BusinessError } from '@kit.BasicServicesKit';
 
 export default class OcrPlugin implements FlutterPlugin, MethodCallHandler {
   private context: common.UIAbilityContext;
+  private applicationContext: common.Context | null = null;
   private channel: MethodChannel | null = null;
   private busy = false;
   private active = '';
@@ -15,6 +16,7 @@ export default class OcrPlugin implements FlutterPlugin, MethodCallHandler {
   constructor(context: common.UIAbilityContext) { this.context = context; }
   getUniqueClassName(): string { return 'ChataiDeepOcrPlugin'; }
   onAttachedToEngine(binding: FlutterPluginBinding): void {
+    this.applicationContext = binding.getApplicationContext();
     this.channel = new MethodChannel(binding.getBinaryMessenger(), 'com.hzb.flutter_ai/ocr');
     this.channel.setMethodCallHandler(this);
   }
@@ -36,6 +38,10 @@ export default class OcrPlugin implements FlutterPlugin, MethodCallHandler {
   private async input(path: string, bytes: number): Promise<fs.File> {
     if (typeof path !== 'string' || path.includes('\0') || path.includes('\\')) throw new Error('Invalid OCR path');
     const roots = [this.context.filesDir, this.context.cacheDir, this.context.tempDir];
+    // Flutter path_provider 返回应用目录，选择器返回 Ability 模块目录；两者都属于本应用。
+    if (this.applicationContext !== null) {
+      roots.push(this.applicationContext.filesDir, this.applicationContext.cacheDir, this.applicationContext.tempDir);
+    }
     const root = roots.find((value: string) => path.startsWith(`${value}/`));
     if (root === undefined) throw new Error('OCR file outside sandbox');
     const parts = path.substring(root.length + 1).split('/');
@@ -75,6 +81,24 @@ export default class OcrPlugin implements FlutterPlugin, MethodCallHandler {
       finally { try { if (decoder !== null) await decoder.release(); } finally { await fs.close(file); } }
     }
   }
+  private async recognizePdfPixels(pixels: image.PixelMap): Promise<string> {
+    // PDF Kit 的 PixelMap 在部分真机无法直接传给 Core Vision；经有界 PNG 重解码统一像素格式。
+    const packer = image.createImagePacker();
+    let decoder: image.ImageSource | null = null;
+    let normalized: image.PixelMap | null = null;
+    try {
+      this.current();
+      const encoded = await packer.packing(pixels, { format: 'image/png', quality: 100 });
+      if (encoded.byteLength === 0 || encoded.byteLength > 32 * 1024 * 1024) throw new Error('PDF raster too large');
+      this.current();
+      decoder = image.createImageSource(encoded);
+      normalized = await decoder.createPixelMap({ desiredPixelFormat: image.PixelMapFormat.RGBA_8888 });
+      return await this.recognize(normalized);
+    } finally {
+      try { if (normalized !== null) await normalized.release(); }
+      finally { try { if (decoder !== null) await decoder.release(); } finally { await packer.release(); } }
+    }
+  }
   private async pdf(path: string, maxPages: number): Promise<string> {
     const file = await this.input(path, 64 * 1024 * 1024);
     let document: pdfService.PdfDocument | null = null;
@@ -96,7 +120,7 @@ export default class OcrPlugin implements FlutterPlugin, MethodCallHandler {
           const matrix = new pdfService.PdfMatrix();
           matrix.x = 0; matrix.y = 0; matrix.width = width; matrix.height = height; matrix.rotate = 0;
           pixels = page.getAreaPixelMap(matrix, Math.max(1, Math.floor(width * ratio)), Math.max(1, Math.floor(height * ratio)), false, true);
-          const text = await this.recognize(pixels);
+          const text = await this.recognizePdfPixels(pixels);
           length += text.length;
           if (length > 1000000) throw new Error('OCR text too large');
           texts.push(text);

@@ -17,12 +17,14 @@ const RETAIN_MILLIS = 24 * 60 * 60 * 1000;
 export default class SharePlugin implements FlutterPlugin, MethodCallHandler {
   private channel: MethodChannel | null = null;
   private context: common.UIAbilityContext;
+  private applicationContext: common.Context | null = null;
   private sequence = 0;
   private busy = false;
   private cancelPending: (() => void) | null = null;
   constructor(context: common.UIAbilityContext) { this.context = context; }
   getUniqueClassName(): string { return 'ChataiDeepSharePlugin'; }
   onAttachedToEngine(binding: FlutterPluginBinding): void {
+    this.applicationContext = binding.getApplicationContext();
     this.channel = new MethodChannel(binding.getBinaryMessenger(), 'com.hzb.flutter_ai/share');
     this.channel.setMethodCallHandler(this);
   }
@@ -56,6 +58,9 @@ export default class SharePlugin implements FlutterPlugin, MethodCallHandler {
   private async validatePath(path: string): Promise<void> {
     if (typeof path !== 'string' || path.includes('\0') || path.includes('\\')) throw new Error('Invalid path');
     const roots = [this.context.filesDir, this.context.cacheDir, this.context.tempDir];
+    if (this.applicationContext !== null) {
+      roots.push(this.applicationContext.filesDir, this.applicationContext.cacheDir, this.applicationContext.tempDir);
+    }
     const root = roots.find((value: string) => path.startsWith(`${value}/`));
     if (root === undefined) throw new Error('File outside sandbox');
     const segments = path.substring(root.length + 1).split('/');

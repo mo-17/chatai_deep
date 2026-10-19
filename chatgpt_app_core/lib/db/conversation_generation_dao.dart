@@ -4,6 +4,7 @@ import 'package:chatgpt_app_core/chat/application/conversation_generation_scope.
 import 'package:chatgpt_app_core/chat/domain/conversation_generation.dart';
 import 'package:chatgpt_app_core/db/hi_db_manager.dart';
 import 'package:chatgpt_app_core/db/message_dao.dart';
+import 'package:chatgpt_app_core/db/schema_guard.dart';
 import 'package:chatgpt_app_core/db/table_name.dart';
 import 'package:chatgpt_app_core/db/usage_dao.dart';
 import 'package:chatgpt_app_core/model/usage_record.dart';
@@ -32,18 +33,14 @@ class ConversationGenerationDao implements IConversationGeneration, ITable {
       revision integer not null, state text not null, reason text not null default '',
       attempts integer not null default 0, finalHash text, updatedAt integer not null,
       retryReplyRowId integer, retryReplyHash text, retryReplyRemoved integer not null default 0)''');
-    for (final column in [
-      'retryReplyRowId integer',
-      'retryReplyHash text',
-      'retryReplyRemoved integer not null default 0'
-    ]) {
-      try {
-        await storage.db.execute(
-            'alter table tb_conversation_generation add column $column');
-      } catch (error) {
-        if (!error.toString().contains('duplicate column')) rethrow;
-      }
-    }
+    // OHOS 的 SQLite 异常只返回通用错误码，不能靠英文错误消息判断列已存在。
+    await SchemaGuard.ensureColumns(storage.db,
+        table: 'tb_conversation_generation',
+        columns: const {
+          'retryReplyRowId': 'integer',
+          'retryReplyHash': 'text',
+          'retryReplyRemoved': 'integer not null default 0',
+        });
     await storage.db
         .execute('create index if not exists conversation_generation_cid_idx '
             'on tb_conversation_generation(cid, updatedAt desc)');

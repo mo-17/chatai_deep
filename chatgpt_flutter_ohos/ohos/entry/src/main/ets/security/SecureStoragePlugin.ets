@@ -9,7 +9,7 @@ import {
 import { huks } from '@kit.UniversalKeystoreKit';
 import { cryptoFramework } from '@kit.CryptoArchitectureKit';
 import dataPreferences from '@ohos.data.preferences';
-import buffer from '@ohos.buffer';
+import { util } from '@kit.ArkTS';
 
 const CHANNEL = 'com.hzb.flutter_ai/secure_storage';
 const PREFERENCES_NAME = 'chatai_deep_secure_values_v1';
@@ -108,12 +108,7 @@ export default class SecureStoragePlugin implements FlutterPlugin, MethodCallHan
     if (!await huks.hasKeyItem(KEY_ALIAS, { properties: [] })) {
       throw new Error('HUKS key missing');
     }
-    const packedBuffer = buffer.from(raw, 'base64');
-    const packed = new Uint8Array(
-      packedBuffer.buffer,
-      packedBuffer.byteOffset,
-      packedBuffer.length,
-    );
+    const packed = new util.Base64Helper().decodeSync(raw);
     if (packed.length < 1 + NONCE_BYTES + TAG_BYTES || packed[0] !== ENVELOPE_VERSION) {
       throw new Error('secure value corrupt');
     }
@@ -126,7 +121,7 @@ export default class SecureStoragePlugin implements FlutterPlugin, MethodCallHan
       cipher.slice(0, cipher.length - TAG_BYTES),
       cipher.slice(cipher.length - TAG_BYTES),
     );
-    return buffer.from(plain).toString('utf8');
+    return new util.TextDecoder('utf-8', { fatal: true }).decodeToString(plain);
   }
 
   private async write(key: string, value: string): Promise<void> {
@@ -143,7 +138,7 @@ export default class SecureStoragePlugin implements FlutterPlugin, MethodCallHan
     packed[0] = ENVELOPE_VERSION;
     packed.set(nonce, 1);
     packed.set(cipher, 1 + NONCE_BYTES);
-    const encoded = buffer.from(packed).toString('base64');
+    const encoded = new util.Base64Helper().encodeToStringSync(packed);
     const prefs = await this.preferences();
     await prefs.put(this.storageKey(key), encoded);
     await prefs.flush();
@@ -231,7 +226,7 @@ export default class SecureStoragePlugin implements FlutterPlugin, MethodCallHan
   }
 
   private utf8(value: string): Uint8Array {
-    const encoded = buffer.from(value, 'utf8');
-    return new Uint8Array(encoded.buffer, encoded.byteOffset, encoded.length);
+    // HarmonyOS Buffer.buffer 的范围与 byteOffset 不保证可再次叠加。
+    return new util.TextEncoder().encodeInto(value);
   }
 }

@@ -5,16 +5,18 @@ const tick = () => new Promise(resolve => setImmediate(resolve));
 function fixture(options = {}) {
   const released = [], handles = new Set(), renders = [];
   let decodeOptions, calls = 0;
-  const pixels = () => ({ async release() { released.push('pixels'); } });
+  const pixels = (label = 'pixels') => ({ async release() { released.push(label); } });
   const decoder = { async getImageInfo() { return { size: options.dimensions || { width: 6000, height: 3000 } }; },
-    async createPixelMap(value) { decodeOptions = value; return pixels(); }, async release() { released.push('decoder'); } };
+    async createPixelMap(value) { decodeOptions = value; return pixels(value.desiredPixelFormat ? 'normalized' : 'pixels'); }, async release() { released.push('decoder'); } };
   const native = load('../ocr/OcrPlugin', {
     '@kit.CoreFileKit': { fileIo: { OpenMode: { READ_ONLY: 1 },
       async lstat(path) { return { isSymbolicLink: () => options.symlink && path.endsWith('link') }; },
       async open() { const h = { fd: 1 }; handles.add(h); return h; },
       async stat() { return { size: options.size || 100, isFile: () => true }; }, async close(h) { handles.delete(h); },
     } },
-    '@kit.ImageKit': { image: { createImageSource() { return decoder; } } },
+    '@kit.ImageKit': { image: { PixelMapFormat: { RGBA_8888: 3 }, createImageSource() { return decoder; },
+      createImagePacker() { return { async packing() { if (options.failPacking) throw new Error('packing'); return new ArrayBuffer(options.packedBytes ?? 8); }, async release() { released.push('packer'); } }; },
+    } },
     '@kit.CoreVisionKit': { textRecognition: {
       async init() { return options.init === undefined ? true : options.init; },
       async release() { if (options.release) await options.release; released.push('service'); },
@@ -26,10 +28,21 @@ function fixture(options = {}) {
         getAreaPixelMap(matrix, width, height) { renders.push({ index, matrix, width, height }); return pixels(); },
         release() { released.push('page'); } }; } releaseDocument() { released.push('document'); }
     } } },
-  }, { filesDir: '/files', cacheDir: '/cache', tempDir: '/temp' });
+  }, { filesDir: '/files', cacheDir: '/cache', tempDir: '/temp' }, { applicationContext: options.applicationContext });
   const recognize = (args = {}) => native.call('recognize', { id: 'request', kind: 'image', path: '/cache/photo.png', maxPages: 1, ...args });
   return { ...native, recognize, released, handles, renders, get decodeOptions() { return decodeOptions; }, get calls() { return calls; } };
 }
+test('识别 path_provider 的应用目录，同时保持 Ability 目录及链接和越界约束', async () => {
+  const options = { applicationContext: { filesDir: '/application/files', cacheDir: '/application/cache', tempDir: '/application/temp' }, symlink: true };
+  const f = fixture(options);
+  for (const path of ['/application/files/a.png', '/application/cache/a.png', '/application/temp/a.png', '/cache/a.png']) {
+    assert.equal(await f.recognize({ path }), '中文内容');
+  }
+  for (const path of ['/application/cache-other/a.png', '/application/cache/../a.png', '/application/cache/link/a.png']) {
+    await assert.rejects(f.recognize({ path }), { code: 'ocr_error' });
+  }
+  assert.equal(f.handles.size, 0);
+});
 test('图片按上限等比解码，释放像素、解码器、句柄和识别服务后返回', async () => {
   const f = fixture(); assert.equal(await f.recognize(), '中文内容');
   assert.deepEqual({ ...f.decodeOptions.desiredSize }, { width: 4096, height: 2048 });
@@ -42,7 +55,17 @@ test('逐页识别 PDF 并限制页数及渲染尺寸，标注截断且逐页释
   assert.equal(f.renders[0].width, 1536); assert.equal(f.renders[0].height, 3072);
   assert.equal(f.released.filter(x => x === 'page').length, 20);
   assert.equal(f.released.filter(x => x === 'pixels').length, 20);
+  assert.equal(f.released.filter(x => x === 'normalized').length, 20);
+  assert.equal(f.decodeOptions.desiredPixelFormat, 3);
   assert.deepEqual(f.released.slice(-2), ['document', 'service']); assert.equal(f.handles.size, 0);
+});
+test('PDF 像素规范化失败或编码超限时释放所有资源，不返回部分正文', async () => {
+  for (const options of [{ failPacking: true }, { packedBytes: 0 }, { packedBytes: 33554433 }]) {
+    const f = fixture(options);
+    await assert.rejects(f.recognize({ kind: 'pdf', maxPages: 1 }), { code: 'ocr_error' });
+    assert.equal(f.calls, 0); assert.equal(f.handles.size, 0);
+    for (const label of ['packer', 'pixels', 'page', 'document', 'service']) assert.ok(f.released.includes(label));
+  }
 });
 test('解析失败、某页失败不返回部分正文且关闭资源', async () => {
   for (const options of [{ parseFailure: true }, { failAt: 2 }]) {

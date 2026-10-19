@@ -1,0 +1,184 @@
+{
+  "date": "2026-10-20",
+  "timezone": "Asia/Shanghai",
+  "baseHead": "e5c0e4949666c58f165faaafc9b5e84681b9ac16",
+  "device": {
+    "model": "ALN-AL00",
+    "os": "OpenHarmony-6.1.1.120",
+    "api": 24,
+    "headset": "Bluetooth headset with microphone (SCO)"
+  },
+  "verified": {
+    "debugAppLaunch": true,
+    "huksWriteReadDeleteInDeviceApp": true,
+    "retainedExistingConversationVisible": true,
+    "sherpaBindingsLoadedInDeviceApp": {
+      "sherpa": "1.13.8",
+      "onnxRuntime": "1.16.3"
+    },
+    "nativeAndBuildTests": 76,
+    "addedSecureStorageTests": 4,
+    "releaseBuildGuards": "passed",
+    "releaseInstall": "success",
+    "installedDebugFlag": false,
+    "addedRegressionTests": 12,
+    "modelImport": {
+      "zipBytes": 125151235,
+      "zipSha256": "a796918cf16e5e5a8a681f72f8c15a1701f9166ff9aac6581a0bcbac4fc3c5dd",
+      "isolatedTestDirectory": true
+    },
+    "realBackgroundIsolateSynthesis": {
+      "model": "matcha-icefall-zh-baker",
+      "elapsedMs": 2858,
+      "wavBytes": 268924
+    },
+    "nativePlayback": {
+      "fullCompletionMs": 7075,
+      "stopAndRelease": true,
+      "userConfirmedClearHeadsetAudio": true
+    },
+    "systemTtsVoiceCount": 3,
+    "systemTtsPlaybackCompleted": true,
+    "realSpeechInputKnownPhrase": true,
+    "headsetBargeIn": {
+      "realController": true,
+      "reply": "local fixed test fixture",
+      "recognizedStopPhrase": true,
+      "cancelReplyCalls": 1,
+      "userConfirmedImmediateStop": true
+    },
+    "backgroundPlaybackStoppedBeforeFullDuration": true,
+    "nativeImageOcr": true,
+    "nativeScannedPdfOcr": true,
+    "nativePdfPreviewPngBytes": 41139,
+    "pickerProcessRestart": {
+      "pendingDraftRecovered": true,
+      "wrongScopeCannotRead": true,
+      "wrongAckPreservesRecord": true,
+      "correctAckConsumesOnce": true,
+      "userPhotoAccessed": false
+    },
+    "releaseUiLaunch": true,
+    "superDeviceAudioDisabledStoppedPlayback": true,
+    "userConfirmedAudioPathDisableStoppedPlayback": true,
+    "superDeviceAudioDisabledRejectsDuplexPreparation": true,
+    "coreDatabaseAndGenerationTests": 36,
+    "coreChangedFilesAnalyze": "no issues",
+    "superDeviceAudioReenabledRestoresDuplex": true,
+    "voicePanelReadyAndHandsFreeEnabledInDeviceApp": true,
+    "conversationInitializationReadyAfterSchemaFix": true,
+    "releaseConversationAndVoicePanelReady": true,
+    "releaseHandsFreeSwitchEnabled": true
+  },
+  "releaseHap": {
+    "path": "chatgpt_flutter_ohos/build/ohos/hap/entry-default-signed.hap",
+    "bytes": 72910287,
+    "sha256": "d79d04c3620ab269418d8b4f8691c7292559a436a6a83495bf1aa3785a7cb4d7",
+    "verifiedLoadSegments": [
+      {
+        "path": "libs/arm64-v8a/libapp.so",
+        "sha256": "8c0de033dd20ee467b5316e7651148a43e65214d7d339c79f80848594785bdf1"
+      },
+      {
+        "path": "libs/arm64-v8a/libchatai_js.so",
+        "sha256": "a8168840954a2e62c0532f0ecd143797ecd6064938fad305441b895dc5e258c0"
+      },
+      {
+        "path": "libs/arm64-v8a/libsherpa-onnx-c-api.so",
+        "sha256": "6c886040602400a513f95b065390effb5aff54f65aa8e3ed993ebab2d050ef6d"
+      },
+      {
+        "path": "libs/arm64-v8a/libonnxruntime.so",
+        "sha256": "9547fbda3f4fb95a1b68509b0e1b7fa983a295fbb952a02176bbd2e8a5692dd4"
+      }
+    ]
+  },
+  "cleanup": {
+    "isolatedDeviceModelOcrProbeDirectoryRemoved": true,
+    "pickerTestRecordAcknowledged": true,
+    "localOnlyFixtureServerStopped": true,
+    "fixtureUsbReverseMappingAbsent": true,
+    "temporaryStandaloneDeviceModelDirectoryRemoved": true,
+    "taskUsbForwardsRemoved": true,
+    "voiceControllerEnded": true,
+    "finalPhoneBuild": "Release (debug=false)"
+  },
+  "sourceSha256": {
+    "chatgpt_app_core/lib/db/conversation_generation_dao.dart": "4149cc446b819b54110ff984e36ff402064e400f3e3ab0b56568ec50a71a97ec",
+    "chatgpt_app_core/test/db_schema_guard_test.dart": "eaaed5a345319776d6113d913abdf207e5b6641df99dbd40f85156c9cd540675",
+    "chatgpt_flutter_ohos/docs/device-smoke-20261020.md": "11128269a106cfa656a7e342d7e1bc8547162b5f4708b47108382deaf5aa9a98",
+    "chatgpt_flutter_ohos/ohos/entry/src/main/ets/media/KnowledgePdfPlugin.ets": "80068023ec3d3ddca9ee7ba686c6ead77df1265695bf54be7b577a5e0bf174e5",
+    "chatgpt_flutter_ohos/ohos/entry/src/main/ets/media/SharePlugin.ets": "8d6379baba218a38e365f56fc592cc07a9bcb5d65353917caf2293805ca23d81",
+    "chatgpt_flutter_ohos/ohos/entry/src/main/ets/ocr/OcrPlugin.ets": "22271b0b989315460175bfe4b8d7386601b4f7451effe5ff1c86f38b26cf87f4",
+    "chatgpt_flutter_ohos/ohos/entry/src/main/ets/security/SecureStoragePlugin.ets": "725152f5188b7916a5d816d9802f290cb4cb1cad91b98c7463924f72a29136eb",
+    "chatgpt_flutter_ohos/ohos/entry/src/main/ets/speech/TtsPlaybackPlugin.ets": "3595f90e8e17bba9d1ded60e2e0dabaa5814b75f1d21fdcb6f700a8b6887f20b",
+    "chatgpt_flutter_ohos/ohos/entry/src/main/ets/speech/VoiceAudioPlugin.ets": "4830d6069b0441db698c1bf9229aa70579704fb0030e98620db32945b12f931c",
+    "chatgpt_flutter_ohos/test/native_ocr.test.cjs": "d0acfaf1463e45580220bc5251bd602daead3e882c6050d3dcec4ac546569a1e",
+    "chatgpt_flutter_ohos/test/native_pdf_package.test.cjs": "e2db0630dddaeab9062525343b2a287a2a2dd3c38aca8692cbcef805ad2d93cd",
+    "chatgpt_flutter_ohos/test/native_secure_storage.test.cjs": "a8813815b0ebd7824d9965d8c46c6e0fe276db8e1322dc5a1ec0c7284c043f48",
+    "chatgpt_flutter_ohos/test/native_share.test.cjs": "eb12c39cd53c3b01be6ded5158199c49256f1bff52e705c74b538bfda8332bc5",
+    "chatgpt_flutter_ohos/test/native_voice_audio.test.cjs": "29fa578b254fa402e30c4f752649323aaa9566263dc35d95caa5bb76e98c6c65",
+    "chatgpt_flutter_ohos/test/support/native_plugin_loader.cjs": "ec5d8e855f0d8eb633f49f8d027b0700d00c886d931354b34f4a5999324b2a45"
+  },
+  "fixes": [
+    {
+      "problem": "RangeError constructing UTF-8 typed view from HarmonyOS Buffer.buffer and byteOffset before HUKS encryption",
+      "change": "Use ArkTS util UTF-8/Base64 codecs; preserve HUKS alias, v1 ciphertext envelope, nonce, tag and AAD format",
+      "temporaryDiagnosticsRemoved": true
+    },
+    {
+      "problem": "Ability module sandbox paths differ from Flutter path_provider application paths",
+      "change": "Validate both contexts within existing path, link and size bounds"
+    },
+    {
+      "problem": "AVPlayer error 5400102 when setting interrupt mode in initialized state",
+      "change": "Set audioInterruptMode after prepared and before play"
+    },
+    {
+      "problem": "Core Vision error 1001400001 on PDF Kit PixelMap",
+      "change": "Bounded PNG encode/decode to RGBA before recognition; release all intermediate resources"
+    },
+    {
+      "problem": "Preferred routes alone do not prove a headset remains connected",
+      "change": "Match preferred device id/type/role against live connected inventory; select input from MEDIA_INPUT_DEVICES; validate user-enabled media output before activating communication session, permit A2DP only at preflight and require SCO for full duplex"
+    },
+    {
+      "problem": "Conversation initialization aborted on OHOS generic duplicate-column DatabaseException 14800021",
+      "change": "Use SchemaGuard for generation retry columns instead of English error text matching; preserve legacy records"
+    }
+  ],
+  "pending": [],
+  "boundaries": [
+    "One phone and current headset only",
+    "No other headset types or long-duration performance/power checks",
+    "Single-page synthetic scanned PDF only",
+    "No process kill during partial image copying",
+    "No real account switching or recovery confirmation UI flow",
+    "No AI provider or Huawei account login network validation",
+    "Share path compatibility covered by host regression only",
+    "Audio-path-off test uses Super Device while Bluetooth link remains connected; full radio disconnection not tested"
+  ],
+  "evidenceSha256": {
+    "huks-fixed-full.log": "d7bf80800b23ff5d5928edb9ec98d2fb1f151a0d329193d7e0fae7c078fd5d79",
+    "synthesize-player-fixed.log": "16aed0a400b0217f6c79f7d7ecb16e1a0be621122e0899687f924a6c1b0620b5",
+    "system-tts.log": "25bab9edf7a6e30260997e2a96f9ce0fa98e429e20ec06af4d7af746b9a2d585",
+    "microphone.log": "7535f99b44a70a4fed1aa2cfc07d609a9d13f139bc68cec7c3e73e98c9992f28",
+    "duplex-cue-live.log": "82df2a26987422826e075541d9af21e57b67d93e1cf1550bab54628f24e6798a",
+    "pdf-ocr-final.log": "0e89b0bcc6873b110c0e7c1bdf8885002c6ba6a76bf70073c5854505d2ef2c21",
+    "route-super-device-off.log": "02f959780d1222dcd607016c45cab6c8dc0685a3a9981d497ea0f31a55bd26d8",
+    "route-super-device-on.log": "11d7a9d85e153d06fd2113fe1f17687fdd7190782f1f7f7101a37bf7e6d8a38f",
+    "ui-panel-enabled.log": "3cb89e88d189ac8bcdcc1ebfc2bfbe57b26d39fbab57d87589ec4c8bff32c104",
+    "picker-restore.log": "dada5d91816820bfe67c9f7bceaeeb0c7dd68c17608da40f771f962081884ca8",
+    "background.log": "11ba7b3a4c8c2d3028abd2c5db938aeb51b2bbc2eb85eea21b5959f1055b39e5",
+    "generation-probe-fixed.log": "153b48d1dc75c739578572e7c2df8e4808a7c98e46c828092fc2565644a39ba7",
+    "ui-state-fixed.log": "a0de6de1fe4a03f412eef0fbd9daf4ff97ecec1da9471b20c4d161bf7d557ba6",
+    "native-tests-final76.log": "b587928f92cc1ca602f7d78e1474614ef45729f7c35460b5ea64ef259a4ba14a",
+    "core-schema-tests.log": "19d6388be1a016381df3f6ca4dd29dad76407fb336abde42a0b7fc08472b743b",
+    "core-schema-analyze.log": "a893841acc0cb62493e29338eacd9a767e68c0f485faba171bee5410b82d5f89",
+    "release-ui-fixed-build.log": "5c7137e09c8912140cfa008cbee79a7062779200a3ab9e1ad9a2736970caa8db",
+    "release-ui-fixed-install.log": "f834c7b0d04bb205664bb2c666cb872caae4780cb6147b38e95afc9ec077f844",
+    "release-ui-fixed-start.log": "4765cf6e38f61be3ce9fa13fdcf53077b79f3da39c947a2123d1facd6c0e3962",
+    "final-voice-panel.png": "ef654356f1a63c4d331bc08b9c2adec09666deee94ce9bbd5cf92d4a61543805",
+    "final-duplex-on.png": "c0a200a869ce1f247c5bc52af1ee773ca82d45a2b87c8a415ba2f469a861af76"
+  }
+}

@@ -20,7 +20,7 @@ module.exports = function load(name, dependencies, context, options = {}) {
     return dependencies[id];
   } });
   const plugin = new module.exports.default(context);
-  plugin.onAttachedToEngine({ getBinaryMessenger() {} });
+  plugin.onAttachedToEngine({ getBinaryMessenger() {}, getApplicationContext() { return options.applicationContext || context; } });
   const call = (method, args = {}) => new Promise((resolve, reject) => plugin.onMethodCall({ method, argument: k => args[k] ?? null }, {
     success: resolve, error: (code, message) => reject(Object.assign(new Error(message), { code })), notImplemented: () => reject(new Error('not implemented')),
   }));

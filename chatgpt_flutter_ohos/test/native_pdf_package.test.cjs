@@ -24,9 +24,17 @@ function pdfFixture(options = {}) {
       async packing() {if(options.packing) await options.packing; if(options.failPacking)throw new Error('packing'); return new Uint8Array(options.outputBytes??8).buffer;},
       async release(){released.push('packer');if(options.releaseFailure)throw new Error('release');},
     };}}},
-  }, {filesDir:'/files',cacheDir:'/cache',tempDir:'/temp'});
+  }, {filesDir:'/files',cacheDir:'/cache',tempDir:'/temp'}, {applicationContext:options.applicationContext});
   return {...native,released,handles,renders,render:(args={})=>native.call('render',{path:'/files/original.pdf',page:1,...args})};
 }
+test('PDF accepts Flutter application paths without expanding sibling or link access',async()=>{
+  const f=pdfFixture({applicationContext:{filesDir:'/application/files',cacheDir:'/application/cache',tempDir:'/application/temp'},symlink:true});
+  assert.equal((await f.render({path:'/application/files/a.pdf'})).length,8);
+  for(const path of ['/application/files-other/a.pdf','/application/files/../a.pdf','/application/files/link/a.pdf']) {
+    await assert.rejects(f.render({path}),{code:'pdf_render_error'});
+  }
+  assert.equal(f.handles.size,0);
+});
 test('PDF previews only the cited page within a bounded raster and releases every resource',async()=>{
   const f=pdfFixture();const bytes=await f.render();
   assert.equal(bytes.length,8);assert.deepEqual(f.renders,[{index:1,width:1536,height:3072}]);
@@ -51,7 +59,7 @@ test('PDF rejects concurrent calls and discards background/engine-stale raster r
   for(const detach of [false,true]) {
     let resume;const f=pdfFixture({packing:new Promise(resolve=>{resume=resolve;})});
     const pending=f.render();await tick();await assert.rejects(f.render(),{code:'pdf_busy'});
-    if(detach){f.plugin.onDetachedFromEngine({});f.plugin.onAttachedToEngine({getBinaryMessenger(){}});}else f.plugin.suspend();
+    if(detach){f.plugin.onDetachedFromEngine({});f.plugin.onAttachedToEngine({getBinaryMessenger(){},getApplicationContext(){return {filesDir:'/files',cacheDir:'/cache',tempDir:'/temp'};}});}else f.plugin.suspend();
     resume();await assert.rejects(pending,{code:'pdf_render_error'});assert.equal(f.handles.size,0);
     assert.equal((await f.render()).length,8);
   }

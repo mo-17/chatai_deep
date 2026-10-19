@@ -18,10 +18,13 @@ export default class TtsPlaybackPlugin implements FlutterPlugin, MethodCallHandl
   private cleanup: Promise<void> = Promise.resolve();
   private releaseFailed = false;
   private context: common.UIAbilityContext;
+  private applicationContext: common.Context | null = null;
   private route: VoiceAudioPlugin;
   constructor(context: common.UIAbilityContext, route: VoiceAudioPlugin) { this.context = context; this.route = route; }
   getUniqueClassName(): string { return 'ChataiDeepTtsPlaybackPlugin'; }
   onAttachedToEngine(binding: FlutterPluginBinding): void {
+    // path_provider 使用应用上下文；其缓存目录可能不同于 Ability 的模块缓存。
+    this.applicationContext = binding.getApplicationContext();
     this.channel = new MethodChannel(binding.getBinaryMessenger(), 'aipu/tts-playback');
     this.channel.setMethodCallHandler(this);
   }
@@ -61,7 +64,8 @@ export default class TtsPlaybackPlugin implements FlutterPlugin, MethodCallHandl
       if (this.releaseFailed || generation !== this.generation || this.channel === null) throw new Error('Player not available');
       const path = call.argument('path') as string;
       if (typeof id !== 'string' || !/^\d+_\d+$/.test(id) || typeof path !== 'string' ||
-        !path.startsWith(`${this.context.cacheDir}/tts_audio_cache/`) ||
+        ![this.context.cacheDir, this.applicationContext?.cacheDir].some((root: string | undefined): boolean =>
+          root !== undefined && path.startsWith(`${root}/tts_audio_cache/`)) ||
         path.includes('\0') || path.split('/').includes('..') || !path.endsWith('.wav')) throw new Error('Invalid playback');
       file = fs.openSync(path, fs.OpenMode.READ_ONLY | fs.OpenMode.NOFOLLOW);
       const stat = fs.statSync(file.fd);
@@ -77,9 +81,10 @@ export default class TtsPlaybackPlugin implements FlutterPlugin, MethodCallHandl
           task.player.audioRendererInfo = {
             usage: this.route.active ? audio.StreamUsage.STREAM_USAGE_VOICE_COMMUNICATION : audio.StreamUsage.STREAM_USAGE_MUSIC,
             rendererFlags: 0 };
-          task.player.audioInterruptMode = audio.InterruptMode.SHARE_MODE;
           task.player.prepare().catch((): void => { this.finish(task, true); });
         } else if (state === 'prepared') {
+          // 系统仅允许在 prepared/playing/paused/completed 状态设置中断模式。
+          task.player.audioInterruptMode = audio.InterruptMode.SHARE_MODE;
           task.player.play().catch((): void => { this.finish(task, true); });
         } else if (state === 'completed') this.finish(task, false);
       });

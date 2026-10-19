@@ -62,6 +62,19 @@ export default class VoiceAudioPlugin implements FlutterPlugin, MethodCallHandle
     this.suspend();
   }
   suspend(): void { this.generation++; this.ready = false; this.release().catch((): void => {}); }
+  private async present(devices: audio.AudioDeviceDescriptors): Promise<boolean> {
+    const connected = await this.routing.getDevices(audio.DeviceFlag.ALL_DEVICES_FLAG);
+    return devices.length > 0 && devices.every((device: audio.AudioDeviceDescriptor): boolean => connected.some(
+      (current: audio.AudioDeviceDescriptor): boolean => current.id === device.id &&
+        current.deviceType === device.deviceType && current.deviceRole === device.deviceRole));
+  }
+  private async headsetOutputEnabled(): Promise<boolean> {
+    const outputs = await this.routing.getPreferOutputDeviceForRendererInfo({
+      usage: audio.StreamUsage.STREAM_USAGE_MUSIC, rendererFlags: 0 });
+    // 蓝牙尚未切入通话时可使用 A2DP；这里仅检查用户已允许耳机输出，随后仍完整验证 SCO 收放音。
+    return outputs.length > 0 && outputs.every((device: audio.AudioDeviceDescriptor): boolean =>
+      this.headset(device) || device.deviceType === audio.DeviceType.BLUETOOTH_A2DP) && await this.present(outputs);
+  }
   private async routesSafe(): Promise<boolean> {
     const input = await this.routing.getPreferredInputDeviceForCapturerInfo({
       source: audio.SourceType.SOURCE_TYPE_VOICE_RECOGNITION, capturerFlags: 0 });
@@ -69,8 +82,10 @@ export default class VoiceAudioPlugin implements FlutterPlugin, MethodCallHandle
       usage: audio.StreamUsage.STREAM_USAGE_VOICE_COMMUNICATION, rendererFlags: 0 });
     const media = await this.routing.getPreferOutputDeviceForRendererInfo({
       usage: audio.StreamUsage.STREAM_USAGE_MUSIC, rendererFlags: 0 });
+    // 首选路由可能短暂保留已拔出设备；必须同时出现在当前连接清单，且设备身份与方向一致。
     // A2DP 只有播放能力；无麦克风的耳机和扬声器均不能当作安全双工路由。
-    return this.headsets(input) && this.headsets(speech) && this.headsets(media);
+    return this.headsets(input) && this.headsets(speech) && this.headsets(media) &&
+      await this.present(input.concat(speech, media));
   }
   private release(): Promise<void> {
     const next = this.cleanup.catch((): void => {}).then(() => this.releaseNow());
@@ -123,11 +138,13 @@ export default class VoiceAudioPlugin implements FlutterPlugin, MethodCallHandle
     try {
       await this.release();
       if (this.session.isAudioSessionActivated()) throw new Error('Session already owned');
+      // 必须在激活通信会话之前检查；不能擅自重新开启超级终端等系统界面已关闭的耳机音频通路。
+      if (!(await this.headsetOutputEnabled())) throw new Error('Headset audio output disabled');
       this.session.setAudioSessionScene(audio.AudioSessionScene.AUDIO_SESSION_SCENE_VOICE_COMMUNICATION);
       await this.session.activateAudioSession({ concurrencyMode: audio.AudioConcurrencyMode.CONCURRENCY_MIX_WITH_OTHERS });
       this.ownsSession = true;
       if (generation !== this.generation) throw new Error('Audio cancelled');
-      const inputs = this.session.getAvailableDevices(audio.DeviceUsage.CALL_INPUT_DEVICES);
+      const inputs = this.session.getAvailableDevices(audio.DeviceUsage.MEDIA_INPUT_DEVICES);
       const input = inputs.find((device: audio.AudioDeviceDescriptor) => this.headset(device));
       if (input === undefined) throw new Error('No headset microphone');
       this.previousInput = this.session.getSelectedMediaInputDevice();

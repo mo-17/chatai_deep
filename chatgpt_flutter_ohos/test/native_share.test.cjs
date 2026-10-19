@@ -2,7 +2,7 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const load = require('./support/native_plugin_loader.cjs');
 
-function fixture({ manual = false, failShow = false, failRead = false, symbolic = false, declaredSize = 5, sizes = {} } = {}) {
+function fixture({ manual = false, failShow = false, failRead = false, symbolic = false, declaredSize = 5, sizes = {}, applicationContext } = {}) {
   const files = new Map([['/files/export.txt', Buffer.from('hello')]]), dirs = new Set(), handles = new Map();
   const panels = []; let sequence = 0;
   const stats = p => ({ size: sizes[p] ?? (files.has(p) ? declaredSize : 0), isFile: () => files.has(p), isDirectory: () => dirs.has(p), isSymbolicLink: () => symbolic });
@@ -32,11 +32,21 @@ function fixture({ manual = false, failShow = false, failRead = false, symbolic 
     '@kit.CoreFileKit': { fileIo: io, fileUri: { getUriFromPath: p => 'file://' + p } },
     '@kit.ShareKit': { systemShare: { SharedData, ShareController, SelectionMode: { SINGLE: 1 }, SharePreviewMode: { DETAIL: 1 } } },
     '@kit.ArkData': { uniformTypeDescriptor: { UniformDataType: { PLAIN_TEXT: 'plain', FILE: 'file' }, getUniformDataTypeByFilenameExtension: () => 'text' } },
-  }, { cacheDir: '/cache', filesDir: '/files', tempDir: '/temp' });
+  }, { cacheDir: '/cache', filesDir: '/files', tempDir: '/temp' }, { applicationContext });
   const share = (args = {}) => native.call('share', { files: [], ...args });
   return { ...native, share, files, dirs, handles, panels };
 }
 const fileArgs = { files: [new Map([['path', '/files/export.txt'], ['name', '报告.txt']])] };
+test('应用上下文的导出文件可分享，仍拒绝相邻目录和链接', async () => {
+  const options = { applicationContext: { cacheDir:'/application/cache', filesDir:'/application/files', tempDir:'/application/temp' } };
+  const f=fixture(options); f.files.set('/application/cache/export.txt',Buffer.from('hello'));
+  const args=path=>({files:[new Map([['path',path],['name','报告.txt']])]});
+  assert.equal(await f.share(args('/application/cache/export.txt')),'success');
+  await assert.rejects(f.share(args('/application/cache-other/export.txt')),{code:'share_error'});
+  const linked=fixture({...options,symbolic:true});linked.files.set('/application/cache/export.txt',Buffer.from('hello'));
+  await assert.rejects(linked.share(args('/application/cache/export.txt')),{code:'share_error'});
+  assert.equal(f.handles.size,0);
+});
 
 test('分享独立副本，原文件删除后仍可读，短读短写保留字节', async () => {
   const f = fixture(); assert.equal(await f.share(fileArgs), 'success');
