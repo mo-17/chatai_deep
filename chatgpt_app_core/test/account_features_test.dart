@@ -1,5 +1,7 @@
 import 'dart:convert';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
+import 'package:package_info_plus/package_info_plus.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:http/http.dart' as http;
 import 'package:http/testing.dart';
@@ -115,6 +117,55 @@ void main() {
         {'requestId', 'content', 'category', 'diagnostics'});
     expect(find.text('已提交，可在此查看处理进展和回复'), findsOneWidget);
   });
+  for (final versionAvailable in [false, true]) {
+    testWidgets('反馈诊断尊重同意且版本可用=$versionAvailable 不阻断提交', (tester) async {
+      const channel = MethodChannel('dev.fluttercommunity.plus/package_info');
+      tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(channel,
+          (_) async {
+        throw PlatformException(code: 'unavailable');
+      });
+      addTearDown(() => tester.binding.defaultBinaryMessenger
+          .setMockMethodCallHandler(channel, null));
+      if (versionAvailable) {
+        PackageInfo.setMockInitialValues(
+            appName: '艾普',
+            packageName: 'com.hzb.flutter_ai',
+            version: '1.2.3',
+            buildNumber: '123',
+            buildSignature: '');
+      }
+      Map? submitted;
+      final api = AccountApi(client: MockClient((request) async {
+        if (request.method == 'POST') {
+          submitted = jsonDecode(request.body) as Map;
+        }
+        return http.Response(
+            jsonEncode({
+              'code': 0,
+              'data': request.method == 'POST'
+                  ? {'id': 1}
+                  : {'list': [], 'total': 0}
+            }),
+            200);
+      }));
+      await tester.pumpWidget(MaterialApp(home: FeedbackPage(api: api)));
+      await tester.pumpAndSettle();
+      await tester.tap(find.byType(CheckboxListTile));
+      await tester.enterText(find.byType(TextField), '鸿蒙平台测试反馈内容');
+      await tester.tap(find.text('提交反馈'));
+      await tester.pumpAndSettle();
+      expect(submitted, isNotNull);
+      final diagnostics = submitted!['diagnostics'] as Map;
+      expect(
+          diagnostics.keys.toSet(),
+          versionAvailable
+              ? {'platform', 'locale', 'appVersion'}
+              : {'platform', 'locale'});
+      if (versionAvailable) expect(diagnostics['appVersion'], '1.2.3+123');
+      expect(find.text('已提交，可在此查看处理进展和回复'), findsOneWidget);
+    });
+  }
+
   testWidgets(
       'unverified email cannot start trial and examples never send requests',
       (tester) async {

@@ -65,9 +65,11 @@ class _FeedbackPageState extends State<FeedbackPage> {
       _api.verifyCurrent();
       final diagnostic = <String, String>{};
       if (_diagnostics) {
-        if (Platform.operatingSystem != 'ohos') {
+        try {
           final info = await PackageInfo.fromPlatform();
           diagnostic['appVersion'] = '${info.version}+${info.buildNumber}';
+        } catch (_) {
+          // 可选版本信息不可用不阻断反馈，仍尊重用户关闭诊断的选择。
         }
         diagnostic['platform'] = Platform.operatingSystem;
         if (!mounted) return;

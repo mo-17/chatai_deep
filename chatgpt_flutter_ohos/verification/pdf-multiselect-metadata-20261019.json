@@ -1,0 +1,85 @@
+{
+  "date": "2026-10-19",
+  "parentCommit": "c51f8bd29a0d07e0a3c71a5aa471f008528d84d7",
+  "flutter": "3.35.7-ohos-local",
+  "localSnapshotNotUpstreamRelease": true,
+  "features": [
+    "verified knowledge PDF citation-page preview",
+    "installed bundle metadata through package_info standard channel",
+    "bounded multi-photo selection and append"
+  ],
+  "checks": {
+    "core": 55,
+    "nativeChannelsAndBuildGuard": 54,
+    "imageAdapter": 5,
+    "totalPassed": 114,
+    "skipped": 0
+  },
+  "staticAnalysis": "core changed files/tests, shell and image adapter: no issues",
+  "releaseHap": {
+    "path": "chatgpt_flutter_ohos/build/ohos/hap/entry-default-signed.hap",
+    "bytes": 55251332,
+    "sha256": "0f2d9f6c9883727204b3eac40b045cdb9464f4d21b22e4cbe905ed177d08a7a1",
+    "aotLoaderFingerprint": "c5ebc0fd8934a6189f10b6c07553e6c921262e2a2c1fb03a7c7b0b19d17e89e2",
+    "quickjsLoaderFingerprint": "d7febea42810e9ca90601dd5637b77bd613004cccaa39ef1ccbabc3ee5332220",
+    "aotAndNativeMatchCurrentBuild": true,
+    "bundledQuickjsLicenseVerified": true,
+    "signing": "existing local/debug configuration"
+  },
+  "limits": {
+    "pdfInputMiB": 64,
+    "pdfPageIndexMaxExclusive": 1000,
+    "pdfLongestEdge": 3072,
+    "pdfOutputMiB": 32,
+    "pdfDartWaitSeconds": 30,
+    "photosPerBatch": 10,
+    "photoInputMiB": 20,
+    "photoBatchInputAndOutputMiB": 128
+  },
+  "physicalDeviceVerified": false,
+  "hdcTargets": "Empty",
+  "published": false,
+  "knownRemaining": [
+    "Sherpa model voices",
+    "headset duplex routing",
+    "image picker process-death recovery",
+    "AGC credentials and real Huawei authorization validation",
+    "physical-device PDF/photo/package-info acceptance"
+  ],
+  "primarySources": [
+    "https://developer.huawei.com/consumer/cn/doc/doccenter-dev-faq/faqs-arkui-688"
+  ],
+  "installedSdkDeclarations": [
+    "@ohos.bundle.bundleManager.d.ts",
+    "@hms.officeservice.pdfservice.d.ts"
+  ],
+  "pdfTimeoutBoundary": "Dart wait is bounded; synchronous native parsing is not forcibly terminated by that timeout",
+  "verificationLogSha256": {
+    "build.log": "a151f06362b98ffc2559a65e1e4979ef77f3a7d97e9737ef33c619935006a8fb",
+    "core-tests.log": "574dfcd3f190316a175155397d025667aba7f65700b1e5de2a939f127a67962e",
+    "image-adapter-tests.log": "9f9a532e16f7141616b6ceeba06d73b279a039939af588a3273d68ec58b1d7ab",
+    "native-tests.log": "a110f430919721249e1381f164c4be698e2489eb23e19afe215547233c0141c4",
+    "core-analyze.log": "036a03e645503309ebbb59af7ed549bab08e9e0820739c8d869bf48c40287a70",
+    "shell-analyze.log": "e83813bfad504110968cf04b5e449530f397a8b29a29d286ee27171592d36f34",
+    "image-adapter-analyze.log": "a893841acc0cb62493e29338eacd9a767e68c0f485faba171bee5410b82d5f89",
+    "hdc-targets.txt": "c769b18b5babef2903583320036d1e507ee1e80e1386b29d098721999cd20bcf"
+  },
+  "sourceSha256": {
+    "AGENTS.md": "4f6cae20123038fb332722fbd0693254261bffd447cae85a3e1a3153d99ef96a",
+    "chatgpt_app_core/lib/pages/feedback_page.dart": "4cd3e1b25eeb965eba9e085918b3bc168ac57f112df9c52d7fe6bc4d2393c243",
+    "chatgpt_app_core/lib/pages/knowledge_pdf_page.dart": "a4979263c46fcf2e8cedf02064cdfa554ba54c5dc27629856d8157a59a7d10c7",
+    "chatgpt_app_core/lib/widget/message_input_widget.dart": "8047bbfbdaeac33f8b62194ce9a8e24c3ae78288065ebd40bff7b9df71935e2e",
+    "chatgpt_app_core/test/account_features_test.dart": "7fa5a42872059ef17c12ffbd0ee7a9d122530cd2003e259403cdde2dd94d49e7",
+    "chatgpt_app_core/test/ohos_package_info_test.dart": "78af1116ade8531e43116b78c01e7bcff54a09c5bd59ed865d19a7fdc1051b99",
+    "chatgpt_flutter_ohos/README.md": "ea00f2b70afb2dbd751fa467f4be676cc8fcc7cff181ed2ae25cea1423f71534",
+    "chatgpt_flutter_ohos/ohos/entry/src/main/ets/entryability/EntryAbility.ets": "91123411b2ed06b25f554c841eb9c6828033d2428e94e52264242971b8c02a65",
+    "chatgpt_flutter_ohos/ohos/entry/src/main/ets/media/ImagePickerPlugin.ets": "6f8e72c4ef21d28a04afa41c7ca29a93a2d981e8bf50721a318a5c144c6883d6",
+    "chatgpt_flutter_ohos/ohos/entry/src/main/ets/media/KnowledgePdfPlugin.ets": "1aa570376505b9f12bf6d6ef195cc924aed63246c7b734adf7178c9964c226c6",
+    "chatgpt_flutter_ohos/ohos/entry/src/main/ets/media/PackageInfoPlugin.ets": "ac16b579eec2c0e073e0ad78644b91b6e858fc1266669c18c0551bb35d344bd6",
+    "chatgpt_flutter_ohos/pubspec.yaml": "b31e4ba000f3e0cd40538f5ac1f9c7487c88b501b666f72802aa2a8d6834048f",
+    "chatgpt_flutter_ohos/test/native_image_picker.test.cjs": "e21a560376547fd13ebd6ab327af937dd94787ea4556507f022e56429674d959",
+    "chatgpt_flutter_ohos/test/native_pdf_package.test.cjs": "f0a4b8e59bab6ced6a68619b58bb48ede71e6bef893c5f07302dd25579579a17",
+    "ohos_plugins/image_picker/lib/ohos_image_picker.dart": "ce1db189b565d0524d8532f8b4e9471366802ae3bfe0fcda6f1e92b79add28e2",
+    "ohos_plugins/image_picker/test/ohos_image_picker_test.dart": "2ece0617d5c1c4aa1ccae5e822ea87b33237699b5a771005896c2abe747d5b47"
+  }
+}

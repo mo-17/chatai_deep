@@ -280,20 +280,25 @@ class _MessageInputWidgetState extends State<MessageInputWidget> {
     final generation = _inputGeneration;
     _pickerEnter();
     try {
-      final picked = await _picker.pickImage(
-        source: source,
-        imageQuality: 70,
-        maxWidth: 2048,
-        maxHeight: 2048,
-      );
-      if (picked != null &&
+      final List<XFile> picked;
+      if (source == ImageSource.gallery && Platform.operatingSystem == 'ohos') {
+        picked = await _picker.pickMultiImage(
+            imageQuality: 70, maxWidth: 2048, maxHeight: 2048, limit: 10);
+      } else {
+        final single = await _picker.pickImage(
+            source: source, imageQuality: 70, maxWidth: 2048, maxHeight: 2048);
+        picked = single == null ? [] : [single];
+      }
+      if (picked.isNotEmpty &&
           mounted &&
           widget.editingEnabled &&
           revision == _editingRevision &&
           generation == _inputGeneration &&
           widget.isReferenceScopeCurrent?.call() != false) {
-        widget.onImagesPicked
-            ?.call({...widget.pendingImages, picked.path}.toList());
+        widget.onImagesPicked?.call({
+          ...widget.pendingImages,
+          ...picked.map((file) => file.path)
+        }.toList());
         return true;
       }
     } catch (e) {

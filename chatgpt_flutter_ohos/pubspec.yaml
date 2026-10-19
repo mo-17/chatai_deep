@@ -44,7 +44,7 @@ dependency_overrides:
       url: https://gitee.com/openharmony-sig/flutter_packages.git
       path: packages/shared_preferences/shared_preferences
       ref: 35fb467533e174411a117b2a030c15d2a3a9687c
-  # package_info_plus: 暂无鸿蒙实现，通过 §6.4 运行时分支兜底
+  # package_info_plus 使用壳内手动注册的标准通道，版本来自实际安装包。
   # ML Kit / pdfx 仅作共享导入的编译占位；OHOS 的 OcrService 改走
   # 壳内 Core Vision / PDF Kit 通道，不调用这两个 stub。
   google_mlkit_text_recognition:

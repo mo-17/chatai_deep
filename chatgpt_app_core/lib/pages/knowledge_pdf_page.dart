@@ -38,7 +38,9 @@ class _KnowledgePdfPageState extends State<KnowledgePdfPage> {
       if (file == null) {
         throw const FormatException('本机没有通过摘要校验的PDF原件；可继续查看引文快照');
       }
-      if (!Platform.isAndroid && !Platform.isIOS) {
+      if (!Platform.isAndroid &&
+          !Platform.isIOS &&
+          Platform.operatingSystem != 'ohos') {
         throw const FormatException('本平台暂不支持原件渲染，请查看引文快照');
       }
       final doc = PdfDocument(inputBytes: await file.readAsBytes());
@@ -59,13 +61,15 @@ class _KnowledgePdfPageState extends State<KnowledgePdfPage> {
         doc.dispose();
       }
       if (!mounted || !_identity.current) return;
-      final png = await _channel.invokeMethod<Uint8List>(
-          'render', {'path': file.path, 'page': source.pageNumber! - 1});
+      final png = await _channel.invokeMethod<Uint8List>('render', {
+        'path': file.path,
+        'page': source.pageNumber! - 1
+      }).timeout(const Duration(seconds: 30));
       if (!mounted || !_identity.current) return;
       if (png == null) throw const FormatException('PDF页面未能渲染');
       setState(() => _image = png);
     } catch (e) {
-      if (mounted) {
+      if (mounted && _identity.current) {
         setState(() =>
             _error = e is FormatException ? e.message : '原件预览未完成，请查看引文快照');
       }

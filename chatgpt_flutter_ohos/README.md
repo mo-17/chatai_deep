@@ -47,7 +47,8 @@ HarmonyOS `DocumentViewPicker`。无须申请整个存储空间的读写权限�
 会话头像沿用共享业务流程和账号边界。图片按请求等比缩放（最长边上限 4096），
 归一 EXIF 方向，PNG 保留透明格式，其余格式转 JPEG；输出为静态图，不保留原始 EXIF。
 原图最多 20 MiB / 64M 像素，默认输出尺寸上限 2048 × 2048。
-相机结果 -1 表示未返回图片；其余系统异常明确报错。未实现多图选择和进程被杀后的选择恢复。
+相机结果 -1 表示未返回图片；其余系统异常明确报错。相册支持单批最多 10 张，输入/输出各最多 128 MiB；逐张转换，整批失败时清理本批副本。
+多次选择可继续追加，不截断已有附件；进程被杀后的选择恢复尚未实现。
 
 `../ohos_plugins/share_plus` 替换分享 stub，使用 ShareKit 分享文本和应用沙箱内文件。
 聊天转发恢复系统分享；创作资料导出可使用文件分享。角色卡和报告仍保留上一批的系统保存流程。
@@ -107,12 +108,29 @@ quickjs-libc、文件/网络/进程/宿主桥；不执行异步 job 队列。现
 Sherpa 模型音色和耳机双工仍未移植；模型页面的提示改为真实限制。
 
 
+## PDF 原件预览与版本信息
+
+`KnowledgePdfPlugin.ets` 实现共享知识页既有 `aipu/knowledge-pdf` 通道。
+「查看原件」仍先按当前账号目录及 SHA-256 校验原 PDF，然后由 PDF Kit
+渲染引用所在页，沿用共享页的连续引文高亮与缩放查看。只读取应用沙箱文件，
+拒绝链接、路径穿越、非文件及超过 64 MiB 的 PDF；引用页索引上限 1000 页，
+页面最长边最多 3072 像素、放大最多 2 倍，输出 PNG 最多 32 MiB。
+一次只处理一个预览，所有成功/失败路径释放 packer、像素、页面、文档和文件句柄。
+后台或 engine 销毁后丢弃迟到结果；Dart 等待最多 30 秒。超时不代表同步 PDF
+原生解析已被强制终止，复杂 PDF 的运行时表现仍需真机验证。
+
+`PackageInfoPlugin.ets` 实现 `package_info_plus` 的标准通道。
+「我的」版本号和用户主动勾选反馈诊断时的版本字段来自实际安装包的
+`versionName` / `versionCode`，应用名按本地化资源读取；不硬编码版本、不读取
+签名信息或其它已安装应用，不申请额外权限。诊断默认关闭，版本信息不可用时
+省略该可选字段，反馈仍可提交。应用市场更新跳转/上架分发仍沿用既有边界。
+
 ## 验证与真机清单
 
 ```sh
 # 在仓库根目录执行：测试真实 ArkTS 方法体，系统 API 使用受控替身
 node --test chatgpt_flutter_ohos/test/native_file_picker.test.cjs chatgpt_flutter_ohos/test/native_directory_picker.test.cjs
-node --test chatgpt_flutter_ohos/test/native_image_picker.test.cjs chatgpt_flutter_ohos/test/native_share.test.cjs
+node --test chatgpt_flutter_ohos/test/native_image_picker.test.cjs chatgpt_flutter_ohos/test/native_share.test.cjs chatgpt_flutter_ohos/test/native_pdf_package.test.cjs
 node --test chatgpt_flutter_ohos/test/native_speech.test.cjs chatgpt_flutter_ohos/test/native_ocr.test.cjs chatgpt_flutter_ohos/test/build_release_guard.test.cjs
 # 在 ohos_plugins/file_picker 内执行：Dart 通道合同
 flutter test
@@ -139,3 +157,11 @@ C/FFI/isolate 测试及 UBSan 检测，仍需鸿蒙真机验证动态库装载�
 认证依赖注入保留 HUKS 安全存储。Client ID、签名指纹和后端 Secret 尚需实际配置，
 当前未完成真实账号授权验收。配置步骤及验证边界见
 [HarmonyOS 华为账号登录](docs/huawei-login.md)。
+
+本批真机补测：相册一次选择多图、取消、批内坏图及超限后立即重试；
+PDF 引用页、高亮、扫描件、横竖页、损坏/加密文件、后台中断；安装不同版本包后
+版本显示是否随安装包更新，以及关闭反馈诊断时不发送版本字段。
+原生测试执行实际插件源码但模拟系统 API，不能证明真实 PDF 渲染、相册提供方或设备版本查询已验收。
+
+接口依据：[PhotoViewPicker 官方示例](https://developer.huawei.com/consumer/cn/doc/doccenter-dev-faq/faqs-arkui-688)，
+以及本机 SDK 的 `@ohos.bundle.bundleManager.d.ts` / `@hms.officeservice.pdfservice.d.ts`。

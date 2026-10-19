@@ -2,12 +2,12 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const load = require('./support/native_plugin_loader.cjs');
 function fixture({ selected = ['photo://1'], capture = { resultCode: 0, resultUri: 'photo://camera' },
-  size = 100, failPack = false, failDecode = false, mime = 'image/jpeg', orientation = 'Top-left', dimensions = { width: 4000, height: 2000 } } = {}) {
+  size = 100, failPack = false, failDecode = false, failDecodeAt = 0, mime = 'image/jpeg', orientation = 'Top-left', dimensions = { width: 4000, height: 2000 } } = {}) {
   const files = new Map(), handles = new Map(), released = [];
-  let next = 0, decodeOptions, packOptions, cameraProfile;
+  let next = 0, decodeOptions, packOptions, cameraProfile, selectOptions, decodes = 0;
   const transforms = [];
   const pixel = { async release() { released.push('pixels'); }, async flip(x, y) { transforms.push(['flip', x, y]); }, async rotate(angle) { transforms.push(['rotate', angle]); } };
-  const decoder = { async getImageInfo() { if (failDecode) throw new Error('decode'); return { size: dimensions, mimeType: mime }; },
+  const decoder = { async getImageInfo() { if (failDecode || ++decodes === failDecodeAt) throw new Error('decode'); return { size: dimensions, mimeType: mime }; },
     async getImageProperty() { return orientation; }, async createPixelMap(options) { decodeOptions = options; return pixel; }, async release() { released.push('decoder'); } };
   const io = {
     OpenMode: { READ_ONLY: 1, CREATE: 2, READ_WRITE: 4, TRUNC: 8 },
@@ -20,7 +20,7 @@ function fixture({ selected = ['photo://1'], capture = { resultCode: 0, resultUr
   const native = load('ImagePickerPlugin', {
     '@kit.CoreFileKit': { fileIo: io },
     '@kit.MediaLibraryKit': { photoAccessHelper: { PhotoViewMIMETypes: { IMAGE_TYPE: 'image' }, PhotoSelectOptions: class {},
-      PhotoViewPicker: class { async select() { return { photoUris: await selected }; } } } },
+      PhotoViewPicker: class { async select(options) { selectOptions = options; return { photoUris: await selected }; } } } },
     '@kit.CameraKit': { camera: { CameraPosition: { CAMERA_POSITION_FRONT: 1, CAMERA_POSITION_BACK: 0 } },
       cameraPicker: { PickerMediaType: { PHOTO: 'photo' }, async pick(ctx, types, profile) { cameraProfile = profile; return capture; } } },
     '@kit.ImageKit': { image: { PropertyKey: { ORIENTATION: 'Orientation' }, createImageSource() { return decoder; }, createImagePacker() { return {
@@ -29,7 +29,7 @@ function fixture({ selected = ['photo://1'], capture = { resultCode: 0, resultUr
     }; } } },
   }, { cacheDir: '/cache' });
   return { ...native, files, handles, released, transforms, get decodeOptions() { return decodeOptions; },
-    get packOptions() { return packOptions; }, get cameraProfile() { return cameraProfile; } };
+    get packOptions() { return packOptions; }, get cameraProfile() { return cameraProfile; }, get selectOptions() { return selectOptions; } };
 }
 test('相册图像等比缩小且处理短写，完成后关闭所有资源', async () => {
   const f = fixture(); const picked = await f.call('pickImage', { source: 'gallery', maxWidth: 512, maxHeight: 512, quality: 80 });
@@ -71,4 +71,35 @@ test('并发、无效选项和 engine 销毁拒绝迟到结果', async () => {
   f.plugin.onDetachedFromEngine({}); resume(['photo://1']);
   await assert.rejects(pending, { code: 'image_picker_error' }); assert.equal(f.handles.size, 0);
   await assert.rejects(fixture().call('pickImage', { source: 'gallery', maxWidth: 100000 }), { code: 'image_picker_error' });
+});
+
+test('多图选择遵守单批限制并对重复 URI 去重，按顺序生成独立副本', async () => {
+  const f = fixture({selected:['photo://1','photo://2','photo://1']});
+  const picked = await f.call('pickImages',{source:'gallery',limit:4});
+  assert.equal(f.selectOptions.maxSelectNumber,4); assert.equal(picked.length,2);
+  assert.notEqual(picked[0].path,picked[1].path); assert.equal(f.files.size,2);
+  assert.equal(f.handles.size,0); assert.equal(f.released.length,6);
+  assert.equal((await fixture({selected:[]}).call('pickImages',{source:'gallery',limit:4})).length,0);
+});
+test('批内任一图片失败或超过整批字节上限时清理已创建的副本', async () => {
+  for (const options of [
+    {selected:['photo://1','photo://2'],failDecodeAt:2},
+    {selected:Array.from({length:7},(_,i)=>'photo://'+i),size:20*1024*1024},
+  ]) {
+    const f=fixture(options);await assert.rejects(f.call('pickImages',{source:'gallery',limit:10}),{code:'image_picker_error'});
+    assert.equal(f.files.size,0);assert.equal(f.handles.size,0);
+  }
+});
+test('多图拒绝无效数量、超出选择结果及相机批量请求', async()=>{
+  for(const args of [{limit:1},{limit:11},{limit:2.5},{source:'camera'}]) {
+    await assert.rejects(fixture().call('pickImages',{source:'gallery',...args}),{code:'image_picker_error'});
+  }
+  await assert.rejects(fixture({selected:['1','2','3']}).call('pickImages',{source:'gallery',limit:2}),{code:'image_picker_error'});
+});
+test('engine 重建后旧相册回调不能冒充新选择返回', async()=>{
+  let resume;const f=fixture({selected:new Promise(resolve=>{resume=resolve;})});
+  const pending=f.call('pickImages',{source:'gallery',limit:4});
+  f.plugin.onDetachedFromEngine({});f.plugin.onAttachedToEngine({getBinaryMessenger(){}});
+  resume(['photo://1']);await assert.rejects(pending,{code:'image_picker_error'});
+  assert.equal(f.files.size,0);assert.equal(f.handles.size,0);
 });

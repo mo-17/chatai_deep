@@ -26,10 +26,48 @@ class OhosImagePicker extends ImagePickerPlatform {
       'quality': validated.imageQuality ?? 85,
       'frontCamera': validated.preferredCameraDevice == CameraDevice.front,
     });
-    if (row == null) return null;
+    return row == null ? null : _file(row);
+  }
+
+  @override
+  Future<List<XFile>> getMultiImageWithOptions({
+    MultiImagePickerOptions options = const MultiImagePickerOptions(),
+  }) async {
+    MultiImagePickerOptions.createAndValidate(
+      imageOptions: options.imageOptions,
+      limit: options.limit,
+    );
+    final image = ImagePickerOptions.createAndValidate(
+      maxWidth: options.imageOptions.maxWidth,
+      maxHeight: options.imageOptions.maxHeight,
+      imageQuality: options.imageOptions.imageQuality,
+    );
+    final limit = (options.limit ?? 10).clamp(2, 10);
+    final rows = await _channel.invokeListMethod<dynamic>('pickImages', {
+      'source': 'gallery',
+      'maxWidth': image.maxWidth ?? 2048,
+      'maxHeight': image.maxHeight ?? 2048,
+      'quality': image.imageQuality ?? 85,
+      'limit': limit,
+    });
+    if (rows == null) return [];
+    if (rows.length > limit) throw const FormatException('鸿蒙图片选择器返回数量超限');
+    final files = <XFile>[];
+    final seen = <String>{};
+    for (final row in rows) {
+      if (row is! Map) throw const FormatException('鸿蒙图片选择器返回无效结果');
+      final file = _file(Map<String, dynamic>.from(row));
+      if (seen.add(file.path)) files.add(file);
+    }
+    return files;
+  }
+
+  XFile _file(Map<String, dynamic> row) {
     final path = row['path'];
     if (path is! String ||
         !path.startsWith('/') ||
+        path.contains('\x00') ||
+        path.split('/').contains('..') ||
         row['name'] is! String ||
         row['mimeType'] is! String) {
       throw const FormatException('鸿蒙图片选择器返回无效结果');

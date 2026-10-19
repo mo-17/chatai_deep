@@ -72,4 +72,53 @@ void main() {
       throwsFormatException,
     );
   });
+  test('多图选项传入系统通道、限制单批数量并保留顺序去重', () async {
+    messenger.setMockMethodCallHandler(channel, (call) async {
+      expect(call.method, 'pickImages');
+      expect(call.arguments['source'], 'gallery');
+      expect(call.arguments['limit'], 10);
+      expect(call.arguments['maxWidth'], 512);
+      return [
+        for (final name in ['a', 'b', 'a'])
+          {
+            'path': '/cache/$name.png',
+            'name': '$name.png',
+            'mimeType': 'image/png',
+          },
+      ];
+    });
+    final files = await OhosImagePicker().getMultiImageWithOptions(
+      options: const MultiImagePickerOptions(
+        imageOptions: ImageOptions(maxWidth: 512),
+        limit: 20,
+      ),
+    );
+    expect(files.map((f) => f.path), ['/cache/a.png', '/cache/b.png']);
+  });
+  test('多选取消返回空集合，异常结果或无效选项被拒绝', () async {
+    messenger.setMockMethodCallHandler(channel, (_) async => null);
+    expect(await OhosImagePicker().getMultiImageWithOptions(), isEmpty);
+    await expectLater(
+      OhosImagePicker().getMultiImageWithOptions(
+        options: const MultiImagePickerOptions(limit: 1),
+      ),
+      throwsArgumentError,
+    );
+    for (final rows in [
+      [1],
+      [
+        {'path': '/cache/../a', 'name': 'a', 'mimeType': 'image/png'},
+      ],
+      List.generate(
+        11,
+        (_) => {'path': '/cache/a', 'name': 'a', 'mimeType': 'image/png'},
+      ),
+    ]) {
+      messenger.setMockMethodCallHandler(channel, (_) async => rows);
+      await expectLater(
+        OhosImagePicker().getMultiImageWithOptions(),
+        throwsFormatException,
+      );
+    }
+  });
 }

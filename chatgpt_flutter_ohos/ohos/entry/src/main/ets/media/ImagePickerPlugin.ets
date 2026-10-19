@@ -18,6 +18,7 @@ export default class ImagePickerPlugin implements FlutterPlugin, MethodCallHandl
   private context: common.UIAbilityContext;
   private busy = false;
   private sequence = 0;
+  private generation = 0;
   constructor(context: common.UIAbilityContext) { this.context = context; }
   getUniqueClassName(): string { return 'ChataiDeepImagePickerPlugin'; }
   onAttachedToEngine(binding: FlutterPluginBinding): void {
@@ -25,20 +26,21 @@ export default class ImagePickerPlugin implements FlutterPlugin, MethodCallHandl
     this.channel.setMethodCallHandler(this);
   }
   onDetachedFromEngine(binding: FlutterPluginBinding): void {
+    this.generation++;
     this.channel?.setMethodCallHandler(null);
     this.channel = null;
   }
   onMethodCall(call: MethodCall, result: MethodResult): void {
-    if (call.method !== 'pickImage') { result.notImplemented(); return; }
+    if (call.method !== 'pickImage' && call.method !== 'pickImages') { result.notImplemented(); return; }
     if (this.busy) { result.error('picker_busy', '图片选择器正在使用中', null); return; }
     this.busy = true;
     this.execute(call, result);
   }
   private async execute(call: MethodCall, result: MethodResult): Promise<void> {
     try {
-      const picked = await this.pick(call);
+      const picked = await this.pick(call, this.generation);
       this.busy = false;
-      result.success(picked);
+      result.success(call.method === 'pickImage' ? (picked[0] ?? null) : picked);
     } catch (error) {
       this.busy = false;
       result.error('image_picker_error', `选取图片失败 (${(error as BusinessError).code ?? 'io'})`, null);
@@ -52,33 +54,63 @@ export default class ImagePickerPlugin implements FlutterPlugin, MethodCallHandl
     }
     return Math.floor(value);
   }
-  private async pick(call: MethodCall): Promise<PickedImage | null> {
+  private current(generation: number): void {
+    if (generation !== this.generation || this.channel === null) throw new Error('Picker detached');
+  }
+  private async pick(call: MethodCall, generation: number): Promise<PickedImage[]> {
     const width = this.number(call, 'maxWidth', 2048, 1, 4096);
     const height = this.number(call, 'maxHeight', 2048, 1, 4096);
     const quality = this.number(call, 'quality', 85, 0, 100);
     const source = call.argument('source') as string;
-    let uri = '';
+    const multiple = call.method === 'pickImages';
+    const limit = multiple ? this.number(call, 'limit', 10, 2, 10) : 1;
+    if (multiple && call.argument('limit') !== null && call.argument('limit') !== limit) throw new Error('Invalid selection limit');
+    let uris: string[] = [];
     if (source === 'gallery') {
       const options = new photoAccessHelper.PhotoSelectOptions();
       options.MIMEType = photoAccessHelper.PhotoViewMIMETypes.IMAGE_TYPE;
-      options.maxSelectNumber = 1;
+      options.maxSelectNumber = limit;
       const selection = await new photoAccessHelper.PhotoViewPicker().select(options);
-      if (selection.photoUris.length === 0) return null;
-      if (selection.photoUris.length !== 1) throw new Error('Invalid selection');
-      uri = selection.photoUris[0];
-    } else if (source === 'camera') {
+      if (selection.photoUris.length > limit) throw new Error('Invalid selection');
+      uris = Array.from(new Set(selection.photoUris));
+    } else if (source === 'camera' && !multiple) {
       const profile: cameraPicker.PickerProfile = {
         cameraPosition: call.argument('frontCamera') === true
           ? camera.CameraPosition.CAMERA_POSITION_FRONT : camera.CameraPosition.CAMERA_POSITION_BACK,
       };
       const capture = await cameraPicker.pick(this.context, [cameraPicker.PickerMediaType.PHOTO], profile);
       if (capture.resultCode !== 0) {
-        if (capture.resultCode === -1) return null;
+        if (capture.resultCode === -1) return [];
         throw new Error('Camera failed');
       }
-      uri = capture.resultUri;
+      uris = [capture.resultUri];
     } else { throw new Error('Invalid source'); }
-    if (this.channel === null || uri.length === 0) throw new Error('Picker detached');
+    this.current(generation);
+    const created: string[] = [];
+    const images: PickedImage[] = [];
+    let sourceBytes = 0, outputBytes = 0;
+    try {
+      for (const uri of uris) {
+        this.current(generation);
+        if (typeof uri !== 'string' || uri.length === 0) throw new Error('Invalid image URI');
+        const picked = await this.copyImage(uri, width, height, quality, generation, created,
+          (input: number, output: number) => {
+            sourceBytes += input; outputBytes += output;
+            if (sourceBytes > 128 * 1024 * 1024 || outputBytes > 128 * 1024 * 1024) throw new Error('Image batch too large');
+          });
+        images.push(picked);
+      }
+      this.current(generation);
+      return images;
+    } catch (_) {
+      for (const path of created) {
+        try { if (fs.accessSync(path)) await fs.unlink(path); } catch (_) { /* 继续清理本批其余副本。 */ }
+      }
+      throw new Error('无法读取或转换选中的图片');
+    }
+  }
+  private async copyImage(uri: string, width: number, height: number, quality: number,
+    generation: number, created: string[], accountBytes: (input: number, output: number) => void): Promise<PickedImage> {
     const file = await fs.open(uri, fs.OpenMode.READ_ONLY);
     let decoder: image.ImageSource | null = null;
     let pixels: image.PixelMap | null = null;
@@ -87,6 +119,7 @@ export default class ImagePickerPlugin implements FlutterPlugin, MethodCallHandl
     try {
       const stat = await fs.stat(file.fd);
       if (!stat.isFile() || stat.size <= 0 || stat.size > MAX_BYTES) throw new Error('Image too large');
+      accountBytes(stat.size, 0);
       decoder = image.createImageSource(file.fd);
       const info = await decoder.getImageInfo();
       if (info.size.width <= 0 || info.size.height <= 0 ||
@@ -111,11 +144,14 @@ export default class ImagePickerPlugin implements FlutterPlugin, MethodCallHandl
       const mime = png ? 'image/png' : 'image/jpeg';
       packer = image.createImagePacker();
       const bytes = await packer.packing(pixels, { format: mime, quality });
-      if (bytes.byteLength === 0 || bytes.byteLength > MAX_BYTES || this.channel === null) throw new Error('Image too large or detached');
+      this.current(generation);
+      if (bytes.byteLength === 0 || bytes.byteLength > MAX_BYTES) throw new Error('Image too large');
+      accountBytes(0, bytes.byteLength);
       const root = `${this.context.cacheDir}/chatai_image_picker`;
       if (!fs.accessSync(root)) fs.mkdirSync(root);
       const name = `image_${Date.now()}_${this.sequence++}.${png ? 'png' : 'jpg'}`;
       output = `${root}/${name}`;
+      created.push(output);
       const target = await fs.open(output, fs.OpenMode.CREATE | fs.OpenMode.READ_WRITE | fs.OpenMode.TRUNC);
       try {
         let written = 0;
@@ -125,7 +161,7 @@ export default class ImagePickerPlugin implements FlutterPlugin, MethodCallHandl
           written += count;
         }
       } finally { await fs.close(target); }
-      if (this.channel === null) throw new Error('Picker detached');
+      this.current(generation);
       return { path: output, name, mimeType: mime };
     } catch (error) {
       if (output.length > 0 && fs.accessSync(output)) await fs.unlink(output);
