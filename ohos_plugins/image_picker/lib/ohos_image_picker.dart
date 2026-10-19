@@ -9,6 +9,13 @@ class OhosImagePicker extends ImagePickerPlatform {
       ImagePickerPlatform.instance = OhosImagePicker();
 
   @override
+  Future<LostDataResponse> getLostData() async {
+    // 应用通过带账号/会话作用域的恢复通道取回；通用 API 不跨账号取图片。
+    await _channel.invokeMethod<void>('retrieveLostData');
+    return LostDataResponse.empty();
+  }
+
+  @override
   Future<XFile?> getImageFromSource({
     required ImageSource source,
     ImagePickerOptions options = const ImagePickerOptions(),

@@ -8,10 +8,15 @@ import { camera, cameraPicker } from '@kit.CameraKit';
 import { image } from '@kit.ImageKit';
 import { fileIo as fs } from '@kit.CoreFileKit';
 import { BusinessError } from '@kit.BasicServicesKit';
+import { util } from '@kit.ArkTS';
 
 const MAX_BYTES = 20 * 1024 * 1024;
 
 interface PickedImage { path: string; name: string; mimeType: string; }
+interface PickerRecovery {
+  scope: string; id: string; created: number; phase: string;
+  text: string; images: string[]; files: PickedImage[];
+}
 
 export default class ImagePickerPlugin implements FlutterPlugin, MethodCallHandler {
   private channel: MethodChannel | null = null;
@@ -19,6 +24,7 @@ export default class ImagePickerPlugin implements FlutterPlugin, MethodCallHandl
   private busy = false;
   private sequence = 0;
   private generation = 0;
+  private recovery: PickerRecovery | null = null;
   constructor(context: common.UIAbilityContext) { this.context = context; }
   getUniqueClassName(): string { return 'ChataiDeepImagePickerPlugin'; }
   onAttachedToEngine(binding: FlutterPluginBinding): void {
@@ -31,20 +37,99 @@ export default class ImagePickerPlugin implements FlutterPlugin, MethodCallHandl
     this.channel = null;
   }
   onMethodCall(call: MethodCall, result: MethodResult): void {
+    if (['setRecoveryContext', 'retrieveLostData', 'ackRecovery'].includes(call.method)) {
+      try { this.recoveryCall(call, result); }
+      catch (_) { result.error('recovery_error', '图片恢复记录不可用', null); }
+      return;
+    }
     if (call.method !== 'pickImage' && call.method !== 'pickImages') { result.notImplemented(); return; }
     if (this.busy) { result.error('picker_busy', '图片选择器正在使用中', null); return; }
     this.busy = true;
     this.execute(call, result);
   }
   private async execute(call: MethodCall, result: MethodResult): Promise<void> {
+    const recovery = this.recovery; this.recovery = null;
     try {
-      const picked = await this.pick(call, this.generation);
+      if (recovery !== null) this.saveRecovery(recovery);
+      const picked = await this.pick(call, this.generation, recovery);
+      if (recovery !== null) { recovery.files = picked; recovery.phase = 'ready'; this.saveRecovery(recovery); }
       this.busy = false;
       result.success(call.method === 'pickImage' ? (picked[0] ?? null) : picked);
     } catch (error) {
       this.busy = false;
       result.error('image_picker_error', `选取图片失败 (${(error as BusinessError).code ?? 'io'})`, null);
     }
+  }
+  private scope(call: MethodCall): string {
+    const scope = call.argument('scope') as string;
+    if (typeof scope !== 'string' || !/^[a-f0-9]{64}$/.test(scope)) throw new Error('Invalid scope');
+    return scope;
+  }
+  private recoveryPath(scope: string): string {
+    const root = `${this.context.filesDir}/chatai_picker_recovery`;
+    if (!fs.accessSync(root)) fs.mkdirSync(root);
+    return `${root}/${scope}.json`;
+  }
+  private saveRecovery(record: PickerRecovery): void {
+    const path = this.recoveryPath(record.scope), temporary = `${path}.tmp`;
+    const bytes = new util.TextEncoder().encodeInto(JSON.stringify(record));
+    if (bytes.byteLength > 1024 * 1024) throw new Error('Draft too large');
+    const file = fs.openSync(temporary, fs.OpenMode.CREATE | fs.OpenMode.READ_WRITE | fs.OpenMode.TRUNC);
+    try {
+      let written = 0;
+      while (written < bytes.byteLength) {
+        const count = fs.writeSync(file.fd, bytes.buffer.slice(written));
+        if (count <= 0) throw new Error('Short journal write');
+        written += count;
+      }
+      fs.fsyncSync(file.fd);
+    } finally { fs.closeSync(file); }
+    fs.renameSync(temporary, path);
+  }
+  private readRecovery(scope: string): PickerRecovery | null {
+    const path = this.recoveryPath(scope);
+    if (!fs.accessSync(path)) return null;
+    const stat = fs.lstatSync(path);
+    if (!stat.isFile() || stat.size > 1024 * 1024) throw new Error('Invalid journal');
+    const record = JSON.parse(fs.readTextSync(path)) as PickerRecovery;
+    if (record.scope !== scope || typeof record.id !== 'string' ||
+      typeof record.text !== 'string' || record.text.length > 200000 ||
+      !Array.isArray(record.files) || record.files.length > 10 ||
+      !Array.isArray(record.images) || record.images.length > 1000 ||
+      !Number.isFinite(record.created) || Date.now() - record.created > 24 * 60 * 60 * 1000) {
+      fs.unlinkSync(path); return null;
+    }
+    const valid = (path: string): boolean => {
+      if (typeof path !== 'string' || !path.startsWith(`${this.context.cacheDir}/chatai_image_picker/`) ||
+        path.includes('\0') || path.split('/').includes('..')) return false;
+      try { const stat = fs.lstatSync(path); return stat.isFile() && stat.size > 0 && stat.size <= MAX_BYTES; }
+      catch (_) { return false; }
+    };
+    record.files = record.files.filter((file: PickedImage) => valid(file.path));
+    record.images = record.images.filter(valid);
+    return record;
+  }
+  private recoveryCall(call: MethodCall, result: MethodResult): void {
+    // 无作用域调用不能读取另一个账号或会话的选择结果。
+    if (call.method === 'retrieveLostData' && call.argument('scope') === null) { result.success(null); return; }
+    const scope = this.scope(call);
+    if (call.method === 'retrieveLostData') {
+      result.success(this.busy ? null : this.readRecovery(scope)); return;
+    }
+    if (call.method === 'ackRecovery') {
+      if (this.recovery?.scope === scope && this.recovery.id === call.argument('id')) this.recovery = null;
+      const record = this.readRecovery(scope);
+      if (record !== null && record.id === call.argument('id')) fs.unlinkSync(this.recoveryPath(scope));
+      result.success(null); return;
+    }
+    if (this.busy) throw new Error('Picker busy');
+    const text = call.argument('text') as string;
+    const images = call.argument('images') as string[];
+    if (typeof text !== 'string' || text.length > 200000 || !Array.isArray(images) || images.length > 1000 ||
+      !images.every((path: string) => typeof path === 'string' && path.length < 4096)) throw new Error('Invalid draft');
+    // 直到下一个 pick 调用才写入；取消弹窗不会产生虚假的恢复任务。
+    this.recovery = { scope, id: `${Date.now()}_${this.sequence++}`, created: Date.now(), phase: 'pending', text, images, files: [] };
+    result.success(this.recovery.id);
   }
   private number(call: MethodCall, key: string, fallback: number, min: number, max: number): number {
     const value = call.argument(key) as number | null;
@@ -57,7 +142,7 @@ export default class ImagePickerPlugin implements FlutterPlugin, MethodCallHandl
   private current(generation: number): void {
     if (generation !== this.generation || this.channel === null) throw new Error('Picker detached');
   }
-  private async pick(call: MethodCall, generation: number): Promise<PickedImage[]> {
+  private async pick(call: MethodCall, generation: number, recovery: PickerRecovery | null): Promise<PickedImage[]> {
     const width = this.number(call, 'maxWidth', 2048, 1, 4096);
     const height = this.number(call, 'maxHeight', 2048, 1, 4096);
     const quality = this.number(call, 'quality', 85, 0, 100);
@@ -99,6 +184,8 @@ export default class ImagePickerPlugin implements FlutterPlugin, MethodCallHandl
             if (sourceBytes > 128 * 1024 * 1024 || outputBytes > 128 * 1024 * 1024) throw new Error('Image batch too large');
           });
         images.push(picked);
+        // 每张沙箱副本写完即持久化；进程在转换下一张时终止也可恢复已完成部分。
+        if (recovery !== null) { recovery.files = images; this.saveRecovery(recovery); }
       }
       this.current(generation);
       return images;

@@ -1,4 +1,5 @@
 import 'package:chatgpt_app_core/chat/domain/backend_usage_identity.dart';
+import 'package:chatgpt_app_core/chat/application/ohos_image_recovery.dart';
 import 'package:chatgpt_app_core/chat/application/direct_failure_recovery.dart';
 import 'package:chatgpt_app_core/widget/direct_failure_dialog.dart';
 import 'package:chatgpt_app_core/chat/application/ordinary_backend_selection.dart';
@@ -2603,6 +2604,13 @@ class _ConversationPageState extends State<ConversationPage>
       controller: _inputController,
       referencesEnabled: true,
       referenceScopeKey: '$_pageAccount:${widget.conversationModel.cid}',
+      imageRecoveryScopeKey: OhosImageRecovery.conversationScope(
+        account: _pageAccount,
+        cid: widget.conversationModel.cid,
+        persisted: widget.conversationModel.title != null,
+        assistantId: widget.conversationModel.assistantId,
+        projectId: widget.conversationModel.projectId,
+      ),
       isReferenceScopeCurrent: () => _accountCurrent,
       references: _references,
       pickHistoryReference: _pickHistoryReference,

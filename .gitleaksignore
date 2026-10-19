@@ -1,0 +1,4 @@
+# Published Sherpa C API binary SHA-256, verified against the official release.
+# Exact staged fingerprints only; these are artifact digests, not credentials.
+chatgpt_flutter_ohos/scripts/sherpa-native.json:generic-api-key:6
+chatgpt_flutter_ohos/verification/voice-recovery-20261019.json:generic-api-key:28

@@ -1,0 +1,9 @@
+{
+  "version": "1.13.8",
+  "url": "https://github.com/k2-fsa/sherpa-onnx/releases/download/v1.13.8/sherpa-onnx-v1.13.8-ohos-arm64-v8a.tar.bz2",
+  "archiveSha256": "7473e1f6138c2d33a26adda01dd94f4d618089370957ed374f8cc0d50b8cdfa7",
+  "libraries": {
+    "libsherpa-onnx-c-api.so": "75b38a525e7178bee052ec99a77175a934daa71ab6983deabbe948a96ae84221",
+    "libonnxruntime.so": "f9fd9080a10f2b93323d597225fbaa63d06f93b384bdfdd7285db9a9115fcc2b"
+  }
+}

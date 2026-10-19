@@ -13,7 +13,16 @@ function run(mode) {
     fs.mkdirSync(path.resolve(root, '../ohos_plugins/flutter_js/native/quickjs'), { recursive: true });
     fs.writeFileSync(path.join(root, 'assets/licenses/quickjs.txt'), 'MIT test license');
     fs.writeFileSync(path.resolve(root, '../ohos_plugins/flutter_js/native/quickjs/LICENSE'), 'MIT test license');
-    for (const name of ['build-release.sh', 'verify-hap-aot.py']) fs.copyFileSync(path.resolve(__dirname, '../scripts', name), path.join(root, 'scripts', name));
+    for (const name of ['build-release.sh', 'verify-hap-aot.py', 'prepare-sherpa.py', 'verify-sherpa-hap.py']) fs.copyFileSync(path.resolve(__dirname, '../scripts', name), path.join(root, 'scripts', name));
+    const binary=Buffer.alloc(320);binary.set([127,69,76,70,2,1,1]);binary.writeUInt16LE(183,18);
+    binary.writeBigUInt64LE(64n,32);binary.writeUInt16LE(56,54);binary.writeUInt16LE(1,56);
+    binary.writeUInt32LE(1,64);binary.writeUInt32LE(5,68);binary.writeBigUInt64LE(256n,96);binary.writeBigUInt64LE(256n,104);binary.writeBigUInt64LE(4096n,112);binary.write('current-aot',128);
+    const nativeDir=path.join(root,'ohos/entry/libs/arm64-v8a');fs.mkdirSync(nativeDir,{recursive:true});
+    const libraries={};for(const name of ['libsherpa-onnx-c-api.so','libonnxruntime.so']) {
+      fs.writeFileSync(path.join(nativeDir,name),binary);libraries[name]=require('node:crypto').createHash('sha256').update(binary).digest('hex');
+    }
+    fs.writeFileSync(path.join(root,'scripts/sherpa-native.json'),JSON.stringify({version:'1.13.8',libraries}));
+    for(const name of ['sherpa-onnx','onnxruntime','onnxruntime-notices','espeak-ng','piper-phonemize','sherpa-dependencies'])fs.writeFileSync(path.join(root,'assets/licenses',name+'.txt'),'test license');
     fs.writeFileSync(path.join(root, 'config.json'), '{"BACKEND_HOST":"example.test","BACKEND_HTTPS":true}');
     fs.writeFileSync(path.join(root, 'bin/fvm'), `#!/usr/bin/env python3
 import json, os, struct, sys, zipfile
@@ -41,6 +50,10 @@ elif 'build' in args:
   native=elf(os.environ['GUARD_MODE']=='stale_native'); struct.pack_into('<Q',native,40,256); struct.pack_into('<HHH',native,58,64,1,0); native[300]=1
   z.writestr('libs/arm64-v8a/libchatai_js.so', native)
   z.writestr('resources/rawfile/flutter_assets/assets/licenses/quickjs.txt', 'missing' if os.environ['GUARD_MODE']=='bad_license' else 'MIT test license')
+  for name in ['libsherpa-onnx-c-api.so','libonnxruntime.so']:
+   z.writestr('libs/arm64-v8a/'+name,elf(os.environ['GUARD_MODE']=='stale_sherpa'))
+  for name in ['sherpa-onnx','onnxruntime','onnxruntime-notices','espeak-ng','piper-phonemize','sherpa-dependencies']:
+   z.writestr('resources/rawfile/flutter_assets/assets/licenses/'+name+'.txt','missing' if os.environ['GUARD_MODE']=='bad_sherpa_license' else 'test license')
  artifact=Path('ohos/entry/build/default/intermediates/cmake/default/obj/arm64-v8a/libchatai_js.so')
  artifact.parent.mkdir(parents=True); artifact.write_bytes(elf())
 else: sys.exit(9)
@@ -64,4 +77,7 @@ test('只有 HAP 内的 AOT 哈希一致才返回成功', () => {
 
 test('原生 QuickJS 库与打包内容不符或许可缺失时失败', () => {
   for (const mode of ['stale_native', 'bad_license']) assert.notEqual(run(mode).status, 0);
+});
+test('Sherpa/ONNX Runtime 可加载段或随包许可证不一致时禁止构建成功',()=>{
+  for(const mode of ['stale_sherpa','bad_sherpa_license'])assert.notEqual(run(mode).status,0);
 });

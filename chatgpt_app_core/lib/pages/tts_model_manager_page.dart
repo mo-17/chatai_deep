@@ -1,5 +1,5 @@
-import 'dart:io';
 import 'package:chatgpt_app_core/chat/application/downloadable_tts_models.dart';
+import 'package:chatgpt_app_core/chat/application/knowledge_import_collection.dart';
 import 'package:hi_download/hi_download.dart';
 
 import 'package:chatgpt_app_core/chat/application/user_sherpa_onnx_tts_models.dart';
@@ -33,8 +33,7 @@ class _TtsModelManagerPageState extends State<TtsModelManagerPage> {
 
   @override
   Widget build(BuildContext context) {
-    final importDisabled =
-        Platform.operatingSystem == 'ohos' || _importing || _downloading;
+    final importDisabled = _importing || _downloading;
     return Scaffold(
       appBar: AppBar(title: const Text('离线语音模型')),
       body: _loading
@@ -43,11 +42,8 @@ class _TtsModelManagerPageState extends State<TtsModelManagerPage> {
               padding: const EdgeInsets.fromLTRB(16, 12, 16, 24),
               children: [
                 FilledButton.icon(
-                  onPressed: (_downloading ||
-                          _importing ||
-                          Platform.operatingSystem == 'ohos')
-                      ? null
-                      : _downloadOfficial,
+                  onPressed:
+                      (_downloading || _importing) ? null : _downloadOfficial,
                   icon: const Icon(Icons.download),
                   label: const Text('下载中文女声 Baker（按需）'),
                 ),
@@ -58,14 +54,6 @@ class _TtsModelManagerPageState extends State<TtsModelManagerPage> {
                       child: const Text('暂停，下次继续')),
                 ],
                 _importActions(importDisabled),
-                if (Platform.operatingSystem == 'ohos')
-                  Padding(
-                    padding: const EdgeInsets.only(top: 10),
-                    child: Text(
-                      '鸿蒙版本暂不支持 Sherpa 模型音色，请使用系统朗读。',
-                      style: Theme.of(context).textTheme.bodySmall,
-                    ),
-                  ),
                 const SizedBox(height: 16),
                 if (_models.isEmpty)
                   const _EmptyModelHint()
@@ -206,14 +194,22 @@ class _TtsModelManagerPageState extends State<TtsModelManagerPage> {
   }
 
   Future<void> _importDirectory() async {
+    String? copiedPath;
     try {
       final path = await FilePicker.getDirectoryPath(
         dialogTitle: '选择 sherpa-onnx TTS 模型目录',
       );
       if (path == null || path.trim().isEmpty) return;
+      copiedPath = path;
       await _runImport(() => _store.installFromDirectory(path));
     } catch (e) {
       if (mounted) HiDialog.showSnackBar(context, '选取目录失败：$e');
+    } finally {
+      if (copiedPath != null) {
+        try {
+          await KnowledgeImportCollection.releasePickedDirectory(copiedPath);
+        } catch (_) {/* 仅清理选择器副本，不影响已复制到模型目录的文件。 */}
+      }
     }
   }
 

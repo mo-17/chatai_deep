@@ -19,6 +19,8 @@ dependencies:
     path: ../ohos_plugins/image_picker
 
 dependency_overrides:
+  # 与官方 OHOS C API 的结构体/函数 ABI 保持一致，不能独立升级。
+  sherpa_onnx: 1.13.8
   sqflite:
     git:
       url: https://gitee.com/openharmony-sig/flutter_sqflite.git
@@ -72,4 +74,4 @@ dev_dependencies:
 flutter:
   uses-material-design: true
   assets:
-    - assets/licenses/quickjs.txt
+    - assets/licenses/

@@ -1,0 +1,104 @@
+{
+  "date": "2026-10-19",
+  "baseHead": "38c0addaa043c75576e9b20a6cfeda110e41a2fc",
+  "scope": [
+    "OHOS Sherpa Matcha model voices",
+    "headset audio session and barge-in",
+    "scoped image-picker process recovery"
+  ],
+  "tests": {
+    "core": 61,
+    "nativeAndBuild": 65,
+    "imagePickerAdapter": 6,
+    "totalUnique": 132,
+    "finalFocusedCoreRecheck": 18
+  },
+  "analysis": {
+    "core": "passed",
+    "ohosShell": "passed",
+    "imagePickerAdapter": "passed"
+  },
+  "hap": {
+    "path": "chatgpt_flutter_ohos/build/ohos/hap/entry-default-signed.hap",
+    "bytes": 72664109,
+    "sha256": "f3d28da3778b34d90c136ffae3fd15c9f83f2bdd470d31776b6399e062007a82",
+    "verifiedLoadSegments": {
+      "libs/arm64-v8a/libapp.so": "02c75f9c53ceef08763b4f78ea2fb7640d77e0205cb2d2f17aff955f64a2c456",
+      "libs/arm64-v8a/libchatai_js.so": "d7febea42810e9ca90601dd5637b77bd613004cccaa39ef1ccbabc3ee5332220",
+      "libs/arm64-v8a/libsherpa-onnx-c-api.so": "6c886040602400a513f95b065390effb5aff54f65aa8e3ed993ebab2d050ef6d",
+      "libs/arm64-v8a/libonnxruntime.so": "9547fbda3f4fb95a1b68509b0e1b7fa983a295fbb952a02176bbd2e8a5692dd4"
+    },
+    "librariesAndLicensesVerified": true,
+    "signing": "existing local project signing"
+  },
+  "sherpa": {
+    "version": "1.13.8",
+    "archiveSha256": "7473e1f6138c2d33a26adda01dd94f4d618089370957ed374f8cc0d50b8cdfa7",
+    "dartRequiredSymbols": 126,
+    "missingOhosExports": 0,
+    "missingPackagedCxxRuntimeSymbols": 0,
+    "licenses": "Bundled upstream notices include eSpeak NG GPLv3; source references in assets/licenses/sherpa-dependencies.txt"
+  },
+  "model": {
+    "bytes": 125151235,
+    "sha256": "a796918cf16e5e5a8a681f72f8c15a1701f9166ff9aac6581a0bcbac4fc3c5dd",
+    "downloadVerified": true
+  },
+  "hostSynthesis": {
+    "runtime": "1.13.8",
+    "onnxRuntime": "1.28.2",
+    "host": "macos",
+    "sampleRate": 22050,
+    "samples": 64276,
+    "durationSeconds": 2.9150113378684805,
+    "peak": 0.6902925968170166,
+    "elapsedMs": 1750,
+    "wavBytes": 128596
+  },
+  "boundaries": [
+    "No connected OHOS device (hdc: Empty).",
+    "Host synthesis used macOS ONNX Runtime 1.28.2; it does not verify OHOS 1.16.3 runtime loading, performance, audio quality or actual headset duplex.",
+    "Upstream model lexicon emitted Unknown token shei2 warnings; generated WAV was non-silent. No perceptual quality test.",
+    "Recovery covers picker interruption or unacknowledged callbacks, not all app drafts/navigation/streaming requests. System selections not yet returned must be repeated."
+  ],
+  "sourceSha256": {
+    "AGENTS.md": "9e86fa59ca78bdd174e9fc0c0bc8bf1a7dbe82468e6b00ec3e7e334abb501943",
+    "chatgpt_app_core/lib/chat/application/sherpa_onnx_read_aloud_service.dart": "cd077b52e21f42eca4b76b552df8ab9dc22abbacd7c14ed5692a289142ccb148",
+    "chatgpt_app_core/lib/pages/conversation_page.dart": "3a08087424c9310e350dcb0943ae9ad2450a5377b7880254209e601b08d08d50",
+    "chatgpt_app_core/lib/pages/tts_model_manager_page.dart": "dda419dba0f70cd73b9dbd86febaadfeeddcebe2d89dd4b6ec81af2544e655fe",
+    "chatgpt_app_core/lib/voice/voice_audio_route.dart": "51b91e5c1bfaeee00a625879c8d2733c5f84631ac8ad71e321468446fdf080f3",
+    "chatgpt_app_core/lib/widget/message_input_widget.dart": "d664a9d21b10b4fcdede7977cc95badae37ae19f8937555f28f558040d748330",
+    "chatgpt_flutter_ohos/README.md": "38678b34373973616be37308a6184ec804fc22d217bb752dcd384583850e10d1",
+    "chatgpt_flutter_ohos/lib/main.dart": "39bc956f6d525eefdeae64c8554589e8d22e62d79e71caf611dd35967e5d4b4f",
+    "chatgpt_flutter_ohos/ohos/.gitignore": "1beb633251cc35308b10e3f9ecae924c70830b35edc9a946b9c29145556292c4",
+    "chatgpt_flutter_ohos/ohos/entry/src/main/ets/entryability/EntryAbility.ets": "1f998b071cedc43973b81b3cfce1720848fdcd3949e1c759ed2e4a05954870fd",
+    "chatgpt_flutter_ohos/ohos/entry/src/main/ets/media/ImagePickerPlugin.ets": "0d0bc896eca5ebd05ffbf8331677c61a17015efc285ab864e872d6a05a99bc43",
+    "chatgpt_flutter_ohos/pubspec.lock": "903c9566439d748c4b4c5867c11a50ca3d865463d6458fc5f2f3ec7d5757f8d7",
+    "chatgpt_flutter_ohos/pubspec.yaml": "91fc3df4a703973efcfe797f07685c33bf29fe9d581c3a67730af238b96acb39",
+    "chatgpt_flutter_ohos/scripts/build-release.sh": "030bbd35dc2f4846373644287e3ba12faf9daf98f225aa113776ea514536c016",
+    "chatgpt_flutter_ohos/test/build_release_guard.test.cjs": "915a6b7f28338c75325732ca444545227c9caada2bf9154edd8e6c9d48290d99",
+    "chatgpt_flutter_ohos/test/native_image_picker.test.cjs": "e9ae088bec9a08107afea540ef3ae15bc0ac11719d95a5868ea5114a7be28010",
+    "ohos_plugins/image_picker/lib/ohos_image_picker.dart": "734a48f592c3b86bae9f32d81cd82f79aee1523d0ccffc2449ba0d10d2aafd00",
+    "ohos_plugins/image_picker/test/ohos_image_picker_test.dart": "0dfe9fd003d6fe5864720cf1903973f3303568f9bcf27494d262422a7569953b",
+    "chatgpt_app_core/lib/chat/application/ohos_image_recovery.dart": "1e31b22973717d97b5d20a2c5ca96a44a787eb14fc5776a21e060e66f329b323",
+    "chatgpt_app_core/test/ohos_voice_recovery_test.dart": "051fa98c70c1a4223afe6a62ff233ddc278d5a801e27c0ddbca6fb03f13b8b15",
+    "chatgpt_flutter_ohos/assets/licenses/espeak-ng.txt": "8ceb4b9ee5adedde47b31e975c1d90c73ad27b6b165a1dcd80c7c545eb65b903",
+    "chatgpt_flutter_ohos/assets/licenses/onnxruntime-notices.txt": "d7d726424fc23a8395c139bbc7eb2aefa2b5bb2eb3332ec34ad0442d149d2308",
+    "chatgpt_flutter_ohos/assets/licenses/onnxruntime.txt": "2f07c72751aed99790b8a4869cf2311df85a860b22ded05fa22803587a48922c",
+    "chatgpt_flutter_ohos/assets/licenses/piper-phonemize.txt": "13746d509d74e55ea2265fbef204bb7cdbf84a8315b0207e988326cb54387028",
+    "chatgpt_flutter_ohos/assets/licenses/sherpa-dependencies.txt": "4583b706f43d94853b5a3636ac484a68d26e4dc0cd80d7288dae939fc57c4bba",
+    "chatgpt_flutter_ohos/assets/licenses/sherpa-onnx.txt": "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30",
+    "chatgpt_flutter_ohos/docs/voice-recovery.md": "ca0bc8b96ddf5fce8448ec633ec003a2c60e1777f81c40af1e3ee7f017adeae4",
+    "chatgpt_flutter_ohos/ohos/entry/src/main/ets/speech/TtsPlaybackPlugin.ets": "4edd46d9977c7eef5bd16eb31edaf0a4c9e8836efc6e1440775ffb0fd75b16b5",
+    "chatgpt_flutter_ohos/ohos/entry/src/main/ets/speech/VoiceAudioPlugin.ets": "c44a3d3b84a980b429dfab1566843914687ffbf841e47751eadff82b282dbe6e",
+    "chatgpt_flutter_ohos/scripts/prepare-sherpa.py": "5a1cd8e43c1f0a02c7ea2b5716f83cfdc115b33161465fba0988bfc7099e0868",
+    "chatgpt_flutter_ohos/scripts/sherpa-native.json": "d863f08aff50405acbebe9f0028bf779245dea1172b41a07a66c5f1078d6a979",
+    "chatgpt_flutter_ohos/scripts/verify-sherpa-hap.py": "cf82c89155c6e981abb6f9c625c1f7d9d6cd08db50a06114034620bdff895d06",
+    "chatgpt_flutter_ohos/test/native_voice_audio.test.cjs": "44e25ede94533d36b121b8e7383e2d1c206414e71cedf542769209cc305b3223",
+    ".gitleaksignore": "c54d6c1379ccaa73c8b23b4cf9677144967e918ea1388af57c01564234b6c710"
+  },
+  "secretScan": {
+    "tool": "gitleaks git --staged --redact",
+    "falsePositives": "Two exact fingerprints for the public Sherpa C API .so SHA-256 digest; tracked in .gitleaksignore."
+  }
+}

@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
+import 'dart:ffi';
 import 'dart:isolate';
 
 import 'package:audioplayers/audioplayers.dart';
@@ -13,6 +14,21 @@ import 'package:flutter/services.dart';
 import 'package:openai_flutter/utils/ai_logger.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:sherpa_onnx/sherpa_onnx.dart' as sherpa;
+// 上游加载器未识别 OHOS；鸿蒙壳固定 Dart/C API 为同一 1.13.8 版本。
+// ignore: implementation_imports
+import 'package:sherpa_onnx/src/sherpa_onnx_bindings.dart'
+    show SherpaOnnxBindings;
+
+void _initSherpaBindings() {
+  if (Platform.operatingSystem == 'ohos') {
+    SherpaOnnxBindings.init(DynamicLibrary.open('libsherpa-onnx-c-api.so'));
+    if (sherpa.getVersion() != '1.13.8') {
+      throw StateError('Sherpa 鸿蒙原生库版本不匹配');
+    }
+  } else {
+    sherpa.initBindings();
+  }
+}
 
 abstract class SherpaOnnxAssetInstaller {
   Future<InstalledSherpaOnnxTtsModel> ensureInstalled(
@@ -124,7 +140,7 @@ class SherpaOnnxOfflineTtsRuntime implements SherpaOnnxTtsRuntime {
   Future<sherpa.OfflineTts> _loadTts(InstalledSherpaOnnxTtsModel model) {
     return _ttsByModelPath.putIfAbsent(model.rootDir.path, () async {
       if (!_initialized) {
-        sherpa.initBindings();
+        _initSherpaBindings();
         _initialized = true;
       }
       final manifest = model.manifest;
@@ -218,7 +234,7 @@ class _SherpaTtsJob {
 }
 
 Future<File> _synthesizeInBackground(_SherpaTtsJob job) async {
-  sherpa.initBindings();
+  _initSherpaBindings();
   final tts = sherpa.OfflineTts(
     sherpa.OfflineTtsConfig(
       model: sherpa.OfflineTtsModelConfig(
@@ -262,6 +278,43 @@ abstract class TtsAudioPlayback {
   Future<void> stop();
 
   Future<void> dispose();
+}
+
+/// OHOS 使用 AVPlayer，Future 只在实际播放结束、停止或失败时结算。
+class OhosTtsAudioPlayback implements TtsAudioPlayback {
+  static const _channel = MethodChannel('aipu/tts-playback');
+  static int _sequence = 0;
+  String? _active;
+  int _epoch = 0;
+
+  @override
+  Future<void> playFile(String path) async {
+    final epoch = ++_epoch;
+    await _stopActive();
+    if (epoch != _epoch) return;
+    final id = '${DateTime.now().microsecondsSinceEpoch}_${_sequence++}';
+    _active = id;
+    try {
+      await _channel.invokeMethod<void>('play', {'id': id, 'path': path});
+    } finally {
+      if (_active == id) _active = null;
+    }
+  }
+
+  Future<void> _stopActive() async {
+    final id = _active;
+    _active = null;
+    if (id != null) await _channel.invokeMethod<void>('stop', {'id': id});
+  }
+
+  @override
+  Future<void> stop() {
+    ++_epoch;
+    return _stopActive();
+  }
+
+  @override
+  Future<void> dispose() => stop();
 }
 
 class AudioplayersTtsPlayback implements TtsAudioPlayback {
@@ -315,7 +368,10 @@ class SherpaOnnxReadAloudService
     BundledSherpaOnnxTtsModel model = BundledSherpaOnnxTtsModel.matchaZhBaker,
   })  : _installer = installer ?? BundledSherpaOnnxAssetInstaller(),
         _runtime = runtime ?? SherpaOnnxOfflineTtsRuntime(),
-        _playback = playback ?? AudioplayersTtsPlayback(),
+        _playback = playback ??
+            (Platform.operatingSystem == 'ohos'
+                ? OhosTtsAudioPlayback()
+                : AudioplayersTtsPlayback()),
         _outputDir = outputDir ?? getTemporaryDirectory,
         _isSupported =
             isSupported ?? (() => SherpaOnnxReadAloudService.isSupported),
@@ -332,7 +388,9 @@ class SherpaOnnxReadAloudService
 
   static bool get isSupported {
     try {
-      return Platform.isAndroid || Platform.isIOS;
+      return Platform.isAndroid ||
+          Platform.isIOS ||
+          Platform.operatingSystem == 'ohos';
     } catch (_) {
       return false;
     }

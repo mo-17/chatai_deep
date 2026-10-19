@@ -23,7 +23,9 @@ fvm flutter pub get
 上述脚本先独立执行 Dart AOT 编译，失败立即停止，再核对 HAP 内 `libapp.so`
 与本次编译结果的程序头及可加载段 SHA-256（打包器会改写节表位置、名称等不参与加载的元数据）；
 单独看到 `flutter build hap` 成功不足以验收。脚本还核对本次 CMake 编译的
-QuickJS 库与包内代码段一致，并检查 MIT 许可文本确实存在于 HAP。
+QuickJS、Sherpa 和 ONNX Runtime 库与包内代码段一致，并检查对应许可文本确实存在于 HAP。
+首次构建会按固定 SHA-256 下载官方 Sherpa OHOS arm64 库；原生库作为生成依赖忽略，
+不将二进制放入 Git。直接从 IDE 构建前先运行 `python3 scripts/prepare-sherpa.py`。
 
 ## 已接入的文件能力
 
@@ -48,7 +50,9 @@ HarmonyOS `DocumentViewPicker`。无须申请整个存储空间的读写权限�
 归一 EXIF 方向，PNG 保留透明格式，其余格式转 JPEG；输出为静态图，不保留原始 EXIF。
 原图最多 20 MiB / 64M 像素，默认输出尺寸上限 2048 × 2048。
 相机结果 -1 表示未返回图片；其余系统异常明确报错。相册支持单批最多 10 张，输入/输出各最多 128 MiB；逐张转换，整批失败时清理本批副本。
-多次选择可继续追加，不截断已有附件；进程被杀后的选择恢复尚未实现。
+多次选择可继续追加，不截断已有附件。选择期间进程被杀或结果尚未确认时，重新打开原会话
+会提示恢复原输入及已复制的图片；尚未返回的系统选择需要重新选择。新会话按同账号、
+同助手/项目恢复未发送草稿。恢复需确认，保留当前输入，确认后消费记录，24 小时过期。
 
 `../ohos_plugins/share_plus` 替换分享 stub，使用 ShareKit 分享文本和应用沙箱内文件。
 聊天转发恢复系统分享；创作资料导出可使用文件分享。角色卡和报告仍保留上一批的系统保存流程。
@@ -69,8 +73,13 @@ HarmonyOS `DocumentViewPicker`。无须申请整个存储空间的读写权限�
 `../ohos_plugins/flutter_tts` 替换空实现，使用系统离线音色朗读，支持系统音色查询、
 语速、音量和音调。长文本分段，等待真实播放结束后再播下一段；停止、后台、
 超时和 engine 销毁会结束当前播放。离线服务或指定语言不可用会返回错误，不自动
-改用联网语音。系统声音路径不创建 Sherpa 播放器。Sherpa 内置/用户模型音色仍未移植，
-选择后明确提示改用系统声音；耳机双工音频路由仍未移植，会按现有逻辑回退到轮流模式。
+改用联网语音。系统声音路径不创建 Sherpa 播放器。Sherpa 1.13.8 现已接入官方 OHOS arm64
+C API，支持按需下载 Baker 和导入兼容的 Matcha 模型。合成在 isolate 内执行，缓存 WAV，
+通过原生 AVPlayer 等待真实播放结束；停止、后台、错误及超时会结算并释放播放器和文件。
+耳机模式使用通信音频会话，确认识别输入、通信输出及媒体输出均为有线/USB/SCO 耳机才
+开放说话打断；A2DP-only、无麦耳机和外放保持轮流模式。断线或失焦立即停止语音，
+现有 Dart 轮询进一步暂停整轮请求，不自动切外放继续。实现边界和真机用例见
+[语音与恢复说明](docs/voice-recovery.md)。
 
 `OcrService` 在 OHOS 分派到 Core Vision 文字识别；知识库可导入图片，扫描 PDF
 使用 PDF Kit 逐页栅格化后 OCR。原文件必须位于应用沙箱，不接受符号链接或路径穿越。
@@ -105,7 +114,7 @@ quickjs-libc、文件/网络/进程/宿主桥；不执行异步 job 队列。现
 文件解析失败回滚。账号或页面失效后停止后续写入；完成或失败时清理 ZIP 临时副本，
 鸿蒙目录副本通过原生精确路径释放，不删除用户源目录。
 
-Sherpa 模型音色和耳机双工仍未移植；模型页面的提示改为真实限制。
+模型目录选择仍受设备 FolderSelection 能力和沙箱复制预算约束；手机使用模型 ZIP 或按需下载。
 
 
 ## PDF 原件预览与版本信息
@@ -131,7 +140,7 @@ Sherpa 模型音色和耳机双工仍未移植；模型页面的提示改为真�
 # 在仓库根目录执行：测试真实 ArkTS 方法体，系统 API 使用受控替身
 node --test chatgpt_flutter_ohos/test/native_file_picker.test.cjs chatgpt_flutter_ohos/test/native_directory_picker.test.cjs
 node --test chatgpt_flutter_ohos/test/native_image_picker.test.cjs chatgpt_flutter_ohos/test/native_share.test.cjs chatgpt_flutter_ohos/test/native_pdf_package.test.cjs
-node --test chatgpt_flutter_ohos/test/native_speech.test.cjs chatgpt_flutter_ohos/test/native_ocr.test.cjs chatgpt_flutter_ohos/test/build_release_guard.test.cjs
+node --test chatgpt_flutter_ohos/test/native_speech.test.cjs chatgpt_flutter_ohos/test/native_voice_audio.test.cjs chatgpt_flutter_ohos/test/native_ocr.test.cjs chatgpt_flutter_ohos/test/build_release_guard.test.cjs
 # 在 ohos_plugins/file_picker 内执行：Dart 通道合同
 flutter test
 ```
@@ -142,7 +151,9 @@ flutter test
 图片需补测拍照/相册取消、中文名称、PNG 透明、EXIF 八种方向、HEIC、大图缩放、
 相机失败及切换后台；分享需测试取消、完成、目标应用延迟读取、连续分享和进程退出。
 语音需检查首次授权/拒绝后重试、离线语音包缺失、中文/英文、分段识别、停止后立即重录、
-长文朗读停止、后台打断、服务错误和轮流语音对话。OCR 需检查中文图片、旋转照片、
+长文朗读停止、后台打断、服务错误、轮流语音对话及耳机双工/插话/拔出/来电抢占。
+模型需检查离线合成性能、内存和音质；恢复需实际终止进程验证确认与跨账号隔离。
+OCR 需检查中文图片、旋转照片、
 无字图片、扫描 PDF、中途坏页、20 页边界、超大图片、超时取消及取消后重试。
 原生单测使用系统 API 替身，不能验证收音/播放质量、真实 OCR 准确率和 PDF 渲染效果。
 目录需真机检查能力判断、中文和多层目录、授权失效、提供方拒绝访问、复制中退出、

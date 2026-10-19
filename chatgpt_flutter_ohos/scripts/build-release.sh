@@ -3,6 +3,7 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 config="${1:-../deploy/flutter/production.json}"
+python3 scripts/prepare-sherpa.py
 version_file="$(mktemp)"
 trap 'rm -f "$version_file"' EXIT
 fvm flutter --version --machine > "$version_file"
@@ -47,3 +48,4 @@ with zipfile.ZipFile('build/ohos/hap/entry-default-signed.hap') as archive:
         raise SystemExit('QuickJS license missing or changed in HAP')
 print('Verified bundled QuickJS license')
 PYLICENSE
+python3 scripts/verify-sherpa-hap.py build/ohos/hap/entry-default-signed.hap

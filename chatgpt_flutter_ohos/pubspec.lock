@@ -816,7 +816,7 @@ packages:
     source: hosted
     version: "2.4.1"
   sherpa_onnx:
-    dependency: transitive
+    dependency: "direct overridden"
     description:
       name: sherpa_onnx
       sha256: b7e65d5956f8c9213fd339c68ea058cdec7ad24bd35f9bfc5c18178d3d73b2f9

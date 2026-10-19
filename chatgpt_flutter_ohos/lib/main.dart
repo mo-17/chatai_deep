@@ -13,6 +13,17 @@ Future<void> main() async {
   LicenseRegistry.addLicense(() async* {
     yield LicenseEntryWithLineBreaks(['QuickJS'],
         await rootBundle.loadString('assets/licenses/quickjs.txt'));
+    for (final name in [
+      'sherpa-onnx',
+      'onnxruntime',
+      'onnxruntime-notices',
+      'espeak-ng',
+      'piper-phonemize',
+      'sherpa-dependencies'
+    ]) {
+      yield LicenseEntryWithLineBreaks(
+          [name], await rootBundle.loadString('assets/licenses/$name.txt'));
+    }
   });
   const host = String.fromEnvironment('BACKEND_HOST', defaultValue: '');
   const useHttps = bool.fromEnvironment('BACKEND_HTTPS', defaultValue: false);

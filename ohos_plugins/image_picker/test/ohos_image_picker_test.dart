@@ -9,6 +9,14 @@ void main() {
   final messenger =
       TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger;
   tearDown(() => messenger.setMockMethodCallHandler(channel, null));
+  test('通用恢复调用不读取其他账号/会话的草稿', () async {
+    messenger.setMockMethodCallHandler(channel, (call) async {
+      expect(call.method, 'retrieveLostData');
+      expect(call.arguments, isNull);
+      return null;
+    });
+    expect((await OhosImagePicker().getLostData()).isEmpty, isTrue);
+  });
   test('注册到现有 image_picker 接口并传递相册缩放选项', () async {
     final original = ImagePickerPlatform.instance;
     addTearDown(() => ImagePickerPlatform.instance = original);

@@ -18,3 +18,5 @@
 **/libs/**/libapp.so
 **/libs/**/libflutter.so
 **/libs/**/libvmservice_snapshot.so
+**/libs/**/libsherpa-onnx-c-api.so
+**/libs/**/libonnxruntime.so

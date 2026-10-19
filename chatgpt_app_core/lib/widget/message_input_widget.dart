@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:io';
 
 import 'package:chatgpt_app_core/chat/application/file_processor.dart';
+import 'package:chatgpt_app_core/chat/application/ohos_image_recovery.dart';
 import 'package:chatgpt_app_core/chat/application/composer_reference_trigger.dart';
 import 'package:chatgpt_app_core/chat/domain/composer_reference.dart';
 import 'package:chatgpt_app_core/widget/message_reference_picker.dart';
@@ -61,6 +62,8 @@ class MessageInputWidget extends StatefulWidget {
   final bool isStreaming;
   final bool referencesEnabled;
   final String? referenceScopeKey;
+  final String? imageRecoveryScopeKey;
+  final OhosImageRecovery imageRecovery;
   final bool Function()? isReferenceScopeCurrent;
   final List<ComposerReference> references;
   final Future<ComposerReference?> Function()? pickHistoryReference;
@@ -103,6 +106,8 @@ class MessageInputWidget extends StatefulWidget {
     this.isStreaming = false,
     this.referencesEnabled = false,
     this.referenceScopeKey,
+    this.imageRecoveryScopeKey,
+    this.imageRecovery = const OhosImageRecovery(),
     this.isReferenceScopeCurrent,
     this.references = const [],
     this.onPreviewReference,
@@ -134,6 +139,8 @@ class _MessageInputWidgetState extends State<MessageInputWidget> {
   TextEditingValue _changeBefore = TextEditingValue.empty;
   bool _suppressPasteTrigger = false;
   int _pickerDepth = 0;
+  OhosImageRecovery get _imageRecovery => widget.imageRecovery;
+  bool _recoveringImages = false;
 
   @override
   void initState() {
@@ -147,6 +154,7 @@ class _MessageInputWidgetState extends State<MessageInputWidget> {
     _previousValue = _controller.value;
     _controller.addListener(_onControllerChanged);
     if (_controller.text.isNotEmpty) widget.onChanged?.call(_controller.text);
+    WidgetsBinding.instance.addPostFrameCallback((_) => _recoverImages());
   }
 
   @override
@@ -154,6 +162,11 @@ class _MessageInputWidgetState extends State<MessageInputWidget> {
     super.didUpdateWidget(oldWidget);
     if (oldWidget.referenceScopeKey != widget.referenceScopeKey) {
       _editingRevision++;
+    }
+    if (oldWidget.referenceScopeKey != widget.referenceScopeKey ||
+        oldWidget.imageRecoveryScopeKey != widget.imageRecoveryScopeKey ||
+        (!oldWidget.imagesEnabled && widget.imagesEnabled)) {
+      WidgetsBinding.instance.addPostFrameCallback((_) => _recoverImages());
     }
     if (oldWidget.editingEnabled != widget.editingEnabled) _editingRevision++;
     if (oldWidget.editingEnabled && !widget.editingEnabled) {
@@ -278,10 +291,26 @@ class _MessageInputWidgetState extends State<MessageInputWidget> {
     if (!widget.editingEnabled || !widget.imagesEnabled) return false;
     final revision = _editingRevision;
     final generation = _inputGeneration;
+    final recoveryScope =
+        widget.imageRecoveryScopeKey ?? widget.referenceScopeKey;
+    String? recoveryId;
     _pickerEnter();
     try {
+      if (_imageRecovery.isSupported &&
+          recoveryScope != null &&
+          widget.isReferenceScopeCurrent?.call() != false) {
+        recoveryId = await _imageRecovery.begin(
+            recoveryScope, _controller.text, widget.pendingImages);
+        if (!mounted ||
+            revision != _editingRevision ||
+            generation != _inputGeneration ||
+            !widget.editingEnabled ||
+            widget.isReferenceScopeCurrent?.call() == false) {
+          return false;
+        }
+      }
       final List<XFile> picked;
-      if (source == ImageSource.gallery && Platform.operatingSystem == 'ohos') {
+      if (source == ImageSource.gallery && _imageRecovery.isSupported) {
         picked = await _picker.pickMultiImage(
             imageQuality: 70, maxWidth: 2048, maxHeight: 2048, limit: 10);
       } else {
@@ -308,9 +337,88 @@ class _MessageInputWidgetState extends State<MessageInputWidget> {
         );
       }
     } finally {
+      if (recoveryId != null && recoveryScope != null) {
+        try {
+          await _imageRecovery.acknowledge(recoveryScope, recoveryId);
+        } catch (_) {/* 已显示的草稿保留，重启后仍可去重恢复。 */}
+      }
       _pickerLeave();
     }
     return false;
+  }
+
+  Future<void> _recoverImages() async {
+    if (!mounted || !_imageRecovery.isSupported || _recoveringImages) return;
+    final scope = widget.imageRecoveryScopeKey ?? widget.referenceScopeKey;
+    if (scope == null || widget.isReferenceScopeCurrent?.call() == false) {
+      return;
+    }
+    final revision = _editingRevision, generation = _inputGeneration;
+    _recoveringImages = true;
+    try {
+      final record = await _imageRecovery.retrieve(scope);
+      if (record == null ||
+          !mounted ||
+          (widget.imageRecoveryScopeKey ?? widget.referenceScopeKey) != scope ||
+          widget.isReferenceScopeCurrent?.call() == false ||
+          !widget.editingEnabled ||
+          !widget.imagesEnabled) {
+        return;
+      }
+      final id = record['id'] as String;
+      final text = record['text'] as String;
+      final paths = <String>{
+        ...List<String>.from(record['images'] as List),
+        ...((record['files'] as List)
+            .map((row) => (row as Map)['path'] as String)),
+      }.toList();
+      final restore = await showDialog<bool>(
+          context: context,
+          builder: (context) => AlertDialog(
+                title: const Text('恢复上次图片选择'),
+                content: SingleChildScrollView(
+                    child: Text(
+                        '${record['phase'] == 'ready' ? '上次选择尚未交回聊天。' : '上次选择被系统中断，未复制的图片需要重新选择。'}'
+                        '\n可恢复 ${paths.length} 张图片。恢复后请核对再发送。'
+                        '${text.isEmpty ? '' : '\n\n上次输入：\n${text.length > 2000 ? '${text.substring(0, 2000)}…' : text}'}'
+                        '${_controller.text.isEmpty ? '' : '\n\n当前输入会保留。'}')),
+                actions: [
+                  TextButton(
+                      onPressed: () => Navigator.pop(context, false),
+                      child: const Text('丢弃')),
+                  FilledButton(
+                      onPressed: () => Navigator.pop(context, true),
+                      child: const Text('恢复草稿')),
+                ],
+              ));
+      if (!mounted ||
+          (widget.imageRecoveryScopeKey ?? widget.referenceScopeKey) != scope ||
+          widget.isReferenceScopeCurrent?.call() == false ||
+          restore == null ||
+          revision != _editingRevision ||
+          generation != _inputGeneration ||
+          !widget.editingEnabled ||
+          !widget.imagesEnabled) {
+        return;
+      }
+      if (restore) {
+        if (_controller.text.isEmpty) _controller.text = text;
+        widget.onImagesPicked
+            ?.call({...widget.pendingImages, ...paths}.toList());
+      }
+      await _imageRecovery.acknowledge(scope, id);
+    } catch (_) {
+      if (mounted) {
+        ScaffoldMessenger.of(context)
+            .showSnackBar(const SnackBar(content: Text('上次图片选择未能恢复，请重新选择')));
+      }
+    } finally {
+      _recoveringImages = false;
+      if (mounted &&
+          scope != (widget.imageRecoveryScopeKey ?? widget.referenceScopeKey)) {
+        WidgetsBinding.instance.addPostFrameCallback((_) => _recoverImages());
+      }
+    }
   }
 
   bool get _showPhotoBtn => true;
