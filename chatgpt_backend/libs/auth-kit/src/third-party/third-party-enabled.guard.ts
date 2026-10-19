@@ -9,6 +9,8 @@ import { Reflector } from '@nestjs/core';
 import { AuthSettingsService } from '../settings/auth-settings.service';
 
 export const THIRD_PARTY_KEY = 'third_party_provider';
+export const HUAWEI_LOGIN_MODE_KEY = 'huawei_login_mode';
+export const HuaweiLoginMode = () => SetMetadata(HUAWEI_LOGIN_MODE_KEY, true);
 export const ThirdParty = (provider: 'huawei' | 'apple') =>
   SetMetadata(THIRD_PARTY_KEY, provider);
 
@@ -31,10 +33,28 @@ export class ThirdPartyEnabledGuard implements CanActivate {
     if (!provider) return true; // 非第三方路由，放行
 
     const settings = await this.settingsService.get();
-    const enabled =
+    let enabled =
       provider === 'huawei'
         ? settings.huaweiGetAuthCodeEnabled || settings.huaweiQuickLoginEnabled
         : settings.appleSignInEnabled;
+
+    if (
+      provider === 'huawei' &&
+      this.reflector.getAllAndOverride<boolean>(HUAWEI_LOGIN_MODE_KEY, [
+        context.getHandler(),
+        context.getClass(),
+      ])
+    ) {
+      const mode = context
+        .switchToHttp()
+        .getRequest<{ body?: { mode?: unknown } }>().body?.mode;
+      enabled =
+        mode === 'getAuthCode'
+          ? settings.huaweiGetAuthCodeEnabled
+          : mode === 'quickLogin'
+            ? settings.huaweiQuickLoginEnabled
+            : false;
+    }
 
     if (!enabled) {
       throw new ForbiddenException({

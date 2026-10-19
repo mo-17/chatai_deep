@@ -36,6 +36,156 @@ void main() {
     expect(identical(copied.authDependencies, dependencies), isTrue);
   });
 
+  testWidgets('华为授权前必须同意协议', (tester) async {
+    final huawei = _FakeHuaweiService();
+    LoginSdkConfig.install(_config(storage: storage));
+    await _pumpLoginPage(tester,
+        dependencies: LoginAuthDependencies(
+            huaweiLoginService: huawei,
+            authDao: _authDao((_) async => _okResponse())),
+        onLoginSuccess: () {});
+    await tester.ensureVisible(find.text('华为'));
+    await tester.tap(find.text('华为'));
+    await tester.pump();
+    expect(huawei.calls, 0);
+    expect(find.text('请先同意用户协议和隐私政策'), findsOneWidget);
+  });
+
+  testWidgets('华为首次登录通过验证码绑定后只保存一次', (tester) async {
+    final paths = <String>[];
+    final huaweiBodies = <String, dynamic>{};
+    final dao = _authDao((request) async {
+      paths.add(request.url.path);
+      switch (request.url.path) {
+        case '/uapi/auth/huawei/login':
+          final body = jsonDecode(request.body) as Map<String, dynamic>;
+          huaweiBodies['login'] = body;
+          return _okResponse(
+              data: {'needBinding': true, 'bindTicket': 'huawei-ticket'});
+        case '/uapi/auth/code/send':
+          return _okResponse();
+        case '/uapi/auth/huawei/bind-and-login':
+          final body = jsonDecode(request.body) as Map<String, dynamic>;
+          huaweiBodies['binding'] = body;
+          return _okResponse(
+              data: 'huawei-session',
+              extra: {'userName': 'huawei-user', 'id': 91});
+        default:
+          throw StateError('Unexpected route');
+      }
+    });
+    LoginSdkConfig.install(_config(
+        storage: storage,
+        dependencies: LoginAuthDependencies(
+            authDao: dao, huaweiLoginService: _FakeHuaweiService())));
+    var success = 0;
+    await _pumpLoginPage(tester, onLoginSuccess: () => success++);
+    await _tapHuawei(tester);
+    await _pumpNetworkUntil(
+        tester, () => find.byType(BindIdentityPage).evaluate().isNotEmpty,
+        reason: '华为绑定页未打开');
+    await _submitBinding(tester, identifier: 'huawei@example.com');
+    await _pumpNetworkUntil(
+        tester, () => storage.readTokenSync() == 'huawei-session',
+        reason: '华为绑定未保存登录状态');
+    expect(huaweiBodies['login'],
+        {'mode': 'getAuthCode', 'authCode': 'huawei-single-use-code'});
+    expect(huaweiBodies['binding']['bindTicket'], 'huawei-ticket');
+    expect(paths, [
+      '/uapi/auth/huawei/login',
+      '/uapi/auth/code/send',
+      '/uapi/auth/huawei/bind-and-login'
+    ]);
+    expect(success, 1);
+    expect(storage.writeCalls, 1);
+  });
+
+  testWidgets('华为已绑定账号直接登录', (tester) async {
+    LoginSdkConfig.install(_config(
+        storage: storage,
+        dependencies: LoginAuthDependencies(
+          huaweiLoginService: _FakeHuaweiService(),
+          authDao: _authDao((_) async => _okResponse(
+              data: 'direct-huawei-session',
+              extra: {'userName': 'direct-huawei'})),
+        )));
+    var success = 0;
+    await _pumpLoginPage(tester, onLoginSuccess: () => success++);
+    await _tapHuawei(tester);
+    await _pumpNetworkUntil(
+        tester, () => storage.readTokenSync() == 'direct-huawei-session',
+        reason: '已绑定华为账号未登录');
+    expect(find.byType(BindIdentityPage), findsNothing);
+    expect(success, 1);
+    expect(storage.writeCalls, 1);
+  });
+
+  testWidgets('华为取消授权不发请求也不提示登录失败', (tester) async {
+    var requests = 0;
+    LoginSdkConfig.install(_config(
+        storage: storage,
+        dependencies: LoginAuthDependencies(
+          huaweiLoginService: _FakeHuaweiService(cancelled: true),
+          authDao: _authDao((_) async {
+            requests++;
+            return _okResponse();
+          }),
+        )));
+    await _pumpLoginPage(tester, onLoginSuccess: () {});
+    await _tapHuawei(tester);
+    await tester.pump();
+    expect(requests, 0);
+    expect(storage.writeCalls, 0);
+    expect(find.byType(SnackBar), findsNothing);
+  });
+
+  testWidgets('新认证使尚未返回的华为授权失效', (tester) async {
+    final pending = Completer<HuaweiLoginResult>();
+    var requests = 0;
+    LoginSdkConfig.install(_config(
+        storage: storage,
+        dependencies: LoginAuthDependencies(
+          huaweiLoginService: _FakeHuaweiService(pending: pending),
+          authDao: _authDao((_) async {
+            requests++;
+            return _okResponse();
+          }),
+        )));
+    await _pumpLoginPage(tester, onLoginSuccess: () {});
+    await _tapHuawei(tester);
+    LoginDao.beginAuthAttempt();
+    pending.complete(
+        const HuaweiLoginResult(authCode: 'stale-code', mode: 'getAuthCode'));
+    await tester.pump();
+    expect(requests, 0);
+    expect(storage.writeCalls, 0);
+  });
+
+  testWidgets('华为请求返回前新认证不会打开旧账号绑定页', (tester) async {
+    final response = Completer<http.Response>();
+    var started = false;
+    LoginSdkConfig.install(_config(
+        storage: storage,
+        dependencies: LoginAuthDependencies(
+          huaweiLoginService: _FakeHuaweiService(),
+          authDao: _authDao((_) {
+            started = true;
+            return response.future;
+          }),
+        )));
+    await _pumpLoginPage(tester, onLoginSuccess: () {});
+    await _tapHuawei(tester);
+    await _pumpNetworkUntil(tester, () => started, reason: '未开始华为服务端请求');
+    LoginDao.beginAuthAttempt();
+    response.complete(
+        _okResponse(data: {'needBinding': true, 'bindTicket': 'stale-ticket'}));
+    await _pumpNetworkUntil(
+        tester, () => find.byType(CircularProgressIndicator).evaluate().isEmpty,
+        reason: '华为请求未结束');
+    expect(find.byType(BindIdentityPage), findsNothing);
+    expect(storage.writeCalls, 0);
+  });
+
   testWidgets(
     'widget 注入 Apple 完成绑定后只保存并回调一次',
     (tester) async {
@@ -475,4 +625,34 @@ final class _ThrowingAppleService implements IAppleSignInService {
   Future<AppleSignInResult> signIn() {
     throw StateError('installed Apple service must not be used');
   }
+}
+
+Future<void> _tapHuawei(WidgetTester tester) async {
+  await tester.ensureVisible(find.textContaining('已阅读并同意'));
+  await tester.tap(find.textContaining('已阅读并同意'));
+  await tester.pump();
+  await tester.ensureVisible(find.text('华为'));
+  await tester.tap(find.text('华为'));
+  await tester.pump();
+}
+
+class _FakeHuaweiService implements IHuaweiLoginService {
+  final bool cancelled;
+  final Completer<HuaweiLoginResult>? pending;
+  int calls = 0;
+  _FakeHuaweiService({this.cancelled = false, this.pending});
+  @override
+  bool get isAvailable => true;
+  @override
+  Future<HuaweiLoginResult> signInWithAuthCode() async {
+    calls++;
+    if (cancelled) throw const HuaweiLoginCancelledException();
+    if (pending != null) return pending!.future;
+    return const HuaweiLoginResult(
+        authCode: 'huawei-single-use-code', mode: 'getAuthCode');
+  }
+
+  @override
+  Future<HuaweiLoginResult> signInWithQuickLogin() =>
+      throw StateError('must use code flow');
 }

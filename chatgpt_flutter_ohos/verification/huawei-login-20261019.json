@@ -1,0 +1,79 @@
+{
+  "date": "2026-10-19",
+  "parentCommit": "a6992a63d35b2c8e1482093b10d571f4f25820b0",
+  "flutter": "3.35.7-ohos-local",
+  "localSnapshotNotUpstreamRelease": true,
+  "releaseHap": {
+    "path": "chatgpt_flutter_ohos/build/ohos/hap/entry-default-signed.hap",
+    "bytes": 54992874,
+    "sha256": "155924274e07fef649e81575365afe23484eb1b135ed96423ab59f2f0b5ed6eb",
+    "aotLoaderFingerprint": "96966b829ed02c984d139d4a56da8ffe7fe81213b8b711f273d00a67d5b15642",
+    "quickjsLoaderFingerprint": "d7febea42810e9ca90601dd5637b77bd613004cccaa39ef1ccbabc3ee5332220",
+    "aotAndNativeMatchCurrentBuild": true,
+    "bundledQuickjsLicenseVerified": true,
+    "signing": "existing local/debug configuration"
+  },
+  "checks": {
+    "loginWidgetAndStorage": 35,
+    "backendAuth": 48,
+    "nativeChannelsAndBuildGuards": 44,
+    "dartHuaweiChannel": 3,
+    "totalPassed": 130,
+    "skipped": 0
+  },
+  "staticAnalysis": {
+    "shell": "passed",
+    "login": "passed",
+    "backendChangedFilesEslint": "passed",
+    "backendProductionTypes": "passed",
+    "backendAllTypes": "blocked by two type errors in unchanged src/access/product-operations.postgres.spec.ts:84-85"
+  },
+  "physicalDeviceVerified": false,
+  "hdcTargets": "Empty",
+  "realHuaweiProviderVerified": false,
+  "clientIdConfigured": false,
+  "backendImplementation": "NestJS chatgpt_backend",
+  "backendDeployed": false,
+  "published": false,
+  "primarySources": [
+    "https://developer.huawei.com/consumer/cn/doc/doccenter-capabilities/account-client-id",
+    "https://developer.huawei.com/consumer/cn/doc/doccenter-references/api/account-api-obtain-user-token",
+    "https://developer.huawei.com/consumer/cn/doc/doccenter-references/api/account-api-get-token-info"
+  ],
+  "verificationLogSha256": {
+    "build.log": "2e88dfa3d2c98801010acf3da70a0623b12e6445e1844a0d1d185b4851353cff",
+    "backend-tests.log": "a471507a9bbad53dbb8eded3b4101c73cb689eb75f470eee0a39c06b1f6228de",
+    "backend-build-types.log": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "backend-types.log": "aa0c22ad51194b54de9d7bcc38a4d50537b137fbd22be1a390690477cd07c2c3",
+    "backend-lint.log": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "login-tests.log": "1d4154d071362db6ee7e294396b90581d91195d1af79ece7b0d1cc3343f25f98",
+    "login-analyze.log": "b8f94746d0debbdb547b510425549cb6d6f85eed5cce23d169d18ece449224ed",
+    "native-tests.log": "e259eeec25a979fc1c791e199744e98a20cc47cfa46a1df16d22172cc09e419c",
+    "shell-tests.log": "a9962f525e3b3eed68e2160900f60dffa1f423a2e32bd8cc0493b50bc3f934df",
+    "shell-analyze.log": "2f52eb9430c7eb88bb299ae30a9c0a2accafffdb41add2e1a7012e6723c4a16d",
+    "hdc-targets.txt": "c769b18b5babef2903583320036d1e507ee1e80e1386b29d098721999cd20bcf"
+  },
+  "sourceSha256": {
+    "AGENTS.md": "1cadf94d88f0ab0414c24e98c41db32d5dde2424aad026acb669b13984caa508",
+    "auth_kit_flutter/lib/third_party/huawei_login_service.dart": "20b4f94c76aad68218dc50973a3dfcc7425c69cd66ff5ce9905aeefde01aa6dd",
+    "chatgpt_backend/.env.example": "58e09e64f46a41cba75bcedbd052d0fc290d8444a6b4e37c43ba635aeac1ea55",
+    "chatgpt_backend/libs/auth-kit/src/controllers/third-party.controller.ts": "c9323ad1c3286ab62322cb6c6938191f31c4521fd88060917de06147e7b6fa6c",
+    "chatgpt_backend/libs/auth-kit/src/third-party/huawei/huawei.service.ts": "3af51288e7cf7b651251373b0ec97a2a61ddd43f1f5af850dc744f2eaa58384a",
+    "chatgpt_backend/libs/auth-kit/src/third-party/third-party-enabled.guard.ts": "742e17a74e32346c65638505ad6a9aea51f50e62004d612b2c08abbda5667ebf",
+    "chatgpt_backend/src/auth/huawei-login.spec.ts": "e90fde57954a9043e9272766a4e4263b6f315c0b91970b02faf67b08e1a39b7b",
+    "chatgpt_flutter_ohos/README.md": "aedbf8a050ecd6c906c24a9b20ef8cf47b4a4917244efb9341d93f4763f162e6",
+    "chatgpt_flutter_ohos/lib/main.dart": "767d4533d79893ce4fc1a21193a67c9234a6667ec0672a2a713199f7c488a225",
+    "chatgpt_flutter_ohos/lib/ohos_huawei_login_service.dart": "c75d6226a66a8cd71f088921b3835b7d8a11a9ff9c83f597773ed61b941fa31b",
+    "chatgpt_flutter_ohos/ohos/entry/src/main/ets/account/HuaweiLoginPlugin.ets": "b9f985591e867bac2964879104425ac6b87824f7aa8d064e2b7e8aa41e090ba9",
+    "chatgpt_flutter_ohos/ohos/entry/src/main/ets/entryability/EntryAbility.ets": "bf3b88acd0c82f23c97159a270d8bf40bdec593a60340311f5dc50c88ce7a2bc",
+    "chatgpt_flutter_ohos/ohos/entry/src/main/module.json5": "d4cc529b17a4390a97d2c98bdf8752f36d66c01d0c66cc54123012652e55950a",
+    "chatgpt_flutter_ohos/pubspec.lock": "13d8fe86b12e6959d80a1889a68a4e6b4a2a7b3e3b3e94baac6f0b9044a20b4b",
+    "chatgpt_flutter_ohos/pubspec.yaml": "643bdeb380b36567297ca70a6c67c970bb3238c6822ba075e26fe0a0ffce6a01",
+    "chatgpt_flutter_ohos/test/native_huawei_login.test.cjs": "8ce633fb0d2ee7811adc372ce071ed60daa60f2056762da109b19afcb322d184",
+    "chatgpt_flutter_ohos/test/ohos_huawei_login_service_test.dart": "9e91e2e6e5582f7f7f53a3d5c809a311937ae205dbb285e5faeb1f1f0dbffd3f",
+    "login_sdk/lib/dao/login_dao.dart": "ac520a16828660cdc9d61c511c9b713dc8eb57e9ff07a6badfd671cf492e15cf",
+    "login_sdk/lib/pages/login_page.dart": "b5d4b3ec19de54b93821abd82edb5bf78c0d648e6fca3ea06f1c20371e7218e3",
+    "login_sdk/test/third_party_binding_flow_test.dart": "82c728482c3834ea7a8448bad4d7c8699446a162b6c69af0488a4d2711be53a3",
+    "chatgpt_flutter_ohos/docs/huawei-login.md": "95e4eeccd4464598a986be3cf299d73c3f2e0d712f94a72159ddf7619fd2a25a"
+  }
+}

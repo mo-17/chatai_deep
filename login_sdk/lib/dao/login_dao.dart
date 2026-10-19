@@ -252,6 +252,10 @@ class LoginDao {
     return LoginAuthAttempt._(generation);
   }
 
+  /// 系统授权返回后、发起后端请求前排除已取消或被新登录替代的请求。
+  static bool isAuthAttemptCurrent(LoginAuthAttempt attempt) =>
+      !attempt._consumed && attempt._generation == _authAttemptGeneration;
+
   /// 取消仍代表当前认证意图的句柄。
   ///
   /// 操作同步且幂等；旧句柄的 generation 已落后时不会使更新的认证失效。

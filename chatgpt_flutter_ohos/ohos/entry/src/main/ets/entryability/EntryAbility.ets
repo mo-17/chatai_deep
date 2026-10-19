@@ -8,6 +8,7 @@ import SharePlugin from '../media/SharePlugin';
 import SpeechRecognizerPlugin from '../speech/SpeechRecognizerPlugin';
 import TtsPlugin from '../speech/TtsPlugin';
 import OcrPlugin from '../ocr/OcrPlugin';
+import HuaweiLoginPlugin from '../account/HuaweiLoginPlugin';
 
 export default class EntryAbility extends FlutterAbility {
   private speech: SpeechRecognizerPlugin | null = null;
@@ -20,6 +21,7 @@ export default class EntryAbility extends FlutterAbility {
     flutterEngine.getPlugins()?.add(new FilePickerPlugin(this.context))
     flutterEngine.getPlugins()?.add(new ImagePickerPlugin(this.context))
     flutterEngine.getPlugins()?.add(new SharePlugin(this.context))
+    flutterEngine.getPlugins()?.add(new HuaweiLoginPlugin(this.context))
     this.speech = new SpeechRecognizerPlugin(this.context)
     this.tts = new TtsPlugin()
     this.ocr = new OcrPlugin(this.context)

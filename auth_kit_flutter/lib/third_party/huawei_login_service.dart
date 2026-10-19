@@ -2,6 +2,19 @@
 ///
 /// OHOS 宿主通过 MethodChannel 桥接华为账号 SDK，
 /// Android/iOS 宿主回退为不可用。
+/// 用户主动关闭系统授权页，不作为登录失败显示。
+class HuaweiLoginCancelledException implements Exception {
+  const HuaweiLoginCancelledException();
+}
+
+/// 平台适配器给 UI 的安全提示，不包含授权码或原生异常详情。
+class HuaweiLoginException implements Exception {
+  final String message;
+  const HuaweiLoginException(this.message);
+  @override
+  String toString() => message;
+}
+
 class HuaweiLoginResult {
   /// getAuthCode 模式返回的授权码
   final String? authCode;

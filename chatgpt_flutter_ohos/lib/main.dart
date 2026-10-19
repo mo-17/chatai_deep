@@ -2,8 +2,10 @@ import 'package:chatgpt_app_core/chatgpt_app_core.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
 import 'package:chatai_ohos_image_picker/ohos_image_picker.dart';
+import 'package:login_sdk/login_sdk.dart';
 
 import 'ohos_huks_secure_key_value_store.dart';
+import 'ohos_huawei_login_service.dart';
 import 'ohos_runtime_security.dart';
 
 Future<void> main() async {
@@ -23,6 +25,12 @@ Future<void> main() async {
         releaseMode: kReleaseMode,
       );
       await secureStore.ensureAvailable();
+      // LoginConfig.init 会在此配置上替换 HUKS 存储，保留宿主认证依赖。
+      LoginSdkConfig.install(LoginSdkConfig.instance.copyWith(
+        authDependencies: LoginAuthDependencies(
+          huaweiLoginService: OhosHuaweiLoginService(),
+        ),
+      ));
     },
     secureStore: secureStore,
   );

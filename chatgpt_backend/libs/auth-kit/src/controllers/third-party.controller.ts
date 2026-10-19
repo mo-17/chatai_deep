@@ -17,6 +17,7 @@ import { HuaweiService } from '../third-party/huawei/huawei.service';
 import { AppleService } from '../third-party/apple/apple.service';
 import {
   ThirdParty,
+  HuaweiLoginMode,
   ThirdPartyEnabledGuard,
 } from '../third-party/third-party-enabled.guard';
 import * as jwt from 'jsonwebtoken';
@@ -134,6 +135,7 @@ export class ThirdPartyController {
   @Post('huawei/login')
   @HttpCode(200)
   @ThirdParty('huawei')
+  @HuaweiLoginMode()
   @UseGuards(ThirdPartyEnabledGuard)
   async huaweiLogin(@Body() body: HuaweiLoginBody) {
     const { mode, authCode, accessToken } = body;

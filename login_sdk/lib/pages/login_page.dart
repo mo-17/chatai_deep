@@ -241,7 +241,6 @@ class _LoginPageState extends State<LoginPage> {
       revision == _codeSendRevision &&
       (ModalRoute.of(context)?.isCurrent ?? false);
 
-
   Future<bool> _handleSendCode() async {
     if (_loading || _sendingCode) return false;
     final identifier = _identifierCtrl.text.trim();
@@ -365,29 +364,52 @@ class _LoginPageState extends State<LoginPage> {
   }
 
   Future<void> _handleHuaweiLogin() async {
+    if (!_agreementChecked) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('请先同意用户协议和隐私政策')),
+      );
+      return;
+    }
     final attempt = _beginLoginAttempt();
     if (attempt == null) return;
     final authAttempt = _beginGlobalAuthAttempt();
     try {
-      final hwResult = await _huaweiService.signInWithQuickLogin();
+      if (!_huaweiService.isAvailable) {
+        throw const HuaweiLoginException('当前设备暂不支持华为账号登录');
+      }
+      final hwResult = await _huaweiService.signInWithAuthCode();
+      if (!_isCurrentAttempt(attempt) ||
+          !LoginDao.isAuthAttemptCurrent(authAttempt)) {
+        return;
+      }
       final authResult = await _authDao.huaweiLogin(
         mode: hwResult.mode,
         authCode: hwResult.authCode,
         accessToken: hwResult.accessToken,
       );
+      if (!LoginDao.isAuthAttemptCurrent(authAttempt)) return;
       await _handleThirdPartyResult(
         authResult,
         provider: 'huawei',
         attempt: attempt,
         authAttempt: authAttempt,
       );
+    } on HuaweiLoginCancelledException {
+      return;
     } on LoginAccountChangedException {
       return;
     } catch (e) {
       if (mounted && _isCurrentAttempt(attempt)) {
         ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(
-              content: Text('华为登录暂未接入'), backgroundColor: Colors.orange),
+          SnackBar(
+              content: Text(e is HuaweiLoginException
+                  ? e.message
+                  : e is AuthApiException && e.statusCode == 503
+                      ? '华为账号登录尚未配置或服务暂不可用，请使用其他登录方式'
+                      : e is AuthApiException && e.statusCode == 403
+                          ? '华为账号登录暂未开放，请使用其他登录方式'
+                          : '华为账号登录失败，请重试或使用其他登录方式'),
+              backgroundColor: Colors.orange),
         );
       }
     } finally {
@@ -1077,7 +1099,7 @@ class _LoginPageState extends State<LoginPage> {
         onTap = _handleAppleLogin;
         break;
       case 'harmony':
-        label = '华为账号一键登录';
+        label = '华为账号登录';
         hint = '鸿蒙原生账号';
         icon = Icons.phone_android;
         onTap = _handleHuaweiLogin;
@@ -1170,7 +1192,7 @@ class _LoginPageState extends State<LoginPage> {
       case 'ios':
         return [
           _SocialItem('华为', Icons.phone_android, const Color(0xFFCF0A2C),
-              () => _showUnavailableToast('华为')),
+              _handleHuaweiLogin),
           _SocialItem('微信', Icons.chat, const Color(0xFF07C160),
               () => _showUnavailableToast('微信')),
           _SocialItem('QQ', Icons.forum, const Color(0xFF12B7F5),
@@ -1195,7 +1217,7 @@ class _LoginPageState extends State<LoginPage> {
       default: // android
         return [
           _SocialItem('华为', Icons.phone_android, const Color(0xFFCF0A2C),
-              () => _showUnavailableToast('华为')),
+              _handleHuaweiLogin),
           _SocialItem('微信', Icons.chat, const Color(0xFF07C160),
               () => _showUnavailableToast('微信')),
           _SocialItem('QQ', Icons.forum, const Color(0xFF12B7F5),
