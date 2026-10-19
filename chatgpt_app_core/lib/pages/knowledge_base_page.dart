@@ -1,5 +1,4 @@
 import 'dart:convert';
-import 'dart:io';
 
 import 'package:chatgpt_app_core/chat/application/file_processor.dart';
 import 'package:chatgpt_app_core/chat/application/knowledge_file_importer.dart';
@@ -192,13 +191,13 @@ class _KnowledgeBasePageState extends State<KnowledgeBasePage> {
                     MaterialPageRoute(
                         builder: (_) => const KnowledgeAssistantPage())),
           ),
-          // file_picker 暂无鸿蒙实现，OHOS 隐藏文件导入入口（粘贴文本仍可用）。
-          if (Platform.operatingSystem != 'ohos')
-            IconButton(
-              icon: const Icon(Icons.upload_file_outlined),
-              tooltip: '导入文件（PDF / 文本 / 图片，扫描件与图片走 OCR）',
-              onPressed: _loading || _dao == null ? null : _importFile,
-            ),
+          IconButton(
+            icon: const Icon(Icons.upload_file_outlined),
+            tooltip: OcrService.isSupported
+                ? '导入文件（PDF / 文本 / 图片，扫描件与图片走 OCR）'
+                : '导入文件（PDF 文本层 / 文本文档）',
+            onPressed: _loading || _dao == null ? null : _importFile,
+          ),
         ],
       ),
       body: _body,
@@ -314,7 +313,7 @@ class _KnowledgeBasePageState extends State<KnowledgeBasePage> {
         withData: false,
         allowedExtensions: [
           ...FileProcessor.pickerExtensions,
-          ...OcrService.imageExtensions,
+          if (OcrService.isSupported) ...OcrService.imageExtensions,
         ],
       );
       paths = [

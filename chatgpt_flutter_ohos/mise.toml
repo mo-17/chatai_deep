@@ -1,6 +1,7 @@
 [env]
 TOOL_HOME = "/Applications/DevEco-Studio.app/Contents"
 DEVECO_SDK_HOME = "/Applications/DevEco-Studio.app/Contents/sdk"
+HOS_SDK_HOME = "/Applications/DevEco-Studio.app/Contents/sdk"
 _.path = [
   "/Applications/DevEco-Studio.app/Contents/tools/ohpm/bin",
   "/Applications/DevEco-Studio.app/Contents/tools/hvigor/bin",

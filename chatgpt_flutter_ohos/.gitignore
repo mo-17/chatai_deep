@@ -1,3 +1,7 @@
 
 # FVM Version Cache
 .fvm/
+
+# Flutter 生成的本机插件路径与崩溃日志，不随源码提交。
+.flutter-plugins-dependencies
+flutter_*.log

@@ -1,3 +1,4 @@
+import 'dart:io';
 import 'package:chatgpt_app_core/chat/application/direct_failure_recovery.dart';
 import 'package:chatgpt_app_core/chat/application/conversation_generation_scope.dart';
 import 'package:chatgpt_app_core/widget/direct_failure_dialog.dart';
@@ -12,7 +13,6 @@ import 'package:chatgpt_app_core/widget/backend_selection_picker.dart';
 import 'package:chatgpt_app_core/chat/application/story_role_card_context.dart';
 import 'dart:async';
 import 'dart:convert';
-import 'dart:io';
 
 import 'package:chatgpt_app_core/chat/application/creative_file_transfer_gateway.dart';
 import 'package:chatgpt_app_core/chat/application/story_room_attachments.dart';
@@ -2871,10 +2871,6 @@ class _StoryRoomPageState extends State<StoryRoomPage> {
 
   Future<void> _importTavernPreset() async {
     if (_presetTransferBusy) return;
-    if (Platform.operatingSystem == 'ohos') {
-      HiDialog.showSnackBar(context, '鸿蒙版本暂不支持预设文件选择');
-      return;
-    }
     setState(() => _presetTransferBusy = true);
     try {
       final source = await CreativeFileTransferGateway(
@@ -3003,10 +2999,6 @@ class _StoryRoomPageState extends State<StoryRoomPage> {
 
   Future<void> _exportTavernPresets() async {
     if (_presetTransferBusy) return;
-    if (Platform.operatingSystem == 'ohos') {
-      HiDialog.showSnackBar(context, '鸿蒙版本暂不支持预设文件保存');
-      return;
-    }
     setState(() => _presetTransferBusy = true);
     try {
       final content = StoryTavernPresetTransfer.exportRoomBundleJson(

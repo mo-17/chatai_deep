@@ -1,5 +1,4 @@
 import 'dart:convert';
-import 'dart:io';
 import 'dart:typed_data';
 
 import 'package:chatgpt_app_core/chat/application/agent_workspace_service.dart';
@@ -307,7 +306,7 @@ class _AgentWorkspacePageState extends State<AgentWorkspacePage> {
         appBar: AppBar(
             title: const Text('文件工作区'),
             actions: [
-              if (!widget.readOnly && Platform.operatingSystem != 'ohos')
+              if (!widget.readOnly)
                 IconButton(
                     tooltip: '导入文件',
                     icon: const Icon(Icons.file_open_outlined),
@@ -616,12 +615,10 @@ class _WorkspacePreviewState extends State<_WorkspacePreview> {
                 appBar: AppBar(
                     title: Text('v${revision.revision} → v${current.revision}'),
                     actions: [
-                      if (Platform.operatingSystem != 'ohos')
-                        IconButton(
-                            tooltip: '导出此版本',
-                            onPressed: () =>
-                                _export(revision: revision.revision),
-                            icon: const Icon(Icons.save_alt)),
+                      IconButton(
+                          tooltip: '导出此版本',
+                          onPressed: () => _export(revision: revision.revision),
+                          icon: const Icon(Icons.save_alt)),
                     ]),
                 body: ListView(padding: const EdgeInsets.all(16), children: [
                   const Text('旧版本与当前版本的差异（− 旧版本，＋ 当前版本）'),
@@ -674,11 +671,10 @@ class _WorkspacePreviewState extends State<_WorkspacePreview> {
                               content: revision.content)));
                   await _read();
                 }),
-          if (Platform.operatingSystem != 'ohos')
-            IconButton(
-                tooltip: '导出文件',
-                icon: const Icon(Icons.save_alt),
-                onPressed: () => _export()),
+          IconButton(
+              tooltip: '导出文件',
+              icon: const Icon(Icons.save_alt),
+              onPressed: () => _export()),
         ]),
         body: Column(children: [
           Padding(

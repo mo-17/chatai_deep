@@ -3,6 +3,8 @@
 library;
 
 class FlutterTts {
+  Future<int> awaitSpeakCompletion(bool enabled) async => 0;
+
   Future<List<Map<String, String>>> get getVoices async => const [];
 
   Future<int> setVoice(Map<String, String> voice) async => 0;

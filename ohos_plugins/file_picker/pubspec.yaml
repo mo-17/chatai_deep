@@ -1,0 +1,12 @@
+name: file_picker
+description: HarmonyOS file selection and save adapter for the app shell.
+version: 11.0.2
+publish_to: 'none'
+environment:
+  sdk: '>=3.0.0 <4.0.0'
+dependencies:
+  flutter:
+    sdk: flutter
+dev_dependencies:
+  flutter_test:
+    sdk: flutter

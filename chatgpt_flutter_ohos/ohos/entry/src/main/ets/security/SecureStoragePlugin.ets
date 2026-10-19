@@ -226,7 +226,7 @@ export default class SecureStoragePlugin implements FlutterPlugin, MethodCallHan
         await huks.abortSession(session.handle, options);
       } catch (_) {
       }
-      throw error;
+      throw new Error('HarmonyOS secure storage operation failed');
     }
   }
 

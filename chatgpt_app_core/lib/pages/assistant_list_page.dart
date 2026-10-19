@@ -7,6 +7,7 @@ import 'package:chatgpt_app_core/chat/application/assistant_card_persistence.dar
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
+import 'package:chatgpt_app_core/chat/application/creative_file_transfer_gateway.dart';
 
 import 'package:chatgpt_app_core/chat/application/assistant_conversation_factory.dart';
 import 'package:chatgpt_app_core/chat/application/assistant_role_card_service.dart';
@@ -291,19 +292,16 @@ class _AssistantListPageState extends State<AssistantListPage> {
         title: const Text('助手管理'),
         centerTitle: true,
         actions: [
-          // file_picker 暂无鸿蒙实现，OHOS 隐藏文件导入入口。
-          if (Platform.operatingSystem != 'ohos')
-            IconButton(
-              icon: const Icon(Icons.file_upload_outlined),
-              tooltip: '导入角色卡（.json/.png/.zip/.charx）',
-              onPressed: _loading ? null : _importRoleCardFile,
-            ),
-          if (Platform.operatingSystem != 'ohos')
-            IconButton(
-              icon: const Icon(Icons.archive_outlined),
-              tooltip: '导入技能（.zip，含 SKILL.md）',
-              onPressed: _loading ? null : _importSkillZip,
-            ),
+          IconButton(
+            icon: const Icon(Icons.file_upload_outlined),
+            tooltip: '导入角色卡（.json/.png/.zip/.charx）',
+            onPressed: _loading ? null : _importRoleCardFile,
+          ),
+          IconButton(
+            icon: const Icon(Icons.archive_outlined),
+            tooltip: '导入技能（.zip，含 SKILL.md）',
+            onPressed: _loading ? null : _importSkillZip,
+          ),
           IconButton(
             icon: const Icon(Icons.storefront_outlined),
             tooltip: '助手市场',
@@ -2102,6 +2100,14 @@ class _AssistantListPageState extends State<AssistantListPage> {
   Future<void> _shareRoleCardBytes(
       AssistantOperationScope scope, String name, List<int> bytes) async {
     scope.verify();
+    if (Platform.operatingSystem == 'ohos') {
+      final saved = await CreativeFileTransferGateway(
+        maxBytes: 256 * 1024 * 1024,
+      ).saveBytes(Uint8List.fromList(bytes), fileName: name);
+      scope.verify();
+      if (saved.saved && mounted) HiDialog.showSnackBar(context, '已保存角色卡');
+      return;
+    }
     Directory? operation;
     try {
       final root = await getTemporaryDirectory();

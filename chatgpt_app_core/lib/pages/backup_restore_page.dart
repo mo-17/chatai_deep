@@ -407,14 +407,7 @@ class _BackupRestorePageState extends State<BackupRestorePage> {
         '_${two(now.hour)}${two(now.minute)}${two(now.second)}.zip';
   }
 
-  ///file_picker 暂未支持鸿蒙（与消息输入框的文件入口同口径）。
-  bool get _pickerUnsupported => Platform.operatingSystem == 'ohos';
-
   void _export() async {
-    if (_pickerUnsupported) {
-      HiDialog.showSnackBar(context, '鸿蒙版本暂不支持备份文件选择，敬请期待');
-      return;
-    }
     if (_includeApiKeys) {
       final confirmed = await _confirmSecretExport();
       if (confirmed != true || !mounted) return;
@@ -441,7 +434,7 @@ class _BackupRestorePageState extends State<BackupRestorePage> {
         },
       );
       final bytes = export.bytes;
-      // 移动端 saveFile 由插件代写 bytes；桌面端只返回路径，需自行写文件。
+      // file_picker 11 及本地鸿蒙适配均消费 bytes；返回值只作保存反馈。
       final path = await FilePicker.saveFile(
         dialogTitle: '保存备份',
         fileName: _fileName(),
@@ -450,9 +443,6 @@ class _BackupRestorePageState extends State<BackupRestorePage> {
         bytes: bytes,
       );
       if (path == null) return; // 用户取消
-      if (!Platform.isAndroid && !Platform.isIOS) {
-        await File(path).writeAsBytes(bytes, flush: true);
-      }
       if (!mounted) return;
       HiDialog.showSnackBar(context, '已导出备份（${_sizeText(bytes.length)}）');
       if (export.warnings.isNotEmpty) {
@@ -504,16 +494,18 @@ class _BackupRestorePageState extends State<BackupRestorePage> {
   }
 
   void _import() async {
-    if (_pickerUnsupported) {
-      HiDialog.showSnackBar(context, '鸿蒙版本暂不支持备份文件选择，敬请期待');
+    final FilePickerResult? picked;
+    try {
+      picked = await FilePicker.pickFiles(
+        dialogTitle: '选择备份文件',
+        type: FileType.custom,
+        allowedExtensions: const ['zip'],
+        withData: false,
+      );
+    } catch (error) {
+      if (mounted) HiDialog.showSnackBar(context, '选取备份文件失败：$error');
       return;
     }
-    final picked = await FilePicker.pickFiles(
-      dialogTitle: '选择备份文件',
-      type: FileType.custom,
-      allowedExtensions: const ['zip'],
-      withData: false,
-    );
     final file = picked?.files.firstOrNull;
     if (file == null || !mounted) return; // 用户取消
     Uint8List? bytes;

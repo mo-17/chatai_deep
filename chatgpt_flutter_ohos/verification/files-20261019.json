@@ -1,0 +1,56 @@
+{
+  "date": "2026-10-19",
+  "baselineCommits": [
+    "166fb2f0",
+    "c3ebebe2"
+  ],
+  "flutter": "3.35.7-ohos-local",
+  "frameworkRevision": "002ff8966ae121929da5504479f80937783fe6d2",
+  "dart": "3.9.2",
+  "localSnapshotNotUpstreamRelease": true,
+  "releaseHap": {
+    "path": "chatgpt_flutter_ohos/build/ohos/hap/entry-default-signed.hap",
+    "bytes": 52567325,
+    "sha256": "6718891231979ca040c5e1dbcf22d355515bc17b398007982084b7169c20ef8d",
+    "hasAotLibapp": true,
+    "nativeFilePickerChannelPresent": true
+  },
+  "checks": {
+    "nativeLogicTests": 5,
+    "dartChannelTests": 6,
+    "fileAndPageRegressionTests": 44,
+    "ohosShellTests": 6,
+    "staticAnalysis": "no issues",
+    "knowledgePageRegressionTests": 8
+  },
+  "physicalDeviceVerified": false,
+  "systemPickerOrProviderVerified": false,
+  "published": false,
+  "sourceSha256": {
+    "chatgpt_app_core/lib/pages/agent_workspace_page.dart": "4c5618aa7d9d0fe617311b4fadda731e9bae2a271f59ecaaf3bd8fe7c514f3c7",
+    "chatgpt_app_core/lib/pages/assistant_list_page.dart": "7cac5a9de95201222f3145e64d8630fce53155fa6ee45be8d36fe5b23294e18d",
+    "chatgpt_app_core/lib/pages/backup_restore_page.dart": "a17b96eea08325140b6f3343d31a5c84393b0e365d81a484dd2814306404cfae",
+    "chatgpt_app_core/lib/pages/knowledge_base_page.dart": "4fb3ae09d25205c23cd7f14fdf33a522eecb17db3d6b135bca6894d8587f9e56",
+    "chatgpt_app_core/lib/pages/knowledge_report_page.dart": "ce111278fbda3c3beb62a3a0755fa7d4729451dd4b9e2dd98f352162fc471337",
+    "chatgpt_app_core/lib/pages/story_room_list_page.dart": "496fed1361b745c49f4d7e26cae85e26871ee0e46d047a9f5b5f9461fb4d105e",
+    "chatgpt_app_core/lib/pages/story_room_page.dart": "5c83a0a1c8098d6d9c81a7a241d1f633179b2537f9ab693b1d5ec4fd0bd94647",
+    "chatgpt_app_core/lib/widget/message_input_widget.dart": "f510a750514d28ac5d67eb00b10074382eea8ae3d52351a7de0fb93f20ab3225",
+    "chatgpt_flutter_ohos/.gitignore": "4fe8769df6fce05ccb58311afd99b172b971ea3a11c3cdd8a82ca7543bae8d76",
+    "chatgpt_flutter_ohos/README.md": "cb749ea88301b1d4b82fec502fd67a18e169ead058c7ad79ab4ae00108a283e0",
+    "chatgpt_flutter_ohos/mise.toml": "e540f20d56373f45b59a6c393c9de9c89b94ad3f4eef97d4aa0ace978cac5b74",
+    "chatgpt_flutter_ohos/ohos/entry/src/main/ets/entryability/EntryAbility.ets": "474813f4d7092aefeb93a0f193c06c46e389ea6d70bf3c4e8a60a4422c7aafdf",
+    "chatgpt_flutter_ohos/ohos/entry/src/main/ets/security/SecureStoragePlugin.ets": "2ce6007dd9368fbf32b92adfcc444bb2618d1728de5a8775d2cd8827e8bca75b",
+    "chatgpt_flutter_ohos/pubspec.lock": "9b8cb2a35ef15eb425eaad3f9b951e6e144a5bbb6cb8196cf3b3f29a505eff65",
+    "chatgpt_flutter_ohos/pubspec.yaml": "ed416899d1041702b7b745678c0523fe9058b9ad64bca59faef91c5788dea843",
+    "ohos_stubs/flutter_js/lib/flutter_js.dart": "edca1b663716f69c2e9a71bdc7af75d1d65114d3cc876a5ead458cc3d65ea5e4",
+    "ohos_stubs/flutter_tts/lib/flutter_tts.dart": "417d98a078f2557b7b56c17840e5b21fe8e5bba1f803a8a9865ee73b49607b4e",
+    "ohos_stubs/share_plus/lib/share_plus.dart": "48302681f15b07c7d8fa03cdf843d5e46d68402fad67c091bf63419f0b1e5696",
+    "ohos_stubs/share_plus/pubspec.yaml": "387850e8a2697140e405f1a34f9188178d03446e29bfbeda27e3cd52e910cf40",
+    "chatgpt_flutter_ohos/ohos/entry/src/main/ets/files/FilePickerPlugin.ets": "0bc8436962af5a682bc2071d4ea744728fe45b91a119e5841f8558c98cc031fc",
+    "chatgpt_flutter_ohos/test/native_file_picker.test.cjs": "356ea1970cf132484e0c16df4fa2406f630c72fb6e9fa59de53e99dac4b758c4",
+    "ohos_plugins/file_picker/.gitignore": "6c05225876d832a86e95ece72a732a71eff869330413877c7a947f3eeafa464b",
+    "ohos_plugins/file_picker/pubspec.yaml": "c778d67e1fa3968f187fe1c8752b6cec2f3d025f0f5987ceff82a1e46b2283b9",
+    "ohos_plugins/file_picker/lib/file_picker.dart": "a684b37551b9ba522827131978e8e7dce6f559737c1a41e6612983d7ff5d5fa6",
+    "ohos_plugins/file_picker/test/file_picker_test.dart": "1c311bc579ea2ab2d95d6e743701a995beb0393c57beed531ab28a750d82e667"
+  }
+}

@@ -311,8 +311,7 @@ class _MessageInputWidgetState extends State<MessageInputWidget> {
   bool get _showPhotoBtn =>
       Platform.operatingSystem != 'ohos'; // image_picker 暂未支持鸿蒙
 
-  bool get _showFileBtn =>
-      Platform.operatingSystem != 'ohos'; // file_picker 暂未支持鸿蒙
+  bool get _showFileBtn => true;
 
   bool get _hasPendingImages => widget.pendingImages.isNotEmpty;
 

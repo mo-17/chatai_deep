@@ -1,4 +1,5 @@
 import 'dart:io';
+import 'package:chatgpt_app_core/chat/application/creative_file_transfer_gateway.dart';
 import 'package:chatgpt_app_core/knowledge/knowledge_evidence.dart';
 import 'package:chatgpt_app_core/knowledge/knowledge_report.dart';
 import 'package:chatgpt_app_core/dao/ai_catalog_dao.dart';
@@ -41,6 +42,18 @@ class _KnowledgeReportPageState extends State<KnowledgeReportPage> {
           answers: [for (final i in _selected) widget.answers[i]]);
       final bytes = pdf ? await report.pdf() : report.docx();
       if (!mounted || !_identity.current) return;
+      if (Platform.operatingSystem == 'ohos') {
+        final saved = await CreativeFileTransferGateway(
+          maxBytes: 256 * 1024 * 1024,
+        ).saveBytes(bytes,
+            fileName: '资料报告.${pdf ? 'pdf' : 'docx'}',
+            allowedExtensions: [pdf ? 'pdf' : 'docx']);
+        if (saved.saved && mounted && _identity.current) {
+          ScaffoldMessenger.of(context)
+              .showSnackBar(const SnackBar(content: Text('已保存报告')));
+        }
+        return;
+      }
       final dir = await getTemporaryDirectory();
       final file = File(
           '${dir.path}/aipu-report-${DateTime.now().microsecondsSinceEpoch}.${pdf ? 'pdf' : 'docx'}');
@@ -116,19 +129,15 @@ class _KnowledgeReportPageState extends State<KnowledgeReportPage> {
                       })),
         if (_error != null) Text(_error!),
         Wrap(spacing: 12, children: [
-          if (Platform.operatingSystem != 'ohos')
-            FilledButton(
-                onPressed: _busy ? null : () => _export(false),
-                child: const Text('导出 Word')),
-          if (Platform.operatingSystem != 'ohos')
-            FilledButton(
-                onPressed: _busy ? null : () => _export(true),
-                child: const Text('导出 PDF')),
+          FilledButton(
+              onPressed: _busy ? null : () => _export(false),
+              child: const Text('导出 Word')),
+          FilledButton(
+              onPressed: _busy ? null : () => _export(true),
+              child: const Text('导出 PDF')),
           OutlinedButton(
               onPressed: _busy ? null : _copy, child: const Text('复制带引用的文本')),
         ]),
-        if (Platform.operatingSystem == 'ohos')
-          const Text('本平台可复制引用文本；Word/PDF文件导出请在Android、iOS或桌面使用。'),
         if (_busy) const LinearProgressIndicator(),
       ]));
   @override

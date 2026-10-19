@@ -3,7 +3,6 @@ import 'package:chatgpt_app_core/chat/application/translation_retry_policy.dart'
 import 'package:chatgpt_app_core/dao/ai_catalog_dao.dart';
 import 'dart:async';
 import 'dart:convert';
-import 'dart:io';
 import 'dart:typed_data';
 
 import 'package:chatgpt_app_core/chat/application/assistant_role_card_service.dart';
@@ -167,13 +166,13 @@ class _StoryRoomListPageState extends State<StoryRoomListPage> {
               MaterialPageRoute(builder: (_) => const StoryPersonaListPage()),
             ),
           ),
-          if (_tabIndex == 1 && Platform.operatingSystem != 'ohos')
+          if (_tabIndex == 1)
             IconButton(
               icon: const Icon(Icons.file_upload_outlined),
               tooltip: '导入本 App 导出的酒馆模板',
               onPressed: _importTemplate,
             ),
-          if (_tabIndex == 0 && Platform.operatingSystem != 'ohos')
+          if (_tabIndex == 0)
             IconButton(
               key: const ValueKey('import_tavern_chat'),
               icon: _chatTransferBusy
@@ -314,8 +313,7 @@ class _StoryRoomListPageState extends State<StoryRoomListPage> {
                       ],
                     ),
                   ),
-                  if (room.mode == StoryRoomMode.tavern &&
-                      Platform.operatingSystem != 'ohos')
+                  if (room.mode == StoryRoomMode.tavern)
                     const PopupMenuItem(
                       value: 'export_chat',
                       child: Row(
@@ -443,17 +441,16 @@ class _StoryRoomListPageState extends State<StoryRoomListPage> {
                       ],
                     ),
                   ),
-                  if (Platform.operatingSystem != 'ohos')
-                    const PopupMenuItem(
-                      value: 'export',
-                      child: Row(
-                        children: [
-                          Icon(Icons.ios_share_outlined),
-                          SizedBox(width: 8),
-                          Text('导出模板'),
-                        ],
-                      ),
+                  const PopupMenuItem(
+                    value: 'export',
+                    child: Row(
+                      children: [
+                        Icon(Icons.ios_share_outlined),
+                        SizedBox(width: 8),
+                        Text('导出模板'),
+                      ],
                     ),
+                  ),
                   if (canTranslateCopy)
                     const PopupMenuItem(
                       value: 'translate_copy',
@@ -550,15 +547,14 @@ class _StoryRoomListPageState extends State<StoryRoomListPage> {
                 subtitle: const Text('从一个空白角色开始配置'),
                 onTap: () => Navigator.pop(ctx, 'new'),
               ),
-              if (Platform.operatingSystem != 'ohos')
-                ListTile(
-                  leading: const CircleAvatar(
-                    child: Icon(Icons.file_upload_outlined),
-                  ),
-                  title: const Text('导入酒馆模板'),
-                  subtitle: const Text('仅支持本 App 导出的 JSON 文件'),
-                  onTap: () => Navigator.pop(ctx, 'import'),
+              ListTile(
+                leading: const CircleAvatar(
+                  child: Icon(Icons.file_upload_outlined),
                 ),
+                title: const Text('导入酒馆模板'),
+                subtitle: const Text('仅支持本 App 导出的 JSON 文件'),
+                onTap: () => Navigator.pop(ctx, 'import'),
+              ),
             ],
           ),
         ),
@@ -582,10 +578,6 @@ class _StoryRoomListPageState extends State<StoryRoomListPage> {
   Future<void> _importTemplate() async {
     final dao = _templateDao;
     if (dao == null) return;
-    if (Platform.operatingSystem == 'ohos') {
-      HiDialog.showSnackBar(context, '鸿蒙版本暂不支持模板文件选择');
-      return;
-    }
     try {
       final content = await CreativeFileTransferGateway(
         maxBytes: StoryTavernChatTransfer.maxSourceBytes,
@@ -719,7 +711,7 @@ class _StoryRoomListPageState extends State<StoryRoomListPage> {
   }
 
   Future<void> _importTavernChat() async {
-    if (_chatTransferBusy || Platform.operatingSystem == 'ohos') return;
+    if (_chatTransferBusy) return;
     setState(() => _chatTransferBusy = true);
     try {
       final source = await CreativeFileTransferGateway(
@@ -813,10 +805,6 @@ class _StoryRoomListPageState extends State<StoryRoomListPage> {
   }
 
   Future<void> _exportTavernChat(StoryRoomModel room) async {
-    if (Platform.operatingSystem == 'ohos') {
-      HiDialog.showSnackBar(context, '鸿蒙版本暂不支持聊天记录文件保存');
-      return;
-    }
     final dao = _dao;
     final roomId = room.id;
     if (dao == null || roomId == null || _chatTransferBusy) return;
@@ -996,10 +984,6 @@ class _StoryRoomListPageState extends State<StoryRoomListPage> {
   }
 
   Future<void> _exportTemplate(StoryTemplateModel template) async {
-    if (Platform.operatingSystem == 'ohos') {
-      HiDialog.showSnackBar(context, '鸿蒙版本暂不支持模板文件保存');
-      return;
-    }
     try {
       final body = StoryTemplateTransfer.exportJson(template);
       final result = await CreativeFileTransferGateway().saveBytes(
@@ -2222,10 +2206,6 @@ class _StoryTemplateEditorPageState extends State<_StoryTemplateEditorPage> {
 
   Future<void> _importTavernPreset() async {
     if (_presetImportBusy) return;
-    if (Platform.operatingSystem == 'ohos') {
-      HiDialog.showSnackBar(context, '鸿蒙版本暂不支持预设文件选择');
-      return;
-    }
     setState(() => _presetImportBusy = true);
     try {
       final source = await CreativeFileTransferGateway(

@@ -19,27 +19,27 @@ dependency_overrides:
     git:
       url: https://gitee.com/openharmony-sig/flutter_sqflite.git
       path: sqflite
-      ref: master
+      ref: 0bd638a416215b9ab74f21eef98e14797827df04
   sqflite_common_ffi:
     git:
       url: https://gitee.com/openharmony-sig/flutter_sqflite.git
       path: sqflite_common_ffi
-      ref: master
+      ref: 0bd638a416215b9ab74f21eef98e14797827df04
   path_provider:
     git:
       url: https://gitee.com/openharmony-sig/flutter_packages.git
       path: packages/path_provider/path_provider
-      ref: master
+      ref: 35fb467533e174411a117b2a030c15d2a3a9687c
   url_launcher:
     git:
       url: https://gitee.com/openharmony-sig/flutter_packages.git
       path: packages/url_launcher/url_launcher
-      ref: master
+      ref: 35fb467533e174411a117b2a030c15d2a3a9687c
   shared_preferences:
     git:
       url: https://gitee.com/openharmony-sig/flutter_packages.git
       path: packages/shared_preferences/shared_preferences
-      ref: master
+      ref: 35fb467533e174411a117b2a030c15d2a3a9687c
   # package_info_plus: 暂无鸿蒙实现，通过 §6.4 运行时分支兜底
   # OCR 插件无鸿蒙实现：覆盖到本地空实现 stub，使共享核心可编译；
   # 运行时由 OcrService.isSupported（仅 Android/iOS）守卫，OHOS 上永不调用。
@@ -47,10 +47,9 @@ dependency_overrides:
     path: ../ohos_stubs/google_mlkit_text_recognition
   pdfx:
     path: ../ohos_stubs/pdfx
-  # file_picker 无鸿蒙实现：覆盖到本地空实现 stub（方法返回 null ≈ 取消）；
-  # 各调用点以 Platform.operatingSystem == 'ohos' 守卫隐藏入口。
+  # 本地适配通过壳注册的原生文件选择器读写授权 URI。
   file_picker:
-    path: ../ohos_stubs/file_picker
+    path: ../ohos_plugins/file_picker
   # flutter_js 无鸿蒙实现：覆盖到本地空实现 stub；
   # 运行时由 JsRuntimeService.isSupported（非 OHOS）守卫，脚本执行永不触达。
   flutter_js:

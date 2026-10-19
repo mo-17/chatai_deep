@@ -19,9 +19,14 @@ class JavascriptRuntime {
   void dispose() {}
 }
 
+class QuickJsRuntime2 extends JavascriptRuntime {
+  QuickJsRuntime2({int? timeout, int? memoryLimit}) {
+    throw UnsupportedError('flutter_js 在鸿蒙平台不可用');
+  }
+}
+
 /// 对应真实包的工厂函数。
 JavascriptRuntime getJavascriptRuntime({
   bool forceJavascriptCoreOnAndroid = false,
   bool xhr = true,
-}) =>
-    throw UnsupportedError('flutter_js 在鸿蒙平台不可用');
+}) => throw UnsupportedError('flutter_js 在鸿蒙平台不可用');

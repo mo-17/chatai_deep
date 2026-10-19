@@ -6,18 +6,22 @@
 /// 承接上游的 `Rect?`（Rect is Object，赋值兼容），避免引入 dart:ui。
 library;
 
+export 'package:cross_file/cross_file.dart' show XFile;
+
 /// 对应上游 `ShareParams`，仅保留共享核心传入的字段。
 class ShareParams {
   final String? text;
   final String? subject;
   final String? title;
   final Object? sharePositionOrigin;
+  final List<Object>? files;
 
   const ShareParams({
     this.text,
     this.subject,
     this.title,
     this.sharePositionOrigin,
+    this.files,
   });
 }
 
@@ -35,6 +39,10 @@ class SharePlus {
 
   static final SharePlus instance = SharePlus._();
 
-  Future<ShareResult> share(ShareParams params) async =>
-      const ShareResult('', 'unavailable');
+  Future<ShareResult> share(ShareParams params) async {
+    if (params.files?.isNotEmpty == true) {
+      throw UnsupportedError('鸿蒙系统文件分享尚未适配，请使用文件保存');
+    }
+    return const ShareResult('', 'unavailable');
+  }
 }
