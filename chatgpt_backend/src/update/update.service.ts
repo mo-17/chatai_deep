@@ -1,6 +1,7 @@
+import { createHash } from 'node:crypto';
 import { Injectable } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository } from 'typeorm';
+import { LessThan, Repository } from 'typeorm';
 import { AppVersion } from './version.entity';
 
 const parseBuildNumber = (value?: string): number | null => {
@@ -61,6 +62,8 @@ export class UpdateService {
     versionCode?: string,
     channel?: string,
     platform?: string,
+    installationId?: string,
+    abi?: string,
   ) {
     const normalizedChannel = channel?.trim().toLowerCase();
     const normalizedPlatform = platform?.trim().toLowerCase();
@@ -99,13 +102,39 @@ export class UpdateService {
       return noUpdateResponse(cid);
     }
 
+    // 灰度未命中或暂停的新版本不遮挡同渠道的上一全量版本。
+    // 只向该渠道更低的构建号回溯，不跨渠道绕过灰度规则。
+    for (
+      let attempt = 0;
+      !isInRollout(latest, installationId, latest.rolloutPercent ?? 100);
+      attempt++
+    ) {
+      if (attempt >= 32) return noUpdateResponse(cid);
+      const previous = await this.versionRepo.findOne({
+        where: {
+          enabled: true,
+          cid: latest.cid,
+          versionCode: LessThan(latest.versionCode),
+        },
+        order: { versionCode: 'DESC' },
+      });
+      if (!previous || previous.versionCode >= latest.versionCode)
+        return noUpdateResponse(cid);
+      latest = previous;
+    }
     const clientBuild = parseBuildNumber(versionCode);
     const newerVersionAvailable =
       clientBuild !== null
         ? latest.versionCode > clientBuild
         : compareSemanticVersion(latest.versionName, versionName || '0.0.0') >
           0;
-    const configuredUrl = latest.url?.trim() || '';
+    const artifact =
+      !isStoreChannel &&
+      abi &&
+      ['arm64-v8a', 'armeabi-v7a', 'x86_64'].includes(abi)
+        ? latest.artifacts?.[abi]
+        : undefined;
+    const configuredUrl = artifact?.url?.trim() || latest.url?.trim() || '';
     const updateAvailable =
       newerVersionAvailable &&
       isAllowedReleaseUrl(configuredUrl, isStoreChannel);
@@ -128,8 +157,27 @@ export class UpdateService {
         updateAvailable,
         downloadUrl: updateAvailable && !isStoreChannel ? releaseUrl : '',
         storeUrl: updateAvailable && isStoreChannel ? releaseUrl : '',
-        sha256: updateAvailable ? latest.sha256 || '' : '',
+        sha256: updateAvailable ? artifact?.sha256 || latest.sha256 || '' : '',
       },
     };
   }
+}
+
+export function isInRollout(
+  release: Pick<AppVersion, 'id' | 'versionCode' | 'rolloutSalt'>,
+  installationId?: string,
+  percent = 100,
+): boolean {
+  if (percent <= 0) return false;
+  if (percent >= 100) return true;
+  if (!installationId || !/^[a-zA-Z0-9-]{16,80}$/.test(installationId))
+    return false;
+  const bucket =
+    createHash('sha256')
+      .update(
+        `${release.id}:${release.versionCode}:${release.rolloutSalt || ''}:${installationId}`,
+      )
+      .digest()
+      .readUInt32BE(0) % 10000;
+  return bucket < percent * 100;
 }

@@ -15,6 +15,8 @@ import 'package:chatgpt_app_core/db/story_persona_dao.dart';
 import 'package:chatgpt_app_core/db/story_room_dao.dart';
 import 'package:chatgpt_app_core/db/story_template_dao.dart';
 import 'package:chatgpt_app_core/sync/sync_tombstone_store.dart';
+import 'package:chatgpt_app_core/knowledge/knowledge_sync.dart';
+import 'package:chatgpt_app_core/knowledge/knowledge_transfer.dart';
 import 'package:chatgpt_app_core/util/account_resource_scope.dart';
 import 'package:chatgpt_app_core/util/avatar_asset_service.dart';
 import 'package:sqflite/sqflite.dart';
@@ -132,10 +134,15 @@ class LocalSyncService {
     this.roleCardAssetDirectoryResolver,
   }) : accountHash = AccountResourceScope.currentAccountHash(accountHash);
 
-  Future<List<SyncChange>> exportChanges({int updatedAfter = 0}) async {
+  Future<List<SyncChange>> exportChanges(
+      {int updatedAfter = 0, String? knowledgeOrigin}) async {
     await _ensureTables();
     final changes = <SyncChange>[];
     for (final spec in _specs) {
+      if (const {'knowledge_doc', 'knowledge_chunk', 'project_knowledge'}
+          .contains(spec.entity)) {
+        continue;
+      }
       final rows = await storage.db.query(
         spec.table,
         where: spec.timestampColumn == null || updatedAfter <= 0
@@ -156,6 +163,8 @@ class LocalSyncService {
         }
       }
     }
+    changes.addAll(await KnowledgeSync.export(storage, accountHash,
+        updatedAfter: updatedAfter, origin: knowledgeOrigin));
     final tombstones = await storage.db.query(
       SyncTombstoneStore.tableName,
       where: updatedAfter <= 0 ? null : 'updatedAt > ?',
@@ -163,6 +172,10 @@ class LocalSyncService {
       orderBy: 'updatedAt asc',
     );
     for (final row in tombstones) {
+      if (const {'knowledge_doc', 'knowledge_chunk', 'project_knowledge'}
+          .contains(row['entity'])) {
+        continue;
+      }
       changes.add(SyncChange(
         entity: row['entity'] as String,
         id: '${row['entityId']}',
@@ -178,6 +191,10 @@ class LocalSyncService {
     return changes;
   }
 
+  Future<void> acknowledgeUploadedKnowledge(Iterable<SyncChange> changes,
+          {required String origin}) =>
+      KnowledgeSync.acknowledge(storage, changes, origin: origin);
+
   Future<SyncMergeResult> applyRemoteChanges(
       Iterable<SyncChange> remoteChanges) async {
     final incoming = remoteChanges
@@ -185,9 +202,15 @@ class LocalSyncService {
         .map(_validateSelectionChange)
         .toList(growable: false);
     await _ensureTables();
-    final accepted = <SyncChange>[];
-    final rejectedStale = <SyncChange>[];
-    final conflicts = <String>[];
+    final knowledgeResult = await KnowledgeSync.apply(
+        storage,
+        accountHash,
+        incoming
+            .where((c) => KnowledgeSync.entities.contains(c.entity))
+            .toList());
+    final accepted = <SyncChange>[...knowledgeResult.accepted];
+    final rejectedStale = <SyncChange>[...knowledgeResult.rejectedStale];
+    final conflicts = <String>[...knowledgeResult.conflicts];
     final deletedAssistantIds = <int>{};
     final upsertedAssistantIds = <int>{};
     final assistantUpsertVersions = <int, int>{};
@@ -200,6 +223,7 @@ class LocalSyncService {
 
     await storage.db.transaction((txn) async {
       for (final remote in incoming) {
+        if (KnowledgeSync.entities.contains(remote.entity)) continue;
         if (remote.entity == assistantRoleAssetChunkEntity) continue;
         if (remote.entity == 'story_persona' && remote.id.trim().isEmpty) {
           rejectedStale.add(remote);
@@ -217,6 +241,25 @@ class LocalSyncService {
           limit: 1,
         );
         final current = currentRows.isEmpty ? null : currentRows.first;
+        // 旧客户端只有设备行号，不能据此覆盖/删除已经有稳定身份的文档。
+        if (remote.entity == 'knowledge_doc' &&
+            (current?['uid'] as String? ?? '').isNotEmpty) {
+          conflicts.add(remote.key);
+          continue;
+        }
+        if (remote.entity == 'knowledge_chunk' ||
+            remote.entity == 'project_knowledge') {
+          final docId = remote.payload['docId'] ?? current?['docId'];
+          final docs = docId == null
+              ? const <Map<String, Object?>>[]
+              : await txn.query('tb_kb_doc',
+                  columns: ['uid'], where: 'id = ?', whereArgs: [docId]);
+          if (docs.isNotEmpty &&
+              (docs.single['uid'] as String? ?? '').isNotEmpty) {
+            conflicts.add(remote.key);
+            continue;
+          }
+        }
         _collectAffectedStoryRoomIds(
           remote,
           current,
@@ -995,6 +1038,7 @@ class LocalSyncService {
 
   Future<void> _ensureTables() async {
     await DbMigration.run(storage.db);
+    await KnowledgeTransfer.ensure(storage);
     await AssistantDao.create(storage);
     await StoryPersonaDao.create(storage);
     await StoryRoomDao.create(storage);

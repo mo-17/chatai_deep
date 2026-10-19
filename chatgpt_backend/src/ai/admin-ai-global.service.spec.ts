@@ -1,3 +1,4 @@
+import { AccessService } from '../access/access.service';
 import { BadRequestException, ValidationPipe } from '@nestjs/common';
 import { Test, type TestingModule } from '@nestjs/testing';
 import { getRepositoryToken } from '@nestjs/typeorm';
@@ -120,6 +121,7 @@ describe('AdminAiGlobalService default pair and cache', () => {
       providers: [
         AdminAiGlobalService,
         ChatService,
+      { provide: AccessService, useValue: { admit: (_id: number, body: unknown) => Promise.resolve({ id: null, body }), finish: async () => {} } },
         { provide: ProviderCacheService, useValue: cache },
         { provide: getRepositoryToken(AiGlobalConfig), useValue: configs },
         { provide: getRepositoryToken(AiProvider), useValue: providers },

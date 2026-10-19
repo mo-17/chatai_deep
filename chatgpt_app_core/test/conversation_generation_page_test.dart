@@ -1,3 +1,7 @@
+import 'package:chatgpt_app_core/voice/speech_input.dart';
+import 'package:chatgpt_app_core/voice/voice_conversation_panel.dart';
+import 'package:chatgpt_app_core/voice/voice_conversation_controller.dart';
+import 'support/fake_voice_input.dart';
 import 'package:chatgpt_app_core/chat/domain/backend_selection.dart';
 import 'package:chatgpt_app_core/util/model_catalog.dart';
 import 'package:chatgpt_app_core/backup/backup_service.dart';
@@ -65,6 +69,7 @@ void main() {
   bool globalServiceUsed = false, listHome = false;
   ComposerPredictionService? pagePrediction;
   ReadAloudService? pageVoice;
+  SpeechInput? pageSpeech;
   final transportEvidence = <Object>[];
   tearDownAll(() async {
     final path = Platform.environment['CHATAI_PAGE_TRANSPORT_EVIDENCE'];
@@ -130,6 +135,7 @@ void main() {
     chats.clear();
     pagePrediction = null;
     pageVoice = null;
+    pageSpeech = null;
     service = ConversationGenerationService(
         registry: ConversationExecutionRegistry.instance,
         observeApplication: false);
@@ -220,6 +226,7 @@ void main() {
               chatService: fake ? chat : null,
               predictionService: pagePrediction,
               readAloudService: pageVoice ?? const NoopReadAloudService(),
+              speechInput: pageSpeech,
               draftStore: stores[cid] ??
                   ConversationDraftStore(
                       conversationId: '$cid',
@@ -1163,6 +1170,120 @@ void main() {
     expect((await t.runAsync(() => storage.db.query('tb_personal_memory')))!,
         hasLength(1));
   });
+  pageTest(
+      'continuous voice persists two ordinary turns and reuses history without duplicate read aloud',
+      (t) async {
+    t.view.physicalSize = const Size(320, 480);
+    t.view.devicePixelRatio = 1;
+    t.platformDispatcher.textScaleFactorTestValue = 1.8;
+    addTearDown(t.view.resetPhysicalSize);
+    addTearDown(t.view.resetDevicePixelRatio);
+    addTearDown(t.platformDispatcher.clearTextScaleFactorTestValue);
+    models[301]!.speechInputEnabled = true;
+    models[301]!.readAloudEnabled = true;
+    final speech = FakeVoiceInput();
+    final voice = FakeVoiceOutput();
+    pageSpeech = speech;
+    pageVoice = voice;
+    chats[301] = FakeComposerChat(content: 'VOICE_REPLY');
+    await mount(t);
+    await open(t, 301);
+    await t.tap(find.byKey(const ValueKey('continuous_voice_entry')));
+    await io(t, 3);
+    expect(find.byType(VoiceConversationPanel), findsOneWidget);
+    expect(speech.results, isEmpty);
+    await t.ensureVisible(find.text('开始语音对话'));
+    await t.tap(find.text('开始语音对话'));
+    await io(t);
+    speech.finish('VOICE_ONE');
+    await until(t, () => voice.requests.length == 1);
+    expect((await rows(t, 'tb_messages', 301)).length, 2);
+    expect(speech.microphone, isFalse);
+    voice.finish();
+    await until(t, () => speech.results.length == 2);
+    speech.finish('VOICE_TWO');
+    await until(t, () => voice.requests.length == 2);
+    expect(chats[301]!.prompts, ['VOICE_ONE', 'VOICE_TWO']);
+    final history = chats[301]!.histories[1].map((m) => m['content']).join(' ');
+    expect(history, contains('VOICE_ONE'));
+    expect(history, contains('VOICE_REPLY'));
+    expect((await rows(t, 'tb_messages', 301)).length, 4);
+    final closeVoice = find.descendant(
+        of: find.byType(VoiceConversationPanel),
+        matching: find.byTooltip('结束语音对话'));
+    await t.ensureVisible(closeVoice);
+    await t.tap(closeVoice);
+    await io(t, 3);
+    expect(find.byType(VoiceConversationPanel), findsNothing);
+    expect(speech.microphone, isFalse);
+    expect(voice.requests.length, 2);
+    await close(t);
+  });
+
+  pageTest(
+      'background pauses voice and cancels its request; late results never speak or auto resume',
+      (t) async {
+    models[301]!.speechInputEnabled = true;
+    final speech = FakeVoiceInput();
+    final voice = FakeVoiceOutput();
+    pageSpeech = speech;
+    pageVoice = voice;
+    chats[301] = FakeComposerChat()..pending = Completer();
+    await mount(t);
+    await open(t, 301);
+    await t.tap(find.byKey(const ValueKey('continuous_voice_entry')));
+    await io(t, 3);
+    await t.tap(find.text('开始语音对话'));
+    await io(t);
+    speech.finish('BACKGROUND_VOICE');
+    await until(t, () => chats[301]!.calls == 1);
+    final run = service.lookup('guest', 301)!;
+    t.binding.handleAppLifecycleStateChanged(AppLifecycleState.paused);
+    await until(t, () => !run.busy);
+    t.binding.handleAppLifecycleStateChanged(AppLifecycleState.resumed);
+    await io(t, 3);
+    chats[301]!
+        .pending!
+        .complete(const ChatCompletionResult(content: 'LATE_REPLY'));
+    await io(t, 3);
+    final panel =
+        t.widget<VoiceConversationPanel>(find.byType(VoiceConversationPanel));
+    expect(panel.controller.phase, VoiceConversationPhase.paused);
+    expect(voice.requests, isEmpty);
+    expect(speech.results.length, 1);
+    expect(speech.microphone, isFalse);
+    await close(t);
+  });
+
+  pageTest(
+      'covering voice page pauses microphone; returning does not resume without a click',
+      (t) async {
+    models[301]!.speechInputEnabled = true;
+    final speech = FakeVoiceInput();
+    pageSpeech = speech;
+    pageVoice = FakeVoiceOutput();
+    chats[301] = FakeComposerChat(content: 'not requested');
+    await mount(t);
+    await open(t, 301);
+    await t.tap(find.byKey(const ValueKey('continuous_voice_entry')));
+    await io(t, 3);
+    await t.tap(find.text('开始语音对话'));
+    await io(t);
+    expect(speech.microphone, isTrue);
+    unawaited(navigator.currentState!.push(MaterialPageRoute<void>(
+        builder: (_) => const Scaffold(body: Text('cover')))));
+    await io(t, 4);
+    expect(speech.microphone, isFalse);
+    expect(chats[301]!.calls, 0);
+    navigator.currentState!.pop();
+    await io(t, 4);
+    final panel =
+        t.widget<VoiceConversationPanel>(find.byType(VoiceConversationPanel));
+    expect(panel.controller.phase, VoiceConversationPhase.paused);
+    expect(speech.results.length, 1);
+    await close(t);
+  });
+
   pageTest(
       'only original fully visible completion starts prediction/read aloud once; reopening does neither',
       (t) async {

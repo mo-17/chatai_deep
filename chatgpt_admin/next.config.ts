@@ -15,6 +15,8 @@ const nextConfig: NextConfig = {
     ignoreBuildErrors: true,
   },
   experimental: {
+    // 2 GB Ubuntu 构建时限制 worker 数；常规开发和其它部署保留默认值。
+    ...(process.env.CHATAI_LOW_MEMORY_BUILD === 'true' ? { cpus: 1 } : {}),
     optimizePackageImports: ['lucide-react', '@nextui-org/react', 'recharts'],
   },
   async headers() {

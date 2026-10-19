@@ -1,0 +1,17 @@
+{
+  "versionName": "1.0.8",
+  "versionCode": 18,
+  "abis": [
+    "arm64-v8a",
+    "armeabi-v7a",
+    "x86_64"
+  ],
+  "bytes": 180586079,
+  "sha256": "0f1d7f91da22132624d59236663421fcfd0fc5d3cf5d71ae4c35e556b95e862e",
+  "signerMatchesPrevious": true,
+  "recognitionServiceQuery": true,
+  "microphonePermission": true,
+  "voiceUiInAot": true,
+  "published": false,
+  "physicalDeviceVerified": false
+}

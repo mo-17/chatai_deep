@@ -7,6 +7,10 @@ import 'package:chatgpt_app_core/dao/ai_catalog_dao.dart';
 import 'package:chatgpt_app_core/widget/backend_selection_picker.dart';
 import 'package:login_sdk/dao/backend_host.dart';
 import 'dart:async';
+import 'package:chatgpt_app_core/voice/speech_input.dart';
+import 'package:chatgpt_app_core/voice/voice_conversation_controller.dart';
+import 'package:chatgpt_app_core/voice/voice_audio_route.dart';
+import 'package:chatgpt_app_core/voice/voice_conversation_panel.dart';
 import 'package:chatgpt_app_core/chat/application/role_continuation_snapshot.dart';
 import 'package:chatgpt_app_core/chat/application/conversation_composer_preparation.dart';
 import 'package:chatgpt_app_core/chat/application/conversation_generation_service.dart';
@@ -179,6 +183,7 @@ class ConversationPage extends StatefulWidget {
   final String? expectedAccountHash;
   final AgentBackgroundExecution? backgroundExecution;
   final ReadAloudService? readAloudService;
+  final SpeechInput? speechInput;
   final ComposerPredictionService? predictionService;
 
   /// 嵌入方或测试可注入传输，默认沿用用户配置。
@@ -208,6 +213,7 @@ class ConversationPage extends StatefulWidget {
     this.expectedAccountHash,
     this.backgroundExecution,
     this.readAloudService,
+    this.speechInput,
     this.predictionService,
     this.chatService,
     this.generationService,
@@ -282,6 +288,9 @@ class _ConversationPageState extends State<ConversationPage>
   late UsageDao usageDao;
   late UsageRecordService usageRecordService;
   late final ReadAloudService _readAloudService;
+  VoiceConversationController? _voiceConversation;
+  ConversationGenerationRun? _voiceRun;
+  bool _closingVoice = false;
   int? _readAloudActiveMessageAt;
   ReadAloudStage? _readAloudStage;
   Future<void>? _manualReadAloudInFlight;
@@ -577,6 +586,7 @@ class _ConversationPageState extends State<ConversationPage>
   }
 
   void _syncOrdinaryRun() {
+    _guardVoiceSession();
     if (!_ready) return;
     if (!_accountCurrent) {
       _ordinaryRun?.detachVisibleHost(_ordinaryHost);
@@ -666,6 +676,7 @@ class _ConversationPageState extends State<ConversationPage>
     }
     setState(() {});
     if (visible &&
+        _voiceConversation == null &&
         run.stage == ConversationGenerationStage.failed &&
         run.profile.settings.mode == AIMode.local &&
         _directRecoveryShown.add(run.runId)) {
@@ -770,7 +781,9 @@ class _ConversationPageState extends State<ConversationPage>
       MessageModel? oldReply,
       AISettings? settingsOverride,
       DirectRetryPermit? retryPermit,
+      bool voiceTurn = false,
       bool preserveReply = false}) {
+    if (_voiceConversation != null && !voiceTurn) return null;
     final dao = _generationDao;
     if (dao == null || !_accountCurrent || !_ordinaryHostVisible) return null;
     if (!_pageGenerationIdentity.identityCurrent) {
@@ -783,6 +796,7 @@ class _ConversationPageState extends State<ConversationPage>
       if (retryPermit == null) _directRequestRevision++;
       final settings = settingsOverride?.clone() ??
           _effective(context.read<AISettingsProvider>().settings);
+      if (voiceTurn) settings.webSearchEnabled = false;
       final scope = ConversationGenerationScope(account: _pageAccount);
       final user = retryUser ??
           _genMessageModel(ownerType: OwnerType.sender, message: text);
@@ -800,8 +814,8 @@ class _ConversationPageState extends State<ConversationPage>
         throw StateError('原消息身份尚未就绪，请重新打开会话后重试');
       }
       final tools = ConversationRunTools(
-          toolIds: _effectiveToolIds,
-          useTools: _assistant?.useTools ?? true,
+          toolIds: voiceTurn ? const [] : _effectiveToolIds,
+          useTools: !voiceTurn && (_assistant?.useTools ?? true),
           forceWebSearch:
               settings.webSearchEnabled && settings.webSearchConfigured);
       final history = completionDao.currentMessages
@@ -1191,6 +1205,7 @@ class _ConversationPageState extends State<ConversationPage>
       _pageGenerationIdentity.identityCurrent;
 
   bool get _predictionEligible =>
+      _voiceConversation == null &&
       _accountCurrent &&
       _ready &&
       !_isStreaming &&
@@ -2281,6 +2296,25 @@ class _ConversationPageState extends State<ConversationPage>
   get _appBar => AppBar(
         title: _appBarTitle,
         actions: [
+          if (widget.speechInput != null || continuousSpeechSupported)
+            IconButton(
+              key: const ValueKey('continuous_voice_entry'),
+              tooltip: _voiceConversation == null ? '连续语音对话' : '结束语音对话',
+              icon: Icon(_voiceConversation == null
+                  ? Icons.headphones_outlined
+                  : Icons.headphones),
+              onPressed: _ready &&
+                      !_closingVoice &&
+                      (_voiceConversation != null ||
+                          (!_isStreaming &&
+                              !_taskMode &&
+                              (widget.conversationModel.speechInputEnabled ??
+                                  true)))
+                  ? () => _voiceConversation == null
+                      ? _openVoiceConversation()
+                      : _closeVoiceConversation()
+                  : null,
+            ),
           IconButton(
             icon: const Icon(Icons.support_agent),
             tooltip: '切换助手',
@@ -2561,8 +2595,10 @@ class _ConversationPageState extends State<ConversationPage>
     );
     return MessageInputWidget(
       '请输入',
-      enable: _ready && !_isStreaming && !_savingReasoningEffort,
-      editingEnabled: _ready && !_isStreaming && !_savingReasoningEffort,
+      enable:
+          _ready && !_isStreaming && !_savingReasoningEffort && !_closingVoice,
+      editingEnabled:
+          _ready && !_isStreaming && !_savingReasoningEffort && !_closingVoice,
       isStreaming: _isStreaming,
       controller: _inputController,
       referencesEnabled: true,
@@ -2800,6 +2836,9 @@ class _ConversationPageState extends State<ConversationPage>
           accountHash: _pageAccount,
         );
     _readAloudService = widget.readAloudService ?? HybridReadAloudService();
+    _predictionSettings.addListener(_onVoiceEnvironmentChanged);
+    BackendConfig.changes.addListener(_onVoiceEnvironmentChanged);
+    AiCatalogIdentity.changes.addListener(_onVoiceEnvironmentChanged);
     if (_accountCurrent) _prewarmReadAloudIfNeeded();
     _doInit();
   }
@@ -2808,12 +2847,17 @@ class _ConversationPageState extends State<ConversationPage>
   void didUpdateWidget(covariant ConversationPage oldWidget) {
     super.didUpdateWidget(oldWidget);
     if (oldWidget.conversationModel.cid != widget.conversationModel.cid) {
+      _onVoiceEnvironmentChanged();
       _invalidatePrediction();
     }
   }
 
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.inactive &&
+        _voiceConversation?.phase != VoiceConversationPhase.preparing) {
+      _onVoiceEnvironmentChanged();
+    }
     if (state == AppLifecycleState.resumed) {
       _applicationInBackground = false;
       return;
@@ -2826,6 +2870,7 @@ class _ConversationPageState extends State<ConversationPage>
     }
     if (_applicationInBackground && state != AppLifecycleState.detached) return;
     _applicationInBackground = true;
+    _onVoiceEnvironmentChanged();
     _invalidatePrediction();
     if (_agentRun?.busy == true) {
       if (_toolConfirmationRoute != null) _dismissToolConfirmation();
@@ -2845,6 +2890,11 @@ class _ConversationPageState extends State<ConversationPage>
 
   @override
   void dispose() {
+    _predictionSettings.removeListener(_onVoiceEnvironmentChanged);
+    BackendConfig.changes.removeListener(_onVoiceEnvironmentChanged);
+    AiCatalogIdentity.changes.removeListener(_onVoiceEnvironmentChanged);
+    _voiceConversation?.removeListener(_voiceChanged);
+    _voiceConversation?.dispose();
     _generations.removeListener(_ordinaryRegistryChanged);
     BackupService.restoreTick.removeListener(_scheduleOrdinarySync);
     ConversationGenerationRoutes.instance.changes
@@ -3014,7 +3064,12 @@ class _ConversationPageState extends State<ConversationPage>
                       chatController.initialMessageList.first),
                   icon: const Icon(Icons.refresh),
                   label: const Text('重试上次未完成的提问')),
-            _inputWidget(caps, settings),
+            if (_voiceConversation case final voice?)
+              VoiceConversationPanel(
+                  controller: voice,
+                  onClose: () => unawaited(_closeVoiceConversation()))
+            else
+              _inputWidget(caps, settings),
           ],
         ),
       ),
@@ -3695,6 +3750,7 @@ class _ConversationPageState extends State<ConversationPage>
 
   ///不用_inputMessage是因为在结果回来之前_inputMessage可能会变
   Future<void> _onSend(final String inputMessage) async {
+    if (_voiceConversation != null || _closingVoice) return;
     final personalTurnStartedAt = DateTime.now().millisecondsSinceEpoch;
     if (inputMessage.trim().isEmpty &&
         _pendingImages.isEmpty &&
@@ -4788,7 +4844,132 @@ class _ConversationPageState extends State<ConversationPage>
         hasError: hasError);
   }
 
+  bool get _voiceEnvironmentCurrent =>
+      mounted &&
+      _cardScopeCurrent &&
+      !_taskMode &&
+      !_applicationInBackground &&
+      (ModalRoute.of(context)?.isCurrent ?? true);
+
+  void _voiceChanged() {
+    if (mounted && !_disposed) setState(() {});
+  }
+
+  void _guardVoiceSession() {
+    if (_voiceConversation?.active == true && !_voiceEnvironmentCurrent) {
+      unawaited(_voiceConversation!.pause('已离开当前会话或账号环境变化，语音已暂停'));
+    }
+  }
+
+  void _onVoiceEnvironmentChanged() {
+    if (_voiceConversation?.active == true) {
+      unawaited(_voiceConversation!.pause('应用、账号或 AI 配置已变化，请确认后继续'));
+    }
+  }
+
+  Future<void> _openVoiceConversation() async {
+    if (!_voiceEnvironmentCurrent ||
+        !_ready ||
+        _isStreaming ||
+        _closingVoice ||
+        _voiceConversation != null) {
+      return;
+    }
+    if (_inputController.text.trim().isNotEmpty ||
+        _pendingImages.isNotEmpty ||
+        _pendingFiles.isNotEmpty ||
+        _references.isNotEmpty) {
+      HiDialog.showSnackBar(context, '请先发送或处理当前草稿，再开始语音对话');
+      return;
+    }
+    if (!_canStartAIRequest(showPrompt: true)) return;
+    setState(() => _closingVoice = true);
+    try {
+      await _stopManualReadAloud();
+      await _readAloudService.stop();
+      if (!_voiceEnvironmentCurrent) return;
+      _invalidatePrediction();
+      FocusManager.instance.primaryFocus?.unfocus();
+      late final VoiceConversationController controller;
+      controller = VoiceConversationController(
+        speech: widget.speechInput ?? SystemSpeechInput(),
+        voice: _readAloudService,
+        send: _sendVoiceTurn,
+        cancelReply: _cancelVoiceReply,
+        isCurrent: () =>
+            identical(_voiceConversation, controller) &&
+            _voiceEnvironmentCurrent,
+        locale: widget.conversationModel.voiceLocale,
+        rate: widget.conversationModel.voiceRate ?? 1,
+        voiceStyle: widget.conversationModel.voiceStyle,
+        streamReplies: true,
+        audioRoute: VoiceAudioRoute(),
+      )..addListener(_voiceChanged);
+      if (mounted) setState(() => _voiceConversation = controller);
+    } finally {
+      if (mounted) setState(() => _closingVoice = false);
+    }
+  }
+
+  Future<String> _sendVoiceTurn(String text, VoiceTurnContext turn) async {
+    if (!turn.isCurrent ||
+        !_voiceEnvironmentCurrent ||
+        !_ready ||
+        _isStreaming ||
+        _savingReasoningEffort ||
+        !_canStartAIRequest(showPrompt: true)) {
+      throw const SpeechInputFailure('当前会话尚未就绪，请检查 AI 服务后继续');
+    }
+    _inputController.text = text;
+    _inputChanged(text);
+    final run = _startOrdinary(text, voiceTurn: true);
+    if (run == null) throw const SpeechInputFailure('语音消息未能发送，已保留识别文字');
+    _voiceRun = run;
+    void progress() {
+      turn.emitText(run.receiver.content);
+    }
+
+    run.addListener(progress);
+    try {
+      await run.finished;
+      if (!turn.isCurrent || !_voiceEnvironmentCurrent) {
+        throw const SpeechInputFailure('语音对话已暂停');
+      }
+      _syncOrdinaryRun();
+      if (run.stage != ConversationGenerationStage.complete ||
+          run.record?.receiverRowId == null) {
+        throw const SpeechInputFailure('本轮回答未完成，请查看聊天记录、额度或网络后重试');
+      }
+      return run.receiver.content;
+    } finally {
+      run.removeListener(progress);
+      if (identical(_voiceRun, run)) _voiceRun = null;
+    }
+  }
+
+  Future<void> _cancelVoiceReply() async {
+    final run = _voiceRun;
+    if (run != null) await run.stop('连续语音对话已暂停，可查看已保存的消息');
+  }
+
+  Future<void> _closeVoiceConversation() async {
+    final controller = _voiceConversation;
+    if (controller == null || _closingVoice) return;
+    controller.removeListener(_voiceChanged);
+    setState(() {
+      _voiceConversation = null;
+      _closingVoice = true;
+    });
+    try {
+      await controller.end();
+    } finally {
+      controller.dispose();
+      if (mounted) setState(() => _closingVoice = false);
+    }
+  }
+
   Future<void> _readAloudAssistant(String text) async {
+    if (_voiceConversation != null || _closingVoice) return;
     try {
       await ReadAloudCoordinator.maybeSpeak(
         service: _readAloudService,
@@ -4804,6 +4985,7 @@ class _ConversationPageState extends State<ConversationPage>
   }
 
   Future<void> _readAloudAssistantManually(String text, int createdAt) {
+    if (_voiceConversation != null || _closingVoice) return Future.value();
     final content = text.trim();
     if (content.isEmpty) return Future.value();
     final signature = _manualReadAloudRequestSignature(content, createdAt);

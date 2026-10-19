@@ -1,0 +1,32 @@
+{
+  "origin": "https://kushui.shop",
+  "release": "20261019T002542Z.Bh12fxpT",
+  "login": {
+    "buttonHeight": 40,
+    "buttonMinWidth": 80,
+    "buttonText": "white",
+    "filledLabelDoesNotOverlap": true
+  },
+  "sidebar": {
+    "asideBottom": 681,
+    "asideHeight": 681,
+    "asideScrollHeight": 681,
+    "footerBottom": 681,
+    "footerVisible": true,
+    "navHeight": 552,
+    "navOverflowY": "auto",
+    "navScrollHeight": 760,
+    "rootScrollWidth": 1384,
+    "rootWidth": 1384
+  },
+  "sidebarScrollTopAfterScroll": 208,
+  "visuallyVerified": [
+    "login",
+    "dashboard",
+    "models table",
+    "model modal and provider dropdown",
+    "providers table and modal",
+    "access policy form"
+  ],
+  "consoleErrors": 0
+}

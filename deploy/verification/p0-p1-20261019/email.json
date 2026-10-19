@@ -1,0 +1,62 @@
+[
+  {
+    "name": "收件邮箱不存在现有账号",
+    "passed": true
+  },
+  {
+    "name": "SMTP 已配置且当前配置测试成功",
+    "passed": true
+  },
+  {
+    "name": "启用已验证的 SMTP",
+    "passed": true
+  },
+  {
+    "name": "register 邮件提交成功",
+    "passed": true
+  },
+  {
+    "name": "实际收信验证码注册并验证邮箱",
+    "passed": true
+  },
+  {
+    "name": "注册后密码登录",
+    "passed": true
+  },
+  {
+    "name": "login 邮件提交成功",
+    "passed": true
+  },
+  {
+    "name": "reset_password 邮件提交成功",
+    "passed": true
+  },
+  {
+    "name": "实际收信验证码登录同一临时账号",
+    "passed": true
+  },
+  {
+    "name": "已消费验证码不能重复登录",
+    "passed": true
+  },
+  {
+    "name": "重置前身份仍为临时账号",
+    "passed": true
+  },
+  {
+    "name": "实际收信验证码找回临时账号密码",
+    "passed": true
+  },
+  {
+    "name": "重置后旧密码失效",
+    "passed": true
+  },
+  {
+    "name": "重置后新密码登录同一临时账号",
+    "passed": true
+  },
+  {
+    "name": "重置密码撤销旧登录态",
+    "passed": true
+  }
+]

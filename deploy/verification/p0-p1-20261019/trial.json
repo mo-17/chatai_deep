@@ -1,0 +1,47 @@
+{
+  "checks": [
+    {
+      "name": "管理员正常登录",
+      "passed": true
+    },
+    {
+      "name": "临时普通用户正常登录",
+      "passed": true
+    },
+    {
+      "name": "已配置额度保护和指定试用模型",
+      "passed": true
+    },
+    {
+      "name": "调用前用量可读取",
+      "passed": true
+    },
+    {
+      "name": "已授权启用官方试用",
+      "passed": true
+    },
+    {
+      "name": "真实 DeepSeek 试用返回文字",
+      "passed": true
+    },
+    {
+      "name": "真实模型返回有效用量",
+      "passed": true
+    },
+    {
+      "name": "按真实 Token 结算而非保留预估",
+      "passed": true
+    },
+    {
+      "name": "计入请求次数和剩余额度",
+      "passed": true
+    },
+    {
+      "name": "用户可见已开启的试用入口",
+      "passed": true
+    }
+  ],
+  "passed": 10,
+  "total": 10,
+  "trialKeptEnabled": true
+}

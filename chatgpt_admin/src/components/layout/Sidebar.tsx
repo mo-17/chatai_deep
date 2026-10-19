@@ -27,9 +27,12 @@ import { clsx } from 'clsx';
 
 const menuItems = [
   { href: '/dashboard', label: 'Dashboard', icon: LayoutDashboard },
+  { href: '/operations', label: '运行监控', icon: BarChart3 },
   { href: '/users', label: '用户管理', icon: Users },
   { href: '/banners', label: 'Banner', icon: Image },
   { href: '/versions', label: '版本管理', icon: Smartphone },
+  { href: '/access', label: '试用与额度', icon: Settings2 },
+  { href: '/feedback', label: '用户反馈', icon: MessageCircle },
   { href: '/usage', label: '用量明细', icon: BarChart3 },
   { href: '/ai-chat', label: 'AI 对话', icon: MessageCircle },
   { href: '/cloud-tasks', label: '我的云任务', icon: Cloud },
@@ -59,11 +62,11 @@ export function Sidebar() {
   return (
     <aside
       className={clsx(
-        'flex flex-col bg-default-100 border-r border-default-200 transition-all duration-200',
+        'flex h-full min-h-0 shrink-0 flex-col bg-default-100 border-r border-default-200 transition-all duration-200',
         collapsed ? 'w-16' : 'w-56',
       )}
     >
-      <div className="flex items-center h-14 px-3 border-b border-default-200">
+      <div className="flex shrink-0 items-center h-14 px-3 border-b border-default-200">
         {!collapsed && (
           <span className="font-bold text-lg text-primary">ChatGPT Admin</span>
         )}
@@ -78,7 +81,7 @@ export function Sidebar() {
         </button>
       </div>
 
-      <nav className="flex-1 py-2">
+      <nav className="min-h-0 flex-1 overflow-y-auto overscroll-contain py-2">
         {menuItems.map((item) => {
           const active = pathname.startsWith(item.href);
           return (
@@ -149,7 +152,7 @@ export function Sidebar() {
         })}
       </nav>
 
-      <div className="border-t border-default-200 p-3">
+      <div className="shrink-0 border-t border-default-200 p-3">
         {!collapsed && (
           <div className="text-sm text-default-600 mb-2">
             {admin?.userName}

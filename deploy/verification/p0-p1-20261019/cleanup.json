@@ -1,0 +1,10 @@
+[
+  {
+    "name": "删除临时用户后原 JWT 返回 401",
+    "passed": true
+  },
+  {
+    "name": "删除临时用户后原 JWT 返回 401",
+    "passed": true
+  }
+]

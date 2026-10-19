@@ -1,0 +1,10 @@
+00:00 +0: loading /Users/huangzhibin/AndroidStudioProjects/flutter/chatai_deep/chatgpt_app_core/test/conversation_generation_page_test.dart
+00:00 +0: (setUpAll)
+00:00 +0: continuous voice persists two ordinary turns and reuses history without duplicate read aloud
+HiDBManager: all dbs closed
+00:02 +1: background pauses voice and cancels its request; late results never speak or auto resume
+HiDBManager: all dbs closed
+00:04 +2: covering voice page pauses microphone; returning does not resume without a click
+HiDBManager: all dbs closed
+00:06 +3: (tearDownAll)
+00:06 +3: All tests passed!

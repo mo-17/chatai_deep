@@ -11,49 +11,9 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:provider/provider.dart';
-import 'package:speech_to_text/speech_to_text.dart' as stt;
-
-/// 根据偏好 / 系统 locale 选择最匹配的语音识别 localeId。
-///
-/// 返回 null 表示交给 speech_to_text 使用平台默认语言；永远不返回空字符串，
-/// 避免部分原生实现收到 `localeId: ''` 后崩溃。
-String? pickSpeechLocaleId(
-  List<stt.LocaleName> locales, {
-  String? preferredLocale,
-  String? systemLocale,
-}) {
-  final candidates = locales
-      .map((l) => l.localeId.trim())
-      .where((id) => id.isNotEmpty)
-      .toList();
-  if (candidates.isEmpty) return null;
-  final sysLocale = _normalizeSpeechLocale(preferredLocale) ??
-      _normalizeSpeechLocale(systemLocale) ??
-      _normalizeSpeechLocale(Platform.localeName);
-  if (sysLocale == null) return candidates.first;
-  // 精确匹配
-  for (final id in candidates) {
-    if (_normalizeSpeechLocale(id) == sysLocale) return id;
-  }
-  // 语言前缀匹配
-  final lang = sysLocale.split('_').first;
-  if (lang.isNotEmpty) {
-    for (final id in candidates) {
-      final normalized = _normalizeSpeechLocale(id);
-      if (normalized != null && normalized.split('_').first == lang) {
-        return id;
-      }
-    }
-  }
-  // 降级到系统默认
-  return candidates.first;
-}
-
-String? _normalizeSpeechLocale(String? locale) {
-  final value = locale?.trim();
-  if (value == null || value.isEmpty) return null;
-  return value.replaceAll('-', '_');
-}
+import 'package:chatgpt_app_core/voice/speech_input.dart';
+export 'package:chatgpt_app_core/voice/speech_input.dart'
+    show pickSpeechLocaleId;
 
 ///聊天输入框
 class MessageInputWidget extends StatefulWidget {
@@ -163,8 +123,8 @@ class _MessageInputWidgetState extends State<MessageInputWidget> {
   late TextEditingController _controller;
   late bool _ownsController;
   final _focusNode = FocusNode();
-  stt.SpeechToText? _speech;
-  bool _hasSpeech = true; // 默认显示，初始化失败才隐藏
+  final SpeechInput _speech = SystemSpeechInput();
+  int _speechAttempt = 0;
   bool _isListening = false;
   int _editingRevision = 0;
   int _inputGeneration = 0;
@@ -187,7 +147,6 @@ class _MessageInputWidgetState extends State<MessageInputWidget> {
     _previousValue = _controller.value;
     _controller.addListener(_onControllerChanged);
     if (_controller.text.isNotEmpty) widget.onChanged?.call(_controller.text);
-    _initSpeech();
   }
 
   @override
@@ -198,7 +157,7 @@ class _MessageInputWidgetState extends State<MessageInputWidget> {
     }
     if (oldWidget.editingEnabled != widget.editingEnabled) _editingRevision++;
     if (oldWidget.editingEnabled && !widget.editingEnabled) {
-      _speech?.cancel();
+      unawaited(_speech.cancel());
       _isListening = false;
       _focusNode.unfocus();
     }
@@ -227,126 +186,46 @@ class _MessageInputWidgetState extends State<MessageInputWidget> {
     }
   }
 
-  // iOS 17.0–17.4 模拟器存在 AVAudioEngine sampleRate 不匹配的 bug，
-  // 调用 speech_to_text 的 listen() 会抛 NSException 直接终止进程，
-  // 这种异常无法被 Dart 的 try-catch 捕获，只能提前禁用语音入口。
-  bool _isBrokenIosSimulator() {
-    if (!Platform.isIOS) return false;
-    final isSimulator =
-        Platform.environment.containsKey('SIMULATOR_DEVICE_NAME');
-    if (!isSimulator) return false;
-    final match = RegExp(r'Version (\d+)\.(\d+)')
-        .firstMatch(Platform.operatingSystemVersion);
-    if (match == null) return false;
-    final major = int.parse(match.group(1)!);
-    final minor = int.parse(match.group(2)!);
-    return major == 17 && minor < 5;
-  }
-
-  Future<void> _initSpeech() async {
-    // ohos: speech_to_text 暂无鸿蒙实现，关闭语音入口
-    if (Platform.operatingSystem == 'ohos') {
-      if (mounted) setState(() => _hasSpeech = false);
-      return;
-    }
-    if (_isBrokenIosSimulator()) {
-      debugPrint('skip speech_to_text init: iOS 17.0–17.4 simulator audio bug');
-      if (mounted) setState(() => _hasSpeech = false);
-      return;
-    }
-    try {
-      _speech = stt.SpeechToText();
-      final available = await _speech!.initialize(
-        onError: (error) {
-          debugPrint(
-              'speech error: ${error.errorMsg}, permanent: ${error.permanent}');
-          _isListening = false;
-        },
-        onStatus: (status) {
-          debugPrint('speech status: $status');
-          if (status == 'done' || status == 'notListening') {
-            _isListening = false;
-            if (mounted) setState(() {});
-          }
-        },
-        debugLogging: true,
-      );
-      debugPrint('speech available: $available');
-      if (available) {
-        final locales = await _speech!.locales();
-        debugPrint(
-            'speech locales: ${locales.map((l) => l.localeId).toList()}');
-      }
-      if (mounted) setState(() => _hasSpeech = available);
-    } catch (e) {
-      debugPrint('speech init exception: $e');
-      if (mounted) setState(() => _hasSpeech = false);
-    }
-  }
-
   Future<void> _onMicTap() async {
     if (!widget.editingEnabled) return;
-    final revision = _editingRevision;
     if (!widget.speechInputEnabled) {
       _focusNode.requestFocus();
       return;
     }
-    if (_speech == null) await _initSpeech();
-    if (!mounted || !widget.editingEnabled || revision != _editingRevision) {
-      return;
-    }
-
-    // 不支持语音识别时，聚焦输入框唤起系统键盘（键盘自带语音按钮）
-    if (!_hasSpeech || _speech == null) {
-      _focusNode.requestFocus();
-      return;
-    }
-
     if (_isListening) {
-      await _speech!.stop();
-      _isListening = false;
-      if (mounted) setState(() {});
+      ++_speechAttempt;
+      await _speech.cancel();
+      if (mounted) setState(() => _isListening = false);
       return;
     }
-
-    // 聚焦输入框，确保键盘弹出
+    final revision = _editingRevision;
+    final attempt = ++_speechAttempt;
+    bool current() =>
+        mounted &&
+        widget.editingEnabled &&
+        revision == _editingRevision &&
+        attempt == _speechAttempt;
     _focusNode.requestFocus();
-
     _lastWords = _controller.text;
+    setState(() => _isListening = true);
+    void apply(String words) {
+      if (!current()) return;
+      final text = '$_lastWords$words';
+      _controller.value = TextEditingValue(
+          text: text, selection: TextSelection.collapsed(offset: text.length));
+    }
+
     try {
-      final locales = await _speech!.locales();
-      if (!mounted || !widget.editingEnabled || revision != _editingRevision) {
-        return;
-      }
-      final localeId =
-          pickSpeechLocaleId(locales, preferredLocale: widget.speechLocale);
-      await _speech!.listen(
-        onResult: (result) {
-          if (!mounted ||
-              !widget.editingEnabled ||
-              revision != _editingRevision) {
-            return;
-          }
-          final text = '$_lastWords${result.recognizedWords}';
-          _controller.text = text;
-          _controller.selection = TextSelection.fromPosition(
-            TextPosition(offset: text.length),
-          );
-          setState(() => _showSend = text.isNotEmpty);
-        },
-        // 锁定的 7.x 插件尚无 SpeechListenOptions.localeId，保留兼容入口。
-        // ignore: deprecated_member_use
-        localeId: localeId,
-      );
-      if (!mounted || !widget.editingEnabled || revision != _editingRevision) {
-        await _speech?.cancel();
-        return;
-      }
-      _isListening = true;
-      if (mounted) setState(() {});
+      final words =
+          await _speech.listen(locale: widget.speechLocale, onPartial: apply);
+      if (words.isNotEmpty) apply(words);
     } catch (_) {
-      _isListening = false;
-      if (mounted) setState(() {});
+      if (mounted && current()) {
+        ScaffoldMessenger.maybeOf(context)?.showSnackBar(
+            const SnackBar(content: Text('语音识别暂不可用，请检查权限或使用键盘输入')));
+      }
+    } finally {
+      if (current()) setState(() => _isListening = false);
     }
   }
 
@@ -702,7 +581,7 @@ class _MessageInputWidgetState extends State<MessageInputWidget> {
 
   @override
   void dispose() {
-    _speech?.cancel();
+    unawaited(_speech.cancel());
     _focusNode.dispose();
     _controller.removeListener(_onControllerChanged);
     if (_ownsController) _controller.dispose();

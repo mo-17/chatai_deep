@@ -1,0 +1,23 @@
+{
+  "description": "合成检索题库，只评价来源召回，不评价模型答案的事实正确性",
+  "documents": [
+    {"id": 1, "title": "退款政策", "content": "退款申请须在购买后7天内提交，退款期限以付款日计算。退货需要保留包装。"},
+    {"id": 2, "title": "部署手册", "content": "部署 Ubuntu 服务时，通过 SSH 登录服务器，发布完成后检查 HTTPS 访问与健康检查。"},
+    {"id": 3, "title": "示例计费说明", "content": "示例产品按月收费，费用为每月100元。价格变更前会提前通知。"},
+    {"id": 4, "title": "请假规则", "content": "员工每年享有10天年假，请假需要提前提交申请。"}
+  ],
+  "cases": [
+    {"question": "退款期限是什么", "firstDocument": 1},
+    {"question": "退费的时限", "firstDocument": 1},
+    {"question": "refund deadline", "firstDocument": 1},
+    {"question": "return conditions", "firstDocument": 1},
+    {"question": "上线后要检查什么", "firstDocument": 2},
+    {"question": "SSH deployment", "firstDocument": 2},
+    {"question": "每月多少钱", "firstDocument": 3},
+    {"question": "price and cost", "firstDocument": 3},
+    {"question": "年假有几天", "firstDocument": 4},
+    {"question": "vacation days", "firstDocument": 4},
+    {"question": "量子纠缠实验结果", "firstDocument": null},
+    {"question": "木星卫星公转轨道", "firstDocument": null}
+  ]
+}

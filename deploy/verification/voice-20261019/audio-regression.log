@@ -1,0 +1,74 @@
+00:00 +0: loading /Users/huangzhibin/AndroidStudioProjects/flutter/chatai_deep/chatgpt_app_core/test/voice_conversation_controller_test.dart
+00:00 +0: /Users/huangzhibin/AndroidStudioProjects/flutter/chatai_deep/chatgpt_app_core/test/voice_conversation_controller_test.dart: explicit start; final text sends once; microphone off while thinking and speaking
+00:00 +1: /Users/huangzhibin/AndroidStudioProjects/flutter/chatai_deep/chatgpt_app_core/test/voice_conversation_controller_test.dart: two silent sessions pause with no model requests
+00:00 +2: /Users/huangzhibin/AndroidStudioProjects/flutter/chatai_deep/chatgpt_app_core/test/voice_conversation_controller_test.dart: permission failure stops without retrying
+00:00 +3: /Users/huangzhibin/AndroidStudioProjects/flutter/chatai_deep/chatgpt_app_core/test/voice_conversation_controller_test.dart: late microphone-ready and partial callbacks after pause cannot send
+00:00 +4: /Users/huangzhibin/AndroidStudioProjects/flutter/chatai_deep/chatgpt_app_core/test/voice_conversation_controller_test.dart: failed model request never retries automatically
+00:00 +5: /Users/huangzhibin/AndroidStudioProjects/flutter/chatai_deep/chatgpt_app_core/test/voice_conversation_controller_test.dart: pause while thinking ignores late answer and cancels original turn
+00:00 +6: /Users/huangzhibin/AndroidStudioProjects/flutter/chatai_deep/chatgpt_app_core/test/voice_conversation_controller_test.dart: tap interruption stops playback; late playback completion cannot restart listening
+00:00 +7: /Users/huangzhibin/AndroidStudioProjects/flutter/chatai_deep/chatgpt_app_core/test/voice_conversation_controller_test.dart: playback failure pauses instead of listening over missing audio
+00:00 +8: /Users/huangzhibin/AndroidStudioProjects/flutter/chatai_deep/chatgpt_app_core/test/voice_conversation_controller_test.dart: identity change without UI notification still releases mic and prevents dispatch
+00:00 +9: /Users/huangzhibin/AndroidStudioProjects/flutter/chatai_deep/chatgpt_app_core/test/voice_conversation_controller_test.dart: disposal does not notify listeners or accept late partial results
+00:00 +10: /Users/huangzhibin/AndroidStudioProjects/flutter/chatai_deep/chatgpt_app_core/test/voice_conversation_controller_test.dart: cleanup failure fails closed and cannot restart microphone
+00:00 +11: /Users/huangzhibin/AndroidStudioProjects/flutter/chatai_deep/chatgpt_app_core/test/speech_input_broker_test.dart: final result ends exactly once; notListening cannot prematurely submit partial text
+00:00 +12: /Users/huangzhibin/AndroidStudioProjects/flutter/chatai_deep/chatgpt_app_core/test/speech_input_broker_test.dart: new lease cancels previous; disposed old input cannot cancel new microphone
+00:00 +13: /Users/huangzhibin/AndroidStudioProjects/flutter/chatai_deep/chatgpt_app_core/test/speech_input_broker_test.dart: cancel while waiting for permission cannot start listening after late permission grant
+00:00 +14: /Users/huangzhibin/AndroidStudioProjects/flutter/chatai_deep/chatgpt_app_core/test/speech_input_broker_test.dart: failed native cancellation cannot return transcript; original owner can retry release
+00:00 +15: /Users/huangzhibin/AndroidStudioProjects/flutter/chatai_deep/chatgpt_app_core/test/speech_input_broker_test.dart: native recognition error resolves as safe recoverable error
+00:00 +16: /Users/huangzhibin/AndroidStudioProjects/flutter/chatai_deep/chatgpt_app_core/test/speech_input_broker_test.dart: silence status sends empty result and timeout never submits partial transcript
+00:00 +17: /Users/huangzhibin/AndroidStudioProjects/flutter/chatai_deep/chatgpt_app_core/test/voice_conversation_panel_test.dart: opening panel does not start mic; large text on narrow screen scrolls without overflow
+00:01 +18: /Users/huangzhibin/AndroidStudioProjects/flutter/chatai_deep/chatgpt_app_core/test/message_input_widget_test.dart: 经典：500个文件使用有界水平懒加载列表，不撑高输入区域
+00:01 +19: /Users/huangzhibin/AndroidStudioProjects/flutter/chatai_deep/chatgpt_app_core/test/message_input_widget_test.dart: 经典：500个文件使用有界水平懒加载列表，不撑高输入区域
+00:01 +20: /Users/huangzhibin/AndroidStudioProjects/flutter/chatai_deep/chatgpt_app_core/test/message_input_widget_test.dart: 经典：500个文件使用有界水平懒加载列表，不撑高输入区域
+00:01 +21: /Users/huangzhibin/AndroidStudioProjects/flutter/chatai_deep/chatgpt_app_core/test/message_input_widget_test.dart: 经典：500个文件使用有界水平懒加载列表，不撑高输入区域
+00:01 +22: /Users/huangzhibin/AndroidStudioProjects/flutter/chatai_deep/chatgpt_app_core/test/message_input_widget_test.dart: 经典：500个文件使用有界水平懒加载列表，不撑高输入区域
+00:01 +23: /Users/huangzhibin/AndroidStudioProjects/flutter/chatai_deep/chatgpt_app_core/test/message_input_widget_test.dart: 经典：500个文件使用有界水平懒加载列表，不撑高输入区域
+00:01 +24: /Users/huangzhibin/AndroidStudioProjects/flutter/chatai_deep/chatgpt_app_core/test/message_input_widget_test.dart: 经典：500个文件使用有界水平懒加载列表，不撑高输入区域
+00:01 +25: /Users/huangzhibin/AndroidStudioProjects/flutter/chatai_deep/chatgpt_app_core/test/message_input_widget_test.dart: 经典：500个文件使用有界水平懒加载列表，不撑高输入区域
+00:01 +26: /Users/huangzhibin/AndroidStudioProjects/flutter/chatai_deep/chatgpt_app_core/test/message_input_widget_test.dart: 经典：500个文件使用有界水平懒加载列表，不撑高输入区域
+00:01 +27: /Users/huangzhibin/AndroidStudioProjects/flutter/chatai_deep/chatgpt_app_core/test/message_input_widget_test.dart: 经典：500个文件使用有界水平懒加载列表，不撑高输入区域
+00:01 +28: /Users/huangzhibin/AndroidStudioProjects/flutter/chatai_deep/chatgpt_app_core/test/message_input_draft_test.dart: 经典：默认旧调用发送后立即清空，回调先获得原文本
+00:01 +29: /Users/huangzhibin/AndroidStudioProjects/flutter/chatai_deep/chatgpt_app_core/test/message_input_draft_test.dart: 经典：默认旧调用发送后立即清空，回调先获得原文本
+00:01 +30: /Users/huangzhibin/AndroidStudioProjects/flutter/chatai_deep/chatgpt_app_core/test/message_input_web_search_test.dart: 经典/亮色：搜索状态、高亮、禁用与可访问性
+00:02 +31: /Users/huangzhibin/AndroidStudioProjects/flutter/chatai_deep/chatgpt_app_core/test/message_input_web_search_test.dart: 经典/亮色：搜索状态、高亮、禁用与可访问性
+00:02 +32: /Users/huangzhibin/AndroidStudioProjects/flutter/chatai_deep/chatgpt_app_core/test/message_input_web_search_test.dart: 经典/亮色：搜索状态、高亮、禁用与可访问性
+00:02 +33: /Users/huangzhibin/AndroidStudioProjects/flutter/chatai_deep/chatgpt_app_core/test/message_input_web_search_test.dart: 经典/亮色：搜索状态、高亮、禁用与可访问性
+00:02 +34: /Users/huangzhibin/AndroidStudioProjects/flutter/chatai_deep/chatgpt_app_core/test/message_input_web_search_test.dart: 经典/亮色：搜索状态、高亮、禁用与可访问性
+00:02 +35: /Users/huangzhibin/AndroidStudioProjects/flutter/chatai_deep/chatgpt_app_core/test/message_input_web_search_test.dart: 经典/亮色：搜索状态、高亮、禁用与可访问性
+00:02 +36: /Users/huangzhibin/AndroidStudioProjects/flutter/chatai_deep/chatgpt_app_core/test/message_input_widget_test.dart: 经典：超过4张图片继续选择全部保留，取消不会删除已有图片
+00:02 +37: /Users/huangzhibin/AndroidStudioProjects/flutter/chatai_deep/chatgpt_app_core/test/message_input_draft_test.dart: 经典：编辑锁切换后恢复输入，默认enable=false仍保留旧的可编辑行为
+00:02 +38: /Users/huangzhibin/AndroidStudioProjects/flutter/chatai_deep/chatgpt_app_core/test/message_input_web_search_test.dart: 经典/暗色：搜索状态、高亮、禁用与可访问性
+00:02 +39: /Users/huangzhibin/AndroidStudioProjects/flutter/chatai_deep/chatgpt_app_core/test/message_input_web_search_test.dart: 经典/暗色：搜索状态、高亮、禁用与可访问性
+00:02 +40: /Users/huangzhibin/AndroidStudioProjects/flutter/chatai_deep/chatgpt_app_core/test/message_input_web_search_test.dart: 经典/暗色：搜索状态、高亮、禁用与可访问性
+00:02 +41: /Users/huangzhibin/AndroidStudioProjects/flutter/chatai_deep/chatgpt_app_core/test/message_input_web_search_test.dart: 经典/暗色：搜索状态、高亮、禁用与可访问性
+00:02 +42: /Users/huangzhibin/AndroidStudioProjects/flutter/chatai_deep/chatgpt_app_core/test/message_input_draft_test.dart: 二次元：clearOnSend=false 保留异步待发送文字，由外部确认后清空
+00:02 +43: /Users/huangzhibin/AndroidStudioProjects/flutter/chatai_deep/chatgpt_app_core/test/message_input_widget_test.dart: 二次元：500个文件使用有界水平懒加载列表，不撑高输入区域
+00:02 +44: /Users/huangzhibin/AndroidStudioProjects/flutter/chatai_deep/chatgpt_app_core/test/message_input_widget_test.dart: 二次元：500个文件使用有界水平懒加载列表，不撑高输入区域
+00:02 +45: /Users/huangzhibin/AndroidStudioProjects/flutter/chatai_deep/chatgpt_app_core/test/message_input_widget_test.dart: 二次元：500个文件使用有界水平懒加载列表，不撑高输入区域
+00:02 +46: /Users/huangzhibin/AndroidStudioProjects/flutter/chatai_deep/chatgpt_app_core/test/message_input_widget_test.dart: 二次元：500个文件使用有界水平懒加载列表，不撑高输入区域
+00:02 +47: /Users/huangzhibin/AndroidStudioProjects/flutter/chatai_deep/chatgpt_app_core/test/message_input_widget_test.dart: 二次元：500个文件使用有界水平懒加载列表，不撑高输入区域
+00:02 +48: /Users/huangzhibin/AndroidStudioProjects/flutter/chatai_deep/chatgpt_app_core/test/message_input_widget_test.dart: 二次元：500个文件使用有界水平懒加载列表，不撑高输入区域
+00:02 +49: /Users/huangzhibin/AndroidStudioProjects/flutter/chatai_deep/chatgpt_app_core/test/message_input_widget_test.dart: 二次元：500个文件使用有界水平懒加载列表，不撑高输入区域
+00:02 +50: /Users/huangzhibin/AndroidStudioProjects/flutter/chatai_deep/chatgpt_app_core/test/message_input_widget_test.dart: 二次元：500个文件使用有界水平懒加载列表，不撑高输入区域
+00:02 +51: /Users/huangzhibin/AndroidStudioProjects/flutter/chatai_deep/chatgpt_app_core/test/message_input_widget_test.dart: 二次元：500个文件使用有界水平懒加载列表，不撑高输入区域
+00:02 +52: /Users/huangzhibin/AndroidStudioProjects/flutter/chatai_deep/chatgpt_app_core/test/message_input_web_search_test.dart: 二次元/亮色：搜索状态、高亮、禁用与可访问性
+00:02 +53: /Users/huangzhibin/AndroidStudioProjects/flutter/chatai_deep/chatgpt_app_core/test/message_input_web_search_test.dart: 二次元/亮色：搜索状态、高亮、禁用与可访问性
+00:02 +54: /Users/huangzhibin/AndroidStudioProjects/flutter/chatai_deep/chatgpt_app_core/test/message_input_web_search_test.dart: 二次元/亮色：搜索状态、高亮、禁用与可访问性
+00:02 +55: /Users/huangzhibin/AndroidStudioProjects/flutter/chatai_deep/chatgpt_app_core/test/message_input_web_search_test.dart: 二次元/亮色：搜索状态、高亮、禁用与可访问性
+00:02 +56: /Users/huangzhibin/AndroidStudioProjects/flutter/chatai_deep/chatgpt_app_core/test/message_input_web_search_test.dart: 二次元/亮色：搜索状态、高亮、禁用与可访问性
+00:02 +57: /Users/huangzhibin/AndroidStudioProjects/flutter/chatai_deep/chatgpt_app_core/test/message_input_web_search_test.dart: 二次元/亮色：搜索状态、高亮、禁用与可访问性
+00:02 +58: /Users/huangzhibin/AndroidStudioProjects/flutter/chatai_deep/chatgpt_app_core/test/message_input_web_search_test.dart: 二次元/亮色：搜索状态、高亮、禁用与可访问性
+00:02 +59: /Users/huangzhibin/AndroidStudioProjects/flutter/chatai_deep/chatgpt_app_core/test/message_input_draft_test.dart: 二次元：编辑锁切换后恢复输入，默认enable=false仍保留旧的可编辑行为
+00:03 +60: /Users/huangzhibin/AndroidStudioProjects/flutter/chatai_deep/chatgpt_app_core/test/message_input_widget_test.dart: 二次元：超过4张图片继续选择全部保留，取消不会删除已有图片
+00:03 +61: /Users/huangzhibin/AndroidStudioProjects/flutter/chatai_deep/chatgpt_app_core/test/message_input_widget_test.dart: 二次元：超过4张图片继续选择全部保留，取消不会删除已有图片
+00:03 +62: /Users/huangzhibin/AndroidStudioProjects/flutter/chatai_deep/chatgpt_app_core/test/message_input_widget_test.dart: 二次元：文件选择未返回时编辑锁往返，不接入过期结果且保留草稿
+00:03 +63: /Users/huangzhibin/AndroidStudioProjects/flutter/chatai_deep/chatgpt_app_core/test/message_input_widget_test.dart: 二次元：相册未返回时编辑锁往返，不接入过期图片且保留草稿
+00:03 +64: /Users/huangzhibin/AndroidStudioProjects/flutter/chatai_deep/chatgpt_app_core/test/message_input_widget_test.dart: 语音识别语言为空时不返回空 localeId
+00:03 +65: /Users/huangzhibin/AndroidStudioProjects/flutter/chatai_deep/chatgpt_app_core/test/message_input_widget_test.dart: 语音识别语言兼容横线和下划线
+00:03 +66: /Users/huangzhibin/AndroidStudioProjects/flutter/chatai_deep/chatgpt_app_core/test/message_input_widget_test.dart: 外部 controller 可填入文本并在发送后清空
+00:03 +67: /Users/huangzhibin/AndroidStudioProjects/flutter/chatai_deep/chatgpt_app_core/test/message_input_widget_test.dart: 发送闸门拒绝时保留输入且不调用 onSend
+00:03 +68: /Users/huangzhibin/AndroidStudioProjects/flutter/chatai_deep/chatgpt_app_core/test/message_input_widget_test.dart: 二次元输入栏保持可触控尺寸并可正常发送
+00:03 +69: /Users/huangzhibin/AndroidStudioProjects/flutter/chatai_deep/chatgpt_app_core/test/message_input_widget_test.dart: 二次元输入栏在 320px 全工具场景分层布局且删除入口至少 44dp
+00:03 +70: /Users/huangzhibin/AndroidStudioProjects/flutter/chatai_deep/chatgpt_app_core/test/message_input_widget_test.dart: 二次元输入栏在 320px 全工具场景分层布局且删除入口至少 44dp
+00:03 +71: /Users/huangzhibin/AndroidStudioProjects/flutter/chatai_deep/chatgpt_app_core/test/message_input_widget_test.dart: 二次元输入栏在 320px 全工具场景分层布局且删除入口至少 44dp
+00:03 +72: All tests passed!

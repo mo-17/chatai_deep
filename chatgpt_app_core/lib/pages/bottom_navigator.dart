@@ -8,6 +8,7 @@ import 'package:chatgpt_app_core/provider/ai_readiness_provider.dart';
 import 'package:chatgpt_app_core/provider/ai_settings_provider.dart';
 import 'package:chatgpt_app_core/provider/theme_provider.dart';
 import 'package:chatgpt_app_core/theme/starcore_icon_assets.dart';
+import 'package:chatgpt_app_core/update/app_update_controller.dart';
 import 'package:chatgpt_app_core/widget/starcore_svg_icon.dart';
 import 'package:flutter/material.dart';
 import 'package:login_sdk/util/navigator_util.dart';
@@ -24,6 +25,7 @@ class BottomNavigator extends StatefulWidget {
 class _BottomNavigatorState extends State<BottomNavigator> {
   final PageController _controller = PageController(initialPage: 0);
   int _currentIndex = 0;
+  final AppUpdateController _updates = AppUpdateController();
 
   @override
   void initState() {
@@ -52,6 +54,7 @@ class _BottomNavigatorState extends State<BottomNavigator> {
         SnackBar(content: Text('账号数据初始化失败，请稍后重试：$error')),
       );
     }
+    if (mounted) await _updates.check(context, manual: false);
   }
 
   /// 正式账号首次进入主页时，若检测到游客模式攒下的数据，弹窗询问是否导入。
@@ -118,11 +121,11 @@ class _BottomNavigatorState extends State<BottomNavigator> {
           });
         },
         physics: const NeverScrollableScrollPhysics(),
-        children: const [
-          ConversationListPage(),
-          WonderfulPage(),
-          StudyPage(),
-          MyPage()
+        children: [
+          const ConversationListPage(),
+          const WonderfulPage(),
+          const StudyPage(),
+          MyPage(updateController: _updates)
         ],
       ),
       bottomNavigationBar: AppBottomNavigationBar(
@@ -141,6 +144,7 @@ class _BottomNavigatorState extends State<BottomNavigator> {
 
   @override
   void dispose() {
+    _updates.dispose();
     _controller.dispose();
     super.dispose();
   }

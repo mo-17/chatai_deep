@@ -1,0 +1,31 @@
+{
+  "product": "艾普",
+  "version": "1.0.6",
+  "build": 16,
+  "channel": "preview",
+  "platform": "android",
+  "minAndroidSdk": 24,
+  "signing": "debug",
+  "deviceAcceptance": false,
+  "bytes": 180471259,
+  "url": "https://kushui.shop/downloads/aipu-1.0.6-16-universal.apk",
+  "sha256": "8b8fe9ecf1bf4186c96931182b8a5652cc5c7c9378681a32651f0680cbb5aa98",
+  "backendOrigin": "https://kushui.shop",
+  "artifacts": {
+    "arm64-v8a": {
+      "url": "https://kushui.shop/downloads/aipu-1.0.6-16-arm64-v8a.apk",
+      "sha256": "a8ebe88dbfd6ecb482efb031fc6fa10dce8ef7361388237cc9c819c98e437cbe",
+      "bytes": 64420181
+    },
+    "armeabi-v7a": {
+      "url": "https://kushui.shop/downloads/aipu-1.0.6-16-armeabi-v7a.apk",
+      "sha256": "38e9db8344929766ad93b2615d5cd15142073d8892e0e4e74f6b3c534702b3b5",
+      "bytes": 53708105
+    },
+    "x86_64": {
+      "url": "https://kushui.shop/downloads/aipu-1.0.6-16-x86_64.apk",
+      "sha256": "8675f58173d32d316fb4546e87dbcff740140e3cb68d63aa52022f3a918e10d0",
+      "bytes": 71876813
+    }
+  }
+}

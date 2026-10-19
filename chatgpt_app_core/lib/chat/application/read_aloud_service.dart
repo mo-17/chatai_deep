@@ -10,6 +10,7 @@ class ReadAloudRequest {
   final String? voiceStyle;
   final void Function(ReadAloudStage stage)? onStage;
   final bool Function()? isCancelled;
+  final bool throwOnError;
 
   const ReadAloudRequest({
     required this.text,
@@ -18,6 +19,7 @@ class ReadAloudRequest {
     this.voiceStyle,
     this.onStage,
     this.isCancelled,
+    this.throwOnError = false,
   });
 }
 
@@ -200,11 +202,15 @@ class FlutterTtsReadAloudService implements ReadAloudService {
       if (request.isCancelled?.call() == true) return;
       await _engine.awaitSpeakCompletion(true);
       request.onStage?.call(ReadAloudStage.playing);
-      await _engine.speak(request.text);
+      final result = await _engine.speak(request.text);
+      if (request.throwOnError && result == 0) {
+        throw StateError('系统朗读未能完成');
+      }
       if (request.isCancelled?.call() != true) {
         request.onStage?.call(ReadAloudStage.completed);
       }
     } catch (e) {
+      if (request.throwOnError) rethrow;
       AILogger.log('flutter_tts speak failed: $e');
       request.onStage?.call(ReadAloudStage.completed);
     }

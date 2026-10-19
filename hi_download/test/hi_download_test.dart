@@ -1,4 +1,6 @@
 import 'dart:io';
+import 'dart:async';
+import 'dart:convert';
 
 import 'package:crypto/crypto.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -7,6 +9,7 @@ import 'package:http/http.dart' as http;
 import 'package:http/testing.dart';
 
 void main() {
+  resumeTests();
   late Directory tempDirectory;
 
   setUp(() async {
@@ -34,7 +37,8 @@ void main() {
     );
 
     expect(await File('${tempDirectory.path}/ChatGPT.apk').exists(), isFalse);
-    expect(await File('${tempDirectory.path}/ChatGPT.apk.part').exists(), isFalse);
+    expect(
+        await File('${tempDirectory.path}/ChatGPT.apk.part').exists(), isFalse);
   });
 
   test('rejects a URL without a host before starting a request', () async {
@@ -80,7 +84,8 @@ void main() {
     expect(requestCount, 0);
   });
 
-  test('future resolves only after all bytes are flushed and renamed', () async {
+  test('future resolves only after all bytes are flushed and renamed',
+      () async {
     final bytes = List<int>.generate(4096, (index) => index % 251);
     final client = MockClient((_) async => http.Response.bytes(bytes, 200));
     var completed = false;
@@ -144,7 +149,8 @@ void main() {
     );
 
     expect(await File('${tempDirectory.path}/ChatGPT.apk').exists(), isFalse);
-    expect(await File('${tempDirectory.path}/ChatGPT.apk.part').exists(), isFalse);
+    expect(
+        await File('${tempDirectory.path}/ChatGPT.apk.part').exists(), isFalse);
   });
 
   test('accepts a matching SHA-256', () async {
@@ -172,4 +178,87 @@ class _StreamedClient extends http.BaseClient {
   @override
   Future<http.StreamedResponse> send(http.BaseRequest request) async =>
       responseBuilder();
+}
+
+// 两次请求共用磁盘分片，覆盖弱网中断后续传与版本变更。
+void resumeTests() {
+  test('resumes only matching resource and validates complete hash', () async {
+    final dir = await Directory.systemTemp.createTemp('resume_');
+    addTearDown(() => dir.delete(recursive: true));
+    const bytes = [1, 2, 3, 4, 5, 6];
+    final digest = sha256.convert(bytes).toString();
+    final client = _RequestClient((request) async {
+      if (request.headers['Range'] == null) {
+        return http.StreamedResponse(Stream.value(bytes.take(3).toList()), 200,
+            contentLength: 6, headers: {'etag': '"v1"'});
+      }
+      expect(request.headers['Range'], 'bytes=3-');
+      expect(request.headers['If-Range'], '"v1"');
+      return http.StreamedResponse(Stream.value(bytes.skip(3).toList()), 206,
+          contentLength: 3,
+          headers: {'content-range': 'bytes 3-5/6', 'etag': '"v1"'});
+    });
+    Future<String> download() => HiDownLoad().download(
+        downLoadUrl: 'https://example.com/a.apk',
+        fileName: 'a.apk',
+        expectedSha256: digest,
+        client: client,
+        listener: (_, __, ___) {},
+        directoryProvider: () async => dir);
+    await expectLater(download(), throwsA(isA<DownloadException>()));
+    expect(await File('${dir.path}/a.apk.part').length(), 3);
+    final path = await download();
+    expect(await File(path).readAsBytes(), bytes);
+    expect(await File('$path.part.json').exists(), false);
+  });
+
+  test('pause interrupts stalled stream and keeps hashed partial', () async {
+    final dir = await Directory.systemTemp.createTemp('pause_');
+    addTearDown(() => dir.delete(recursive: true));
+    final token = DownloadCancellationToken();
+    final stream = StreamController<List<int>>();
+    addTearDown(stream.close);
+    final client = _StreamedClient(
+        () => http.StreamedResponse(stream.stream, 200, contentLength: 6));
+    final pending = HiDownLoad().download(
+        downLoadUrl: 'https://example.com/a.apk',
+        fileName: 'a.apk',
+        expectedSha256: sha256.convert([1, 2, 3, 4, 5, 6]).toString(),
+        client: client,
+        cancellationToken: token,
+        listener: (_, __, ___) => token.cancel(),
+        directoryProvider: () async => dir);
+    stream.add([1, 2, 3]);
+    await expectLater(pending, throwsA(isA<DownloadCancelled>()));
+    expect(await File('${dir.path}/a.apk.part').length(), 3);
+  });
+
+  test('rejects a wrong range and deletes unsafe partial', () async {
+    final dir = await Directory.systemTemp.createTemp('range_');
+    addTearDown(() => dir.delete(recursive: true));
+    final digest = sha256.convert([1, 2, 3]).toString();
+    await File('${dir.path}/a.apk.part').writeAsBytes([1]);
+    await File('${dir.path}/a.apk.part.json').writeAsString(
+        jsonEncode({'url': 'https://example.com/a.apk', 'sha256': digest}));
+    await expectLater(
+        HiDownLoad().download(
+            downLoadUrl: 'https://example.com/a.apk',
+            fileName: 'a.apk',
+            expectedSha256: digest,
+            client: _StreamedClient(() => http.StreamedResponse(
+                Stream.value([2, 3]), 206,
+                headers: {'content-range': 'bytes 0-1/3'})),
+            listener: (_, __, ___) {},
+            directoryProvider: () async => dir),
+        throwsA(isA<DownloadException>()));
+    expect(await File('${dir.path}/a.apk.part').exists(), false);
+  });
+}
+
+class _RequestClient extends http.BaseClient {
+  final Future<http.StreamedResponse> Function(http.BaseRequest) handler;
+  _RequestClient(this.handler);
+  @override
+  Future<http.StreamedResponse> send(http.BaseRequest request) =>
+      handler(request);
 }

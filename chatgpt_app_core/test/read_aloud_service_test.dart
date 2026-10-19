@@ -166,6 +166,17 @@ void main() {
     ]);
   });
 
+  test(
+      'strict voice playback propagates errors; existing manual read aloud remains compatible',
+      () async {
+    final service =
+        FlutterTtsReadAloudService(engine: _FakeTtsEngine(failSpeak: true));
+    await service.speak(const ReadAloudRequest(text: '兼容旧行为'));
+    await expectLater(
+        service.speak(const ReadAloudRequest(text: '连续对话', throwOnError: true)),
+        throwsStateError);
+  });
+
   test('FlutterTtsReadAloudService stop 透传到底层 engine', () async {
     final engine = _FakeTtsEngine();
     final service = FlutterTtsReadAloudService(engine: engine);
@@ -189,7 +200,8 @@ class _FakeReadAloudService implements ReadAloudService {
 }
 
 class _FakeTtsEngine implements TtsEngine {
-  _FakeTtsEngine({this.voices = const []});
+  _FakeTtsEngine({this.voices = const [], this.failSpeak = false});
+  final bool failSpeak;
 
   final List<Map<String, String>> voices;
   final calls = <String>[];
@@ -233,6 +245,7 @@ class _FakeTtsEngine implements TtsEngine {
   @override
   Future<void> speak(String text) async {
     calls.add('speak:$text');
+    if (failSpeak) throw StateError('synthetic TTS failure');
   }
 
   @override

@@ -79,13 +79,9 @@ class _CloudSyncPageState extends State<CloudSyncPage> {
       _syncing = true;
       _error = null;
     });
-    CloudSyncClient? client;
     try {
       final result = widget.syncAction == null
-          ? await () async {
-              client = await widget.clientFactory();
-              return client!.syncOnce();
-            }()
+          ? await CloudSyncCoordinator.runSync(factory: widget.clientFactory)
           : await widget.syncAction!();
       if (!mounted) return;
       setState(() {
@@ -98,7 +94,6 @@ class _CloudSyncPageState extends State<CloudSyncPage> {
         _error = e.toString();
       });
     } finally {
-      client?.close();
       if (mounted) {
         setState(() {
           _syncing = false;
@@ -108,11 +103,12 @@ class _CloudSyncPageState extends State<CloudSyncPage> {
   }
 
   Future<void> _loadLastSyncAt() async {
-    final value = await widget.lastSyncAtLoader();
-    if (!mounted) return;
-    setState(() {
-      _lastSyncAt = value;
-    });
+    try {
+      final value = await widget.lastSyncAtLoader();
+      if (mounted) setState(() => _lastSyncAt = value);
+    } catch (_) {
+      if (mounted) setState(() => _error = '同步状态读取失败，可点击重试');
+    }
   }
 }
 
@@ -216,7 +212,7 @@ class _StatusPanel extends StatelessWidget {
     final conflictDetail = _conflictDetailText(r);
     return '同步完成（${r.auto ? '自动' : '手动'}）：拉取 ${r.pulled} 条，'
         '上传 ${r.pushed} 条，陈旧 ${r.stale} 条$conflict，'
-        '云端游标 ${r.cursor}。\n'
+        '。\n'
         '${_lastSyncText(lastSyncAt)}$conflictDetail';
   }
 
@@ -231,7 +227,7 @@ class _StatusPanel extends StatelessWidget {
         ? result.conflictDetails.take(3).map(_formatConflictDetail).join('、')
         : result.conflicts.take(3).map(_formatConflictKey).join('、');
     final more = _conflictCount(result) > 3 ? ' 等' : '';
-    return '\n冲突：$details$more';
+    return '\n冲突：$details$more。未自动覆盖冲突内容，请核对另一设备的版本后编辑并重新同步。';
   }
 
   static String _formatConflictDetail(SyncConflictDetail detail) {
@@ -252,6 +248,12 @@ class _StatusPanel extends StatelessWidget {
         'assistant' => '助手',
         'favorite' => '收藏',
         'knowledge_doc' => '知识库文档',
+        'knowledge_document_v2' => '知识库文档',
+        'knowledge_record_v2' => '问答与修订快照',
+        'knowledge_packet_v2' => '知识快照分片',
+        'knowledge_pointer_v2' => '知识快照',
+        'knowledge_pdf_part_v2' => '知识原件分片',
+        'knowledge_project_link_v2' => '项目知识库绑定',
         'knowledge_chunk' => '知识库片段',
         'project_knowledge' => '项目知识库绑定',
         _ => entity,
@@ -261,6 +263,8 @@ class _StatusPanel extends StatelessWidget {
         'remote_newer' => '远端更新，本机已跳过',
         'same_timestamp' => '同时间内容不同',
         'local_same_timestamp' => '本地同时间内容不同',
+        'knowledge_revision_conflict' => '知识资料版本不一致，本机版本已保留，请到知识库比较',
+        'knowledge_legacy_identity' => '旧版资料标识无法核对，未覆盖本机文档',
         'unknown' => '未知原因',
         _ => reason,
       };

@@ -1,0 +1,192 @@
+{
+  "passed": true,
+  "checks": [
+    {
+      "check": "Nginx -> NestJS -> PostgreSQL health",
+      "passed": true,
+      "httpStatus": 200
+    },
+    {
+      "check": "Admin login HTML",
+      "passed": true,
+      "httpStatus": 200
+    },
+    {
+      "check": "Admin static asset references",
+      "passed": true,
+      "httpStatus": null
+    },
+    {
+      "check": "Admin static asset b14973d3d0f5170c.css",
+      "passed": true,
+      "httpStatus": 200
+    },
+    {
+      "check": "Admin static asset webpack-24b33b9a2da9b242.js",
+      "passed": true,
+      "httpStatus": 200
+    },
+    {
+      "check": "Admin static asset fa31a4ad-c7a4599855fcc179.js",
+      "passed": true,
+      "httpStatus": 200
+    },
+    {
+      "check": "Admin static asset 514-043676ea24abe344.js",
+      "passed": true,
+      "httpStatus": 200
+    },
+    {
+      "check": "Admin static asset main-app-705df918ba7e5df6.js",
+      "passed": true,
+      "httpStatus": 200
+    },
+    {
+      "check": "Admin static asset 6dee23d0-f4354ac5ff192bb9.js",
+      "passed": true,
+      "httpStatus": 200
+    },
+    {
+      "check": "Admin static asset 9881-25b3515cae0fc705.js",
+      "passed": true,
+      "httpStatus": 200
+    },
+    {
+      "check": "Admin static asset 9343-1126425fad490d07.js",
+      "passed": true,
+      "httpStatus": 200
+    },
+    {
+      "check": "Admin static asset 4370-1eb0045c966025e7.js",
+      "passed": true,
+      "httpStatus": 200
+    },
+    {
+      "check": "Admin static asset 4193-750f3648c31558a0.js",
+      "passed": true,
+      "httpStatus": 200
+    },
+    {
+      "check": "Admin static asset 1788-8a0e6455a0a20f00.js",
+      "passed": true,
+      "httpStatus": 200
+    },
+    {
+      "check": "Admin static asset 6356-e1cea76990b5630f.js",
+      "passed": true,
+      "httpStatus": 200
+    },
+    {
+      "check": "Admin static asset 6520-7f048b7dbb57c135.js",
+      "passed": true,
+      "httpStatus": 200
+    },
+    {
+      "check": "Admin static asset layout-c3b546d4be34ac6c.js",
+      "passed": true,
+      "httpStatus": 200
+    },
+    {
+      "check": "Admin static asset 4050-7f6a7f81864b5f0e.js",
+      "passed": true,
+      "httpStatus": 200
+    },
+    {
+      "check": "Admin static asset 6485-bc18ffe5bc2c71df.js",
+      "passed": true,
+      "httpStatus": 200
+    },
+    {
+      "check": "Admin static asset 9721-0c8bc7d8c60e9162.js",
+      "passed": true,
+      "httpStatus": 200
+    },
+    {
+      "check": "Admin static asset 9011-de600465080ceac4.js",
+      "passed": true,
+      "httpStatus": 200
+    },
+    {
+      "check": "Admin static asset 4483-4e0aa70cd0f0d294.js",
+      "passed": true,
+      "httpStatus": 200
+    },
+    {
+      "check": "Admin static asset page-de693f03d59700bd.js",
+      "passed": true,
+      "httpStatus": 200
+    },
+    {
+      "check": "Admin static asset polyfills-42372ed130431b0a.js",
+      "passed": true,
+      "httpStatus": 200
+    },
+    {
+      "check": "Unauthenticated request rejected /api/admin/me",
+      "passed": true,
+      "httpStatus": 401
+    },
+    {
+      "check": "Unauthenticated request rejected /uapi/admin/ai/providers",
+      "passed": true,
+      "httpStatus": 401
+    },
+    {
+      "check": "Admin login through Next.js rewrite",
+      "passed": true,
+      "httpStatus": 200
+    },
+    {
+      "check": "Authenticated /api/admin/me",
+      "passed": true,
+      "httpStatus": 200
+    },
+    {
+      "check": "Authenticated /api/admin/users",
+      "passed": true,
+      "httpStatus": 200
+    },
+    {
+      "check": "Authenticated /api/admin/ai/providers",
+      "passed": true,
+      "httpStatus": 200
+    },
+    {
+      "check": "Authenticated /api/admin/ai/models",
+      "passed": true,
+      "httpStatus": 200
+    },
+    {
+      "check": "Authenticated /api/admin/ai/global",
+      "passed": true,
+      "httpStatus": 200
+    },
+    {
+      "check": "Authenticated /api/admin/usage/summary",
+      "passed": true,
+      "httpStatus": 200
+    },
+    {
+      "check": "Authenticated /api/admin/banners",
+      "passed": true,
+      "httpStatus": 200
+    },
+    {
+      "check": "Authenticated /api/admin/versions",
+      "passed": true,
+      "httpStatus": 200
+    },
+    {
+      "check": "Authenticated /uapi/ai/catalog",
+      "passed": true,
+      "httpStatus": 200
+    },
+    {
+      "check": "App public auth configuration",
+      "passed": true,
+      "httpStatus": 200
+    }
+  ],
+  "externalAiInferenceVerified": false,
+  "smtpDeliveryVerified": false
+}

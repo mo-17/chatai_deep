@@ -6,6 +6,7 @@ import {
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository, type EntityManager } from 'typeorm';
 import type { Response } from 'express';
+import { AccessService } from '../access/access.service';
 import { Usage } from './usage.entity';
 import { Conversation } from './conversation.entity';
 import { Message } from './message.entity';
@@ -80,6 +81,7 @@ export class ChatService {
     @InjectRepository(AiGlobalConfig)
     private readonly globalRepo: Repository<AiGlobalConfig>,
     private readonly providerCache: ProviderCacheService,
+    private readonly access: AccessService,
   ) {}
 
   // --- Conversation CRUD ---
@@ -225,6 +227,18 @@ export class ChatService {
   // --- Non-streaming completion ---
 
   async complete(userId: number, body: CompletionBody) {
+    const admission = await this.access.admit(userId, body);
+    let usage: UpstreamResponse['usage'];
+    try {
+      const result = await this.completeAdmitted(userId, admission.body);
+      usage = result.usage ?? undefined;
+      return result;
+    } finally {
+      await this.access.finish(admission.id, usage);
+    }
+  }
+
+  private async completeAdmitted(userId: number, body: CompletionBody) {
     const provider = await this.resolveProvider(body.model, body.providerCode);
     const data = await this.callUpstream(provider, body);
 
@@ -272,6 +286,7 @@ export class ChatService {
           Authorization: `Bearer ${provider.apiKey}`,
         },
         body: JSON.stringify(upstreamBody),
+        signal: AbortSignal.timeout(10 * 60 * 1000),
       });
 
       if (!resp.ok) {
@@ -298,6 +313,26 @@ export class ChatService {
     body: CompletionBody,
     res: Response,
     clientSignal: AbortSignal = new AbortController().signal,
+  ) {
+    const admission = await this.access.admit(userId, body);
+    let usage: UpstreamResponse['usage'];
+    try {
+      usage = await this.streamAdmitted(
+        userId,
+        admission.body,
+        res,
+        clientSignal,
+      );
+    } finally {
+      await this.access.finish(admission.id, usage);
+    }
+  }
+
+  private async streamAdmitted(
+    userId: number,
+    body: CompletionBody,
+    res: Response,
+    clientSignal: AbortSignal,
   ) {
     const provider = await this.resolveProvider(body.model, body.providerCode);
     assertProviderAvailable(provider);
@@ -450,6 +485,7 @@ export class ChatService {
           console.error('[usage] save failed', e);
         });
     }
+    return completedNormally ? lastUsage : undefined;
   }
 
   /** 每次发送/解析均以当前数据库为准；旧 model-only 缓存不证明归属或可用性。 */

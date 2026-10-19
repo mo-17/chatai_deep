@@ -1,0 +1,46 @@
+{
+  "date": "2026-10-19",
+  "flutterSdk": "3.35.7",
+  "audioRegression": {
+    "passed": 72,
+    "failed": 0,
+    "files": [
+      "voice_conversation_controller_test.dart",
+      "speech_input_broker_test.dart",
+      "voice_conversation_panel_test.dart",
+      "message_input_widget_test.dart",
+      "message_input_draft_test.dart",
+      "message_input_web_search_test.dart",
+      "read_aloud_service_test.dart",
+      "sherpa_onnx_read_aloud_service_test.dart",
+      "story_room_read_aloud_controller_test.dart"
+    ],
+    "log": "audio-regression.log"
+  },
+  "conversationPage": {
+    "passedDistinctCases": 57,
+    "failedCases": 0,
+    "note": "All page cases passed in earlier combined batch. A separate audio fixture failure in that batch was fixed and is covered by the final clean 72-case audio run."
+  },
+  "finalVoicePageSubset": {
+    "passed": 3,
+    "failed": 0,
+    "subsetOfConversationPage": true,
+    "viewport": "320x480 at 1.8 text scale in two-turn case",
+    "log": "voice-page.log"
+  },
+  "androidBuild": {
+    "success": true,
+    "command": "cd chatgpt_flutter && fvm flutter build apk --release --dart-define-from-file=../deploy/flutter/production.json"
+  },
+  "physicalDeviceVerified": false,
+  "actualAsrOrAudioVerified": false,
+  "iosMacOsRuntimeVerified": false,
+  "productionInferenceOrSmtpCalled": false,
+  "published": false,
+  "staticAnalysis": {
+    "result": "No issues found",
+    "targets": 10,
+    "log": "analyze.log"
+  }
+}

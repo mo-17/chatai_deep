@@ -142,6 +142,21 @@ android {
 
     buildTypes {
         release {
+            // 直发逐架构构建保留同一版本码，同时排除插件附带的其它架构 .so。
+            // Flutter 默认非 split 构建仍会保留三种 ABI，单独传 target-platform 不够。
+            if (project.findProperty('split-per-abi')?.toString() != 'true') {
+                def abiByPlatform = ['android-arm': 'armeabi-v7a',
+                                     'android-arm64': 'arm64-v8a',
+                                     'android-x64': 'x86_64']
+                def targets = (project.findProperty('target-platform') ?: 'android-arm,android-arm64,android-x64').toString().split(',')
+                ndk.abiFilters.clear()
+                targets.each { target ->
+                    if (!abiByPlatform.containsKey(target)) {
+                        throw new GradleException("Unsupported Android target: ${target}")
+                    }
+                    ndk.abiFilters.add(abiByPlatform[target])
+                }
+            }
             if (chatgptDistribution == 'store') {
                 signingConfig signingConfigs.getByName('store')
             } else {

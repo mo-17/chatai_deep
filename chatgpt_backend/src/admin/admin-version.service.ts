@@ -52,6 +52,51 @@ export class AdminVersionService {
     existing: Partial<AppVersion> | null,
   ): Partial<AppVersion> {
     const normalizedBody = { ...body };
+    if (body.artifacts !== undefined) {
+      if (
+        !body.artifacts ||
+        typeof body.artifacts !== 'object' ||
+        Array.isArray(body.artifacts)
+      )
+        throw new BadRequestException('架构安装包配置无效');
+      for (const [abi, artifact] of Object.entries(body.artifacts)) {
+        if (
+          !['arm64-v8a', 'armeabi-v7a', 'x86_64'].includes(abi) ||
+          !artifact ||
+          typeof artifact !== 'object' ||
+          typeof artifact.sha256 !== 'string' ||
+          !/^[0-9a-f]{64}$/.test(artifact.sha256) ||
+          !Number.isSafeInteger(artifact.bytes) ||
+          artifact.bytes <= 0
+        )
+          throw new BadRequestException('架构安装包摘要或大小无效');
+        let url: URL;
+        try {
+          url = new URL(artifact.url);
+        } catch {
+          throw new BadRequestException('架构安装包地址无效');
+        }
+        if (
+          url.protocol !== 'https:' ||
+          !url.hostname ||
+          url.username ||
+          url.password
+        )
+          throw new BadRequestException('架构安装包必须使用 HTTPS');
+      }
+    }
+    if (
+      body.rolloutPercent !== undefined &&
+      (!Number.isInteger(body.rolloutPercent) ||
+        body.rolloutPercent < 0 ||
+        body.rolloutPercent > 100)
+    )
+      throw new BadRequestException('灰度比例必须为 0 到 100 的整数');
+    if (
+      body.rolloutSalt !== undefined &&
+      (typeof body.rolloutSalt !== 'string' || body.rolloutSalt.length > 80)
+    )
+      throw new BadRequestException('灰度批次标识无效');
 
     if (Object.prototype.hasOwnProperty.call(body, 'cid')) {
       if (typeof body.cid !== 'string' || body.cid.trim() === '') {

@@ -1,0 +1,66 @@
+{
+  "checks": [
+    {
+      "name": "管理员正常登录",
+      "passed": true
+    },
+    {
+      "name": "普通用户正常登录",
+      "passed": true
+    },
+    {
+      "name": "每日一万 Token 政策与当前用量可读",
+      "passed": true
+    },
+    {
+      "name": "普通用户不能修改额度",
+      "passed": true
+    },
+    {
+      "name": "普通用户不能读后台反馈列表",
+      "passed": true
+    },
+    {
+      "name": "管理员读取额度政策",
+      "passed": true
+    },
+    {
+      "name": "未意外启用试用或额度",
+      "passed": true
+    },
+    {
+      "name": "保存已确认试用参数且保持关闭",
+      "passed": true
+    },
+    {
+      "name": "准备 DeepSeek Flash 模型元数据",
+      "passed": true
+    },
+    {
+      "name": "提交反馈且过滤诊断白名单外字段",
+      "passed": true
+    },
+    {
+      "name": "反馈未知结果重试不会重复创建",
+      "passed": true
+    },
+    {
+      "name": "后台处理并回复反馈",
+      "passed": true
+    },
+    {
+      "name": "用户能查看自己的处理结果与回复",
+      "passed": true
+    },
+    {
+      "name": "试用未配置时拒绝调用上游",
+      "passed": true
+    },
+    {
+      "name": "匿名不能读取用量",
+      "passed": true
+    }
+  ],
+  "passed": 15,
+  "total": 15
+}

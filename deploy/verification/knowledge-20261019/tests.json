@@ -1,0 +1,32 @@
+{
+  "date": "2026-10-19",
+  "flutterSdk": "3.35.7",
+  "distinctPassed": 80,
+  "featureTests": 30,
+  "existingRegressionTests": 50,
+  "fullRegressionRun": {
+    "passed": 79,
+    "failed": 0,
+    "log": "regression.log",
+    "note": "Before adding one retrieval budget test."
+  },
+  "finalCoreRun": {
+    "passed": 22,
+    "failed": 0,
+    "log": "core-final.log",
+    "note": "Includes the additional retrieval budget test; overlaps 21 cases from the full run."
+  },
+  "staticAnalysis": {
+    "result": "No issues found",
+    "log": "analyze.log"
+  },
+  "physicalAndroidDeviceConnected": false,
+  "realModelInferenceCalled": false,
+  "smtpCalled": false,
+  "published": false,
+  "androidBuild": {
+    "passed": true,
+    "version": "1.0.9+19",
+    "log": "build.log"
+  }
+}

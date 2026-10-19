@@ -79,7 +79,7 @@ test('preview only permits inert attribute-free format tags plus sandbox CSP', (
 });
 
 test('code status keeps locked/expired terminal reasons ahead of legacy consumedAt marker', () => {
- const {codeState}=require(path.join(root,'app/(dashboard)/auth/codes/page.js'));
+ const {codeState}=require(path.join(root,'lib/auth-code-state.js'));
  const r={deliveryStatus:'sent',consumedAt:'2026-10-12',invalidatedAt:'2026-10-12',expiresAt:'2099-01-01'};
  assert.equal(codeState({...r,invalidationReason:'locked'}),'已锁定');assert.equal(codeState({...r,invalidationReason:'expired'}),'已过期');assert.equal(codeState({...r,invalidationReason:'consumed'}),'已核销');assert.equal(codeState({...r,invalidationReason:'superseded'}),'已被新码替代');
 });

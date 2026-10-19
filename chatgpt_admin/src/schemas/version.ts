@@ -16,5 +16,8 @@ export const versionSchema = z.object({
   cid: z.string().default('all'),
   forceUpdate: z.boolean().default(false),
   enabled: z.boolean().default(true),
+  rolloutPercent: z.number().int().min(0).max(100).default(100),
+  rolloutSalt: z.string().max(80).default(''),
+  artifacts: z.record(z.string(),z.object({url:z.url(),sha256:z.string().regex(/^[0-9a-f]{64}$/),bytes:z.number().int().positive()})).default({}),
 });
 export type VersionForm = z.infer<typeof versionSchema>;

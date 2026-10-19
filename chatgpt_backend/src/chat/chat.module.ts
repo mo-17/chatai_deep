@@ -1,3 +1,4 @@
+import { AccessModule } from '../access/access.module';
 import { Module, forwardRef } from '@nestjs/common';
 import { TypeOrmModule } from '@nestjs/typeorm';
 import { ChatController } from './chat.controller';
@@ -12,6 +13,7 @@ import { AiModule } from '../ai/ai.module';
 
 @Module({
   imports: [
+    AccessModule,
     TypeOrmModule.forFeature([
       Usage,
       Conversation,

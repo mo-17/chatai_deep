@@ -1,0 +1,30 @@
+{
+  "backend": {
+    "suitesPassed": 53,
+    "testsPassed": 587,
+    "suitesSkipped": 20,
+    "testsSkipped": 329
+  },
+  "postgres": {
+    "passed": 8,
+    "isolatedDatabase": true,
+    "stopped": true
+  },
+  "flutter": {
+    "passed": 14,
+    "analyzerIssues": 0,
+    "liveLoginPassed": 1,
+    "physicalDeviceVerified": false
+  },
+  "deploymentTests": {
+    "passed": 23
+  },
+  "admin": {
+    "typecheck": true,
+    "lint": true,
+    "ubuntuBuild": true
+  },
+  "paidInferenceCalls": 0,
+  "emailsSent": 0,
+  "gitCommitOrPush": false
+}

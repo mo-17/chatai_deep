@@ -43,6 +43,7 @@ void main() {
 
     final model = await ApkUpdateDao.checkUpdate(
       packageInfo: packageInfo(),
+      installationId: 'unit-installation-12345',
       client: client,
       distribution: AppDistribution.direct,
       platform: 'android',
@@ -81,6 +82,7 @@ void main() {
 
     final model = await ApkUpdateDao.checkUpdate(
       packageInfo: packageInfo(),
+      installationId: 'unit-installation-12345',
       client: client,
       distribution: AppDistribution.direct,
       platform: 'android',
@@ -111,6 +113,7 @@ void main() {
 
     final model = await ApkUpdateDao.checkUpdate(
       packageInfo: packageInfo(),
+      installationId: 'unit-installation-12345',
       client: client,
       distribution: AppDistribution.direct,
       platform: 'android',

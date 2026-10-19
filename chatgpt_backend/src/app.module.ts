@@ -1,4 +1,7 @@
 import { logUrl } from './common/auth-log-safety';
+import { FeedbackModule } from './feedback/feedback.module';
+import { OperationsModule } from './operations/operations.module';
+import { KnowledgeTeamModule } from './knowledge-team/knowledge-team.module';
 import { Module } from '@nestjs/common';
 import { ConfigModule, ConfigService } from '@nestjs/config';
 import { TypeOrmModule } from '@nestjs/typeorm';
@@ -75,6 +78,8 @@ import { CloudWorkflowModule } from './cloud-workflow/cloud-workflow.module';
         };
       },
     }),
+    FeedbackModule,
+    KnowledgeTeamModule,
     UserModule,
     NoticeModule,
     UpdateModule,
@@ -83,6 +88,7 @@ import { CloudWorkflowModule } from './cloud-workflow/cloud-workflow.module';
     AdminModule,
     AiModule,
     HealthModule,
+    OperationsModule,
     AuthModule,
     McpModule,
     SyncModule,

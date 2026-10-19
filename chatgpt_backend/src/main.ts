@@ -12,6 +12,7 @@ import { AllExceptionsFilter } from './common/all-exceptions.filter';
 import { existsSync, mkdirSync } from 'fs';
 import { resolveUploadsDir } from './common/uploads-path';
 import { createJsonBodyParser } from './common/json-body-parser';
+import { OperationsService } from './operations/operations.service';
 
 async function bootstrap() {
   const origins = (
@@ -36,6 +37,7 @@ async function bootstrap() {
   app.useGlobalInterceptors(new ClassSerializerInterceptor(app.get(Reflector)));
   app.useGlobalFilters(new AllExceptionsFilter());
 
+  app.use(app.get(OperationsService).metrics.middleware());
   app.use(createJsonBodyParser());
   app.use(urlencoded({ extended: true }));
 
@@ -44,7 +46,13 @@ async function bootstrap() {
   if (!existsSync(uploadsDir)) mkdirSync(uploadsDir, { recursive: true });
   app.useStaticAssets(uploadsDir, { prefix: '/uploads/' });
 
-  await app.listen(process.env.PORT ?? 3000);
+  // 独立服务器可通过 HOST 限定监听地址；未配置时保留原有行为。
+  const port = process.env.PORT ?? 3000;
+  if (process.env.HOST) {
+    await app.listen(port, process.env.HOST);
+  } else {
+    await app.listen(port);
+  }
   app
     .get(Logger)
     .log(`Backend running on http://localhost:${process.env.PORT ?? 3000}`);

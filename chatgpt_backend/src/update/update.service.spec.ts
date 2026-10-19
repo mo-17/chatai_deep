@@ -11,6 +11,9 @@ const version = (overrides: Partial<AppVersion> = {}): AppVersion => ({
   cid: 'all',
   forceUpdate: false,
   enabled: true,
+  artifacts: {},
+  rolloutPercent: 100,
+  rolloutSalt: '',
   createTime: new Date('2026-07-14T00:00:00.000Z'),
   updateTime: new Date('2026-07-14T00:00:00.000Z'),
   ...overrides,
@@ -230,5 +233,86 @@ describe('UpdateService', () => {
 
     expect(data.updateAvailable).toBe(true);
     expect(data.sha256).toBe(hash);
+  });
+});
+
+describe('stable rollout', () => {
+  it('pauses even force-update releases and old clients cannot bypass gray rollout', async () => {
+    const repo = {
+      findOne: jest
+        .fn()
+        .mockResolvedValue(version({ forceUpdate: true, rolloutPercent: 0 })),
+    };
+    expect(
+      (
+        await new UpdateService(repo as never).checkUpdate(
+          'all',
+          '1.0.0',
+          '1',
+          'direct',
+          'android',
+          'installation-12345678',
+        )
+      ).data.updateAvailable,
+    ).toBe(false);
+    repo.findOne.mockResolvedValue(version({ rolloutPercent: 50 }));
+    expect(
+      (await new UpdateService(repo as never).checkUpdate('all', '1.0.0', '1'))
+        .data.updateAvailable,
+    ).toBe(false);
+  });
+});
+
+describe('ABI selection', () => {
+  it('selects architecture SHA and falls back for legacy clients', async () => {
+    const release = version({
+      artifacts: {
+        'arm64-v8a': {
+          url: 'https://example.com/arm64.apk',
+          sha256: 'a'.repeat(64),
+          bytes: 123,
+        },
+      },
+    });
+    const service = new UpdateService({
+      findOne: jest.fn().mockResolvedValue(release),
+    } as never);
+    const arm = await service.checkUpdate(
+      'all',
+      '1.0.0',
+      '1',
+      'direct',
+      'android',
+      'installation-12345678',
+      'arm64-v8a',
+    );
+    expect(arm.data.downloadUrl).toBe('https://example.com/arm64.apk');
+    expect(arm.data.sha256).toBe('a'.repeat(64));
+    expect(
+      (await service.checkUpdate('all', '1.0.0', '1')).data.downloadUrl,
+    ).toBe(release.url);
+  });
+});
+
+describe('paused release fallback', () => {
+  it('keeps older stable update available in the same channel', async () => {
+    const repo = {
+      findOne: jest
+        .fn()
+        .mockResolvedValueOnce(
+          version({ versionCode: 16, rolloutPercent: 0, cid: '321' }),
+        )
+        .mockResolvedValueOnce(version({ versionCode: 15, cid: '321' })),
+    };
+    const result = await new UpdateService(repo as never).checkUpdate(
+      '321',
+      '1.0.4',
+      '14',
+      'direct',
+      'android',
+    );
+    // android-direct is returned by synthetic fixture, but fallback uses its exact channel.
+    expect(result.data.versionCode).toBe('15');
+    expect(result.data.updateAvailable).toBe(true);
   });
 });

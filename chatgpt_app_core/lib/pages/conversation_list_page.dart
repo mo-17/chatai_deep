@@ -20,6 +20,7 @@ import 'package:chatgpt_app_core/model/assistant_model.dart';
 import 'package:chatgpt_app_core/model/conversation_model.dart';
 import 'package:chatgpt_app_core/model/project_model.dart';
 import 'package:chatgpt_app_core/pages/conversation_page.dart';
+import 'package:chatgpt_app_core/pages/account_usage_page.dart';
 import 'package:chatgpt_app_core/pages/agent_task_center_page.dart';
 import 'package:chatgpt_app_core/pages/ai_health_check_page.dart';
 import 'package:chatgpt_app_core/pages/ai_settings_page.dart';
@@ -255,14 +256,18 @@ class _ConversationListPageState extends State<ConversationListPage>
         children: [
           _projectBar,
           if (readiness?.showProactiveCard == true)
-            AIReadinessCard(
+            Flexible(
+                child: SingleChildScrollView(
+                    child: AIReadinessCard(
               state: readiness!.state,
               onRetry: () => unawaited(_refreshReadiness()),
               onConfigure: () => unawaited(_openAISettings()),
               onVerify: () => unawaited(_openAIHealthCheck()),
               onLogin: () => unawaited(LoginDao.logOut()),
               onDismiss: () => unawaited(_dismissReadinessCard()),
-            ),
+              onTrial: () => Navigator.push<void>(context,
+                  MaterialPageRoute(builder: (_) => const AccountUsagePage())),
+            ))),
           Expanded(child: _listView),
         ],
       ),

@@ -1,0 +1,41 @@
+{
+  "scope": "Voice runtime inputs only; not the full mixed-worktree APK source closure",
+  "files": [
+    {
+      "path": "chatgpt_app_core/lib/voice/speech_input.dart",
+      "sha256": "c19d443e86d42d0421572681b4b388445ad9df81154bd3b418aca5fb5fa3f99c"
+    },
+    {
+      "path": "chatgpt_app_core/lib/voice/voice_conversation_controller.dart",
+      "sha256": "b17e7cd5d1e85e5b1fca5dc1477554949572d89250105e458cb63b536b3f21a8"
+    },
+    {
+      "path": "chatgpt_app_core/lib/voice/voice_conversation_panel.dart",
+      "sha256": "8ae7a7eefc736c9444a1ed2654c965426904237728438e303eaad4713db831f6"
+    },
+    {
+      "path": "chatgpt_app_core/lib/pages/conversation_page.dart",
+      "sha256": "66ffbc729cf206e3f37424f782826f2f3e1daa687d96b080b0fe5ad0ee7b1208"
+    },
+    {
+      "path": "chatgpt_app_core/lib/widget/message_input_widget.dart",
+      "sha256": "f5c1566a01512b0ae93bfe7de685b7b262d67d63cefc1221ff9569029497cc6b"
+    },
+    {
+      "path": "chatgpt_app_core/lib/chat/application/read_aloud_service.dart",
+      "sha256": "55726edca03e71de947e66e2f5f1cf021ab78a89bf44611a250fce789830040a"
+    },
+    {
+      "path": "chatgpt_app_core/lib/chat/application/sherpa_onnx_read_aloud_service.dart",
+      "sha256": "ff51b8ed463da41d901f2115a03d0dc3db984e80f3b0594d43f2d33c3d33d71f"
+    },
+    {
+      "path": "chatgpt_flutter/android/app/src/main/AndroidManifest.xml",
+      "sha256": "7328c716f1e460cb7cf20028b94e22a494c4465bb74db2f45ae109f6fbd5c5a4"
+    },
+    {
+      "path": "chatgpt_flutter/pubspec.yaml",
+      "sha256": "842592659251a7aae14995152292427ebcbc544675e46aedd04f29472d44abf5"
+    }
+  ]
+}

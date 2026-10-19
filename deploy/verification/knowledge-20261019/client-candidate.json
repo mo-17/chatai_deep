@@ -1,0 +1,20 @@
+{
+  "versionName": "1.0.9",
+  "versionCode": 19,
+  "abis": [
+    "arm64-v8a",
+    "armeabi-v7a",
+    "x86_64"
+  ],
+  "bytes": 180799155,
+  "sha256": "017e149f5212cd8869cf1526aefc5b4acc01b8e6551d66c00fb361e443682f83",
+  "signerMatchesPrevious": true,
+  "signerSha256": "DAE075AF9ECF7BD3C7C8C92FE8FFAD855A610C37B8731B1DE931270FAF102C7F",
+  "onnxWeightsBundled": false,
+  "knowledgeUiInAot": true,
+  "backendHostInAot": true,
+  "candidatePath": "/tmp/chatai-client-knowledge19/aipu-1.0.9-19-universal.apk",
+  "published": false,
+  "physicalDeviceVerified": false,
+  "realModelQualityVerified": false
+}

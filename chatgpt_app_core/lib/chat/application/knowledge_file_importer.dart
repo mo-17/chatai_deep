@@ -1,3 +1,6 @@
+import 'dart:io';
+import 'package:syncfusion_flutter_pdf/pdf.dart';
+import 'package:chatgpt_app_core/knowledge/knowledge_library.dart';
 import 'package:chatgpt_app_core/chat/application/file_processor.dart';
 import 'package:chatgpt_app_core/chat/application/ocr_service.dart';
 import 'package:chatgpt_app_core/chat/domain/attachment_processing_limits.dart';
@@ -48,8 +51,9 @@ class KnowledgeFileImportResult {
 
 class KnowledgeFileImporter {
   final KnowledgeDao dao;
+  final String account;
 
-  const KnowledgeFileImporter(this.dao);
+  const KnowledgeFileImporter(this.dao, {this.account = 'guest'});
 
   Future<KnowledgeFileImportResult> importPaths(List<String> paths,
       {AttachmentProcessingLimits limits =
@@ -110,7 +114,46 @@ class KnowledgeFileImporter {
           reason: '未提取到文字',
         );
       }
-      final docId = await dao.addDocument(title, text);
+      final library =
+          await KnowledgeLibrary.create(dao.storage, account: account);
+      int? docId;
+      if (ext == 'pdf') {
+        final bytes = await File(path).readAsBytes();
+        final pdf = PdfDocument(inputBytes: bytes);
+        List<String> pages;
+        try {
+          if (pdf.pages.count > FileProcessor.maxPdfPages) {
+            throw const FormatException('PDF页数超过当前导入上限，请拆分后导入');
+          }
+          final extractor = PdfTextExtractor(pdf);
+          pages = [
+            for (var i = 0; i < pdf.pages.count; i++)
+              extractor.extractText(startPageIndex: i, endPageIndex: i)
+          ];
+        } finally {
+          pdf.dispose();
+        }
+        if (pages.join().trim().isEmpty) {
+          // OCR旧接口未返回逐页位置，不能伪造页码。
+          docId = await library.add(title, [text]);
+        } else {
+          if (pages.fold<int>(0, (n, p) => n + p.length) >
+              limits.normalized.maxTextChars) {
+            throw const FormatException('PDF文字超过导入预算，请拆分或提高限额');
+          }
+          docId = await library.add(title, pages, pdf: true);
+        }
+        if (docId != null) {
+          try {
+            await library.preservePdf(docId, bytes);
+          } catch (_) {
+            await dao.deleteDocument(docId);
+            rethrow;
+          }
+        }
+      } else {
+        docId = await library.add(title, [text]);
+      }
       return KnowledgeFileImportItem(
         path: path,
         name: name,

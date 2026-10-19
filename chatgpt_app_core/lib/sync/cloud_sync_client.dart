@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:convert';
+import 'dart:io';
 
 import 'package:chatgpt_app_core/capability/product_capabilities.dart';
 import 'package:chatgpt_app_core/db/hi_db_manager.dart';
@@ -24,6 +25,8 @@ class CloudSyncClient {
   final Duration timeout;
   final DateTime Function() nowProvider;
   final int maxPushBodyBytes;
+  final int maxRetries;
+  final Future<void> Function(Duration) retryDelay;
 
   static const int defaultMaxPushBodyBytes = 4 * 1024 * 1024;
   static const int maxPushChanges = 500;
@@ -35,6 +38,8 @@ class CloudSyncClient {
     http.Client? client,
     this.timeout = const Duration(seconds: 20),
     this.maxPushBodyBytes = defaultMaxPushBodyBytes,
+    this.maxRetries = 2,
+    this.retryDelay = Future<void>.delayed,
     DateTime Function()? nowProvider,
   })  : _client = client ?? http.Client(),
         _ownClient = client == null,
@@ -51,8 +56,8 @@ class CloudSyncClient {
     }
     final cursor = cursorStore.readCursor();
     final lastPushAt = cursorStore.readLastPushAt();
-    final localChanges =
-        await localSync.exportChanges(updatedAfter: lastPushAt);
+    final localChanges = await localSync.exportChanges(
+        updatedAfter: lastPushAt, knowledgeOrigin: accountGuard._origin);
     accountGuard.verify();
 
     final pulled = await _pullAllRemoteChanges(cursor, accountGuard);
@@ -80,7 +85,12 @@ class CloudSyncClient {
 
     final localConflictDetails = [
       for (final key in merge.conflicts)
-        SyncConflictDetail.fromKey(key, reason: 'local_same_timestamp'),
+        SyncConflictDetail.fromKey(key,
+            reason: key.startsWith('knowledge_document_v2:')
+                ? 'knowledge_revision_conflict'
+                : key.startsWith('knowledge_')
+                    ? 'knowledge_legacy_identity'
+                    : 'local_same_timestamp'),
     ];
     final conflictDetails = [
       ...localConflictDetails,
@@ -138,7 +148,7 @@ class CloudSyncClient {
       'limit': '$limit',
     });
     final resp =
-        await _client.get(uri, headers: headersBuilder()).timeout(timeout);
+        await _retryHttp(() => _client.get(uri, headers: headersBuilder()));
     final json = _decodeResponse(resp, '拉取云同步变更失败');
     final data = (json['data'] as Map?)?.cast<String, dynamic>() ?? const {};
     final changes = [
@@ -169,10 +179,21 @@ class CloudSyncClient {
     final accepted = <SyncChange>[];
     final conflicts = <SyncConflictDetail>[];
     var cursor = 0;
-    for (final batch in _pushBatches(changes)) {
-      accountGuard?.verify();
+    final batches = _pushBatches(changes).toList();
+    final guard = accountGuard ?? _LoginAccountGuard.capture();
+    for (final batch in batches) {
+      guard.verify();
       final result = await _pushBatch(batch);
-      accountGuard?.verify();
+      guard.verify();
+      await localSync.acknowledgeUploadedKnowledge([
+        for (final uploaded in batch)
+          if (result.accepted.any((accepted) =>
+              accepted.key == uploaded.key &&
+              accepted.updatedAt == uploaded.updatedAt &&
+              accepted.op == uploaded.op))
+            uploaded
+      ], origin: guard._origin);
+      guard.verify();
       accepted.addAll(result.accepted);
       conflicts.addAll(result.conflictDetails);
       if (result.cursor > cursor) cursor = result.cursor;
@@ -186,16 +207,14 @@ class CloudSyncClient {
 
   Future<PushSyncResult> _pushBatch(List<SyncChange> changes) async {
     final uri = BackendConst.buildUri('uapi/sync/push');
-    final resp = await _client
-        .post(
+    final resp = await _retryHttp(() => _client.post(
           uri,
           headers: {...headersBuilder(), 'content-type': 'application/json'},
           body: jsonEncode({
             'deviceId': cursorStore.deviceId,
             'changes': changes.map(_changeToJson).toList(),
           }),
-        )
-        .timeout(timeout);
+        ));
     final json = _decodeResponse(resp, '上传云同步变更失败');
     final data = (json['data'] as Map?)?.cast<String, dynamic>() ?? const {};
     return PushSyncResult(
@@ -243,13 +262,37 @@ class CloudSyncClient {
         }),
       );
 
+  Future<http.Response> _retryHttp(
+      Future<http.Response> Function() send) async {
+    final guard = _LoginAccountGuard.capture();
+    for (var attempt = 0;; attempt++) {
+      guard.verify();
+      try {
+        final response = await send().timeout(timeout);
+        guard.verify();
+        if (![408, 502, 503, 504].contains(response.statusCode) ||
+            attempt >= maxRetries) {
+          return response;
+        }
+      } on TimeoutException {
+        if (attempt >= maxRetries) rethrow;
+      } on SocketException {
+        if (attempt >= maxRetries) rethrow;
+      } on http.ClientException {
+        if (attempt >= maxRetries) rethrow;
+      }
+      await retryDelay(Duration(milliseconds: 400 * (attempt + 1)));
+      guard.verify();
+    }
+  }
+
   Map<String, dynamic> _decodeResponse(http.Response resp, String message) {
     final body = utf8.decode(resp.bodyBytes, allowMalformed: true);
     if (resp.statusCode != 200) {
       throw CloudSyncException('$message HTTP ${resp.statusCode}');
     }
     final json = jsonDecode(body) as Map<String, dynamic>;
-    if (json['code'] != 0) throw CloudSyncException('$message：$body');
+    if (json['code'] != 0) throw CloudSyncException('$message，请稍后重试');
     return json;
   }
 
@@ -286,14 +329,19 @@ class CloudSyncClient {
 
 final class _LoginAccountGuard {
   final String? _accountHash;
+  final String? _token;
+  final String _origin;
+  const _LoginAccountGuard._(this._accountHash, this._token, this._origin);
 
-  const _LoginAccountGuard._(this._accountHash);
-
-  factory _LoginAccountGuard.capture() =>
-      _LoginAccountGuard._(LoginDao.getAccountHash());
+  factory _LoginAccountGuard.capture() => _LoginAccountGuard._(
+      LoginDao.getAccountHash(),
+      LoginDao.getBoardingPass(),
+      BackendConst.buildUri('/').origin);
 
   void verify() {
-    if (LoginDao.getAccountHash() != _accountHash) {
+    if (LoginDao.getAccountHash() != _accountHash ||
+        LoginDao.getBoardingPass() != _token ||
+        BackendConst.buildUri('/').origin != _origin) {
       throw const LoginAccountChangedException();
     }
   }
@@ -331,18 +379,27 @@ class CloudSyncCoordinator {
     if (!shouldAutoSync(lastSyncAt, DateTime.now().millisecondsSinceEpoch)) {
       return;
     }
+    unawaited(runSync(auto: true).catchError((Object _) {
+      // 登录钩子只做机会性同步，失败不阻断登录流程。
+      return const CloudSyncResult(
+          pulled: 0, pushed: 0, stale: 0, conflicts: [], cursor: 0);
+    }));
+  }
+
+  static Future<CloudSyncResult> runSync({
+    Future<CloudSyncClient> Function() factory = createClient,
+    bool auto = false,
+  }) async {
+    if (_running) throw const CloudSyncException('同步正在进行，请稍后刷新');
     _running = true;
-    unawaited(() async {
-      final client = await createClient();
-      try {
-        await client.syncOnce(auto: true);
-      } catch (_) {
-        // 登录钩子只做机会性同步，失败不阻断登录流程。
-      } finally {
-        client.close();
-        _running = false;
-      }
-    }());
+    CloudSyncClient? client;
+    try {
+      client = await factory();
+      return await client.syncOnce(auto: auto);
+    } finally {
+      client?.close();
+      _running = false;
+    }
   }
 
   static bool shouldAutoSync(
@@ -534,7 +591,7 @@ class CloudSyncResult {
     this.auto = false,
   });
 
-  bool get hasConflict => conflicts.isNotEmpty;
+  bool get hasConflict => conflicts.isNotEmpty || conflictDetails.isNotEmpty;
 }
 
 class CloudSyncException implements Exception {

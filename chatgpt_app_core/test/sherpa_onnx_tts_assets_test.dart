@@ -6,7 +6,7 @@ import 'package:chatgpt_app_core/chat/application/sherpa_onnx_tts_assets.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 void main() {
-  test('内置 Matcha 中文模型声明首版随 app 打包的必需资源', () {
+  test('Matcha 模型声明兼容旧安装与按需模型包的必需资源', () {
     const model = BundledSherpaOnnxTtsModel.matchaZhBaker;
 
     expect(model.id, 'matcha-icefall-zh-baker');

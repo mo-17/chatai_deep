@@ -1,0 +1,36 @@
+[Unit]
+Description=ChatAI Deep API
+Wants=network-online.target
+After=network-online.target postgresql.service
+Requires=postgresql.service
+StartLimitIntervalSec=120
+StartLimitBurst=5
+
+[Service]
+Type=simple
+User=chatai
+Group=chatai
+WorkingDirectory=/opt/chatai-deep/current/chatgpt_backend
+EnvironmentFile=/etc/chatai-deep/backend.env
+Environment=NODE_OPTIONS=--max-old-space-size=384
+Environment=HOME=/var/lib/chatai-deep
+Environment=PATH=/opt/chatai-deep/node/bin:/usr/local/bin:/usr/bin:/bin
+Environment=NPM_CONFIG_CACHE=/var/cache/chatai-deep/npm
+ExecStart=/opt/chatai-deep/node/bin/node dist/src/main.js
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=45
+KillSignal=SIGTERM
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=strict
+ReadWritePaths=/var/lib/chatai-deep /var/cache/chatai-deep
+MemoryAccounting=true
+MemoryHigh=512M
+MemoryMax=640M
+TasksMax=128
+
+[Install]
+WantedBy=multi-user.target

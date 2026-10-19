@@ -8,6 +8,7 @@ import 'package:chatgpt_app_core/chat/application/read_aloud_service.dart';
 import 'package:chatgpt_app_core/chat/application/sherpa_onnx_tts_assets.dart';
 import 'package:chatgpt_app_core/chat/application/user_sherpa_onnx_tts_models.dart';
 import 'package:crypto/crypto.dart';
+import 'package:chatgpt_app_core/chat/application/downloadable_tts_models.dart';
 import 'package:flutter/services.dart';
 import 'package:openai_flutter/utils/ai_logger.dart';
 import 'package:path_provider/path_provider.dart';
@@ -35,13 +36,21 @@ class BundledSherpaOnnxAssetInstaller implements SherpaOnnxAssetInstaller {
   ) async {
     final base = await _baseDir();
     final root = Directory('${base.path}/tts_models/${model.id}');
+    final downloaded =
+        await DownloadableTtsModelStore(baseDir: _baseDir).resolve(model.id);
+    if (downloaded != null) return downloaded;
     await root.create(recursive: true);
     for (final assetKey in model.fileAssetKeys) {
       final relative = assetKey.substring('${model.rootAsset}/'.length);
       final target = File('${root.path}/$relative');
       if (await target.exists() && await target.length() > 0) continue;
       await target.parent.create(recursive: true);
-      final data = await _bundle.load(assetKey);
+      ByteData data;
+      try {
+        data = await _bundle.load(assetKey);
+      } catch (_) {
+        throw StateError('请先在 我的 → 离线语音模型 下载中文女声，下载后可离线使用');
+      }
       await target.writeAsBytes(
         data.buffer.asUint8List(data.offsetInBytes, data.lengthInBytes),
         flush: true,
@@ -343,7 +352,10 @@ class SherpaOnnxReadAloudService
 
   @override
   Future<void> speak(ReadAloudRequest request) async {
-    if (!_isSupported()) return;
+    if (!_isSupported()) {
+      if (request.throwOnError) throw StateError('当前设备不支持离线朗读');
+      return;
+    }
     final text = request.text.trim();
     if (text.isEmpty) return;
     try {
@@ -383,6 +395,7 @@ class SherpaOnnxReadAloudService
         request.onStage?.call(ReadAloudStage.completed);
       }
     } catch (e) {
+      if (request.throwOnError) rethrow;
       AILogger.log('sherpa-onnx speak failed: $e');
       request.onStage?.call(ReadAloudStage.completed);
     }

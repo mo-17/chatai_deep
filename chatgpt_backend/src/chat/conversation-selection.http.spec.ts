@@ -1,3 +1,4 @@
+import { AccessService } from '../access/access.service';
 import { Logger, ValidationPipe, type INestApplication } from '@nestjs/common';
 import { Test } from '@nestjs/testing';
 import { getRepositoryToken } from '@nestjs/typeorm';
@@ -134,6 +135,7 @@ describe('R2a conversation selection actual guarded HTTP, synthetic repositories
       controllers: [ChatController],
       providers: [
         ChatService,
+      { provide: AccessService, useValue: { admit: (_id: number, body: unknown) => Promise.resolve({ id: null, body }), finish: async () => {} } },
         ProviderCacheService,
         TokenAuthenticationService,
         { provide: getRepositoryToken(Conversation), useValue: convRepo },

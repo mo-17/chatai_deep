@@ -1,3 +1,4 @@
+import { AccessService } from '../access/access.service';
 import { existsSync, readFileSync, writeFileSync, statSync } from 'node:fs';
 import { resolve } from 'node:path';
 import type { AddressInfo } from 'node:net';
@@ -196,6 +197,7 @@ owned('R4a owner CRUD: actual AdminGuard HTTP and private PostgreSQL', () => {
     };
     const providers = [
       ChatService,
+      { provide: AccessService, useValue: { admit: (_id: number, body: unknown) => Promise.resolve({ id: null, body }), finish: async () => {} } },
       ProviderCacheService,
       TokenAuthenticationService,
       ...[

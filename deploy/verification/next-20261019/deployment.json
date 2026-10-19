@@ -1,0 +1,21 @@
+{
+  "activeRelease": "/opt/chatai-deep/releases/20261019T010046Z.HZTlt5UL",
+  "previousRelease": "/opt/chatai-deep/releases/20261019T002542Z.Bh12fxpT",
+  "backup": "/var/backups/chatai-deep/20261019T010112Z.sgzdT8zt",
+  "backupChecksumsPassed": true,
+  "databaseArchiveReadable": true,
+  "migrations": 12,
+  "sourceFilesVerified": 14,
+  "stagingRemoved": true,
+  "servicesActive": [
+    "chatai-deep-api",
+    "chatai-deep-admin",
+    "nginx",
+    "postgresql",
+    "certbot.timer"
+  ],
+  "remainingDiskGiBApprox": 4.1,
+  "sharedIP": true,
+  "cloudflarePlan": "Free",
+  "dnsAndRenewalUnchanged": true
+}

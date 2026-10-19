@@ -8,6 +8,8 @@ import 'package:chatgpt_app_core/db/hi_db_manager.dart';
 import 'package:chatgpt_app_core/model/conversation_model.dart';
 import 'package:chatgpt_app_core/sync/cloud_sync_client.dart';
 import 'package:chatgpt_app_core/sync/local_sync_service.dart';
+import 'package:chatgpt_app_core/knowledge/knowledge_library.dart';
+import 'package:chatgpt_app_core/knowledge/knowledge_sync.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:http/http.dart' as http;
 import 'package:http/testing.dart';
@@ -42,6 +44,124 @@ void main() {
       await databaseFactoryFfi.openDatabase('${dir.path}/db.sqlite'),
     );
   }
+
+  test('知识大资料上传中途失败可从确认批次继续，响应不回显正文也能记账', () async {
+    await _installTestAccount();
+    final db = await newDb();
+    final library = await KnowledgeLibrary.create(db, account: 'fixture');
+    await library.add('较大文档', [List.filled(50000, '资料正文。').join()]);
+    final changes = await KnowledgeSync.export(db, 'fixture');
+    var calls = 0;
+    http.Response accept(http.Request request) {
+      final rows = jsonDecode(request.body)['changes'] as List;
+      return http.Response(
+          jsonEncode({
+            'code': 0,
+            'data': {
+              'accepted': [
+                for (final c in rows)
+                  {
+                    'entity': c['entity'],
+                    'entityId': c['entityId'],
+                    'op': c['op'],
+                    'updatedAt': c['updatedAt']
+                  }
+              ],
+              'conflicts': [],
+              'cursor': 1
+            }
+          }),
+          200);
+    }
+
+    final firstHttp = MockClient((request) async {
+      calls++;
+      return calls == 3 ? http.Response('limited', 429) : accept(request);
+    });
+    final client = CloudSyncClient(
+        localSync: LocalSyncService(db),
+        cursorStore: MemorySyncCursorStore(),
+        headersBuilder: () => {},
+        maxPushBodyBytes: 200000,
+        maxRetries: 0,
+        client: firstHttp);
+    try {
+      await expectLater(
+          client.pushLocalChanges(changes), throwsA(isA<CloudSyncException>()));
+      expect(await db.db.query('tb_kb_upload_ack'), hasLength(2));
+      final remaining = await KnowledgeSync.export(db, 'fixture');
+      expect(remaining.length, changes.length - 2);
+      final secondHttp = MockClient((request) async => accept(request));
+      final retry = CloudSyncClient(
+          localSync: LocalSyncService(db),
+          cursorStore: MemorySyncCursorStore(),
+          headersBuilder: () => {},
+          maxPushBodyBytes: 200000,
+          client: secondHttp);
+      try {
+        await retry.pushLocalChanges(remaining);
+        expect(await KnowledgeSync.export(db, 'fixture'), isEmpty);
+      } finally {
+        retry.close();
+        secondHttp.close();
+      }
+      expect(
+          await KnowledgeSync.export(db, 'fixture',
+              origin: 'https://another-fixture.invalid'),
+          isNotEmpty);
+    } finally {
+      client.close();
+      firstHttp.close();
+      await db.db.close();
+    }
+  });
+  test('创建客户端失败后同步锁会释放，下一次可以重试', () async {
+    for (var attempt = 0; attempt < 2; attempt++) {
+      await expectLater(
+          CloudSyncCoordinator.runSync(
+              factory: () async => throw StateError('synthetic open failure')),
+          throwsStateError);
+    }
+  });
+
+  test('临时失败会重试，切号后不再发送旧请求', () async {
+    final auth = await _installTestAccount();
+    var sends = 0;
+    final client = CloudSyncClient(
+        localSync: LocalSyncService(await newDb()),
+        cursorStore: MemorySyncCursorStore(),
+        headersBuilder: () => {},
+        retryDelay: (_) async {},
+        client: MockClient((_) async {
+          sends++;
+          return sends == 1
+              ? http.Response('temporary', 503)
+              : http.Response(
+                  jsonEncode({
+                    'code': 0,
+                    'data': {'cursor': 1, 'changes': []}
+                  }),
+                  200);
+        }));
+    expect((await client.pullRemoteChanges()).cursor, 1);
+    expect(sends, 2);
+    var attempts = 0;
+    final switched = CloudSyncClient(
+        localSync: LocalSyncService(await newDb()),
+        cursorStore: MemorySyncCursorStore(),
+        headersBuilder: () => {},
+        retryDelay: (_) async {
+          await auth.writeProfile(
+              token: 'token-b', userName: 'b', extras: {'accountHash': 'b'});
+        },
+        client: MockClient((_) async {
+          attempts++;
+          return http.Response('temporary', 503);
+        }));
+    await expectLater(switched.pullRemoteChanges(),
+        throwsA(isA<LoginAccountChangedException>()));
+    expect(attempts, 1);
+  });
 
   test('pullRemoteChanges 解析服务端变更并推进游标', () async {
     final client = CloudSyncClient(

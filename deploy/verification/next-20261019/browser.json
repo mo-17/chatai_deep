@@ -1,0 +1,33 @@
+{
+  "monitorRendered": true,
+  "refreshControlsWorked": true,
+  "accessPolicyRendered": true,
+  "modelDialogCheckedAndClosedWithoutSave": true,
+  "geometry": {
+    "mainScrollWidth": 1160,
+    "mainWidth": 1160,
+    "pageScrollWidth": 1384,
+    "pageWidth": 1384,
+    "tableRows": 6,
+    "tableWidth": 1110
+  },
+  "sidebar": {
+    "bottom": 681,
+    "footerBottom": 681,
+    "height": 681,
+    "navContent": 800,
+    "navHeight": 552
+  },
+  "modal": {
+    "inputHeight": 20,
+    "inputTop": 212.5,
+    "labelBottom": 210.5
+  },
+  "consoleErrors": 0,
+  "loginButton": {
+    "color": "rgb(255, 255, 255)",
+    "height": 40,
+    "minWidth": "80px"
+  },
+  "logoutAndProtectedRedirect": true
+}

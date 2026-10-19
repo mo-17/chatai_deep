@@ -1,0 +1,37 @@
+{
+  "releaseId": 2,
+  "checks": [
+    {
+      "name": "正式体验版本保持暂停推送",
+      "passed": true
+    },
+    {
+      "name": "独立 QA 渠道灰度命中返回对应架构",
+      "passed": true
+    },
+    {
+      "name": "同一安装标识稳定命中",
+      "passed": true
+    },
+    {
+      "name": "灰度排除用户不收到新版",
+      "passed": true
+    },
+    {
+      "name": "旧客户端不参与灰度",
+      "passed": true
+    },
+    {
+      "name": "暂停后命中用户也不收到新版",
+      "passed": true
+    },
+    {
+      "name": "暂停新版仍保留上一全量版本供旧客户端更新",
+      "passed": true
+    },
+    {
+      "name": "当前体验包不会降级",
+      "passed": true
+    }
+  ]
+}

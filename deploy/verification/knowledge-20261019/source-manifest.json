@@ -1,0 +1,37 @@
+{
+  "scope": "Related runtime files only; APK is built from the existing mixed worktree, not an immutable clean Git release.",
+  "files": [
+    {
+      "path": "chatgpt_app_core/lib/knowledge/knowledge_evidence.dart",
+      "sha256": "330b59161dfb2301ff4a52857e38fe70e91b9628f03826ddce2d75dda07e0d82"
+    },
+    {
+      "path": "chatgpt_app_core/lib/knowledge/knowledge_repository.dart",
+      "sha256": "0cb1fe4092fd46c2d1f430e1d2959d7f481c8c47b98721e17e950713a2f4584c"
+    },
+    {
+      "path": "chatgpt_app_core/lib/knowledge/knowledge_assistant.dart",
+      "sha256": "17799f6a48dcd7e58878057899530615c124e8b35c91aa5a929a1464a000b4ff"
+    },
+    {
+      "path": "chatgpt_app_core/lib/knowledge/knowledge_runtime.dart",
+      "sha256": "7b6c789f425819c7be27d22534fd9ffed2748d395a1415c2c69c690c8689b394"
+    },
+    {
+      "path": "chatgpt_app_core/lib/pages/knowledge_assistant_page.dart",
+      "sha256": "55a6f022aca6b7bfa120bee919cd97234ceb36e9a2ced3de7bb32f5153ba8061"
+    },
+    {
+      "path": "chatgpt_app_core/lib/pages/knowledge_base_page.dart",
+      "sha256": "7f9df41ca9b10e5de4e8044120b265d905aa56fb9079032485ffaee8750a3d5f"
+    },
+    {
+      "path": "chatgpt_app_core/lib/pages/my_page.dart",
+      "sha256": "a9d7b9f2214cec8f5185fefb60c0887c3cb34b453a052c4f8b0eb9c0b428d9bd"
+    },
+    {
+      "path": "chatgpt_flutter/pubspec.yaml",
+      "sha256": "841d028d5d4b12a0f3a2c41424ab2cc1834c2e622149d35bd91f0fefabc95bbb"
+    }
+  ]
+}

@@ -7,6 +7,18 @@ import 'package:chatgpt_app_core/chat/application/sherpa_onnx_tts_assets.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 void main() {
+  test(
+      'strict continuous voice cannot silently succeed on unsupported offline engine',
+      () async {
+    final service = SherpaOnnxReadAloudService(
+        isSupported: () => false, playback: _FakePlayback());
+    await service.speak(const ReadAloudRequest(text: 'legacy'));
+    await expectLater(
+        service
+            .speak(const ReadAloudRequest(text: 'voice', throwOnError: true)),
+        throwsStateError);
+  });
+
   test('SherpaOnnxReadAloudService 安装模型、生成 wav 并播放', () async {
     final temp = await Directory.systemTemp.createTemp('sherpa_tts_test_');
     addTearDown(() => temp.delete(recursive: true));

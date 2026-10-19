@@ -80,8 +80,32 @@ void main() {
       ),
     );
 
-    expect(find.byKey(const ValueKey('anime_ai_readiness_card')),
-        findsOneWidget);
+    expect(
+        find.byKey(const ValueKey('anime_ai_readiness_card')), findsOneWidget);
     expect(find.text('待验证'), findsOneWidget);
+  });
+  testWidgets(
+      'trial entry is explicit and does not replace service configuration action',
+      (tester) async {
+    var trial = 0;
+    var configured = 0;
+    tester.view.devicePixelRatio = 1;
+    tester.view.physicalSize = const Size(320, 700);
+    addTearDown(tester.view.resetDevicePixelRatio);
+    addTearDown(tester.view.resetPhysicalSize);
+    await tester.pumpWidget(MaterialApp(
+        home: Scaffold(
+            body: SingleChildScrollView(
+                child: AIReadinessCard(
+      state: const AIReadyState(
+          status: AIReadyStatus.needsSetup, reasonCode: 'missing_api_key'),
+      onTrial: () => trial++,
+      onConfigure: () => configured++,
+    )))));
+    await tester.tap(find.text('了解官方试用'));
+    await tester.tap(find.text('去配置'));
+    expect(trial, 1);
+    expect(configured, 1);
+    expect(tester.takeException(), isNull);
   });
 }

@@ -248,6 +248,7 @@ suite(
         reader.getRepository(AiModel),
         {} as never,
         new ProviderCacheService(),
+    { admit: (_id: number, body: unknown) => Promise.resolve({ id: null, body }), finish: async () => {} } as never,
       );
       send = jest
         .spyOn(chat, 'callUpstream')

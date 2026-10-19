@@ -1,5 +1,8 @@
 import 'dart:convert';
 import 'dart:io';
+import 'dart:ffi';
+import 'dart:math';
+import 'package:flutter_hi_cache/flutter_hi_cache.dart';
 
 import 'package:chatgpt_app_core/config/app_distribution.dart';
 import 'package:chatgpt_app_core/model/apk_model.dart';
@@ -9,12 +12,32 @@ import 'package:login_sdk/dao/header_util.dart';
 import 'package:package_info_plus/package_info_plus.dart';
 
 class ApkUpdateDao {
+  static String _currentAbi() => switch (Abi.current()) {
+        Abi.androidArm64 => 'arm64-v8a',
+        Abi.androidArm => 'armeabi-v7a',
+        Abi.androidX64 => 'x86_64',
+        _ => '',
+      };
+  static String _installationId() {
+    final cache = HiCache.getInstance();
+    final existing = cache.get('update_installation_id_v1')?.toString();
+    if (existing != null && existing.length >= 16) return existing;
+    final random = Random.secure();
+    final value = List.generate(
+            16, (_) => random.nextInt(256).toRadixString(16).padLeft(2, '0'))
+        .join();
+    cache.setString('update_installation_id_v1', value);
+    return value;
+  }
+
   static Future<ApkModel> checkUpdate({
     PackageInfo? packageInfo,
     http.Client? client,
     AppDistribution? distribution,
     String? platform,
     Map<String, String> Function()? headersBuilder,
+    String? installationId,
+    String? abi,
   }) async {
     final info = packageInfo ?? await PackageInfo.fromPlatform();
     final resolvedDistribution = distribution ?? DistributionConfig.current;
@@ -26,10 +49,12 @@ class ApkUpdateDao {
         // platform-channel -> channel -> 321 -> all 的顺序回退；旧后台也
         // 仍能命中原有 321 记录。
         'cid': '321',
+        'installationId': installationId ?? _installationId(),
         'version': info.version,
         'versionCode': info.buildNumber,
         'channel': resolvedDistribution.updateChannel,
         'platform': platform ?? Platform.operatingSystem,
+        'abi': abi ?? _currentAbi(),
       });
       final response = await resolvedClient
           .get(uri, headers: (headersBuilder ?? hiHeaders)())

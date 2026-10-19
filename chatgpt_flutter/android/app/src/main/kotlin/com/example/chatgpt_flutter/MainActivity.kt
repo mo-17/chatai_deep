@@ -15,6 +15,7 @@ import org.devio.flutter.splashscreen.SplashScreen
 import java.lang.ref.WeakReference
 class MainActivity: FlutterActivity() {
     private var foreground = false
+    private var voiceAudioBridge: VoiceAudioBridge? = null
     private var permissionStart: Pair<MethodCall, MethodChannel.Result>? = null
     private var permissionGrantedWaiting = false
     private val handler = Handler(Looper.getMainLooper())
@@ -33,6 +34,8 @@ class MainActivity: FlutterActivity() {
 
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
+        KnowledgePdfBridge.attach(flutterEngine, this)
+        voiceAudioBridge = VoiceAudioBridge(this, flutterEngine)
         val activity = WeakReference(this)
         AgentBackgroundBridge.attach(flutterEngine).setMethodCallHandler { call, result ->
             when (call.method) {
@@ -99,6 +102,7 @@ class MainActivity: FlutterActivity() {
 
     override fun onRequestPermissionsResult(requestCode: Int, permissions: Array<out String>, grantResults: IntArray) {
         super.onRequestPermissionsResult(requestCode, permissions, grantResults)
+        if (voiceAudioBridge?.permissionResult(requestCode, grantResults) == true) return
         if (requestCode != 9038) return
         val waiting = permissionStart ?: return
         if (grantResults.firstOrNull() == PackageManager.PERMISSION_GRANTED) {
@@ -137,6 +141,8 @@ class MainActivity: FlutterActivity() {
     }
 
     override fun cleanUpFlutterEngine(flutterEngine: FlutterEngine) {
+        voiceAudioBridge?.close()
+        voiceAudioBridge = null
         cancelPermissionStart("activityDestroyed")
         AgentBackgroundBridge.detach(flutterEngine)
         super.cleanUpFlutterEngine(flutterEngine)

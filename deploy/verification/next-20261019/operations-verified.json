@@ -1,0 +1,44 @@
+{
+  "checkedAt": "2026-10-19T01:03:04.178698+00:00",
+  "phase": "verified",
+  "passed": 9,
+  "total": 9,
+  "checks": [
+    {
+      "name": "监控拒绝匿名访问",
+      "passed": true
+    },
+    {
+      "name": "监控拒绝普通用户",
+      "passed": true
+    },
+    {
+      "name": "管理员监控经可信公网 HTTPS 返回",
+      "passed": true
+    },
+    {
+      "name": "监控禁用缓存",
+      "passed": true
+    },
+    {
+      "name": "监控包含数据库与固定六类统计",
+      "passed": true
+    },
+    {
+      "name": "试用保持开启且预算保留",
+      "passed": true
+    },
+    {
+      "name": "邮箱资格与服务端风控已启用",
+      "passed": true
+    },
+    {
+      "name": "邮箱资格与测试阶段一致",
+      "passed": true
+    },
+    {
+      "name": "已验证邮箱显示剩余额度",
+      "passed": true
+    }
+  ]
+}

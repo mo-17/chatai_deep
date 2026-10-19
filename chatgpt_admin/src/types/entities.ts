@@ -30,6 +30,9 @@ export interface Banner {
 }
 
 export interface AppVersion {
+  rolloutPercent: number;
+  rolloutSalt: string;
+  artifacts: Record<string,{url:string;sha256:string;bytes:number}>;
   id: number;
   versionName: string;
   versionCode: number;

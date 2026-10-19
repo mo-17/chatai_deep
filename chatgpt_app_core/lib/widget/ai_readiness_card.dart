@@ -115,6 +115,7 @@ class AIReadinessCard extends StatelessWidget {
   final VoidCallback? onVerify;
   final VoidCallback? onLogin;
   final VoidCallback? onDismiss;
+  final VoidCallback? onTrial;
 
   const AIReadinessCard({
     super.key,
@@ -124,6 +125,7 @@ class AIReadinessCard extends StatelessWidget {
     this.onVerify,
     this.onLogin,
     this.onDismiss,
+    this.onTrial,
   });
 
   @override
@@ -169,6 +171,17 @@ class AIReadinessCard extends StatelessWidget {
             ],
           ),
           const SizedBox(height: 14),
+          if (onTrial != null) ...[
+            const Text('还没有 Key？登录并验证邮箱后，可查看官方文字试用与每日额度。'),
+            Align(
+              alignment: Alignment.centerLeft,
+              child: TextButton.icon(
+                onPressed: onTrial,
+                icon: const Icon(Icons.auto_awesome_outlined),
+                label: const Text('了解官方试用'),
+              ),
+            ),
+          ],
           Row(
             children: [
               AppStatusBadge(

@@ -1,3 +1,4 @@
+import 'dart:convert';
 import 'dart:io';
 
 import 'package:chatgpt_app_core/chat/application/file_processor.dart';
@@ -12,6 +13,10 @@ import 'package:chatgpt_app_core/util/hi_dialog.dart';
 import 'package:chatgpt_app_core/widget/app_visual_widgets.dart';
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
+import 'knowledge_assistant_page.dart';
+import 'team_knowledge_page.dart';
+import 'package:chatgpt_app_core/knowledge/knowledge_library.dart';
+import 'package:chatgpt_app_core/dao/ai_catalog_dao.dart';
 
 /// 知识库管理页（L4a）：导入文档（粘贴文本 / PDF、文本文件）/ 列表 / 删除。
 /// 导入的文档供绑定了「知识库检索」工具的助手按关键词检索作答。
@@ -27,6 +32,12 @@ class _KnowledgeBasePageState extends State<KnowledgeBasePage> {
   List<KnowledgeDoc> _docs = [];
   bool _loading = true;
   Object? _loadError;
+  KnowledgeLibrary? _library;
+  final _filter = TextEditingController();
+  String? _folder, _tag;
+  bool _includeArchived = false;
+  int _loadEpoch = 0;
+  late final _identity = AiCatalogIdentity.capture();
 
   @override
   void initState() {
@@ -49,6 +60,7 @@ class _KnowledgeBasePageState extends State<KnowledgeBasePage> {
       final dbManager =
           await HiDBManager.instance(dbName: HiDBManager.getAccountHash());
       _dao = await KnowledgeDao.create(dbManager);
+      _library = await KnowledgeLibrary.create(dbManager);
       if (!mounted) return;
       await _loadData();
     } catch (error) {
@@ -58,8 +70,88 @@ class _KnowledgeBasePageState extends State<KnowledgeBasePage> {
     }
   }
 
+  Future<void> _showConflicts() async {
+    final rows = await _library!.conflicts();
+    if (!mounted || !_identity.current) return;
+    final heads = <int, String?>{};
+    for (final row in rows) {
+      heads[row['id'] as int] = await _library!.headHash(row['uid'] as String);
+    }
+    if (!mounted || !_identity.current) return;
+    final chosen = await showModalBottomSheet<(int, String)>(
+        context: context,
+        isScrollControlled: true,
+        builder: (ctx) => SafeArea(
+            child: SizedBox(
+                height: 500,
+                child: ListView(padding: const EdgeInsets.all(16), children: [
+                  const Text('知识同步冲突',
+                      style:
+                          TextStyle(fontSize: 20, fontWeight: FontWeight.bold)),
+                  const Text('当前版本未被覆盖。比较外来快照后，可选择生成新修订，原有分支均保留在修订历史。'),
+                  if (rows.isEmpty) const Text('暂无待处理冲突'),
+                  for (final row in rows)
+                    Builder(builder: (_) {
+                      final record =
+                          jsonDecode(row['payload'] as String) as Map;
+                      final data = record['kind'] == 'document'
+                          ? record['snapshot'] as Map
+                          : jsonDecode(record['payload'] as String) as Map;
+                      final answer = record['kind'] == 'answer';
+                      final title = answer
+                          ? data['question'] as String
+                          : (data['document'] as Map)['title'] as String;
+                      final body = answer
+                          ? (data['claims'] as List)
+                              .map((c) => c['text'])
+                              .join('\n')
+                          : (data['chunks'] as List)
+                              .map((c) => c['content'])
+                              .join('\n\n');
+                      return ExpansionTile(title: Text(title), children: [
+                        SelectableText(body),
+                        if (!answer)
+                          TextButton(
+                              onPressed: () => Navigator.pop(
+                                  ctx, (row['id'] as int, 'copy')),
+                              child: const Text('另存为新文档')),
+                        if (!answer && heads[row['id']] != null)
+                          Wrap(children: [
+                            TextButton(
+                                onPressed: () => Navigator.pop(
+                                    ctx, (row['id'] as int, 'local')),
+                                child: const Text('保留本机，生成新修订')),
+                            TextButton(
+                                onPressed: () => Navigator.pop(
+                                    ctx, (row['id'] as int, 'incoming')),
+                                child: const Text('采用传入，生成新修订'))
+                          ]),
+                      ]);
+                    }),
+                ]))));
+    if (chosen == null || !mounted || !_identity.current) return;
+    try {
+      if (chosen.$2 == 'copy') {
+        await _library!.copyConflict(chosen.$1);
+      } else {
+        await _library!.resolveConflict(chosen.$1,
+            incoming: chosen.$2 == 'incoming', expectedHead: heads[chosen.$1]!);
+      }
+      await _loadData();
+    } catch (_) {
+      if (mounted) HiDialog.showSnackBar(context, '冲突副本未保存，原记录保留；正文可能已存在。');
+    }
+  }
+
   Future<void> _loadData() async {
-    final list = await _dao!.getDocuments();
+    if (!_identity.current) return;
+    final epoch = ++_loadEpoch;
+    final list = await _library!.list(
+        query: _filter.text,
+        folder: _folder,
+        tag: _tag,
+        includeArchived: _includeArchived);
+    if (!_identity.current || epoch != _loadEpoch) return;
     setState(() => _docs = list);
   }
 
@@ -70,10 +162,35 @@ class _KnowledgeBasePageState extends State<KnowledgeBasePage> {
         title: const Text('知识库'),
         centerTitle: true,
         actions: [
+          PopupMenuButton<String>(
+              tooltip: '知识库操作',
+              enabled: !_loading && _identity.current,
+              onSelected: (action) async {
+                if (action == 'team') {
+                  await Navigator.push(
+                      context,
+                      MaterialPageRoute(
+                          builder: (_) => const TeamKnowledgePage()));
+                } else if (action == 'conflicts') {
+                  await _showConflicts();
+                } else {
+                  await _rebuildVectorIndex();
+                }
+              },
+              itemBuilder: (_) => const [
+                    PopupMenuItem(value: 'team', child: Text('团队知识库')),
+                    PopupMenuItem(value: 'conflicts', child: Text('同步冲突')),
+                    PopupMenuItem(value: 'index', child: Text('重建检索索引'))
+                  ]),
           IconButton(
-            icon: const Icon(Icons.manage_search_outlined),
-            tooltip: '重建检索索引',
-            onPressed: _loading || _dao == null ? null : _rebuildVectorIndex,
+            icon: const Icon(Icons.fact_check_outlined),
+            tooltip: '可信知识助手',
+            onPressed: _loading || _dao == null
+                ? null
+                : () => Navigator.push<void>(
+                    context,
+                    MaterialPageRoute(
+                        builder: (_) => const KnowledgeAssistantPage())),
           ),
           // file_picker 暂无鸿蒙实现，OHOS 隐藏文件导入入口（粘贴文本仍可用）。
           if (Platform.operatingSystem != 'ohos')
@@ -107,7 +224,31 @@ class _KnowledgeBasePageState extends State<KnowledgeBasePage> {
         ),
       );
     }
-    return _docs.isEmpty ? _emptyView : _listView;
+    if (!_identity.current) return const Center(child: Text('账号已变化，请返回并重新打开'));
+    return Column(children: [
+      Padding(
+          padding: const EdgeInsets.all(12),
+          child: TextField(
+              controller: _filter,
+              decoration: const InputDecoration(
+                  prefixIcon: Icon(Icons.search), labelText: '搜索标题、文件夹或标签'),
+              onChanged: (_) => _loadData())),
+      SingleChildScrollView(
+          scrollDirection: Axis.horizontal,
+          child: Row(children: [
+            TextButton(
+                onPressed: () => _chooseFilter(),
+                child: Text('范围：${_folder ?? '全部文件夹'} / ${_tag ?? '全部标签'}')),
+            FilterChip(
+                label: const Text('显示失效资料'),
+                selected: _includeArchived,
+                onSelected: (v) {
+                  setState(() => _includeArchived = v);
+                  _loadData();
+                }),
+          ])),
+      Expanded(child: _docs.isEmpty ? _emptyView : _listView),
+    ]);
   }
 
   Widget get _emptyView => AppVisualEmptyState(
@@ -143,7 +284,10 @@ class _KnowledgeBasePageState extends State<KnowledgeBasePage> {
             leading:
                 const CircleAvatar(child: Icon(Icons.description_outlined)),
             title: Text(d.title, maxLines: 1, overflow: TextOverflow.ellipsis),
-            subtitle: Text('${d.chunkCount} 个片段'),
+            subtitle: Text(
+                '${d.folder.isEmpty ? '未分类' : d.folder} · v${d.revision} · '
+                '${d.chunkCount} 个片段${d.archived ? ' · 已失效' : ''}\n${d.tags.join(' · ')}'),
+            onTap: () => _manageDocument(d),
             trailing: IconButton(
               icon: const Icon(Icons.delete_outline),
               tooltip: '删除',
@@ -186,7 +330,8 @@ class _KnowledgeBasePageState extends State<KnowledgeBasePage> {
     final limits = AISettingsDao.load().attachmentProcessingLimits;
     final result = await _withLoading(
       paths.length == 1 ? '正在导入文件…' : '正在导入 ${paths.length} 个文件…',
-      () => KnowledgeFileImporter(_dao!).importPaths(paths, limits: limits),
+      () => KnowledgeFileImporter(_dao!, account: _identity.account ?? 'guest')
+          .importPaths(paths, limits: limits),
     );
     if (!mounted) return;
     HiDialog.showSnackBar(context, result.message);
@@ -194,7 +339,7 @@ class _KnowledgeBasePageState extends State<KnowledgeBasePage> {
     if (result.imported > 0) await _loadData();
   }
 
-  void _rebuildVectorIndex() async {
+  Future<void> _rebuildVectorIndex() async {
     if (_dao == null) return;
     final stats = await _withLoading(
       '正在重建检索索引…',
@@ -314,7 +459,14 @@ class _KnowledgeBasePageState extends State<KnowledgeBasePage> {
     titleCtl.dispose();
     contentCtl.dispose();
     if (ok != true) return;
-    final docId = await _dao!.addDocument(title, text);
+    if (!_identity.current) return;
+    int? docId;
+    try {
+      docId = await _library!.add(title, [text]);
+    } catch (e) {
+      if (mounted) HiDialog.showSnackBar(context, e.toString());
+      return;
+    }
     if (!mounted) return;
     HiDialog.showSnackBar(
         context,
@@ -329,7 +481,7 @@ class _KnowledgeBasePageState extends State<KnowledgeBasePage> {
       context: context,
       builder: (ctx) => AlertDialog(
         title: const Text('删除文档'),
-        content: Text('确定删除「${d.title}」及其全部片段吗？'),
+        content: Text('将「${d.title}」从检索库移除？已有修订、问答及原文快照保留，删除标记将参与个人同步。'),
         actions: [
           TextButton(
               onPressed: () => Navigator.pop(ctx, false),
@@ -340,10 +492,150 @@ class _KnowledgeBasePageState extends State<KnowledgeBasePage> {
         ],
       ),
     );
-    if (confirmed != true || d.id == null) return;
+    if (confirmed != true || d.id == null || !_identity.current) return;
     await _dao!.deleteDocument(d.id!);
     if (!mounted) return;
     HiDialog.showSnackBar(context, '已删除「${d.title}」');
     await _loadData();
+  }
+
+  Future<void> _chooseFilter() async {
+    final all = await _dao!.getDocuments();
+    if (!mounted || !_identity.current) return;
+    final folders = all.map((d) => d.folder).where((f) => f.isNotEmpty).toSet();
+    final tags = all.expand((d) => d.tags).toSet();
+    await showDialog<void>(
+        context: context,
+        builder: (ctx) => SimpleDialog(title: const Text('筛选资料'), children: [
+              SimpleDialogOption(
+                  onPressed: () {
+                    _folder = null;
+                    _tag = null;
+                    Navigator.pop(ctx);
+                  },
+                  child: const Text('全部资料')),
+              for (final f in folders)
+                SimpleDialogOption(
+                    onPressed: () {
+                      _folder = f;
+                      _tag = null;
+                      Navigator.pop(ctx);
+                    },
+                    child: Text('文件夹：$f')),
+              for (final t in tags)
+                SimpleDialogOption(
+                    onPressed: () {
+                      _tag = t;
+                      _folder = null;
+                      Navigator.pop(ctx);
+                    },
+                    child: Text('标签：$t')),
+            ]));
+    if (mounted) await _loadData();
+  }
+
+  Future<void> _manageDocument(KnowledgeDoc doc) async {
+    final folder = TextEditingController(text: doc.folder);
+    final tags = TextEditingController(text: doc.tags.join(','));
+    var archived = doc.archived;
+    final action = await showDialog<String>(
+        context: context,
+        builder: (ctx) => StatefulBuilder(
+            builder: (ctx, update) => AlertDialog(
+                    title: Text(doc.title),
+                    content: SingleChildScrollView(
+                        child:
+                            Column(mainAxisSize: MainAxisSize.min, children: [
+                      TextField(
+                          controller: folder,
+                          maxLength: 100,
+                          decoration: const InputDecoration(labelText: '文件夹')),
+                      TextField(
+                          controller: tags,
+                          decoration:
+                              const InputDecoration(labelText: '标签（逗号分隔）')),
+                      CheckboxListTile(
+                          value: archived,
+                          title: const Text('标记失效（不参与问答）'),
+                          onChanged: (v) => update(() => archived = v == true)),
+                    ])),
+                    actions: [
+                      TextButton(
+                          onPressed: () => Navigator.pop(ctx, 'history'),
+                          child: const Text('修订历史')),
+                      TextButton(
+                          onPressed: () => Navigator.pop(ctx, 'revise'),
+                          child: const Text('更新正文')),
+                      FilledButton(
+                          onPressed: () => Navigator.pop(ctx, 'save'),
+                          child: const Text('保存')),
+                    ])));
+    final f = folder.text;
+    final ts = tags.text.split(RegExp('[,，]'));
+    folder.dispose();
+    tags.dispose();
+    if (action == null || !mounted || !_identity.current) return;
+    try {
+      if (action == 'save') {
+        await _library!.organize(doc, folder: f, tags: ts, archived: archived);
+      }
+      if (action == 'history') {
+        final rows = await _library!.versions(doc);
+        if (!mounted || !_identity.current) return;
+        await showModalBottomSheet<void>(
+            context: context,
+            isScrollControlled: true,
+            builder: (ctx) => SafeArea(
+                child: SizedBox(
+                    height: MediaQuery.sizeOf(ctx).height * .75,
+                    child: ListView(children: [
+                      for (final r in rows)
+                        ExpansionTile(
+                            title: Text(
+                                'v${(r['document'] as Map)['revision']} · ${doc.title}'),
+                            children: [
+                              Padding(
+                                  padding: const EdgeInsets.all(16),
+                                  child: SelectableText((r['chunks'] as List)
+                                      .map((c) => c['content'])
+                                      .join('\n\n')))
+                            ])
+                    ]))));
+      }
+      if (action == 'revise') {
+        if (!mounted || !_identity.current) return;
+        final ctl = TextEditingController();
+        final ok = await showDialog<bool>(
+            context: context,
+            builder: (ctx) => AlertDialog(
+                    title: const Text('导入新的文字修订'),
+                    content: TextField(
+                        controller: ctl,
+                        minLines: 5,
+                        maxLines: 12,
+                        decoration: const InputDecoration(
+                            hintText: '旧版本及历史引用会保留；新正文不继承PDF页码')),
+                    actions: [
+                      TextButton(
+                          onPressed: () => Navigator.pop(ctx, false),
+                          child: const Text('取消')),
+                      FilledButton(
+                          onPressed: () => Navigator.pop(ctx, true),
+                          child: const Text('创建新修订'))
+                    ]));
+        final text = ctl.text;
+        ctl.dispose();
+        if (ok == true && _identity.current) await _library!.revise(doc, text);
+      }
+      if (mounted) await _loadData();
+    } catch (e) {
+      if (mounted) HiDialog.showSnackBar(context, e.toString());
+    }
+  }
+
+  @override
+  void dispose() {
+    _filter.dispose();
+    super.dispose();
   }
 }

@@ -4,6 +4,10 @@ import 'package:chatgpt_app_core/capability/product_capabilities.dart';
 import 'package:chatgpt_app_core/data/knowledge_chunker.dart';
 import 'package:chatgpt_app_core/db/hi_db_manager.dart';
 import 'package:chatgpt_app_core/db/table_name.dart';
+import 'package:chatgpt_app_core/db/schema_guard.dart';
+import 'package:chatgpt_app_core/util/uuid_v4.dart';
+import 'package:crypto/crypto.dart';
+import 'package:sqflite/sqflite.dart';
 import 'package:chatgpt_app_core/model/knowledge_model.dart';
 import 'package:openai_flutter/utils/ai_logger.dart';
 
@@ -74,25 +78,81 @@ class KnowledgeDao implements IKnowledge, ITable {
         ', docId integer not null, primary key(projectId, docId));');
     await storage.db.execute(
         'create index if not exists tb_project_kb_doc_idx on tb_project_kb(docId);');
+    await SchemaGuard.ensureColumns(storage.db,
+        table: 'tb_kb_doc',
+        columns: const {
+          'uid': 'text',
+          'revision': 'integer not null default 1',
+          'folder': "text not null default ''",
+          'tags': "text not null default '[]'",
+          'contentHash': "text not null default ''",
+          'updatedAt': 'integer not null default 0',
+          'archived': 'integer not null default 0',
+          'sourceKind': "text not null default 'text'",
+          'sourceAsset': "text not null default ''",
+          'syncParent': "text not null default ''",
+        });
+    await SchemaGuard.ensureColumns(storage.db,
+        table: 'tb_kb_chunk', columns: const {'pageNumber': 'integer'});
+    final legacy = await storage.db
+        .query('tb_kb_doc', columns: ['id'], where: "uid is null or uid = ''");
+    for (final row in legacy) {
+      await storage.db.update('tb_kb_doc', {'uid': generateUuidV4()},
+          where: "id = ? and (uid is null or uid = '')",
+          whereArgs: [row['id']]);
+    }
+    await storage.db.rawUpdate(
+        'update tb_kb_doc set updatedAt = createdAt where updatedAt = 0');
+    await storage.db.execute(
+        'create table if not exists tb_kb_deleted (uid text primary key, updatedAt integer not null)');
     return KnowledgeDao._(storage);
   }
 
   @override
   Future<int?> addDocument(String title, String text) async {
-    final chunks = KnowledgeChunker.split(text);
+    return addPagedDocument(title, [text], isPdf: false);
+  }
+
+  Future<int?> addPagedDocument(String title, List<String> pages,
+      {bool isPdf = true, bool rejectDuplicates = false}) async {
+    final chunks = <(String, int?)>[
+      for (var page = 0; page < pages.length; page++)
+        for (final chunk in KnowledgeChunker.split(pages[page]))
+          (chunk, isPdf ? page + 1 : null),
+    ];
     if (chunks.isEmpty) return null;
     final now = DateTime.now().millisecondsSinceEpoch;
-    final docId = await storage.db.insert('tb_kb_doc', {
-      'title': title.trim().isEmpty ? '未命名文档' : title.trim(),
-      'chunkCount': chunks.length,
-      'createdAt': now,
+    final hash =
+        sha256.convert(utf8.encode(pages.join('\n\n').trim())).toString();
+    final docId = await storage.db.transaction((txn) async {
+      if (rejectDuplicates) {
+        final same = await txn.query('tb_kb_doc',
+            where: 'contentHash = ?', whereArgs: [hash], limit: 1);
+        if (same.isNotEmpty) {
+          throw FormatException('内容已存在于「${same.single['title']}」，未重复导入');
+        }
+      }
+      final docId = await txn.insert('tb_kb_doc', {
+        'title': title.trim().isEmpty ? '未命名文档' : title.trim(),
+        'chunkCount': chunks.length,
+        'createdAt': now,
+        'updatedAt': now,
+        'uid': generateUuidV4(),
+        'contentHash': hash,
+        'sourceKind': isPdf ? 'pdf' : 'text',
+      });
+      final batch = txn.batch();
+      for (var i = 0; i < chunks.length; i++) {
+        batch.insert('tb_kb_chunk', {
+          'docId': docId,
+          'seq': i,
+          'content': chunks[i].$1,
+          'pageNumber': chunks[i].$2
+        });
+      }
+      await batch.commit(noResult: true);
+      return docId;
     });
-    final batch = storage.db.batch();
-    for (var i = 0; i < chunks.length; i++) {
-      batch.insert(
-          'tb_kb_chunk', {'docId': docId, 'seq': i, 'content': chunks[i]});
-    }
-    await batch.commit(noResult: true);
     await rebuildVectorIndex(docId: docId);
     AILogger.log('kb add doc "$title" -> $docId (${chunks.length} chunks)');
     return docId;
@@ -106,6 +166,17 @@ class KnowledgeDao implements IKnowledge, ITable {
 
   @override
   Future<int> deleteDocument(int docId) async {
+    final docs = await storage.db.query('tb_kb_doc',
+        columns: ['uid'], where: 'id = ?', whereArgs: [docId]);
+    if (docs.isNotEmpty && (docs.single['uid'] as String? ?? '').isNotEmpty) {
+      await storage.db.insert(
+          'tb_kb_deleted',
+          {
+            'uid': docs.single['uid'],
+            'updatedAt': DateTime.now().millisecondsSinceEpoch
+          },
+          conflictAlgorithm: ConflictAlgorithm.replace);
+    }
     await storage.db
         .delete('tb_kb_chunk', where: 'docId = ?', whereArgs: [docId]);
     await storage.db
@@ -177,6 +248,7 @@ class KnowledgeDao implements IKnowledge, ITable {
     final useProjectScope = scopedDocIds.isNotEmpty;
     // 多词「与」：每个词一个 LIKE，全部命中才返回。
     final clauses = <String>[
+      'd.archived = 0',
       ...List.filled(terms.length, 'c.content like ?'),
       if (useProjectScope)
         'c.docId in (${List.filled(scopedDocIds.length, '?').join(',')})',
@@ -208,8 +280,8 @@ class KnowledgeDao implements IKnowledge, ITable {
       {required int limit, required List<int> scopedDocIds}) async {
     final useProjectScope = scopedDocIds.isNotEmpty;
     final where = useProjectScope
-        ? 'where c.docId in (${List.filled(scopedDocIds.length, '?').join(',')})'
-        : '';
+        ? 'where d.archived = 0 and c.docId in (${List.filled(scopedDocIds.length, '?').join(',')})'
+        : 'where d.archived = 0';
     final rows = await storage.db.rawQuery(
       'select c.id as chunkId, c.docId as docId, c.content as content, '
       'd.title as title, v.vector as vector from tb_kb_chunk c '

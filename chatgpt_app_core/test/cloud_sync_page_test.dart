@@ -37,7 +37,7 @@ void main() {
     await tester.pumpAndSettle();
 
     expect(find.textContaining('同步完成（手动）：拉取 2 条，上传 1 条'), findsOneWidget);
-    expect(find.textContaining('云端游标 9'), findsOneWidget);
+    expect(find.textContaining('未自动覆盖冲突内容'), findsOneWidget);
     expect(find.textContaining('冲突：助手 a1：同时间内容不同'), findsOneWidget);
     expect(find.textContaining('上次同步：2026-07-01'), findsOneWidget);
   });

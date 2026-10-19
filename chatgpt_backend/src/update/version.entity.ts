@@ -37,6 +37,15 @@ export class AppVersion {
   @Column({ default: true })
   enabled: boolean;
 
+  @Column({ type: 'jsonb', default: {} })
+  artifacts: Record<string, { url: string; sha256: string; bytes: number }>;
+
+  @Column({ default: 100 })
+  rolloutPercent: number;
+
+  @Column({ default: '' })
+  rolloutSalt: string;
+
   @CreateDateColumn()
   createTime: Date;
 

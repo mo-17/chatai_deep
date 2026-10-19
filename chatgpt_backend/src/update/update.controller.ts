@@ -12,6 +12,8 @@ export class UpdateController {
     @Query('versionCode') versionCode?: string,
     @Query('channel') channel?: string,
     @Query('platform') platform?: string,
+    @Query('installationId') installationId?: string,
+    @Query('abi') abi?: string,
   ) {
     return this.updateService.checkUpdate(
       cid || 'all',
@@ -19,6 +21,8 @@ export class UpdateController {
       versionCode,
       channel,
       platform,
+      installationId,
+      abi,
     );
   }
 }

@@ -23,6 +23,8 @@ import 'package:chatgpt_app_core/db/assistant_memory_dao.dart';
 import 'package:chatgpt_app_core/db/conversation_dao.dart';
 import 'package:chatgpt_app_core/db/personal_memory_dao.dart';
 import 'package:chatgpt_app_core/backup/personal_memory_backup.dart';
+import 'package:chatgpt_app_core/knowledge/knowledge_transfer.dart';
+import 'package:chatgpt_app_core/knowledge/knowledge_library.dart';
 import 'package:chatgpt_app_core/db/db_migration.dart';
 import 'package:chatgpt_app_core/db/favorite_dao.dart';
 import 'package:chatgpt_app_core/db/hi_db_manager.dart';
@@ -414,7 +416,7 @@ class BackupTableConflict {
 /// 因此可以用 sqflite_common_ffi 内存库做 round-trip 单测。
 class BackupService {
   /// 备份格式版本。导入时大于本值则拒绝（新版本备份导入旧 app）。
-  static const int formatVersion = 13;
+  static const int formatVersion = 14;
 
   static const _kManifest = 'manifest.json';
   static const _kConversations = 'conversations.json';
@@ -590,6 +592,8 @@ class BackupService {
     );
     final assistantMemories = memoryExport.rows;
     final personalRows = await PersonalMemoryBackup.read(storage.db);
+    final knowledgeWorkbench =
+        await KnowledgeTransfer.read(storage, accountHash);
     final avatarFiles = await _collectAvatarFiles([
       ...conversations,
       ...storyPersonas,
@@ -639,6 +643,7 @@ class BackupService {
       _kWorkspaceRevisions: _jsonBytes(workspace.revisions),
       _kFavorites: _jsonBytes(favorites),
       _kProjects: _jsonBytes(projects),
+      KnowledgeTransfer.file: _jsonBytes(knowledgeWorkbench),
       _kKnowledgeDocs: _jsonBytes(knowledgeDocs),
       _kKnowledgeChunks: _jsonBytes(knowledgeChunks),
       _kProjectKnowledge: _jsonBytes(projectKnowledge),
@@ -676,6 +681,7 @@ class BackupService {
           entry.value: personalRows[entry.key]!.length,
         'favorites': favorites.length,
         'projects': projects.length,
+        'knowledgeWorkbench': knowledgeWorkbench.length,
         'knowledgeDocs': knowledgeDocs.length,
         'knowledgeChunks': knowledgeChunks.length,
         'projectKnowledge': projectKnowledge.length,
@@ -753,6 +759,9 @@ class BackupService {
             ? _readRows(archive, file, strict: true)
             : <Map<String, dynamic>>[],
     }, messages: messages, conversations: conversations);
+    final knowledgeWorkbench = KnowledgeTransfer.validate(version >= 14
+        ? _readRows(archive, KnowledgeTransfer.file, strict: true)
+        : <Map<String, dynamic>>[]);
     final favorites = _readRowsForVersion(archive, _kFavorites, version);
     final projects = _readRowsForVersion(archive, _kProjects, version);
     final knowledgeDocs =
@@ -792,6 +801,7 @@ class BackupService {
             entry.key: entry.value.length,
         _kFavorites: favorites.length,
         _kProjects: projects.length,
+        if (version >= 14) KnowledgeTransfer.file: knowledgeWorkbench.length,
         _kKnowledgeDocs: knowledgeDocs.length,
         _kKnowledgeChunks: knowledgeChunks.length,
         _kProjectKnowledge: projectKnowledge.length,
@@ -980,6 +990,9 @@ class BackupService {
             ? _readRows(archive, file, strict: true)
             : <Map<String, dynamic>>[],
     }, messages: messages, conversations: conversations);
+    final knowledgeWorkbench = KnowledgeTransfer.validate(version >= 14
+        ? _readRows(archive, KnowledgeTransfer.file, strict: true)
+        : <Map<String, dynamic>>[]);
     final favorites = _readRowsForVersion(archive, _kFavorites, version);
     final projects = _readRowsForVersion(archive, _kProjects, version);
     final knowledgeDocs =
@@ -1019,6 +1032,7 @@ class BackupService {
             entry.key: entry.value.length,
         _kFavorites: favorites.length,
         _kProjects: projects.length,
+        if (version >= 14) KnowledgeTransfer.file: knowledgeWorkbench.length,
         _kKnowledgeDocs: knowledgeDocs.length,
         _kKnowledgeChunks: knowledgeChunks.length,
         _kProjectKnowledge: projectKnowledge.length,
@@ -1084,6 +1098,7 @@ class BackupService {
         assistants: assistants,
         assistantMemories: normalizedAssistantMemories,
         personalRows: personalRows,
+        knowledgeWorkbench: knowledgeWorkbench,
         skillCatalog: skillCatalog,
         favorites: favorites,
         knowledgeDocs: knowledgeDocs,
@@ -1127,6 +1142,8 @@ class BackupService {
     }
     if (mode == BackupImportMode.knowledgeBaseOnly) {
       return _importKnowledgeBaseOnly(
+        accountHash: accountHash,
+        knowledgeWorkbench: knowledgeWorkbench,
         knowledgeDocs: knowledgeDocs,
         knowledgeChunks: knowledgeChunks,
         projectKnowledge: projectKnowledge,
@@ -1274,6 +1291,7 @@ class BackupService {
     var insertedStoryArtifactRevisions = 0;
     var fixedTranslationTaskOutputRoomRefs = 0;
     final resources = _BackupResourceCoordinator();
+    await _stageKnowledgeAssets(resources, knowledgeWorkbench, accountHash);
     late final int generatedImageAssets;
     try {
       await _restoreAttachmentAssets(
@@ -1459,6 +1477,7 @@ class BackupService {
         insertedStoryArtifactRevisions++;
       }
       await batch.commit(noResult: true);
+      await KnowledgeTransfer.restore(txn, knowledgeWorkbench, overwrite: true);
       restoredPersonalMemories = await PersonalMemoryBackup.restore(
           txn, personalRows,
           overwrite: true);
@@ -1659,6 +1678,7 @@ class BackupService {
     required List<Map<String, dynamic>> assistants,
     required List<Map<String, dynamic>> assistantMemories,
     required Map<String, List<Map<String, dynamic>>> personalRows,
+    required List<Map<String, dynamic>> knowledgeWorkbench,
     required List<Map<String, dynamic>> skillCatalog,
     required List<Map<String, dynamic>> favorites,
     required List<Map<String, dynamic>> knowledgeDocs,
@@ -1739,6 +1759,7 @@ class BackupService {
     var rekeyedAssistantMemories = 0;
 
     final resources = _BackupResourceCoordinator();
+    await _stageKnowledgeAssets(resources, knowledgeWorkbench, accountHash);
     late final int generatedImageAssets;
     try {
       await _restoreAttachmentAssets(
@@ -2034,14 +2055,28 @@ class BackupService {
         await txn.insert('tb_favorite', _withoutId(row));
       }
 
+      final reusedKnowledgeIds = <int>{};
       for (final row in knowledgeDocs) {
         final oldId = _intValue(row['id']);
+        final uid = row['uid'] as String? ?? '';
+        final same = uid.isEmpty
+            ? const <Map<String, Object?>>[]
+            : await txn.query('tb_kb_doc', where: 'uid = ?', whereArgs: [uid]);
+        if (same.isNotEmpty) {
+          if (oldId != null) {
+            docIdMap[oldId] = same.first['id'] as int;
+            reusedKnowledgeIds.add(oldId);
+          }
+          // 当前正文保留，外来完整修订进入修订/冲突记录供用户核对。
+          continue;
+        }
         final newId = await txn.insert('tb_kb_doc', _withoutId(row));
         if (oldId != null) docIdMap[oldId] = newId;
       }
 
       for (final row in knowledgeChunks) {
         final oldDocId = _intValue(row['docId']);
+        if (reusedKnowledgeIds.contains(oldDocId)) continue;
         final newDocId = oldDocId == null ? null : docIdMap[oldDocId];
         if (newDocId == null) {
           skippedChunks++;
@@ -2124,6 +2159,8 @@ class BackupService {
           whereArgs: [newId],
         );
       }
+      await KnowledgeTransfer.restore(txn, knowledgeWorkbench,
+          overwrite: false);
       insertedPersonalMemories = await PersonalMemoryBackup.restore(
           txn, personalRows,
           overwrite: false, cidMap: cidMap);
@@ -2328,6 +2365,8 @@ class BackupService {
   }
 
   Future<BackupRestoreResult> _importKnowledgeBaseOnly({
+    required String accountHash,
+    required List<Map<String, dynamic>> knowledgeWorkbench,
     required List<Map<String, dynamic>> knowledgeDocs,
     required List<Map<String, dynamic>> knowledgeChunks,
     required List<Map<String, dynamic>> projectKnowledge,
@@ -2355,6 +2394,7 @@ class BackupService {
     }
 
     final resources = _BackupResourceCoordinator();
+    await _stageKnowledgeAssets(resources, knowledgeWorkbench, accountHash);
     await _runResourceTransaction(resources, (txn) async {
       final batch = txn.batch();
       batch.delete('tb_project_kb');
@@ -2370,6 +2410,7 @@ class BackupService {
         batch.insert('tb_project_kb', row);
       }
       await batch.commit(noResult: true);
+      await KnowledgeTransfer.restore(txn, knowledgeWorkbench, overwrite: true);
     }, accountGuard: accountGuard);
 
     AILogger.log('backup import knowledge only: ${knowledgeDocs.length} docs'
@@ -2438,6 +2479,7 @@ class BackupService {
     for (final name in [
       ..._v11RowCountKeys.keys,
       if (version >= 12) ...PersonalMemoryBackup.rowFiles.keys,
+      if (version >= 14) KnowledgeTransfer.file,
       _kSettings
     ]) {
       if (!entries.containsKey(name)) {
@@ -2462,6 +2504,8 @@ class BackupService {
       if ((manifest['formatVersion'] as int) >= 12)
         for (final entry in PersonalMemoryBackup.rowFiles.entries)
           entry.value: rowCounts[entry.key] ?? -1,
+      if ((manifest['formatVersion'] as int) >= 14)
+        'knowledgeWorkbench': rowCounts[KnowledgeTransfer.file] ?? -1,
       for (final entry in _v11ResourceCountKeys.entries)
         entry.value: archive.files
             .where((file) => file.isFile && file.name.startsWith(entry.key))
@@ -2569,6 +2613,7 @@ class BackupService {
     await FavoriteDao.create(storage);
     await ProjectDao.create(storage);
     await KnowledgeDao.create(storage);
+    await KnowledgeTransfer.ensure(storage);
     await StoryPersonaDao.create(storage);
     await StoryRoomDao.create(storage);
     await StoryArtifactDao.create(storage);
@@ -2576,6 +2621,20 @@ class BackupService {
     await StoryTemplateTranslationTaskDao.create(storage);
     await AgentWorkspaceDao.create(storage, cid: 0);
     await _ensureConversationProjectIdColumn(storage.db);
+  }
+
+  Future<void> _stageKnowledgeAssets(_BackupResourceCoordinator resources,
+      List<Map<String, dynamic>> rows, String account) async {
+    if (!rows.any((r) => r['kind'] == 'asset')) return;
+    try {
+      final target = await KnowledgeLibrary.assetDirectory(account: account);
+      final staged =
+          await resources.stageDirectory(target, preserveExisting: true);
+      await KnowledgeTransfer.writeAssets(rows, staged);
+    } catch (_) {
+      await resources.rollback();
+      rethrow;
+    }
   }
 
   static Future<void> _ensureConversationProjectIdColumn(Database db) async {

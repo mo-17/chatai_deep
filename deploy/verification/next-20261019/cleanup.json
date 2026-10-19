@@ -1,0 +1,7 @@
+{
+  "temporaryAccountDeleted": true,
+  "jwtRejectedAfterDeletion": true,
+  "noUsageOrReservations": true,
+  "macCredentialsDeleted": true,
+  "serverCredentialsDeleted": true
+}

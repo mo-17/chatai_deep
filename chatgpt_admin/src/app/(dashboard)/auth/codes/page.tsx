@@ -2,17 +2,9 @@
 import { useEffect, useState } from 'react';
 import { fetchCodes, type CodeRecord } from '@/lib/api/auth-admin';
 import { AuthAdminBoundary } from '@/lib/auth-admin-boundary';
+import { codeState } from '@/lib/auth-code-state';
 const DELIVERY = { legacy: '历史记录，投递未确认', pending: '发送中', sent: '已发送', failed: '发送失败', unknown: '投递未知' };
 const PURPOSE: Record<string, string> = { login: '登录', register: '注册', bind: '绑定', reset_password: '重置密码' };
-export function codeState(r: CodeRecord, now = Date.now()) {
-  if (r.invalidationReason === 'locked') return '已锁定';
-  if (r.invalidationReason === 'expired') return '已过期';
-  if (r.invalidationReason === 'superseded') return '已被新码替代';
-  if (r.consumedAt && (!r.invalidatedAt || r.invalidationReason === 'consumed')) return '已核销';
-  if (r.invalidatedAt) return '已失效';
-  if (new Date(r.expiresAt).getTime() <= now) return '已过期';
-  return r.deliveryStatus === 'sent' ? '待验证' : '不可验证';
-}
 function CodesView() {
   const [items, setItems] = useState<CodeRecord[]>([]), [total, setTotal] = useState(0), [notice, setNotice] = useState('');
   const [page, setPage] = useState(1), [channel, setChannel] = useState(''), [purpose, setPurpose] = useState('');

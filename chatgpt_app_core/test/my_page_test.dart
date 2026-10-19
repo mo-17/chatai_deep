@@ -4,10 +4,12 @@ import 'package:chatgpt_app_core/model/apk_model.dart';
 import 'package:chatgpt_app_core/pages/my_page.dart';
 import 'package:chatgpt_app_core/provider/theme_provider.dart';
 import 'package:chatgpt_app_core/theme/app_visual_theme.dart';
+import 'package:chatgpt_app_core/update/app_update_controller.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_hi_cache/flutter_hi_cache.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:provider/provider.dart';
+import 'package:package_info_plus/package_info_plus.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 void main() {
@@ -227,6 +229,27 @@ void main() {
     expect(find.text('当前已是最新版本'), findsOneWidget);
     expect(find.text('有新版本啦'), findsNothing);
     expect(downloadCalled, isFalse);
+  });
+
+  testWidgets('检测更新入口显示当前安装版本与构建号', (tester) async {
+    final updates = AppUpdateController(
+      packageInfoLoader: () async => PackageInfo(
+        appName: '艾普',
+        packageName: 'com.example.chatgpt_flutter',
+        version: '1.0.5',
+        buildNumber: '15',
+      ),
+    );
+    addTearDown(updates.dispose);
+    await tester.pumpWidget(ChangeNotifierProvider(
+      create: (_) => ThemeProvider(),
+      child: MaterialApp(home: MyPage(updateController: updates)),
+    ));
+    await tester.pumpAndSettle();
+    await tester.scrollUntilVisible(find.text('检测更新'), 300,
+        scrollable: find.byType(Scrollable).first);
+    await tester.pumpAndSettle();
+    expect(find.text('当前版本 1.0.5（15）'), findsOneWidget);
   });
 
   testWidgets('Store 更新只打开商店，不调用 APK 下载', (tester) async {

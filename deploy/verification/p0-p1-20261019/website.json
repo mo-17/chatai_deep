@@ -1,0 +1,220 @@
+{
+  "origin": "https://kushui.shop",
+  "checkedAt": "2026-10-19T07:09:33.040751+08:00",
+  "passed": 53,
+  "total": 53,
+  "checks": [
+    {
+      "name": "官网 HTTPS 与产品正文",
+      "passed": true
+    },
+    {
+      "name": "标准 HTTPS 经 Cloudflare 边缘",
+      "passed": true
+    },
+    {
+      "name": "官网 CSP、nosniff 与重验证缓存",
+      "passed": true
+    },
+    {
+      "name": "官网资源 /site-assets/favicon.svg",
+      "passed": true
+    },
+    {
+      "name": "官网资源 /site-assets/site.css",
+      "passed": true
+    },
+    {
+      "name": "官网资源 /site-assets/site.js",
+      "passed": true
+    },
+    {
+      "name": "缺失官网资源返回 404",
+      "passed": true
+    },
+    {
+      "name": "爬虫仅开放官网与展示资源",
+      "passed": true
+    },
+    {
+      "name": "路由 /index.html",
+      "passed": true
+    },
+    {
+      "name": "路由 /admin",
+      "passed": true
+    },
+    {
+      "name": "路由 /admin/",
+      "passed": true
+    },
+    {
+      "name": "后台登录页保持 Next.js",
+      "passed": true
+    },
+    {
+      "name": "后台存在静态资源",
+      "passed": true
+    },
+    {
+      "name": "后台资源 /_next/static/chunks/1788-8a0e6455a0a20f00.js",
+      "passed": true
+    },
+    {
+      "name": "后台资源 /_next/static/chunks/4050-7f6a7f81864b5f0e.js",
+      "passed": true
+    },
+    {
+      "name": "后台资源 /_next/static/chunks/4193-750f3648c31558a0.js",
+      "passed": true
+    },
+    {
+      "name": "后台资源 /_next/static/chunks/4370-1eb0045c966025e7.js",
+      "passed": true
+    },
+    {
+      "name": "后台资源 /_next/static/chunks/4483-4e0aa70cd0f0d294.js",
+      "passed": true
+    },
+    {
+      "name": "后台资源 /_next/static/chunks/514-043676ea24abe344.js",
+      "passed": true
+    },
+    {
+      "name": "后台资源 /_next/static/chunks/6356-e1cea76990b5630f.js",
+      "passed": true
+    },
+    {
+      "name": "后台资源 /_next/static/chunks/6485-bc18ffe5bc2c71df.js",
+      "passed": true
+    },
+    {
+      "name": "后台资源 /_next/static/chunks/6520-7f048b7dbb57c135.js",
+      "passed": true
+    },
+    {
+      "name": "后台资源 /_next/static/chunks/6dee23d0-f4354ac5ff192bb9.js",
+      "passed": true
+    },
+    {
+      "name": "后台资源 /_next/static/chunks/9011-de600465080ceac4.js",
+      "passed": true
+    },
+    {
+      "name": "后台资源 /_next/static/chunks/9343-1126425fad490d07.js",
+      "passed": true
+    },
+    {
+      "name": "后台资源 /_next/static/chunks/9721-0c8bc7d8c60e9162.js",
+      "passed": true
+    },
+    {
+      "name": "后台资源 /_next/static/chunks/9881-25b3515cae0fc705.js",
+      "passed": true
+    },
+    {
+      "name": "后台资源 /_next/static/chunks/app/layout-54771afb2b0f97f6.js",
+      "passed": true
+    },
+    {
+      "name": "后台资源 /_next/static/chunks/app/login/page-9e5c4d89743f51cc.js",
+      "passed": true
+    },
+    {
+      "name": "后台资源 /_next/static/chunks/fa31a4ad-c7a4599855fcc179.js",
+      "passed": true
+    },
+    {
+      "name": "后台资源 /_next/static/chunks/main-app-521a9f6a03c75fa9.js",
+      "passed": true
+    },
+    {
+      "name": "后台资源 /_next/static/chunks/polyfills-42372ed130431b0a.js",
+      "passed": true
+    },
+    {
+      "name": "后台资源 /_next/static/chunks/webpack-24b33b9a2da9b242.js",
+      "passed": true
+    },
+    {
+      "name": "后台资源 /_next/static/css/4cced7175a777aa2.css",
+      "passed": true
+    },
+    {
+      "name": "API /healthz",
+      "passed": true
+    },
+    {
+      "name": "API /uapi/auth/public-config",
+      "passed": true
+    },
+    {
+      "name": "API /uapi/ai/catalog",
+      "passed": true
+    },
+    {
+      "name": "API /uapi/admin/me",
+      "passed": true
+    },
+    {
+      "name": "API /api/admin/me",
+      "passed": true
+    },
+    {
+      "name": "HTTP 跳转 /",
+      "passed": true
+    },
+    {
+      "name": "HTTP 跳转 /login",
+      "passed": true
+    },
+    {
+      "name": "WWW 跳转保留路径和查询 /",
+      "passed": true
+    },
+    {
+      "name": "WWW 跳转保留路径和查询 /login?from=www",
+      "passed": true
+    },
+    {
+      "name": "标准 HTTPS 精确 CORS 来源",
+      "passed": true
+    },
+    {
+      "name": "受保护 API 不在边缘缓存",
+      "passed": true
+    },
+    {
+      "name": "下载版本元数据",
+      "passed": true
+    },
+    {
+      "name": "本地 APK 与公开摘要和大小一致",
+      "passed": true
+    },
+    {
+      "name": "APK 附件头与大小",
+      "passed": true
+    },
+    {
+      "name": "APK 公网分段内容 0",
+      "passed": true
+    },
+    {
+      "name": "APK 公网分段内容 180467163",
+      "passed": true
+    },
+    {
+      "name": "公开 SHA-256 文件",
+      "passed": true
+    },
+    {
+      "name": "禁止安装包目录列表",
+      "passed": true
+    },
+    {
+      "name": "缺失安装包返回 404",
+      "passed": true
+    }
+  ]
+}
