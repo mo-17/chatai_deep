@@ -14,6 +14,7 @@ dependencies:
   flutter_hi_cache: ^0.0.1
   flutter_svg: ^2.0.0
   http: ^1.0.0
+  crypto: ^3.0.3
   url_launcher: ^6.1.10
   auth_kit_flutter:
     path: ../auth_kit_flutter

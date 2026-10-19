@@ -1,0 +1,425 @@
+{
+  "date": "2026-10-20",
+  "timezone": "Asia/Shanghai",
+  "baseHead": "287f1774b2c2d27ada7af2d68ec6a3a433e6c2e5",
+  "device": {
+    "model": "ALN-AL00",
+    "os": "OpenHarmony-6.1.1.120",
+    "api": 24,
+    "headset": "Bluetooth headset with microphone (SCO)"
+  },
+  "runtimeSourceChanged": true,
+  "newRuntimeFixes": 1,
+  "voice": {
+    "system": {
+      "complete": true,
+      "elapsedMs": 902095,
+      "cycles": 153,
+      "full": 128,
+      "cancelled": 25,
+      "micStarts": 153,
+      "micSettles": 153
+    },
+    "sherpa": {
+      "complete": false,
+      "lastCompletedCycle": {
+        "n": 52,
+        "elapsedMs": 531893,
+        "cycleMs": 11143,
+        "synthMs": 2992,
+        "full": 44,
+        "cancelled": 8,
+        "micStarts": 52
+      },
+      "interruptionAfterUserAudibleFailure": true,
+      "intentionalStopErrors": [
+        "PlatformException(playback_error, 离线语音播放失败或已被系统中断, null, null)"
+      ],
+      "audibleQualityPassed": false
+    },
+    "resourceSamples": {
+      "samples": 20,
+      "pidStable": true,
+      "fdMin": 147,
+      "fdMax": 151,
+      "threadsMin": 55,
+      "threadsMax": 60,
+      "observedRssMinBytes": 566489088,
+      "observedRssMaxBytes": 1004113920,
+      "lastRssBytes": 650960896
+    },
+    "full30MinuteAcceptancePassed": false,
+    "userRequestedNoFurtherVoiceInvestigation": true,
+    "shortComparisons": {
+      "mediaWithoutCapture": {
+        "playsCompleted": 3,
+        "userConfirmedClear": true
+      },
+      "continuousCommunicationRouteWithoutCapture": {
+        "playsCompleted": 3,
+        "userConfirmedClear": true
+      },
+      "continuousCommunicationRouteWithCapture": {
+        "playsCompleted": 3,
+        "userConfirmedClear": null
+      }
+    },
+    "wavAnalysis": {
+      "rate": 22050,
+      "channels": 1,
+      "duration": 7.703219954648526,
+      "peak": 0.768341064453125,
+      "rms": 0.08010106383803225,
+      "clipped": 0,
+      "quietRuns": []
+    },
+    "method": "Each stress cycle prepares/releases the communication route, captures with system recognition, plays offline TTS, and deliberately cancels every sixth cycle. No AI chat requests."
+  },
+  "accounts": {
+    "userAvailableRealAccounts": 1,
+    "realToGuest": {
+      "tokenAndProfileCleared": true,
+      "oldConversationPageDisposed": true,
+      "originalConversationIdsVisibleInGuest": 0,
+      "guestListAccountScopeCurrent": true,
+      "originalRecoveryJournalVisibleInGuest": false
+    },
+    "originalCounts": {
+      "conversations": 1,
+      "messages": 0,
+      "assistants": 0,
+      "favorites": 0
+    },
+    "settingsProviders": 16,
+    "configuredProviderKeys": 0,
+    "realAccountRelogin": "Passed after account scope index fix, using actual backend authentication.",
+    "twoRealAccountSwitchCovered": false,
+    "audioLogoutDiagnostic": "Not counted: headset duplex unavailable; proceeded with normal logout without further audio testing.",
+    "userConfirmationOfOriginalIdentity": true,
+    "newProfileUserNameNonempty": true,
+    "newScopeMatchesCurrentUserNameHash": true,
+    "initialDatabaseCountsUnchangedAfterRelogin": true,
+    "noDataMigratedAcrossScopes": true,
+    "originalDraftRestoredThroughUi": true,
+    "ownTestJournalRemovedByExactFixtureMatch": true,
+    "initialMismatchObservedBeforeFix": true,
+    "repair": {
+      "userConfirmedSameAccountAndMethod": true,
+      "sameAuthenticatedTokenPreservedDuringMetadataRepair": true,
+      "businessRowsMoved": 0,
+      "historicalScopeReassociated": true,
+      "aotAndDebugComputedHashMatch": true,
+      "initialPersistedHashDiffersFromBoth": true,
+      "exactHistoricalDerivationUnknown": true
+    },
+    "afterFix": {
+      "realToGuestOldConversationsVisible": 0,
+      "realToGuestOldRecoveryVisible": false,
+      "guestOldStateDisposed": true,
+      "reloginSameInitialAccountScope": true,
+      "reloginOriginalTableCountsMatch": true,
+      "reloginOriginalConversationRowsVisible": 1,
+      "reloginOriginalRecoveryVisible": true,
+      "recoveryTextMatchesFixedFixture": true,
+      "recoveryImages": 0,
+      "recoveryJournalConsumed": true,
+      "settingsValuesMatch": true,
+      "nonemptySecretIsolationPhysicallyProven": false
+    },
+    "initialRelogin": {
+      "scopeMatchesInitial": false,
+      "originalRowsVisible": 0,
+      "originalRecoveryVisible": false
+    }
+  },
+  "authenticationTransport": {
+    "directDeviceConnectionReset": true,
+    "temporaryPinnedTcpConnectOverUsb": true,
+    "tlsCertificateValidationUnchanged": true,
+    "tlsNotTerminatedByRelay": true,
+    "authPublicConfigCode": 0,
+    "credentialsEnteredOnlyByUser": true,
+    "sourceAndPersistentBackendConfigUnchanged": true,
+    "restoredToSdkDefaultAfterRetest": true
+  },
+  "hostTests": {
+    "coreVoiceBrokerRecoveryPassedBeforeFix": 24,
+    "fullLoginSdkAfterFixPassed": 104,
+    "fullLoginSdkAfterFixSkipped": 1,
+    "skipReason": "Explicit credentials not supplied for opt-in production_backend_live_test",
+    "newAccountScopeRegressionTests": 6,
+    "focusedStaticAnalysis": "No issues found"
+  },
+  "cleanup": {
+    "ownIsolatedModelAndWavDirectoriesRemoved": 2,
+    "ownFixtureServerStopped": true,
+    "authTransportRestored": true,
+    "testJournalConsumed": true,
+    "releaseReinstalled": true,
+    "ownRelayStopped": true,
+    "usbForwardsRemoved": 5,
+    "remainingUsbForwards": "[Empty]",
+    "temporaryVmCallbacksRemovedByProcessTermination": true
+  },
+  "release": {
+    "sha256": "886c0d784f76ef024c3b69e5f221ac566e7394b9734942a5a008c1bcc689fce4",
+    "bytes": 72926673,
+    "reusedPreviouslyVerifiedBuild": false,
+    "independentAotAndNativeLicenseGuardsPassed": true,
+    "accountIndexMarkerPresent": true,
+    "temporaryDiagnosticMarkerAbsent": true,
+    "reinstallSucceeded": true,
+    "installedDebug": false,
+    "homePageDisplayedAfterStart": true,
+    "historicalAccountScopeRestoredBeforeFinalInstall": true
+  },
+  "boundaries": [
+    "Model voice long-run audible quality failed and remains unresolved per user direction; callback completion is not audible quality proof.",
+    "Not a completed uninterrupted 30-minute run.",
+    "Debug USB-powered resource sampling does not establish release memory leak, thermal or power acceptance.",
+    "Only one formal account available; real-to-real account switching and nonempty secret isolation not proven on device.",
+    "Recovery widget uses a temporary fixture; no production navigation or entire draft restoration claim.",
+    "Direct device backend connectivity remains unresolved.",
+    "Exact historical origin of the initial numeric account scope was not established. AOT/debug hashing comparison agreed; no runtime-mode cause claimed. User confirmed identity equivalence before device metadata repair."
+  ],
+  "evidenceSha256": [
+    {
+      "file": "soak-system.log",
+      "sha256": "e867578574d0ab204b1ef2168a8a045bd2ef4f5d67b0988cef945ad7faa8eda8"
+    },
+    {
+      "file": "soak-system-direct-listen.log",
+      "sha256": "7bf737662b66c8ab858e0450d0e6ae0d40cac8b302e452947b9565b965cfd731"
+    },
+    {
+      "file": "soak-sherpa.log",
+      "sha256": "d8dc744aa6bb47a5abd5b387307e04e4ee592dfea8bfb6f9b64deec0930af823"
+    },
+    {
+      "file": "soak-summary.json",
+      "sha256": "fb88a37ce16ccb5c9326c44746ce11aba7c885d71ca225ce632ceef0bf70de88"
+    },
+    {
+      "file": "stop-audible-failure.log",
+      "sha256": "6fa9411193c91d74539bb904b88492c56e7c75dc4cad0c41534f3f0f7bb8cceb"
+    },
+    {
+      "file": "compare-a.log",
+      "sha256": "ff83e913bd07a0ff4bde7fe776cdb5b757489b029c9dc0756315ffde6b4783f6"
+    },
+    {
+      "file": "compare-b.log",
+      "sha256": "f36bdaa23f24c409d96ea6169420561b96127d865cc6dde17a9fe80689bb6b0f"
+    },
+    {
+      "file": "compare-c.log",
+      "sha256": "85ad4c48dff005eb7dc56ea3a9cb38a02fece55e9f7f12a7a589ea1c765227c0"
+    },
+    {
+      "file": "comparison-waveform.json",
+      "sha256": "b8a09059d7f813b83db694e099bb0a170df2cc9cbafad5df57442b7189725345"
+    },
+    {
+      "file": "metrics-live.log",
+      "sha256": "a89c9ca6fb1629d7221e7d97bd26bcf87300ef6429cb59cbd0c7549e415cc88f"
+    },
+    {
+      "file": "monitor-heartbeat.jsonl",
+      "sha256": "819656866791321e991dc6219e7fe22c13874dae66236540564cfe15e52eff67"
+    },
+    {
+      "file": "core-voice-tests.log",
+      "sha256": "53e2210dac2fc20a9b792d5ce56121c222f46c321bbce4482973721548c4db1c"
+    },
+    {
+      "file": "login-tests.log",
+      "sha256": "58395b183b5e2c502cc893169755f9aa7c202c4fe76d3dae976aecf5a85a0ddc"
+    },
+    {
+      "file": "account-baseline.log",
+      "sha256": "df39054b7d78d6d21bbd79aa45e17c474c1b3d2a3987003479cd3ec2f0b8ac06"
+    },
+    {
+      "file": "settings-baseline.log",
+      "sha256": "273673e1b5a0a60b439c9c1e07f00dfe5a0b39150531d32a2e2a5351d3afa005"
+    },
+    {
+      "file": "account-ui-baseline.log",
+      "sha256": "51055dc157785274341aea36f4be98cb5a15d73155f17f37e1e9eb97bb01f27f"
+    },
+    {
+      "file": "account-events.log",
+      "sha256": "c00bc12cd8c157d4c349ff90cfcee74a01ff9c89f119485873220fceb7ea0c0a"
+    },
+    {
+      "file": "account-plain-logout.log",
+      "sha256": "441c852690220ca6ba1251f564e0f8041ca0fd638a8002786592f62c4b5b4036"
+    },
+    {
+      "file": "account-guest-open.log",
+      "sha256": "1d32f95b5acff1d12d9d09ffa169eaf2b691587eb6c72c17de6621907ebbfaa8"
+    },
+    {
+      "file": "account-guest-logout.log",
+      "sha256": "f4e10374a107053ca52a61ab6583c27287564760bc4d6b392c51490ea2f3ea68"
+    },
+    {
+      "file": "auth-pre-logout.log",
+      "sha256": "aafd93bc1e028bffc947cc51c515c65b397a2c7b0c4231e4fe67306ebd30c236"
+    },
+    {
+      "file": "cleanup-test-model.log",
+      "sha256": "ef8934d6d14ca92885dc66b9fac184552ffd8d415ab995ba67b8a57c5a67a278"
+    },
+    {
+      "file": "account-identity-comparison.log",
+      "sha256": "3c273c3dc3c414c640099bdba9334600eb3c31936a2e52a2fa02c41429e66a31"
+    },
+    {
+      "file": "account-cleanup.log",
+      "sha256": "87fde726bf24ff82beaaa5c3747419fa1c5c77205ff17eacb5db23c93baf7448"
+    },
+    {
+      "file": "auth-transport-restore.log",
+      "sha256": "643a86a98a64b49f656994be9f8c0c11aa5f847a01931ad52e4dadc6033310c9"
+    },
+    {
+      "file": "release-reinstall.log",
+      "sha256": "f834c7b0d04bb205664bb2c666cb872caae4780cb6147b38e95afc9ec077f844"
+    },
+    {
+      "file": "release-start.log",
+      "sha256": "4765cf6e38f61be3ce9fa13fdcf53077b79f3da39c947a2123d1facd6c0e3962"
+    },
+    {
+      "file": "release-installed.txt",
+      "sha256": "a0cecfaef98442cb2a2776708954aa06aac427bb513dbad38d4efd3774fcc6d0"
+    },
+    {
+      "file": "release-final-layout.json",
+      "sha256": "960013083d577ad41efff9aa11ef139dbc62faf3e0f8069de75291d3235c18bc"
+    },
+    {
+      "file": "fport-after-cleanup.txt",
+      "sha256": "c769b18b5babef2903583320036d1e507ee1e80e1386b29d098721999cd20bcf"
+    },
+    {
+      "file": "account-aot-result.log",
+      "sha256": "b48243ccf3a86ff8473d4162fb18ed3f1f3afce9e80a96ebf8f685c5de6bcf1b"
+    },
+    {
+      "file": "account-scope-repair.log",
+      "sha256": "46d5a3877690d6390b872741b53d6a5cf1453942efd289fda6b4dc5a53ab6270"
+    },
+    {
+      "file": "account-fixed-baseline.log",
+      "sha256": "b0c6359a9f8204d1bb66d1617dbed108bdd25dcd9becbd5523ab1ad7dfd56a95"
+    },
+    {
+      "file": "account-fixed-settings-baseline.log",
+      "sha256": "b95f6fb2be49c5e5440cfd1a7251b5d55c49db883d3e3f64df5717cf78eb00cf"
+    },
+    {
+      "file": "account-fixed-ui-baseline.log",
+      "sha256": "51055dc157785274341aea36f4be98cb5a15d73155f17f37e1e9eb97bb01f27f"
+    },
+    {
+      "file": "account-fix-events.log",
+      "sha256": "8aa04c2fd08a740eb8d9fde05094a946ff25f9aae429f035bc5249a0535084fc"
+    },
+    {
+      "file": "account-fixed-picker.log",
+      "sha256": "9a6d44aae4bff648529f60b4dfcae91475aee0d9cb380e384ff7a12dae8c0aac"
+    },
+    {
+      "file": "account-fixed-logout.log",
+      "sha256": "9a454ca4d6af75e214e6826baa7c395364e3bb2d2e03e415bff61a77f07f5c8a"
+    },
+    {
+      "file": "account-fixed-guest.log",
+      "sha256": "154a2a10ae0332ea66869bf0462b6635d829a6aa5f9959f6d6f42aa00758d67b"
+    },
+    {
+      "file": "account-fixed-guest-logout.log",
+      "sha256": "675ac5e9b62907aa1b26ac88b47e0f1e5a8f4c0beac2dfcd1c3c03cc0d9c31c6"
+    },
+    {
+      "file": "account-fixed-recovery-check.log",
+      "sha256": "0b3339abb63295cdc909bec973b9855e7bd8ac86c4e80723cc81bac9495274be"
+    },
+    {
+      "file": "account-fix-final-release-build.log",
+      "sha256": "cfbf9b4233248e66ce7d734c9569e0ccfc01f74a35ac4c65e8d8ca7a5c7f25f4"
+    },
+    {
+      "file": "account-fix-final-artifact.json",
+      "sha256": "d21753d9fb158be984e2232da63f9ad581f5d25c2bffd0834c7e5338f2e0b073"
+    },
+    {
+      "file": "login-full-after-account-fix.log",
+      "sha256": "1b2316166c3519c8472061df3130e757447704c27f38b76b270933be5a17f1d3"
+    },
+    {
+      "file": "account-index-analyze.log",
+      "sha256": "2ab670d2122a1c69addb8ad430a657ce544e34569ff1a1eeb5b1a998dae96de3"
+    },
+    {
+      "file": "auth-transport-final-restore.log",
+      "sha256": "643a86a98a64b49f656994be9f8c0c11aa5f847a01931ad52e4dadc6033310c9"
+    },
+    {
+      "file": "account-final-release-install.log",
+      "sha256": "1bdaa558945cad455738848740bcfa0a384d69903d277d3d6d27f478d855d53e"
+    },
+    {
+      "file": "account-final-release-check.json",
+      "sha256": "8502528f6cf3475157e8bbc8c33a63e5a8d018434d5b6897fa77d8740deccce7"
+    },
+    {
+      "file": "account-final-fport.txt",
+      "sha256": "c769b18b5babef2903583320036d1e507ee1e80e1386b29d098721999cd20bcf"
+    }
+  ],
+  "runtimeSourceSha256": [
+    {
+      "file": "chatgpt_flutter_ohos/lib/main.dart",
+      "sha256": "39bc956f6d525eefdeae64c8554589e8d22e62d79e71caf611dd35967e5d4b4f"
+    },
+    {
+      "file": "chatgpt_flutter_ohos/ohos/entry/src/main/ets/speech/VoiceAudioPlugin.ets",
+      "sha256": "4830d6069b0441db698c1bf9229aa70579704fb0030e98620db32945b12f931c"
+    },
+    {
+      "file": "chatgpt_flutter_ohos/ohos/entry/src/main/ets/speech/TtsPlaybackPlugin.ets",
+      "sha256": "3595f90e8e17bba9d1ded60e2e0dabaa5814b75f1d21fdcb6f700a8b6887f20b"
+    },
+    {
+      "file": "chatgpt_app_core/lib/chat/application/sherpa_onnx_read_aloud_service.dart",
+      "sha256": "cd077b52e21f42eca4b76b552df8ab9dc22abbacd7c14ed5692a289142ccb148"
+    },
+    {
+      "file": "login_sdk/lib/dao/login_dao.dart",
+      "sha256": "ac520a16828660cdc9d61c511c9b713dc8eb57e9ff07a6badfd671cf492e15cf"
+    },
+    {
+      "file": "login_sdk/lib/config/token_storage.dart",
+      "sha256": "8f6e2c3e91b4560086be6ea66ad2fd1922313b88384b4e05541f7708d75781b3"
+    },
+    {
+      "file": "login_sdk/lib/pages/login_page.dart",
+      "sha256": "b5d4b3ec19de54b93821abd82edb5bf78c0d648e6fca3ea06f1c20371e7218e3"
+    },
+    {
+      "file": "login_sdk/lib/config/account_scope_index.dart",
+      "sha256": "29ae3bec6731f0a19fdd8c50e8418bc4c03be7c243eea2b0e9203626fa6ee22c"
+    },
+    {
+      "file": "login_sdk/pubspec.yaml",
+      "sha256": "25e8fae2114a2bec847e0f725d84109825f6567810c44c0281b4c1d157ac4423"
+    },
+    {
+      "file": "login_sdk/test/account_scope_index_test.dart",
+      "sha256": "246c8601576b614844cfbb9569221170f7be85cc9c8842377acf21ccbe20a0c6"
+    }
+  ]
+}

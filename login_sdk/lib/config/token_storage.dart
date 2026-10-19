@@ -3,6 +3,8 @@ import 'dart:convert';
 import 'package:flutter_hi_cache/flutter_hi_cache.dart';
 import 'package:login_sdk/config/secure_key_value_store.dart';
 
+import 'account_scope_index.dart';
+
 /// 登录态持久化适配器。默认实现 [HiCacheTokenStorage] 走仓库现有的
 /// flutter_hi_cache；想换 shared_preferences / flutter_secure_storage
 /// 只要实现这个接口并在 [LoginSdkConfig.install] 时注入。
@@ -61,8 +63,11 @@ class SecureStorageUnavailableException implements Exception {
 
 /// 用仓库现有的 flutter_hi_cache 做持久化。kUserInfo 与原 LoginDao 保持一致，
 /// 便于无缝替换（旧账号无须重新登录）。
-class HiCacheTokenStorage implements TokenStorage {
+class HiCacheTokenStorage implements TokenStorage, InitializableTokenStorage {
   static const _kUserInfo = 'user_info';
+
+  @override
+  Future<void> initialize() => AccountScopeIndex.remember(_decode());
 
   Map<String, dynamic>? _decode() {
     final s = HiCache.getInstance().get(_kUserInfo);
@@ -97,9 +102,11 @@ class HiCacheTokenStorage implements TokenStorage {
       'boardingPass': token,
       'userName': userName,
       'avatar': avatar,
-      'accountHash': userName.hashCode,
+      'accountHash': AccountScopeIndex.resolve(userName, extras),
+      AccountScopeIndex.originField: AccountScopeIndex.origin,
       ...extras,
     };
+    await AccountScopeIndex.remember(map);
     final prefs = HiCache.getInstance().prefs;
     if (prefs == null || !await prefs.setString(_kUserInfo, jsonEncode(map))) {
       throw StateError('登录态写入失败');
@@ -108,6 +115,10 @@ class HiCacheTokenStorage implements TokenStorage {
 
   @override
   Future<void> clear() async {
+    // 索引失败也必须允许退出；凭据清理优先于保留分区元数据。
+    try {
+      await AccountScopeIndex.remember(_decode());
+    } catch (_) {}
     final prefs = HiCache.getInstance().prefs;
     if (prefs == null || !await prefs.remove(_kUserInfo)) {
       throw StateError('登录态删除失败');
@@ -144,12 +155,17 @@ class MigratingTokenStorage implements TokenStorage, InitializableTokenStorage {
 
   @override
   Future<void> initialize() {
-    if (_initialized) return Future<void>.value();
     final current = _initializing;
     if (current != null) return current;
+    if (_initialized) return Future<void>.value();
 
     late final Future<void> future;
-    future = _initialize().whenComplete(() {
+    future = _initialize().then((_) async {
+      if (!readOnly) await AccountScopeIndex.remember(_profile);
+    }).catchError((Object error) {
+      _initialized = false;
+      throw error;
+    }).whenComplete(() {
       if (identical(_initializing, future)) _initializing = null;
     });
     _initializing = future;
@@ -273,9 +289,11 @@ class MigratingTokenStorage implements TokenStorage, InitializableTokenStorage {
       'boardingPass': token,
       'userName': userName,
       'avatar': avatar,
-      'accountHash': userName.hashCode,
+      'accountHash': AccountScopeIndex.resolve(userName, extras),
+      AccountScopeIndex.originField: AccountScopeIndex.origin,
       ...extras,
     };
+    await AccountScopeIndex.remember(profile);
 
     if (previousState == _verified) {
       // verified 后 secure 是唯一持久化来源。先清掉迁移期可能遗留的明文，
@@ -344,7 +362,11 @@ class MigratingTokenStorage implements TokenStorage, InitializableTokenStorage {
       token: token,
       userName: userName,
       avatar: avatar,
-      extras: extras,
+      extras: {
+        ...extras,
+        'accountHash': profile['accountHash'],
+        AccountScopeIndex.originField: profile[AccountScopeIndex.originField],
+      },
     );
     await _writeMigrationState(_awaitingVerification);
     _profile = profile;
@@ -359,6 +381,7 @@ class MigratingTokenStorage implements TokenStorage, InitializableTokenStorage {
   @override
   Future<void> clear() async {
     if (readOnly) throw StateError('只读登录存储不能清除 profile');
+    await _bestEffort(() => AccountScopeIndex.remember(_profile));
     // tombstone 必须先落盘，防止安全存储 delete 失败后下次启动恢复旧 token。
     await _writeMigrationState(_cleared);
     _profile = null;
@@ -429,7 +452,7 @@ class MigratingTokenStorage implements TokenStorage, InitializableTokenStorage {
         final userName = profile['userName'];
         if (userName is! String) return null;
         // 兼容极早期 profile：当时只有 userName，可按旧规则恢复账号分区。
-        profile['accountHash'] = userName.hashCode;
+        profile['accountHash'] = AccountScopeIndex.resolve(userName, const {});
       }
       return profile;
     } catch (_) {
