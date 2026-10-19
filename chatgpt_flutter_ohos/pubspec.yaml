@@ -17,6 +17,7 @@ dependencies:
     path: ../auth_kit_flutter
   chatai_ohos_image_picker:
     path: ../ohos_plugins/image_picker
+  file_picker: any
 
 dependency_overrides:
   # 与官方 OHOS C API 的结构体/函数 ABI 保持一致，不能独立升级。

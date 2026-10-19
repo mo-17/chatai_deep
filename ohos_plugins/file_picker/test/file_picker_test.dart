@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:io';
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/services.dart';
@@ -8,7 +9,10 @@ void main() {
   const channel = MethodChannel('com.hzb.flutter_ai/file_picker');
   final messenger =
       TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger;
-  tearDown(() => messenger.setMockMethodCallHandler(channel, null));
+  tearDown(() {
+    FilePicker.beforeSelection = null;
+    messenger.setMockMethodCallHandler(channel, null);
+  });
 
   test('系统取消与原生错误分别处理', () async {
     messenger.setMockMethodCallHandler(channel, (_) async => null);
@@ -119,5 +123,28 @@ void main() {
       return null;
     });
     expect(await FilePicker.pickFiles(type: FileType.image), isNull);
+  });
+  test('文件、目录与通用清理先等待宿主引用核对', () async {
+    var checks = 0;
+    final gate = Completer<void>();
+    FilePicker.beforeSelection = () async {
+      checks++;
+      await gate.future;
+    };
+    final calls = <String>[];
+    messenger.setMockMethodCallHandler(channel, (call) async {
+      calls.add(call.method);
+      return null;
+    });
+    final pending = FilePicker.pickFiles();
+    await Future<void>.delayed(Duration.zero);
+    expect(checks, 1);
+    expect(calls, isEmpty);
+    gate.complete();
+    await pending;
+    await FilePicker.getDirectoryPath();
+    await FilePicker.clearTemporaryFiles();
+    expect(checks, 3);
+    expect(calls, ['pickFiles', 'getDirectoryPath', 'clearTemporaryFiles']);
   });
 }

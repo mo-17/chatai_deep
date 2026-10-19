@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'package:chatai_ohos_image_picker/ohos_image_picker.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -8,7 +9,10 @@ void main() {
   const channel = MethodChannel('com.hzb.flutter_ai/image_picker');
   final messenger =
       TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger;
-  tearDown(() => messenger.setMockMethodCallHandler(channel, null));
+  tearDown(() {
+    OhosImagePicker.beforeSelection = null;
+    messenger.setMockMethodCallHandler(channel, null);
+  });
   test('通用恢复调用不读取其他账号/会话的草稿', () async {
     messenger.setMockMethodCallHandler(channel, (call) async {
       expect(call.method, 'retrieveLostData');
@@ -128,5 +132,29 @@ void main() {
         throwsFormatException,
       );
     }
+  });
+  test('单图和多图先等待宿主整理，恢复接口不触发全局清理', () async {
+    var checks = 0;
+    final gate = Completer<void>();
+    OhosImagePicker.beforeSelection = () async {
+      checks++;
+      await gate.future;
+    };
+    final calls = <String>[];
+    messenger.setMockMethodCallHandler(channel, (call) async {
+      calls.add(call.method);
+      return null;
+    });
+    final pending = OhosImagePicker().getImageFromSource(
+      source: ImageSource.gallery,
+    );
+    await Future<void>.delayed(Duration.zero);
+    expect(calls, isEmpty);
+    gate.complete();
+    await pending;
+    await OhosImagePicker().getMultiImageWithOptions();
+    await OhosImagePicker().getLostData();
+    expect(checks, 2);
+    expect(calls, ['pickImage', 'pickImages', 'retrieveLostData']);
   });
 }

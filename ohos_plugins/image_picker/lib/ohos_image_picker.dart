@@ -4,6 +4,7 @@ import 'package:image_picker_platform_interface/image_picker_platform_interface.
 /// 鸿蒙壳显式注册，其他平台继续使用 image_picker 原有实现。
 class OhosImagePicker extends ImagePickerPlatform {
   static const _channel = MethodChannel('com.hzb.flutter_ai/image_picker');
+  static Future<void> Function()? beforeSelection;
 
   static void registerWith() =>
       ImagePickerPlatform.instance = OhosImagePicker();
@@ -26,6 +27,7 @@ class OhosImagePicker extends ImagePickerPlatform {
       imageQuality: options.imageQuality,
       preferredCameraDevice: options.preferredCameraDevice,
     );
+    await beforeSelection?.call();
     final row = await _channel.invokeMapMethod<String, dynamic>('pickImage', {
       'source': source.name,
       'maxWidth': validated.maxWidth ?? 2048,
@@ -50,6 +52,7 @@ class OhosImagePicker extends ImagePickerPlatform {
       imageQuality: options.imageOptions.imageQuality,
     );
     final limit = (options.limit ?? 10).clamp(2, 10);
+    await beforeSelection?.call();
     final rows = await _channel.invokeListMethod<dynamic>('pickImages', {
       'source': 'gallery',
       'maxWidth': image.maxWidth ?? 2048,

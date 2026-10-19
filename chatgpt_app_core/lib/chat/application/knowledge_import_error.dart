@@ -36,6 +36,9 @@ class KnowledgeImportFailure implements Exception {
     }
     if (error is PlatformException) {
       return switch (error.code) {
+        'file_cache_full' => const KnowledgeImportFailure(
+            KnowledgeImportErrorKind.tooLarge,
+            '文件缓存已满，请到「我的 → 存储管理」清理无引用副本后重试'),
         'ocr_busy' => const KnowledgeImportFailure(
             KnowledgeImportErrorKind.busy, '文字识别仍在结束上一任务，请稍后重试'),
         'ocr_cancelled' => const KnowledgeImportFailure(

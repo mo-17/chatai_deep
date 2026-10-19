@@ -22,6 +22,7 @@ console.log(`Host Flutter ${sdk.frameworkVersion}`);
 cd "$repo_root"
 "$node_bin" --test \
   chatgpt_flutter_ohos/test/native_file_picker.test.cjs \
+  chatgpt_flutter_ohos/test/native_storage.test.cjs \
   chatgpt_flutter_ohos/test/native_directory_picker.test.cjs \
   chatgpt_flutter_ohos/test/native_image_picker.test.cjs \
   chatgpt_flutter_ohos/test/native_share.test.cjs \
@@ -42,12 +43,14 @@ cd "$repo_root"
     lib/chat/application/pdf_ocr_result.dart \
     lib/pages/knowledge_base_page.dart \
     lib/widget/knowledge_import_progress_dialog.dart \
-    lib/db/knowledge_dao.dart lib/knowledge/knowledge_library.dart
+    lib/db/knowledge_dao.dart lib/knowledge/knowledge_library.dart \
+    lib/storage lib/pages/storage_management_page.dart lib/pages/my_page.dart
   "$flutter_bin" test --no-pub --concurrency=1 --reporter expanded \
     test/knowledge_file_importer_test.dart test/knowledge_import_operation_test.dart \
     test/knowledge_import_ui_test.dart test/knowledge_import_collection_test.dart \
     test/ohos_ocr_test.dart test/ocr_service_test.dart \
-    test/knowledge_workbench_test.dart test/office_attachment_integration_test.dart
+    test/knowledge_workbench_test.dart test/office_attachment_integration_test.dart \
+    test/ohos_storage_test.dart
 )
 for package in file_picker image_picker share_plus; do
   (

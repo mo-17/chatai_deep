@@ -222,7 +222,7 @@ packages:
     source: hosted
     version: "7.0.1"
   file_picker:
-    dependency: "direct overridden"
+    dependency: "direct main"
     description:
       path: "../ohos_plugins/file_picker"
       relative: true

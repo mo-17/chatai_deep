@@ -1,5 +1,6 @@
 import 'dart:convert';
 import 'dart:io';
+import 'dart:typed_data';
 import 'package:archive/archive.dart';
 import 'package:chatgpt_app_core/chat/application/knowledge_import_collection.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -16,8 +17,31 @@ void main() {
     for (final entry in entries.entries) {
       archive.addFile(ArchiveFile.bytes(entry.key, utf8.encode(entry.value)));
     }
-    return File('${root.path}/bundle.zip')
-        .writeAsBytes(ZipEncoder().encode(archive));
+    final bytes = Uint8List.fromList(ZipEncoder().encode(archive));
+    // 新版编码器会把反斜杠规范化；测试需在两个 header 中保留原始非法名称，
+    // 否则生成的是合法路径，无法验证导入器的拒绝边界。
+    final view = ByteData.sublistView(bytes);
+    for (var i = 0; i + 46 <= bytes.length; i++) {
+      final signature = view.getUint32(i, Endian.little);
+      final header = signature == 0x04034b50
+          ? 30
+          : signature == 0x02014b50
+              ? 46
+              : 0;
+      if (header == 0) continue;
+      final length =
+          view.getUint16(i + (header == 30 ? 26 : 28), Endian.little);
+      if (i + header + length > bytes.length) continue;
+      final name = utf8.decode(bytes.sublist(i + header, i + header + length));
+      for (final original
+          in entries.keys.where((name) => name.contains(r'\'))) {
+        if (name == original.replaceAll(r'\', '/')) {
+          bytes.setRange(
+              i + header, i + header + length, utf8.encode(original));
+        }
+      }
+    }
+    return File('${root.path}/bundle.zip').writeAsBytes(bytes);
   }
 
   Future<KnowledgeImportCollection> unpack(File file) =>

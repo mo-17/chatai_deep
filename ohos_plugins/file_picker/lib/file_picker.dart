@@ -24,6 +24,9 @@ class FilePicker {
   static const _channel = MethodChannel('com.hzb.flutter_ai/file_picker');
   static const maxFileBytes = 256 * 1024 * 1024;
 
+  /// 宿主注入引用核对；普通 Flutter 平台不使用此适配器。
+  static Future<void> Function()? beforeSelection;
+
   static Future<FilePickerResult?> pickFiles({
     String? dialogTitle,
     String? initialDirectory,
@@ -35,6 +38,7 @@ class FilePicker {
     bool lockParentWindow = false,
   }) async {
     if (withReadStream) throw UnsupportedError('鸿蒙文件适配暂不支持 readStream');
+    await beforeSelection?.call();
     final rows = await _channel.invokeListMethod<dynamic>('pickFiles', {
       'type': type.name,
       'allowedExtensions': _extensions(type, allowedExtensions),
@@ -89,6 +93,7 @@ class FilePicker {
     String? initialDirectory,
     bool lockParentWindow = false,
   }) async {
+    await beforeSelection?.call();
     final path = await _channel.invokeMethod<String>('getDirectoryPath');
     if (path != null &&
         (!path.startsWith('/') ||
@@ -99,8 +104,10 @@ class FilePicker {
     return path;
   }
 
-  static Future<bool?> clearTemporaryFiles() =>
-      _channel.invokeMethod<bool>('clearTemporaryFiles');
+  static Future<bool?> clearTemporaryFiles() async {
+    await beforeSelection?.call();
+    return _channel.invokeMethod<bool>('clearTemporaryFiles');
+  }
 
   static List<String> _extensions(FileType type, List<String>? extensions) {
     const images = ['jpg', 'jpeg', 'png', 'gif', 'webp', 'bmp', 'heic'];

@@ -1,0 +1,187 @@
+{
+  "date": "2026-10-20",
+  "baseHead": "ec94213140db2077fc6f833e85b82fbfe57c7b64",
+  "isolatedSourceTree": "df22f5d137540ea5140509c21b79a43963d34ff1",
+  "implemented": [
+    "512 MiB cumulative picker file quota, reference-safe expiry and manual cleanup",
+    "Persistent and legacy picker image reference inspection and seven-day orphan cleanup"
+  ],
+  "productEntry": "HarmonyOS: 我的 -> 存储管理",
+  "deviceUsed": false,
+  "voiceChanged": false,
+  "pushed": false,
+  "hostTests": {
+    "native": 78,
+    "coreUnitAndWidget": 75,
+    "fileAdapter": 8,
+    "imageAdapter": 7,
+    "shareAdapter": 3,
+    "total": 171,
+    "failed": 0,
+    "skipped": 0
+  },
+  "staticAnalysis": {
+    "coreAndAdapters": "passed",
+    "ohosShellMain": "passed"
+  },
+  "policies": {
+    "fileCacheBytes": 536870912,
+    "automaticFileGraceHours": 24,
+    "manualIdleFilesMayBeYounger": true,
+    "orphanImageGraceDays": 7,
+    "sessionReturnedFilesRetainedUntilEngineDetach": true,
+    "allLocalAccountDatabasesReadOnly": true,
+    "allPreferenceKeysAndValuesChecked": true,
+    "documentsAndSupportJsonChecked": true,
+    "allValidNativeRecoveryJournalsChecked": true,
+    "unicodeEscapedJsonReferencesProtected": true,
+    "corruptOrOverBudgetSourceRefusesCleanup": true,
+    "unknownFilesCountTowardQuotaButArePreserved": true,
+    "snapshotSingleUseSeconds": 60,
+    "cacheRoots": [
+      "cacheDir/chatai_file_picker",
+      "filesDir/chatai_picked_images",
+      "cacheDir/chatai_image_picker (legacy image_*)"
+    ],
+    "otherBusinessRootsRemoved": false
+  },
+  "release": {
+    "passed": true,
+    "independentAotAndNativeLicenseGuardsPassed": true,
+    "bytes": 72760307,
+    "sha256": "4cbc083cdfbc08b735f7ecc5500110158ba6d852283d32148a17ce8ae3f3f97c",
+    "artifact": "/private/tmp/chatai-ohos-storage-20261020/final-verified-release.hap",
+    "installed": false
+  },
+  "isolation": {
+    "alternateIndexOnly": true,
+    "primaryIndexUntouchedDuringSnapshotBuild": true,
+    "otherDesktopChangesExcluded": true,
+    "discardedPrimaryBuildRejectedByAotGuard": true
+  },
+  "boundaries": [
+    "No new physical-device acceptance, install or cleanup.",
+    "Native tests execute actual code with controlled system APIs; no device IO or disk-full quality proof.",
+    "Freshly selected or recovered copies remain protected until the engine ends; garbage collection can be delayed.",
+    "JSON or database corruption, links, large data, stale snapshots and active selection stop cleanup.",
+    "Cleanup is bounded and cannot inspect arbitrarily large data; referenced files are never force-evicted to make quota.",
+    "Unknown resources, generated images and managed chat_avatar roots are outside this cleanup scope.",
+    "A deletion IO failure may leave a partially completed cleanup; refresh statistics before retrying."
+  ],
+  "sourceSha256": [
+    {
+      "file": "chatgpt_app_core/lib/chat/application/knowledge_import_error.dart",
+      "sha256": "99405bd2a4fd3cf916c13321884551edb2d80bf63377f1169c90f93a5f1e77ff"
+    },
+    {
+      "file": "chatgpt_app_core/lib/chatgpt_app_core.dart",
+      "sha256": "fcc814cff2e228af42d6764c0bd91c43f715703c163611ab84a781991d1ce719"
+    },
+    {
+      "file": "chatgpt_app_core/lib/pages/my_page.dart",
+      "sha256": "80b99564ca24aa9082384080ea5a9db892d46bc65487fc0b509bfbdda323c483"
+    },
+    {
+      "file": "chatgpt_app_core/lib/pages/storage_management_page.dart",
+      "sha256": "f3f1bb8db8e8d925a0527ab614bd1f97c23f52fd48b8686b64ff899601d9b9a0"
+    },
+    {
+      "file": "chatgpt_app_core/lib/storage/local_media_references.dart",
+      "sha256": "719bb5ab83b4a82bd94525976aa25652adbc6d9373e8355dca519fdfbe42100d"
+    },
+    {
+      "file": "chatgpt_app_core/lib/storage/ohos_storage_service.dart",
+      "sha256": "18d6dacb4ae19d65a6f3e8f2b70671d5c432e86175a279d59fcd9b4411d6263e"
+    },
+    {
+      "file": "chatgpt_app_core/test/ohos_storage_test.dart",
+      "sha256": "7c7b501bc211f4dc5e281fd5c9e0e87011de2f29130fcf4baa8dae67fa781701"
+    },
+    {
+      "file": "chatgpt_flutter_ohos/lib/main.dart",
+      "sha256": "3c5e241e97879200b3067f3c5659c747c21a591fb689f309f0f3c6fa08983e64"
+    },
+    {
+      "file": "chatgpt_flutter_ohos/pubspec.yaml",
+      "sha256": "dcfae8dde16a3e1eaa745b238de8f47c6d3a76966a233e65c85acd54e086cb1d"
+    },
+    {
+      "file": "chatgpt_flutter_ohos/pubspec.lock",
+      "sha256": "6b8127e5a20da128bcaff6200c5b0a7133f5346b7696a30e5ff9272aefd17a5b"
+    },
+    {
+      "file": "chatgpt_flutter_ohos/ohos/entry/src/main/ets/files/FilePickerPlugin.ets",
+      "sha256": "ab6298ef63f3fc32192ad50000d2a1e3e51822b4fb07cfbecea6478b0a119240"
+    },
+    {
+      "file": "chatgpt_flutter_ohos/ohos/entry/src/main/ets/media/ImagePickerPlugin.ets",
+      "sha256": "e3e7f75a183bea52d48bda6c32e0fcd5155e1ccab47fbb2eed9963faed71c974"
+    },
+    {
+      "file": "chatgpt_flutter_ohos/ohos/entry/src/main/ets/storage/PickerStorage.ets",
+      "sha256": "78f2963d31adb07b833606908d74c32da1f146d590ce828d3c114a7b80ef1212"
+    },
+    {
+      "file": "chatgpt_flutter_ohos/test/native_file_picker.test.cjs",
+      "sha256": "ec829eef8181a04e89a5f3d942c5734ac19d782e562057737733d1f793174f74"
+    },
+    {
+      "file": "chatgpt_flutter_ohos/test/native_directory_picker.test.cjs",
+      "sha256": "63d5c4849b3b14f8598c69f0607a10446eaffde6e466f182f09e6e91a3598b12"
+    },
+    {
+      "file": "chatgpt_flutter_ohos/test/native_storage.test.cjs",
+      "sha256": "d215306bd149277e73452e1ed21f8ca72b8fec34b56f0a2c1c769c539d955e25"
+    },
+    {
+      "file": "chatgpt_flutter_ohos/test/support/native_plugin_loader.cjs",
+      "sha256": "852f64ef7524b7ee92133b7435a2c17f57de3c82aa2679b1f0ecaaa25a9d782c"
+    },
+    {
+      "file": "chatgpt_flutter_ohos/scripts/test-offline.sh",
+      "sha256": "dc48c2ea0b0664aef878141bbafe6a6f0452d0aea2db57c458fd9a70ff2eebe2"
+    },
+    {
+      "file": "ohos_plugins/file_picker/lib/file_picker.dart",
+      "sha256": "9bb583e47530d46e56ea4f2c34df8d01c877cc539be13d9343be2018acfa49b1"
+    },
+    {
+      "file": "ohos_plugins/file_picker/test/file_picker_test.dart",
+      "sha256": "ed6affc83c0ff90ee04ba0231b82db43fa446e2a434a531fc638310a051d3c2d"
+    },
+    {
+      "file": "ohos_plugins/image_picker/lib/ohos_image_picker.dart",
+      "sha256": "95b83122987c922b56fb917b5afc6f52184725655e71ea93862ef76d0062c838"
+    },
+    {
+      "file": "ohos_plugins/image_picker/test/ohos_image_picker_test.dart",
+      "sha256": "574cbb418ff306c13986437bcb99e19f0e18feaed311db9c9617ffc0b9265f19"
+    },
+    {
+      "file": "chatgpt_app_core/test/knowledge_import_collection_test.dart",
+      "sha256": "3c8c7a09eabdc9586e6cd248578862932c9b633d1466c3612d43883f9626162f"
+    }
+  ],
+  "evidenceSha256": [
+    {
+      "file": "isolated-offline.log",
+      "sha256": "a9bab2074498a7f002048913d980d5f4c457dc75ee8c4044d9cb078d73546a56"
+    },
+    {
+      "file": "isolated-release.log",
+      "sha256": "6f1d760c6128aa2326350bbd52d710ca6d8dff9661774695cbca6b63e4d3e159"
+    },
+    {
+      "file": "ohos-shell-analyze.log",
+      "sha256": "e65e84e65e036224bbe3fe2c0961d7c315651fa2b989a29ba495b94e6d9484dc"
+    },
+    {
+      "file": "native-final.log",
+      "sha256": "ed2d4d727bd00755e353c386285e12ed6e03c00f03ac335175605e36984e58ad"
+    },
+    {
+      "file": "core-final.log",
+      "sha256": "2e6b8559b8e910b07e7d1ea32c9e5c9287abb2f2398edda38b260fe61f736205"
+    }
+  ]
+}

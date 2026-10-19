@@ -5,6 +5,7 @@ import {
 import { common } from '@kit.AbilityKit';
 import { picker, fileIo as fs, fileUri } from '@kit.CoreFileKit';
 import { BusinessError } from '@kit.BasicServicesKit';
+import PickerStorage, { FILE_CACHE_LIMIT, PickerCacheFullError, StorageInventory, StorageCleanup } from '../storage/PickerStorage';
 
 const CHANNEL = 'com.hzb.flutter_ai/file_picker';
 const MAX_FILE_BYTES = 256 * 1024 * 1024;
@@ -18,16 +19,20 @@ interface PickedFile {
   size: number;
 }
 
-interface DirectoryBudget { entries: number; files: number; bytes: number; names: Set<string>; deadline: number; }
+interface DirectoryBudget { entries: number; files: number; bytes: number; names: Set<string>; deadline: number; generation: number; }
 
 /** 只操作用户在系统选择器中授权的 URI，导入后返回可供 Dart 读取的缓存副本。 */
 export default class FilePickerPlugin implements FlutterPlugin, MethodCallHandler {
   private channel: MethodChannel | null = null;
   private busy = false;
   private sequence = 0;
+  private generation = 0;
   private context: common.UIAbilityContext;
+  private owner = PickerStorage.owner();
+  private storage: PickerStorage;
+  private cacheBytes = 0;
 
-  constructor(context: common.UIAbilityContext) { this.context = context; }
+  constructor(context: common.UIAbilityContext) { this.context = context; this.storage = new PickerStorage(context); }
 
   getUniqueClassName(): string { return 'ChataiDeepFilePickerPlugin'; }
 
@@ -37,6 +42,8 @@ export default class FilePickerPlugin implements FlutterPlugin, MethodCallHandle
   }
 
   onDetachedFromEngine(binding: FlutterPluginBinding): void {
+    this.generation++;
+    PickerStorage.detach(this.owner);
     this.channel?.setMethodCallHandler(null);
     this.channel = null;
   }
@@ -46,38 +53,44 @@ export default class FilePickerPlugin implements FlutterPlugin, MethodCallHandle
     if (call.method === 'getDirectoryPath' && !canIUse('SystemCapability.FileManagement.UserFileService.FolderSelection')) {
       result.error('directory_unsupported', '当前设备不支持选择文件夹，请使用 ZIP 或多选文件', null); return;
     }
-    if (!['pickFiles', 'saveFile', 'getDirectoryPath', 'releaseDirectory', 'clearTemporaryFiles'].includes(call.method)) {
+    if (!['pickFiles', 'saveFile', 'getDirectoryPath', 'releaseDirectory', 'clearTemporaryFiles', 'storageInventory', 'cleanupStorage'].includes(call.method)) {
       result.notImplemented();
       return;
     }
-    if (this.busy) {
+    if (this.busy || PickerStorage.unavailable) {
       result.error('picker_busy', '文件选择器正在使用中', null);
       return;
     }
     this.busy = true;
-    this.execute(call, result);
+    if (['pickFiles', 'saveFile', 'getDirectoryPath'].includes(call.method)) PickerStorage.begin(this.owner);
+    this.execute(call, result, this.generation);
   }
 
-  private async execute(call: MethodCall, result: MethodResult): Promise<void> {
+  private async execute(call: MethodCall, result: MethodResult, generation: number): Promise<void> {
     try {
-      let output: PickedFile[] | string | boolean | null = null;
-      if (call.method === 'pickFiles') output = await this.pick(call);
-      else if (call.method === 'saveFile') output = await this.save(call);
-      else if (call.method === 'getDirectoryPath') output = await this.pickDirectory();
+      let output: PickedFile[] | string | boolean | StorageInventory | StorageCleanup | null = null;
+      if (call.method === 'pickFiles') output = await this.pick(call, generation);
+      else if (call.method === 'saveFile') output = await this.save(call, generation);
+      else if (call.method === 'getDirectoryPath') output = await this.pickDirectory(generation);
       else if (call.method === 'releaseDirectory') output = await this.releaseDirectory(call);
+      else if (call.method === 'storageInventory') output = this.storage.inventory(call.argument('images') === true);
+      else if (call.method === 'cleanupStorage') output = await this.storage.cleanup(call.argument('token') as string,
+        call.argument('referenced') as string[], call.argument('manual') === true);
       else {
-        const directory = this.cacheRoot();
-        if (fs.accessSync(directory)) await fs.rmdir(directory);
-        output = true;
+        // 没有完整引用扫描证明的通用清理调用不能删除在用附件。
+        output = this.storage.fileBytes() === 0;
       }
       // 回调到 Dart 前释放门闩，允许取消后立即发起下一次操作。
       this.busy = false;
+      PickerStorage.end(this.owner);
       result.success(output);
     } catch (error) {
       this.busy = false;
+      PickerStorage.end(this.owner);
       const failure = error as BusinessError;
       // 取消通过空数组返回；权限/IO/构建错误不能伪装成取消。
-      result.error('file_picker_error', `文件操作失败 (${failure.code ?? 'io'})`, null);
+      if (error instanceof PickerCacheFullError) result.error('file_cache_full', '文件缓存已满，使用中的附件已保留，请到存储管理清理后重试', null);
+      else result.error('file_picker_error', `文件操作失败 (${failure.code ?? 'io'})`, null);
     }
   }
 
@@ -98,14 +111,25 @@ export default class FilePickerPlugin implements FlutterPlugin, MethodCallHandle
 
   private cacheRoot(): string { return `${this.context.cacheDir}/chatai_file_picker`; }
 
-  private async pick(call: MethodCall): Promise<PickedFile[] | null> {
+  private current(generation: number): void {
+    if (this.channel === null || generation !== this.generation || PickerStorage.unavailable) throw new Error('Picker detached');
+  }
+
+  private prepareCache(): void {
+    this.cacheBytes = this.storage.fileBytes();
+    if (this.cacheBytes >= FILE_CACHE_LIMIT) throw new PickerCacheFullError('Cache full');
+  }
+
+  private async pick(call: MethodCall, generation: number): Promise<PickedFile[] | null> {
+    this.prepareCache();
     const options = new picker.DocumentSelectOptions();
     options.maxSelectNumber = call.argument('allowMultiple') === true ? MAX_FILES : 1;
     const suffixes = this.suffixes(call);
     if (suffixes.length > 0) options.fileSuffixFilters = [suffixes.join(',')];
     const uris = await new picker.DocumentViewPicker(this.context).select(options);
     if (uris.length === 0) return null;
-    if (this.channel === null || uris.length > options.maxSelectNumber) throw new Error('Picker detached');
+    this.current(generation);
+    if (uris.length > options.maxSelectNumber) throw new Error('Invalid selection count');
     const root = this.cacheRoot();
     if (!fs.accessSync(root)) fs.mkdirSync(root);
     const batch = `${root}/${Date.now()}_${this.sequence++}`;
@@ -114,6 +138,7 @@ export default class FilePickerPlugin implements FlutterPlugin, MethodCallHandle
     let total = 0;
     try {
       for (let index = 0; index < uris.length; index++) {
+        this.current(generation);
         const source = await fs.open(uris[index], fs.OpenMode.READ_ONLY);
         try {
           const stat = await fs.stat(source.fd);
@@ -130,9 +155,11 @@ export default class FilePickerPlugin implements FlutterPlugin, MethodCallHandle
           try {
             const buffer = new ArrayBuffer(BUFFER_BYTES);
             while (true) {
+              this.current(generation);
               const count = await fs.read(source.fd, buffer);
               if (count === 0) break;
               copied += count;
+              if (this.cacheBytes + total + copied > FILE_CACHE_LIMIT) throw new PickerCacheFullError('Cache full');
               if (copied > MAX_FILE_BYTES || total + copied > MAX_BATCH_BYTES) throw new Error('File too large');
               await this.writeAll(target.fd, buffer.slice(0, count));
             }
@@ -141,24 +168,28 @@ export default class FilePickerPlugin implements FlutterPlugin, MethodCallHandle
           files.push({ path, name, size: copied });
         } finally { await fs.close(source); }
       }
-      if (this.channel === null) throw new Error('Picker detached');
+      this.current(generation);
+      PickerStorage.hold(this.owner, batch);
       return files;
     } catch (error) {
       await fs.rmdir(batch);
+      if (error instanceof PickerCacheFullError) throw error;
       throw new Error('无法复制选中的文件');
     }
   }
 
   private activeDirectory(budget: DirectoryBudget): void {
-    if (this.channel === null || Date.now() > budget.deadline) throw new Error('Directory import cancelled or timed out');
+    if (this.channel === null || budget.generation !== this.generation || Date.now() > budget.deadline) throw new Error('Directory import cancelled or timed out');
   }
 
-  private async pickDirectory(): Promise<string | null> {
+  private async pickDirectory(generation: number): Promise<string | null> {
+    this.prepareCache();
     const options = new picker.DocumentSelectOptions();
     options.maxSelectNumber = 1; options.selectMode = picker.DocumentSelectMode.FOLDER;
     const uris = await new picker.DocumentViewPicker(this.context).select(options);
     if (uris.length === 0) return null;
-    if (this.channel === null || uris.length !== 1 || !uris[0].startsWith('file://')) throw new Error('Invalid directory selection');
+    this.current(generation);
+    if (uris.length !== 1 || !uris[0].startsWith('file://')) throw new Error('Invalid directory selection');
     const source = new fileUri.FileUri(uris[0]).path.replace(/\/+$/, '');
     const root = this.cacheRoot();
     if (!source.startsWith('/') || source.split('/').some((part: string) => part === '..' || part === '.') ||
@@ -168,12 +199,13 @@ export default class FilePickerPlugin implements FlutterPlugin, MethodCallHandle
     if (!fs.accessSync(root)) fs.mkdirSync(root);
     const batch = `${root}/tree_${Date.now()}_${this.sequence++}`;
     fs.mkdirSync(batch);
-    const budget: DirectoryBudget = { entries: 0, files: 0, bytes: 0, names: new Set<string>(), deadline: Date.now() + 120000 };
+    const budget: DirectoryBudget = { entries: 0, files: 0, bytes: 0, names: new Set<string>(), deadline: Date.now() + 120000, generation };
     try {
       await this.copyDirectory(source, batch, '', 0, budget);
       this.activeDirectory(budget);
+      PickerStorage.hold(this.owner, batch);
       return batch;
-    } catch (_) { await fs.rmdir(batch); throw new Error('文件夹复制失败、包含链接或超过导入上限'); }
+    } catch (error) { await fs.rmdir(batch); if (error instanceof PickerCacheFullError) throw error; throw new Error('文件夹复制失败、包含链接或超过导入上限'); }
   }
 
   private async copyDirectory(source: string, target: string, prefix: string, depth: number, budget: DirectoryBudget): Promise<void> {
@@ -210,6 +242,7 @@ export default class FilePickerPlugin implements FlutterPlugin, MethodCallHandle
             const count = await fs.read(input.fd, buffer);
             if (count === 0) break;
             size += count;
+            if (this.cacheBytes + budget.bytes + size > FILE_CACHE_LIMIT) throw new PickerCacheFullError('Cache full');
             if (size > stat.size || budget.bytes + size > 128 * 1024 * 1024) throw new Error('Directory file grew');
             await this.writeAll(output.fd, buffer.slice(0, count));
           }
@@ -227,7 +260,7 @@ export default class FilePickerPlugin implements FlutterPlugin, MethodCallHandle
     if (!fs.accessSync(path)) return true;
     const stat = await fs.lstat(path);
     if (stat.isSymbolicLink() || !stat.isDirectory()) throw new Error('Invalid directory cache');
-    await fs.rmdir(path); return true;
+    await fs.rmdir(path); PickerStorage.release(this.owner, path); return true;
   }
 
   private async writeAll(fd: number, bytes: ArrayBuffer): Promise<void> {
@@ -239,7 +272,7 @@ export default class FilePickerPlugin implements FlutterPlugin, MethodCallHandle
     }
   }
 
-  private async save(call: MethodCall): Promise<string | null> {
+  private async save(call: MethodCall, generation: number): Promise<string | null> {
     const bytes = call.argument('bytes') as Uint8Array;
     if (!(bytes instanceof Uint8Array) || bytes.byteLength > MAX_FILE_BYTES) throw new Error('Invalid bytes');
     const fileName = call.argument('fileName') as string;
@@ -250,10 +283,12 @@ export default class FilePickerPlugin implements FlutterPlugin, MethodCallHandle
     if (suffixes.length > 0) options.fileSuffixChoices = [suffixes.join(',')];
     const uris = await new picker.DocumentViewPicker(this.context).save(options);
     if (uris.length === 0) return null;
-    if (this.channel === null || uris.length !== 1) throw new Error('Picker detached');
+    this.current(generation);
+    if (uris.length !== 1) throw new Error('Invalid save selection');
     const target = await fs.open(uris[0], fs.OpenMode.READ_WRITE | fs.OpenMode.TRUNC);
     try {
       for (let offset = 0; offset < bytes.byteLength; offset += BUFFER_BYTES) {
+        this.current(generation);
         const chunk = bytes.slice(offset, Math.min(offset + BUFFER_BYTES, bytes.byteLength));
         await this.writeAll(target.fd, chunk.buffer as ArrayBuffer);
       }

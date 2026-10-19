@@ -26,6 +26,8 @@ import 'package:chatgpt_app_core/util/hi_dialog.dart';
 import 'package:chatgpt_app_core/widget/header_widget.dart';
 import 'package:chatgpt_app_core/widget/ai_readiness_card.dart';
 import 'package:flutter/material.dart';
+import '../storage/ohos_storage_service.dart';
+import 'storage_management_page.dart';
 import 'knowledge_assistant_page.dart';
 import 'package:login_sdk/dao/login_dao.dart';
 import 'package:login_sdk/util/padding_extension.dart';
@@ -237,6 +239,15 @@ class _MyPageState extends State<MyPage> {
                 title: '隐私与诊断',
                 icon: Icons.privacy_tip_outlined,
                 onTap: _showDiagnosticsSettings),
+            if (OhosStorageService.isSupported)
+              ..._itemWidget(
+                  color: color,
+                  title: '存储管理',
+                  icon: Icons.storage_outlined,
+                  onTap: () => Navigator.push(
+                      context,
+                      MaterialPageRoute(
+                          builder: (_) => const StorageManagementPage()))),
             ..._itemWidget(
                 color: color,
                 title: '检测更新',

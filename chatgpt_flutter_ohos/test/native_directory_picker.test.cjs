@@ -17,6 +17,8 @@ function fixture({ supported = true, selected = ['file://docs/documents/picked']
       async select(options) { selectCalls++; selectOptions = options; return selected; }
     } },
     fileIo: { OpenMode: { READ_ONLY: 1, READ_WRITE: 2, CREATE: 4, TRUNC: 8, NOFOLLOW: 16 },
+      lstatSync(path) { if(!nodes.has(path))throw new Error('missing');return stat(nodes.get(path)); },
+      listFileSync(path) {return [...nodes.keys()].filter(p=>p.startsWith(path+'/')&&!p.substring(path.length+1).includes('/')).map(p=>p.substring(path.length+1));},
       accessSync: path => nodes.has(path), mkdirSync: path => { nodes.set(path, { kind: 'dir' }); },
       async lstat(path) { if (!nodes.has(path)) throw new Error('missing'); return stat(nodes.get(path)); },
       async stat(fd) { return stat(nodes.get(handles.get(fd).path)); },
@@ -41,7 +43,7 @@ function fixture({ supported = true, selected = ['file://docs/documents/picked']
       async close(h) { handles.delete(h.fd); },
       async rmdir(path) { for (const key of [...nodes.keys()]) if (key === path || key.startsWith(path + '/')) nodes.delete(key); },
     },
-  } }, { cacheDir: '/cache' }, { canIUse: () => supported });
+  } }, { cacheDir: '/cache', filesDir: '/files' }, { canIUse: () => supported });
   return { ...native, nodes, handles, get selectCalls() { return selectCalls; }, get selectOptions() { return selectOptions; } };
 }
 test('目录选择检查系统能力，手机无能力时明确失败；取消不复制', async () => {

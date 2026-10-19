@@ -9,6 +9,7 @@ import { image } from '@kit.ImageKit';
 import { fileIo as fs } from '@kit.CoreFileKit';
 import { BusinessError } from '@kit.BasicServicesKit';
 import { util } from '@kit.ArkTS';
+import PickerStorage from '../storage/PickerStorage';
 
 const MAX_BYTES = 20 * 1024 * 1024;
 const CACHE_LIMIT = 512 * 1024 * 1024;
@@ -30,6 +31,7 @@ export default class ImagePickerPlugin implements FlutterPlugin, MethodCallHandl
   private generation = 0;
   private cacheBytes = 0;
   private recovery: PickerRecovery | null = null;
+  private owner = PickerStorage.owner();
   constructor(context: common.UIAbilityContext) { this.context = context; }
   getUniqueClassName(): string { return 'ChataiDeepImagePickerPlugin'; }
   onAttachedToEngine(binding: FlutterPluginBinding): void {
@@ -38,11 +40,13 @@ export default class ImagePickerPlugin implements FlutterPlugin, MethodCallHandl
     try { this.cleanupCache(); } catch (_) { /* 缓存异常不阻止应用启动。 */ }
   }
   onDetachedFromEngine(binding: FlutterPluginBinding): void {
+    PickerStorage.detach(this.owner);
     this.generation++;
     this.channel?.setMethodCallHandler(null);
     this.channel = null;
   }
   onMethodCall(call: MethodCall, result: MethodResult): void {
+    if (PickerStorage.unavailable) { result.error('picker_busy', '存储正在整理，请稍后重试', null); return; }
     if (['setRecoveryContext', 'retrieveLostData', 'ackRecovery'].includes(call.method)) {
       try { this.recoveryCall(call, result); }
       catch (_) { result.error('recovery_error', '图片恢复记录不可用', null); }
@@ -55,8 +59,9 @@ export default class ImagePickerPlugin implements FlutterPlugin, MethodCallHandl
       return;
     }
     if (call.method !== 'pickImage' && call.method !== 'pickImages') { result.notImplemented(); return; }
-    if (this.busy) { result.error('picker_busy', '图片选择器正在使用中', null); return; }
+    if (this.busy || PickerStorage.unavailable) { result.error('picker_busy', '图片选择器正在使用中', null); return; }
     this.busy = true;
+    PickerStorage.begin(this.owner);
     this.execute(call, result);
   }
   private async execute(call: MethodCall, result: MethodResult): Promise<void> {
@@ -68,9 +73,11 @@ export default class ImagePickerPlugin implements FlutterPlugin, MethodCallHandl
       const picked = await this.pick(call, this.generation, recovery);
       if (recovery !== null) { recovery.files = picked; recovery.phase = 'ready'; this.saveRecovery(recovery); }
       this.busy = false;
+      PickerStorage.end(this.owner);
       result.success(call.method === 'pickImage' ? (picked[0] ?? null) : picked);
     } catch (error) {
       this.busy = false;
+      PickerStorage.end(this.owner);
       if (error instanceof ImageCacheFullError) result.error('image_cache_full', '图片临时缓存已满，待恢复草稿已保留，请稍后重试', null);
       else result.error('image_picker_error', `选取图片失败 (${(error as BusinessError).code ?? 'io'})`, null);
     }
@@ -144,6 +151,8 @@ export default class ImagePickerPlugin implements FlutterPlugin, MethodCallHandl
           return draft;
         });
         for (let index = 0; index < drafts.length; index++) this.promote(drafts, index, record, [], true);
+        for (const file of record.files) PickerStorage.hold(this.owner, file.path);
+        for (const path of record.images) PickerStorage.hold(this.owner, path);
       }
       result.success(record); return;
     }
@@ -160,6 +169,7 @@ export default class ImagePickerPlugin implements FlutterPlugin, MethodCallHandl
       !images.every((path: string) => typeof path === 'string' && path.length < 4096)) throw new Error('Invalid draft');
     // 直到下一个 pick 调用才写入；取消弹窗不会产生虚假的恢复任务。
     this.recovery = { scope, id: `${Date.now()}_${this.sequence++}`, created: Date.now(), phase: 'pending', text, images, files: [] };
+    for (const path of images) PickerStorage.hold(this.owner, path);
     result.success(this.recovery.id);
   }
   /// 只回收新版本自己管理的 staging 文件；历史缓存可能已被聊天或头像引用。
@@ -297,6 +307,7 @@ export default class ImagePickerPlugin implements FlutterPlugin, MethodCallHandl
       }
       this.current(generation);
       for (let index = 0; index < images.length; index++) this.promote(images, index, recovery, created);
+      for (const file of images) PickerStorage.hold(this.owner, file.path);
       return images;
     } catch (error) {
       for (const path of created) {

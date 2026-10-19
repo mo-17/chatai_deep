@@ -1,13 +1,7 @@
 // 执行真实 ArkTS 方法体，系统 API 使用可控文件提供方替身；真机交互仍需单独验收。
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const fs = require('node:fs');
-const path = require('node:path');
-const vm = require('node:vm');
-const { createRequire } = require('node:module');
-const ts = createRequire(path.resolve(__dirname, '../../chatgpt_backend/package.json'))('typescript');
-const source = fs.readFileSync(path.resolve(__dirname, '../ohos/entry/src/main/ets/files/FilePickerPlugin.ets'), 'utf8');
-const compiled = ts.transpileModule(source, { compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2021 } }).outputText;
+const load = require('./support/native_plugin_loader.cjs');
 
 function fixture({ selected = ['content://picked'], saveUris = ['content://saved'], data = Buffer.from('hello'), size = data.length, name = '../note.txt', failRead = false } = {}) {
   const files = new Map([['content://picked', Buffer.from(data)], ['content://saved', Buffer.from('old longer content')]]);
@@ -17,7 +11,9 @@ function fixture({ selected = ['content://picked'], saveUris = ['content://saved
   let next = 0, flushed = 0;
   const io = {
     OpenMode: { READ_ONLY: 1, READ_WRITE: 2, CREATE: 4, TRUNC: 8 },
-    accessSync: p => directories.has(p),
+    accessSync: p => directories.has(p) || files.has(p),
+    lstatSync(p) { return { size: files.get(p)?.length || 0, mtime: 1, isFile:()=>files.has(p), isDirectory:()=>directories.has(p), isSymbolicLink:()=>false }; },
+    listFileSync(p) { return [...new Set([...directories,...files.keys()].filter(k=>k.startsWith(p+'/')).map(k=>k.substring(p.length+1).split('/')[0]))]; },
     mkdirSync: p => directories.add(p),
     async rmdir(p) {
       for (const key of files.keys()) if (key.startsWith(p + '/')) files.delete(key);
@@ -45,18 +41,8 @@ function fixture({ selected = ['content://picked'], saveUris = ['content://saved
     async select(options) { fixture.lastOptions = options; return await selected; }
     async save(options) { fixture.lastSaveOptions = options; return saveUris; }
   }
-  const module = { exports: {} };
-  vm.runInNewContext(compiled, { module, exports: module.exports, Uint8Array, ArrayBuffer, require(id) {
-    if (id === '@kit.CoreFileKit') return { fileIo: io, picker: { DocumentViewPicker, DocumentSelectOptions: class {}, DocumentSaveOptions: class {} } };
-    if (id === '@ohos/flutter_ohos') return { MethodChannel: class { setMethodCallHandler() {} } };
-    throw new Error('Unexpected import: ' + id);
-  } });
-  const plugin = new module.exports.default({ cacheDir: '/cache' });
-  plugin.onAttachedToEngine({ getBinaryMessenger() {} });
-  const call = (method, args = {}) => new Promise((resolve, reject) => plugin.onMethodCall({ method, argument: k => args[k] ?? null }, {
-    success: resolve, error: (code, message) => reject(Object.assign(new Error(message), { code })), notImplemented: () => reject(new Error('not implemented')),
-  }));
-  return { plugin, call, files, handles, closed, get flushed() { return flushed; } };
+  const native = load('../files/FilePickerPlugin', { '@kit.CoreFileKit': { fileIo: io, picker: { DocumentViewPicker, DocumentSelectOptions: class {}, DocumentSaveOptions: class {} } } }, { cacheDir: '/cache', filesDir: '/files' });
+  return { ...native, files, directories, handles, closed, get flushed() { return flushed; } };
 }
 
 test('导入短读/短写仍得到完整缓存，文件名不能逃逸缓存目录', async () => {
@@ -93,6 +79,6 @@ test('并发请求被拒绝，engine 销毁后不复制返回的 URI', async () 
   let resume; const selected = new Promise(resolve => { resume = resolve; });
   const f = fixture({ selected }); const pending = f.call('pickFiles');
   await assert.rejects(f.call('pickFiles'), { code: 'picker_busy' });
-  f.plugin.onDetachedFromEngine({}); resume(['content://picked']);
+  f.plugin.onDetachedFromEngine({}); f.plugin.onAttachedToEngine({ getBinaryMessenger() {} }); resume(['content://picked']);
   await assert.rejects(pending, { code: 'file_picker_error' }); assert.equal(f.closed.length, 0);
 });
