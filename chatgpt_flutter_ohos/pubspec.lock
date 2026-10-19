@@ -143,6 +143,13 @@ packages:
       relative: true
     source: path
     version: "1.0.0"
+  chatai_ohos_image_picker:
+    dependency: "direct main"
+    description:
+      path: "../ohos_plugins/image_picker"
+      relative: true
+    source: path
+    version: "0.1.0"
   chatgpt_app_core:
     dependency: "direct main"
     description:
@@ -738,7 +745,7 @@ packages:
   share_plus:
     dependency: "direct overridden"
     description:
-      path: "../ohos_stubs/share_plus"
+      path: "../ohos_plugins/share_plus"
       relative: true
     source: path
     version: "12.0.2"

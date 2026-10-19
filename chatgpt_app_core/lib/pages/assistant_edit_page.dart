@@ -1264,10 +1264,6 @@ class _AssistantEditPageState extends State<AssistantEditPage> {
   }
 
   void _pickAvatarImage() async {
-    if (Platform.operatingSystem == 'ohos') {
-      HiDialog.showSnackBar(context, '当前平台暂不支持选择图片头像');
-      return;
-    }
     String? owned;
     try {
       final session = await _session;

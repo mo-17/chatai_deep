@@ -308,8 +308,7 @@ class _MessageInputWidgetState extends State<MessageInputWidget> {
     return false;
   }
 
-  bool get _showPhotoBtn =>
-      Platform.operatingSystem != 'ohos'; // image_picker 暂未支持鸿蒙
+  bool get _showPhotoBtn => true;
 
   bool get _showFileBtn => true;
 

@@ -3,7 +3,6 @@ import 'package:chatgpt_app_core/chat/application/assistant_operation_scope.dart
 import 'package:chatgpt_app_core/widget/backend_selection_picker.dart';
 import 'package:chatgpt_app_core/chat/application/conversation_generation_service.dart';
 import 'dart:async';
-import 'dart:io';
 
 import 'package:chatgpt_app_core/ai_readiness/ai_ready_state.dart';
 import 'package:chatgpt_app_core/backup/backup_service.dart';
@@ -1271,12 +1270,11 @@ class _ConversationListPageState extends State<ConversationListPage>
               title: const Text('设置表情头像'),
               onTap: () => Navigator.pop(ctx, 'emoji'),
             ),
-            if (Platform.operatingSystem != 'ohos')
-              ListTile(
-                leading: const Icon(Icons.photo_library_outlined),
-                title: const Text('从相册选择'),
-                onTap: () => Navigator.pop(ctx, 'image'),
-              ),
+            ListTile(
+              leading: const Icon(Icons.photo_library_outlined),
+              title: const Text('从相册选择'),
+              onTap: () => Navigator.pop(ctx, 'image'),
+            ),
             ListTile(
               leading: const Icon(Icons.restart_alt),
               title: const Text('恢复默认头像'),

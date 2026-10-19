@@ -1,5 +1,3 @@
-import 'dart:io';
-
 import 'package:chat_message/models/message_model.dart';
 import 'package:chatgpt_app_core/dao/ai_catalog_dao.dart';
 import 'package:chatgpt_app_core/db/conversation_dao.dart';
@@ -9,7 +7,6 @@ import 'package:chatgpt_app_core/model/conversation_model.dart';
 import 'package:chatgpt_app_core/pages/conversation_page.dart';
 import 'package:chatgpt_app_core/util/app_events.dart';
 import 'package:flutter/material.dart';
-import 'package:flutter/services.dart';
 import 'package:login_sdk/dao/login_dao.dart';
 import 'package:login_sdk/util/navigator_util.dart';
 import 'package:openai_flutter/utils/ai_logger.dart';
@@ -171,16 +168,9 @@ class _ForwardSheet extends StatelessWidget {
   }
 }
 
-/// 系统分享。鸿蒙无 share_plus 原生实现（OHOS 壳 override 到空 stub），
-/// 这里以 `ohos` 守卫降级为复制到剪贴板，避免触达 stub。
+/// 将用户选择的内容交给系统分享面板。
 Future<void> _shareToOtherApps(BuildContext context, String content,
     ScaffoldMessengerState messenger) async {
-  if (Platform.operatingSystem == 'ohos') {
-    await Clipboard.setData(ClipboardData(text: content));
-    messenger.showSnackBar(
-        const SnackBar(content: Text('鸿蒙暂不支持系统分享，已复制到剪贴板')));
-    return;
-  }
   try {
     await SharePlus.instance.share(ShareParams(
       text: content,
@@ -201,8 +191,11 @@ Rect? _shareOrigin(BuildContext context) {
 }
 
 /// 新建会话并写入转发内容（作为一条发送方消息），随后直接打开该会话。
-Future<void> _forwardToNewConversation(BuildContext context,
-    HiDBManager storage, ConversationListDao convDao, String content,
+Future<void> _forwardToNewConversation(
+    BuildContext context,
+    HiDBManager storage,
+    ConversationListDao convDao,
+    String content,
     ScaffoldMessengerState messenger) async {
   try {
     final now = DateTime.now().millisecondsSinceEpoch;
@@ -227,8 +220,12 @@ Future<void> _forwardToNewConversation(BuildContext context,
 }
 
 /// 把转发内容追加进已有会话（作为一条发送方消息），刷新其预览/时间后打开该会话。
-Future<void> _forwardToConversation(BuildContext context, HiDBManager storage,
-    ConversationListDao convDao, ConversationModel conv, String content,
+Future<void> _forwardToConversation(
+    BuildContext context,
+    HiDBManager storage,
+    ConversationListDao convDao,
+    ConversationModel conv,
+    String content,
     ScaffoldMessengerState messenger) async {
   try {
     final now = DateTime.now().millisecondsSinceEpoch;

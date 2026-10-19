@@ -1,0 +1,13 @@
+name: chatai_ohos_image_picker
+description: HarmonyOS image_picker platform implementation for the app shell.
+version: 0.1.0
+publish_to: 'none'
+environment:
+  sdk: '>=3.9.0 <4.0.0'
+dependencies:
+  flutter:
+    sdk: flutter
+  image_picker_platform_interface: ^2.11.0
+dev_dependencies:
+  flutter_test:
+    sdk: flutter

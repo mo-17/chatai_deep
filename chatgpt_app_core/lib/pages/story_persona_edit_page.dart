@@ -1,5 +1,3 @@
-import 'dart:io';
-
 import 'package:chatgpt_app_core/db/hi_db_manager.dart';
 import 'package:chatgpt_app_core/db/story_persona_dao.dart';
 import 'package:chatgpt_app_core/model/story_persona_model.dart';
@@ -82,10 +80,6 @@ class _StoryPersonaEditPageState extends State<StoryPersonaEditPage> {
   }
 
   Future<void> _pickAvatar() async {
-    if (Platform.operatingSystem == 'ohos') {
-      HiDialog.showSnackBar(context, '当前平台暂不支持选择图片头像');
-      return;
-    }
     try {
       final picked = await _imagePicker.pickImage(
         source: ImageSource.gallery,

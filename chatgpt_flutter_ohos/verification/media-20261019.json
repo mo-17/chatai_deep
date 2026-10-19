@@ -1,0 +1,52 @@
+{
+  "date": "2026-10-19",
+  "parentCommit": "f4717302b31467cef8388d0118bad3716f1939ed",
+  "flutter": "3.35.7-ohos-local",
+  "localSnapshotNotUpstreamRelease": true,
+  "releaseHap": {
+    "path": "chatgpt_flutter_ohos/build/ohos/hap/entry-default-signed.hap",
+    "bytes": 52605730,
+    "sha256": "680719ebbc5b063ebb5ad6851e6698bb2031c7150af514a9520e9f7635784065",
+    "hasAotLibapp": true,
+    "nativeImageAndShareChannelsPresent": true
+  },
+  "checks": {
+    "nativeTests": 15,
+    "imageDartTests": 3,
+    "shareDartTests": 3,
+    "coreRegressionTests": 53,
+    "staticAnalysis": "core, shell and both adapter packages: no issues"
+  },
+  "physicalDeviceVerified": false,
+  "realImageCodecOrSystemShareVerified": false,
+  "published": false,
+  "primaryApiSources": [
+    "https://developer.huawei.com/consumer/cn/doc/harmonyos-references/share-system-share",
+    "https://github.com/openharmony/docs/blob/master/en/application-dev/reference/apis-camera-kit/js-apis-cameraPicker.md"
+  ],
+  "sourceSha256": {
+    "chatgpt_app_core/lib/pages/assistant_edit_page.dart": "b7287fdebf6a01522b984d711ea0208e2303fbc2f4e3d59ba2bd548c292d2d57",
+    "chatgpt_app_core/lib/pages/conversation_list_page.dart": "b3d6408f9142b7e5724c32afdeb652a39f633a45cf9f1ca8e7dd00fff59824fa",
+    "chatgpt_app_core/lib/pages/story_persona_edit_page.dart": "b61705f4c3c4c9a2735f2c3668086112410b9de9f95cb683919e1f3d2e018565",
+    "chatgpt_app_core/lib/widget/forward_sheet.dart": "aec3323d0c4bb5ee07d9096063852fc8ac39cd9ac9a3195ddfd68cb058450d12",
+    "chatgpt_app_core/lib/widget/message_input_widget.dart": "552e9c52b45fa3f20abda0e81aaa44c8ee352fb077ca86015ca14757348a68b7",
+    "chatgpt_flutter_ohos/README.md": "83d8833914a1a7b1aef3cbea4a24ae375138208c960233019a7a24804c823e79",
+    "chatgpt_flutter_ohos/lib/main.dart": "32c75422e2dd61e47aa73903c7515e9b4e7ee6da1f7e0b2b0a60eedfe7e1ff90",
+    "chatgpt_flutter_ohos/ohos/entry/src/main/ets/entryability/EntryAbility.ets": "8e7e41a17bab3e37262ba71307d0f626f058d98870f8cd17a2b49e7edc224142",
+    "chatgpt_flutter_ohos/pubspec.lock": "6af622a47e26bc056270f1b3bbed12d87326287647c29ae87cddbe2d2a8f721b",
+    "chatgpt_flutter_ohos/pubspec.yaml": "f5fc00125f7e610fb377e25912f9bbd87f048a99a021f806d63bc7f3ebf8cfda",
+    "chatgpt_flutter_ohos/ohos/entry/src/main/ets/media/ImagePickerPlugin.ets": "dbf008f2b91b5f28e73efe1e39493cbfbf25d9226b4c9e1bc87cf503ee7d252b",
+    "chatgpt_flutter_ohos/ohos/entry/src/main/ets/media/SharePlugin.ets": "f5e6c07defe54c84ea4b69d7b0a7c690f01d50d179759d0bf6c38a9213e56c9d",
+    "chatgpt_flutter_ohos/test/native_image_picker.test.cjs": "27509a00e6c090ee01c471be6ad9b9fe39d43cf710682e6d2d55646a154956ba",
+    "chatgpt_flutter_ohos/test/native_share.test.cjs": "9f9d3b5e5da1fed55ca1ac96eb1a487d3c9f717e06d4db02f780ef0cc6c4b1ac",
+    "chatgpt_flutter_ohos/test/support/native_plugin_loader.cjs": "a30e97327093720beddf47f0ac6531760e3c64d5e498bf13516faf184337b503",
+    "ohos_plugins/image_picker/.gitignore": "6c05225876d832a86e95ece72a732a71eff869330413877c7a947f3eeafa464b",
+    "ohos_plugins/image_picker/lib/ohos_image_picker.dart": "b4743f87b40243896c92ef50a867ced84a33d6ba6d3930dd7477863fe8e85ca8",
+    "ohos_plugins/image_picker/pubspec.yaml": "497ef92692681e20d995b55ed833779759cf68f4e5a41718e6609df369ff1980",
+    "ohos_plugins/image_picker/test/ohos_image_picker_test.dart": "ab922ff502a62833142bf4899b3bfc16a0d466f906e53c2294d1d0d4d38fc4b5",
+    "ohos_plugins/share_plus/.gitignore": "6c05225876d832a86e95ece72a732a71eff869330413877c7a947f3eeafa464b",
+    "ohos_plugins/share_plus/lib/share_plus.dart": "7444e42a6b0d9f1acdf58b6e8eaf3d7093a171ca3c2733eb9b7a5b3785ac671e",
+    "ohos_plugins/share_plus/pubspec.yaml": "de571b37b20d7b12794865c101ec5cbb3ed15e4d6b611d89d06dd12ce3822861",
+    "ohos_plugins/share_plus/test/share_plus_test.dart": "82100d7ca4a14f8bd49ea603377696d36551540f0f390825daa547352746ffd1"
+  }
+}
