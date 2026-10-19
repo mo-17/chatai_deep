@@ -328,10 +328,10 @@ packages:
   flutter_tts:
     dependency: "direct overridden"
     description:
-      path: "../ohos_stubs/flutter_tts"
+      path: "../ohos_plugins/flutter_tts"
       relative: true
     source: path
-    version: "4.2.3"
+    version: "4.2.5"
   flutter_web_plugins:
     dependency: transitive
     description: flutter

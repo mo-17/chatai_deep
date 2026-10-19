@@ -1,5 +1,3 @@
-import 'dart:io';
-
 import 'package:flutter_tts/flutter_tts.dart';
 import 'package:openai_flutter/utils/ai_logger.dart';
 
@@ -176,13 +174,7 @@ class FlutterTtsReadAloudService implements ReadAloudService {
 
   final TtsEngine _engine;
 
-  static bool get isSupported {
-    try {
-      return Platform.operatingSystem != 'ohos';
-    } catch (_) {
-      return true;
-    }
-  }
+  static bool get isSupported => true;
 
   @override
   Future<void> speak(ReadAloudRequest request) async {

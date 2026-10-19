@@ -1,5 +1,6 @@
 {
   "string": [
+    {"name": "microphone_reason", "value": "用于将语音转换为文字及语音对话"},
     {
       "name": "module_desc",
       "value": "module description"

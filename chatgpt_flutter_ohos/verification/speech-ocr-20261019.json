@@ -1,0 +1,80 @@
+{
+  "date": "2026-10-19",
+  "parentCommit": "9552a3d3e667abb8635ab2e7e2adc507e807af28",
+  "flutter": "3.35.7-ohos-local",
+  "frameworkRevision": "002ff8966ae121929da5504479f80937783fe6d2",
+  "localSnapshotNotUpstreamRelease": true,
+  "capabilities": [
+    "system_offline_speech_recognition",
+    "system_offline_text_to_speech",
+    "image_ocr",
+    "scanned_pdf_ocr"
+  ],
+  "releaseHap": {
+    "path": "chatgpt_flutter_ohos/build/ohos/hap/entry-default-signed.hap",
+    "bytes": 52648069,
+    "sha256": "cb7448db142e89edad5ca15c0f5c08d7690e8a80602a458e68bb741589b62623",
+    "aotLoadSegmentsSha256": "921c680b7f64542703f74741fd1768af6ed353ed230e4f3f13da2e27037c6be6",
+    "independentDartCompileVerified": true,
+    "embeddedAotMatches": true,
+    "nativeChannelsPresent": true,
+    "signing": "existing local/debug configuration"
+  },
+  "checks": {
+    "nativeAndBuildGuardTests": 31,
+    "ttsDartTests": 4,
+    "coreRegressionTests": 59,
+    "staticAnalysis": "core changed files, shell and TTS adapter: no issues"
+  },
+  "physicalDeviceVerified": false,
+  "hdcTargets": "Empty",
+  "realSpeechOrOcrAccuracyVerified": false,
+  "published": false,
+  "remainingVoiceLimitations": [
+    "Sherpa built-in and user model voices not ported; explicit unsupported error",
+    "Headset duplex audio routing not ported; existing turn-taking fallback"
+  ],
+  "primaryApiSources": [
+    "https://developer.huawei.com/consumer/cn/doc/harmonyos-references/hms-ai-speechrecognizer",
+    "https://developer.huawei.com/consumer/cn/doc/harmonyos-references/hms-ai-texttospeech",
+    "https://developer.huawei.com/consumer/cn/doc/architecture-guides/stockwatchocr-0000002752449305",
+    "https://developer.huawei.com/consumer/cn/doc/doccenter-release-notes/js-apidiff-pdfkit-b035"
+  ],
+  "verificationLogSha256": {
+    "build-verified.log": "53bb4c4bc41b8f897728f6f5f6e8a4b934bce743b9b5da99a78f1ca7a46d399b",
+    "native-test.log": "7707ae20fff69543b18b72b1999282630246e87e86682c1bf19f818e4fcfd15f",
+    "core-test.log": "bdfe43974e9604b9a953e1aac99599d2c1baf181ac7a0c80e5a899db4c9effa8",
+    "core-analyze.log": "d652f99f562aaea84e631bc5f655eaea0b84e1dfe753be7fab26cb10598228a0",
+    "shell-analyze.log": "20ed598a71bf0bc6123c521f2e8dff7706c0d46035994fc87f598dcd5345558b",
+    "tts-test.log": "2682a0695f8f73df3d5a107c14aedda208595db163afdf06c3344a1370473226",
+    "tts-analyze.log": "29b9c48351f179f549f204dbceb20a635265d55f01c3adf1a2d33ca7eb9623a8"
+  },
+  "sourceSha256": {
+    "chatgpt_app_core/lib/chat/application/ocr_service.dart": "0e4b12471276e57867ca5f60a3f4a67f1eab62c182c40660822db8db6f6b36d8",
+    "chatgpt_app_core/lib/chat/application/ohos_ocr.dart": "0ae6fa4e194bb3ccdf13f2cfedc562c409c3ecf89db1500695e6fd30847fbace",
+    "chatgpt_app_core/lib/chat/application/read_aloud_service.dart": "d28a2ef83be85991161d580d31aeeff0cebc40339e60f2e2a89d3269b3f6909c",
+    "chatgpt_app_core/lib/chat/application/sherpa_onnx_read_aloud_service.dart": "8fa9c760ffbb30e2d6ea2524afc4433daaea716b4d7debe8aa62786817a369e3",
+    "chatgpt_app_core/lib/voice/speech_input.dart": "d090600dce9eb045dd98057fe47196e4a8c33b536d88b84068187cf9c970533d",
+    "chatgpt_app_core/test/ohos_ocr_test.dart": "ac09e0075043f5e8d18d637ef6867065445229a9028014f08c8abf565cf662ed",
+    "chatgpt_app_core/test/sherpa_onnx_read_aloud_service_test.dart": "eab80e16b2ef516cab09fe5384bac00062dd6148cc22b6fb138da76f2ef28170",
+    "chatgpt_flutter_ohos/README.md": "0c02a5232befd36213c404d637f8ddeee0a609f699e41f5ff7cd7eb39243d953",
+    "chatgpt_flutter_ohos/ohos/entry/src/main/ets/entryability/EntryAbility.ets": "cbafb092f2cee955b9a5c64641a163759fc78058a0bb182fc162e82e6012abf4",
+    "chatgpt_flutter_ohos/ohos/entry/src/main/ets/ocr/OcrPlugin.ets": "ba6169fbe6e6d16026af2299b59d924489a39d9cf5188b616d7822d32fed53f7",
+    "chatgpt_flutter_ohos/ohos/entry/src/main/ets/speech/SpeechRecognizerPlugin.ets": "d2119df9f92b060854773c6dd09696df31d81a2d23a6c4e954f88d95f488bb8b",
+    "chatgpt_flutter_ohos/ohos/entry/src/main/ets/speech/TtsPlugin.ets": "65773a281469a4a0345a7d61bffe8bf3235e5e5aeec262715ae65326aebf498e",
+    "chatgpt_flutter_ohos/ohos/entry/src/main/module.json5": "419a722235b19fddba4f1b41269a2f6b17070368b6b2b06a1e3b865d19f4bc79",
+    "chatgpt_flutter_ohos/ohos/entry/src/main/resources/base/element/string.json": "2d4c59cf171e56f2938f1d024040e10a7a4f3690590fe134ce6ad41d184cd647",
+    "chatgpt_flutter_ohos/pubspec.lock": "135d6e7d7511c17e29ed1172b6743bf5181bdac6549499170cfd7533526189d2",
+    "chatgpt_flutter_ohos/pubspec.yaml": "96284c86c1bdc5d721d28515c9cb003fbeb3aaa6b9d0bbb47b29e00e1c24d09c",
+    "chatgpt_flutter_ohos/scripts/build-release.sh": "d34794b5f532c7640569957bb9fedd18e8967881cafd66246a3980a57278ef09",
+    "chatgpt_flutter_ohos/scripts/verify-hap-aot.py": "a5e416d3bd679f230a47120efc03e01e0f7c814910966306762922ad8fd0b72c",
+    "chatgpt_flutter_ohos/test/build_release_guard.test.cjs": "7c425f2e0d6281d828ecb2afe8c831b764f750891e0451afc3b7b3c76426e49b",
+    "chatgpt_flutter_ohos/test/native_ocr.test.cjs": "fd9b03800369e1dd9624c590564342b5bf76c9b6f7b4ba65d7e0f7f3870adeba",
+    "chatgpt_flutter_ohos/test/native_speech.test.cjs": "8a127f37ccafebe5300f0ae78b81c6212db65b87b1f500b06192acec89ac1f2d",
+    "chatgpt_flutter_ohos/test/support/native_plugin_loader.cjs": "af8681fbf1034300ec7eac8fe33eedf85e04d17d03637d906e946779afd640c9",
+    "ohos_plugins/flutter_tts/.gitignore": "6c05225876d832a86e95ece72a732a71eff869330413877c7a947f3eeafa464b",
+    "ohos_plugins/flutter_tts/lib/flutter_tts.dart": "0be27d9a6cf97ca3aa2a5e1c79c69bb0ccc0da7d4a63dfa3e3900840c504c081",
+    "ohos_plugins/flutter_tts/pubspec.yaml": "2e01589c800f71b1b4ea556059e57121248e3df4ac60d6e82a04d20a92783599",
+    "ohos_plugins/flutter_tts/test/flutter_tts_test.dart": "16898c817d5211b98a73a519be7f84105a5d183bdc9730628adb7a37d411eb10"
+  }
+}

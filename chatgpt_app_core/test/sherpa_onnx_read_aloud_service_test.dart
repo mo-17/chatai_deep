@@ -7,6 +7,31 @@ import 'package:chatgpt_app_core/chat/application/sherpa_onnx_tts_assets.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 void main() {
+  test('系统朗读与停止不创建模型播放器，不支持模型音色时明确提示', () async {
+    var created = 0;
+    final system = _FakeReadAloudService();
+    final service = HybridReadAloudService(
+      system: system,
+      offlineSupported: () => false,
+      offlineFactory: () {
+        created++;
+        return _FakeReadAloudService();
+      },
+    );
+    await service.stop();
+    await service.speak(const ReadAloudRequest(text: '系统朗读'));
+    await service.stop();
+    expect(created, 0);
+    expect(system.stopCount, 2);
+    await expectLater(
+        Future.sync(() => service.speak(ReadAloudRequest(
+              text: '模型音色',
+              voiceStyle: TtsVoiceStyle.offlineZhFemale.id,
+            ))),
+        throwsStateError);
+    expect(created, 0);
+  });
+
   test(
       'strict continuous voice cannot silently succeed on unsupported offline engine',
       () async {

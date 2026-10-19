@@ -7,8 +7,14 @@ module.exports = function load(name, dependencies, context) {
   const source = fs.readFileSync(path.resolve(__dirname, '../../ohos/entry/src/main/ets/media', name + '.ets'), 'utf8');
   const code = ts.transpileModule(source, { compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2021 } }).outputText;
   const module = { exports: {} };
-  vm.runInNewContext(code, { module, exports: module.exports, Map, Uint8Array, ArrayBuffer, require(id) {
-    if (id === '@ohos/flutter_ohos') return { MethodChannel: class { setMethodCallHandler() {} } };
+  const events = [], timers = new Map();
+  let timerId = 0;
+  vm.runInNewContext(code, { module, exports: module.exports, Map, Uint8Array, ArrayBuffer,
+    setTimeout(fn, ms) { const id = ++timerId; timers.set(id, { fn, ms }); return id; },
+    clearTimeout(id) { timers.delete(id); }, require(id) {
+    if (id === '@ohos/flutter_ohos') return { MethodChannel: class {
+      setMethodCallHandler() {} invokeMethod(method, value) { events.push({ method, value }); }
+    } };
     if (!(id in dependencies)) throw new Error('Unexpected import: ' + id);
     return dependencies[id];
   } });
@@ -17,5 +23,5 @@ module.exports = function load(name, dependencies, context) {
   const call = (method, args = {}) => new Promise((resolve, reject) => plugin.onMethodCall({ method, argument: k => args[k] ?? null }, {
     success: resolve, error: (code, message) => reject(Object.assign(new Error(message), { code })), notImplemented: () => reject(new Error('not implemented')),
   }));
-  return { plugin, call };
+  return { plugin, call, events, timers };
 };

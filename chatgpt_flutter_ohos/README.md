@@ -11,7 +11,7 @@
 eval "$(mise activate zsh --shims)"
 eval "$(mise env -s zsh)"
 fvm flutter pub get
-fvm flutter build hap --release --dart-define-from-file=../deploy/flutter/production.json
+./scripts/build-release.sh ../deploy/flutter/production.json
 ```
 
 `mise.toml` 配置 DevEco、HOS_SDK_HOME 和工具路径。生产构建必须显式指定
@@ -19,6 +19,10 @@ fvm flutter build hap --release --dart-define-from-file=../deploy/flutter/produc
 当前本机 SDK 是 `002ff8966a` 本地快照、Dart 3.9.2，添加了
 `3.35.7-ohos-local` 本地标签用于修复版本识别；它不是上游正式发布标签。
 新机器应安装具有完整版本信息的 Flutter OH 3.35 SDK，避免手动改写版本缓存。
+本地快照的 Hvigor 插件会捕获并吞掉 Dart 编译异常，可能继续打包旧缓存。
+上述脚本先独立执行 Dart AOT 编译，失败立即停止，再核对 HAP 内 `libapp.so`
+与本次编译结果的程序头及可加载段 SHA-256（打包器会改写不参与加载的段名称表）；
+单独看到 `flutter build hap` 成功不足以验收。
 
 ## 已接入的文件能力
 
@@ -53,8 +57,28 @@ HarmonyOS `DocumentViewPicker`。无须申请整个存储空间的读写权限�
 面板成功展示不等于完成分享：等待关闭事件并结合系统完成事件返回结果，退出 engine 时返回未知状态。
 这些结果不代表接收应用已完成导入。
 
-OCR/扫描 PDF、目录递归导入、语音和 JS 执行尚未补齐，相关平台守卫继续生效。
-TTS/JS stub 的 API 补齐只解决编译，不代表这些功能可用。
+## 语音与 OCR
+
+`SpeechRecognizerPlugin.ets` 实现现有 `speech_to_text` 标准通道，申请麦克风权限后
+调用 Core Speech Kit 离线识别（`online: 1`）。聊天语音输入和轮流收音/播放的
+语音对话使用同一个共享租约。分段结果累计回传，最终结果、取消、错误或 24 秒
+超时均结束录音；后台退出当前会话，旧会话回调不能修改新会话。
+
+`../ohos_plugins/flutter_tts` 替换空实现，使用系统离线音色朗读，支持系统音色查询、
+语速、音量和音调。长文本分段，等待真实播放结束后再播下一段；停止、后台、
+超时和 engine 销毁会结束当前播放。离线服务或指定语言不可用会返回错误，不自动
+改用联网语音。系统声音路径不创建 Sherpa 播放器。Sherpa 内置/用户模型音色仍未移植，
+选择后明确提示改用系统声音；耳机双工音频路由仍未移植，会按现有逻辑回退到轮流模式。
+
+`OcrService` 在 OHOS 分派到 Core Vision 文字识别；知识库可导入图片，扫描 PDF
+使用 PDF Kit 逐页栅格化后 OCR。原文件必须位于应用沙箱，不接受符号链接或路径穿越。
+图片最多 20 MiB / 64M 像素，解码最长边 4096；PDF 最多 64 MiB，OCR 最多前 20 页，
+每页渲染最长边 3072，超过页数标注截断；正文最多 100 万字符。
+单次只允许一个识别任务，Dart 等待 2 分钟后按请求 ID 取消，原生完成资源释放前仍拒绝并发。
+后台取消和迟到结果不会写入知识库；空白图片返回空串，文件或服务错误明确失败。
+ML Kit / pdfx 的 stub 只保留编译导入，OHOS 的 OCR 不经过它们。
+
+目录递归导入和 JS 执行尚未补齐，相关平台守卫继续生效。
 
 ## 验证与真机清单
 
@@ -62,6 +86,7 @@ TTS/JS stub 的 API 补齐只解决编译，不代表这些功能可用。
 # 在仓库根目录执行：测试真实 ArkTS 方法体，系统 API 使用受控替身
 node --test chatgpt_flutter_ohos/test/native_file_picker.test.cjs
 node --test chatgpt_flutter_ohos/test/native_image_picker.test.cjs chatgpt_flutter_ohos/test/native_share.test.cjs
+node --test chatgpt_flutter_ohos/test/native_speech.test.cjs chatgpt_flutter_ohos/test/native_ocr.test.cjs chatgpt_flutter_ohos/test/build_release_guard.test.cjs
 # 在 ohos_plugins/file_picker 内执行：Dart 通道合同
 flutter test
 ```
@@ -71,4 +96,8 @@ flutter test
 角色卡/报告内容完整性，以及跨账号切换时的原有操作边界。
 图片需补测拍照/相册取消、中文名称、PNG 透明、EXIF 八种方向、HEIC、大图缩放、
 相机失败及切换后台；分享需测试取消、完成、目标应用延迟读取、连续分享和进程退出。
+语音需检查首次授权/拒绝后重试、离线语音包缺失、中文/英文、分段识别、停止后立即重录、
+长文朗读停止、后台打断、服务错误和轮流语音对话。OCR 需检查中文图片、旋转照片、
+无字图片、扫描 PDF、中途坏页、20 页边界、超大图片、超时取消及取消后重试。
+原生单测使用系统 API 替身，不能验证收音/播放质量、真实 OCR 准确率和 PDF 渲染效果。
 调试与 release 构建均使用当前工程配置的本地签名，不代表应用市场发布签名已验收。

@@ -461,11 +461,26 @@ class HybridReadAloudService implements ReadAloudService, ReadAloudPreparer {
   HybridReadAloudService({
     ReadAloudService? system,
     ReadAloudService? offline,
+    ReadAloudService Function()? offlineFactory,
+    bool Function()? offlineSupported,
   })  : _system = system ?? FlutterTtsReadAloudService(),
-        _offline = offline ?? SherpaOnnxReadAloudService();
+        _offline = offline,
+        _offlineFactory =
+            offlineFactory ?? (() => SherpaOnnxReadAloudService()),
+        _offlineSupported = offlineSupported ??
+            (() => offline != null || SherpaOnnxReadAloudService.isSupported);
 
   final ReadAloudService _system;
-  final ReadAloudService _offline;
+  ReadAloudService? _offline;
+  final ReadAloudService Function() _offlineFactory;
+  final bool Function() _offlineSupported;
+
+  ReadAloudService _offlineService() {
+    if (!_offlineSupported()) {
+      throw StateError('当前设备不支持 Sherpa 模型音色，请选择系统声音');
+    }
+    return _offline ??= _offlineFactory();
+  }
 
   @override
   Future<void> prepare(ReadAloudRequest request) async {
@@ -473,7 +488,8 @@ class HybridReadAloudService implements ReadAloudService, ReadAloudPreparer {
         !UserSherpaOnnxTtsModelStore.isUserVoiceStyle(request.voiceStyle)) {
       return;
     }
-    final service = _offline;
+    if (!_offlineSupported()) return;
+    final service = _offlineService();
     if (service is ReadAloudPreparer) {
       await (service as ReadAloudPreparer).prepare(request);
     }
@@ -483,7 +499,7 @@ class HybridReadAloudService implements ReadAloudService, ReadAloudPreparer {
   Future<void> speak(ReadAloudRequest request) {
     if (request.voiceStyle == TtsVoiceStyle.offlineZhFemale.id ||
         UserSherpaOnnxTtsModelStore.isUserVoiceStyle(request.voiceStyle)) {
-      return _offline.speak(request);
+      return _offlineService().speak(request);
     }
     return _system.speak(request);
   }
@@ -491,6 +507,7 @@ class HybridReadAloudService implements ReadAloudService, ReadAloudPreparer {
   @override
   Future<void> stop() async {
     await _system.stop();
-    await _offline.stop();
+    // 系统声音路径不创建、不调用尚未移植的模型播放器。
+    await _offline?.stop();
   }
 }

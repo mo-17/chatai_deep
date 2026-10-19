@@ -18,7 +18,10 @@ class SpeechInputFailure implements Exception {
 }
 
 bool get continuousSpeechSupported =>
-    (Platform.isAndroid || Platform.isIOS || Platform.isMacOS) &&
+    (Platform.isAndroid ||
+        Platform.isIOS ||
+        Platform.isMacOS ||
+        Platform.operatingSystem == 'ohos') &&
     !brokenIosSpeechSimulator;
 
 bool get brokenIosSpeechSimulator {
@@ -106,7 +109,7 @@ class SpeechInputBroker {
       if (_speech.isAvailable) await _speech.cancel();
       _cancelOwner = null;
       if (!_current(lease)) return;
-      if (Platform.operatingSystem == 'ohos' || brokenIosSpeechSimulator) {
+      if (brokenIosSpeechSimulator) {
         lease.finish(const _Result('', '当前设备暂不支持语音识别'));
         return;
       }
