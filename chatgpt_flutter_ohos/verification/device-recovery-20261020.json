@@ -1,0 +1,143 @@
+{
+  "date": "2026-10-20",
+  "timezone": "Asia/Shanghai",
+  "baseHead": "e54b1deff072bf4592bb63ba3ec93ee813526024",
+  "device": {
+    "model": "ALN-AL00",
+    "os": "OpenHarmony-6.1.1.120",
+    "api": 24,
+    "headset": "Bluetooth headset with microphone (SCO)"
+  },
+  "findings": {
+    "newRuntimeDefects": 0,
+    "runtimeUnchangedFromBase": true,
+    "newRegressionTests": 2
+  },
+  "verified": {
+    "bluetoothFullPeripheralDisconnection": {
+      "userOperatedHeadsetWhileAppForeground": true,
+      "localConnectedDeviceTypesAfterDisconnect": [
+        15,
+        1,
+        2
+      ],
+      "scoAndA2dpAbsentFromLiveLocalDevices": true,
+      "systemPlaybackInterrupted": true,
+      "playbackSettledMsFromTestStart": 12091,
+      "routeLossObservedMsFromTestStart": 12109,
+      "userConfirmedImmediateStopAndNoSpeakerFallback": true,
+      "reconnectSafeDuplex": true,
+      "reconnectHeadsetConnected": true,
+      "noStopLatencyMeasuredFromPhysicalDisconnect": true
+    },
+    "partialImageBatchRestart": {
+      "phase": "pending",
+      "completedImages": 1,
+      "completedImageBytes": 1582,
+      "imagesRenderedAfterConfirmation": 1,
+      "currentNonemptyInputPreserved": true,
+      "recordConsumedAfterConfirmation": true
+    },
+    "completedBatchBeforeCallbackRestart": {
+      "phase": "ready",
+      "completedImages": 2,
+      "confirmationDialogImageCount": 2,
+      "secondTerminationWhileConfirmationPendingPreservesRecord": true,
+      "discardDoesNotFillImagesOrText": true,
+      "discardConsumesRecord": true
+    },
+    "actualSystemPickerPendingRestart": {
+      "startedFromSharedInputWidget": true,
+      "personalPhotosSelected": false,
+      "phase": "pending",
+      "completedImages": 0,
+      "draftRestoredAfterExplicitConfirmation": true,
+      "recordConsumed": true
+    },
+    "microphoneProcessDeath": {
+      "forceStopTriggeredByRealOnListening": true,
+      "oldProcessAbsent": true,
+      "oldPidAbsentFromAudioPolicyService": true,
+      "newPidAbsentFromAudioPolicyServiceAfterRestart": true,
+      "audioRouteNotAutomaticallyActivatedAfterRestart": true
+    },
+    "hostTests": {
+      "nativeAndBuildPassed": 78,
+      "flutterRecoveryPassed": 7,
+      "nativeSystemApisUseTestDoubles": true
+    },
+    "noChatRequestsSent": true
+  },
+  "method": {
+    "termination": "HDC aa force-stop",
+    "copyBoundary": "temporary deterministic native checkpoints",
+    "copySource": "two isolated sandbox 320x200 solid-color PNG fixtures in the actual native copy loop",
+    "recoveryUi": "actual shared MessageInputWidget in a temporary device-only fixture page",
+    "temporaryCheckpointsRemovedFromSource": true,
+    "temporaryCheckpointsAbsentFromFinalInstalledRelease": true
+  },
+  "release": {
+    "reusedPreviouslyVerifiedBuild": true,
+    "priorVerification": "device-smoke-20261020.json",
+    "sha256": "d79d04c3620ab269418d8b4f8691c7292559a436a6a83495bf1aa3785a7cb4d7",
+    "bytes": 72910287,
+    "reinstallSucceeded": true,
+    "installedDebug": false,
+    "existingConversationVisible": true
+  },
+  "cleanup": {
+    "generatedCachedImagesRemovedByHash": 3,
+    "isolatedInputFixtureDirectoryRemoved": true,
+    "testJournalsConsumed": true,
+    "taskUsbForwardsRemoved": 11,
+    "remainingUsbForwards": "[Empty]"
+  },
+  "boundaries": [
+    "Other headset types and wired/USB routes not physically tested",
+    "Real provider URI authorization revocation during copy not tested",
+    "Actual login/account switching not performed; account isolation covered by host tests and prior scoped native tests",
+    "Recovery UI used the real shared widget in an isolated fixture route, not a login/navigation restoration flow",
+    "Long-running performance/power, incoming-call contention, and complex multi-page OCR not covered",
+    "Initial controller opener did not receive speech and was not counted as passing",
+    "Bluetooth system TTS interruption and routing were tested; no new Sherpa synthesis or voice-recognition accuracy claim"
+  ],
+  "runtimeSourceSha256": {
+    "chatgpt_flutter_ohos/ohos/entry/src/main/ets/media/ImagePickerPlugin.ets": "0d0bc896eca5ebd05ffbf8331677c61a17015efc285ab864e872d6a05a99bc43",
+    "chatgpt_flutter_ohos/ohos/entry/src/main/ets/speech/VoiceAudioPlugin.ets": "4830d6069b0441db698c1bf9229aa70579704fb0030e98620db32945b12f931c",
+    "chatgpt_flutter_ohos/ohos/entry/src/main/ets/entryability/EntryAbility.ets": "1f998b071cedc43973b81b3cfce1720848fdcd3949e1c759ed2e4a05954870fd",
+    "chatgpt_app_core/lib/widget/message_input_widget.dart": "d664a9d21b10b4fcdede7977cc95badae37ae19f8937555f28f558040d748330",
+    "chatgpt_app_core/lib/chat/application/ohos_image_recovery.dart": "1e31b22973717d97b5d20a2c5ca96a44a787eb14fc5776a21e060e66f329b323",
+    "chatgpt_flutter_ohos/lib/main.dart": "39bc956f6d525eefdeae64c8554589e8d22e62d79e71caf611dd35967e5d4b4f"
+  },
+  "evidenceSha256": {
+    "bt-direct.log": "2426393fdbfee10f6afdf0b895c5d873cdbca96a3dd1051a4b96cbac29c77156",
+    "reconnect.log": "736f39541f456889c0a786416be7bc7e083fe8930cc91a7ec8e9af07aa3f881a",
+    "partial-checkpoint.log": "9728e30b5a1c4208c0e2c170c0c0fc49917122f8a6bb8e9a40d25cc3b51de5f7",
+    "partial-restart.log": "1c88df41d9127034d8e36fc20669f920874450db261fd895b7db74efcb6720fa",
+    "partial-ui-verify.log": "25f9e0645d5e913d6d76ca7ba1e96e92ee6be356450f6279f2011d19624acc32",
+    "ready-checkpoint.log": "2a1883485d0359c7298c1ec6f37757193a782634ac63475c19306a171d9056c7",
+    "dialog-restart-record.log": "70881711a1a71bb5c99d00da37ed295d44a4b0d4fdf50694d9f7155c9388c19b",
+    "ready-discard-verify.log": "2f31ffb77456bef08d7613ab176e3893b156caf5530320fb2844f71577982eff",
+    "gallery-checkpoint.log": "1cf1f1bb77e237c9a5bee6e274d547cacdf05485919aa7adbbf820010be1dc6c",
+    "gallery-ui-verify.log": "3a05e1ad561d078170d750f5debf8f7f6afceccddfeb820d5a40a4c8dfd0e30b",
+    "mic-kill.log": "9358fd5f81a86948cb5222fdcb1f50480e9c3604631a6fc3a52b4a3bbfb96c2d",
+    "cleanup-inspect.log": "5b3b892b54ecd0b6ca3475d30f30ef2a6a8d2e9845324e527e0f35faeae5fa43",
+    "cleanup.log": "5b9ff255947d37ed135aec9dc00f5fe2426bce506deb168483d5a053aa4ddd31",
+    "native-tests.log": "10905c51170240f055055a95ab4c9d4084eef3b0835debbab22ec91ef64ad6f4",
+    "flutter-recovery-tests.log": "9e6ee826411468f0d8bc260b24251a2aec12cece821da0359d87331c37c89957",
+    "release-reinstall.log": "f834c7b0d04bb205664bb2c666cb872caae4780cb6147b38e95afc9ec077f844",
+    "release-installed.txt": "39adeff6516607eca1d361b4990e00f6735eb85e563eee829e14a910e39a2a21",
+    "audio-after-disconnect.txt": "3cdbf0dbb318866c96125c85d9d62b4193e2744cae285c81da776fcceb2bc139",
+    "audio-reconnected.txt": "383eeabcf346359f07df4d7e3a42397adf8747d1d2739d8a66b42f757315e0b5",
+    "audio-after-mic-kill.txt": "2aba8a324c0d1ba2295f6bf041bb40b1e0d755bd3e10eb3393aba2840e150f01",
+    "audio-after-mic-restart.txt": "2aba8a324c0d1ba2295f6bf041bb40b1e0d755bd3e10eb3393aba2840e150f01",
+    "partial-dialog.png": "f9cc9f74e8ec4087f3d5d5f1ff23a7c89a045a11ab45cdc2570c7ad7c8408f2a",
+    "partial-restored.png": "8e2a07137a5229547e37ea4579cc9f30ecfc50803d6b7bf85e6336160391c4f1",
+    "ready-dialog.png": "c150628a6a1cb7883d08155389db3d746c30621aedbd6aa33a3679a9f661b5be",
+    "dialog-restart-layout.json": "f7769832057e824eecceced0a3af3378c653263124c0d55c513c84ebafd33855",
+    "gallery-dialog-layout.json": "5f06674ba75cffa91bc5908d7f06cce3da6f3a1edcadf42837c71d0d3f762443",
+    "final-release-layout.json": "34c69bef01b02c31d8be8506787dddcac23724023f10a08c95acbe1805664274",
+    "final-release.png": "454c037037da3f83b693d599b5ea92e6f272e50de4757af449ea6e3b3873d141",
+    "fport-after-cleanup.txt": "465c6ea0be785220b2d054ab72c80dc4e33e546475e18d1b788545f4ab4b279b"
+  }
+}

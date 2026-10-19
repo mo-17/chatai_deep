@@ -2,12 +2,12 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const load = require('./support/native_plugin_loader.cjs');
 function fixture({ selected = ['photo://1'], capture = { resultCode: 0, resultUri: 'photo://camera' },
-  size = 100, failPack = false, failDecode = false, failDecodeAt = 0, mime = 'image/jpeg', orientation = 'Top-left', dimensions = { width: 4000, height: 2000 }, files = new Map() } = {}) {
+  beforeDecode = async () => {}, size = 100, failPack = false, failDecode = false, failDecodeAt = 0, mime = 'image/jpeg', orientation = 'Top-left', dimensions = { width: 4000, height: 2000 }, files = new Map() } = {}) {
   const handles = new Map(), released = [];
   let next = 0, decodeOptions, packOptions, cameraProfile, selectOptions, decodes = 0;
   const transforms = [];
   const pixel = { async release() { released.push('pixels'); }, async flip(x, y) { transforms.push(['flip', x, y]); }, async rotate(angle) { transforms.push(['rotate', angle]); } };
-  const decoder = { async getImageInfo() { if (failDecode || ++decodes === failDecodeAt) throw new Error('decode'); return { size: dimensions, mimeType: mime }; },
+  const decoder = { async getImageInfo() { const current = ++decodes; await beforeDecode(current); if (failDecode || current === failDecodeAt) throw new Error('decode'); return { size: dimensions, mimeType: mime }; },
     async getImageProperty() { return orientation; }, async createPixelMap(options) { decodeOptions = options; return pixel; }, async release() { released.push('decoder'); } };
   const io = {
     OpenMode: { READ_ONLY: 1, CREATE: 2, READ_WRITE: 4, TRUNC: 8 },
@@ -138,4 +138,44 @@ test('系统尚未返回的选择恢复为中断状态，丢失缓存不返回�
   const g=fixture();await g.call('setRecoveryContext',{scope,text:'',images:[]});
   const picked=await g.call('pickImage',{source:'gallery'});g.files.delete(picked.path);
   assert.equal((await fixture({files:g.files}).call('retrieveLostData',{scope})).files.length,0);
+});
+
+test('复制下一张时重启只恢复已落盘图片，不能返回未确认的批次结果', async () => {
+  let resumeSecond, reachedSecond;
+  const second = new Promise(resolve => { reachedSecond = resolve; });
+  const gate = new Promise(resolve => { resumeSecond = resolve; });
+  const f = fixture({ selected: ['photo://first', 'photo://second'],
+    beforeDecode: async index => { if (index === 2) { reachedSecond(); await gate; } } });
+  const scope = 'd'.repeat(64);
+  const id = await f.call('setRecoveryContext', { scope, text: '复制中的原输入', images: [] });
+  const picking = f.call('pickImages', { source: 'gallery', limit: 4 });
+  await second;
+  try {
+    assert.equal(await f.call('retrieveLostData', { scope }), null, '旧进程忙碌时不能并发消费');
+    const restarted = fixture({ files: f.files });
+    const record = await restarted.call('retrieveLostData', { scope });
+    assert.equal(record.id, id); assert.equal(record.phase, 'pending');
+    assert.equal(record.text, '复制中的原输入'); assert.equal(record.files.length, 1);
+    assert.deepEqual([...f.files.get(record.files[0].path)], [1, 2, 3, 4, 5]);
+    assert.equal(await restarted.call('retrieveLostData', { scope: 'e'.repeat(64) }), null);
+  } finally { resumeSecond(); }
+  const picked = await picking;
+  assert.equal(picked.length, 2);
+  const complete = await fixture({ files: f.files }).call('retrieveLostData', { scope });
+  assert.equal(complete.phase, 'ready'); assert.equal(complete.files.length, 2);
+});
+
+test('确认旧恢复弹窗不能消费同作用域后来产生的恢复记录', async () => {
+  const f = fixture(), scope = 'f'.repeat(64);
+  const previous = await f.call('setRecoveryContext', { scope, text: '旧草稿', images: [] });
+  await f.call('pickImage', { source: 'gallery' });
+  const current = await f.call('setRecoveryContext', { scope, text: '新草稿', images: [] });
+  await f.call('pickImage', { source: 'gallery' });
+  assert.notEqual(current, previous);
+  const restarted = fixture({ files: f.files });
+  await restarted.call('ackRecovery', { scope, id: previous });
+  const record = await restarted.call('retrieveLostData', { scope });
+  assert.equal(record.id, current); assert.equal(record.text, '新草稿');
+  await restarted.call('ackRecovery', { scope, id: current });
+  assert.equal(await restarted.call('retrieveLostData', { scope }), null);
 });
