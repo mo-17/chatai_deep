@@ -355,7 +355,7 @@ void main() {
     expect(result.imported, 3);
     expect(result.skipped, 1);
     expect(result.failedItems.single.name, 'broken.docx');
-    expect(result.failedItems.single.reason, contains('识别失败'));
+    expect(result.failedItems.single.reason, '文件解析失败，请检查文件格式后重试');
     final docs = await dao.getDocuments();
     expect(
         docs.map((doc) => doc.title), containsAll(['word', 'excel', 'note']));

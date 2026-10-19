@@ -114,7 +114,9 @@ class KnowledgeDao implements IKnowledge, ITable {
   }
 
   Future<int?> addPagedDocument(String title, List<String> pages,
-      {bool isPdf = true, bool rejectDuplicates = false}) async {
+      {bool isPdf = true,
+      bool rejectDuplicates = false,
+      void Function()? beforeCommit}) async {
     final chunks = <(String, int?)>[
       for (var page = 0; page < pages.length; page++)
         for (final chunk in KnowledgeChunker.split(pages[page]))
@@ -125,6 +127,7 @@ class KnowledgeDao implements IKnowledge, ITable {
     final hash =
         sha256.convert(utf8.encode(pages.join('\n\n').trim())).toString();
     final docId = await storage.db.transaction((txn) async {
+      beforeCommit?.call();
       if (rejectDuplicates) {
         final same = await txn.query('tb_kb_doc',
             where: 'contentHash = ?', whereArgs: [hash], limit: 1);
@@ -132,6 +135,7 @@ class KnowledgeDao implements IKnowledge, ITable {
           throw FormatException('内容已存在于「${same.single['title']}」，未重复导入');
         }
       }
+      beforeCommit?.call();
       final docId = await txn.insert('tb_kb_doc', {
         'title': title.trim().isEmpty ? '未命名文档' : title.trim(),
         'chunkCount': chunks.length,
@@ -151,6 +155,7 @@ class KnowledgeDao implements IKnowledge, ITable {
         });
       }
       await batch.commit(noResult: true);
+      beforeCommit?.call();
       return docId;
     });
     await rebuildVectorIndex(docId: docId);

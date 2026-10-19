@@ -1,4 +1,5 @@
 import 'dart:convert';
+import 'package:chatgpt_app_core/widget/knowledge_import_progress_dialog.dart';
 
 import 'package:chatgpt_app_core/chat/application/file_processor.dart';
 import 'package:chatgpt_app_core/chat/application/knowledge_file_importer.dart';
@@ -21,7 +22,11 @@ import 'package:chatgpt_app_core/dao/ai_catalog_dao.dart';
 /// 知识库管理页（L4a）：导入文档（粘贴文本 / PDF、文本文件）/ 列表 / 删除。
 /// 导入的文档供绑定了「知识库检索」工具的助手按关键词检索作答。
 class KnowledgeBasePage extends StatefulWidget {
-  const KnowledgeBasePage({super.key});
+  final HiDBManager? storage;
+  final bool Function()? isCurrent;
+  final Future<List<String>> Function()? selectFiles;
+  const KnowledgeBasePage(
+      {super.key, this.storage, this.isCurrent, this.selectFiles});
 
   @override
   State<KnowledgeBasePage> createState() => _KnowledgeBasePageState();
@@ -38,11 +43,14 @@ class _KnowledgeBasePageState extends State<KnowledgeBasePage> {
   bool _includeArchived = false;
   bool _directorySupported = false;
   int _loadEpoch = 0;
+  bool _importBusy = false;
+  ImportCancellation? _activeImport;
   late final _identity = AiCatalogIdentity.capture();
 
   @override
   void initState() {
     super.initState();
+    AiCatalogIdentity.changes.addListener(_identityChanged);
     _doInit();
     KnowledgeImportCollection.supportsDirectorySelection().then((value) {
       if (mounted) setState(() => _directorySupported = value);
@@ -61,7 +69,7 @@ class _KnowledgeBasePageState extends State<KnowledgeBasePage> {
       _loadError = null;
     });
     try {
-      final dbManager =
+      final dbManager = widget.storage ??
           await HiDBManager.instance(dbName: HiDBManager.getAccountHash());
       _dao = await KnowledgeDao.create(dbManager);
       _library = await KnowledgeLibrary.create(dbManager);
@@ -319,47 +327,85 @@ class _KnowledgeBasePageState extends State<KnowledgeBasePage> {
         },
       );
 
-  /// 导入文件（PDF / 文本 / 图片）：可多选 → 抽正文（图片或扫描件走 OCR）→ 切块落库。
-  void _importFile() async {
-    List<String> paths;
+  void _identityChanged() {
+    if (!_identity.current) _activeImport?.cancel();
+  }
+
+  bool get _importCurrent =>
+      mounted && _identity.current && widget.isCurrent?.call() != false;
+
+  Future<KnowledgeFileImportResult?> _runImport(List<String> paths) async {
+    if (!_importCurrent || _dao == null) return null;
+    final operation = ImportCancellation();
+    _activeImport = operation;
+    final progress = ValueNotifier(
+        KnowledgeImportProgress(completed: 0, total: paths.length));
     try {
-      final result = await FilePicker.pickFiles(
+      return await withKnowledgeImportProgress(context,
+          progress: progress,
+          cancellation: operation,
+          task: () => KnowledgeFileImporter(_dao!,
+                  account: _identity.account ?? 'guest',
+                  isCurrent: () => _importCurrent)
+              .importPaths(paths,
+                  cancellation: operation,
+                  limits: AISettingsDao.load().attachmentProcessingLimits,
+                  onProgress: (value) => progress.value = value));
+    } finally {
+      _activeImport = null;
+    }
+  }
+
+  Future<KnowledgeFileImportResult?> _presentImport(List<String> paths) async {
+    final result = await _runImport(paths);
+    if (!mounted || !_importCurrent || result == null) return null;
+    HiDialog.showSnackBar(context, result.message);
+    if (result.imported > 0) await _loadData();
+    return result;
+  }
+
+  /// 普通文件、ZIP 与目录都走同一个账号守卫、进度及重试路径。
+  Future<void> _importFile() async {
+    if (_importBusy || !_importCurrent) return;
+    _importBusy = true;
+    try {
+      final paths = await (widget.selectFiles?.call() ?? _selectImportFiles());
+      if (!mounted || !_importCurrent) return;
+      if (paths.isEmpty) return;
+      final result = await _presentImport(paths);
+      if (_importCurrent && result != null) await _showImportDetails(result);
+    } catch (error) {
+      if (mounted && _importCurrent) {
+        HiDialog.showSnackBar(
+            context, KnowledgeImportFailure.from(error).message);
+      }
+    } finally {
+      _importBusy = false;
+    }
+  }
+
+  Future<List<String>> _selectImportFiles() async {
+    final selected = await FilePicker.pickFiles(
         type: FileType.custom,
         allowMultiple: true,
         withData: false,
         allowedExtensions: [
           ...FileProcessor.pickerExtensions,
           if (OcrService.isSupported) ...OcrService.imageExtensions,
-        ],
-      );
-      paths = [
-        for (final file in result?.files ?? const <PlatformFile>[])
-          if (file.path != null) file.path!,
-      ];
-    } catch (e) {
-      if (mounted) HiDialog.showSnackBar(context, '选取文件失败：$e');
-      return;
-    }
-    if (paths.isEmpty) return;
-    if (!mounted) return;
-    final limits = AISettingsDao.load().attachmentProcessingLimits;
-    final result = await _withLoading(
-      paths.length == 1 ? '正在导入文件…' : '正在导入 ${paths.length} 个文件…',
-      () => KnowledgeFileImporter(_dao!, account: _identity.account ?? 'guest')
-          .importPaths(paths, limits: limits),
-    );
-    if (!mounted) return;
-    HiDialog.showSnackBar(context, result.message);
-    if (result.failedItems.isNotEmpty) _showImportDetails(result);
-    if (result.imported > 0) await _loadData();
+        ]);
+    return [
+      for (final file in selected?.files ?? const <PlatformFile>[])
+        if (file.path != null) file.path!
+    ];
   }
 
   Future<void> _importCollection(bool zip) async {
+    if (_importBusy || !_importCurrent) return;
+    _importBusy = true;
     KnowledgeImportCollection? collection;
     String? pickedDirectory;
-    KnowledgeFileImportResult? details;
     try {
-      String? path;
+      final String? path;
       if (zip) {
         final picked = await FilePicker.pickFiles(
             type: FileType.custom,
@@ -370,47 +416,37 @@ class _KnowledgeBasePageState extends State<KnowledgeBasePage> {
         path = await FilePicker.getDirectoryPath(dialogTitle: '选择要导入的资料文件夹');
         pickedDirectory = path;
       }
-      if (path == null || !mounted || !_identity.current) return;
-      final selected = path;
-      await _withLoading('正在检查并导入资料…', () async {
-        collection = zip
-            ? await KnowledgeImportCollection.fromZip(selected)
-            : await KnowledgeImportCollection.fromDirectory(selected);
-        if (!mounted || !_identity.current) return;
-        if (collection!.paths.isEmpty) {
-          HiDialog.showSnackBar(context, '所选资料中没有文件');
-          return;
-        }
-        final result = await KnowledgeFileImporter(_dao!,
-                account: _identity.account ?? 'guest',
-                isCurrent: () => mounted && _identity.current)
-            .importPaths(collection!.paths,
-                limits: AISettingsDao.load().attachmentProcessingLimits);
-        if (!mounted || !_identity.current) return;
-        HiDialog.showSnackBar(context, result.message);
-        // 在模态加载框关闭后再展示明细。
-        if (result.failedItems.isNotEmpty) details = result;
-        if (result.imported > 0) await _loadData();
-      });
-      if (mounted && _identity.current && details != null) {
-        _showImportDetails(details!);
+      if (path == null || !mounted || !_importCurrent) return;
+      final prepared = await _withLoading(
+          '正在检查资料…',
+          () => zip
+              ? KnowledgeImportCollection.fromZip(path!)
+              : KnowledgeImportCollection.fromDirectory(path!));
+      collection = prepared;
+      if (!mounted || !_importCurrent) return;
+      if (prepared.paths.isEmpty) {
+        HiDialog.showSnackBar(context, '所选资料中没有文件');
+        return;
       }
+      final result = await _presentImport(prepared.paths);
+      // 在明细及全部重试结束后才释放集合的临时文件。
+      if (_importCurrent && result != null) await _showImportDetails(result);
     } catch (error) {
-      if (mounted && _identity.current) {
-        HiDialog.showSnackBar(context, '批量导入失败：$error');
+      if (mounted && _importCurrent) {
+        HiDialog.showSnackBar(
+            context, KnowledgeImportFailure.from(error).message);
       }
     } finally {
       try {
         await collection?.dispose();
-      } catch (error) {
-        debugPrint('知识库导入临时副本清理失败：$error');
-      }
+      } catch (_) {}
       if (pickedDirectory != null) {
         try {
           await KnowledgeImportCollection.releasePickedDirectory(
               pickedDirectory);
         } catch (_) {}
       }
+      _importBusy = false;
     }
   }
 
@@ -429,25 +465,36 @@ class _KnowledgeBasePageState extends State<KnowledgeBasePage> {
     );
   }
 
-  void _showImportDetails(KnowledgeFileImportResult result) {
-    showDialog<void>(
-      context: context,
-      builder: (ctx) => AlertDialog(
-        title: const Text('部分文件未导入'),
-        content: SingleChildScrollView(child: Text(result.detailMessage)),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(ctx),
-            child: const Text('知道了'),
-          ),
-        ],
-      ),
-    );
+  Future<void> _showImportDetails(KnowledgeFileImportResult result) async {
+    var current = result;
+    while (_importCurrent && current.failedItems.isNotEmpty) {
+      if (!mounted) return;
+      final retry = await showDialog<bool>(
+          context: context,
+          builder: (ctx) => AlertDialog(
+                title: const Text('未导入的文件'),
+                content:
+                    SingleChildScrollView(child: Text(current.detailMessage)),
+                actions: [
+                  TextButton(
+                      onPressed: () => Navigator.pop(ctx, false),
+                      child: const Text('关闭')),
+                  TextButton(
+                      onPressed: () => Navigator.pop(ctx, true),
+                      child: const Text('重试未完成文件')),
+                ],
+              ));
+      if (retry != true || !mounted || !_importCurrent) return;
+      final next = await _presentImport(current.retryPaths);
+      if (next == null) return;
+      current = next;
+    }
   }
 
   /// 执行一个耗时任务并显示模态加载框（OCR 可能较慢）。
   Future<T> _withLoading<T>(String label, Future<T> Function() task) async {
-    showDialog(
+    final navigator = Navigator.of(context, rootNavigator: true);
+    final route = DialogRoute<void>(
       context: context,
       barrierDismissible: false,
       builder: (_) => Dialog(
@@ -464,10 +511,11 @@ class _KnowledgeBasePageState extends State<KnowledgeBasePage> {
         ),
       ),
     );
+    navigator.push(route);
     try {
       return await task();
     } finally {
-      if (mounted) Navigator.of(context, rootNavigator: true).pop();
+      if (route.isActive) navigator.removeRoute(route);
     }
   }
 
@@ -710,6 +758,8 @@ class _KnowledgeBasePageState extends State<KnowledgeBasePage> {
 
   @override
   void dispose() {
+    _activeImport?.cancel();
+    AiCatalogIdentity.changes.removeListener(_identityChanged);
     _filter.dispose();
     super.dispose();
   }

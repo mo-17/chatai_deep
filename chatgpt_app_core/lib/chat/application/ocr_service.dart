@@ -1,8 +1,9 @@
 import 'dart:io';
 import 'ohos_ocr.dart';
+import 'pdf_ocr_result.dart';
+import 'import_operation.dart';
 
 import 'package:google_mlkit_text_recognition/google_mlkit_text_recognition.dart';
-import 'package:openai_flutter/utils/ai_logger.dart';
 import 'package:pdfx/pdfx.dart';
 
 /// 端上 OCR。Android / iOS 使用 ML Kit + pdfx，HarmonyOS 使用 Core Vision + PDF Kit。
@@ -43,65 +44,99 @@ class OcrService {
   }
 
   /// 识别单张图片，返回纯文本（无文字时返回空串）。
-  static Future<String> recognizeImageFile(String path) async {
-    if (Platform.operatingSystem == 'ohos') return const OhosOcr().image(path);
+  static Future<String> recognizeImageFile(String path,
+      {ImportCancellation? cancellation}) async {
+    cancellation?.check();
+    if (Platform.operatingSystem == 'ohos') {
+      return const OhosOcr().image(path, cancellation: cancellation);
+    }
     final recognizer = TextRecognizer(script: TextRecognitionScript.chinese);
     try {
       final result =
           await recognizer.processImage(InputImage.fromFilePath(path));
+      cancellation?.check();
       return result.text.trim();
     } finally {
       await recognizer.close();
     }
   }
 
-  /// 逐页渲染 PDF 为图片并 OCR，拼成全文（限 [maxPages] 页）。
+  /// 兼容全文接口；需要页码的导入流程使用 [recognizePdfPages]。
   static Future<String> recognizePdf(String path,
-      {int maxPages = maxPdfPages}) async {
+          {int maxPages = maxPdfPages}) async =>
+      (await recognizePdfPages(path, maxPages: maxPages)).text;
+
+  /// 只识别请求的页，返回列表仍与原 PDF 的页序一致。
+  static Future<PdfOcrResult> recognizePdfPages(String path,
+      {int maxPages = maxPdfPages,
+      List<int>? pageNumbers,
+      ImportCancellation? cancellation,
+      void Function(int, int)? onProgress}) async {
+    cancellation?.check();
+    if (maxPages < 1 || maxPages > maxPdfPages) {
+      throw RangeError.range(maxPages, 1, maxPdfPages, 'maxPages');
+    }
+    final selected = pageNumbers?.toSet();
+    if (selected != null &&
+        (selected.isEmpty ||
+            selected.length != pageNumbers!.length ||
+            selected.any((page) => page < 1 || page > maxPages))) {
+      throw ArgumentError('OCR 页码必须唯一且位于页数预算内');
+    }
     if (Platform.operatingSystem == 'ohos') {
-      return const OhosOcr().pdf(path, maxPages: maxPages);
+      return const OhosOcr().pdfPages(path,
+          maxPages: maxPages,
+          pageNumbers: pageNumbers,
+          cancellation: cancellation,
+          onProgress: onProgress);
     }
     final tmp = await Directory.systemTemp.createTemp('kb_ocr');
-    final recognizer = TextRecognizer(script: TextRecognitionScript.chinese);
-    final doc = await PdfDocument.openFile(path);
-    final buf = StringBuffer();
+    TextRecognizer? recognizer;
+    PdfDocument? doc;
     try {
+      recognizer = TextRecognizer(script: TextRecognitionScript.chinese);
+      doc = await PdfDocument.openFile(path);
       final total = doc.pagesCount;
       final count = total < maxPages ? total : maxPages;
+      if (total < 1 || (selected?.any((page) => page > count) ?? false)) {
+        throw const FormatException('OCR 请求页码超出原 PDF');
+      }
+      final pages = List<String>.filled(count, '');
+      var length = 0;
       for (var i = 1; i <= count; i++) {
+        cancellation?.check();
+        if (selected != null && !selected.contains(i)) continue;
         final page = await doc.getPage(i);
         try {
-          // 2x 渲染提升识别率。
           final img = await page.render(
             width: page.width * 2,
             height: page.height * 2,
             format: PdfPageImageFormat.png,
           );
-          if (img == null) continue;
-          final f = File('${tmp.path}/p$i.png');
-          await f.writeAsBytes(img.bytes);
-          final text = await recognizeImageFileWith(recognizer, f.path);
-          if (text.isNotEmpty) {
-            buf
-              ..writeln(text)
-              ..writeln();
-          }
-        } catch (e) {
-          AILogger.log('ocr page $i failed: $e');
+          if (img == null) throw FormatException('PDF 第 $i 页渲染失败');
+          final file = File('${tmp.path}/p$i.png');
+          await file.writeAsBytes(img.bytes);
+          final text = await recognizeImageFileWith(recognizer, file.path);
+          length += text.length;
+          if (length > 1000000) throw const FormatException('OCR 文字超过导入上限');
+          cancellation?.check();
+          pages[i - 1] = text;
+          onProgress?.call(i, count);
         } finally {
           await page.close();
         }
       }
-      if (total > maxPages) {
-        buf.writeln('[注：原文共 $total 页，仅 OCR 前 $maxPages 页]');
-      }
-      return buf.toString().trim();
+      return PdfOcrResult(totalPages: total, pages: pages);
     } finally {
-      await recognizer.close();
-      await doc.close();
       try {
-        await tmp.delete(recursive: true);
-      } catch (_) {}
+        await recognizer?.close();
+      } finally {
+        try {
+          await doc?.close();
+        } finally {
+          if (await tmp.exists()) await tmp.delete(recursive: true);
+        }
+      }
     }
   }
 

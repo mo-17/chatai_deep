@@ -91,7 +91,8 @@ class KnowledgeLibrary implements IKnowledgeLibrary, ITable {
   }
 
   @override
-  Future<int?> add(String title, List<String> pages, {bool pdf = false}) async {
+  Future<int?> add(String title, List<String> pages,
+      {bool pdf = false, void Function()? beforeCommit}) async {
     if (title.length > 1000 ||
         pages.fold<int>(0, (n, p) => n + p.length) > 1000000) {
       throw const KnowledgeScopeException('标题最多1000字、正文最多100万字符，请拆分后导入');
@@ -99,7 +100,7 @@ class KnowledgeLibrary implements IKnowledgeLibrary, ITable {
     int? id;
     try {
       id = await dao.addPagedDocument(title, pages,
-          isPdf: pdf, rejectDuplicates: true);
+          isPdf: pdf, rejectDuplicates: true, beforeCommit: beforeCommit);
     } on FormatException catch (e) {
       throw KnowledgeScopeException(e.message);
     }

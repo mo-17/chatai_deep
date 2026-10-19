@@ -20,7 +20,7 @@ function fixture(options = {}) {
     '@kit.CoreVisionKit': { textRecognition: {
       async init() { return options.init === undefined ? true : options.init; },
       async release() { if (options.release) await options.release; released.push('service'); },
-      async recognizeText() { calls++; if (options.failAt === calls) throw new Error('recognition failed'); return { value: options.text === undefined ? '  中文内容  ' : await options.text }; },
+      async recognizeText() { calls++; if (options.failAt === calls) throw new Error('recognition failed'); return { value: options.pageTexts ? options.pageTexts[calls - 1] : options.text === undefined ? '  中文内容  ' : await options.text }; },
     } },
     '@kit.PDFKit': { pdfService: { ParseResult: { PARSE_SUCCESS: 0 }, PdfMatrix: class {}, PdfDocument: class {
       loadDocument() { return options.parseFailure ? 1 : 0; } getPageCount() { return options.pages || 2; }
@@ -67,6 +67,40 @@ test('PDF 像素规范化失败或编码超限时释放所有资源，不返回�
     for (const label of ['packer', 'pixels', 'page', 'document', 'service']) assert.ok(f.released.includes(label));
   }
 });
+test('分页 OCR 保留空白页和页序，仅渲染指定扫描页', async () => {
+  const f = fixture({ pages: 6, pageTexts: ['第二页', '', '第六页'] });
+  const result = await f.recognize({ kind: 'pdfPages', maxPages: 6, pageNumbers: [2, 3, 6] });
+  assert.equal(result.totalPages, 6);
+  assert.deepEqual(Array.from(result.pages), ['', '第二页', '', '', '', '第六页']);
+  assert.deepEqual(f.renders.map(r => r.index), [1, 2, 5]);
+  assert.equal(f.handles.size, 0);
+  assert.equal(f.released.filter(x => x === 'page').length, 3);
+});
+test('分页 OCR 拒绝重复、越界、非整数和超过原文页数的页码', async () => {
+  for (const pageNumbers of [[], [1, 1], [0], [21], [1.5], '2', [3]]) {
+    const f = fixture({ pages: 2 });
+    await assert.rejects(f.recognize({ kind: 'pdfPages', maxPages: 20, pageNumbers }), { code: 'ocr_error' });
+    assert.equal(f.calls, 0);
+    assert.equal(f.handles.size, 0);
+  }
+});
+test('分页结果携带原文总页数，页数预算内返回完整页槽位', async () => {
+  const f = fixture({ pages: 21 });
+  const result = await f.recognize({ kind: 'pdfPages', maxPages: 20 });
+  assert.equal(result.totalPages, 21);
+  assert.equal(result.pages.length, 20);
+  assert.equal(f.renders.length, 20);
+});
+test('真实通道缺省参数为 undefined 时仍兼容图片和旧 PDF 接口', async () => {
+  const f = fixture();
+  const missing = (kind) => new Promise((resolve, reject) => f.plugin.onMethodCall({
+    method: 'recognize', argument: key => ({ id: 'missing', kind, path: '/cache/a', maxPages: 2 })[key],
+  }, { success: resolve, error: (code, message) => reject(Object.assign(new Error(message), { code })) }));
+  assert.equal(await missing('image'), '中文内容');
+  assert.match(await missing('pdf'), /中文内容/);
+  const pages = await missing('pdfPages');
+  assert.equal(pages.pages.length, 2);
+});
 test('解析失败、某页失败不返回部分正文且关闭资源', async () => {
   for (const options of [{ parseFailure: true }, { failAt: 2 }]) {
     const f = fixture(options); await assert.rejects(f.recognize({ kind: 'pdf', maxPages: 2 }), { code: 'ocr_error' });
@@ -88,13 +122,22 @@ test('取消按请求 ID 隔离，拒绝并发，后台取消不回传迟到正�
   const pending = f.recognize(); await tick(); await f.call('cancel', { id: 'old' });
   await assert.rejects(f.recognize({ id: 'second' }), { code: 'ocr_busy' });
   await f.call('cancel', { id: 'request' }); resume('迟到正文');
-  await assert.rejects(pending, { code: 'ocr_error' }); assert.equal(f.handles.size, 0);
+  await assert.rejects(pending, { code: 'ocr_cancelled' }); assert.equal(f.handles.size, 0);
   const g = fixture(); g.plugin.suspend(); // 新请求重置取消标志
   assert.equal(await g.recognize(), '中文内容');
 });
 test('释放服务期间切后台同样拒绝结果，再次调用可以成功', async () => {
   let resume; const f = fixture({ release: new Promise(r => { resume = r; }) });
   const pending = f.recognize(); await tick(); f.plugin.suspend(); resume();
-  await assert.rejects(pending, { code: 'ocr_error' }); assert.equal(f.handles.size, 0);
+  await assert.rejects(pending, { code: 'ocr_cancelled' }); assert.equal(f.handles.size, 0);
   assert.equal(await f.recognize(), '中文内容');
+});
+
+test('PDF 页进度带请求身份，仅在显式请求时发送', async () => {
+  const f = fixture({ pages: 4 });
+  await f.recognize({ kind: 'pdfPages', maxPages: 4, pageNumbers: [2, 4], reportProgress: true });
+  assert.deepEqual(f.events.map(e => [e.method, e.value.id, e.value.page, e.value.total]),
+    [['progress', 'request', 2, 4], ['progress', 'request', 4, 4]]);
+  const quiet = fixture(); await quiet.recognize({ kind: 'pdfPages', maxPages: 2 });
+  assert.equal(quiet.events.length, 0);
 });

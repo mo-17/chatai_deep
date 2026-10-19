@@ -5,13 +5,17 @@ import 'package:chatgpt_app_core/chat/application/knowledge_import_collection.da
 
 import 'package:chatgpt_app_core/chat/application/file_processor.dart';
 import 'package:chatgpt_app_core/chat/application/knowledge_file_importer.dart';
+import 'package:chatgpt_app_core/chat/application/pdf_ocr_result.dart';
 import 'package:chatgpt_app_core/chat/domain/attachment_processing_limits.dart';
 import 'package:chatgpt_app_core/db/hi_db_manager.dart';
 import 'package:chatgpt_app_core/db/knowledge_dao.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:flutter/services.dart';
 import 'package:sqflite_common_ffi/sqflite_ffi.dart';
+import 'package:syncfusion_flutter_pdf/pdf.dart';
 
 void main() {
+  TestWidgetsFlutterBinding.ensureInitialized();
   setUpAll(() {
     sqfliteFfiInit();
   });
@@ -23,6 +27,77 @@ void main() {
     addTearDown(db.close);
     return KnowledgeDao.create(HiDBManager.test(db));
   }
+
+  Future<File> pdfFile(Directory dir, String name, List<String> pages) async {
+    final doc = PdfDocument();
+    try {
+      for (final text in pages) {
+        final page = doc.pages.add();
+        if (text.isNotEmpty) {
+          page.graphics
+              .drawString(text, PdfStandardFont(PdfFontFamily.helvetica, 18));
+        }
+      }
+      return await File('${dir.path}/$name').writeAsBytes(await doc.save());
+    } finally {
+      doc.dispose();
+    }
+  }
+
+  test('混合 PDF 只 OCR 缺字页，空白页不使后续引用页码偏移', () async {
+    final dir = await Directory.systemTemp.createTemp('kb_pdf_pages_');
+    addTearDown(() => dir.delete(recursive: true));
+    const pathChannel = MethodChannel('plugins.flutter.io/path_provider');
+    final messenger =
+        TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger;
+    messenger.setMockMethodCallHandler(pathChannel, (_) async => dir.path);
+    addTearDown(() => messenger.setMockMethodCallHandler(pathChannel, null));
+    final file = await pdfFile(dir, 'mixed.pdf',
+        ['TEXT PAGE ONE preserved verbatim', '', '', '', 'TEXT PAGE FIVE']);
+    final dao = await newDao();
+    final importer = KnowledgeFileImporter(dao, pdfOcr: (path, pages) async {
+      expect(path, file.path);
+      expect(pages, [2, 3, 4]);
+      return PdfOcrResult(
+          totalPages: 5,
+          pages: ['', 'SCAN PAGE TWO', '', 'SCAN PAGE FOUR', '']);
+    });
+    expect((await importer.importPaths([file.path])).imported, 1);
+    final chunks = await dao.storage.db.query('tb_kb_chunk', orderBy: 'seq');
+    expect(chunks.map((r) => r['pageNumber']), [1, 2, 4, 5]);
+    expect(
+        chunks.first['content'], contains('TEXT PAGE ONE preserved verbatim'));
+    expect(chunks[1]['content'], 'SCAN PAGE TWO');
+    expect(chunks[2]['content'], 'SCAN PAGE FOUR');
+    expect((await dao.getDocuments()).single.sourceKind, 'pdf');
+  });
+
+  test('超页、OCR 页数错误和 OCR 后超字符预算均不落库', () async {
+    final dir = await Directory.systemTemp.createTemp('kb_pdf_reject_');
+    addTearDown(() => dir.delete(recursive: true));
+    final tooMany = await pdfFile(dir, 'limit.pdf', List.filled(21, ''));
+    final scan = await pdfFile(dir, 'scan.pdf', ['', '']);
+    final dao = await newDao();
+    var called = false;
+    final importer = KnowledgeFileImporter(dao, pdfOcr: (_, __) async {
+      called = true;
+      return PdfOcrResult(totalPages: 1, pages: ['wrong']);
+    });
+    final cap = await importer.importPaths([tooMany.path]);
+    expect(cap.imported, 0);
+    expect(cap.detailMessage, contains('页数超过'));
+    expect(called, false);
+    expect((await importer.importPaths([scan.path])).detailMessage,
+        contains('页数与原 PDF 不一致'));
+    final budget = await KnowledgeFileImporter(dao,
+            pdfOcr: (_, __) async =>
+                PdfOcrResult(totalPages: 2, pages: ['x' * 1200, 'y' * 1200]))
+        .importPaths([scan.path],
+            limits: const AttachmentProcessingLimits(maxTextChars: 1024));
+    expect(budget.imported, 0);
+    expect(budget.detailMessage, contains('文字超过导入预算'));
+    expect(await dao.getDocuments(), isEmpty);
+  });
 
   test('资料 ZIP 检查后可通过现有导入器落库并清理临时副本', () async {
     final dir = await Directory.systemTemp.createTemp('kb_collection_db_');

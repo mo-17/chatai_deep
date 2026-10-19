@@ -23,14 +23,15 @@ function fixture({ manual = false, failShow = false, failRead = false, symbolic 
     constructor(data) { this.data = data; this.handlers = new Map(); panels.push(this); }
     on(name, fn) { this.handlers.set(name, fn); }
     off(name, fn) { assert.equal(typeof fn, 'function'); this.handlers.delete(name); }
-    async show() {
+    async show(context, options) {
+      this.options = options;
       if (failShow) throw Object.assign(new Error('show failed'), { code: 401 });
       if (!manual) setImmediate(() => { this.handlers.get('shareCompleted')?.({}); this.handlers.get('dismiss')?.(); });
     }
   }
   const native = load('SharePlugin', {
     '@kit.CoreFileKit': { fileIo: io, fileUri: { getUriFromPath: p => 'file://' + p } },
-    '@kit.ShareKit': { systemShare: { SharedData, ShareController, SelectionMode: { SINGLE: 1 }, SharePreviewMode: { DETAIL: 1 } } },
+    '@kit.ShareKit': { systemShare: { SharedData, ShareController, SelectionMode: { SINGLE: 0, BATCH: 1 }, SharePreviewMode: { DETAIL: 1 } } },
     '@kit.ArkData': { uniformTypeDescriptor: { UniformDataType: { PLAIN_TEXT: 'plain', FILE: 'file' }, getUniformDataTypeByFilenameExtension: () => 'text' } },
   }, { cacheDir: '/cache', filesDir: '/files', tempDir: '/temp' }, { applicationContext });
   const share = (args = {}) => native.call('share', { files: [], ...args });
@@ -53,6 +54,17 @@ test('分享独立副本，原文件删除后仍可读，短读短写保留字�
   const uri = f.panels[0].data.records[0].uri, copy = uri.substring('file://'.length);
   f.files.delete('/files/export.txt'); assert.equal(f.files.get(copy).toString(), 'hello');
   assert.equal(f.handles.size, 0); assert.equal(f.panels[0].handlers.size, 0);
+});
+test('多文件和文字加文件使用批量分享模式，单项仍使用单选模式', async () => {
+  const f = fixture();
+  await f.share(fileArgs);
+  assert.equal(f.panels[0].options.selectionMode, 0);
+  await f.share({ files: [...fileArgs.files, ...fileArgs.files] });
+  assert.equal(f.panels[1].data.records.length, 2);
+  assert.equal(f.panels[1].options.selectionMode, 1);
+  await f.share({ ...fileArgs, text: '说明正文' });
+  assert.equal(f.panels[2].data.records.length, 2);
+  assert.equal(f.panels[2].options.selectionMode, 1);
 });
 test('面板展示不代表完成；取消、完成和 engine 销毁分别结算', async () => {
   const f = fixture({ manual: true }); let settled = false;

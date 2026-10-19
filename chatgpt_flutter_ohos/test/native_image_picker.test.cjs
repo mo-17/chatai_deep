@@ -2,18 +2,22 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const load = require('./support/native_plugin_loader.cjs');
 function fixture({ selected = ['photo://1'], capture = { resultCode: 0, resultUri: 'photo://camera' },
-  beforeDecode = async () => {}, size = 100, failPack = false, failDecode = false, failDecodeAt = 0, mime = 'image/jpeg', orientation = 'Top-left', dimensions = { width: 4000, height: 2000 }, files = new Map() } = {}) {
+  beforeDecode = async () => {}, size = 100, failPack = false, failDecode = false, failDecodeAt = 0, mime = 'image/jpeg', orientation = 'Top-left', dimensions = { width: 4000, height: 2000 }, files = new Map(), sizes = {}, links = new Set(), failRetain = false } = {}) {
   const handles = new Map(), released = [];
   let next = 0, decodeOptions, packOptions, cameraProfile, selectOptions, decodes = 0;
   const transforms = [];
   const pixel = { async release() { released.push('pixels'); }, async flip(x, y) { transforms.push(['flip', x, y]); }, async rotate(angle) { transforms.push(['rotate', angle]); } };
   const decoder = { async getImageInfo() { const current = ++decodes; await beforeDecode(current); if (failDecode || current === failDecodeAt) throw new Error('decode'); return { size: dimensions, mimeType: mime }; },
     async getImageProperty() { return orientation; }, async createPixelMap(options) { decodeOptions = options; return pixel; }, async release() { released.push('decoder'); } };
+  const dirs = new Set();
+  const directory = p => dirs.has(p) || [...files.keys()].some(k => k.startsWith(p + '/'));
   const io = {
     OpenMode: { READ_ONLY: 1, CREATE: 2, READ_WRITE: 4, TRUNC: 8 },
     async open(path, mode) { const h = { fd: ++next, path }; handles.set(h.fd, h); if (mode & 2) files.set(path, Buffer.alloc(0)); return h; },
     async stat() { return { size, isFile: () => true }; },
-    accessSync: p => files.has(p), mkdirSync() {},
+    accessSync: p => files.has(p) || directory(p), mkdirSync(p) {dirs.add(p);},
+    listFileSync(p) {return [...new Set([...files.keys()].filter(k=>k.startsWith(p+'/')).map(k=>k.substring(p.length+1).split('/')[0]))];},
+    copyFileSync(a,b) {if(failRetain) throw new Error('retain');files.set(b,Buffer.from(files.get(a)));},
     async write(fd, bytes) { const h = handles.get(fd), b = Buffer.from(bytes).subarray(0, 2); files.set(h.path, Buffer.concat([files.get(h.path), b])); return b.length; },
     async unlink(p) { files.delete(p); }, async close(h) { handles.delete(h.fd); },
     openSync(path,mode) { const h={fd:++next,path};handles.set(h.fd,h);if(mode&2)files.set(path,Buffer.alloc(0));return h; },
@@ -21,7 +25,7 @@ function fixture({ selected = ['photo://1'], capture = { resultCode: 0, resultUr
     writeSync(fd,data) { const path=handles.get(fd).path,b=Buffer.from(data);files.set(path,Buffer.concat([files.get(path),b]));return b.length; },
     fsyncSync() {},renameSync(a,b) { files.set(b,files.get(a));files.delete(a); },
     unlinkSync(p) { files.delete(p); },
-    lstatSync(p) { if(!files.has(p))throw new Error('missing');return {size:files.get(p).length,isFile:()=>true}; },
+    lstatSync(p) { if(!files.has(p) && !directory(p))throw new Error('missing');return {size:sizes[p] ?? files.get(p)?.length ?? 0,isFile:()=>files.has(p),isDirectory:()=>directory(p),isSymbolicLink:()=>links.has(p)}; },
     readTextSync(p) { return files.get(p).toString(); },
   };
   const native = load('ImagePickerPlugin', {
@@ -152,6 +156,7 @@ test('复制下一张时重启只恢复已落盘图片，不能返回未确认�
   await second;
   try {
     assert.equal(await f.call('retrieveLostData', { scope }), null, '旧进程忙碌时不能并发消费');
+    f.plugin.onDetachedFromEngine({});
     const restarted = fixture({ files: f.files });
     const record = await restarted.call('retrieveLostData', { scope });
     assert.equal(record.id, id); assert.equal(record.phase, 'pending');
@@ -159,10 +164,10 @@ test('复制下一张时重启只恢复已落盘图片，不能返回未确认�
     assert.deepEqual([...f.files.get(record.files[0].path)], [1, 2, 3, 4, 5]);
     assert.equal(await restarted.call('retrieveLostData', { scope: 'e'.repeat(64) }), null);
   } finally { resumeSecond(); }
-  const picked = await picking;
-  assert.equal(picked.length, 2);
+  await assert.rejects(picking, { code: 'image_picker_error' });
   const complete = await fixture({ files: f.files }).call('retrieveLostData', { scope });
-  assert.equal(complete.phase, 'ready'); assert.equal(complete.files.length, 2);
+  assert.equal(complete.phase, 'pending'); assert.equal(complete.files.length, 1);
+  assert.ok(f.files.has(complete.files[0].path), '旧 engine 清理不能删除新进程已恢复的持久副本');
 });
 
 test('确认旧恢复弹窗不能消费同作用域后来产生的恢复记录', async () => {
@@ -178,4 +183,74 @@ test('确认旧恢复弹窗不能消费同作用域后来产生的恢复记录',
   assert.equal(record.id, current); assert.equal(record.text, '新草稿');
   await restarted.call('ackRecovery', { scope, id: current });
   assert.equal(await restarted.call('retrieveLostData', { scope }), null);
+});
+
+test('新图片返回持久目录，失败清理本批副本且旧缓存不被回收', async () => {
+  const legacy = '/cache/chatai_image_picker/image_1_0.jpg';
+  const files = new Map([[legacy, Buffer.from('legacy')]]);
+  const f = fixture({ files });
+  const picked = await f.call('pickImage', { source: 'gallery' });
+  assert.ok(picked.path.startsWith('/files/chatai_picked_images/'));
+  assert.equal([...files.keys()].some(p => p.includes('/pending_image_')), false);
+  assert.equal(files.get(legacy).toString(), 'legacy');
+  const bad = fixture({ failRetain: true });
+  await assert.rejects(bad.call('pickImage', { source: 'gallery' }), { code: 'image_picker_error' });
+  assert.equal(bad.files.size, 0);
+  assert.equal(bad.handles.size, 0);
+});
+test('只删除过期 staging，保护各作用域恢复记录和历史文件', async () => {
+  const old = Date.now() - 25 * 3600 * 1000;
+  const stale = `/cache/chatai_image_picker/pending_image_${old}_0.png`;
+  const pinned = `/cache/chatai_image_picker/pending_image_${old}_1.png`;
+  const fresh = `/cache/chatai_image_picker/pending_image_${Date.now()}_2.jpg`;
+  const legacy = '/cache/chatai_image_picker/image_1_0.jpg';
+  const scope = 'a'.repeat(64);
+  const journal = `/files/chatai_picker_recovery/${scope}.json`;
+  const files = new Map([[stale, Buffer.from('old')], [pinned, Buffer.from('pin')],
+    [fresh, Buffer.from('new')], [legacy, Buffer.from('keep')], [journal, Buffer.from(JSON.stringify({
+      scope, id: 'pending', created: Date.now(), phase: 'pending', text: '草稿', images: [],
+      files: [{ path: pinned, name: '../../unexpected.png', mimeType: 'image/png' }],
+    }))]]);
+  const f = fixture({ files });
+  assert.equal(files.has(stale), false, '启动时回收过期 staging');
+  for (const path of [pinned, fresh, legacy]) assert.ok(files.has(path));
+  const restored = await f.call('retrieveLostData', { scope });
+  assert.ok(restored.files[0].path.startsWith('/files/chatai_picked_images/'));
+  assert.equal(restored.files[0].name, pinned.split('/').pop().replace(/^pending_/, ''));
+  assert.equal(files.has('/files/unexpected.png'), false, '恢复记录不能通过显示名称改写目标路径');
+  assert.equal(files.has(pinned), false);
+  await f.call('ackRecovery', { scope, id: restored.id });
+  await f.call('cleanupCache');
+  assert.ok(files.has(restored.files[0].path), '已恢复图片永久保存，清缓存不删除');
+});
+test('恢复原输入中的 staging 图片也先落盘再消费记录', async () => {
+  const scope = 'e'.repeat(64), path = `/cache/chatai_image_picker/pending_image_${Date.now()}_3.png`;
+  const files = new Map([[path, Buffer.from('draft')], [`/files/chatai_picker_recovery/${scope}.json`,
+    Buffer.from(JSON.stringify({ scope, id: 'old-draft', created: Date.now(), phase: 'pending',
+      text: '', images: [path], files: [] }))]]);
+  const f = fixture({ files });
+  const record = await f.call('retrieveLostData', { scope });
+  assert.ok(record.images[0].startsWith('/files/chatai_picked_images/'));
+  await f.call('ackRecovery', { scope, id: record.id });
+  assert.ok(files.has(record.images[0]));
+});
+test('损坏恢复记录使清理保守跳过，超出 staging 总预算时明确拒绝新选择', async () => {
+  const path = `/cache/chatai_image_picker/pending_image_${Date.now() - 25 * 3600 * 1000}_0.png`;
+  const broken = `/files/chatai_picker_recovery/${'b'.repeat(64)}.json`;
+  const files = new Map([[path, Buffer.from('keep')], [broken, Buffer.from('{broken')]]);
+  const f = fixture({ files });
+  await f.call('cleanupCache'); assert.ok(files.has(path));
+  files.set(broken, Buffer.from(JSON.stringify({ scope: 'b'.repeat(64), images: [path] })));
+  await f.call('cleanupCache'); assert.ok(files.has(path), 'JSON 可解码但结构损坏也必须保留草稿副本');
+  assert.ok(files.has(broken), '损坏记录不能被静默丢弃后回收其图片');
+  const full = fixture({ files, sizes: { [path]: 512 * 1024 * 1024 } });
+  await assert.rejects(full.call('pickImage', { source: 'gallery' }), { code: 'image_cache_full' });
+  assert.ok(files.has(path)); assert.equal(full.selectOptions, undefined);
+});
+test('清理不追踪缓存链接，损坏条目不会导致删除其它目录', async () => {
+  const path = `/cache/chatai_image_picker/pending_image_${Date.now() - 25 * 3600 * 1000}_0.png`;
+  const files = new Map([[path, Buffer.from('target')]]);
+  const f = fixture({ files, links: new Set([path]) });
+  await assert.rejects(f.call('cleanupCache'), { code: 'image_cache_error' });
+  assert.ok(files.has(path));
 });

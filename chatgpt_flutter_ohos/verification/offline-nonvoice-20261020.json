@@ -1,0 +1,271 @@
+{
+  "date": "2026-10-20",
+  "baseHead": "673f8e84c301d026766f0ff02d81f681024ee0ec",
+  "packagesCompleted": 6,
+  "voiceChanged": false,
+  "deviceTestsPerformedThisRound": false,
+  "offline": {
+    "nativeContractTests": 71,
+    "coreUnitAndWidgetTests": 69,
+    "adapterTests": {
+      "file_picker": 7,
+      "image_picker": 6,
+      "share_plus": 3
+    },
+    "total": 156,
+    "failed": 0,
+    "skipped": 0,
+    "targetedStaticAnalysis": "10 core runtime files and 3 adapters: no issues",
+    "hostFlutter": "3.35.7",
+    "systemApis": "Controlled substitutes; no device quality claim",
+    "scriptSyntaxChecked": true,
+    "sourceUnchangedThroughFinalBuild": true
+  },
+  "ci": {
+    "workflow": ".github/workflows/ohos-offline.yml",
+    "configured": true,
+    "yamlParsed": true,
+    "remoteExecutionPerformed": false
+  },
+  "currentRelease": {
+    "status": "passed",
+    "installed": false,
+    "bytes": 72951684,
+    "sha256": "9f341e56a415715f319c3eb159f48c0829d5b035a3ac5d32f2654590bb305f14",
+    "independentAotAndNativeLicenseGuardsPassed": true,
+    "artifact": "/private/tmp/chatai-ohos-offline-20261020/final-verified-release.hap",
+    "sdk": "Flutter OH 3.35.7 local snapshot 002ff8966a; Dart 3.9.2"
+  },
+  "priorPhysicalEvidence": {
+    "device": {
+      "model": "ALN-AL00",
+      "os": "OpenHarmony-6.1.1.120",
+      "api": 24
+    },
+    "documentPages": {
+      "text": [
+        1,
+        2,
+        3
+      ],
+      "mixed": [
+        1,
+        2,
+        3,
+        4,
+        5
+      ],
+      "scannedNonblank": [
+        1,
+        2,
+        4,
+        5,
+        6
+      ]
+    },
+    "batch": {
+      "total": 13,
+      "imported": 9,
+      "rejected": 4
+    },
+    "sharedGalleryImagesReceived": 6,
+    "pickerImagesReturned": 6,
+    "composerImagesAfterRemoval": 5,
+    "syntheticLocalSendOnly": true,
+    "filesReceivedAndShaMatched": 2,
+    "releaseInstalled": false,
+    "builtReleaseBytes": 72925595,
+    "builtReleaseSha256": "97eebdd6d5c22822fc6de1cba928bb49cc9eb9bd22bebd35e160e81bf811e1f8",
+    "cleanup": {
+      "shareBatchesRemoved": 3,
+      "pickerCopiesRemoved": 12,
+      "pendingGalleryPhotos": 7,
+      "pendingReceivedFiles": 2,
+      "earliestShareBatchRequiresRecheck": true
+    },
+    "scope": "Captured before pause and before current offline changes; not a current device acceptance"
+  },
+  "boundaries": [
+    "Current progress, cancellation, retry, account guards and cache policy have no new device acceptance.",
+    "Native contract tests execute plugin bodies with substituted system APIs; no OCR accuracy or rendering quality proof.",
+    "Cancellation is cooperative; synchronous system PDF calls cannot be forcibly stopped.",
+    "512 MiB limits managed staging, not persistent or legacy user-referenced images.",
+    "No device cleanup, install, voice work, remote CI run or Git push this round."
+  ],
+  "evidenceSha256": [
+    {
+      "file": "offline-suite.log",
+      "sha256": "36fcdabe867eba06c1aa38fb6163bbf639c629d55c88006e2012408ce89182a9"
+    },
+    {
+      "file": "final-import-ui.log",
+      "sha256": "ac67a777b79fafb088e1c013eab88e0346af8b79a04122a2db05d60f394e43d6"
+    },
+    {
+      "file": "final-image-cache.log",
+      "sha256": "631901bbae129804dd44f3fb636ef85f570fb530c6f3fe7db605faeea7d48c7f"
+    },
+    {
+      "file": "release-build.log",
+      "sha256": "20e7bab7c115d4d57f2e73b47ec1b7bf676e85d3124d3227a21c321092d2e677"
+    }
+  ],
+  "priorEvidenceSha256": [
+    {
+      "file": "import-final.log",
+      "sha256": "a354fa867f3ca91f25dc06c968f3689333a0c2c72232572f2ff88402a6723397"
+    },
+    {
+      "file": "pdf-protocol-final.log",
+      "sha256": "13bf04f06277a65c4c0c7b386512e816a4147aa564a5e2277ad3ecce628bb019"
+    },
+    {
+      "file": "share-images-fixed.log",
+      "sha256": "bdde6cab936d46243d36f32d6b6facdfdf22ead3e24f53313ce628cbfb55ca54"
+    },
+    {
+      "file": "pick-six-fixed.log",
+      "sha256": "48c4ded81311f520b2c5f751c54431e123a7f71a9800708455ead41df5b1ee05"
+    },
+    {
+      "file": "composer-events.log",
+      "sha256": "eb306c459d5999406754023e40f87b4d79960335505dbb1ec9d6f074432bacb4"
+    },
+    {
+      "file": "receiver-hashes.log",
+      "sha256": "b212c615f4937fa240c3f39f77895be2b875c154caa02ab06e682a0eeaccd502"
+    },
+    {
+      "file": "share-text-cancel.log",
+      "sha256": "db97bff0aad3e067eba5eba1541d177f0b02c34ef981bcb22cfa802d23b1a403"
+    },
+    {
+      "file": "share-files-cancel.log",
+      "sha256": "76640c46d06e0819d900e231ea9278374c60cd48b0a676ad9fa1a833ba45fa00"
+    },
+    {
+      "file": "account-audit.log",
+      "sha256": "0c649e13eab1946aa26841905aa9666f422df785438e6db6ca4c75fda373c218"
+    },
+    {
+      "file": "cleanup-private.log",
+      "sha256": "57685b8e5bf77ad6a240c87faa8c4ed108aaf8d66a24b09f941786e6f8da2caf"
+    },
+    {
+      "file": "cleanup-private-rest.log",
+      "sha256": "b24faa783167b3e7fb489414c0a2d149a812e1521dfa855dcd1fd21415de2ef5"
+    }
+  ],
+  "sourceSha256": [
+    {
+      "file": ".github/workflows/ohos-offline.yml",
+      "sha256": "2bf6e7d0c36b35d8500d5b5ea2f7764a7bbc5dd5d954cca84c2317f6c21c8ce0"
+    },
+    {
+      "file": "chatgpt_app_core/lib/chat/application/knowledge_file_importer.dart",
+      "sha256": "c545db96c2e222cf17d43b6d396dc6224365734577d7d1d9911a185d20fc21f1"
+    },
+    {
+      "file": "chatgpt_app_core/lib/chat/application/ocr_service.dart",
+      "sha256": "b9771346ee1aa83be6c28e9ee3cadcb8b4d87f6005ba09e49a110e424f9d75d2"
+    },
+    {
+      "file": "chatgpt_app_core/lib/chat/application/ohos_ocr.dart",
+      "sha256": "792c9aba01618696f560b6a11dac854db8436ff39c850e24e6675012434ad926"
+    },
+    {
+      "file": "chatgpt_app_core/lib/chat/application/import_operation.dart",
+      "sha256": "c9ef2e1229bb027bd583d32b4336dff6a9850979729df5e0543448a38f6be209"
+    },
+    {
+      "file": "chatgpt_app_core/lib/chat/application/knowledge_import_error.dart",
+      "sha256": "24cf7d7e86fd6faebf50690e8302538af758d9ca55664fd98ab24fe253cc97f8"
+    },
+    {
+      "file": "chatgpt_app_core/lib/chat/application/pdf_ocr_result.dart",
+      "sha256": "d87f7b8816df7a9427252fe673e3aab58922bdb38bea1549d38a800f462298b5"
+    },
+    {
+      "file": "chatgpt_app_core/lib/widget/knowledge_import_progress_dialog.dart",
+      "sha256": "03ebf45d6e4a4f882719865eb65a4f920654e8bfef3bb1be732b440fbaf2150b"
+    },
+    {
+      "file": "chatgpt_app_core/lib/db/knowledge_dao.dart",
+      "sha256": "3da3db2f7aa5cbe53a5cf8dafd32ae56a0ac4896d5ed0e1aeea578fc9cd5d965"
+    },
+    {
+      "file": "chatgpt_app_core/lib/knowledge/knowledge_library.dart",
+      "sha256": "777c044f6403444569567ccf28d63d2f6597278acd2220db230b062654d29768"
+    },
+    {
+      "file": "chatgpt_app_core/lib/pages/knowledge_base_page.dart",
+      "sha256": "97631b4b6d30bf54168413d5a8c61224a39736640b904b169c527ec67f9e66b6"
+    },
+    {
+      "file": "chatgpt_app_core/test/knowledge_file_importer_test.dart",
+      "sha256": "63eda250895211f488e591f49252cd18fe94b4d5c98ec6e6956cc2bb21b42a2f"
+    },
+    {
+      "file": "chatgpt_app_core/test/ohos_ocr_test.dart",
+      "sha256": "6bd3244a47c8e8763e356e58d6ec4ba29992cee325dc151f7cdbdf2f3146918c"
+    },
+    {
+      "file": "chatgpt_app_core/test/office_attachment_integration_test.dart",
+      "sha256": "42394cf7d8d02c557916087d4db1ca649d0d1f8ad5e3219588e5628477be4e26"
+    },
+    {
+      "file": "chatgpt_app_core/test/knowledge_import_operation_test.dart",
+      "sha256": "bc8ea9104ccaf89bd1ce0d5160be27c2e4d561c84e7520b22decc4c156c408ba"
+    },
+    {
+      "file": "chatgpt_app_core/test/knowledge_import_ui_test.dart",
+      "sha256": "61aab57f99e5eed64ba817f96235734b3f1089ebbccd955afa55915750e474cb"
+    },
+    {
+      "file": "chatgpt_flutter_ohos/README.md",
+      "sha256": "8dfd754b3bd5751abacb60e50d1321ad620bb38a1a980a434512b869c93d19f3"
+    },
+    {
+      "file": "chatgpt_flutter_ohos/docs/device-nonvoice-20261020.md",
+      "sha256": "1c1781c40d90b2757b347892c1b0e5b2728127a0f2744e7fcb60addb4a9e938e"
+    },
+    {
+      "file": "chatgpt_flutter_ohos/docs/offline-nonvoice-20261020.md",
+      "sha256": "305c1b066723e1479676830f2537b709c0820516318a95f2f8297f4e6e2d78e2"
+    },
+    {
+      "file": "chatgpt_flutter_ohos/scripts/test-offline.sh",
+      "sha256": "fb9eebc28686c90787603c158b87ac4741b432148a0855e2c6828c1a95e9090f"
+    },
+    {
+      "file": "chatgpt_flutter_ohos/ohos/entry/src/main/ets/media/ImagePickerPlugin.ets",
+      "sha256": "3f1bf822449caf907afed495085feff173b6e5e556562a351d8b62ce09db43d1"
+    },
+    {
+      "file": "chatgpt_flutter_ohos/ohos/entry/src/main/ets/media/SharePlugin.ets",
+      "sha256": "3ef4464ec64abd3044d20dda02e403f3e20b3bc5b98975f3e90b4a461e1bb818"
+    },
+    {
+      "file": "chatgpt_flutter_ohos/ohos/entry/src/main/ets/ocr/OcrPlugin.ets",
+      "sha256": "f34cdba875bdeb54839fbd7522d08c5bf928379a0a024e6cca77b00ca9974b2b"
+    },
+    {
+      "file": "chatgpt_flutter_ohos/test/native_image_picker.test.cjs",
+      "sha256": "af73f70f11d79b582da9b08abbaf14af65a90a6c4fa51e5dbacadb76ba0b8d0a"
+    },
+    {
+      "file": "chatgpt_flutter_ohos/test/native_ocr.test.cjs",
+      "sha256": "5c5d4361c57ba0aa3c4d9b1f623102b8577a3850e61fd361920c59c30c7d1355"
+    },
+    {
+      "file": "chatgpt_flutter_ohos/test/native_share.test.cjs",
+      "sha256": "a489c2344c90dbef672f194f23e4ea69d4ae1d4dfa9977b524ad3578dd8f2086"
+    }
+  ],
+  "issuesFixedDuringFinalVerification": [
+    "Pinned host Flutter 3.35.7 instead of the stale local 3.41 symlink to avoid shader incompatibility.",
+    "Updated Office import assertion to fixed Chinese error contract.",
+    "Explicit ArkTS PickedImage type for restored draft mapping.",
+    "Conservatively retain staging when recovery JSON has invalid structure, not only invalid syntax."
+  ]
+}

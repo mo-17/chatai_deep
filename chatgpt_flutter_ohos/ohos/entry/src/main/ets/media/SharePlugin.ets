@@ -156,13 +156,13 @@ export default class SharePlugin implements FlutterPlugin, MethodCallHandler {
       if (records.length === 0 || this.channel === null) throw new Error('Empty share or detached');
       const data = new systemShare.SharedData(records[0]);
       for (let index = 1; index < records.length; index++) data.addRecord(records[index]);
-      return await this.show(new systemShare.ShareController(data));
+      return await this.show(new systemShare.ShareController(data), records.length > 1);
     } catch (error) {
       if (batch.length > 0 && fs.accessSync(batch)) await fs.rmdir(batch);
       throw new Error('无法准备或展示分享内容');
     }
   }
-  private show(controller: systemShare.ShareController): Promise<string> {
+  private show(controller: systemShare.ShareController, multiple: boolean): Promise<string> {
     return new Promise<string>((resolve, reject) => {
       let settled = false;
       let shared = false;
@@ -180,7 +180,7 @@ export default class SharePlugin implements FlutterPlugin, MethodCallHandler {
       controller.on('shareCompleted', onCompleted);
       controller.on('dismiss', onDismiss);
       // show() 成功仅表示面板已展示；必须等 dismiss，才能判断用户是否选择了目标。
-      controller.show(this.context, { selectionMode: systemShare.SelectionMode.SINGLE,
+      controller.show(this.context, { selectionMode: multiple ? systemShare.SelectionMode.BATCH : systemShare.SelectionMode.SINGLE,
         previewMode: systemShare.SharePreviewMode.DETAIL }).catch((error: BusinessError) => {
         if (settled) return;
         settled = true;

@@ -6,6 +6,8 @@ import { textRecognition } from '@kit.CoreVisionKit';
 import { pdfService } from '@kit.PDFKit';
 import { BusinessError } from '@kit.BasicServicesKit';
 
+interface PdfOcrPages { totalPages: number; pages: string[]; }
+
 export default class OcrPlugin implements FlutterPlugin, MethodCallHandler {
   private context: common.UIAbilityContext;
   private applicationContext: common.Context | null = null;
@@ -13,6 +15,7 @@ export default class OcrPlugin implements FlutterPlugin, MethodCallHandler {
   private busy = false;
   private active = '';
   private cancelled = false;
+  private reportProgress = false;
   constructor(context: common.UIAbilityContext) { this.context = context; }
   getUniqueClassName(): string { return 'ChataiDeepOcrPlugin'; }
   onAttachedToEngine(binding: FlutterPluginBinding): void {
@@ -99,7 +102,7 @@ export default class OcrPlugin implements FlutterPlugin, MethodCallHandler {
       finally { try { if (decoder !== null) await decoder.release(); } finally { await packer.release(); } }
     }
   }
-  private async pdf(path: string, maxPages: number): Promise<string> {
+  private async pdf(path: string, maxPages: number, selected: number[] | null): Promise<PdfOcrPages> {
     const file = await this.input(path, 64 * 1024 * 1024);
     let document: pdfService.PdfDocument | null = null;
     try {
@@ -107,10 +110,13 @@ export default class OcrPlugin implements FlutterPlugin, MethodCallHandler {
       if (document.loadDocument(path) !== pdfService.ParseResult.PARSE_SUCCESS) throw new Error('PDF cannot be opened');
       const total = document.getPageCount();
       if (total < 1) throw new Error('PDF has no pages');
+      const count = Math.min(total, maxPages);
+      if (selected !== null && selected.some((page: number) => page > count)) throw new Error('Invalid PDF page');
       const texts: string[] = [];
       let length = 0;
-      for (let index = 0; index < Math.min(total, maxPages); index++) {
+      for (let index = 0; index < count; index++) {
         this.current();
+        if (selected !== null && !selected.includes(index + 1)) { texts.push(''); continue; }
         const page = document.getPage(index);
         let pixels: image.PixelMap | null = null;
         try {
@@ -124,10 +130,10 @@ export default class OcrPlugin implements FlutterPlugin, MethodCallHandler {
           length += text.length;
           if (length > 1000000) throw new Error('OCR text too large');
           texts.push(text);
+          if (this.reportProgress) this.channel?.invokeMethod('progress', { id: this.active, page: index + 1, total: count });
         } finally { try { if (pixels !== null) await pixels.release(); } finally { page.release(); } }
       }
-      if (total > maxPages) texts.push(`[注：原文共 ${total} 页，仅 OCR 前 ${maxPages} 页]`);
-      return texts.join('\n\n').trim();
+      return { totalPages: total, pages: texts };
     } finally { try { document?.releaseDocument(); } finally { await fs.close(file); } }
   }
   private async execute(call: MethodCall, result: MethodResult): Promise<void> {
@@ -137,12 +143,27 @@ export default class OcrPlugin implements FlutterPlugin, MethodCallHandler {
       const kind = call.argument('kind') as string;
       const path = call.argument('path') as string;
       const pages = call.argument('maxPages') as number;
-      if (typeof id !== 'string' || id.length === 0 || id.length > 100 || !['image', 'pdf'].includes(kind) || !Number.isInteger(pages) || pages < 1 || pages > 20) throw new Error('Invalid OCR request');
+      if (typeof id !== 'string' || id.length === 0 || id.length > 100 || !['image', 'pdf', 'pdfPages'].includes(kind) || !Number.isInteger(pages) || pages < 1 || pages > 20) throw new Error('Invalid OCR request');
+      const selected = (call.argument('pageNumbers') as number[] | null) ?? null;
+      if (selected !== null && (kind !== 'pdfPages' || !Array.isArray(selected) || selected.length < 1 ||
+        selected.length > pages || new Set(selected).size !== selected.length ||
+        selected.some((page: number) => !Number.isInteger(page) || page < 1 || page > pages))) throw new Error('Invalid OCR pages');
       this.active = id;
+      this.reportProgress = call.argument('reportProgress') === true;
       initialized = await textRecognition.init();
       if (!initialized) throw new Error('OCR unavailable');
       this.current();
-      const text = kind === 'image' ? await this.image(path) : await this.pdf(path, pages);
+      let text: string | PdfOcrPages;
+      if (kind === 'image') text = await this.image(path);
+      else {
+        const recognized = await this.pdf(path, pages, selected);
+        if (kind === 'pdfPages') text = recognized;
+        else {
+          const parts = recognized.pages.slice();
+          if (recognized.totalPages > pages) parts.push(`[注：原文共 ${recognized.totalPages} 页，仅 OCR 前 ${pages} 页]`);
+          text = parts.join('\n\n').trim();
+        }
+      }
       this.current();
       // 先释放全局识别服务，避免下一次调用在回调后抢到尚未释放的资源。
       await textRecognition.release(); initialized = false;
@@ -152,7 +173,7 @@ export default class OcrPlugin implements FlutterPlugin, MethodCallHandler {
     } catch (error) {
       if (initialized) { try { await textRecognition.release(); } catch (_) {} }
       this.busy = false; this.active = '';
-      result.error('ocr_error', `文字识别未完成 (${(error as BusinessError).code ?? 'file_or_service'})`, null);
+      result.error(this.cancelled ? 'ocr_cancelled' : 'ocr_error', `文字识别未完成 (${(error as BusinessError).code ?? 'file_or_service'})`, null);
     }
   }
 }
