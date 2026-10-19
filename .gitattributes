@@ -1,0 +1,2 @@
+# Preserve the exact pinned upstream QuickJS bytes; hashes are checked in verification.
+ohos_plugins/flutter_js/native/quickjs/** -whitespace

@@ -1,0 +1,134 @@
+{
+  "date": "2026-10-19",
+  "parentCommit": "9bbf0ed7f181c91e97de7eae76964363b903da3c",
+  "flutter": "3.35.7-ohos-local",
+  "localSnapshotNotUpstreamRelease": true,
+  "releaseHap": {
+    "path": "chatgpt_flutter_ohos/build/ohos/hap/entry-default-signed.hap",
+    "bytes": 54952076,
+    "sha256": "a064056156d38f58389a4842c0103ec1b045a7ec432e56cc7dba5c76cd451085",
+    "aotLoaderFingerprint": "ebf38fed505db3ade1e4472a480f5401280853ab6961a5d0ee7ba70236bc21d8",
+    "quickjsLoaderFingerprint": "d7febea42810e9ca90601dd5637b77bd613004cccaa39ef1ccbabc3ee5332220",
+    "aotAndNativeMatchCurrentBuild": true,
+    "bundledQuickjsLicenseVerified": true,
+    "signing": "existing local/debug configuration"
+  },
+  "checks": {
+    "core": {
+      "passed": 27,
+      "skipped": 4
+    },
+    "integration": {
+      "passed": 38,
+      "skipped": 0
+    },
+    "filePicker": {
+      "passed": 7,
+      "skipped": 0
+    },
+    "quickjsFfi": {
+      "passed": 7,
+      "skipped": 0
+    },
+    "nativeChannelAndBuildGuard": {
+      "passed": 37,
+      "skipped": 0
+    },
+    "totalPassed": 116,
+    "realNativeRuntimeChecks": 14,
+    "undefinedBehaviorSanitizer": "passed",
+    "addressSanitizer": "unavailable: minimal empty-main probe and runtime both time out before main on this host"
+  },
+  "staticAnalysis": "core changed files, shell, file_picker and QuickJS adapter: no issues",
+  "quickjsSource": {
+    "version": "2026-06-04",
+    "archiveSha256": "b376e839b322978313d929fd20663b11ba58b75df5a46c126dd19ea2fa70ad2a",
+    "vendoredFilesByteIdenticalToArchive": 17,
+    "license": "MIT"
+  },
+  "directorySupport": "runtime FolderSelection capability; unavailable devices use multi-file/ZIP import",
+  "declaredDeviceTypes": [
+    "phone",
+    "tablet",
+    "2in1"
+  ],
+  "builtAbi": "arm64-v8a",
+  "physicalDeviceVerified": false,
+  "hdcTargets": "Empty",
+  "realProviderDirectoryOrDeviceFfiVerified": false,
+  "published": false,
+  "primarySources": [
+    "https://bellard.org/quickjs/",
+    "https://github.com/openharmony/docs/blob/master/en/application-dev/file-management/select-user-file.md"
+  ],
+  "verificationLogSha256": {
+    "build.log": "6e2c7f23afc2301afa9d8f89bfbbe61551fac4283931bc283593db3fd9e25779",
+    "core-test.log": "c9973c592780d0c5047f445e2a5299e43892ebad9aff31298abaffb85f830814",
+    "integration-test.log": "41d403f6e45babb85b0d50f7d616a8275505386366b0a02c3a45ee06e58b30b0",
+    "native-test.log": "00b782fc7037ffefe3d95b3379c91fef7561bd0b2700511f161577d51495816d",
+    "picker-test.log": "aba760daccaffcef1660849538dd90453a2315f9151b3c1c4029a87c2d15c976",
+    "js-test.log": "857da0ee49e215a0c15435d782406aa6970f962de9fb01202a55a18f0730ac5e",
+    "native-c-test.log": "3d066087e1d881217e2b3dfdd17d475545d95c027acb5cf164c8e79abcfda0bd",
+    "native-ubsan-test.log": "46814f06dfb0e82d31040074967f45aa1d2e398cd49d26552c959d37f62b0da0",
+    "sanitizer-probe.log": "4958b60b74ae3b3e1b43dcf4aae00be2a902a815b9dd3ae2cf172beed4e5303a",
+    "core-analyze.log": "e08c7f5f9069ab4383e730eca6e897cd2383ba9b7ddfd7da68509152275def2a",
+    "shell-analyze.log": "7f1b0fcd0ded5ea89974a94c3e7ac50c63ff506e5fa74387cd158ff0fc94496c",
+    "picker-analyze.log": "d53a31efe233620c3d26c5bdb19eafe1fd7b93b9e954a267dbdaa4cb0b6065e5",
+    "js-analyze.log": "f067ef2486c9fe563b175fb6a3511d32eb3b404491ebfad74f6f580ed6bac910"
+  },
+  "sourceSha256": {
+    ".gitattributes": "7159e382cab1833a96d882d0d910a6e903fa5f6317dd5e74a133a93ef48d05f2",
+    "AGENTS.md": "34644bd9996d6fc6be72bc738a02357af66e0212133330ddf49f9826e9f01d60",
+    "chatgpt_app_core/lib/chat/application/knowledge_file_importer.dart": "39f91a0ccfb972180884f5a73ce63220a890a990ab184af78b986097ff596e58",
+    "chatgpt_app_core/lib/chat/application/knowledge_import_collection.dart": "4808cd4df4d419897613ea258b7be9ce68daba6cb387b46796af3f6acce1abdd",
+    "chatgpt_app_core/lib/pages/assistant_list_page.dart": "dbe8cb11f4fd8ee78db51794d0d7b63bdeb3182f67488c73ede277cda4e34f95",
+    "chatgpt_app_core/lib/pages/knowledge_base_page.dart": "e2d4224137d39cc93c7e3eed9a9affd70ecc2b96cb783ff66b11fbc9024e9f06",
+    "chatgpt_app_core/lib/pages/tts_model_manager_page.dart": "3f646148373ec47344ee6027138107fecd427923661249b52bcce3d7cd42d3ad",
+    "chatgpt_app_core/lib/skill/js_runtime_service.dart": "9252af8bfe72f7202949e3e852f747ab612cb96e4567896919964b5d8d2cb8e9",
+    "chatgpt_app_core/test/js_runtime_service_test.dart": "ced90eed1229cc94f44199720f2a28b789280b8be2d604a73455e4d9685ec527",
+    "chatgpt_app_core/test/knowledge_file_importer_test.dart": "c1b712f8fd3512d6fde623cc4ae7facab6d2df5d3b654b9eadf0cd6e02c07d5a",
+    "chatgpt_app_core/test/knowledge_import_collection_test.dart": "068c64ddeb63cde299e20d251f2e7de670e23d7963c3e1afa8c453f1a6b4b4dc",
+    "chatgpt_flutter_ohos/README.md": "497acd7bb0813b79b601d62814b3956494c99c4a1f1ca5b8ad83b57f937e37a3",
+    "chatgpt_flutter_ohos/assets/licenses/quickjs.txt": "598fd7fc928e4350abce36e337ba5a1346923c5c692f5be92c3d8e29ddd7c18d",
+    "chatgpt_flutter_ohos/lib/main.dart": "dbae2852fee6e9ee9b9c38d3195ded7d7456c65fcee65fe44e5d24b21b1f0c05",
+    "chatgpt_flutter_ohos/ohos/entry/build-profile.json5": "031bd818b9839f7d6fe25d79c988ff58dd76378831ca10dec318238adfae3757",
+    "chatgpt_flutter_ohos/ohos/entry/src/main/cpp/CMakeLists.txt": "2ec407efdbbb9e903ed0deca7c98629ab78b2dc9896eb7cf1e440605a01afd8d",
+    "chatgpt_flutter_ohos/ohos/entry/src/main/ets/files/FilePickerPlugin.ets": "e3baf688dc66582a5e704adebcd8ec8a50741a1e5e683882514ccaa0cc337a21",
+    "chatgpt_flutter_ohos/ohos/entry/src/main/module.json5": "4abf00094c1142084e58ffeebf26be815cba6aec6230e5e469b93e21d0199d86",
+    "chatgpt_flutter_ohos/pubspec.lock": "d0e1abcca86b06fdca369180969fbaa3e556679b40fecefc76f4ebf79e28fedf",
+    "chatgpt_flutter_ohos/pubspec.yaml": "74ebb7926524008f58b354a9ac6ac9e89bb1eae44b0cd29e9128b3ea0a90372c",
+    "chatgpt_flutter_ohos/scripts/build-release.sh": "14d14e5a2c6a8e3d02fe69db11877f61570f17282c8f5dcde3ee266b34f8c486",
+    "chatgpt_flutter_ohos/scripts/verify-hap-aot.py": "0019f0e707c2263885da3d4bf5605e9bbf34551c6958a230f4b1e87a413dc523",
+    "chatgpt_flutter_ohos/test/build_release_guard.test.cjs": "6646e58c6c648b43aa4c25becc655b1e1e73da48db6bca33d23ed3b1f67c73d3",
+    "chatgpt_flutter_ohos/test/native_directory_picker.test.cjs": "e313ad14421082332a41efadce2044f6059c3eff8cd23ea6827bb276596920d0",
+    "chatgpt_flutter_ohos/test/support/native_plugin_loader.cjs": "611be8b5be6c6ad28fa8ad44a74d27d3d97bd655754b0ffe809b4601ebd00083",
+    "ohos_plugins/file_picker/lib/file_picker.dart": "47a683632e9bd69e08d053b3fe33ea0c26c85b03390945f021b401e5516ad7ca",
+    "ohos_plugins/file_picker/test/file_picker_test.dart": "18ff4c9e01c2d0bafe242b5b96780a609ffe3ec31ba878a5a72337fe84efed5b",
+    "ohos_plugins/flutter_js/.gitignore": "6c05225876d832a86e95ece72a732a71eff869330413877c7a947f3eeafa464b",
+    "ohos_plugins/flutter_js/pubspec.yaml": "ac33d018a051bae653d5f75536c39efd7eb741eed9c7cc885e639c82a97a6a41",
+    "ohos_plugins/flutter_js/lib/flutter_js.dart": "39807843017ef36d356edc555d8f5138a3e975f757eeaf1dd6ac85b52fd9e35f",
+    "ohos_plugins/flutter_js/test/flutter_js_test.dart": "37cc113bc17d601f520398d05a070a1da312f7382bbd7fe24c3eb8f16fc320a3",
+    "ohos_plugins/flutter_js/native/CMakeLists.txt": "3ab2411654e0783dd96f32f81c8e398101f20362390d54dcc5bdbd54a32b7965",
+    "ohos_plugins/flutter_js/native/chatai_js.h": "aa28029f9608c4f4e4649ae6c0f147e4fc0bca17b9bb3b4f0ec7fd821028c739",
+    "ohos_plugins/flutter_js/native/chatai_js.c": "4051e3aab44a76904e2e4161ad62ec68db61f188625879907c603b6516152b54",
+    "ohos_plugins/flutter_js/native/chatai_js_test.c": "5a2ac27c63b39b27a0a172405df371c7b4a864593dc50232c4682015ab9ac8d4",
+    "ohos_plugins/flutter_js/native/quickjs-source.json": "ab8901c9f73b5d977fcb698dbd6dee3ea20cad27e3aa94a595abfaec6ba757e3",
+    "ohos_plugins/flutter_js/native/quickjs/LICENSE": "598fd7fc928e4350abce36e337ba5a1346923c5c692f5be92c3d8e29ddd7c18d",
+    "ohos_plugins/flutter_js/native/quickjs/VERSION": "234057c4079458cba9862d4bbb6f8a059ac2e4a194947673da0ad38ca16a37fd",
+    "ohos_plugins/flutter_js/native/quickjs/cutils.c": "b73a403a59da30726257ddbdf5e399298941c1def997782ee0d4d33f796a80a2",
+    "ohos_plugins/flutter_js/native/quickjs/cutils.h": "d2da6d06a75b9e6c116c82b7a41df6bcc170c8b1779f374fa953ecf688eda647",
+    "ohos_plugins/flutter_js/native/quickjs/dtoa.c": "af5abd68fa9806d1a19bdd5f2daef00d5fd0990ae56311382dfed4700343f074",
+    "ohos_plugins/flutter_js/native/quickjs/dtoa.h": "462070f7678a894b9f3612422f280f4dce412eb360a5cc585a513f407fc23114",
+    "ohos_plugins/flutter_js/native/quickjs/libregexp-opcode.h": "2a98d646089f3a72f25480116297c5fdb5b28fd9f815447273951f4ade4a115e",
+    "ohos_plugins/flutter_js/native/quickjs/libregexp.c": "fdfcf86167029ab2c39c35730d4ae6875b7bbeb9406a0fcc886de4e9b1f5e2ac",
+    "ohos_plugins/flutter_js/native/quickjs/libregexp.h": "f5c5ef1899f224dcc718422a22c789ef9d8b5b837b622818fcfaf681ae793446",
+    "ohos_plugins/flutter_js/native/quickjs/libunicode-table.h": "cf782bc7a07549e976f606bd3cb8555858482b279574554dcb8d46412986006c",
+    "ohos_plugins/flutter_js/native/quickjs/libunicode.c": "26203ae888c0582e7d0e2113f13db0c9b39dc7b0b3836d68fa308c54f7a0898c",
+    "ohos_plugins/flutter_js/native/quickjs/libunicode.h": "ce310152bc80d7415dcb657e23abd9a40bf83e393c0d05d325dae384bb01d259",
+    "ohos_plugins/flutter_js/native/quickjs/list.h": "181c6b25d9d0e4853315d36a6e6fab3b2c3554271693d898a439384ba0f67c2b",
+    "ohos_plugins/flutter_js/native/quickjs/quickjs-atom.h": "342194359417664e652f54e7d682ee2ef91dd982e91f74decbde992a2c848236",
+    "ohos_plugins/flutter_js/native/quickjs/quickjs-opcode.h": "a9c60a8c9366820733d9d2acbb805f48b2e9e2778df526e6bcb845fdb6b47834",
+    "ohos_plugins/flutter_js/native/quickjs/quickjs.c": "a00762d2eee42316cecbc9c15efc4549b715ec500461845cd91b2a6c38190d08",
+    "ohos_plugins/flutter_js/native/quickjs/quickjs.h": "2165f47772af9faee1798999a599fa9de850d1bf0259502dade1c25d4a588316"
+  }
+}

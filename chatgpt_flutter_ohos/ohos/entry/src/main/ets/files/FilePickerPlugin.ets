@@ -3,7 +3,7 @@ import {
   MethodChannel, MethodResult,
 } from '@ohos/flutter_ohos';
 import { common } from '@kit.AbilityKit';
-import { picker, fileIo as fs } from '@kit.CoreFileKit';
+import { picker, fileIo as fs, fileUri } from '@kit.CoreFileKit';
 import { BusinessError } from '@kit.BasicServicesKit';
 
 const CHANNEL = 'com.hzb.flutter_ai/file_picker';
@@ -17,6 +17,8 @@ interface PickedFile {
   name: string;
   size: number;
 }
+
+interface DirectoryBudget { entries: number; files: number; bytes: number; names: Set<string>; deadline: number; }
 
 /** 只操作用户在系统选择器中授权的 URI，导入后返回可供 Dart 读取的缓存副本。 */
 export default class FilePickerPlugin implements FlutterPlugin, MethodCallHandler {
@@ -40,7 +42,11 @@ export default class FilePickerPlugin implements FlutterPlugin, MethodCallHandle
   }
 
   onMethodCall(call: MethodCall, result: MethodResult): void {
-    if (!['pickFiles', 'saveFile', 'clearTemporaryFiles'].includes(call.method)) {
+    if (call.method === 'supportsDirectories') { result.success(canIUse('SystemCapability.FileManagement.UserFileService.FolderSelection')); return; }
+    if (call.method === 'getDirectoryPath' && !canIUse('SystemCapability.FileManagement.UserFileService.FolderSelection')) {
+      result.error('directory_unsupported', '当前设备不支持选择文件夹，请使用 ZIP 或多选文件', null); return;
+    }
+    if (!['pickFiles', 'saveFile', 'getDirectoryPath', 'releaseDirectory', 'clearTemporaryFiles'].includes(call.method)) {
       result.notImplemented();
       return;
     }
@@ -57,6 +63,8 @@ export default class FilePickerPlugin implements FlutterPlugin, MethodCallHandle
       let output: PickedFile[] | string | boolean | null = null;
       if (call.method === 'pickFiles') output = await this.pick(call);
       else if (call.method === 'saveFile') output = await this.save(call);
+      else if (call.method === 'getDirectoryPath') output = await this.pickDirectory();
+      else if (call.method === 'releaseDirectory') output = await this.releaseDirectory(call);
       else {
         const directory = this.cacheRoot();
         if (fs.accessSync(directory)) await fs.rmdir(directory);
@@ -139,6 +147,87 @@ export default class FilePickerPlugin implements FlutterPlugin, MethodCallHandle
       await fs.rmdir(batch);
       throw new Error('无法复制选中的文件');
     }
+  }
+
+  private activeDirectory(budget: DirectoryBudget): void {
+    if (this.channel === null || Date.now() > budget.deadline) throw new Error('Directory import cancelled or timed out');
+  }
+
+  private async pickDirectory(): Promise<string | null> {
+    const options = new picker.DocumentSelectOptions();
+    options.maxSelectNumber = 1; options.selectMode = picker.DocumentSelectMode.FOLDER;
+    const uris = await new picker.DocumentViewPicker(this.context).select(options);
+    if (uris.length === 0) return null;
+    if (this.channel === null || uris.length !== 1 || !uris[0].startsWith('file://')) throw new Error('Invalid directory selection');
+    const source = new fileUri.FileUri(uris[0]).path.replace(/\/+$/, '');
+    const root = this.cacheRoot();
+    if (!source.startsWith('/') || source.split('/').some((part: string) => part === '..' || part === '.') ||
+      source.includes('\\') || source.includes('\0') || source === root || root.startsWith(`${source}/`) || source.startsWith(`${root}/`)) throw new Error('Invalid directory path');
+    const stat = await fs.lstat(source);
+    if (stat.isSymbolicLink() || !stat.isDirectory()) throw new Error('Selected entry is not a directory');
+    if (!fs.accessSync(root)) fs.mkdirSync(root);
+    const batch = `${root}/tree_${Date.now()}_${this.sequence++}`;
+    fs.mkdirSync(batch);
+    const budget: DirectoryBudget = { entries: 0, files: 0, bytes: 0, names: new Set<string>(), deadline: Date.now() + 120000 };
+    try {
+      await this.copyDirectory(source, batch, '', 0, budget);
+      this.activeDirectory(budget);
+      return batch;
+    } catch (_) { await fs.rmdir(batch); throw new Error('文件夹复制失败、包含链接或超过导入上限'); }
+  }
+
+  private async copyDirectory(source: string, target: string, prefix: string, depth: number, budget: DirectoryBudget): Promise<void> {
+    this.activeDirectory(budget);
+    if (depth > 12) throw new Error('Directory too deep');
+    const names = await fs.listFile(source, { recursion: false, listNum: 1025 });
+    budget.entries += names.length;
+    if (budget.entries > 1024) throw new Error('Too many directory entries');
+    for (const name of names) {
+      this.activeDirectory(budget);
+      if (name === '' || name === '.' || name === '..' || name.length > 180 || /[\\/\x00-\x1f\x7f]/.test(name)) throw new Error('Invalid directory entry');
+      const relative = prefix + name;
+      if (budget.names.has(relative.toLowerCase())) throw new Error('Conflicting directory entries');
+      budget.names.add(relative.toLowerCase());
+      const path = `${source}/${name}`, destination = `${target}/${name}`;
+      const stat = await fs.lstat(path);
+      if (stat.isSymbolicLink()) throw new Error('Symbolic links are not imported');
+      if (stat.isDirectory()) {
+        fs.mkdirSync(destination);
+        await this.copyDirectory(path, destination, `${relative}/`, depth + 1, budget);
+        continue;
+      }
+      if (!stat.isFile() || ++budget.files > 256 || stat.size > 64 * 1024 * 1024 || budget.bytes + stat.size > 128 * 1024 * 1024) throw new Error('Directory file budget exceeded');
+      const input = await fs.open(path, fs.OpenMode.READ_ONLY | fs.OpenMode.NOFOLLOW);
+      try {
+        const opened = await fs.stat(input.fd);
+        if (!opened.isFile() || opened.size !== stat.size) throw new Error('Directory entry changed');
+        const output = await fs.open(destination, fs.OpenMode.CREATE | fs.OpenMode.READ_WRITE | fs.OpenMode.TRUNC);
+        let size = 0;
+        try {
+          const buffer = new ArrayBuffer(BUFFER_BYTES);
+          while (true) {
+            this.activeDirectory(budget);
+            const count = await fs.read(input.fd, buffer);
+            if (count === 0) break;
+            size += count;
+            if (size > stat.size || budget.bytes + size > 128 * 1024 * 1024) throw new Error('Directory file grew');
+            await this.writeAll(output.fd, buffer.slice(0, count));
+          }
+          if (size !== stat.size) throw new Error('Directory file was truncated');
+          budget.bytes += size;
+        } finally { await fs.close(output); }
+      } finally { await fs.close(input); }
+    }
+  }
+
+  private async releaseDirectory(call: MethodCall): Promise<boolean> {
+    const path = call.argument('path') as string;
+    const root = this.cacheRoot() + '/';
+    if (typeof path !== 'string' || !path.startsWith(root) || !/^tree_[0-9]+_[0-9]+$/.test(path.substring(root.length))) throw new Error('Invalid directory cache path');
+    if (!fs.accessSync(path)) return true;
+    const stat = await fs.lstat(path);
+    if (stat.isSymbolicLink() || !stat.isDirectory()) throw new Error('Invalid directory cache');
+    await fs.rmdir(path); return true;
   }
 
   private async writeAll(fd: number, bytes: ArrayBuffer): Promise<void> {

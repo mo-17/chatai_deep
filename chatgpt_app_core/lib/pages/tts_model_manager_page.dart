@@ -62,7 +62,7 @@ class _TtsModelManagerPageState extends State<TtsModelManagerPage> {
                   Padding(
                     padding: const EdgeInsets.only(top: 10),
                     child: Text(
-                      '鸿蒙版本暂不支持文件选择导入。',
+                      '鸿蒙版本暂不支持 Sherpa 模型音色，请使用系统朗读。',
                       style: Theme.of(context).textTheme.bodySmall,
                     ),
                   ),

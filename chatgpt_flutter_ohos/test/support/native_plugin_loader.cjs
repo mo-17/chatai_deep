@@ -3,13 +3,14 @@ const path = require('node:path');
 const vm = require('node:vm');
 const { createRequire } = require('node:module');
 const ts = createRequire(path.resolve(__dirname, '../../../chatgpt_backend/package.json'))('typescript');
-module.exports = function load(name, dependencies, context) {
+module.exports = function load(name, dependencies, context, options = {}) {
   const source = fs.readFileSync(path.resolve(__dirname, '../../ohos/entry/src/main/ets/media', name + '.ets'), 'utf8');
   const code = ts.transpileModule(source, { compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2021 } }).outputText;
   const module = { exports: {} };
   const events = [], timers = new Map();
   let timerId = 0;
   vm.runInNewContext(code, { module, exports: module.exports, Map, Uint8Array, ArrayBuffer,
+    canIUse: options.canIUse || (() => true),
     setTimeout(fn, ms) { const id = ++timerId; timers.set(id, { fn, ms }); return id; },
     clearTimeout(id) { timers.delete(id); }, require(id) {
     if (id === '@ohos/flutter_ohos') return { MethodChannel: class {

@@ -8,7 +8,7 @@ Multi-package monorepo: a Flutter ChatGPT/AI client (Android/iOS/desktop + a sep
 
 **App shells** (entry points — each has its own `lib/main.dart` and platform folders):
 - `chatgpt_flutter/` — Android / iOS / desktop shell. Depends directly on `chatgpt_app_core` + `login_sdk`. Current version `1.0.2+3`.
-- `chatgpt_flutter_ohos/` — HarmonyOS shell (separately versioned `1.0.0+1`). Same core, but uses `dependency_overrides` to pull OHOS-SIG forks of `sqflite`, `sqflite_common_ffi`, `path_provider`, `url_launcher`, `shared_preferences`, plus three local stubs (see HarmonyOS section). `package_info_plus` has no OHOS impl — handled by runtime branch.
+- `chatgpt_flutter_ohos/` — HarmonyOS shell (separately versioned `1.0.0+1`). Same core, but uses `dependency_overrides` to pull OHOS-SIG forks of `sqflite`, `sqflite_common_ffi`, `path_provider`, `url_launcher`, `shared_preferences`, local platform adapters, and two OCR compile stubs (see HarmonyOS section). `package_info_plus` has no OHOS impl — handled by runtime branch.
 
 **Shared core**:
 - `chatgpt_app_core/` — all business code (pages, DAOs, DB, widgets, providers) **plus the assistant/tool-calling, knowledge-base/RAG, web-search, multi-provider config, and backup subsystems**. Entry point is `lib/app.dart:runChatGptApp`; both app shells just call it. Transitively pulls `login_sdk`, `auth_kit_flutter`, `hi_download`, `chat_message`, `openai_flutter` — these don't need to be listed in the shell's `pubspec.yaml`, but they DO have to exist as siblings on disk for `pub get` to resolve. The chat engine lives under `lib/chat/` split into `application/` (services), `domain/` (types), and `ui/` (block widgets).
@@ -44,9 +44,10 @@ Single test: `flutter test test/widget_test.dart --plain-name "<test name>"`.
 Requires DevEco Studio toolchain — `mise.toml` sets `DEVECO_SDK_HOME` + paths. Always activate mise first:
 ```bash
 cd chatgpt_flutter_ohos
-eval "$(mise activate bash --shims)"      # or zsh
-flutter pub get
-flutter build hap                           # OHOS package
+eval "$(mise activate zsh --shims)"
+eval "$(mise env -s zsh)"
+fvm flutter pub get
+./scripts/build-release.sh                  # independent Dart compile + HAP/AOT/native/license checks
 flutter run                                  # connected OHOS device
 ```
 See [[project_ohos_build]] in user memory for the full build/install/launch command chain.
@@ -108,7 +109,7 @@ The tool path is active only when `caps.tool` (model capability bit) **AND** str
 ### Knowledge base + OCR (`chatgpt_app_core/lib/chat/application/`, `lib/db/knowledge_dao.dart`)
 Keyword-only RAG (no embeddings/vectors — "vector version left for L4b"). `KnowledgeChunker.split` aggregates paragraphs up to ~600 chars then hard-cuts oversized ones. `KnowledgeDao` stores docs/chunks in `tb_kb_doc` + `tb_kb_chunk` and `search()` does multi-term AND-`LIKE` (default 6 chunks). The `knowledge_search` tool wraps it. `KnowledgeBasePage` (entered from "我的 → 知识库") supports paste-text import and file import:
 - `FileProcessor.extractTextForImport()` handles PDFs (syncfusion text layer, 20-page cap) + many text extensions.
-- `OcrService` (`ocr_service.dart`) does on-device OCR via `google_mlkit_text_recognition` (`TextRecognitionScript.chinese`) for images, and rasterizes scanned PDFs page-by-page with `pdfx`. **Gated by `OcrService.isSupported` (Android/iOS only)**; `pdfNeedsOcr()` heuristic decides the syncfusion→OCR fallback. The file-import entry is hidden on OHOS (`Platform.operatingSystem == 'ohos'`).
+- `OcrService` (`ocr_service.dart`) does on-device OCR via `google_mlkit_text_recognition` (`TextRecognitionScript.chinese`) for images, and rasterizes scanned PDFs page-by-page with `pdfx`. **Gated by `OcrService.isSupported` (Android/iOS/OHOS)**; `pdfNeedsOcr()` heuristic decides the syncfusion→OCR fallback. OHOS uses the shell Core Vision/PDF Kit bridge; knowledge import accepts files, bounded ZIP collections, and folders on devices with FolderSelection capability.
 
 ### Conversation context + streaming pipeline (`chatgpt_app_core/lib/dao/completion_dao.dart`)
 `CompletionDao.buildHistory` maps `MessageModel` → OpenAI `messages[]`, and additionally **reconstructs cross-turn state**: tool-call pairs (`assistant(tool_calls)` + `tool`) from `_toolHistory`, and file-extracted text appended to user messages from `_fileHistory`. `appendTurn` / `dropLastTurn` maintain these (and back the regenerate feature). The constructor defensively copies the message list to a growable list (it can be rebuilt from an unmodifiable `currentMessages`).
@@ -123,7 +124,7 @@ The streaming path now uses `chatService.chatStreamEvents` (typed `StreamEvent`:
 - **Scroll-jump**: `ConversationPage` holds `ItemScrollController` + `ItemPositionsListener`; `util/scroll_jump.dart`'s pure `computeChatListEdges` drives the floating to-top/to-bottom buttons; the "对话目录" outline sheet loads all history then `scrollTo(index, alignment:0.08)`.
 - **SPL first-message bug**: `scrollToLastMessage` is deferred via `addPostFrameCallback`, and `ChatList` guards out-of-range `itemBuilder` indices with `SizedBox.shrink` — both avoid the `-1` anchor crash/blank when the list goes 0→1 item.
 - Regenerate: long-press the latest assistant bubble → "重新生成" deletes the old reply (DB/UI/blockStore), calls `dropLastTurn`, and re-sends the original user message.
-- Attachments: images max 4, files max 10 (`MessageInputWidget._maxFiles`); both buttons hidden on OHOS.
+- Attachments: images max 4, files max 10 (`MessageInputWidget._maxFiles`); OHOS uses the local file/image picker adapters.
 
 ### Web search (`chatgpt_app_core/lib/chat/application/search_orchestrator.dart`)
 `SearchOrchestrator.run`: (1) a lightweight no-system-prompt chat classifies intent → `{needSearch, queries[]}` (fault-tolerant JSON parse, falls back to the raw prompt); (2) calls the provider (`web_search_provider.dart`, Tavily) in parallel per query, de-dupes by URL, caps total results; (3) `buildSearchContext` formats numbered results with a date anchor and passes them as `attachments.extraText`. Toggled by a `travel_explore` button in the input bar, persisted to `AISettings.webSearchEnabled`, only shown when `webSearchConfigured` (a search key is set).
@@ -134,7 +135,7 @@ The streaming path now uses `chatService.chatStreamEvents` (typed `StreamEvent`:
 `ModelCapabilities` (`lib/chat/domain/model_capabilities.dart`: `image / pdf / tool / reasoning / largeFileUpload / fileSizeLimits`) is the **single capability source** that gates the image/PDF attachment UI, tool-loop routing, and thinking-block rendering. `ModelCatalog.capabilitiesFor(modelId, providerCode)` starts from name-based heuristics, then applies the backend catalog as an **additive overlay** — remote bits can only turn capabilities ON, never OFF.
 
 ### Backup / restore + guest migration
-`BackupService` (`lib/backup/backup_service.dart`) exports a zip (`manifest.json` formatVersion=1, `conversations.json`, `messages.json`, `assistants.json`, `favorites.json`, `settings.json`). It scrubs all provider API keys + search keys when `includeApiKeys=false`. Import is **overwrite-mode** (single transaction: delete all four tables then bulk insert), repairs dangling `assistantId` FKs, and rejects a newer `formatVersion` without touching data. `BackupService.restoreTick` (a `ValueNotifier<int>`) is bumped after import so `ConversationListPage` reloads without restart. **The knowledge base (`tb_kb_doc` / `tb_kb_chunk`) is NOT included in backups.** UI is `BackupRestorePage` (share_plus export, file_picker import — guarded on OHOS).
+`BackupService` (`lib/backup/backup_service.dart`) exports a zip (`manifest.json` formatVersion=1, `conversations.json`, `messages.json`, `assistants.json`, `favorites.json`, `settings.json`). It scrubs all provider API keys + search keys when `includeApiKeys=false`. Import is **overwrite-mode** (single transaction: delete all four tables then bulk insert), repairs dangling `assistantId` FKs, and rejects a newer `formatVersion` without touching data. `BackupService.restoreTick` (a `ValueNotifier<int>`) is bumped after import so `ConversationListPage` reloads without restart. **The knowledge base (`tb_kb_doc` / `tb_kb_chunk`) is NOT included in backups.** UI is `BackupRestorePage` (file_picker import/export — OHOS uses the local native adapter).
 
 `GuestMigrationService` (`lib/migration/guest_migration_service.dart`): guest data lives under `accountHash='guest'`. On first login to a real account, `shouldPrompt()` checks a `guest_migrated_<hash>` done-key, and `mergeGuestData()` does a **row-level append merge** in one transaction — assistants re-inserted with fresh ids (recorded in a map), conversations re-inserted with `cid` conflicts remapped, messages' `cid` rewritten, favorites appended; AI settings imported only if the target account has none.
 
@@ -173,11 +174,14 @@ App Router under `src/app/`, a single `(dashboard)` route group behind an auth g
 
 ### HarmonyOS + platform build specifics
 - OHOS-impl plugins are swapped via `dependency_overrides` to `openharmony-sig` gitee forks. Don't bump these to upstream stock versions — the OHOS impls don't exist there.
-- Plugins with no OHOS fork are overridden to **local no-op stubs under `ohos_stubs/`** (same package name, Dart-only; methods throw `UnsupportedError` or return null ≈ cancel): `google_mlkit_text_recognition` + `pdfx` (OCR — guarded by `OcrService.isSupported`) and `file_picker` (guarded at each call site by `Platform.operatingSystem == 'ohos'`, which hides the file-pick entry — backup import/export, chat attachments, knowledge-base file import). The OCR two also serve **double duty as the iOS-simulator workaround** referenced from `chatgpt_flutter/pubspec.yaml`. Keep a stub's public API in sync with whatever the core calls.
+- Local adapters under `ohos_plugins/` implement file/image picking, ShareKit sharing, system TTS, and a bounded QuickJS FFI runtime. Shell-native speech/OCR/security plugins are registered manually in `EntryAbility.ets`. The QuickJS sources and MIT license are pinned and compiled by the entry CMake project; preserve the native time/heap/stack limits and the existing script audit/confirmation path.
+- `google_mlkit_text_recognition` + `pdfx` remain local **compile stubs** under `ohos_stubs/`; OHOS `OcrService` dispatches to Core Vision/PDF Kit, not these stubs. These two also serve as the iOS-simulator workaround referenced from `chatgpt_flutter/pubspec.yaml`. Keep the stub API in sync with core imports.
+- Directory selection is gated by `SystemCapability.FileManagement.UserFileService.FolderSelection` (currently 2-in-1 devices); phones use multi-file or bounded ZIP import. Never request system-only file manager permissions or treat a provider URI as unrestricted filesystem access. Native folder selection returns a copied sandbox tree, released only by the matching native cache-path method. Knowledge collection import rejects links/traversal and checks counts, sizes, depth and ZIP CRC before processing.
+- Sherpa model voices and headset duplex routing remain unsupported on OHOS. System offline speech recognition/TTS and image/scanned-PDF OCR are implemented, but host tests and HAP compilation do not establish physical-device quality.
 - **iOS** deploy target is `15.5` (required by `google_mlkit_commons`); **macOS** is `11.0` (required by `speech_to_text`). macOS adds `com.apple.security.device.audio-input` + `…personal-information.speech-recognition` entitlements and `NSSpeechRecognitionUsageDescription` / `NSMicrophoneUsageDescription` Info.plist strings; iOS Info.plist has camera/photo/speech/microphone usage strings.
 - **Android**: `compileSdk 36`, `targetSdk 35`, `ndkVersion 27.0.12077973`. `proguard-rules.pro` has ML Kit R8 `-dontwarn` rules for non-Latin recognizer classes missing from the release APK. **Release currently uses `signingConfigs.debug`** and `applicationId` is still `com.example.chatgpt_flutter` — see `docs/android-release-signing.md` before store submission.
 - Build artifacts (`.dart_tool/`, `build/`) are gitignored at the repo level; do not re-track them.
-- The OHOS shell sets `BackendConfig.host` directly to a LAN IP because OHOS devices can't reach the host's `localhost`.
+- The OHOS shell requires explicit `BACKEND_HOST` / `BACKEND_HTTPS` defines. Release startup rejects local/private backend addresses and probes HUKS before using secrets. See `chatgpt_flutter_ohos/README.md` for the verified build command and remaining device gates.
 
 ## Conventions worth preserving
 

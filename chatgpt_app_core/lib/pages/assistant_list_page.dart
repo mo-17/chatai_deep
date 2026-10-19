@@ -2226,7 +2226,7 @@ class _AssistantListPageState extends State<AssistantListPage> {
               if (pkg.scripts.isNotEmpty)
                 Text(
                   '脚本：${pkg.scripts.length} 个 → 绑定「运行脚本」工具，'
-                  '运行前在沙箱执行并需你确认（仅 Android/iOS 等支持，鸿蒙不可执行）\n'
+                  '在支持的平台上经安全审计并由你确认后，于受限运行时执行\n'
                   '· ${pkg.scripts.map((s) => s.name).join('\n· ')}',
                   style: TextStyle(
                     color: _statusColor(ctx, AppStatusKind.warning),

@@ -47,6 +47,7 @@ class JsRuntimeService {
       isMacOS: !kIsWeb && Platform.isMacOS,
       isWindows: !kIsWeb && Platform.isWindows,
       isLinux: !kIsWeb && Platform.isLinux,
+      isOhos: !kIsWeb && Platform.operatingSystem == 'ohos',
     );
   }
 
@@ -57,8 +58,13 @@ class JsRuntimeService {
     required bool isMacOS,
     required bool isWindows,
     required bool isLinux,
+    bool isOhos = false,
   }) =>
-      !isWeb && !isIOS && !isMacOS && !isLinux && (isAndroid || isWindows);
+      !isWeb &&
+      !isIOS &&
+      !isMacOS &&
+      !isLinux &&
+      (isAndroid || isWindows || isOhos);
 
   /// 执行一段脚本。[input] 会以全局变量 `INPUT`（字符串）注入，脚本可读取；
   /// 约定脚本的输出为「最后一个表达式的字符串值」或脚本自行 `JSON.stringify`。

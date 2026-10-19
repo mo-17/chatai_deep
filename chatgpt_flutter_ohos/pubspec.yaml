@@ -52,10 +52,9 @@ dependency_overrides:
   # 本地适配通过壳注册的原生文件选择器读写授权 URI。
   file_picker:
     path: ../ohos_plugins/file_picker
-  # flutter_js 无鸿蒙实现：覆盖到本地空实现 stub；
-  # 运行时由 JsRuntimeService.isSupported（非 OHOS）守卫，脚本执行永不触达。
+  # 独立 QuickJS 纯计算运行时，原生层限制时间、堆和栈。
   flutter_js:
-    path: ../ohos_stubs/flutter_js
+    path: ../ohos_plugins/flutter_js
   # 本地适配通过鸿蒙 ShareKit 分享文本与应用沙箱文件。
   share_plus:
     path: ../ohos_plugins/share_plus
@@ -70,3 +69,5 @@ dev_dependencies:
 
 flutter:
   uses-material-design: true
+  assets:
+    - assets/licenses/quickjs.txt

@@ -2,6 +2,7 @@ import 'dart:convert';
 
 import 'package:chatgpt_app_core/chat/application/file_processor.dart';
 import 'package:chatgpt_app_core/chat/application/knowledge_file_importer.dart';
+import 'package:chatgpt_app_core/chat/application/knowledge_import_collection.dart';
 import 'package:chatgpt_app_core/chat/application/ocr_service.dart';
 import 'package:chatgpt_app_core/dao/ai_settings_dao.dart';
 import 'package:chatgpt_app_core/db/hi_db_manager.dart';
@@ -35,6 +36,7 @@ class _KnowledgeBasePageState extends State<KnowledgeBasePage> {
   final _filter = TextEditingController();
   String? _folder, _tag;
   bool _includeArchived = false;
+  bool _directorySupported = false;
   int _loadEpoch = 0;
   late final _identity = AiCatalogIdentity.capture();
 
@@ -42,6 +44,9 @@ class _KnowledgeBasePageState extends State<KnowledgeBasePage> {
   void initState() {
     super.initState();
     _doInit();
+    KnowledgeImportCollection.supportsDirectorySelection().then((value) {
+      if (mounted) setState(() => _directorySupported = value);
+    });
   }
 
   @override
@@ -191,12 +196,23 @@ class _KnowledgeBasePageState extends State<KnowledgeBasePage> {
                     MaterialPageRoute(
                         builder: (_) => const KnowledgeAssistantPage())),
           ),
-          IconButton(
+          PopupMenuButton<String>(
             icon: const Icon(Icons.upload_file_outlined),
-            tooltip: OcrService.isSupported
-                ? '导入文件（PDF / 文本 / 图片，扫描件与图片走 OCR）'
-                : '导入文件（PDF 文本层 / 文本文档）',
-            onPressed: _loading || _dao == null ? null : _importFile,
+            tooltip: '导入文档',
+            enabled: !_loading && _dao != null,
+            onSelected: (mode) {
+              if (mode == 'files') {
+                _importFile();
+              } else {
+                _importCollection(mode == 'zip');
+              }
+            },
+            itemBuilder: (_) => [
+              const PopupMenuItem(value: 'files', child: Text('选择文件（可多选）')),
+              if (_directorySupported)
+                const PopupMenuItem(value: 'directory', child: Text('导入文件夹')),
+              const PopupMenuItem(value: 'zip', child: Text('导入资料 ZIP')),
+            ],
           ),
         ],
       ),
@@ -336,6 +352,66 @@ class _KnowledgeBasePageState extends State<KnowledgeBasePage> {
     HiDialog.showSnackBar(context, result.message);
     if (result.failedItems.isNotEmpty) _showImportDetails(result);
     if (result.imported > 0) await _loadData();
+  }
+
+  Future<void> _importCollection(bool zip) async {
+    KnowledgeImportCollection? collection;
+    String? pickedDirectory;
+    KnowledgeFileImportResult? details;
+    try {
+      String? path;
+      if (zip) {
+        final picked = await FilePicker.pickFiles(
+            type: FileType.custom,
+            allowedExtensions: const ['zip'],
+            withData: false);
+        path = picked?.files.firstOrNull?.path;
+      } else {
+        path = await FilePicker.getDirectoryPath(dialogTitle: '选择要导入的资料文件夹');
+        pickedDirectory = path;
+      }
+      if (path == null || !mounted || !_identity.current) return;
+      final selected = path;
+      await _withLoading('正在检查并导入资料…', () async {
+        collection = zip
+            ? await KnowledgeImportCollection.fromZip(selected)
+            : await KnowledgeImportCollection.fromDirectory(selected);
+        if (!mounted || !_identity.current) return;
+        if (collection!.paths.isEmpty) {
+          HiDialog.showSnackBar(context, '所选资料中没有文件');
+          return;
+        }
+        final result = await KnowledgeFileImporter(_dao!,
+                account: _identity.account ?? 'guest',
+                isCurrent: () => mounted && _identity.current)
+            .importPaths(collection!.paths,
+                limits: AISettingsDao.load().attachmentProcessingLimits);
+        if (!mounted || !_identity.current) return;
+        HiDialog.showSnackBar(context, result.message);
+        // 在模态加载框关闭后再展示明细。
+        if (result.failedItems.isNotEmpty) details = result;
+        if (result.imported > 0) await _loadData();
+      });
+      if (mounted && _identity.current && details != null) {
+        _showImportDetails(details!);
+      }
+    } catch (error) {
+      if (mounted && _identity.current) {
+        HiDialog.showSnackBar(context, '批量导入失败：$error');
+      }
+    } finally {
+      try {
+        await collection?.dispose();
+      } catch (error) {
+        debugPrint('知识库导入临时副本清理失败：$error');
+      }
+      if (pickedDirectory != null) {
+        try {
+          await KnowledgeImportCollection.releasePickedDirectory(
+              pickedDirectory);
+        } catch (_) {}
+      }
+    }
   }
 
   Future<void> _rebuildVectorIndex() async {

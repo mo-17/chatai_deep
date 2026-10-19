@@ -1,0 +1,10 @@
+name: flutter_js
+description: App-scoped HarmonyOS QuickJS adapter with native time and heap budgets.
+version: 0.8.7
+publish_to: 'none'
+environment:
+  sdk: '>=3.9.0 <4.0.0'
+dependencies:
+  ffi: ^2.1.4
+dev_dependencies:
+  test: ^1.25.15

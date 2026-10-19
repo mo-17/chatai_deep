@@ -65,6 +65,19 @@ void main() {
     );
   });
 
+  test('鸿蒙具有原生资源预算时启用 QuickJS', () {
+    expect(
+        JsRuntimeService.supportsPlatform(
+            isWeb: false,
+            isAndroid: false,
+            isIOS: false,
+            isMacOS: false,
+            isWindows: false,
+            isLinux: false,
+            isOhos: true),
+        isTrue);
+  });
+
   test('Linux 不加载不兼容 bridge，也不尝试执行脚本', () async {
     const service = JsRuntimeService();
     final result = await service.run('while (true) {}');

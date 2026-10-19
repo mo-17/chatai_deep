@@ -83,12 +83,21 @@ class FilePicker {
     });
   }
 
-  // 离线模型目录涉及递归授权，保留明确的不支持边界。
-  static Future<String?> getDirectoryPath(
-          {String? dialogTitle,
-          String? initialDirectory,
-          bool lockParentWindow = false}) async =>
-      throw UnsupportedError('鸿蒙暂不支持目录导入，请使用模型压缩包');
+  /// 支持目录选择的设备返回保留层级的沙箱副本；不支持时返回明确的平台错误。
+  static Future<String?> getDirectoryPath({
+    String? dialogTitle,
+    String? initialDirectory,
+    bool lockParentWindow = false,
+  }) async {
+    final path = await _channel.invokeMethod<String>('getDirectoryPath');
+    if (path != null &&
+        (!path.startsWith('/') ||
+            path.split('/').contains('..') ||
+            path.contains('\u0000'))) {
+      throw const FormatException('无效的目录选择结果');
+    }
+    return path;
+  }
 
   static Future<bool?> clearTemporaryFiles() =>
       _channel.invokeMethod<bool>('clearTemporaryFiles');

@@ -292,10 +292,10 @@ packages:
   flutter_js:
     dependency: "direct overridden"
     description:
-      path: "../ohos_stubs/flutter_js"
+      path: "../ohos_plugins/flutter_js"
       relative: true
     source: path
-    version: "0.0.1"
+    version: "0.8.7"
   flutter_lints:
     dependency: "direct dev"
     description:

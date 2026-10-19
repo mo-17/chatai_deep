@@ -21,8 +21,9 @@ fvm flutter pub get
 新机器应安装具有完整版本信息的 Flutter OH 3.35 SDK，避免手动改写版本缓存。
 本地快照的 Hvigor 插件会捕获并吞掉 Dart 编译异常，可能继续打包旧缓存。
 上述脚本先独立执行 Dart AOT 编译，失败立即停止，再核对 HAP 内 `libapp.so`
-与本次编译结果的程序头及可加载段 SHA-256（打包器会改写不参与加载的段名称表）；
-单独看到 `flutter build hap` 成功不足以验收。
+与本次编译结果的程序头及可加载段 SHA-256（打包器会改写节表位置、名称等不参与加载的元数据）；
+单独看到 `flutter build hap` 成功不足以验收。脚本还核对本次 CMake 编译的
+QuickJS 库与包内代码段一致，并检查 MIT 许可文本确实存在于 HAP。
 
 ## 已接入的文件能力
 
@@ -78,13 +79,39 @@ HarmonyOS `DocumentViewPicker`。无须申请整个存储空间的读写权限�
 后台取消和迟到结果不会写入知识库；空白图片返回空串，文件或服务错误明确失败。
 ML Kit / pdfx 的 stub 只保留编译导入，OHOS 的 OCR 不经过它们。
 
-目录递归导入和 JS 执行尚未补齐，相关平台守卫继续生效。
+## 脚本与资料批量导入
+
+`../ohos_plugins/flutter_js` 使用官方 QuickJS 2026-06-04 源码（MIT），来源、
+下载归档 SHA-256 和逐文件摘要保存在 `native/quickjs-source.json`。CMake 从源码
+交叉编译 arm64 `libchatai_js.so`，没有预编译第三方二进制或构建时下载。
+Dart FFI 在现有独立 isolate 中执行，每次 evaluate 使用独立运行时。
+原生层设定时间中断、堆上限和 256 KiB 栈上限，禁用阻塞 Atomics.wait；
+正则执行与输出对象的 toString 也受时间中断约束。不安装模块加载器、
+quickjs-libc、文件/网络/进程/宿主桥；不执行异步 job 队列。现有脚本审计和用户确认继续生效。
+默认 2 秒 / 32 MiB 堆，原生硬上限 10 秒 / 64 MiB 堆、源码及 UTF-8 输出各 4 MiB；
+共享核心还有更小的代码、输入和输出字符限制。运行失败返回错误，不回退到无预算引擎。
+
+文件选择器增加系统能力查询、文件夹选择、保留相对路径的沙箱复制和精确副本释放。
+`FolderSelection` 目前属于 2-in-1 设备能力，手机通常不具备；应用按运行时能力
+显示入口，不申请系统级文件管理权限。不支持的设备保留多选文件和资料 ZIP 导入。
+壳声明支持 phone / tablet / 2in1；目前仍仅构建 arm64，未做其他设备形态的真机验收。
+
+知识库导入菜单包含文件、资料 ZIP，以及支持设备上的文件夹。
+集合在交给现有文本/PDF/OCR 导入器前先完整检查：最多 1024 条目、256 个文件、
+12 层子目录、单文件 64 MiB、总计 128 MiB；ZIP 压缩文件最多 64 MiB。
+拒绝链接、特殊文件、路径穿越、大小写冲突和 CRC/大小不一致的 ZIP；解压仅写入
+本次专属临时目录。解析结果仍逐文件报告成功/跳过，已成功导入的文档不会因其它
+文件解析失败回滚。账号或页面失效后停止后续写入；完成或失败时清理 ZIP 临时副本，
+鸿蒙目录副本通过原生精确路径释放，不删除用户源目录。
+
+Sherpa 模型音色和耳机双工仍未移植；模型页面的提示改为真实限制。
+
 
 ## 验证与真机清单
 
 ```sh
 # 在仓库根目录执行：测试真实 ArkTS 方法体，系统 API 使用受控替身
-node --test chatgpt_flutter_ohos/test/native_file_picker.test.cjs
+node --test chatgpt_flutter_ohos/test/native_file_picker.test.cjs chatgpt_flutter_ohos/test/native_directory_picker.test.cjs
 node --test chatgpt_flutter_ohos/test/native_image_picker.test.cjs chatgpt_flutter_ohos/test/native_share.test.cjs
 node --test chatgpt_flutter_ohos/test/native_speech.test.cjs chatgpt_flutter_ohos/test/native_ocr.test.cjs chatgpt_flutter_ohos/test/build_release_guard.test.cjs
 # 在 ohos_plugins/file_picker 内执行：Dart 通道合同
@@ -100,4 +127,8 @@ flutter test
 长文朗读停止、后台打断、服务错误和轮流语音对话。OCR 需检查中文图片、旋转照片、
 无字图片、扫描 PDF、中途坏页、20 页边界、超大图片、超时取消及取消后重试。
 原生单测使用系统 API 替身，不能验证收音/播放质量、真实 OCR 准确率和 PDF 渲染效果。
+目录需真机检查能力判断、中文和多层目录、授权失效、提供方拒绝访问、复制中退出、
+ZIP 导入后原图/PDF 保留、异常与重试、账号切换及源目录完整性。QuickJS 已有宿主真实
+C/FFI/isolate 测试及 UBSan 检测，仍需鸿蒙真机验证动态库装载和工具调用。
+本机 ASan 的最小无业务探针也在进入 main 前超时，因此 ASan 检测尚未完成。
 调试与 release 构建均使用当前工程配置的本地签名，不代表应用市场发布签名已验收。

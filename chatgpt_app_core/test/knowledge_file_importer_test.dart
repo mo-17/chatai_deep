@@ -1,4 +1,7 @@
 import 'dart:io';
+import 'dart:convert';
+import 'package:archive/archive.dart';
+import 'package:chatgpt_app_core/chat/application/knowledge_import_collection.dart';
 
 import 'package:chatgpt_app_core/chat/application/file_processor.dart';
 import 'package:chatgpt_app_core/chat/application/knowledge_file_importer.dart';
@@ -20,6 +23,48 @@ void main() {
     addTearDown(db.close);
     return KnowledgeDao.create(HiDBManager.test(db));
   }
+
+  test('资料 ZIP 检查后可通过现有导入器落库并清理临时副本', () async {
+    final dir = await Directory.systemTemp.createTemp('kb_collection_db_');
+    addTearDown(() => dir.delete(recursive: true));
+    final zip = Archive()
+      ..addFile(
+          ArchiveFile.bytes('folder/alpha.txt', utf8.encode('alpha content')))
+      ..addFile(ArchiveFile.bytes('beta.md', utf8.encode('beta content')));
+    final input = await File('${dir.path}/documents.zip')
+        .writeAsBytes(ZipEncoder().encode(zip));
+    final collection = await KnowledgeImportCollection.fromZip(input.path,
+        temporaryDirectory: () async => dir);
+    final dao = await newDao();
+    try {
+      final result =
+          await KnowledgeFileImporter(dao).importPaths(collection.paths);
+      expect(result.imported, 2);
+      expect((await dao.getDocuments()).map((d) => d.title),
+          containsAll(['alpha', 'beta']));
+    } finally {
+      await collection.dispose();
+    }
+    expect(await input.exists(), true);
+    expect(await File(collection.paths.first).exists(), false);
+  });
+
+  test('账号或页面失效后不再写入本批文档', () async {
+    final dir = await Directory.systemTemp.createTemp('kb_importer_identity_');
+    addTearDown(() => dir.delete(recursive: true));
+    final file = await File('${dir.path}/note.txt').writeAsString('content');
+    final dao = await newDao();
+    final before = await KnowledgeFileImporter(dao, isCurrent: () => false)
+        .importPaths([file.path]);
+    expect(before.imported, 0);
+    expect(await dao.getDocuments(), isEmpty);
+    var checks = 0;
+    final during =
+        await KnowledgeFileImporter(dao, isCurrent: () => ++checks < 2)
+            .importPaths([file.path]);
+    expect(during.imported, 0);
+    expect(await dao.getDocuments(), isEmpty);
+  });
 
   test('批量导入多个文本文件，并按文件名创建知识库文档', () async {
     final dir = await Directory.systemTemp.createTemp('kb_importer_test_');

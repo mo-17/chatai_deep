@@ -1,0 +1,17 @@
+cmake_minimum_required(VERSION 3.16)
+project(chatai_js C)
+set(CMAKE_C_STANDARD 11)
+set(CMAKE_C_STANDARD_REQUIRED ON)
+add_library(chatai_js SHARED chatai_js.c quickjs/quickjs.c quickjs/dtoa.c
+    quickjs/libregexp.c quickjs/libunicode.c quickjs/cutils.c)
+target_compile_definitions(chatai_js PRIVATE CONFIG_VERSION="2026-06-04" _GNU_SOURCE)
+# 与上游 Makefile 保持 signed overflow 和 char 语义一致。
+target_compile_options(chatai_js PRIVATE -fvisibility=hidden -fno-strict-aliasing -fwrapv -funsigned-char)
+target_link_libraries(chatai_js PRIVATE m)
+if(CHATAI_JS_TESTS)
+    enable_testing()
+    add_executable(chatai_js_test chatai_js_test.c)
+    target_link_libraries(chatai_js_test PRIVATE chatai_js)
+    add_test(NAME runtime_budgets COMMAND chatai_js_test)
+    set_tests_properties(runtime_budgets PROPERTIES TIMEOUT 15)
+endif()

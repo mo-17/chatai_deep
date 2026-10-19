@@ -52,14 +52,17 @@ class KnowledgeFileImportResult {
 class KnowledgeFileImporter {
   final KnowledgeDao dao;
   final String account;
+  final bool Function()? isCurrent;
 
-  const KnowledgeFileImporter(this.dao, {this.account = 'guest'});
+  const KnowledgeFileImporter(this.dao,
+      {this.account = 'guest', this.isCurrent});
 
   Future<KnowledgeFileImportResult> importPaths(List<String> paths,
       {AttachmentProcessingLimits limits =
           const AttachmentProcessingLimits()}) async {
     final items = <KnowledgeFileImportItem>[];
     for (final path in paths) {
+      if (isCurrent?.call() == false) break;
       final item = await _importPath(path, limits);
       items.add(item);
     }
@@ -114,8 +117,10 @@ class KnowledgeFileImporter {
           reason: '未提取到文字',
         );
       }
+      if (isCurrent?.call() == false) throw StateError('账号或页面已变化，停止导入');
       final library =
           await KnowledgeLibrary.create(dao.storage, account: account);
+      if (isCurrent?.call() == false) throw StateError('账号或页面已变化，停止导入');
       int? docId;
       if (ext == 'pdf') {
         final bytes = await File(path).readAsBytes();
@@ -135,12 +140,14 @@ class KnowledgeFileImporter {
         }
         if (pages.join().trim().isEmpty) {
           // OCR旧接口未返回逐页位置，不能伪造页码。
+          if (isCurrent?.call() == false) throw StateError('账号或页面已变化，停止导入');
           docId = await library.add(title, [text]);
         } else {
           if (pages.fold<int>(0, (n, p) => n + p.length) >
               limits.normalized.maxTextChars) {
             throw const FormatException('PDF文字超过导入预算，请拆分或提高限额');
           }
+          if (isCurrent?.call() == false) throw StateError('账号或页面已变化，停止导入');
           docId = await library.add(title, pages, pdf: true);
         }
         if (docId != null) {

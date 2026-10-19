@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Compare ELF program headers and loadable bytes; packaging may rewrite section names."""
+"""Compare ELF loader data, allowing strip to rewrite section-table-only metadata."""
 import hashlib
 import struct
 import sys
@@ -27,7 +27,14 @@ def fingerprint(data):
             continue
         if length > memory or start + length > len(data):
             raise ValueError('Invalid ELF load segment')
-        digest.update(data[start:start + length])
+        segment = bytearray(data[start:start + length])
+        # ELF 节表供链接/调试工具使用；strip 会修改这些字段，即使头部位于 PT_LOAD。
+        # 保留机器类型、入口、程序头等加载器使用的字段及全部代码/数据。
+        for begin, end in ((40, 48), (58, 64)):
+            lower, upper = max(start, begin), min(start + length, end)
+            if lower < upper:
+                segment[lower - start:upper - start] = bytes(upper - lower)
+        digest.update(segment)
         loads += 1
         executable |= bool(flags & 1)
     if not loads or not executable:
@@ -39,14 +46,16 @@ def main():
     mode, value, *rest = sys.argv[1:]
     if mode == 'fingerprint' and not rest:
         print(fingerprint(Path(value).read_bytes()))
-    elif mode == 'verify' and len(rest) == 1:
+    elif mode == 'verify' and len(rest) in (1, 2):
         with zipfile.ZipFile(rest[0]) as archive:
-            actual = fingerprint(archive.read('libs/arm64-v8a/libapp.so'))
+            entry = rest[1] if len(rest) == 2 else 'libs/arm64-v8a/libapp.so'
+            actual = fingerprint(archive.read(entry))
         if actual != value:
-            raise ValueError('HAP contains a different Dart AOT build; refusing stale artifact')
-        print('Verified HAP Dart AOT load segments SHA-256: ' + actual)
+            kind = 'Dart AOT' if entry.endswith('/libapp.so') else 'QuickJS native'
+            raise ValueError(f'HAP contains a different {kind} build; refusing stale artifact')
+        print('Verified HAP load segments (' + entry + ') SHA-256: ' + actual)
     else:
-        raise ValueError('Usage: fingerprint app.so | verify HASH app.hap')
+        raise ValueError('Usage: fingerprint app.so | verify HASH app.hap [ENTRY]')
 
 
 if __name__ == '__main__':

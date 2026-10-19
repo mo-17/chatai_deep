@@ -77,7 +77,25 @@ void main() {
         FilePicker.pickFiles(type: FileType.custom), throwsArgumentError);
     await expectLater(
         FilePicker.pickFiles(withReadStream: true), throwsUnsupportedError);
-    await expectLater(FilePicker.getDirectoryPath(), throwsUnsupportedError);
+  });
+
+  test('目录选择返回沙箱副本，取消和能力错误分别处理', () async {
+    messenger.setMockMethodCallHandler(channel, (call) async {
+      expect(call.method, 'getDirectoryPath');
+      return '/cache/chatai_file_picker/tree_1_0';
+    });
+    expect(await FilePicker.getDirectoryPath(),
+        '/cache/chatai_file_picker/tree_1_0');
+    messenger.setMockMethodCallHandler(channel, (_) async => null);
+    expect(await FilePicker.getDirectoryPath(), isNull);
+    messenger.setMockMethodCallHandler(
+        channel, (_) async => '/cache/../secret');
+    await expectLater(FilePicker.getDirectoryPath(), throwsFormatException);
+    messenger.setMockMethodCallHandler(channel, (_) async {
+      throw PlatformException(code: 'directory_unsupported');
+    });
+    await expectLater(
+        FilePicker.getDirectoryPath(), throwsA(isA<PlatformException>()));
   });
 
   test('损坏或超限的原生元数据不能当成有效文件', () async {
@@ -95,7 +113,7 @@ void main() {
     }
   });
 
-  test('媒体类型有明确过滤条件，目录选择未开放', () async {
+  test('媒体类型有明确过滤条件', () async {
     messenger.setMockMethodCallHandler(channel, (call) async {
       expect(call.arguments['allowedExtensions'], containsAll(['jpg', 'png']));
       return null;
