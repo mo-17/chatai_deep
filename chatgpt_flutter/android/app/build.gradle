@@ -170,6 +170,8 @@ android {
 
 dependencies {
     implementation "org.jetbrains.kotlin:kotlin-stdlib-jdk7:1.9.20"
+    // OcrService 使用中文识别器；插件默认只捆绑拉丁文字模型。
+    implementation 'com.google.mlkit:text-recognition-chinese:16.0.1'
 }
 
 if (requestedRelease && chatgptDistribution == 'direct') {

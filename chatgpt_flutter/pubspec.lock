@@ -198,6 +198,14 @@ packages:
       url: "https://pub.dev"
     source: hosted
     version: "0.7.14"
+  extension:
+    dependency: transitive
+    description:
+      name: extension
+      sha256: "1d6cc5a2d173407284780b68fd94f2b547184d4190ca7dbf6d0bf43eb43c29d8"
+      url: "https://pub.dev"
+    source: hosted
+    version: "1.0.0"
   fake_async:
     dependency: transitive
     description:
@@ -407,12 +415,21 @@ packages:
     description: flutter
     source: sdk
     version: "0.0.0"
-  google_mlkit_text_recognition:
-    dependency: "direct overridden"
+  google_mlkit_commons:
+    dependency: transitive
     description:
-      path: "../ohos_stubs/google_mlkit_text_recognition"
-      relative: true
-    source: path
+      name: google_mlkit_commons
+      sha256: "3e69fea4211727732cc385104e675ad1e40b29f12edd492ee52fa108423a6124"
+      url: "https://pub.dev"
+    source: hosted
+    version: "0.11.1"
+  google_mlkit_text_recognition:
+    dependency: transitive
+    description:
+      name: google_mlkit_text_recognition
+      sha256: "10a8d1a64fa21efda89514f6df88bbb7885be3ae1bfb7a6d229132d802a20d22"
+      url: "https://pub.dev"
+    source: hosted
     version: "0.15.1"
   hi_download:
     dependency: transitive
@@ -737,12 +754,13 @@ packages:
     source: hosted
     version: "2.3.0"
   pdfx:
-    dependency: "direct overridden"
+    dependency: transitive
     description:
-      path: "../ohos_stubs/pdfx"
-      relative: true
-    source: path
-    version: "2.9.2"
+      name: pdfx
+      sha256: "83bcd2b971fc2f6ee4299659c96d7d66b2ba4807748571a8a4889f1cde14b754"
+      url: "https://pub.dev"
+    source: hosted
+    version: "2.11.0"
   pedantic:
     dependency: transitive
     description:
@@ -759,6 +777,14 @@ packages:
       url: "https://pub.dev"
     source: hosted
     version: "7.0.2"
+  photo_view:
+    dependency: transitive
+    description:
+      name: photo_view
+      sha256: "1fc3d970a91295fbd1364296575f854c9863f225505c28c46e0a03e48960c75e"
+      url: "https://pub.dev"
+    source: hosted
+    version: "0.15.0"
   platform:
     dependency: transitive
     description:
@@ -1132,6 +1158,14 @@ packages:
       url: "https://pub.dev"
     source: hosted
     version: "1.4.0"
+  universal_platform:
+    dependency: transitive
+    description:
+      name: universal_platform
+      sha256: "64e16458a0ea9b99260ceb5467a214c1f298d647c659af1bff6d3bf82536b1ec"
+      url: "https://pub.dev"
+    source: hosted
+    version: "1.1.0"
   url_launcher:
     dependency: transitive
     description:

@@ -19,18 +19,6 @@ dependencies:
   workmanager: ^0.9.0+3
   flutter_secure_storage: ^10.3.1
 
-# ───────────────────────────────────────────────────────────────────────────
-# 【临时】OCR 插件用本地 Dart-only stub 覆盖，使 iOS 模拟器可编译。
-# 原因：google_mlkit / pdfx 的预编译二进制没有 arm64 模拟器切片，
-#       Apple Silicon 的 iOS 模拟器无法链接 → 构建失败。
-# 影响：覆盖期间整个 iOS/Android 构建都【没有 OCR】（调用会抛 UnsupportedError）。
-# 还原：等有 iOS 真机时，直接删除下面整个 dependency_overrides 块即可恢复 OCR。
-dependency_overrides:
-  google_mlkit_text_recognition:
-    path: ../ohos_stubs/google_mlkit_text_recognition
-  pdfx:
-    path: ../ohos_stubs/pdfx
-
 dev_dependencies:
   flutter_test:
     sdk: flutter
