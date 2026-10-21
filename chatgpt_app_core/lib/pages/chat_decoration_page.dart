@@ -38,12 +38,12 @@ class _ChatDecorationPageState extends State<ChatDecorationPage> {
         actions: [
           IconButton(
             key: const ValueKey('reset_chat_decoration'),
-            tooltip: '恢复默认气泡、配色和头像框',
+            tooltip: '恢复默认气泡、配色、头像框和对话界面',
             icon: const Icon(Icons.restart_alt_rounded),
             onPressed: () {
               provider.resetChatDecoration();
               ScaffoldMessenger.of(context).showSnackBar(
-                  const SnackBar(content: Text('已恢复默认气泡、配色和头像框')));
+                  const SnackBar(content: Text('已恢复默认聊天装扮和对话界面')));
             },
           ),
         ],
@@ -87,6 +87,17 @@ class _ChatDecorationPageState extends State<ChatDecorationPage> {
                   ),
                 ),
                 const SizedBox(height: 20),
+                SwitchListTile.adaptive(
+                  key: const ValueKey('follow_conversation_decoration'),
+                  contentPadding: EdgeInsets.zero,
+                  title: const Text('对话界面跟随套装'),
+                  subtitle: Text(provider.conversationDecoration == null
+                      ? '背景、顶部栏和输入框一同变化'
+                      : '当前界面：${provider.conversationDecoration!.label}'),
+                  value: provider.followConversationDecoration,
+                  onChanged: provider.setFollowConversationDecoration,
+                ),
+                const SizedBox(height: 8),
                 const ChatDecorationPreview(),
                 const SizedBox(height: 20),
                 SegmentedButton<bool>(

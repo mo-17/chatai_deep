@@ -27,6 +27,8 @@ fvm flutter test --no-pub ../chat_message/test test/chat_decoration_test.dart te
 
 2026-10-22：按用户授权，将代码、运行时素材和验收记录分批提交并推送；原始源帧、预览和打包文件保留本机。
 
+对话背景、顶部栏及输入框随套装变化的功能见 [对话整页装扮](../chatgpt_app_core/CONVERSATION_DECORATION.md)；已有消息装扮的尺寸与间距规则继续保留。
+
 ## 本次结果
 
 - 57 项正式回归全部通过，临时真实组件视觉验收 1 项通过，输出 40 张明暗预览。共计 58 项；不把素材解码或宿主机绘制称为手机播放验收。

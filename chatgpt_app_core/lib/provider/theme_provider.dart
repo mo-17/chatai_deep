@@ -14,11 +14,15 @@ class ThemeProvider extends ChangeNotifier {
   static const keyAiBubbleStyle = 'chat_ai_bubble_style_v1';
   static const keyUserAvatarFrame = 'chat_user_avatar_frame_v1';
   static const keyAiAvatarFrame = 'chat_ai_avatar_frame_v1';
+  static const keyFollowConversationDecoration = 'chat_follow_decoration_v1';
+  static const keyConversationDecoration = 'chat_conversation_decoration_v1';
 
   late ChatBubbleStyle _userBubbleStyle;
   late ChatBubbleStyle _aiBubbleStyle;
   late ChatAvatarFrameStyle _userAvatarFrame;
   late ChatAvatarFrameStyle _aiAvatarFrame;
+  late bool _followConversationDecoration;
+  ChatIllustratedTheme? _conversationDecoration;
 
   late bool _showMessageAvatars;
   Color? _userBubbleColor;
@@ -58,6 +62,13 @@ class ThemeProvider extends ChangeNotifier {
         ChatAvatarFrameStyle.fromStorage(cache.get<String>(keyUserAvatarFrame));
     _aiAvatarFrame =
         ChatAvatarFrameStyle.fromStorage(cache.get<String>(keyAiAvatarFrame));
+    _followConversationDecoration =
+        cache.get<bool>(keyFollowConversationDecoration) ?? true;
+    _conversationDecoration = ChatBubbleStyle.fromStorage(
+                cache.get<String>(keyConversationDecoration))
+            .illustration ??
+        _userBubbleStyle.illustration ??
+        _aiBubbleStyle.illustration;
     _showMessageAvatars = cache.get<bool>(keyShowMessageAvatars) ?? true;
     _userBubbleColor = _loadBubbleColor(keyUserBubbleColor);
     _aiBubbleColor = _loadBubbleColor(keyAiBubbleColor);
@@ -71,6 +82,21 @@ class ThemeProvider extends ChangeNotifier {
   bool get showMessageAvatars => _showMessageAvatars;
   Color? get userBubbleColor => _userBubbleColor;
   Color? get aiBubbleColor => _aiBubbleColor;
+  bool get followConversationDecoration => _followConversationDecoration;
+  ChatIllustratedTheme? get conversationDecoration =>
+      _followConversationDecoration ? _conversationDecoration : null;
+
+  void setFollowConversationDecoration(bool value) {
+    if (_followConversationDecoration == value) return;
+    _followConversationDecoration = value;
+    HiCache.getInstance().setBool(keyFollowConversationDecoration, value);
+    notifyListeners();
+  }
+
+  void _rememberConversationDecoration(ChatIllustratedTheme theme) {
+    _conversationDecoration = theme;
+    HiCache.getInstance().setString(keyConversationDecoration, theme.name);
+  }
 
   ChatBubbleStyle bubbleStyle({required bool isUser}) =>
       isUser ? _userBubbleStyle : _aiBubbleStyle;
@@ -87,6 +113,9 @@ class ThemeProvider extends ChangeNotifier {
     }
     HiCache.getInstance()
         .setString(isUser ? keyUserBubbleStyle : keyAiBubbleStyle, style.name);
+    if (style.illustration case final illustrated?) {
+      _rememberConversationDecoration(illustrated);
+    }
     notifyListeners();
   }
 
@@ -122,6 +151,7 @@ class ThemeProvider extends ChangeNotifier {
         isUser ? keyUserBubbleStyle : keyAiBubbleStyle, bubble.name);
     cache.setString(isUser ? keyUserAvatarFrame : keyAiAvatarFrame, frame.name);
     cache.remove(isUser ? keyUserBubbleColor : keyAiBubbleColor);
+    _rememberConversationDecoration(theme);
     notifyListeners();
   }
 
@@ -130,13 +160,17 @@ class ThemeProvider extends ChangeNotifier {
     _userBubbleStyle = _aiBubbleStyle = ChatBubbleStyle.classic;
     _userAvatarFrame = _aiAvatarFrame = ChatAvatarFrameStyle.none;
     _userBubbleColor = _aiBubbleColor = null;
+    _conversationDecoration = null;
+    _followConversationDecoration = true;
     for (final key in [
       keyUserBubbleStyle,
       keyAiBubbleStyle,
       keyUserAvatarFrame,
       keyAiAvatarFrame,
       keyUserBubbleColor,
-      keyAiBubbleColor
+      keyAiBubbleColor,
+      keyConversationDecoration,
+      keyFollowConversationDecoration,
     ]) {
       HiCache.getInstance().remove(key);
     }

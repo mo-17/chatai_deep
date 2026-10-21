@@ -1,4 +1,7 @@
 import 'dart:convert';
+import 'package:chat_message/theme/chat_illustrated_theme.dart';
+import 'package:chatgpt_app_core/theme/conversation_decoration_theme.dart';
+import 'package:chatgpt_app_core/pages/chat_decoration_page.dart';
 import 'package:chatgpt_app_core/chat/application/assistant_conversation_factory.dart';
 import 'package:chatgpt_app_core/db/project_dao.dart';
 import 'package:chatgpt_app_core/model/project_model.dart';
@@ -154,6 +157,63 @@ void main() {
         title: title,
         speechInputEnabled: false,
       );
+
+  testWidgets('真实对话页切换整页装扮和关闭联动时保留输入状态与草稿', (tester) async {
+    theme.applyDecorationSet(
+        isUser: true, theme: ChatIllustratedTheme.crimsonPhoenix);
+    await openPage(tester, conversation(960));
+    final input = find.byType(MessageInputWidget);
+    final state = tester.state(input);
+    final controller = tester.widget<MessageInputWidget>(input).controller!;
+    final colored = Theme.of(tester.element(input));
+    expect(colored.extension<ConversationDecorationTheme>()?.decoration,
+        ChatIllustratedTheme.crimsonPhoenix);
+    expect(colored.appBarTheme.backgroundColor,
+        colored.extension<ConversationDecorationTheme>()!.panel);
+    await tester.enterText(
+        find.byKey(const ValueKey('anime_message_input')), '保留草稿与输入状态');
+    theme.applyDecorationSet(
+        isUser: false, theme: ChatIllustratedTheme.bluePorcelain);
+    await tester.pump();
+    expect(identical(tester.state(input), state), isTrue);
+    expect(controller.text, '保留草稿与输入状态');
+    expect(
+        Theme.of(tester.element(input))
+            .extension<ConversationDecorationTheme>()
+            ?.decoration,
+        ChatIllustratedTheme.bluePorcelain);
+    theme.setFollowConversationDecoration(false);
+    await tester.pump();
+    expect(identical(tester.state(input), state), isTrue);
+    expect(controller.text, '保留草稿与输入状态');
+    expect(find.byKey(const ValueKey('conversation_decoration_backdrop')),
+        findsNothing);
+    expect(
+        Theme.of(tester.element(input))
+            .extension<ConversationDecorationTheme>(),
+        isNull);
+    await tester.tap(find.byTooltip('更多'));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 300));
+    await tester.tap(find.text('聊天装扮'));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 350));
+    expect(find.byType(ChatDecorationPage), findsOneWidget);
+    await tester
+        .tap(find.byKey(const ValueKey('follow_conversation_decoration')));
+    await tester.pump();
+    await tester.pageBack();
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 350));
+    expect(identical(tester.state(input), state), isTrue);
+    expect(controller.text, '保留草稿与输入状态');
+    expect(theme.conversationDecoration, ChatIllustratedTheme.bluePorcelain);
+    expect(mainChat.calls, 0);
+    expect(tester.takeException(), isNull);
+    await letIoFinish(tester);
+    await tester.pumpWidget(const SizedBox.shrink());
+    await letIoFinish(tester);
+  });
 
   for (final projectDefault in <bool?>[null, false, true]) {
     testWidgets('项目默认=$projectDefault：全局变化仅影响跟随会话，项目修改只影响后来新建的会话',

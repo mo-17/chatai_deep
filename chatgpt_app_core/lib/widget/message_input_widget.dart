@@ -12,6 +12,7 @@ import 'package:chatgpt_app_core/platform/picked_file.dart';
 import 'package:chatgpt_app_core/provider/theme_provider.dart';
 import 'package:chatgpt_app_core/platform/app_file_picker.dart';
 import 'package:flutter/material.dart';
+import 'package:chatgpt_app_core/theme/conversation_decoration_theme.dart';
 import 'package:flutter/services.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:provider/provider.dart';
@@ -878,9 +879,12 @@ class _MessageInputWidgetState extends State<MessageInputWidget> {
             minimumSize: const Size.square(48),
             maximumSize: const Size.square(48),
             backgroundColor: widget.isStreaming ? colorScheme.error : color,
-            foregroundColor: Colors.white,
+            foregroundColor: widget.isStreaming
+                ? colorScheme.onError
+                : colorScheme.onPrimary,
             disabledBackgroundColor: color.withValues(alpha: 0.45),
-            disabledForegroundColor: Colors.white70,
+            disabledForegroundColor:
+                colorScheme.onSurface.withValues(alpha: .38),
           ),
           onPressed: widget.isStreaming
               ? widget.onStop
@@ -1316,7 +1320,8 @@ class _MessageInputWidgetState extends State<MessageInputWidget> {
   @override
   Widget build(BuildContext context) {
     final themeProvider = context.watch<ThemeProvider>();
-    final isAnime = themeProvider.isAnime;
+    final decoration = ConversationDecorationTheme.of(context);
+    final isAnime = themeProvider.isAnime || decoration != null;
     final colorScheme = Theme.of(context).colorScheme;
     final color = isAnime ? colorScheme.primary : themeProvider.themeColor;
     var bottom = MediaQuery.of(context).padding.bottom;
@@ -1335,7 +1340,7 @@ class _MessageInputWidgetState extends State<MessageInputWidget> {
       ),
       decoration: isAnime
           ? BoxDecoration(
-              color: colorScheme.surface,
+              color: decoration?.panel ?? colorScheme.surface,
               border: Border(
                 top: BorderSide(color: colorScheme.outlineVariant),
               ),

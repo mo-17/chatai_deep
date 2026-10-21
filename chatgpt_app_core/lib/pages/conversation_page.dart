@@ -45,6 +45,8 @@ import 'package:chatgpt_app_core/chat/domain/attachment_processing_limits.dart';
 import 'package:chatgpt_app_core/db/message_reference_dao.dart';
 import 'package:chatgpt_app_core/util/account_resource_scope.dart';
 import 'package:chatgpt_app_core/widget/message_reference_picker.dart';
+import 'package:chatgpt_app_core/widget/conversation_decoration.dart';
+import 'package:chatgpt_app_core/pages/chat_decoration_page.dart';
 import 'package:chatgpt_app_core/chat/application/composer_prediction_service.dart';
 import 'package:chatgpt_app_core/chat/application/chat_context_planner.dart';
 import 'package:chatgpt_app_core/chat/application/agent_task_session.dart';
@@ -155,6 +157,7 @@ enum _ConversationMoreAction {
   roleContext,
   roleDebug,
   voicePrefs,
+  decoration,
 }
 
 class _ReadAloudTriggerMode {
@@ -2022,7 +2025,7 @@ class _ConversationPageState extends State<ConversationPage>
   /// 块上记录的 modelId（覆盖后实际生效的模型）。
   String get _effectiveModelId => _effective(_currentSettings).effectiveModel;
 
-  Widget get _chatList {
+  Widget _buildChatList(BuildContext context) {
     final appearance = context.watch<ThemeProvider?>();
     final visualTheme = AppVisualTheme.of(context);
     final colorScheme = Theme.of(context).colorScheme;
@@ -2306,8 +2309,8 @@ class _ConversationPageState extends State<ConversationPage>
     );
   }
 
-  get _appBar => AppBar(
-        title: _appBarTitle,
+  PreferredSizeWidget _buildAppBar(BuildContext context) => AppBar(
+        title: _buildAppBarTitle(context),
         actions: [
           if (widget.speechInput != null || continuousSpeechSupported)
             IconButton(
@@ -2338,6 +2341,8 @@ class _ConversationPageState extends State<ConversationPage>
             icon: const Icon(Icons.more_vert),
             onSelected: _onConversationMoreAction,
             itemBuilder: (_) => [
+              _moreMenuItem(_ConversationMoreAction.decoration,
+                  Icons.palette_outlined, '聊天装扮'),
               _moreMenuItem(_ConversationMoreAction.taskMode,
                   Icons.checklist_rounded, '任务模式'),
               _moreMenuItem(_ConversationMoreAction.workflow,
@@ -2399,6 +2404,10 @@ class _ConversationPageState extends State<ConversationPage>
 
   void _onConversationMoreAction(_ConversationMoreAction action) {
     switch (action) {
+      case _ConversationMoreAction.decoration:
+        _invalidatePrediction();
+        unawaited(Navigator.push<void>(context,
+            MaterialPageRoute(builder: (_) => const ChatDecorationPage())));
       case _ConversationMoreAction.taskMode:
         _openTaskMode();
       case _ConversationMoreAction.workflow:
@@ -2504,7 +2513,7 @@ class _ConversationPageState extends State<ConversationPage>
 
   String _aiName = '';
 
-  Widget get _appBarTitle {
+  Widget _buildAppBarTitle(BuildContext context) {
     final assistant = _assistant;
     final subtitle = _roleSubtitle;
     final visualTheme = AppVisualTheme.of(context);
@@ -2532,7 +2541,8 @@ class _ConversationPageState extends State<ConversationPage>
                   subtitle,
                   maxLines: 1,
                   overflow: TextOverflow.ellipsis,
-                  style: const TextStyle(fontSize: 11, color: Colors.black54),
+                  style: TextStyle(
+                      fontSize: 11, color: theme.colorScheme.onSurfaceVariant),
                 ),
               ],
             ],
@@ -3025,6 +3035,7 @@ class _ConversationPageState extends State<ConversationPage>
     // 立即重算能力位并刷新图片入口（修复阶段三复审遗留 1：原先缓存在字段里，
     // 要等下次发送才更新）。与 completionDao.capabilities 同源（见 ChatService）。
     final settings = context.watch<AISettingsProvider>().settings;
+    final appearance = context.watch<ThemeProvider?>();
     if (!_accountCurrent) {
       return Scaffold(
         appBar: AppBar(title: const Text('对话')),
@@ -3037,64 +3048,68 @@ class _ConversationPageState extends State<ConversationPage>
         ? _assistant!.name
         : _effective(settings).aiDisplayName;
     // 把块仓库提供给气泡内部的块渲染（BlockMessageContent 用 Selector 精确订阅）。
-    return ChangeNotifierProvider<ChatBlockStore>.value(
-      value: _blockStore,
-      child: Scaffold(
-        appBar: _appBar,
-        body: Column(
-          children: [
-            _chatList,
-            if (_agentTask != null)
-              AgentTaskPanel(
-                  session: _agentTask!,
-                  busy: _isStreaming || _savingReasoningEffort,
-                  onOpen: _openTaskMode,
-                  onResume: _resumeTask,
-                  onDetails: _openTaskDetails,
-                  onResolveFailure: _resolveTaskFailure,
-                  backgroundNotice: _isStreaming ? _backgroundNotice : null,
-                  queued: _agentRun?.queued == true,
-                  queuePosition: _taskExecutor.queuePosition(_taskKey),
-                  onCancelQueued: () => _stopStream(reason: '已取消排队，可继续任务'),
-                  verificationSummary:
-                      _workspaceTools?.lastReport?.hasChecks == true
-                          ? _workspaceTools!.lastReport!.summary
-                          : null),
-            if (_ordinaryRun?.persistencePending == true)
-              TextButton.icon(
-                  key: const ValueKey('ordinary_retry_save'),
-                  onPressed: () => _ordinaryRun?.retryPersistence(),
-                  icon: const Icon(Icons.save_outlined),
-                  label: const Text('重试保存回复')),
-            ChatSendStatusPanel(
-              progress: _sendProgress,
-              busy: _isStreaming,
-              draftNotice: _draftNotice,
-              contextPlan: _contextPlan,
-              attachmentsPending: !_contextAttachmentsPrepared &&
-                  (_pendingImages.isNotEmpty || _pendingFiles.isNotEmpty),
-              onCancel: _isStreaming ? _stopStream : null,
-              onPreview: _ready ? _showContextPreview : null,
-              onDismissDraft: () => setState(() => _draftNotice = null),
-            ),
-            if (_ready &&
-                !_isStreaming &&
-                chatController.initialMessageList.isNotEmpty &&
-                chatController.initialMessageList.first.ownerType ==
-                    OwnerType.sender)
-              TextButton.icon(
-                  key: const ValueKey('retry_unanswered_chat_prompt'),
-                  onPressed: () => _retryUserMessage(
-                      chatController.initialMessageList.first),
-                  icon: const Icon(Icons.refresh),
-                  label: const Text('重试上次未完成的提问')),
-            if (_voiceConversation case final voice?)
-              VoiceConversationPanel(
-                  controller: voice,
-                  onClose: () => unawaited(_closeVoiceConversation()))
-            else
-              _inputWidget(caps, settings),
-          ],
+    return ConversationDecorationScope(
+      decoration: appearance?.conversationDecoration,
+      builder: (context) => ChangeNotifierProvider<ChatBlockStore>.value(
+        value: _blockStore,
+        child: Scaffold(
+          appBar: _buildAppBar(context),
+          body: ConversationDecorationBackdrop(
+              child: Column(
+            children: [
+              _buildChatList(context),
+              if (_agentTask != null)
+                AgentTaskPanel(
+                    session: _agentTask!,
+                    busy: _isStreaming || _savingReasoningEffort,
+                    onOpen: _openTaskMode,
+                    onResume: _resumeTask,
+                    onDetails: _openTaskDetails,
+                    onResolveFailure: _resolveTaskFailure,
+                    backgroundNotice: _isStreaming ? _backgroundNotice : null,
+                    queued: _agentRun?.queued == true,
+                    queuePosition: _taskExecutor.queuePosition(_taskKey),
+                    onCancelQueued: () => _stopStream(reason: '已取消排队，可继续任务'),
+                    verificationSummary:
+                        _workspaceTools?.lastReport?.hasChecks == true
+                            ? _workspaceTools!.lastReport!.summary
+                            : null),
+              if (_ordinaryRun?.persistencePending == true)
+                TextButton.icon(
+                    key: const ValueKey('ordinary_retry_save'),
+                    onPressed: () => _ordinaryRun?.retryPersistence(),
+                    icon: const Icon(Icons.save_outlined),
+                    label: const Text('重试保存回复')),
+              ChatSendStatusPanel(
+                progress: _sendProgress,
+                busy: _isStreaming,
+                draftNotice: _draftNotice,
+                contextPlan: _contextPlan,
+                attachmentsPending: !_contextAttachmentsPrepared &&
+                    (_pendingImages.isNotEmpty || _pendingFiles.isNotEmpty),
+                onCancel: _isStreaming ? _stopStream : null,
+                onPreview: _ready ? _showContextPreview : null,
+                onDismissDraft: () => setState(() => _draftNotice = null),
+              ),
+              if (_ready &&
+                  !_isStreaming &&
+                  chatController.initialMessageList.isNotEmpty &&
+                  chatController.initialMessageList.first.ownerType ==
+                      OwnerType.sender)
+                TextButton.icon(
+                    key: const ValueKey('retry_unanswered_chat_prompt'),
+                    onPressed: () => _retryUserMessage(
+                        chatController.initialMessageList.first),
+                    icon: const Icon(Icons.refresh),
+                    label: const Text('重试上次未完成的提问')),
+              if (_voiceConversation case final voice?)
+                VoiceConversationPanel(
+                    controller: voice,
+                    onClose: () => unawaited(_closeVoiceConversation()))
+              else
+                _inputWidget(caps, settings),
+            ],
+          )),
         ),
       ),
     );
