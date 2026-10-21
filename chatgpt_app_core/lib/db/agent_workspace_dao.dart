@@ -107,13 +107,20 @@ class AgentWorkspaceDao implements IAgentWorkspace, ITable {
     required List<String> pageTexts,
     required int sizeBytes,
     List<Map<String, dynamic>> sections = const [],
+    bool Function()? canCommit,
   }) async {
     return storage.db.transaction((txn) async {
+      void check() {
+        if (canCommit?.call() == false) throw StateError('任务已停止，工作区未修改');
+      }
+
+      check();
       final existing = await txn.query(filesTable,
           where: "cid=? AND kind='input' AND sourceKey=? AND contentHash=?",
           whereArgs: [cid, sourceKey, contentHash],
           limit: 1);
       if (existing.isNotEmpty) {
+        check();
         return AgentWorkspaceFile.fromJson(existing.single);
       }
       final now = DateTime.now().millisecondsSinceEpoch;
@@ -124,6 +131,7 @@ class AgentWorkspaceDao implements IAgentWorkspace, ITable {
       final id = await txn.insert(filesTable, row);
       await txn.insert(
           revisionsTable, _revision(id, 1, content, pageTexts, '', now));
+      check();
       return AgentWorkspaceFile.fromJson({...row, 'id': id});
     });
   }

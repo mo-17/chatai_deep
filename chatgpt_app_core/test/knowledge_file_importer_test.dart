@@ -72,6 +72,39 @@ void main() {
     expect((await dao.getDocuments()).single.sourceKind, 'pdf');
   });
 
+  test('桌面图片可经注入的服务器 OCR 导入，识别后仍检查文字预算', () async {
+    final dir = await Directory.systemTemp.createTemp('kb_server_image_');
+    addTearDown(() => dir.delete(recursive: true));
+    final file = await File('${dir.path}/scan.png').writeAsBytes([1, 2, 3]);
+    final dao = await newDao();
+    final result = await KnowledgeFileImporter(dao,
+            imageOcr: (_) async => 'server recognized image')
+        .importPaths([file.path]);
+    expect(result.imported, 1);
+    expect((await dao.getDocuments()).single.title, 'scan');
+    final oversized = await KnowledgeFileImporter(dao,
+            imageOcr: (_) async => List.filled(100001, 'x').join())
+        .importPaths([file.path],
+            limits: const AttachmentProcessingLimits(maxTextChars: 100000));
+    expect(oversized.imported, 0);
+    expect(await dao.getDocuments(), hasLength(1));
+  });
+
+  test('服务器图片识别期间取消，迟到文字不会落库', () async {
+    final dir =
+        await Directory.systemTemp.createTemp('kb_server_image_cancel_');
+    addTearDown(() => dir.delete(recursive: true));
+    final file = await File('${dir.path}/scan.png').writeAsBytes([1]);
+    final dao = await newDao();
+    final cancellation = ImportCancellation();
+    final result = await KnowledgeFileImporter(dao, imageOcr: (_) async {
+      cancellation.cancel();
+      return 'late OCR text';
+    }).importPaths([file.path], cancellation: cancellation);
+    expect(result.cancelled, true);
+    expect(await dao.getDocuments(), isEmpty);
+  });
+
   test('超页、OCR 页数错误和 OCR 后超字符预算均不落库', () async {
     final dir = await Directory.systemTemp.createTemp('kb_pdf_reject_');
     addTearDown(() => dir.delete(recursive: true));

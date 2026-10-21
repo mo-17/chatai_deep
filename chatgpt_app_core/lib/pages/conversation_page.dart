@@ -14,6 +14,8 @@ import 'package:chatgpt_app_core/voice/voice_audio_route.dart';
 import 'package:chatgpt_app_core/voice/voice_conversation_panel.dart';
 import 'package:chatgpt_app_core/chat/application/role_continuation_snapshot.dart';
 import 'package:chatgpt_app_core/chat/application/conversation_composer_preparation.dart';
+import 'package:chatgpt_app_core/chat/application/conversation_attachment_ocr.dart';
+import 'package:chatgpt_app_core/chat/application/server_ocr_client.dart';
 import 'package:chatgpt_app_core/chat/application/conversation_generation_service.dart';
 import 'package:chatgpt_app_core/chat/application/conversation_generation_profile.dart';
 import 'package:chatgpt_app_core/chat/application/conversation_generation_scope.dart';
@@ -832,6 +834,7 @@ class _ConversationPageState extends State<ConversationPage>
               images: _pendingImages,
               files: _pendingFiles,
               references: _references,
+              createOcr: ConversationAttachmentOcr.forRun,
               runTools: tools) as ConversationTurnPreparation
           : RetryGenerationPreparation(
               persisted: completionDao.attachmentsForUserMessage(retryUser),
@@ -2653,8 +2656,11 @@ class _ConversationPageState extends State<ConversationPage>
       speechLocale: widget.conversationModel.voiceLocale,
       pendingImages: _pendingImages,
       imagesEnabled: caps.image,
-      imagesDisabledReason:
-          caps.image ? '' : '当前模型不支持图片，请切换 deepseek-flash、gpt-4o 等多模态模型',
+      imagesDisabledReason: caps.image
+          ? ''
+          : _taskMode
+              ? '当前模型不支持图片，请切换 deepseek-flash、gpt-4o 等多模态模型'
+              : '当前模型不支持看图，可从文件入口选择图片，经确认后使用服务器 OCR 识别文字',
       onImagesPicked: (images) => _setAttachmentPaths(images, photo: true),
       onRemoveImage: (index) {
         _setAttachmentPaths(List.from(_pendingImages)..removeAt(index),
@@ -2662,6 +2668,7 @@ class _ConversationPageState extends State<ConversationPage>
       },
       // 文件入口不按能力位关闭：不支持原生文件的模型走抽文本降级（阶段四）。
       pendingFiles: _pendingFiles,
+      fileOcrEnabled: true,
       onFilesPicked: (files) => _setAttachmentPaths(files, photo: false),
       onRemoveFile: (index) {
         _setAttachmentPaths(List.from(_pendingFiles)..removeAt(index),
@@ -4152,12 +4159,34 @@ class _ConversationPageState extends State<ConversationPage>
   }
 
   Future<ProcessedFiles> _prepareWorkspaceFiles(List<String> paths,
-          AISettings settings, AttachmentBatchBudget batchBudget) =>
-      WorkspaceAttachmentProcessor(_workspace!).process(paths,
-          limits: settings.attachmentProcessingLimits,
-          batchBudget: batchBudget,
-          onProgress: _onSendProgress,
-          isCancelled: () => _sendCancelled);
+      AISettings settings, AttachmentBatchBudget batchBudget) {
+    final profile = _taskPreparedProfile!;
+    final scope = _taskPreparedScope!;
+    bool current() =>
+        !_sendCancelled &&
+        identical(profile, _taskPreparedProfile) &&
+        profile.visiblyCurrent;
+    return WorkspaceAttachmentProcessor(_workspace!).process(paths,
+        limits: settings.attachmentProcessingLimits,
+        batchBudget: batchBudget,
+        onProgress: _onSendProgress,
+        ocr: ConversationAttachmentOcr(
+                destinationNotice: '识别文字将保存在本对话工作区，任务可按页读取并发送给当前模型服务。',
+                verify: () async {
+                  if (!current()) {
+                    throw const AttachmentProcessingCancelledException();
+                  }
+                  await profile.verify(scope);
+                },
+                isCurrent: current,
+                abortTrigger: _streamAbortCompleter!.future,
+                confirm: _confirmToolAction,
+                createClient: () =>
+                    ServerOcrClient.capture(additionalCurrent: current),
+                onProgress: _onSendProgress)
+            .recognize,
+        isCancelled: () => !current());
+  }
 
   void _onContextPlan(ChatContextPlan plan) {
     if (mounted && _accountCurrent && !_userStopped) {

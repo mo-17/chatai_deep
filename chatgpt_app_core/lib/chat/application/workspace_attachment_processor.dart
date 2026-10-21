@@ -8,6 +8,7 @@ import 'package:chatgpt_app_core/chat/domain/attachment_processing_limits.dart';
 import 'package:chatgpt_app_core/chat/domain/chat_send_progress.dart';
 import 'package:chatgpt_app_core/chat/domain/message_block.dart';
 import 'package:login_sdk/platform/app_io.dart';
+import 'attachment_ocr.dart';
 
 /// 任务附件只发送清单；原文持久保存，由 read_file 分段读取。
 class WorkspaceAttachmentProcessor {
@@ -18,6 +19,7 @@ class WorkspaceAttachmentProcessor {
       {required AttachmentProcessingLimits limits,
       AttachmentBatchBudget? batchBudget,
       ChatSendProgressCallback? onProgress,
+      AttachmentOcrHandler? ocr,
       bool Function()? isCancelled}) async {
     final metas = <FileMetadata>[];
     final diagnostics = <FileProcessingDiagnostic>[];
@@ -40,24 +42,30 @@ class WorkspaceAttachmentProcessor {
       final separator = metas.isEmpty ? '' : '\n\n';
       var reservedCharacters = 0;
       final record = await workspace.importBytes(snapshot.bytes,
-          name: name, sourceKey: path, maxBytes: maxBytes,
+          name: name,
+          sourceKey: path,
+          maxBytes: maxBytes,
+          ocr: ocr,
+          canCommit: () => isCancelled?.call() != true,
           validateParsed: (fullText, actualBytes, manifestPreview) {
-        if (isCancelled?.call() == true) {
-          throw const AttachmentProcessingCancelledException();
-        }
-        if (actualBytes != snapshot.bytes.length) {
-          throw const FormatException('工作区附件快照字节不一致');
-        }
-        budget.consumeText(fullText);
-        final manifest = '$separator${describe(manifestPreview)}';
-        budget.consumeText(manifest);
-        reservedCharacters = manifest.length;
-      }, onWarnings: (warnings) {
-        diagnostics.addAll(warnings.map((warning) => FileProcessingDiagnostic(
-            filename: name,
-            kind: FileProcessingDiagnosticKind.textFallback,
-            message: warning)));
-      });
+            if (isCancelled?.call() == true) {
+              throw const AttachmentProcessingCancelledException();
+            }
+            if (actualBytes != snapshot.bytes.length) {
+              throw const FormatException('工作区附件快照字节不一致');
+            }
+            budget.consumeText(fullText);
+            final manifest = '$separator${describe(manifestPreview)}';
+            budget.consumeText(manifest);
+            reservedCharacters = manifest.length;
+          },
+          onWarnings: (warnings) {
+            diagnostics.addAll(warnings.map((warning) =>
+                FileProcessingDiagnostic(
+                    filename: name,
+                    kind: FileProcessingDiagnosticKind.textFallback,
+                    message: warning)));
+          });
       final manifest = describe(record.toJson());
       budget.replaceTextReservation(reservedCharacters, '$separator$manifest');
       if (isCancelled?.call() == true) {

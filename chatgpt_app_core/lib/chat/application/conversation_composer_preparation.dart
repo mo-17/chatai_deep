@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:convert';
+import 'attachment_ocr.dart';
 import 'package:login_sdk/platform/app_io.dart';
 import 'package:crypto/crypto.dart';
 import 'package:chatgpt_app_core/chat/application/attachment_batch_budget.dart';
@@ -34,6 +35,7 @@ final class ComposerGenerationPreparation
   final List<MessageBlock> extraUserBlocks;
   final ToolRegistry? tools;
   final ConversationRunTools? runTools;
+  final AttachmentOcrHandler Function(ConversationGenerationRun)? createOcr;
   final Future<Directory> Function() _resourceRoot;
   late final Future<DraftManifestToken?> _manifest;
   late final Future<DraftSubmissionToken?> _submission;
@@ -53,6 +55,7 @@ final class ComposerGenerationPreparation
     List<MessageBlock> extraUserBlocks = const [],
     this.tools,
     this.runTools,
+    this.createOcr,
     Future<Directory> Function()? resourceRoot,
   })  : images = List.unmodifiable(images),
         files = List.unmodifiable(files),
@@ -142,6 +145,8 @@ final class ComposerGenerationPreparation
           officialDeepSeek ? caps.copyWith(pdf: false) : caps,
           batchBudget: budget,
           limits: limits,
+          ocr: createOcr?.call(run),
+          onProgress: run.requestOptions.onProgress,
           abortTrigger: run.abortTrigger,
           isCancelled: () => !run.current);
       final referenceText = historyReferencesExtraText(references);

@@ -46,6 +46,23 @@ void main() {
     await tester.pump();
   }
 
+  testWidgets('服务器 OCR 默认关闭，游客可阅读上传说明但不能启用', (tester) async {
+    await tester
+        .pumpWidget(MaterialApp(home: KnowledgeBasePage(storage: storage)));
+    await waitFor(tester, () => find.text('搜索标题、文件夹或标签').evaluate().isNotEmpty);
+    await tester.tap(find.byTooltip('导入文档'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('OCR：仅本地识别'));
+    await tester.pumpAndSettle();
+    expect(find.textContaining('需要 OCR 的整份 PDF 会上传'), findsOneWidget);
+    final button = tester
+        .widget<FilledButton>(find.widgetWithText(FilledButton, '使用服务器 OCR'));
+    expect(button.onPressed, isNull);
+    await tester.tap(find.text('仅本地识别'));
+    await tester.pumpAndSettle();
+    await tester.pumpWidget(const SizedBox.shrink());
+  });
+
   testWidgets('选择器等待期间作用域变化，普通文件不再入库', (tester) async {
     var current = true;
     final picked = Completer<List<String>>();

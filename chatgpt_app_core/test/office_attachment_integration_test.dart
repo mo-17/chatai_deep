@@ -26,12 +26,17 @@ import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:sqflite_common_ffi/sqflite_ffi.dart';
+import 'package:flutter_hi_cache/flutter_hi_cache.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
 // 这些小型文件使用真实 OOXML 容器，经过解析器和持久化管线；没有模拟提取正文。
 void main() {
+  TestWidgetsFlutterBinding.ensureInitialized();
   late Directory root;
   setUpAll(sqfliteFfiInit);
   setUp(() async {
+    SharedPreferences.setMockInitialValues({});
+    await HiCache.preInit();
     root = await Directory.systemTemp.createTemp('office_attachment_flow_');
     ManagedAttachmentStore.debugRootDirectory =
         Directory('${root.path}/managed');

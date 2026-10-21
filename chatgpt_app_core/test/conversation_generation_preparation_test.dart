@@ -1,5 +1,10 @@
 import 'dart:async';
 import 'dart:io';
+import 'dart:convert';
+import 'package:http/http.dart' as http;
+import 'package:http/testing.dart';
+import 'package:chatgpt_app_core/chat/application/conversation_attachment_ocr.dart';
+import 'package:chatgpt_app_core/chat/application/server_ocr_client.dart';
 import 'package:chat_message/models/message_model.dart';
 import 'package:chatgpt_app_core/chat/application/conversation_composer_preparation.dart';
 import 'package:chatgpt_app_core/chat/application/conversation_draft_store.dart';
@@ -160,6 +165,103 @@ void main() {
     LoginDao.resetHooksForTest();
     LoginSdkConfig.reset();
   });
+  test('OCR 上传须经 run 确认，识别文字随用户消息落库并发送模型', () async {
+    final pick = await File('${base.path}/scan.png').writeAsBytes([1, 2, 3]);
+    await draft().save(text: 'task', files: [pick.path]);
+    final calls = <http.Request>[];
+    final prep = ComposerGenerationPreparation(
+        draftStore: draft(),
+        text: 'task',
+        files: [pick.path],
+        resourceRoot: () async => resources,
+        createOcr: (run) => ConversationAttachmentOcr.forRun(run,
+            createClient: () => ServerOcrClient(
+                base: Uri.parse('https://captured.example/uapi/ocr/'),
+                headers: const {'Authorization': 'Bearer synthetic'},
+                isCurrent: () => run.current,
+                clientFactory: () => MockClient((request) async {
+                      calls.add(request);
+                      return http.Response(
+                          jsonEncode({
+                            'code': 0,
+                            'data': {
+                              'id': request.url.pathSegments.last,
+                              'state': request.method == 'DELETE'
+                                  ? 'cancelled'
+                                  : 'completed',
+                              if (request.method != 'DELETE')
+                                'result': {
+                                  'totalPages': 1,
+                                  'pages': [
+                                    {'page': 1, 'text': 'OCR SOURCE TEXT'}
+                                  ]
+                                },
+                            }
+                          }),
+                          200);
+                    }))));
+    final run = start(prep);
+    final host = Object();
+    run.attachVisibleHost(host);
+    await support.waitGeneration(() => run.confirmation != null);
+    expect(run.confirmation!.title, '服务器 OCR 上传确认');
+    expect(calls, isEmpty);
+    expect(chat.requests, 0);
+    expect(await storage.db.query('tb_messages'), isEmpty);
+    await run.answerConfirmation(
+        host: host, confirmationId: run.confirmation!.id, accepted: true);
+    await support.waitGeneration(() => chat.requests == 1);
+    expect(calls.map((r) => r.method), ['POST', 'DELETE']);
+    expect(chat.attachments!.extraText, contains('OCR SOURCE TEXT'));
+    expect(chat.attachments!.images, isEmpty);
+    final rows = await storage.db
+        .query('tb_messages', where: 'content=?', whereArgs: ['task']);
+    final blocks = MessageBlock.decodeList(rows.single['blocks'] as String?);
+    final meta = blocks.whereType<FileBlock>().single.file;
+    expect(meta.extractedText, chat.attachments!.extraText);
+    expect(meta.mime, 'image/png');
+    expect(run.inputConsumed, true);
+    chat.release.complete();
+    await run.finished.timeout(const Duration(seconds: 4));
+    expect(
+        run.completion!.attachmentsForUserMessage(run.acceptedUser!).extraText,
+        contains('OCR SOURCE TEXT'));
+  });
+
+  test('拒绝 OCR 确认不上传不请求模型，原草稿和原件保留', () async {
+    final pick = await File('${base.path}/scan.png').writeAsBytes([1, 2, 3]);
+    await draft().save(text: 'task', files: [pick.path]);
+    var uploads = 0;
+    final prep = ComposerGenerationPreparation(
+        draftStore: draft(),
+        text: 'task',
+        files: [pick.path],
+        resourceRoot: () async => resources,
+        createOcr: (run) => ConversationAttachmentOcr.forRun(run,
+            createClient: () => ServerOcrClient(
+                base: Uri.parse('https://captured.example/uapi/ocr/'),
+                headers: const {},
+                isCurrent: () => run.current,
+                clientFactory: () => MockClient((_) async {
+                      uploads++;
+                      throw StateError('must not upload');
+                    }))));
+    final run = start(prep);
+    final host = Object();
+    run.attachVisibleHost(host);
+    await support.waitGeneration(() => run.confirmation != null);
+    await run.answerConfirmation(
+        host: host, confirmationId: run.confirmation!.id, accepted: false);
+    await run.finished.timeout(const Duration(seconds: 4));
+    expect(uploads, 0);
+    expect(chat.requests, 0);
+    expect(run.notice, contains('已取消服务器 OCR'));
+    expect(run.inputConsumed, false);
+    expect(await storage.db.query('tb_messages'), isEmpty);
+    expect((await draft().load())!.text, 'task');
+    expect(await pick.exists(), true);
+  });
+
   test(
       'unaccepted absent slot restores text and attachment after preparation failure',
       () async {

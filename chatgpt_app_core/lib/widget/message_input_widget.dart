@@ -45,6 +45,8 @@ class MessageInputWidget extends StatefulWidget {
   final ValueChanged<List<String>>? onFilesPicked;
   final List<String> pendingFiles;
 
+  /// 普通聊天的文件入口可选图片，发送时单独确认服务器 OCR。
+  final bool fileOcrEnabled;
   final ValueChanged<int>? onRemoveFile;
 
   /// 联网搜索开关（阶段五）。独立于模型能力位 —— 搜索结果以上下文回填，
@@ -95,6 +97,7 @@ class MessageInputWidget extends StatefulWidget {
     this.imagesDisabledReason = '当前模型不支持图片',
     this.onFilesPicked,
     this.pendingFiles = const [],
+    this.fileOcrEnabled = false,
     this.onRemoveFile,
     this.showWebSearch = false,
     this.webSearchEnabled = false,
@@ -457,7 +460,10 @@ class _MessageInputWidgetState extends State<MessageInputWidget> {
       // 不按数量截断；发送前按整轮附件大小和解析字数检查。
       final result = await FilePicker.pickFiles(
         type: FileType.custom,
-        allowedExtensions: FileProcessor.pickerExtensions,
+        allowedExtensions: [
+          ...FileProcessor.pickerExtensions,
+          if (widget.fileOcrEnabled) ...FileProcessor.ocrImageExtensions,
+        ],
         allowMultiple: true,
         withData: false,
       );
@@ -711,7 +717,9 @@ class _MessageInputWidgetState extends State<MessageInputWidget> {
     super.dispose();
   }
 
-  get _fileBtn => GestureDetector(
+  get _fileBtn => Tooltip(
+      message: widget.fileOcrEnabled ? '添加文件或识别图片文字' : '添加文件',
+      child: GestureDetector(
         onTap: widget.editingEnabled ? _onFileTap : null,
         child: Container(
           margin: const EdgeInsets.only(right: 6),
@@ -721,7 +729,7 @@ class _MessageInputWidgetState extends State<MessageInputWidget> {
             size: 24,
           ),
         ),
-      );
+      ));
 
   get _photoBtn => GestureDetector(
         onTap: widget.editingEnabled ? _onPhotoTap : null,
@@ -1156,7 +1164,7 @@ class _MessageInputWidgetState extends State<MessageInputWidget> {
         if (_showFileBtn)
           _animeToolButton(
             icon: Icons.attach_file_rounded,
-            tooltip: '添加文件',
+            tooltip: widget.fileOcrEnabled ? '添加文件或识别图片文字' : '添加文件',
             onPressed: widget.editingEnabled ? _onFileTap : null,
           ),
         if (widget.speechInputEnabled)

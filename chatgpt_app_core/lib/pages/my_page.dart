@@ -29,6 +29,7 @@ import 'package:flutter/material.dart';
 import '../storage/ohos_storage_service.dart';
 import 'storage_management_page.dart';
 import 'knowledge_assistant_page.dart';
+import 'ocr_task_center_page.dart';
 import 'package:login_sdk/dao/login_dao.dart';
 import 'package:login_sdk/util/padding_extension.dart';
 import 'package:provider/provider.dart';
@@ -176,6 +177,15 @@ class _MyPageState extends State<MyPage> {
                     context,
                     MaterialPageRoute(
                         builder: (_) => const KnowledgeBasePage()))),
+            ..._itemWidget(
+                color: color,
+                title: 'OCR 任务中心',
+                icon: Icons.document_scanner_outlined,
+                subtitle: '批量识别、校对与失败重试',
+                onTap: () => Navigator.push(
+                    context,
+                    MaterialPageRoute(
+                        builder: (_) => const OcrTaskCenterPage()))),
             ..._itemWidget(
                 color: color,
                 title: '可信知识助手',

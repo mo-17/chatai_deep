@@ -66,9 +66,10 @@ class KnowledgeFileImporter {
   final bool Function()? isCurrent;
   final Future<PdfOcrResult> Function(String path, List<int> pageNumbers)?
       pdfOcr;
+  final Future<String> Function(String path)? imageOcr;
 
   const KnowledgeFileImporter(this.dao,
-      {this.account = 'guest', this.isCurrent, this.pdfOcr});
+      {this.account = 'guest', this.isCurrent, this.pdfOcr, this.imageOcr});
 
   Future<KnowledgeFileImportResult> importPaths(List<String> paths,
       {AttachmentProcessingLimits limits = const AttachmentProcessingLimits(),
@@ -197,24 +198,29 @@ class KnowledgeFileImporter {
         }
         text = pdfPages.join('\n\n');
       } else if (isImage) {
-        if (!OcrService.isSupported) {
+        if (imageOcr == null && !OcrService.isSupported) {
           return KnowledgeFileImportItem(
             path: path,
             name: name,
             title: title,
             imported: false,
-            reason: '当前平台不支持 OCR',
+            reason: '当前平台不支持本地 OCR，请在导入菜单选择服务器 OCR',
           );
         }
         progress('正在识别图片');
         check();
-        text =
-            await OcrService.recognizeImageFile(path, cancellation: operation);
+        text = imageOcr != null
+            ? await imageOcr!(path)
+            : await OcrService.recognizeImageFile(path,
+                cancellation: operation);
       } else {
         text = await FileProcessor.extractTextForImport(path, limits: limits);
       }
 
       check();
+      if (isImage && (text?.length ?? 0) > limits.normalized.maxTextChars) {
+        throw const FormatException('文字超过导入预算，请拆分后导入');
+      }
       if (text == null || text.trim().isEmpty) {
         return KnowledgeFileImportItem(
           path: path,

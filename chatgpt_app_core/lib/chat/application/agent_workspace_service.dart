@@ -10,6 +10,8 @@ import 'package:chatgpt_app_core/util/bounded_file_reader.dart';
 import 'package:crypto/crypto.dart';
 import 'package:flutter/foundation.dart';
 import 'package:syncfusion_flutter_pdf/pdf.dart';
+import 'attachment_ocr.dart';
+import 'ocr_service.dart';
 
 /// 只导入用户选择的文件，工具随后仅凭本对话的文件 id 访问 SQLite 副本。
 class AgentWorkspaceService {
@@ -65,6 +67,8 @@ class AgentWorkspaceService {
       {required String name,
       required int maxBytes,
       String? sourceKey,
+      AttachmentOcrHandler? ocr,
+      bool Function()? canCommit,
       void Function(List<String>)? onWarnings,
       void Function(String fullText, int byteLength,
               Map<String, dynamic> manifestPreview)?
@@ -74,11 +78,65 @@ class AgentWorkspaceService {
     if (bytes.length > maxBytes) {
       throw const FormatException('工作区文件超过导入字节上限');
     }
-    final parsed = await compute(_parseBytes, {'bytes': bytes, 'name': name});
+    bytes = Uint8List.fromList(bytes).asUnmodifiableView();
+    void check() {
+      if (canCommit?.call() == false) {
+        throw const AttachmentOcrException('任务已停止，工作区未修改');
+      }
+    }
+
+    check();
+    final image =
+        OcrService.imageExtensions.contains(name.split('.').last.toLowerCase());
+    var parsed = image
+        ? _parseText({'content': ''})
+        : await compute(_parseBytes, {'bytes': bytes, 'name': name});
+    check();
+    if (image && ocr == null) {
+      throw const AttachmentOcrException('图片需要 OCR，请先选择服务器识别');
+    }
+    final pages = (parsed['pageTexts'] as List).cast<String>();
+    final missing = [
+      for (var i = 0; i < pages.length; i++)
+        if (OcrService.pdfNeedsOcr(pages[i])) i + 1,
+    ];
+    if (ocr != null && (image || missing.isNotEmpty)) {
+      if (pages.length > 20) {
+        parsed['warnings'] = ['扫描页未识别：服务器 OCR 最多 20 页，请拆分后导入'];
+      } else {
+        final result = await ocr(AttachmentOcrRequest(
+            filename: name,
+            bytes: bytes,
+            pdf: !image,
+            totalPages: image ? 1 : pages.length,
+            pageNumbers: missing));
+        check();
+        final total = image ? 1 : pages.length;
+        if (result.totalPages != total || result.pages.length != total) {
+          throw const AttachmentOcrException('OCR 页数与原件不一致，工作区未修改');
+        }
+        final merged = image ? [...result.pages] : [...pages];
+        for (final page in image ? [1] : missing) {
+          if (result.pages[page - 1].trim().isNotEmpty) {
+            merged[page - 1] = result.pages[page - 1];
+          }
+        }
+        if (merged.every((p) => p.trim().isEmpty)) {
+          throw const AttachmentOcrException('未识别到文字，工作区未修改');
+        }
+        parsed =
+            await compute(_parseText, {'content': '', 'pageTexts': merged});
+        if (merged.any(OcrService.pdfNeedsOcr)) {
+          parsed['warnings'] = ['部分页仍缺少文字，请结合原件核对'];
+        }
+      }
+    }
+    check();
     _validateParsedInput(name, parsed, bytes.length, validateParsed);
     onWarnings?.call((parsed['warnings'] as List? ?? const []).cast<String>());
     return _saveInput(
-        name, parsed, sourceKey ?? 'inline-bytes:$name', bytes.length);
+        name, parsed, sourceKey ?? 'inline-bytes:$name', bytes.length,
+        canCommit: canCommit);
   }
 
   Future<AgentWorkspaceFile> importText({
@@ -96,8 +154,9 @@ class AgentWorkspaceService {
         parsed['rawSizeBytes'] as int);
   }
 
-  Future<AgentWorkspaceFile> _saveInput(String name,
-          Map<String, dynamic> parsed, String sourceKey, int bytes) =>
+  Future<AgentWorkspaceFile> _saveInput(
+          String name, Map<String, dynamic> parsed, String sourceKey, int bytes,
+          {bool Function()? canCommit}) =>
       dao.saveInput(
         name: name,
         sourceKey: sourceKey,
@@ -106,6 +165,7 @@ class AgentWorkspaceService {
         pageTexts: (parsed['pageTexts'] as List).cast<String>(),
         sections: (parsed['sections'] as List).cast<Map<String, dynamic>>(),
         sizeBytes: bytes,
+        canCommit: canCommit,
       );
 
   /// 验证发生在 DAO 写入前；整数位数保守预留，写入后按真实清单释放差额。

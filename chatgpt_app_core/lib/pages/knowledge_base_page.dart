@@ -5,6 +5,7 @@ import 'package:chatgpt_app_core/chat/application/file_processor.dart';
 import 'package:chatgpt_app_core/chat/application/knowledge_file_importer.dart';
 import 'package:chatgpt_app_core/chat/application/knowledge_import_collection.dart';
 import 'package:chatgpt_app_core/chat/application/ocr_service.dart';
+import 'package:chatgpt_app_core/chat/application/server_ocr_client.dart';
 import 'package:chatgpt_app_core/dao/ai_settings_dao.dart';
 import 'package:chatgpt_app_core/db/hi_db_manager.dart';
 import 'package:chatgpt_app_core/db/knowledge_dao.dart';
@@ -16,6 +17,7 @@ import 'package:chatgpt_app_core/platform/app_file_picker.dart';
 import 'package:flutter/material.dart';
 import 'knowledge_assistant_page.dart';
 import 'team_knowledge_page.dart';
+import 'ocr_task_center_page.dart';
 import 'package:chatgpt_app_core/knowledge/knowledge_library.dart';
 import 'package:chatgpt_app_core/dao/ai_catalog_dao.dart';
 
@@ -45,6 +47,7 @@ class _KnowledgeBasePageState extends State<KnowledgeBasePage> {
   int _loadEpoch = 0;
   bool _importBusy = false;
   ImportCancellation? _activeImport;
+  bool _serverOcr = false;
   late final _identity = AiCatalogIdentity.capture();
 
   @override
@@ -209,13 +212,26 @@ class _KnowledgeBasePageState extends State<KnowledgeBasePage> {
             tooltip: '导入文档',
             enabled: !_loading && _dao != null,
             onSelected: (mode) {
-              if (mode == 'files') {
+              if (mode == 'ocr') {
+                _chooseOcrMode();
+              } else if (mode == 'tasks') {
+                Navigator.push(
+                    context,
+                    MaterialPageRoute(
+                        builder: (_) => const OcrTaskCenterPage())).then((_) {
+                  if (mounted && _importCurrent) _loadData();
+                });
+              } else if (mode == 'files') {
                 _importFile();
               } else {
                 _importCollection(mode == 'zip');
               }
             },
             itemBuilder: (_) => [
+              const PopupMenuItem(value: 'tasks', child: Text('批量 OCR 与校对')),
+              PopupMenuItem(
+                  value: 'ocr',
+                  child: Text('OCR：${_serverOcr ? '服务器识别' : '仅本地识别'}')),
               const PopupMenuItem(value: 'files', child: Text('选择文件（可多选）')),
               if (_directorySupported)
                 const PopupMenuItem(value: 'directory', child: Text('导入文件夹')),
@@ -334,19 +350,83 @@ class _KnowledgeBasePageState extends State<KnowledgeBasePage> {
   bool get _importCurrent =>
       mounted && _identity.current && widget.isCurrent?.call() != false;
 
+  Future<void> _chooseOcrMode() async {
+    final selected = await showDialog<bool>(
+        context: context,
+        builder: (ctx) => AlertDialog(
+              title: const Text('扫描件与图片识别'),
+              content: Text('文本 PDF、Word、Excel 等仍在本地提取。\n\n'
+                  '选择服务器识别后，本次页面内导入的图片及需要 OCR 的整份 PDF 会上传到当前后端。'
+                  '服务器只识别缺字页，任务结束删除原件，结果最多暂存 5 分钟。'
+                  '每个文件最多 8 MiB、PDF 最多 20 页；支持 PNG、JPEG、WebP、BMP。\n\n'
+                  '${_identity.authenticated ? '敏感资料可选择仅本地识别。' : '登录后可使用服务器 OCR。'}'),
+              actions: [
+                TextButton(
+                    onPressed: () => Navigator.pop(ctx, false),
+                    child: const Text('仅本地识别')),
+                FilledButton(
+                    onPressed: _identity.authenticated
+                        ? () => Navigator.pop(ctx, true)
+                        : null,
+                    child: const Text('使用服务器 OCR')),
+              ],
+            ));
+    if (!_importCurrent || selected == null) return;
+    if (selected) {
+      try {
+        await ServerOcrClient.capture().checkAvailable();
+      } catch (error) {
+        if (mounted && _importCurrent) {
+          HiDialog.showSnackBar(
+              context, KnowledgeImportFailure.from(error).message);
+        }
+        return;
+      }
+    }
+    if (_importCurrent) setState(() => _serverOcr = selected);
+  }
+
   Future<KnowledgeFileImportResult?> _runImport(List<String> paths) async {
     if (!_importCurrent || _dao == null) return null;
+    final server = _serverOcr ? ServerOcrClient.capture() : null;
     final operation = ImportCancellation();
     _activeImport = operation;
     final progress = ValueNotifier(
         KnowledgeImportProgress(completed: 0, total: paths.length));
+    void serverProgress(String stage, int? page, int? pages) {
+      if (!operation.isCancelled) {
+        final previous = progress.value;
+        progress.value = KnowledgeImportProgress(
+            completed: previous.completed,
+            total: previous.total,
+            filename: previous.filename,
+            stage: stage,
+            page: page,
+            pages: pages);
+      }
+    }
+
     try {
       return await withKnowledgeImportProgress(context,
           progress: progress,
           cancellation: operation,
           task: () => KnowledgeFileImporter(_dao!,
                   account: _identity.account ?? 'guest',
-                  isCurrent: () => _importCurrent)
+                  isCurrent: () => _importCurrent,
+                  pdfOcr: server == null
+                      ? null
+                      : (path, pages) => server.recognize(path,
+                          pdf: true,
+                          pageNumbers: pages,
+                          cancellation: operation,
+                          onProgress: serverProgress),
+                  imageOcr: server == null
+                      ? null
+                      : (path) async => (await server.recognize(path,
+                              pdf: false,
+                              cancellation: operation,
+                              onProgress: serverProgress))
+                          .text)
               .importPaths(paths,
                   cancellation: operation,
                   limits: AISettingsDao.load().attachmentProcessingLimits,
@@ -391,7 +471,7 @@ class _KnowledgeBasePageState extends State<KnowledgeBasePage> {
         withData: false,
         allowedExtensions: [
           ...FileProcessor.pickerExtensions,
-          if (OcrService.isSupported) ...OcrService.imageExtensions,
+          ...OcrService.imageExtensions,
         ]);
     return [
       for (final file in selected?.files ?? const <PlatformFile>[])

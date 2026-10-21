@@ -1,5 +1,6 @@
 import 'package:chatgpt_app_core/chat/application/chat_context_planner.dart';
 import 'dart:async';
+import 'attachment_ocr.dart';
 import 'package:chatgpt_app_core/chat/application/role_continuation_snapshot.dart';
 import 'dart:convert';
 import 'package:chatgpt_app_core/chat/application/conversation_draft_store.dart';
@@ -565,7 +566,9 @@ class ConversationGenerationRun extends ChangeNotifier {
                 ? error.reason
                 : error is ChatTransportException
                     ? error.safeMessage
-                    : '请求未完成，可查看错误后明确重试';
+                    : error is AttachmentOcrException
+                        ? error.message
+                        : '请求未完成，可查看错误后明确重试';
         if (_finalStage == ConversationGenerationStage.interrupted) {
           dispatcher.onStopped();
         } else {

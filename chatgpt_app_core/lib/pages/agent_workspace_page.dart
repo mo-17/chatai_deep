@@ -1,4 +1,5 @@
 import 'dart:convert';
+import 'dart:async';
 import 'dart:typed_data';
 
 import 'package:chatgpt_app_core/chat/application/agent_workspace_service.dart';
@@ -7,6 +8,11 @@ import 'package:chatgpt_app_core/chat/application/agent_task_verifier.dart';
 import 'package:chatgpt_app_core/chat/application/creative_file_transfer_gateway.dart';
 import 'package:chatgpt_app_core/chat/domain/agent_workspace_file.dart';
 import 'package:flutter/material.dart';
+import '../chat/application/conversation_attachment_ocr.dart';
+import '../chat/application/server_ocr_client.dart';
+import '../chat/application/attachment_ocr.dart';
+import '../chat/application/file_processor.dart';
+import '../dao/ai_catalog_dao.dart';
 
 class AgentWorkspacePage extends StatefulWidget {
   final AgentWorkspaceService workspace;
@@ -29,6 +35,7 @@ class _AgentWorkspacePageState extends State<AgentWorkspacePage> {
   List<AgentWorkspaceFile> _files = [];
   bool _busy = true;
   String? _error;
+  Completer<void>? _importAbort;
   TaskAcceptanceCriteria _criteria = const TaskAcceptanceCriteria();
   AgentTaskVerificationReport? _report;
   CreativeFileTransferGateway get _transfer =>
@@ -71,6 +78,10 @@ class _AgentWorkspacePageState extends State<AgentWorkspacePage> {
   }
 
   Future<void> _import() async {
+    if (_importAbort != null) return;
+    final identity = AiCatalogIdentity.capture();
+    final abort = _importAbort = Completer<void>();
+    bool current() => mounted && identity.current && !abort.isCompleted;
     try {
       final picked =
           await _transfer.pickFile(dialogTitle: '导入工作区文件', allowedExtensions: [
@@ -84,17 +95,54 @@ class _AgentWorkspacePageState extends State<AgentWorkspacePage> {
         'docx',
         'xls',
         'xlsx',
-        'pdf'
+        'pdf',
+        'png',
+        'jpg',
+        'jpeg',
+        'webp',
+        'bmp'
       ]);
-      if (picked == null || !mounted) return;
+      if (picked == null || !current()) return;
       // Files Provider 可能只返回 bytes，不依赖平台路径的写权限。
       final extension = picked.name.split('.').last.toLowerCase();
       final warnings = <String>[];
-      if (const {'pdf', 'doc', 'docx', 'xls', 'xlsx'}.contains(extension)) {
+      if (const {'pdf', 'doc', 'docx', 'xls', 'xlsx'}.contains(extension) ||
+          FileProcessor.ocrImageExtensions.contains(extension)) {
         await widget.workspace.importBytes(picked.bytes,
             name: picked.name,
             maxBytes: widget.maxImportBytes,
             sourceKey: picked.path,
+            canCommit: current,
+            ocr: ConversationAttachmentOcr(
+                destinationNotice: '识别文字将保存在本对话工作区，后续任务可按页读取并发送给所选模型服务。',
+                verify: () async {
+                  if (!current()) throw const AttachmentOcrException('导入已停止');
+                },
+                isCurrent: current,
+                abortTrigger: abort.future,
+                confirm: (title, detail) async {
+                  if (!current()) return false;
+                  return await showDialog<bool>(
+                              context: context,
+                              builder: (context) => AlertDialog(
+                                      title: Text(title),
+                                      content: SingleChildScrollView(
+                                          child: Text(detail)),
+                                      actions: [
+                                        TextButton(
+                                            onPressed: () =>
+                                                Navigator.pop(context, false),
+                                            child: const Text('取消')),
+                                        FilledButton(
+                                            onPressed: () =>
+                                                Navigator.pop(context, true),
+                                            child: const Text('上传识别')),
+                                      ])) ==
+                          true &&
+                      current();
+                },
+                createClient: () => ServerOcrClient.capture(
+                    additionalCurrent: current)).recognize,
             onWarnings: warnings.addAll);
       } else {
         await widget.workspace.importText(
@@ -108,8 +156,20 @@ class _AgentWorkspacePageState extends State<AgentWorkspacePage> {
           ? '文件已导入，启用对话任务模式后可按需读取'
           : '文件已导入；${warnings.join('；')}');
     } catch (e) {
-      _notice('导入失败：$e');
+      if (current()) {
+        _notice(e is AttachmentOcrException ? e.message : '导入失败：$e');
+      }
+    } finally {
+      if (!abort.isCompleted) abort.complete();
+      if (identical(_importAbort, abort)) _importAbort = null;
     }
+  }
+
+  @override
+  void dispose() {
+    final abort = _importAbort;
+    if (abort != null && !abort.isCompleted) abort.complete();
+    super.dispose();
   }
 
   Future<void> _edit([AgentWorkspaceFile? file]) async {

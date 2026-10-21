@@ -2,6 +2,8 @@ import 'dart:async';
 import 'dart:convert';
 import 'package:login_sdk/platform/app_io.dart';
 import 'dart:typed_data';
+import 'attachment_ocr.dart';
+import 'ocr_service.dart' show OcrService;
 
 import 'package:chatgpt_app_core/chat/application/attachment_batch_budget.dart';
 import 'package:chatgpt_app_core/chat/domain/attachment_processing_limits.dart';
@@ -42,6 +44,13 @@ class FileProcessor {
   /// 无能力位 / 无限制配置时的 PDF 原生发送兜底上限（与 OpenAI 32MB 对齐）。
   static const int defaultPdfLimit = 32 * 1024 * 1024;
   static const int maxImageBytes = 20 * 1024 * 1024;
+  static const List<String> ocrImageExtensions = [
+    'png',
+    'jpg',
+    'jpeg',
+    'webp',
+    'bmp'
+  ];
   static const int maxTextFileBytes =
       AttachmentProcessingLimits.defaultMaxTextFileBytes;
 
@@ -203,6 +212,7 @@ class FileProcessor {
     ChatSendProgressCallback? onProgress,
     Future<void>? abortTrigger,
     bool Function()? isCancelled,
+    AttachmentOcrHandler? ocr,
   }) async {
     final nativeFiles = <NativeFilePart>[];
     final metas = <FileMetadata>[];
@@ -260,8 +270,14 @@ class FileProcessor {
               size: size));
         } else {
           // 降级路径：syncfusion 抽文本（限页），文本随 meta 落库（遗留项 6）。
-          final extracted = _extractPdfBytesContent(bytes,
-              limitCharacters: true, limits: effectiveLimits);
+          final extracted = ocr == null
+              ? _extractPdfBytesContent(bytes,
+                  limitCharacters: true, limits: effectiveLimits)
+              : await _extractPdfWithOcr(bytes,
+                  filename: name,
+                  limits: effectiveLimits,
+                  ocr: ocr,
+                  cancellation: cancellation);
           await cancellation.checkpoint();
           diagnostics.addAll(extracted.diagnosticsFor(name));
           final text = _wrapFileText(name, extracted.text);
@@ -272,6 +288,25 @@ class FileProcessor {
               size: size,
               extractedText: text));
         }
+        continue;
+      }
+
+      if (ocr != null && ocrImageExtensions.contains(ext)) {
+        final recognized = await ocr(
+            AttachmentOcrRequest(filename: name, bytes: bytes, pdf: false));
+        await cancellation.checkpoint();
+        if (recognized.totalPages != 1 || recognized.pages.length != 1) {
+          throw const AttachmentOcrException('图片识别结果无效，请重新选择后发送');
+        }
+        final extracted =
+            _limitRecognizedText(recognized.text, effectiveLimits);
+        diagnostics.addAll(extracted.diagnosticsFor(name));
+        addMeta(FileMetadata(
+            name: name,
+            path: managedPath,
+            size: size,
+            mime: ext == 'bmp' ? 'image/bmp' : imageMimeFor(name),
+            extractedText: _wrapFileText(name, extracted.text)));
         continue;
       }
 
@@ -325,6 +360,89 @@ class FileProcessor {
       metas: metas,
       diagnostics: diagnostics,
     );
+  }
+
+  static _ExtractedContent _limitRecognizedText(
+      String text, AttachmentProcessingLimits limits) {
+    if (text.trim().isEmpty) {
+      throw const AttachmentOcrException('未识别到附件文字，原输入已保留，请更换清晰图片后重试');
+    }
+    final limit = limits.normalized.maxTextChars;
+    if (text.length > limit) {
+      return _ExtractedContent('${text.substring(0, limit)}\n\n[注：内容过长，已截断]', [
+        _ExtractionWarning(FileProcessingDiagnosticKind.truncated,
+            '识别文字超过 $limit 字符，仅发送前 $limit 字符')
+      ]);
+    }
+    return _ExtractedContent(text);
+  }
+
+  static Future<_ExtractedContent> _extractPdfWithOcr(Uint8List bytes,
+      {required String filename,
+      required AttachmentProcessingLimits limits,
+      required AttachmentOcrHandler ocr,
+      required _ProcessingCancellation cancellation}) async {
+    final pages = <String>[];
+    int total;
+    // PDF 解析失败沿用原有诊断；OCR 的拒绝/失败不能被解析器 catch 吞掉。
+    try {
+      final document = PdfDocument(inputBytes: bytes);
+      try {
+        total = document.pages.count;
+        final extractor = PdfTextExtractor(document);
+        for (var i = 0; i < total && i < maxPdfPages; i++) {
+          pages.add(extractor.extractText(startPageIndex: i, endPageIndex: i));
+        }
+      } finally {
+        document.dispose();
+      }
+    } catch (_) {
+      return _pdfExtractionFailure;
+    }
+    await cancellation.checkpoint();
+    final missing = [
+      for (var i = 0; i < pages.length; i++)
+        if (OcrService.pdfNeedsOcr(pages[i])) i + 1
+    ];
+    if (missing.isEmpty || total > maxPdfPages) {
+      return _extractPdfBytesContent(bytes,
+          limitCharacters: true, limits: limits);
+    }
+    final recognized = await ocr(AttachmentOcrRequest(
+        filename: filename,
+        bytes: bytes,
+        pdf: true,
+        totalPages: total,
+        pageNumbers: missing));
+    await cancellation.checkpoint();
+    if (recognized.totalPages != total || recognized.pages.length != total) {
+      throw const AttachmentOcrException('OCR 页数与 PDF 不一致，原输入已保留');
+    }
+    for (final page in missing) {
+      if (recognized.pages[page - 1].trim().isNotEmpty) {
+        pages[page - 1] = recognized.pages[page - 1];
+      }
+    }
+    final warnings = <_ExtractionWarning>[];
+    final empty = [
+      for (final page in missing)
+        if (recognized.pages[page - 1].trim().isEmpty) page
+    ];
+    if (empty.isNotEmpty) {
+      warnings.add(_ExtractionWarning(FileProcessingDiagnosticKind.scannedPdf,
+          '第 ${empty.join('、')} 页未补充识别文字，已保留原有文字；请确认是否为空白页'));
+    }
+    final nonempty = pages.any((page) => page.trim().isNotEmpty);
+    if (!nonempty) {
+      throw const AttachmentOcrException('未识别到 PDF 文字，原输入已保留，请更换清晰扫描件后重试');
+    }
+    final result = _limitRecognizedText(
+        [
+          for (var i = 0; i < pages.length; i++)
+            '【第 ${i + 1} 页】\n${pages[i].trim()}'
+        ].join('\n\n'),
+        limits);
+    return _ExtractedContent(result.text, [...warnings, ...result.warnings]);
   }
 
   /// 抽取 PDF 文本（限 [maxPdfPages] 页）。解析失败返回提示文案而不抛，
