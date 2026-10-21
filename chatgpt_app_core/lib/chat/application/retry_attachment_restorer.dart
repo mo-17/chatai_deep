@@ -1,5 +1,5 @@
 import 'dart:async';
-import 'dart:io';
+import 'package:login_sdk/platform/app_io.dart';
 import 'dart:typed_data';
 import 'package:chatgpt_app_core/util/account_resource_scope.dart';
 import 'package:chatgpt_app_core/util/bounded_file_reader.dart';
@@ -42,15 +42,15 @@ final class RetryAttachmentRestorer {
       String? path, String account, Future<void> Function() checkpoint) async {
     if (path == null || path.isEmpty) return null;
     final rawRoot = ManagedAttachmentStore.rootDirectory.absolute;
-    if (await FileSystemEntity.type(rawRoot.path, followLinks: false) !=
+    if (await appFileType(rawRoot.path, followLinks: false) !=
         FileSystemEntityType.directory) {
       return null;
     }
-    final root = Directory(await rawRoot.resolveSymbolicLinks());
-    var file = File(path).absolute;
+    final root = appDirectory(await rawRoot.resolveSymbolicLinks());
+    var file = appFile(path).absolute;
     final rawPrefix = '${rawRoot.path}${Platform.pathSeparator}';
     if (file.path.startsWith(rawPrefix)) {
-      file = File('${root.path}/${file.path.substring(rawPrefix.length)}');
+      file = appFile('${root.path}/${file.path.substring(rawPrefix.length)}');
     }
     final prefix = '${root.path}${Platform.pathSeparator}';
     if (!file.path.startsWith(prefix)) return null;

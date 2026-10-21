@@ -1,5 +1,6 @@
+import 'package:login_sdk/platform/app_file_image.dart';
 import 'dart:convert';
-import 'dart:io';
+import 'package:login_sdk/platform/app_io.dart';
 
 import 'package:bubble/bubble.dart';
 import 'package:chat_message/util/wechat_date_format.dart';
@@ -125,10 +126,10 @@ class DefaultMessageWidget extends StatelessWidget {
       return emoji.trim().isEmpty ? _initialsAvatar : _emojiAvatar(emoji);
     }
     if (!_isValidNetworkUrl(avatar)) {
-      final file = File(avatar);
+      final file = appFile(avatar);
       if (!file.isAbsolute || !file.existsSync()) return _initialsAvatar;
       return ClipOval(
-        child: Image.file(
+        child: appFileImage(
           file,
           height: avatarSize,
           width: avatarSize,
@@ -377,9 +378,9 @@ class DefaultMessageWidget extends StatelessWidget {
       );
     } else if (img.startsWith('/') || img.contains('://')) {
       // 本地文件路径
-      final file = File(img);
+      final file = appFile(img);
       if (file.existsSync()) {
-        return Image.file(
+        return appFileImage(
           file,
           width: w,
           height: h,

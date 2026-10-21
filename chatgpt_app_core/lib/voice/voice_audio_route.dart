@@ -1,5 +1,5 @@
 import 'package:flutter/services.dart';
-import 'dart:io';
+import 'package:login_sdk/platform/app_io.dart';
 
 class VoiceAudioRoute {
   static const channel = MethodChannel('aipu/voice-audio');

@@ -1,3 +1,4 @@
+import 'package:chatgpt_app_core/platform/picked_file.dart';
 import 'package:chatgpt_app_core/db/hi_db_manager.dart';
 import 'package:chatgpt_app_core/db/story_persona_dao.dart';
 import 'package:chatgpt_app_core/model/story_persona_model.dart';
@@ -88,10 +89,12 @@ class _StoryPersonaEditPageState extends State<StoryPersonaEditPage> {
         maxHeight: 512,
       );
       if (!mounted || picked == null) return;
+      final pickedPath = await materializePickedImage(picked);
+      if (!mounted) return;
       setState(() {
-        _pendingImagePath = picked.path;
+        _pendingImagePath = pickedPath;
         _avatarType = AvatarAssetService.imageType;
-        _avatarValue = picked.path;
+        _avatarValue = pickedPath;
       });
     } catch (error) {
       if (mounted) HiDialog.showSnackBar(context, '图片选择失败：$error');

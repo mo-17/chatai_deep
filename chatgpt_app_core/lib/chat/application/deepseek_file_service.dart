@@ -1,6 +1,6 @@
 import 'dart:async';
 import 'dart:convert';
-import 'dart:io';
+import 'package:login_sdk/platform/app_io.dart';
 import 'dart:typed_data';
 
 import 'package:chatgpt_app_core/chat/domain/chat_send_progress.dart';
@@ -62,7 +62,7 @@ class DeepSeekFileService {
     await _checkAbort(abortTrigger);
     _validateKey();
     final bytes = await readFileBytesBounded(
-      File(path),
+      appFile(path),
       maxBytes: maxImageBytes,
       label: 'DeepSeek 图片附件',
     );

@@ -1,4 +1,4 @@
-import 'dart:io';
+import 'package:login_sdk/platform/app_io.dart';
 import 'dart:typed_data';
 
 import 'package:crypto/crypto.dart';
@@ -38,7 +38,7 @@ final class AttachmentBatchBudget {
   int get usedTextCharacters => _usedTextCharacters;
   int get remainingBytes => _enforceLimits
       ? limits.maxTotalFileBytes - _usedBytes
-      : 9223372036854775807;
+      : int.parse('9223372036854775807');
 
   /// 只读 stat，不读内容、不占用预算；共享调用方可先预检图片与文件的并集。
   Future<void> preflightPaths(Iterable<String> paths,
@@ -46,11 +46,11 @@ final class AttachmentBatchBudget {
     var additionalBytes = 0;
     for (final path in paths) {
       await _checkpoint(isCancelled);
-      if (await FileSystemEntity.type(path, followLinks: false) !=
+      if (await appFileType(path, followLinks: false) !=
           FileSystemEntityType.file) {
         throw const FormatException('附件不存在或不是普通文件');
       }
-      additionalBytes += await File(path).length();
+      additionalBytes += await appFile(path).length();
       _checkBytes(additionalBytes);
     }
     await _checkpoint(isCancelled);
@@ -115,7 +115,7 @@ final class AttachmentBatchBudget {
         () => ManagedAttachmentStore.importFile(source, maxBytes: readLimit),
         singleLimit: maxBytes,
         readLimit: readLimit);
-    final bytes = await readFileBytes(File(path), maxBytes: maxBytes);
+    final bytes = await readFileBytes(appFile(path), maxBytes: maxBytes);
     final expected = expectedDigests[source.path];
     if (expected != null && sha256.convert(bytes).toString() != expected) {
       throw const FormatException('引用快照校验失败，请重新选择');

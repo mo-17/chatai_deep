@@ -11,6 +11,8 @@ environment:
   flutter: ">=1.17.0"
 
 dependencies:
+  login_sdk:
+    path: ../login_sdk
   bubble: ^1.2.1
   flutter:
     sdk: flutter

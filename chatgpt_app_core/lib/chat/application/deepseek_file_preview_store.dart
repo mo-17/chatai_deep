@@ -1,6 +1,6 @@
 import 'dart:async';
 import 'dart:convert';
-import 'dart:io';
+import 'package:login_sdk/platform/app_io.dart';
 import 'dart:math' as math;
 import 'dart:typed_data';
 import 'dart:ui' as ui;
@@ -9,7 +9,7 @@ import 'package:chatgpt_app_core/chat/application/deepseek_file_service.dart';
 import 'package:chatgpt_app_core/util/account_resource_scope.dart';
 import 'package:chatgpt_app_core/util/bounded_file_reader.dart';
 import 'package:crypto/crypto.dart';
-import 'package:path_provider/path_provider.dart';
+import 'package:chatgpt_app_core/platform/app_paths.dart';
 
 /// 官方文件接口仅返回元数据；上传成功时保存与 file_id 精确关联的本地缩略图。
 /// 目录和文件名只包含摘要，不落盘账号、API Key 或原图。
@@ -42,7 +42,7 @@ class DeepSeekFilePreviewStore {
     }
   }
 
-  static Future<Directory> _defaultRoot() async => Directory(
+  static Future<Directory> _defaultRoot() async => appDirectory(
       '${(await getApplicationSupportDirectory()).path}/deepseek_file_previews_v1');
 
   Future<Uint8List?> read({
@@ -58,8 +58,8 @@ class DeepSeekFilePreviewStore {
         final root = await _rootDirectory();
         await AccountResourceScope.ensureNoLinks(
             root: root, relativeSegments: [name]);
-        final file = File('${root.path}/$name');
-        if (await FileSystemEntity.type(file.path, followLinks: false) !=
+        final file = appFile('${root.path}/$name');
+        if (await appFileType(file.path, followLinks: false) !=
             FileSystemEntityType.file) {
           return null;
         }
@@ -111,8 +111,8 @@ class DeepSeekFilePreviewStore {
         await AccountResourceScope.ensureNoLinks(
             root: root, relativeSegments: ['$name.part']);
         if (shouldSave != null && !shouldSave()) return;
-        final file = File('${root.path}/$name');
-        temporary = File('${file.path}.part');
+        final file = appFile('${root.path}/$name');
+        temporary = appFile('${file.path}.part');
         await temporary.writeAsBytes(thumbnail, flush: true);
         await AccountResourceScope.ensureNoLinks(
             root: root, relativeSegments: [name]);
@@ -127,7 +127,7 @@ class DeepSeekFilePreviewStore {
       } finally {
         try {
           if (temporary != null &&
-              await FileSystemEntity.type(temporary.path, followLinks: false) ==
+              await appFileType(temporary.path, followLinks: false) ==
                   FileSystemEntityType.file) {
             await temporary.delete();
           }
@@ -149,8 +149,8 @@ class DeepSeekFilePreviewStore {
         final root = await _rootDirectory();
         await AccountResourceScope.ensureNoLinks(
             root: root, relativeSegments: [name]);
-        final file = File('${root.path}/$name');
-        if (await FileSystemEntity.type(file.path, followLinks: false) ==
+        final file = appFile('${root.path}/$name');
+        if (await appFileType(file.path, followLinks: false) ==
             FileSystemEntityType.file) {
           await file.delete();
         }

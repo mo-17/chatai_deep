@@ -6,7 +6,7 @@ import 'package:chatgpt_app_core/chat/application/user_sherpa_onnx_tts_models.da
 import 'package:chatgpt_app_core/theme/app_visual_theme.dart';
 import 'package:chatgpt_app_core/util/hi_dialog.dart';
 import 'package:chatgpt_app_core/widget/app_visual_widgets.dart';
-import 'package:file_picker/file_picker.dart';
+import 'package:chatgpt_app_core/platform/app_file_picker.dart';
 import 'package:flutter/material.dart';
 
 class TtsModelManagerPage extends StatefulWidget {

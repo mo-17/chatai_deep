@@ -197,6 +197,14 @@ packages:
       url: "https://pub.dev"
     source: hosted
     version: "3.0.7"
+  dev_build:
+    dependency: transitive
+    description:
+      name: dev_build
+      sha256: "1d9aa167c05cbe4be9fbaf863c76dcee9bec302fb861270672beb6d6be0bc8f4"
+      url: "https://pub.dev"
+    source: hosted
+    version: "1.1.3+1"
   fake_async:
     dependency: transitive
     description:
@@ -710,6 +718,14 @@ packages:
       url: "https://pub.dev"
     source: hosted
     version: "2.1.8"
+  pool:
+    dependency: transitive
+    description:
+      name: pool
+      sha256: "4177f68c237ea2128d1bee66ac17b2ce05ba3dbaafcbdd54c5d40a39d0b6b11c"
+      url: "https://pub.dev"
+    source: hosted
+    version: "1.5.3"
   posix:
     dependency: transitive
     description:
@@ -718,6 +734,14 @@ packages:
       url: "https://pub.dev"
     source: hosted
     version: "6.5.0"
+  process_run:
+    dependency: transitive
+    description:
+      name: process_run
+      sha256: "6ec839cdd3e6de4685318e7686cd4abb523c3d3a55af0e8d32a12ae19bc66622"
+      url: "https://pub.dev"
+    source: hosted
+    version: "1.2.4"
   provider:
     dependency: transitive
     description:
@@ -726,6 +750,14 @@ packages:
       url: "https://pub.dev"
     source: hosted
     version: "6.1.5+1"
+  pub_semver:
+    dependency: transitive
+    description:
+      name: pub_semver
+      sha256: "261236774e8b1d69cfc6b9eabbc96c40f25e7a2d6b171f3385d4f65d5734fb24"
+      url: "https://pub.dev"
+    source: hosted
+    version: "2.2.1"
   rxdart:
     dependency: transitive
     description:
@@ -942,10 +974,10 @@ packages:
     source: git
     version: "2.2.8+3"
   sqflite_common:
-    dependency: transitive
+    dependency: "direct overridden"
     description:
       path: sqflite_common
-      ref: HEAD
+      ref: "0bd638a416215b9ab74f21eef98e14797827df04"
       resolved-ref: "0bd638a416215b9ab74f21eef98e14797827df04"
       url: "https://gitee.com/openharmony-sig/flutter_sqflite.git"
     source: git
@@ -959,6 +991,14 @@ packages:
       url: "https://gitee.com/openharmony-sig/flutter_sqflite.git"
     source: git
     version: "2.2.5"
+  sqflite_common_ffi_web:
+    dependency: transitive
+    description:
+      name: sqflite_common_ffi_web
+      sha256: "61ea702e7aba727f28be7ead00b84c19c745cd4a4934d0c41473303df11ac9ea"
+      url: "https://pub.dev"
+    source: hosted
+    version: "0.4.5+4"
   sqlite3:
     dependency: transitive
     description:
@@ -1193,6 +1233,14 @@ packages:
       url: "https://pub.dev"
     source: hosted
     version: "6.6.1"
+  yaml:
+    dependency: transitive
+    description:
+      name: yaml
+      sha256: f67cdd8e07d3c6329146aaef1ba043542b3134c12489f553ca9a7435d1068aea
+      url: "https://pub.dev"
+    source: hosted
+    version: "3.1.4"
 sdks:
   dart: ">=3.9.0 <4.0.0"
   flutter: ">=3.35.6"

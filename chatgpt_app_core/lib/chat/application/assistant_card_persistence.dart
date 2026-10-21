@@ -1,4 +1,4 @@
-import 'dart:io';
+import 'package:login_sdk/platform/app_io.dart';
 
 import 'package:chatgpt_app_core/chat/application/assistant_operation_scope.dart';
 import 'package:chatgpt_app_core/chat/application/assistant_role_card_asset_store.dart';
@@ -10,7 +10,7 @@ import 'package:chatgpt_app_core/util/account_resource_scope.dart';
 import 'package:chatgpt_app_core/util/uuid_v4.dart';
 import 'package:flutter/foundation.dart';
 import 'package:sqflite/sqflite.dart';
-import 'package:path_provider/path_provider.dart';
+import 'package:chatgpt_app_core/platform/app_paths.dart';
 
 typedef AssistantStableMutation = Future<AssistantMutationResult> Function(
     Future<AssistantMutationResult> Function() action);
@@ -110,7 +110,7 @@ class AssistantCardPersistence {
       }
       if (ownedAvatar != null) {
         try {
-          await File(ownedAvatar).delete();
+          await appFile(ownedAvatar).delete();
         } catch (_) {}
       }
       Error.throwWithStackTrace(error, stack);
@@ -147,7 +147,7 @@ class AssistantCardPersistence {
     final base =
         await (directoryResolver ?? getApplicationDocumentsDirectory)();
     scope.verify();
-    final root = Directory('${base.path}/chat_avatar');
+    final root = appDirectory('${base.path}/chat_avatar');
     final segment =
         scope.accountHash.replaceAll(RegExp(r'[^a-zA-Z0-9_.-]'), '_');
     final directory = await AccountResourceScope.createManagedDirectory(
@@ -156,7 +156,7 @@ class AssistantCardPersistence {
     final name = 'assistant_operation_$generation$extension';
     await AccountResourceScope.ensureNoLinks(
         root: root, relativeSegments: [segment, name]);
-    final file = File('${directory.path}/$name');
+    final file = appFile('${directory.path}/$name');
     await file.create(exclusive: true);
     try {
       await file.writeAsBytes(bytes, flush: true);

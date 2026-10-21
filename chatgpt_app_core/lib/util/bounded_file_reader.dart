@@ -1,4 +1,4 @@
-import 'dart:io';
+import 'package:login_sdk/platform/app_io.dart';
 import 'dart:typed_data';
 
 /// 先检查文件长度，再以流式累计做第二次上限校验，避免 `readAsBytes` 在预算

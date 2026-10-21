@@ -1,4 +1,5 @@
-import 'dart:io';
+import 'package:login_sdk/platform/app_file_image.dart';
+import 'package:login_sdk/platform/app_io.dart';
 
 import 'package:chatgpt_app_core/model/assistant_model.dart';
 import 'package:chatgpt_app_core/theme/app_visual_theme.dart';
@@ -46,11 +47,11 @@ class AssistantAvatar extends StatelessWidget {
             final resolved = snapshot.data?.trim() ?? '';
             return resolved.isEmpty
                 ? _emojiAvatar(context)
-                : _imageAvatar(context, File(resolved));
+                : _imageAvatar(context, appFile(resolved));
           },
         );
       }
-      return _imageAvatar(context, File(value));
+      return _imageAvatar(context, appFile(value));
     }
     final visual = AppVisualTheme.of(context);
     if (visual.isAnime && type == AvatarAssetService.assetType) {
@@ -68,7 +69,7 @@ class AssistantAvatar extends StatelessWidget {
       ClipOval(
         child: SizedBox.square(
           dimension: radius * 2,
-          child: Image.file(
+          child: appFileImage(
             file,
             fit: BoxFit.cover,
             cacheWidth: decodeSize,

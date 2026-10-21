@@ -4,7 +4,7 @@ import 'package:chatgpt_app_core/model/story_room_model.dart';
 import 'dart:async';
 import 'dart:collection';
 import 'dart:convert';
-import 'dart:io';
+import 'package:login_sdk/platform/app_io.dart';
 
 import 'package:archive/archive.dart';
 import 'package:chatgpt_app_core/backup/backup_archive_limits.dart';
@@ -48,7 +48,7 @@ import 'package:chatgpt_app_core/util/uuid_v4.dart';
 import 'package:crypto/crypto.dart';
 import 'package:flutter/foundation.dart';
 import 'package:openai_flutter/utils/ai_logger.dart';
-import 'package:path_provider/path_provider.dart';
+import 'package:chatgpt_app_core/platform/app_paths.dart';
 import 'package:sqflite/sqflite.dart';
 
 /// 一次导入的产物：各表行数统计 + 修复告警 + 备份内的 AI 设置。
@@ -3733,7 +3733,7 @@ class BackupService {
   static Future<Directory> _roleCardAssetsRootDir() async {
     final base = await (debugRoleCardAssetsDirectoryResolver ??
         getApplicationDocumentsDirectory)();
-    return Directory(
+    return appDirectory(
         '${base.path}/${AssistantRoleCardAssetStore.directoryName}');
   }
 
@@ -3786,7 +3786,7 @@ class BackupService {
         }
         try {
           // 清单的绝对根不可信，只从当前 documents 托管根重定位。
-          final file = File('${root.path}/$suffix');
+          final file = appFile('${root.path}/$suffix');
           if (!await file.exists()) continue;
           files[_roleCardAssetArchiveName(assistantId, entry.key, asset)] =
               await file.readAsBytes();
@@ -3848,10 +3848,10 @@ class BackupService {
           continue;
         }
         try {
-          final dir = Directory('${stageRoot.path}/$newId');
+          final dir = appDirectory('${stageRoot.path}/$newId');
           if (!await dir.exists()) await dir.create(recursive: true);
           final filename = _roleCardAssetFileName(entry.key, asset);
-          final stagedTarget = File('${dir.path}/$filename');
+          final stagedTarget = appFile('${dir.path}/$filename');
           await stagedTarget.writeAsBytes(archiveFile.content as List<int>,
               flush: true);
           asset['localPath'] = '${root.path}/$newId/$filename';
@@ -3946,7 +3946,7 @@ class BackupService {
       final path = row['avatarValue']?.toString();
       if (!AvatarAssetService.isManagedPath(path)) continue;
       try {
-        final file = File(path!);
+        final file = appFile(path!);
         if (!await file.exists()) continue;
         files[_basename(path)] = await file.readAsBytes();
       } catch (_) {
@@ -4021,7 +4021,7 @@ class BackupService {
             preserveExisting: true,
           );
           final filename = _basename(asset.name);
-          final stagedTarget = File('${stageDir!.path}/$filename');
+          final stagedTarget = appFile('${stageDir!.path}/$filename');
           await stagedTarget.writeAsBytes(asset.content as List<int>,
               flush: true);
           restored = '${targetDir!.path}/$filename';
@@ -4112,7 +4112,7 @@ class BackupService {
             '';
         final targetName =
             '${sha256.convert(utf8.encode(assetName))}$extension';
-        final stagedTarget = File('${stageDir.path}/$targetName');
+        final stagedTarget = appFile('${stageDir.path}/$targetName');
         await stagedTarget.writeAsBytes(asset.content as List<int>,
             flush: true);
         restored.add(_fileBlockWithPath(block, '${dir.path}/$targetName'));
@@ -4183,7 +4183,7 @@ class BackupService {
       final name = _safeImageAssetName(_basename(asset.name));
       if (name == null) continue;
       final target = replaceExisting
-          ? File('${stageDir.path}/$name')
+          ? appFile('${stageDir.path}/$name')
           : await _uniqueFile(stageDir, name);
       await target.writeAsBytes(asset.content as List<int>, flush: true);
       restored++;
@@ -4211,10 +4211,10 @@ class BackupService {
     final dot = name.lastIndexOf('.');
     final stem = dot <= 0 ? name : name.substring(0, dot);
     final ext = dot <= 0 ? '' : name.substring(dot);
-    var candidate = File('${dir.path}/$name');
+    var candidate = appFile('${dir.path}/$name');
     var i = 1;
     while (await candidate.exists()) {
-      candidate = File('${dir.path}/${stem}_$i$ext');
+      candidate = appFile('${dir.path}/${stem}_$i$ext');
       i++;
     }
     return candidate;
@@ -4328,8 +4328,8 @@ class _BackupResourceCoordinator {
     final parent = normalizedTarget.parent;
     if (!await parent.exists()) await parent.create(recursive: true);
     final token = generateUuidV4();
-    final stage = Directory('$key.backup-stage-$token');
-    final backup = Directory('$key.backup-original-$token');
+    final stage = appDirectory('$key.backup-stage-$token');
+    final backup = appDirectory('$key.backup-original-$token');
     await stage.create(recursive: true);
     try {
       final before = await _snapshotTarget(normalizedTarget);
@@ -4498,7 +4498,7 @@ class _BackupResourceCoordinator {
     await for (final entity in source.list(followLinks: false)) {
       final name = BackupService._basename(entity.path);
       if (entity is Directory) {
-        final child = Directory('${destination.path}/$name');
+        final child = appDirectory('${destination.path}/$name');
         await child.create(recursive: true);
         await _copyDirectory(entity, child);
       } else if (entity is File) {
@@ -4521,7 +4521,7 @@ class _BackupResourceCoordinator {
   static Future<_BackupTargetSnapshot> _snapshotTarget(
     Directory target,
   ) async {
-    final type = await FileSystemEntity.type(target.path, followLinks: false);
+    final type = await appFileType(target.path, followLinks: false);
     if (type == FileSystemEntityType.notFound) {
       return const _BackupTargetSnapshot.absent();
     }
@@ -4551,7 +4551,7 @@ class _BackupResourceCoordinator {
   }
 
   static Future<bool> _entityExists(String path) async =>
-      await FileSystemEntity.type(path, followLinks: false) !=
+      await appFileType(path, followLinks: false) !=
       FileSystemEntityType.notFound;
 }
 

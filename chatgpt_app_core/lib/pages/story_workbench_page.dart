@@ -11,7 +11,7 @@ import 'package:chatgpt_app_core/dao/ai_catalog_dao.dart';
 import 'package:chatgpt_app_core/widget/backend_selection_picker.dart';
 import 'package:chatgpt_app_core/chat/application/story_role_card_context.dart';
 import 'dart:async';
-import 'dart:io';
+import 'package:login_sdk/platform/app_io.dart';
 
 import 'package:chatgpt_app_core/chat/application/story_ai_workflow_service.dart';
 import 'package:chatgpt_app_core/chat/application/story_room_settings_resolver.dart';
@@ -29,7 +29,7 @@ import 'package:chatgpt_app_core/provider/ai_settings_provider.dart';
 import 'package:chatgpt_app_core/util/hi_dialog.dart';
 import 'package:chatgpt_app_core/widget/story_visual_widgets.dart';
 import 'package:flutter/material.dart';
-import 'package:path_provider/path_provider.dart';
+import 'package:chatgpt_app_core/platform/app_paths.dart';
 import 'package:provider/provider.dart';
 import 'package:share_plus/share_plus.dart';
 
@@ -872,7 +872,7 @@ class _StoryWorkbenchPageState extends State<StoryWorkbenchPage> {
       final dir = await getTemporaryDirectory();
       final safeTitle =
           widget.room.title.replaceAll(RegExp(r'[^\w\u4e00-\u9fff-]+'), '_');
-      final file = File('${dir.path}/$safeTitle-创作资料.md');
+      final file = appFile('${dir.path}/$safeTitle-创作资料.md');
       await file.writeAsString(body.toString());
       await SharePlus.instance.share(ShareParams(files: [XFile(file.path)]));
     } catch (e) {

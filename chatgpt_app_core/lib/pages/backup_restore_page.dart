@@ -1,4 +1,4 @@
-import 'dart:io';
+import 'package:login_sdk/platform/app_io.dart';
 import 'dart:typed_data';
 
 import 'package:chatgpt_app_core/backup/backup_archive_limits.dart';
@@ -13,8 +13,9 @@ import 'package:chatgpt_app_core/theme/app_visual_theme.dart';
 import 'package:chatgpt_app_core/util/hi_dialog.dart';
 import 'package:chatgpt_app_core/util/bounded_file_reader.dart';
 import 'package:chatgpt_app_core/widget/app_visual_widgets.dart';
-import 'package:file_picker/file_picker.dart';
+import 'package:chatgpt_app_core/platform/app_file_picker.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:login_sdk/dao/login_dao.dart';
 import 'package:openai_flutter/utils/ai_logger.dart';
 import 'package:provider/provider.dart';
@@ -50,7 +51,7 @@ Future<Uint8List?> readBackupImportFile(PlatformFile file) async {
   final path = file.path;
   if (path == null || path.isEmpty) return null;
   return readFileBytesBounded(
-    File(path),
+    appFile(path),
     maxBytes: BackupArchiveLimits.standard.maxCompressedBytes,
     label: '备份文件',
   );
@@ -444,7 +445,8 @@ class _BackupRestorePageState extends State<BackupRestorePage> {
       );
       if (path == null) return; // 用户取消
       if (!mounted) return;
-      HiDialog.showSnackBar(context, '已导出备份（${_sizeText(bytes.length)}）');
+      HiDialog.showSnackBar(context,
+          '${kIsWeb ? '已发起备份下载' : '已导出备份'}（${_sizeText(bytes.length)}）');
       if (export.warnings.isNotEmpty) {
         await showDialog<void>(
           context: context,

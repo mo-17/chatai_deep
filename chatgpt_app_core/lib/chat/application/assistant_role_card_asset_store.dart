@@ -1,12 +1,12 @@
 import 'dart:async';
 import 'dart:convert';
-import 'dart:io';
+import 'package:login_sdk/platform/app_io.dart';
 import 'dart:math';
 
 import 'package:chatgpt_app_core/chat/application/assistant_role_card_service.dart';
 import 'package:chatgpt_app_core/util/account_resource_scope.dart';
 import 'package:flutter/foundation.dart';
-import 'package:path_provider/path_provider.dart';
+import 'package:chatgpt_app_core/platform/app_paths.dart';
 
 typedef RoleCardAssetDirectoryResolver = Future<Directory> Function();
 typedef RoleCardAssetWriteObserver = FutureOr<void> Function(
@@ -85,7 +85,7 @@ class AssistantRoleCardAssetStore {
           '$assistantId',
           if (generation != null) ...['generations', generation]
         ];
-        final directory = Directory('${root.path}/${targetSegments.join('/')}');
+        final directory = appDirectory('${root.path}/${targetSegments.join('/')}');
         await AccountResourceScope.ensureNoLinks(
           root: root,
           relativeSegments: targetSegments,
@@ -99,14 +99,14 @@ class AssistantRoleCardAssetStore {
                 '$assistantId',
                 'generations'
               ]);
-          if (await FileSystemEntity.type(directory.path, followLinks: false) !=
+          if (await appFileType(directory.path, followLinks: false) !=
               FileSystemEntityType.notFound) {
             throw const FormatException('角色资源 generation 已存在');
           }
         }
         final staging = await stagingParent
             .createTemp('${generation ?? assistantId}.staging.');
-        final stagingType = await FileSystemEntity.type(
+        final stagingType = await appFileType(
           staging.path,
           followLinks: false,
         );
@@ -134,10 +134,10 @@ class AssistantRoleCardAssetStore {
                 bytes.length <= maxAssetBytes &&
                 totalBytes + bytes.length <= maxTotalBytes) {
               final filename = _filename(entry.key, resource);
-              final file = File('${staging.path}/$filename');
+              final file = appFile('${staging.path}/$filename');
               await file.create(exclusive: true);
               await file.writeAsBytes(bytes, flush: true);
-              if (await FileSystemEntity.type(file.path, followLinks: false) !=
+              if (await appFileType(file.path, followLinks: false) !=
                   FileSystemEntityType.file) {
                 throw FileSystemException(
                   'role asset staging item is not a regular file',
@@ -224,9 +224,9 @@ class AssistantRoleCardAssetStore {
             relativeSegments: segments,
           );
           verifyAccount();
-          final file = File('${root.path}/$suffix');
+          final file = appFile('${root.path}/$suffix');
           final type =
-              await FileSystemEntity.type(file.path, followLinks: false);
+              await appFileType(file.path, followLinks: false);
           verifyAccount();
           final canonical = type == FileSystemEntityType.file &&
               await AccountResourceScope.isCanonicalWithin(file, root);
@@ -238,7 +238,7 @@ class AssistantRoleCardAssetStore {
             );
             verifyAccount();
             final statType =
-                await FileSystemEntity.type(file.path, followLinks: false);
+                await appFileType(file.path, followLinks: false);
             verifyAccount();
             if (statType != FileSystemEntityType.file) {
               throw FileSystemException(
@@ -260,7 +260,7 @@ class AssistantRoleCardAssetStore {
             );
             verifyAccount();
             final readType =
-                await FileSystemEntity.type(file.path, followLinks: false);
+                await appFileType(file.path, followLinks: false);
             verifyAccount();
             if (readType != FileSystemEntityType.file) {
               throw FileSystemException(
@@ -321,8 +321,8 @@ class AssistantRoleCardAssetStore {
     ];
     await AccountResourceScope.ensureNoLinks(
         root: root, relativeSegments: segments);
-    final directory = Directory('${root.path}/${segments.join('/')}');
-    if (await FileSystemEntity.type(directory.path, followLinks: false) ==
+    final directory = appDirectory('${root.path}/${segments.join('/')}');
+    if (await appFileType(directory.path, followLinks: false) ==
         FileSystemEntityType.notFound) {
       return;
     }
@@ -437,16 +437,16 @@ class AssistantRoleCardAssetStore {
           AccountResourceScope.accountsDirectoryName,
           AccountResourceScope.tokenFor(resolvedAccountHash),
         ];
-        final accountDirectory = Directory(
+        final accountDirectory = appDirectory(
           '${root.path}/${scopeSegments.join(Platform.pathSeparator)}',
         );
-        final directory = Directory('${accountDirectory.path}/$assistantId');
+        final directory = appDirectory('${accountDirectory.path}/$assistantId');
         await AccountResourceScope.ensureNoLinks(
           root: root,
           relativeSegments: [...scopeSegments, '$assistantId'],
         );
         final type =
-            await FileSystemEntity.type(directory.path, followLinks: false);
+            await appFileType(directory.path, followLinks: false);
         if (type == FileSystemEntityType.notFound) return;
         if (type != FileSystemEntityType.directory ||
             !await AccountResourceScope.isCanonicalWithin(
@@ -474,7 +474,7 @@ class AssistantRoleCardAssetStore {
     RoleCardAssetCleanupObserver? debugBeforeBackupCleanup,
   }) async {
     final targetType =
-        await FileSystemEntity.type(target.path, followLinks: false);
+        await appFileType(target.path, followLinks: false);
     if (targetType == FileSystemEntityType.link ||
         (targetType != FileSystemEntityType.directory &&
             targetType != FileSystemEntityType.notFound)) {
@@ -487,14 +487,14 @@ class AssistantRoleCardAssetStore {
     Directory? backup;
     if (targetType == FileSystemEntityType.directory) {
       await _ensureTreeContainsNoLinks(target);
-      backup = Directory(await _unusedSiblingDirectoryPath(target, 'backup'));
+      backup = appDirectory(await _unusedSiblingDirectoryPath(target, 'backup'));
       await target.rename(backup.path);
     }
     try {
       await staging.rename(target.path);
     } catch (error, stackTrace) {
       if (backup != null &&
-          await FileSystemEntity.type(target.path, followLinks: false) ==
+          await appFileType(target.path, followLinks: false) ==
               FileSystemEntityType.notFound) {
         await backup.rename(target.path);
         backup = null;
@@ -518,9 +518,9 @@ class AssistantRoleCardAssetStore {
   ) async {
     for (var attempt = 0; attempt < 16; attempt++) {
       final nonce = '${DateTime.now().microsecondsSinceEpoch}-'
-          '${Random.secure().nextInt(1 << 32)}';
+          '${Random.secure().nextInt(0x100000000)}';
       final candidate = '${target.path}.$label.$nonce';
-      if (await FileSystemEntity.type(candidate, followLinks: false) ==
+      if (await appFileType(candidate, followLinks: false) ==
           FileSystemEntityType.notFound) {
         return candidate;
       }
@@ -532,7 +532,7 @@ class AssistantRoleCardAssetStore {
   }
 
   static Future<void> _ensureTreeContainsNoLinks(Directory root) async {
-    if (await FileSystemEntity.type(root.path, followLinks: false) !=
+    if (await appFileType(root.path, followLinks: false) !=
         FileSystemEntityType.directory) {
       throw FileSystemException(
         'role asset tree root is not a regular directory',
@@ -540,7 +540,7 @@ class AssistantRoleCardAssetStore {
       );
     }
     await for (final entity in root.list(followLinks: false)) {
-      final type = await FileSystemEntity.type(entity.path, followLinks: false);
+      final type = await appFileType(entity.path, followLinks: false);
       if (type == FileSystemEntityType.link) {
         throw FileSystemException(
           'role asset tree must not contain links',
@@ -548,7 +548,7 @@ class AssistantRoleCardAssetStore {
         );
       }
       if (type == FileSystemEntityType.directory) {
-        await _ensureTreeContainsNoLinks(Directory(entity.path));
+        await _ensureTreeContainsNoLinks(appDirectory(entity.path));
       } else if (type != FileSystemEntityType.file) {
         throw FileSystemException(
           'role asset tree contains an unsupported entity',
@@ -560,7 +560,7 @@ class AssistantRoleCardAssetStore {
 
   static Future<void> _deleteDirectoryIfRegular(Directory directory) async {
     final type =
-        await FileSystemEntity.type(directory.path, followLinks: false);
+        await appFileType(directory.path, followLinks: false);
     if (type == FileSystemEntityType.notFound) return;
     if (type != FileSystemEntityType.directory) {
       throw FileSystemException(

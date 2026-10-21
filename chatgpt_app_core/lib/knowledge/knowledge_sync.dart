@@ -1,5 +1,5 @@
 import 'dart:convert';
-import 'dart:io';
+import 'package:login_sdk/platform/app_io.dart';
 import 'package:sqflite/sqflite.dart';
 import 'package:chatgpt_app_core/capability/product_capabilities.dart';
 import 'package:chatgpt_app_core/db/hi_db_manager.dart';
@@ -386,10 +386,10 @@ class KnowledgeSync {
       ];
       KnowledgeTransfer.validate(rows);
       final target = await KnowledgeLibrary.assetDirectory(account: account);
-      final file = File('${target.path}/$uid');
+      final file = appFile('${target.path}/$uid');
       if (await KnowledgeLibrary.verifiedPdf(uid, account: account) == null) {
         final temporary =
-            File('${file.path}.part-${DateTime.now().microsecondsSinceEpoch}');
+            appFile('${file.path}.part-${DateTime.now().microsecondsSinceEpoch}');
         try {
           await temporary.writeAsBytes(bytes, flush: true);
           await temporary.rename(file.path);

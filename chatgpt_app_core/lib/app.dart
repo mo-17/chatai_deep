@@ -30,6 +30,7 @@ import 'package:login_sdk/dao/public_config_dao.dart';
 import 'package:login_sdk/login_sdk.dart';
 import 'package:login_sdk/pages/login_page.dart';
 import 'package:provider/provider.dart';
+import 'package:login_sdk/platform/app_io.dart' show initializeBrowserFileSystem;
 
 Future<void> runChatGptApp({
   Future<void> Function()? platformInitializer,
@@ -214,6 +215,7 @@ class _MyAppState extends State<MyApp> {
   }
 
   Future<void> doInit() async {
+    await initializeBrowserFileSystem();
     final tokenStorage = widget.secureStore == null
         ? null
         : MigratingTokenStorage(secureStore: widget.secureStore!);

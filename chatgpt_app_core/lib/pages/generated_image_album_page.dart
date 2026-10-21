@@ -1,4 +1,5 @@
-import 'dart:io';
+import 'package:login_sdk/platform/app_file_image.dart';
+import 'package:login_sdk/platform/app_io.dart';
 import 'dart:math' as math;
 
 import 'package:chatgpt_app_core/capability/generated_image_save_service.dart';
@@ -191,8 +192,8 @@ class _ImageTile extends StatelessWidget {
               child: Semantics(
                 image: true,
                 label: '生成图片 ${item.filename}',
-                child: Image.file(
-                  File(item.path),
+                child: appFileImage(
+                  appFile(item.path),
                   fit: BoxFit.cover,
                   cacheWidth: cacheWidth,
                   errorBuilder: (_, __, ___) => Center(

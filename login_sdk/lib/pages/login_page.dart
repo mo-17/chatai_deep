@@ -1,4 +1,4 @@
-import 'dart:io';
+import 'package:login_sdk/platform/app_io.dart';
 import 'dart:ui' as ui;
 
 import 'package:auth_kit_flutter/auth_kit_flutter.dart';
@@ -140,6 +140,7 @@ class _LoginPageState extends State<LoginPage> {
 
   // ---- Platform detection ----
   static String get _platform {
+    if (Platform.operatingSystem == 'web') return 'web';
     if (Platform.isIOS) return 'ios';
     if (Platform.operatingSystem == 'ohos') return 'harmony';
     return 'android';
@@ -1067,6 +1068,7 @@ class _LoginPageState extends State<LoginPage> {
   }
 
   Widget _buildDivider() {
+    if (_platform == 'web') return const SizedBox.shrink();
     return Padding(
       padding: const EdgeInsets.fromLTRB(0, 34, 0, 14),
       child: Row(
@@ -1085,6 +1087,7 @@ class _LoginPageState extends State<LoginPage> {
   }
 
   Widget _buildPlatformMandatory() {
+    if (_platform == 'web') return const SizedBox.shrink();
     final platform = _platform;
     String label;
     String hint;
@@ -1148,6 +1151,7 @@ class _LoginPageState extends State<LoginPage> {
   }
 
   Widget _buildSocialDots() {
+    if (_platform == 'web') return const SizedBox.shrink();
     final socials = _socialList();
     return Padding(
       padding: const EdgeInsets.only(top: 18),

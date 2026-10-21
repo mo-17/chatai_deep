@@ -1,6 +1,6 @@
 import 'dart:async';
 import 'dart:convert';
-import 'dart:io';
+import 'package:login_sdk/platform/app_io.dart';
 import 'dart:math';
 import 'dart:typed_data';
 
@@ -10,7 +10,7 @@ import 'package:chatgpt_app_core/chat/domain/composer_reference.dart';
 import 'package:chatgpt_app_core/util/account_resource_scope.dart';
 import 'package:chatgpt_app_core/util/bounded_file_reader.dart';
 import 'package:crypto/crypto.dart';
-import 'package:path_provider/path_provider.dart';
+import 'package:chatgpt_app_core/platform/app_paths.dart';
 
 typedef DraftDirectoryResolver = Future<Directory> Function();
 
@@ -182,12 +182,12 @@ class ConversationDraftStore {
     final base = await _directoryResolver();
     verify?.call();
     _verifyAccount();
-    final root = Directory('${base.path}/$directoryName');
+    final root = appDirectory('${base.path}/$directoryName');
     await AccountResourceScope.ensureNoLinks(
         root: root, relativeSegments: [..._segments, 'draft.json']);
     verify?.call();
-    final file = File('${root.path}/${_segments.join('/')}/draft.json');
-    final type = await FileSystemEntity.type(file.path, followLinks: false);
+    final file = appFile('${root.path}/${_segments.join('/')}/draft.json');
+    final type = await appFileType(file.path, followLinks: false);
     if (type == FileSystemEntityType.notFound) return null;
     if (type != FileSystemEntityType.file) {
       throw const DraftStorageException('草稿文件类型异常');
@@ -302,15 +302,15 @@ class ConversationDraftStore {
     _verifyAccount();
     final base = await _directoryResolver();
     _verifyAccount();
-    final root = Directory('${base.path}/$directoryName');
-    final directory = Directory('${root.path}/${_segments.join('/')}');
+    final root = appDirectory('${base.path}/$directoryName');
+    final directory = appDirectory('${root.path}/${_segments.join('/')}');
     try {
       await AccountResourceScope.ensureNoLinks(
         root: root,
         relativeSegments: [..._segments, 'draft.json'],
       );
-      final file = File('${directory.path}/draft.json');
-      if (await FileSystemEntity.type(file.path, followLinks: false) !=
+      final file = appFile('${directory.path}/draft.json');
+      if (await appFileType(file.path, followLinks: false) !=
           FileSystemEntityType.file) {
         return null;
       }
@@ -352,8 +352,8 @@ class ConversationDraftStore {
               root: root,
               relativeSegments: [..._segments, digest, name],
             );
-            final owned = File('${directory.path}/$digest/$name');
-            if (await FileSystemEntity.type(owned.path, followLinks: false) !=
+            final owned = appFile('${directory.path}/$digest/$name');
+            if (await appFileType(owned.path, followLinks: false) !=
                     FileSystemEntityType.file ||
                 !await AccountResourceScope.isCanonicalWithin(
                     owned, directory)) {
@@ -480,7 +480,7 @@ class ConversationDraftStore {
       throw const DraftStorageException('引用已变化或不可用，请重新选择');
     }
     final base = await _directoryResolver();
-    final root = Directory('${base.path}/$directoryName');
+    final root = appDirectory('${base.path}/$directoryName');
     final name = reference.attachmentPath!.split(RegExp(r'[/\\]')).last;
     final expectedPath =
         '${root.path}/${_segments.join('/')}/${reference.snapshotDigest}/$name';
@@ -490,7 +490,7 @@ class ConversationDraftStore {
     await AccountResourceScope.ensureNoLinks(
         root: root,
         relativeSegments: [..._segments, reference.snapshotDigest, name]);
-    final bytes = await readFileBytesBounded(File(expectedPath),
+    final bytes = await readFileBytesBounded(appFile(expectedPath),
         maxBytes: reference.kind == ComposerReferenceKind.photo
             ? maxImageBytes
             : (manifestBound || name.toLowerCase().endsWith('.pdf')
@@ -586,7 +586,7 @@ class ConversationDraftStore {
         stableMutation: stableMutation,
         action: () async {
           if (!isCurrent()) return null;
-          final root = Directory('${base.path}/$directoryName');
+          final root = appDirectory('${base.path}/$directoryName');
           if (!isCurrent()) return null;
           final directory = await AccountResourceScope.createManagedDirectory(
             root: root,
@@ -706,12 +706,12 @@ class ConversationDraftStore {
           if (encoded.length > maxManifestBytes) {
             throw const DraftStorageCapacityException('草稿内容超出保存上限');
           }
-          final target = File('${directory.path}/draft.json');
+          final target = appFile('${directory.path}/draft.json');
           await AccountResourceScope.ensureNoLinks(
             root: root,
             relativeSegments: [..._segments, 'draft.json'],
           );
-          final temporary = File('${directory.path}/.${_randomToken()}.tmp');
+          final temporary = appFile('${directory.path}/.${_randomToken()}.tmp');
           try {
             if (!isCurrent()) return null;
             await temporary.create(exclusive: true);
@@ -772,22 +772,22 @@ class ConversationDraftStore {
     Future<void> mutation() async {
       _verifyAccount();
       if (!isCurrent()) return;
-      final root = Directory('${base.path}/$directoryName');
-      final directory = Directory('${root.path}/${_segments.join('/')}');
+      final root = appDirectory('${base.path}/$directoryName');
+      final directory = appDirectory('${root.path}/${_segments.join('/')}');
       await AccountResourceScope.ensureNoLinks(
         root: root,
         relativeSegments: [..._segments, 'draft.json'],
       );
       if (!isCurrent()) return;
       if (removeAttachments) {
-        if (await FileSystemEntity.type(directory.path, followLinks: false) ==
+        if (await appFileType(directory.path, followLinks: false) ==
             FileSystemEntityType.directory) {
           await directory.delete(recursive: true);
         }
         return;
       }
-      final manifest = File('${directory.path}/draft.json');
-      if (await FileSystemEntity.type(manifest.path, followLinks: false) ==
+      final manifest = appFile('${directory.path}/draft.json');
+      if (await appFileType(manifest.path, followLinks: false) ==
           FileSystemEntityType.file) {
         if (!isCurrent()) return;
         await manifest.delete();
@@ -872,8 +872,8 @@ class ConversationDraftStore {
     bool enforceDraftQuota = true,
     required void Function(String digest, int bytes) beforeWrite,
   }) async {
-    final source = File(path);
-    if (await FileSystemEntity.type(path, followLinks: false) !=
+    final source = appFile(path);
+    if (await appFileType(path, followLinks: false) !=
         FileSystemEntityType.file) {
       throw const DraftStorageException('草稿附件已不可用，请重新选择');
     }
@@ -888,7 +888,7 @@ class ConversationDraftStore {
       label: '草稿附件',
     );
     final after = await source.stat();
-    if (await FileSystemEntity.type(path, followLinks: false) !=
+    if (await appFileType(path, followLinks: false) !=
             FileSystemEntityType.file ||
         before.modified != after.modified ||
         before.changed != after.changed ||
@@ -912,23 +912,23 @@ class ConversationDraftStore {
       if (!_isSafeFilename(existingName) || existingName.startsWith('.')) {
         continue;
       }
-      if (await FileSystemEntity.type(entity.path, followLinks: false) !=
+      if (await appFileType(entity.path, followLinks: false) !=
           FileSystemEntityType.file) {
         continue;
       }
-      final existing = await readFileBytesBounded(File(entity.path),
+      final existing = await readFileBytesBounded(appFile(entity.path),
           maxBytes: maxBytes, label: '草稿附件');
       if (sha256.convert(existing).toString() != digest) {
         throw const DraftStorageException('草稿附件校验失败，请重新选择');
       }
       return {'digest': digest, 'name': existingName, 'bytes': existing.length};
     }
-    final target = File('${ownedDirectory.path}/$name');
+    final target = appFile('${ownedDirectory.path}/$name');
     await AccountResourceScope.ensureNoLinks(
       root: root,
       relativeSegments: [..._segments, digest, name],
     );
-    final type = await FileSystemEntity.type(target.path, followLinks: false);
+    final type = await appFileType(target.path, followLinks: false);
     if (type == FileSystemEntityType.notFound) {
       final conversationBytes =
           enforceDraftQuota ? await _directoryBytes(directory) : 0;
@@ -940,7 +940,7 @@ class ConversationDraftStore {
         throw const DraftStorageCapacityException('草稿附件空间已满，请清理不需要的会话草稿');
       }
       if (!isCurrent()) return null;
-      final temporary = File('${ownedDirectory.path}/.${_randomToken()}.tmp');
+      final temporary = appFile('${ownedDirectory.path}/.${_randomToken()}.tmp');
       try {
         await temporary.create(exclusive: true);
         await temporary.writeAsBytes(content, flush: true);
@@ -969,7 +969,7 @@ class ConversationDraftStore {
     await for (final entity
         in directory.list(recursive: true, followLinks: false)) {
       if (entity is File &&
-          await FileSystemEntity.type(entity.path, followLinks: false) ==
+          await appFileType(entity.path, followLinks: false) ==
               FileSystemEntityType.file) {
         bytes += await entity.length();
       }

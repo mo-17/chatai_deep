@@ -6,7 +6,7 @@ import 'package:chatgpt_app_core/chat/application/assistant_operation_scope.dart
 import 'package:chatgpt_app_core/chat/application/assistant_card_persistence.dart';
 import 'dart:async';
 import 'dart:convert';
-import 'dart:io';
+import 'package:login_sdk/platform/app_io.dart';
 import 'package:chatgpt_app_core/chat/application/creative_file_transfer_gateway.dart';
 
 import 'package:chatgpt_app_core/chat/application/assistant_conversation_factory.dart';
@@ -59,12 +59,12 @@ import 'package:chatgpt_app_core/widget/app_visual_widgets.dart';
 import 'package:chatgpt_app_core/widget/assistant_avatar.dart';
 import 'package:chatgpt_app_core/widget/translation_task_log_dialog.dart';
 import 'package:chatgpt_app_core/widget/translation_settings_dialog.dart';
-import 'package:file_picker/file_picker.dart';
+import 'package:chatgpt_app_core/platform/app_file_picker.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:login_sdk/dao/login_dao.dart';
 import 'package:login_sdk/util/navigator_util.dart';
-import 'package:path_provider/path_provider.dart';
+import 'package:chatgpt_app_core/platform/app_paths.dart';
 import 'package:provider/provider.dart';
 import 'package:share_plus/share_plus.dart';
 
@@ -911,7 +911,7 @@ class _AssistantListPageState extends State<AssistantListPage> {
       AssistantRoleCardImportBatchResult importBatch;
       try {
         final pickedBytes = await readFileBytesBounded(
-          File(path),
+          appFile(path),
           maxBytes: AssistantRoleCardService.maxImportBytes,
           label: '角色卡文件',
         );
@@ -2114,7 +2114,7 @@ class _AssistantListPageState extends State<AssistantListPage> {
       scope.verify();
       operation = await root.createTemp('role-card-export-');
       scope.verify();
-      final file = File('${operation.path}/$name');
+      final file = appFile('${operation.path}/$name');
       await file.writeAsBytes(bytes, flush: true);
       scope.verify();
       await SharePlus.instance.share(ShareParams(files: [XFile(file.path)]));
@@ -2146,11 +2146,11 @@ class _AssistantListPageState extends State<AssistantListPage> {
     }
     final documents = await getApplicationDocumentsDirectory();
     scope.verify();
-    final root = Directory('${documents.path}/chat_avatar');
+    final root = appDirectory('${documents.path}/chat_avatar');
     await AccountResourceScope.ensureNoLinks(
         root: root, relativeSegments: suffix.split('/'));
-    final file = File('${root.path}/$suffix');
-    if (file.absolute.path != File(value).absolute.path) {
+    final file = appFile('${root.path}/$suffix');
+    if (file.absolute.path != appFile(value).absolute.path) {
       throw const FormatException('头像路径不属于当前应用容器');
     }
     final bytes = await readFileBytesBounded(file,
@@ -2184,7 +2184,7 @@ class _AssistantListPageState extends State<AssistantListPage> {
     SkillPackage pkg;
     try {
       final bytes = await readFileBytesBounded(
-        File(path),
+        appFile(path),
         maxBytes: SkillImportService.maxImportBytes,
         label: '技能包',
       );

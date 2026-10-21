@@ -20,6 +20,13 @@ dependencies:
   flutter_secure_storage: ^10.3.1
 
 dev_dependencies:
+  sqflite_common_ffi_web: ^0.4.5+4
+  http: ^1.6.0
+  crypto: ^3.0.6
+  flutter_web_plugins:
+    sdk: flutter
+  flutter_secure_storage_web: ^2.1.1
+  shared_preferences_web: ^2.4.3
   flutter_test:
     sdk: flutter
   integration_test:

@@ -7,6 +7,7 @@ import 'package:chatgpt_app_core/chat/application/translation_model_probe_cache.
 import 'package:chatgpt_app_core/model/ai_provider.dart';
 import 'package:chatgpt_app_core/model/ai_settings.dart';
 import 'package:flutter_hi_cache/flutter_hi_cache.dart';
+import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:login_sdk/dao/login_dao.dart';
 import 'package:login_sdk/login_sdk.dart';
 
@@ -406,7 +407,9 @@ class AISettingsDao {
       // 仅 legacy 明文本来就已暴露，或带有更高 generation 的 pending 才
       // 能作为权威恢复副本。安全存储失败时保留原明文，不制造新的暴露。
       final generation = plainGeneration ??
-          ((existingPayload?.generation ?? 0) + 1).clamp(1, 1 << 62).toInt();
+          ((existingPayload?.generation ?? 0) + 1)
+              .clamp(1, _maxGeneration)
+              .toInt();
       final payload = _AISecurePayload.fromSettings(
         settings,
         generation: generation,
@@ -575,8 +578,13 @@ class AISettingsDao {
 
   static int _nextGeneration(String hash) {
     final current = _generationsByAccount[hash] ?? 0;
-    return current >= (1 << 62) ? current : current + 1;
+    return current >= _maxGeneration ? current : current + 1;
   }
+
+  // Dart JS 的位移只有 32 位，1 << 62 会变成 0，导致所有安全快照校验失败。
+  // 采用原生范围与 JS 可精确表示的整数范围各自的上界。
+  static const int _maxGeneration =
+      kIsWeb ? 9007199254740991 : 0x4000000000000000;
 
   /// 指定账号是否已存过 AI 设置（用于游客迁移判断目标账号是否「空」）。
   static bool hasSettings(String hash) {

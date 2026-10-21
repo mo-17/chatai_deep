@@ -1,4 +1,4 @@
-import 'dart:io' show Platform;
+import 'package:login_sdk/platform/app_io.dart' show Platform;
 import 'package:flutter/foundation.dart' show kIsWeb, ValueNotifier;
 import 'package:login_sdk/config/login_sdk_config.dart';
 

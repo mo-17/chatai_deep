@@ -7,7 +7,7 @@ import 'package:chatgpt_app_core/chat/application/office_text_extractor.dart';
 import 'package:chatgpt_app_core/chat/domain/attachment_processing_limits.dart';
 import 'package:chatgpt_app_core/chat/domain/chat_send_progress.dart';
 import 'package:chatgpt_app_core/chat/domain/message_block.dart';
-import 'dart:io';
+import 'package:login_sdk/platform/app_io.dart';
 
 /// 任务附件只发送清单；原文持久保存，由 read_file 分段读取。
 class WorkspaceAttachmentProcessor {
@@ -36,7 +36,7 @@ class WorkspaceAttachmentProcessor {
           ? FileProcessor.defaultPdfLimit
           : limits.normalized.maxTextFileBytes;
       final snapshot =
-          await budget.snapshotFile(File(path), maxBytes: maxBytes);
+          await budget.snapshotFile(appFile(path), maxBytes: maxBytes);
       final separator = metas.isEmpty ? '' : '\n\n';
       var reservedCharacters = 0;
       final record = await workspace.importBytes(snapshot.bytes,

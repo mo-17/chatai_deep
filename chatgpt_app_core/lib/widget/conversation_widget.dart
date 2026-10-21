@@ -1,4 +1,5 @@
-import 'dart:io';
+import 'package:login_sdk/platform/app_file_image.dart';
+import 'package:login_sdk/platform/app_io.dart';
 
 import 'package:cached_network_image/cached_network_image.dart';
 import 'package:chat_message/util/wechat_date_format.dart';
@@ -84,10 +85,10 @@ class ConversationWidget extends StatelessWidget {
       );
 
   Widget _localImageAvatar(String path) {
-    final file = File(path);
+    final file = appFile(path);
     return ClipRRect(
       borderRadius: BorderRadius.circular(5),
-      child: Image.file(
+      child: appFileImage(
         file,
         height: 50,
         width: 50,
@@ -135,10 +136,10 @@ class ConversationWidget extends StatelessWidget {
       return _emojiAvatar(avatarValue);
     }
     if (avatarType == 'image' && avatarValue.isNotEmpty) {
-      final file = File(avatarValue);
+      final file = appFile(avatarValue);
       return ClipRRect(
         borderRadius: BorderRadius.circular(14),
-        child: Image.file(
+        child: appFileImage(
           file,
           height: 50,
           width: 50,

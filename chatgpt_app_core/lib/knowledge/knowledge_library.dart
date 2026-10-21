@@ -1,8 +1,8 @@
 import 'dart:convert';
-import 'dart:io';
+import 'package:login_sdk/platform/app_io.dart';
 import 'dart:typed_data';
 import 'package:crypto/crypto.dart';
-import 'package:path_provider/path_provider.dart';
+import 'package:chatgpt_app_core/platform/app_paths.dart';
 import 'package:sqflite/sqflite.dart';
 import 'package:chatgpt_app_core/data/knowledge_chunker.dart';
 import 'package:chatgpt_app_core/db/hi_db_manager.dart';
@@ -360,17 +360,17 @@ class KnowledgeLibrary implements IKnowledgeLibrary, ITable {
     final root = await getApplicationDocumentsDirectory();
     final token = AccountResourceScope.tokenFor(
         AccountResourceScope.currentAccountHash(account));
-    return Directory('${root.path}/accounts/$token/knowledge_sources')
+    return appDirectory('${root.path}/accounts/$token/knowledge_sources')
         .create(recursive: true);
   }
 
   Future<void> preservePdf(int docId, Uint8List bytes) async {
     final name = '${sha256.convert(bytes)}.pdf';
     final dir = await assetDirectory(account: account);
-    final file = File('${dir.path}/$name');
+    final file = appFile('${dir.path}/$name');
     if (await verifiedPdf(name, account: account) == null) {
       final temporary =
-          File('${file.path}.part-${DateTime.now().microsecondsSinceEpoch}');
+          appFile('${file.path}.part-${DateTime.now().microsecondsSinceEpoch}');
       try {
         await temporary.writeAsBytes(bytes, flush: true);
         await temporary.rename(file.path);
@@ -411,7 +411,7 @@ class KnowledgeLibrary implements IKnowledgeLibrary, ITable {
   static Future<File?> verifiedPdf(String name, {String? account}) async {
     if (!RegExp(r'^[a-f0-9]{64}\.pdf$').hasMatch(name)) return null;
     final dir = await assetDirectory(account: account);
-    final file = File('${dir.path}/$name');
+    final file = appFile('${dir.path}/$name');
     if (!await file.exists() || await file.length() > 64 * 1024 * 1024) {
       return null;
     }

@@ -1,5 +1,5 @@
 import 'dart:convert';
-import 'dart:io';
+import 'package:login_sdk/platform/app_io.dart';
 import 'package:crypto/crypto.dart';
 import 'package:sqflite/sqflite.dart';
 import 'package:chatgpt_app_core/db/hi_db_manager.dart';
@@ -224,7 +224,7 @@ class KnowledgeTransfer {
   static Future<void> writeAssets(
       List<Map<String, dynamic>> rows, Directory staged) async {
     for (final row in validate(rows).where((r) => r['kind'] == 'asset')) {
-      await File('${staged.path}/${row['uid']}')
+      await appFile('${staged.path}/${row['uid']}')
           .writeAsBytes(base64Decode(row['data'] as String), flush: true);
     }
   }

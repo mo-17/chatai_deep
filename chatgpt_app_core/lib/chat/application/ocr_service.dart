@@ -1,4 +1,4 @@
-import 'dart:io';
+import 'package:login_sdk/platform/app_io.dart';
 import 'ohos_ocr.dart';
 import 'pdf_ocr_result.dart';
 import 'import_operation.dart';
@@ -90,7 +90,7 @@ class OcrService {
           cancellation: cancellation,
           onProgress: onProgress);
     }
-    final tmp = await Directory.systemTemp.createTemp('kb_ocr');
+    final tmp = await appTemporaryDirectory.createTemp('kb_ocr');
     TextRecognizer? recognizer;
     PdfDocument? doc;
     try {
@@ -114,7 +114,7 @@ class OcrService {
             format: PdfPageImageFormat.png,
           );
           if (img == null) throw FormatException('PDF 第 $i 页渲染失败');
-          final file = File('${tmp.path}/p$i.png');
+          final file = appFile('${tmp.path}/p$i.png');
           await file.writeAsBytes(img.bytes);
           final text = await recognizeImageFileWith(recognizer, file.path);
           length += text.length;

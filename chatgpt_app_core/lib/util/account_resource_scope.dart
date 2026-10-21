@@ -1,5 +1,5 @@
 import 'dart:convert';
-import 'dart:io';
+import 'package:login_sdk/platform/app_io.dart';
 
 import 'package:crypto/crypto.dart';
 import 'package:login_sdk/dao/login_dao.dart';
@@ -75,7 +75,7 @@ class AccountResourceScope {
     required Directory base,
     required String resourceDirectoryName,
   }) =>
-      Directory('${base.path}/$resourceDirectoryName');
+      appDirectory('${base.path}/$resourceDirectoryName');
 
   static Directory scopedDirectory({
     required Directory base,
@@ -83,7 +83,7 @@ class AccountResourceScope {
     String? accountHash,
   }) {
     final resolved = currentAccountHash(accountHash);
-    return Directory(
+    return appDirectory(
       '${base.path}/$resourceDirectoryName/$accountsDirectoryName/'
       '${tokenFor(resolved)}',
     );
@@ -119,7 +119,7 @@ class AccountResourceScope {
     await _ensureDirectory(current, beforeMutation: beforeMutation);
     for (final segment in relativeSegments) {
       _validateSegment(segment);
-      current = Directory(
+      current = appDirectory(
         '${current.path}${Platform.pathSeparator}$segment',
       );
       await _ensureDirectory(current, beforeMutation: beforeMutation);
@@ -160,7 +160,7 @@ class AccountResourceScope {
 
   static Future<void> _ensureDirectory(Directory directory,
       {void Function()? beforeMutation}) async {
-    final before = await FileSystemEntity.type(
+    final before = await appFileType(
       directory.path,
       followLinks: false,
     );
@@ -179,7 +179,7 @@ class AccountResourceScope {
       beforeMutation?.call();
       await directory.create(recursive: true);
     }
-    final after = await FileSystemEntity.type(
+    final after = await appFileType(
       directory.path,
       followLinks: false,
     );
@@ -192,7 +192,7 @@ class AccountResourceScope {
   }
 
   static Future<void> _rejectLink(String path) async {
-    if (await FileSystemEntity.type(path, followLinks: false) ==
+    if (await appFileType(path, followLinks: false) ==
         FileSystemEntityType.link) {
       throw FileSystemException('managed path must not be a link', path);
     }

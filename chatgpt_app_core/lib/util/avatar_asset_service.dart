@@ -1,8 +1,8 @@
-import 'dart:io';
+import 'package:login_sdk/platform/app_io.dart';
 
 import 'package:chatgpt_app_core/db/hi_db_manager.dart';
 import 'package:flutter/foundation.dart';
-import 'package:path_provider/path_provider.dart';
+import 'package:chatgpt_app_core/platform/app_paths.dart';
 
 /// 会话头像资源托管：把相册临时路径复制到应用 Documents，避免原路径失效。
 class AvatarAssetService {
@@ -17,14 +17,14 @@ class AvatarAssetService {
     required String sourcePath,
     required int cid,
   }) async {
-    final source = File(sourcePath);
+    final source = appFile(sourcePath);
     if (!await source.exists()) {
       throw Exception('头像文件不存在');
     }
     if (isManagedPath(sourcePath)) return sourcePath;
     final dir = await avatarDir();
     final ext = _extension(sourcePath);
-    final dest = File(
+    final dest = appFile(
         '${dir.path}/conversation_${cid}_${DateTime.now().millisecondsSinceEpoch}$ext');
     await source.copy(dest.path);
     return dest.path;
@@ -42,7 +42,7 @@ class AvatarAssetService {
     final dir = await avatarDir(accountHash: accountHash);
     final safeName = _safeSegment(assistantName);
     final ext = extension.startsWith('.') ? extension : '.$extension';
-    final dest = File(
+    final dest = appFile(
         '${dir.path}/assistant_${safeName}_${DateTime.now().millisecondsSinceEpoch}$ext');
     await dest.writeAsBytes(bytes, flush: true);
     return dest.path;
@@ -53,7 +53,7 @@ class AvatarAssetService {
     required String assistantName,
     String? accountHash,
   }) async {
-    final source = File(sourcePath);
+    final source = appFile(sourcePath);
     if (!await source.exists()) {
       throw Exception('头像文件不存在');
     }
@@ -80,7 +80,7 @@ class AvatarAssetService {
     final dir = await avatarDir(accountHash: accountHash);
     final safeKey = _safeSegment(personaKey);
     final ext = extension.startsWith('.') ? extension : '.$extension';
-    final dest = File(
+    final dest = appFile(
         '${dir.path}/persona_${safeKey}_${DateTime.now().millisecondsSinceEpoch}$ext');
     await dest.writeAsBytes(bytes, flush: true);
     return dest.path;
@@ -92,7 +92,7 @@ class AvatarAssetService {
     required String personaKey,
     String? accountHash,
   }) async {
-    final source = File(sourcePath);
+    final source = appFile(sourcePath);
     if (!await source.exists()) {
       throw Exception('头像文件不存在');
     }
@@ -108,7 +108,7 @@ class AvatarAssetService {
   static Future<void> deleteConversationAvatar(String? path) async {
     if (!isManagedPath(path)) return;
     try {
-      final file = File(path!);
+      final file = appFile(path!);
       if (await file.exists()) {
         await file.delete();
       }
@@ -126,14 +126,14 @@ class AvatarAssetService {
   static Future<String?> resolveManagedPath(String? path) async {
     final value = path?.trim() ?? '';
     if (value.isEmpty) return null;
-    final file = File(value);
+    final file = appFile(value);
     if (await file.exists()) return value;
     if (!isManagedPath(value)) return value;
     final suffix = managedSuffix(value);
     if (suffix == null) return value;
     final root = await (debugDocumentsDirectoryResolver ??
         getApplicationDocumentsDirectory)();
-    final relocated = File('${root.path}/$_rootDirName/$suffix');
+    final relocated = appFile('${root.path}/$_rootDirName/$suffix');
     return await relocated.exists() ? relocated.path : value;
   }
 
@@ -141,7 +141,7 @@ class AvatarAssetService {
     final root = await (debugDocumentsDirectoryResolver ??
         getApplicationDocumentsDirectory)();
     final hash = _safeSegment(accountHash ?? HiDBManager.getAccountHash());
-    final dir = Directory('${root.path}/$_rootDirName/$hash');
+    final dir = appDirectory('${root.path}/$_rootDirName/$hash');
     if (!await dir.exists()) {
       await dir.create(recursive: true);
     }

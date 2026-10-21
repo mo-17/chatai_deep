@@ -1,5 +1,5 @@
 import 'dart:convert';
-import 'dart:io' as io show ZLibDecoder;
+import 'package:chatgpt_app_core/platform/zlib_decoder.dart' as io show ZLibDecoder;
 import 'dart:typed_data';
 
 import 'package:archive/archive.dart';

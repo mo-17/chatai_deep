@@ -1,4 +1,5 @@
-import 'dart:io';
+import 'package:login_sdk/platform/app_file_image.dart';
+import 'package:login_sdk/platform/app_io.dart';
 import 'package:chatgpt_app_core/chat/application/direct_failure_recovery.dart';
 import 'package:chatgpt_app_core/chat/application/conversation_generation_scope.dart';
 import 'package:chatgpt_app_core/widget/direct_failure_dialog.dart';
@@ -1298,8 +1299,8 @@ class _StoryRoomPageState extends State<StoryRoomPage> {
               borderRadius: BorderRadius.circular(
                 storyUsesAnimeStyle(context) ? 14 : 6,
               ),
-              child: Image.file(
-                File(path),
+              child: appFileImage(
+                appFile(path),
                 width: 54,
                 height: 54,
                 fit: BoxFit.cover,

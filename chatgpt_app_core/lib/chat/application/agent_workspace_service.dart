@@ -1,5 +1,5 @@
 import 'dart:convert';
-import 'dart:io';
+import 'package:login_sdk/platform/app_io.dart';
 
 import 'package:chatgpt_app_core/chat/domain/agent_workspace_file.dart';
 import 'package:chatgpt_app_core/chat/domain/local_source_citation.dart';
@@ -46,13 +46,13 @@ class AgentWorkspaceService {
               Map<String, dynamic> manifestPreview)?
           validateParsed}) async {
     _validateByteLimit(maxBytes);
-    if (await FileSystemEntity.type(path, followLinks: false) !=
+    if (await appFileType(path, followLinks: false) !=
         FileSystemEntityType.file) {
       throw const FormatException('请选择普通文件，不能导入目录或符号链接');
     }
     final name = path.replaceAll('\\', '/').split('/').last;
     _validateName(name, output: false);
-    final bytes = await readFileBytesBounded(File(path),
+    final bytes = await readFileBytesBounded(appFile(path),
         maxBytes: maxBytes, label: '工作区文件');
     final parsed = await compute(_parseBytes, {'bytes': bytes, 'name': name});
     _validateParsedInput(name, parsed, bytes.length, validateParsed);
@@ -115,7 +115,7 @@ class AgentWorkspaceService {
     final content = parsed['content'] as String;
     final sections = (parsed['sections'] as List).cast<Map<String, dynamic>>();
     final preview = AgentWorkspaceFile(
-        id: 9223372036854775807,
+        id: int.parse('9223372036854775807'),
         cid: dao.cid,
         name: name,
         kind: 'input',
@@ -124,8 +124,8 @@ class AgentWorkspaceService {
         lineCount: content.isEmpty ? 0 : '\n'.allMatches(content).length + 1,
         pageCount: (parsed['pageTexts'] as List).length,
         sizeBytes: bytes,
-        updatedAt: 9223372036854775807,
-        createdAt: 9223372036854775807,
+        updatedAt: int.parse('9223372036854775807'),
+        createdAt: int.parse('9223372036854775807'),
         sectionCount: sections.length,
         sections: sections.take(40).map((section) {
           final title = section['title'] as String;

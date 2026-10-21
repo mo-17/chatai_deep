@@ -1,5 +1,6 @@
+import 'package:login_sdk/platform/app_file_image.dart';
 import 'dart:convert';
-import 'dart:io';
+import 'package:login_sdk/platform/app_io.dart';
 
 import 'package:chatgpt_app_core/capability/generated_image_save_service.dart';
 import 'package:chatgpt_app_core/capability/product_capabilities.dart';
@@ -867,9 +868,9 @@ class _Image extends StatelessWidget {
         errorBuilder: (_, __, ___) => _imageError(context, width),
       );
     }
-    if (path != null && File(path).existsSync()) {
-      return Image.file(
-        File(path),
+    if (path != null && appFile(path).existsSync()) {
+      return appFileImage(
+        appFile(path),
         width: width,
         fit: BoxFit.cover,
         errorBuilder: (_, __, ___) => _imageError(context, width),

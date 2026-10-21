@@ -1,9 +1,9 @@
-import 'dart:io';
+import 'package:login_sdk/platform/app_io.dart';
 import 'package:archive/archive.dart';
 import 'package:chatgpt_app_core/backup/backup_archive_limits.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
-import 'package:path_provider/path_provider.dart';
+import 'package:chatgpt_app_core/platform/app_paths.dart';
 
 /// 先完整检查选中文件集合，再交给现有导入器；ZIP 只解到本次专属临时目录。
 class KnowledgeImportCollection {
@@ -41,7 +41,7 @@ class KnowledgeImportCollection {
   }
 
   static Future<KnowledgeImportCollection> fromDirectory(String path) async {
-    if (await FileSystemEntity.type(path, followLinks: false) !=
+    if (await appFileType(path, followLinks: false) !=
         FileSystemEntityType.directory) {
       throw const FormatException('请选择普通文件夹，不支持符号链接');
     }
@@ -77,7 +77,7 @@ class KnowledgeImportCollection {
       }
     }
 
-    await visit(Directory(path), '', 0);
+    await visit(appDirectory(path), '', 0);
     paths.sort();
     return KnowledgeImportCollection._(paths);
   }
@@ -86,11 +86,11 @@ class KnowledgeImportCollection {
     String path, {
     Future<Directory> Function()? temporaryDirectory,
   }) async {
-    if (await FileSystemEntity.type(path, followLinks: false) !=
+    if (await appFileType(path, followLinks: false) !=
         FileSystemEntityType.file) {
       throw const FormatException('ZIP 必须是普通文件');
     }
-    final size = await File(path).length();
+    final size = await appFile(path).length();
     validateBackupCompressedSize(size, limits: archiveLimits);
     final root = await (temporaryDirectory ?? getTemporaryDirectory)();
     final directory = await root.createTemp('knowledge-batch-');
@@ -123,7 +123,7 @@ class KnowledgeImportCollection {
           if (header.uncompressedSize != 0) {
             throw const FormatException('ZIP 目录大小不合法');
           }
-          await Directory(target).create(recursive: true);
+          await appDirectory(target).create(recursive: true);
           continue;
         }
         final sink = budget.newEntry(entry.name);
@@ -133,12 +133,12 @@ class KnowledgeImportCollection {
             getCrc32(bytes) != header.crc32) {
           throw const FormatException('ZIP 文件大小或 CRC 校验失败');
         }
-        await File(target).parent.create(recursive: true);
-        if (await FileSystemEntity.type(target, followLinks: false) !=
+        await appFile(target).parent.create(recursive: true);
+        if (await appFileType(target, followLinks: false) !=
             FileSystemEntityType.notFound) {
           throw const FormatException('ZIP 路径在当前文件系统上冲突');
         }
-        await File(target).writeAsBytes(bytes, flush: true);
+        await appFile(target).writeAsBytes(bytes, flush: true);
       }
       final collection = await fromDirectory(directory.path);
       return KnowledgeImportCollection._(collection.paths, directory);

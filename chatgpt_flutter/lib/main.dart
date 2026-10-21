@@ -1,5 +1,8 @@
+import 'package:login_sdk/platform/app_io.dart';
+
 import 'package:chatgpt_app_core/chatgpt_app_core.dart';
 import 'package:chatgpt_app_core/config/app_distribution.dart';
+import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter_splash_screen/flutter_splash_screen.dart';
 import 'package:login_sdk/dao/backend_host.dart';
 import 'package:package_info_plus/package_info_plus.dart';
@@ -12,6 +15,7 @@ Future<void> main() async {
     platformInitializer: _initializePlatform,
     secureStore: FlutterSecureKeyValueStore(),
     afterRunApp: () {
+      if (!Platform.isAndroid && !Platform.isIOS) return;
       Future.delayed(const Duration(milliseconds: 1800), () {
         FlutterSplashScreen.hide();
       });
@@ -20,6 +24,10 @@ Future<void> main() async {
 }
 
 Future<void> _initializePlatform() async {
+  if (kIsWeb && const String.fromEnvironment('BACKEND_HOST').isEmpty) {
+    BackendConfig.host = Uri.base.authority;
+    BackendConfig.useHttps = Uri.base.scheme == 'https';
+  }
   if (DistributionConfig.current == AppDistribution.store) {
     final packageInfo = await PackageInfo.fromPlatform();
     DistributionConfig.validateStore(

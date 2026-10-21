@@ -100,7 +100,7 @@ class StoryPersonaModel {
     final random = Random.secure();
     final timestamp = DateTime.now().microsecondsSinceEpoch.toRadixString(36);
     final entropy =
-        List.generate(3, (_) => random.nextInt(1 << 32).toRadixString(36))
+        List.generate(3, (_) => random.nextInt(0x100000000).toRadixString(36))
             .join();
     return 'persona-$timestamp-$entropy';
   }

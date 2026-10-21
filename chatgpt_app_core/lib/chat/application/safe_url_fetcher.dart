@@ -1,7 +1,6 @@
 import 'dart:async';
 import 'dart:convert';
-import 'dart:io';
-import 'dart:typed_data';
+import 'package:login_sdk/platform/app_io.dart';
 import 'package:chatgpt_app_core/chat/application/tool_execution_scope.dart';
 
 import 'package:chatgpt_app_core/util/public_network_address_policy.dart';
@@ -41,6 +40,9 @@ class SafeUrlFetcher {
         _securityContext = securityContext;
 
   Future<String> fetch(Uri initialUri) async {
+    if (Platform.operatingSystem == 'web') {
+      throw const SafeUrlFetchException('网页端暂不支持此抓取工具，请使用后端工具');
+    }
     final deadline = DateTime.now().add(timeout);
     var uri = initialUri.replace(fragment: '');
     for (var redirects = 0; redirects <= maxRedirects; redirects++) {

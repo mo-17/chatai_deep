@@ -1,5 +1,5 @@
 import 'dart:convert';
-import 'dart:io';
+import 'package:login_sdk/platform/app_io.dart';
 import 'dart:typed_data';
 
 import 'package:chatgpt_app_core/chat/application/assistant_role_card_asset_store.dart';
@@ -406,7 +406,7 @@ class LocalSyncService {
     payload['avatarValue'] = _personaAvatarFallback;
     final path = row['avatarValue']?.toString() ?? '';
     try {
-      final file = File(path);
+      final file = appFile(path);
       if (path.isEmpty || !await file.exists()) {
         return SyncChange(
           entity: persona.entity,

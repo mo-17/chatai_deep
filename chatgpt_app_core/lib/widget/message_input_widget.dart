@@ -1,13 +1,15 @@
+import 'package:login_sdk/platform/app_file_image.dart';
 import 'dart:async';
-import 'dart:io';
+import 'package:login_sdk/platform/app_io.dart';
 
 import 'package:chatgpt_app_core/chat/application/file_processor.dart';
 import 'package:chatgpt_app_core/chat/application/ohos_image_recovery.dart';
 import 'package:chatgpt_app_core/chat/application/composer_reference_trigger.dart';
 import 'package:chatgpt_app_core/chat/domain/composer_reference.dart';
 import 'package:chatgpt_app_core/widget/message_reference_picker.dart';
+import 'package:chatgpt_app_core/platform/picked_file.dart';
 import 'package:chatgpt_app_core/provider/theme_provider.dart';
-import 'package:file_picker/file_picker.dart';
+import 'package:chatgpt_app_core/platform/app_file_picker.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:image_picker/image_picker.dart';
@@ -42,6 +44,7 @@ class MessageInputWidget extends StatefulWidget {
   /// 文件时走「抽文本拼 prompt」降级路径，任何模型都可用。
   final ValueChanged<List<String>>? onFilesPicked;
   final List<String> pendingFiles;
+
   final ValueChanged<int>? onRemoveFile;
 
   /// 联网搜索开关（阶段五）。独立于模型能力位 —— 搜索结果以上下文回填，
@@ -324,10 +327,19 @@ class _MessageInputWidgetState extends State<MessageInputWidget> {
           revision == _editingRevision &&
           generation == _inputGeneration &&
           widget.isReferenceScopeCurrent?.call() != false) {
-        widget.onImagesPicked?.call({
-          ...widget.pendingImages,
-          ...picked.map((file) => file.path)
-        }.toList());
+        final paths = <String>[];
+        for (final file in picked) {
+          paths.add(await materializePickedImage(file));
+        }
+        if (!mounted ||
+            !widget.editingEnabled ||
+            revision != _editingRevision ||
+            generation != _inputGeneration ||
+            widget.isReferenceScopeCurrent?.call() == false) {
+          return false;
+        }
+        widget.onImagesPicked
+            ?.call({...widget.pendingImages, ...paths}.toList());
         return true;
       }
     } catch (e) {
@@ -885,8 +897,8 @@ class _MessageInputWidgetState extends State<MessageInputWidget> {
                         bottom: 0,
                         child: ClipRRect(
                           borderRadius: BorderRadius.circular(12),
-                          child: Image.file(
-                            File(widget.pendingImages[i]),
+                          child: appFileImage(
+                            appFile(widget.pendingImages[i]),
                             width: 48,
                             height: 48,
                             cacheWidth: 144,
@@ -928,8 +940,8 @@ class _MessageInputWidgetState extends State<MessageInputWidget> {
                   children: [
                     ClipRRect(
                       borderRadius: BorderRadius.circular(6),
-                      child: Image.file(
-                        File(widget.pendingImages[i]),
+                      child: appFileImage(
+                        appFile(widget.pendingImages[i]),
                         width: 48,
                         height: 48,
                         cacheWidth: 144,

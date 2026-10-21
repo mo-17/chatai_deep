@@ -1,5 +1,5 @@
 import 'dart:async';
-import 'dart:io';
+import 'package:login_sdk/platform/app_io.dart';
 
 import 'package:chatgpt_app_core/config/app_distribution.dart';
 import 'package:chatgpt_app_core/dao/apk_update_dao.dart';

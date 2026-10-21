@@ -42,6 +42,7 @@ import 'package:provider/provider.dart';
 
 import '../db/hi_db_manager.dart';
 import '../widget/conversation_widget.dart';
+import 'package:chatgpt_app_core/platform/picked_file.dart';
 
 typedef ConversationSearchPageBuilder = Widget Function(
   BuildContext context,
@@ -1353,8 +1354,10 @@ class _ConversationListPageState extends State<ConversationListPage>
       );
       if (!mounted || picked == null) return;
       final oldPath = model.avatarValue;
+      final pickedPath = await materializePickedImage(picked);
+      if (!mounted) return;
       final avatarPath = await AvatarAssetService.saveConversationAvatar(
-          sourcePath: picked.path, cid: model.cid);
+          sourcePath: pickedPath, cid: model.cid);
       await conversationListDao.updateAvatar(
           model, AvatarAssetService.imageType, avatarPath);
       if (oldPath != avatarPath) {

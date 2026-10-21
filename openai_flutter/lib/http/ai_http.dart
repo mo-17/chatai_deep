@@ -3,7 +3,7 @@ import 'dart:convert';
 import 'dart:io';
 
 import 'package:http/http.dart' as http;
-import 'package:http/io_client.dart';
+import 'owned_client.dart';
 import 'package:openai_flutter/http/ai_config.dart';
 import 'package:openai_flutter/http/ai_exception.dart';
 import 'package:openai_flutter/model/ai_stream_chunk.dart';
@@ -313,14 +313,8 @@ class AIHttp {
     }
   }
 
-  static IOClient _createOwnedClient(AIConfigBuilder config) {
-    final httpClient = HttpClient();
-    final proxy = config.proxy;
-    if (proxy != null && proxy.trim().isNotEmpty) {
-      httpClient.findProxy = (uri) => 'PROXY $proxy';
-    }
-    return IOClient(httpClient);
-  }
+  static http.Client _createOwnedClient(AIConfigBuilder config) =>
+      createOwnedAIClient(config.proxy);
 
   static Uri _parseEndpoint(String url) {
     try {

@@ -1,4 +1,4 @@
-import 'dart:io';
+import 'package:login_sdk/platform/app_io.dart';
 import 'dart:typed_data';
 import 'pdf_ocr_result.dart';
 import 'import_operation.dart';
@@ -146,7 +146,7 @@ class KnowledgeFileImporter {
       Uint8List? pdfBytes;
       List<String>? pdfPages;
       if (ext == 'pdf') {
-        pdfBytes = await File(path).readAsBytes();
+        pdfBytes = await appFile(path).readAsBytes();
         check();
         final pdf = PdfDocument(inputBytes: pdfBytes);
         try {

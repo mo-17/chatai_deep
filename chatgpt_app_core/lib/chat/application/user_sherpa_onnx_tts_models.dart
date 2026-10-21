@@ -1,12 +1,12 @@
 import 'dart:convert';
-import 'dart:io';
+import 'package:login_sdk/platform/app_io.dart';
 import 'dart:typed_data';
 
 import 'package:archive/archive_io.dart';
 import 'package:chatgpt_app_core/backup/backup_archive_limits.dart';
 import 'package:chatgpt_app_core/chat/application/sherpa_onnx_tts_assets.dart';
 import 'package:chatgpt_app_core/util/bounded_file_reader.dart';
-import 'package:path_provider/path_provider.dart';
+import 'package:chatgpt_app_core/platform/app_paths.dart';
 
 class UserSherpaOnnxTtsModel {
   final String id;
@@ -67,7 +67,7 @@ class UserSherpaOnnxTtsModelStore {
   }
 
   Future<UserSherpaOnnxTtsModel> installFromDirectory(String sourcePath) async {
-    final source = Directory(sourcePath);
+    final source = appDirectory(sourcePath);
     if (!await source.exists()) {
       throw StateError('模型目录不存在');
     }
@@ -91,12 +91,12 @@ class UserSherpaOnnxTtsModelStore {
   }
 
   Future<UserSherpaOnnxTtsModel> installFromZip(String zipPath) async {
-    final zip = File(zipPath);
+    final zip = appFile(zipPath);
     if (!await zip.exists()) {
       throw StateError('模型 ZIP 不存在');
     }
     final base = await _baseDir();
-    final tmp = Directory(
+    final tmp = appDirectory(
       '${base.path}/tts_models/tmp_import_${DateTime.now().millisecondsSinceEpoch}',
     );
     await tmp.create(recursive: true);
@@ -110,7 +110,7 @@ class UserSherpaOnnxTtsModelStore {
   }
 
   Future<void> _extractZipBounded(File zip, Directory target) async {
-    final type = await FileSystemEntity.type(zip.path, followLinks: false);
+    final type = await appFileType(zip.path, followLinks: false);
     if (type == FileSystemEntityType.link) {
       throw const FormatException('TTS 模型 ZIP 不允许使用符号链接');
     }
@@ -143,11 +143,11 @@ class UserSherpaOnnxTtsModelStore {
           if (header.uncompressedSize != 0) {
             throw const FormatException('TTS 模型 ZIP 目录 entry 大小不合法');
           }
-          await Directory(targetPath).create(recursive: true);
+          await appDirectory(targetPath).create(recursive: true);
           continue;
         }
 
-        await File(targetPath).parent.create(recursive: true);
+        await appFile(targetPath).parent.create(recursive: true);
         final sink = _BoundedTtsFileSink(
           targetPath,
           outputBudget,
@@ -180,7 +180,7 @@ class UserSherpaOnnxTtsModelStore {
   ) async {
     final id = idFromVoiceStyle(voiceStyle);
     if (id == null) throw StateError('不是用户 sherpa-onnx 模型');
-    final root = Directory('${(await _modelsRoot()).path}/$id');
+    final root = appDirectory('${(await _modelsRoot()).path}/$id');
     final model = await _readModel(root);
     return InstalledSherpaOnnxTtsModel(
       id: model.id,
@@ -191,7 +191,7 @@ class UserSherpaOnnxTtsModelStore {
 
   Future<Directory> _modelsRoot() async {
     final base = await _baseDir();
-    final root = Directory('${base.path}/tts_models/user_sherpa');
+    final root = appDirectory('${base.path}/tts_models/user_sherpa');
     await root.create(recursive: true);
     return root;
   }
@@ -209,8 +209,8 @@ class UserSherpaOnnxTtsModelStore {
   }
 
   Future<SherpaOnnxTtsManifest> _readManifest(Directory root) async {
-    final file = File('${root.path}/manifest.json');
-    if (await FileSystemEntity.type(file.path, followLinks: false) !=
+    final file = appFile('${root.path}/manifest.json');
+    if (await appFileType(file.path, followLinks: false) !=
         FileSystemEntityType.file) {
       throw StateError('模型目录缺少 manifest.json');
     }
@@ -248,8 +248,8 @@ class UserSherpaOnnxTtsModelStore {
   ) async {
     final missing = <String>[];
     for (final relative in manifest.requiredRelativePaths) {
-      final file = File('${root.path}/$relative');
-      if (await FileSystemEntity.type(file.path, followLinks: false) !=
+      final file = appFile('${root.path}/$relative');
+      if (await appFileType(file.path, followLinks: false) !=
               FileSystemEntityType.file ||
           await file.length() <= 0) {
         missing.add(relative);
@@ -257,8 +257,8 @@ class UserSherpaOnnxTtsModelStore {
     }
     final dictDir = manifest.dictDir;
     if (dictDir != null && dictDir.isNotEmpty) {
-      final dir = Directory('${root.path}/$dictDir');
-      if (await FileSystemEntity.type(dir.path, followLinks: false) !=
+      final dir = appDirectory('${root.path}/$dictDir');
+      if (await appFileType(dir.path, followLinks: false) !=
           FileSystemEntityType.directory) {
         missing.add(dictDir);
       }
@@ -270,9 +270,9 @@ class UserSherpaOnnxTtsModelStore {
 
   Future<Directory> _uniqueTarget(String id) async {
     final root = await _modelsRoot();
-    var candidate = Directory('${root.path}/$id');
+    var candidate = appDirectory('${root.path}/$id');
     if (!await candidate.exists()) return candidate;
-    candidate = Directory(
+    candidate = appDirectory(
         '${root.path}/${id}_${DateTime.now().millisecondsSinceEpoch}');
     return candidate;
   }
@@ -283,9 +283,9 @@ class UserSherpaOnnxTtsModelStore {
       final relative = entity.path.substring(source.path.length + 1);
       final targetPath = '${target.path}/$relative';
       if (entity is Directory) {
-        await Directory(targetPath).create(recursive: true);
+        await appDirectory(targetPath).create(recursive: true);
       } else if (entity is File) {
-        await File(targetPath).parent.create(recursive: true);
+        await appFile(targetPath).parent.create(recursive: true);
         await entity.copy(targetPath);
       }
     }
@@ -300,12 +300,12 @@ class UserSherpaOnnxTtsModelStore {
       if (entries > importArchiveLimits.maxEntries) {
         throw const FormatException('TTS 模型目录文件数量过多');
       }
-      final type = await FileSystemEntity.type(entity.path, followLinks: false);
+      final type = await appFileType(entity.path, followLinks: false);
       if (type == FileSystemEntityType.link) {
         throw const FormatException('TTS 模型目录不允许包含符号链接');
       }
       if (type != FileSystemEntityType.file) continue;
-      final bytes = await File(entity.path).length();
+      final bytes = await appFile(entity.path).length();
       if (bytes > importArchiveLimits.maxEntryUncompressedBytes) {
         throw const FormatException('TTS 模型单文件过大');
       }
@@ -317,12 +317,12 @@ class UserSherpaOnnxTtsModelStore {
   }
 
   Future<Directory> _findModelRoot(Directory root) async {
-    final selfManifest = File('${root.path}/manifest.json');
+    final selfManifest = appFile('${root.path}/manifest.json');
     if (await selfManifest.exists()) return root;
     final candidates = <Directory>[];
     await for (final entity in root.list(recursive: true, followLinks: false)) {
       if (entity is Directory &&
-          await File('${entity.path}/manifest.json').exists()) {
+          await appFile('${entity.path}/manifest.json').exists()) {
         candidates.add(entity);
       }
     }

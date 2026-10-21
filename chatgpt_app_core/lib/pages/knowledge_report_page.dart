@@ -1,11 +1,11 @@
-import 'dart:io';
+import 'package:login_sdk/platform/app_io.dart';
 import 'package:chatgpt_app_core/chat/application/creative_file_transfer_gateway.dart';
 import 'package:chatgpt_app_core/knowledge/knowledge_evidence.dart';
 import 'package:chatgpt_app_core/knowledge/knowledge_report.dart';
 import 'package:chatgpt_app_core/dao/ai_catalog_dao.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
-import 'package:path_provider/path_provider.dart';
+import 'package:chatgpt_app_core/platform/app_paths.dart';
 import 'package:share_plus/share_plus.dart';
 
 class KnowledgeReportPage extends StatefulWidget {
@@ -55,7 +55,7 @@ class _KnowledgeReportPageState extends State<KnowledgeReportPage> {
         return;
       }
       final dir = await getTemporaryDirectory();
-      final file = File(
+      final file = appFile(
           '${dir.path}/aipu-report-${DateTime.now().microsecondsSinceEpoch}.${pdf ? 'pdf' : 'docx'}');
       temporary = file;
       await file.writeAsBytes(bytes, flush: true);

@@ -1,7 +1,7 @@
 import 'dart:convert';
-import 'dart:io';
+import 'package:login_sdk/platform/app_io.dart';
 import 'package:flutter_hi_cache/flutter_hi_cache.dart';
-import 'package:path_provider/path_provider.dart';
+import 'package:chatgpt_app_core/platform/app_paths.dart';
 import 'package:sqflite_common_ffi/sqflite_ffi.dart';
 import 'ohos_storage_service.dart' show StorageCandidate;
 import '../util/bounded_file_reader.dart';
@@ -21,7 +21,7 @@ class LocalMediaReferences {
       this.maxBytes = 64 * 1024 * 1024,
       this.maxEntries = 20000})
       : databases =
-            databases ?? (() async => Directory(await getDatabasesPath())),
+            databases ?? (() async => appDirectory(await getDatabasesPath())),
         documents = documents ??
             (() async => [
                   await getApplicationDocumentsDirectory(),
@@ -107,7 +107,7 @@ class LocalMediaReferences {
 
   static String _identifier(String value) => '"${value.replaceAll('"', '""')}"';
   static Future<void> _checkDirectory(Directory root) async {
-    final type = await FileSystemEntity.type(root.path, followLinks: false);
+    final type = await appFileType(root.path, followLinks: false);
     if (type != FileSystemEntityType.notFound &&
         type != FileSystemEntityType.directory) {
       throw StateError('引用目录不可用');

@@ -1,7 +1,7 @@
 import 'package:chatgpt_app_core/db/hi_db_manager.dart';
 import 'package:chatgpt_app_core/db/table_name.dart';
 import 'package:chatgpt_app_core/model/semantic_chat_summary.dart';
-import 'package:sqflite_common_ffi/sqflite_ffi.dart';
+import 'package:chatgpt_app_core/db/database_platform.dart';
 
 abstract class SemanticChatSummaryStore {
   Future<SemanticChatSummary?> get(int cid, String sourceFingerprint);

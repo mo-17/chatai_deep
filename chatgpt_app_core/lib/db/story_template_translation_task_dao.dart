@@ -1,5 +1,5 @@
 import 'dart:convert';
-import 'package:sqflite_common_ffi/sqflite_ffi.dart' show DatabaseExecutor;
+import 'package:chatgpt_app_core/db/database_platform.dart' show DatabaseExecutor;
 import 'package:chatgpt_app_core/chat/application/backend_selection_probe.dart';
 import 'package:chatgpt_app_core/chat/domain/backend_selection.dart';
 import 'package:chatgpt_app_core/chat/domain/translation_request_profile.dart';

@@ -1042,7 +1042,7 @@ class AgentWorkflowDao implements IAgentWorkflowStore, ITable {
                         completionTokens -
                         (a.single['estimatedInput'] as int) -
                         (a.single['reservedOutput'] as int))
-                    .clamp(0, 1 << 40);
+                    .clamp(0, 0x10000000000);
         return _update(tx, w, {
           'state': ok ? 'running' : 'paused',
           'reason': ok ? null : (reason ?? '请求未完成，需明确继续'),

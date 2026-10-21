@@ -1,5 +1,5 @@
 import 'dart:async';
-import 'dart:io';
+import 'package:login_sdk/platform/app_io.dart';
 
 import 'package:flutter/services.dart';
 

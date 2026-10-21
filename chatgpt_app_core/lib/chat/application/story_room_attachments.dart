@@ -1,4 +1,4 @@
-import 'dart:io';
+import 'package:login_sdk/platform/app_io.dart';
 
 import 'package:chatgpt_app_core/chat/application/attachment_batch_budget.dart';
 import 'package:chatgpt_app_core/chat/application/file_processor.dart';
@@ -97,7 +97,7 @@ class StoryRoomAttachmentService {
       for (final path in images) {
         checkCancelled();
         try {
-          if (await File(path).exists()) {
+          if (await appFile(path).exists()) {
             imageData.add(await FileProcessor.encodeImage(path,
                 batchBudget: reuseExtractedContext ? null : budget,
                 onSnapshot: reuseExtractedContext ? null : savedImagePaths.add,

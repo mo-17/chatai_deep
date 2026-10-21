@@ -1,8 +1,8 @@
 import 'dart:convert';
-import 'dart:io';
+import 'package:login_sdk/platform/app_io.dart';
 import 'dart:typed_data';
 
-import 'package:file_picker/file_picker.dart';
+import 'package:chatgpt_app_core/platform/app_file_picker.dart';
 
 typedef CreativePickFiles = Future<FilePickerResult?> Function({
   String? dialogTitle,
@@ -217,5 +217,5 @@ class CreativeFileTransferGateway {
   }
 
   static Future<Uint8List> _readFileBytes(String path) async =>
-      Uint8List.fromList(await File(path).readAsBytes());
+      Uint8List.fromList(await appFile(path).readAsBytes());
 }

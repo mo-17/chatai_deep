@@ -1,4 +1,4 @@
-import 'dart:io';
+import 'package:login_sdk/platform/app_io.dart';
 
 import 'package:chatgpt_app_core/model/assistant_model.dart';
 import 'package:chatgpt_app_core/theme/starcore_icon_assets.dart';
@@ -27,7 +27,7 @@ abstract final class AssistantAvatarBytes {
     }
     if (type != AvatarAssetService.imageType || value.isEmpty) return null;
     try {
-      return await File(value).readAsBytes();
+      return await appFile(value).readAsBytes();
     } on FileSystemException {
       return null;
     }

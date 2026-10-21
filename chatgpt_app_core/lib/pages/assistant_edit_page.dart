@@ -2,7 +2,8 @@ import 'package:chatgpt_app_core/chat/domain/backend_selection.dart';
 import 'package:chatgpt_app_core/dao/ai_catalog_dao.dart';
 import 'package:chatgpt_app_core/widget/backend_selection_picker.dart';
 import 'dart:async';
-import 'dart:io';
+import 'package:login_sdk/platform/app_io.dart';
+import 'package:chatgpt_app_core/platform/picked_file.dart';
 
 import 'package:chatgpt_app_core/chat/application/assistant_management_session.dart';
 import 'package:chatgpt_app_core/chat/application/assistant_operation_scope.dart';
@@ -1278,7 +1279,8 @@ class _AssistantEditPageState extends State<AssistantEditPage> {
           maxHeight: 512);
       session.scope.verify();
       if (!mounted || picked == null) return;
-      final bytes = await readFileBytesBounded(File(picked.path),
+      final pickedPath = await materializePickedImage(picked);
+      final bytes = await readFileBytesBounded(appFile(pickedPath),
           maxBytes: AssistantRoleCardService.maxImportBytes, label: '角色头像');
       session.scope.verify();
       // 每次选择只创建自己的文件，不复用选择器给出的其他账号托管路径。
@@ -1286,7 +1288,7 @@ class _AssistantEditPageState extends State<AssistantEditPage> {
           bytes: bytes,
           assistantName: 'operation_${generateUuidV4()}',
           extension:
-              picked.path.toLowerCase().endsWith('.png') ? '.png' : '.jpg',
+              pickedPath.toLowerCase().endsWith('.png') ? '.png' : '.jpg',
           accountHash: session.scope.accountHash);
       owned = path;
       _ownedAvatarPaths.add(path);

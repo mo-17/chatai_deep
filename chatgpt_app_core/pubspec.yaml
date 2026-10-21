@@ -1,10 +1,11 @@
 name: chatgpt_app_core
-description: 业务核心：UI / DAO / Provider / Util，三端共享
+description: 业务核心：UI / DAO / Provider / Util，多端共享
 version: 0.0.1
 publish_to: 'none'
 
 environment:
-  sdk: '>=3.0.0 <4.0.0'
+  # 与 SQLite Web 依赖的实际最低 SDK 要求保持一致。
+  sdk: '>=3.5.0 <4.0.0'
 
 dependencies:
   flutter:
@@ -19,6 +20,8 @@ dependencies:
     path: ../openai_flutter
   sqflite: ^2.4.0
   sqflite_common_ffi: ^2.3.0
+  # 与现有 sqlite3 2.x / Dart 3.9 保持兼容，浏览器数据库持久化到 IndexedDB。
+  sqflite_common_ffi_web: 0.4.5+4
   flutter_hi_cache: ^0.0.1
   provider: ^6.1.5+1
   url_launcher: ^6.3.2

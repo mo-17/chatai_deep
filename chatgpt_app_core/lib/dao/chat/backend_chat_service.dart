@@ -3,7 +3,7 @@ import 'package:chatgpt_app_core/chat/application/backend_request_selection.dart
 import 'package:chatgpt_app_core/chat/domain/backend_selection.dart';
 import 'package:chatgpt_app_core/chat/domain/backend_selection_error.dart';
 import 'dart:convert';
-import 'dart:io';
+import 'package:login_sdk/platform/app_io.dart';
 
 import 'package:chatgpt_app_core/chat/application/reasoning_control_adapter.dart';
 import 'package:chatgpt_app_core/chat/application/chat_request_recovery.dart';

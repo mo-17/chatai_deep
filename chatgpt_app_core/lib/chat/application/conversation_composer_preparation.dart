@@ -1,6 +1,6 @@
 import 'dart:async';
 import 'dart:convert';
-import 'dart:io';
+import 'package:login_sdk/platform/app_io.dart';
 import 'package:crypto/crypto.dart';
 import 'package:chatgpt_app_core/chat/application/attachment_batch_budget.dart';
 import 'package:chatgpt_app_core/chat/application/chat_block_store.dart';
@@ -311,8 +311,8 @@ final class _GenerationResources {
       required void Function(int) consumeBytes,
       String? expectedDigest}) async {
     _verify();
-    final source = File(sourcePath);
-    if (await FileSystemEntity.type(sourcePath, followLinks: false) !=
+    final source = appFile(sourcePath);
+    if (await appFileType(sourcePath, followLinks: false) !=
         FileSystemEntityType.file) {
       throw const DraftStorageException('附件不可用');
     }
@@ -321,7 +321,7 @@ final class _GenerationResources {
         await readFileBytesBounded(source, maxBytes: maxBytes, label: '发送快照');
     final after = await source.stat();
     _verify();
-    if (await FileSystemEntity.type(sourcePath, followLinks: false) !=
+    if (await appFileType(sourcePath, followLinks: false) !=
             FileSystemEntityType.file ||
         before.modified != after.modified ||
         before.changed != after.changed ||
@@ -342,7 +342,7 @@ final class _GenerationResources {
       'generations',
       run.runId
     ];
-    _directory = Directory('${_root!.path}/${segments.join('/')}');
+    _directory = appDirectory('${_root!.path}/${segments.join('/')}');
     final directory = await AccountResourceScope.createManagedDirectory(
         root: _root!,
         relativeSegments: [...segments, digest],
@@ -355,11 +355,11 @@ final class _GenerationResources {
         RegExp(r'[\x00-\x1f\x7f]').hasMatch(name)) {
       throw const DraftStorageException('附件名称无效');
     }
-    final target = File('${directory.path}/$name');
+    final target = appFile('${directory.path}/$name');
     await AccountResourceScope.ensureNoLinks(
         root: _root!, relativeSegments: [...segments, digest, name]);
     _verify();
-    final type = await FileSystemEntity.type(target.path, followLinks: false);
+    final type = await appFileType(target.path, followLinks: false);
     _verify();
     if (type == FileSystemEntityType.notFound) {
       await target.create(exclusive: true);
@@ -381,7 +381,7 @@ final class _GenerationResources {
     _verify();
     final digest = _digests[source.path];
     if (digest == null ||
-        await FileSystemEntity.type(source.path, followLinks: false) !=
+        await appFileType(source.path, followLinks: false) !=
             FileSystemEntityType.file ||
         !await AccountResourceScope.isCanonicalWithin(source, _directory!)) {
       throw const DraftStorageException('附件不属于本次运行');
@@ -389,7 +389,7 @@ final class _GenerationResources {
     final bytes =
         await readFileBytesBounded(source, maxBytes: maxBytes, label: '发送快照');
     _verify();
-    if (await FileSystemEntity.type(source.path, followLinks: false) !=
+    if (await appFileType(source.path, followLinks: false) !=
             FileSystemEntityType.file ||
         sha256.convert(bytes).toString() != digest) {
       throw const DraftStorageException('快照已变化');
@@ -415,7 +415,7 @@ final class _GenerationResources {
         'generations',
         run.runId
       ]);
-      if (await FileSystemEntity.type(_directory!.path, followLinks: false) ==
+      if (await appFileType(_directory!.path, followLinks: false) ==
           FileSystemEntityType.directory) {
         await _directory!
             .delete(recursive: true)

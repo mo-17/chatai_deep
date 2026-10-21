@@ -1,4 +1,4 @@
-import 'dart:io';
+import 'package:login_sdk/platform/app_io.dart';
 import 'dart:math';
 import 'dart:typed_data';
 
@@ -16,28 +16,28 @@ final class ManagedAttachmentStore {
 
   static Directory get rootDirectory =>
       debugRootDirectory ??
-      Directory('${Directory.systemTemp.path}/chatai_attachment_files');
+      appDirectory('${appTemporaryDirectory.path}/chatai_attachment_files');
 
   /// 返回经 no-follow 校验的可信目录。固定根若被本机其他进程预置为链接，
   /// 必须拒绝而不是沿链接获得任意文件读写能力。
   static Future<Directory> ensureRootDirectory() async {
     final root = rootDirectory;
-    var type = await FileSystemEntity.type(root.path, followLinks: false);
+    var type = await appFileType(root.path, followLinks: false);
     if (type == FileSystemEntityType.notFound) {
       await root.create(recursive: true);
-      type = await FileSystemEntity.type(root.path, followLinks: false);
+      type = await appFileType(root.path, followLinks: false);
     }
     if (type != FileSystemEntityType.directory) {
       throw const FormatException('附件安全目录不可用');
     }
-    return Directory(await root.resolveSymbolicLinks());
+    return appDirectory(await root.resolveSymbolicLinks());
   }
 
   static Future<String> importFile(
     File source, {
     int maxBytes = maxAttachmentBytes,
   }) async {
-    final type = await FileSystemEntity.type(source.path, followLinks: false);
+    final type = await appFileType(source.path, followLinks: false);
     if (type == FileSystemEntityType.link) {
       throw const FormatException('附件不允许使用符号链接');
     }
@@ -53,9 +53,9 @@ final class ManagedAttachmentStore {
     final extension = _safeExtension(source.path);
     final digest = sha256.convert(bytes);
     final name = '$digest$extension';
-    final target = File('${root.path}/$name');
+    final target = appFile('${root.path}/$name');
     final targetType =
-        await FileSystemEntity.type(target.path, followLinks: false);
+        await appFileType(target.path, followLinks: false);
     if (targetType == FileSystemEntityType.file) {
       final existing = await readFileBytesBounded(
         target,
@@ -75,7 +75,7 @@ final class ManagedAttachmentStore {
     final suffix = List<int>.generate(16, (_) => random.nextInt(256))
         .map((byte) => byte.toRadixString(16).padLeft(2, '0'))
         .join();
-    final temporary = File('${root.path}/.$name.$suffix.tmp');
+    final temporary = appFile('${root.path}/.$name.$suffix.tmp');
     try {
       await temporary.create(exclusive: true);
       await temporary.writeAsBytes(bytes, flush: true);
@@ -83,7 +83,7 @@ final class ManagedAttachmentStore {
       await temporary.rename(target.path);
     } on FileSystemException {
       final concurrentType =
-          await FileSystemEntity.type(target.path, followLinks: false);
+          await appFileType(target.path, followLinks: false);
       if (concurrentType != FileSystemEntityType.file) rethrow;
       final existing = await readFileBytesBounded(
         target,
@@ -104,10 +104,10 @@ final class ManagedAttachmentStore {
     if (path == null || path.isEmpty) return null;
     final rawRoot = rootDirectory;
     final rootType =
-        await FileSystemEntity.type(rawRoot.path, followLinks: false);
+        await appFileType(rawRoot.path, followLinks: false);
     if (rootType != FileSystemEntityType.directory) return null;
-    final candidate = File(path);
-    if (await FileSystemEntity.type(candidate.path, followLinks: false) !=
+    final candidate = appFile(path);
+    if (await appFileType(candidate.path, followLinks: false) !=
         FileSystemEntityType.file) {
       return null;
     }
@@ -119,7 +119,7 @@ final class ManagedAttachmentStore {
           : '$rootCanonical${Platform.pathSeparator}';
       if (!fileCanonical.startsWith(prefix)) return null;
       return await readFileBytesBounded(
-        File(fileCanonical),
+        appFile(fileCanonical),
         maxBytes: maxBytes,
         label: '附件',
       );

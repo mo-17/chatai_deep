@@ -32,6 +32,12 @@ dependency_overrides:
       url: https://gitee.com/openharmony-sig/flutter_sqflite.git
       path: sqflite_common_ffi
       ref: 0bd638a416215b9ab74f21eef98e14797827df04
+  # Web 实现的 hosted 依赖也统一到现有 OHOS 分支；OHOS 不编译 Web 实现。
+  sqflite_common:
+    git:
+      url: https://gitee.com/openharmony-sig/flutter_sqflite.git
+      path: sqflite_common
+      ref: 0bd638a416215b9ab74f21eef98e14797827df04
   path_provider:
     git:
       url: https://gitee.com/openharmony-sig/flutter_packages.git

@@ -1,11 +1,11 @@
 import 'dart:convert';
-import 'dart:io';
+import 'package:login_sdk/platform/app_io.dart';
 import 'dart:isolate';
 import 'package:chatgpt_app_core/chat/application/sherpa_onnx_tts_assets.dart';
 import 'package:chatgpt_app_core/chat/application/user_sherpa_onnx_tts_models.dart';
 import 'package:hi_download/hi_download.dart';
 import 'package:http/http.dart' as http;
-import 'package:path_provider/path_provider.dart';
+import 'package:chatgpt_app_core/platform/app_paths.dart';
 
 class DownloadableTtsModel {
   final String id, title, url, sha256;
@@ -73,7 +73,7 @@ class DownloadableTtsModelStore {
     if (id != BundledSherpaOnnxTtsModel.matchaZhBaker.id) return null;
     try {
       final pointer = jsonDecode(
-          await File('${(await baseDir()).path}/tts_models/official-model.json')
+          await appFile('${(await baseDir()).path}/tts_models/official-model.json')
               .readAsString()) as Map;
       final style = pointer['voiceStyle'];
       if (style is! String ||
@@ -101,22 +101,22 @@ class DownloadableTtsModelStore {
         fileName: '${model.id}-${model.sha256.substring(0, 12)}.zip',
         expectedSha256: model.sha256,
         directoryProvider: () async =>
-            Directory('${base.path}/tts_models/downloads'),
+            appDirectory('${base.path}/tts_models/downloads'),
         cancellationToken: token,
         client: client,
         maxBytes: model.bytes,
         listener: listener);
     final basePath = base.path;
     final installed = await Isolate.run(() =>
-        UserSherpaOnnxTtsModelStore(baseDir: () async => Directory(basePath))
+        UserSherpaOnnxTtsModelStore(baseDir: () async => appDirectory(basePath))
             .installFromZip(path));
-    final pointer = File('${base.path}/tts_models/official-model.json');
-    final pending = File('${pointer.path}.new');
+    final pointer = appFile('${base.path}/tts_models/official-model.json');
+    final pending = appFile('${pointer.path}.new');
     await pending.writeAsString(
         jsonEncode(
             {'voiceStyle': installed.voiceStyleId, 'sha256': model.sha256}),
         flush: true);
     await pending.rename(pointer.path);
-    await File(path).delete();
+    await appFile(path).delete();
   }
 }

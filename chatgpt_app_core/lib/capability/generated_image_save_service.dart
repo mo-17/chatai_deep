@@ -1,13 +1,13 @@
 import 'dart:async';
 import 'dart:convert';
-import 'dart:io';
+import 'package:login_sdk/platform/app_io.dart';
 import 'dart:math';
 
 import 'package:chatgpt_app_core/capability/product_capabilities.dart';
 import 'package:chatgpt_app_core/util/account_resource_scope.dart';
 import 'package:flutter/foundation.dart';
 import 'package:http/http.dart' as http;
-import 'package:path_provider/path_provider.dart';
+import 'package:chatgpt_app_core/platform/app_paths.dart';
 
 typedef ImageSaveDirectoryResolver = Future<Directory> Function();
 typedef ImageSaveCleanupObserver = FutureOr<void> Function();
@@ -78,7 +78,7 @@ class GeneratedImageSaveService {
             targetDir.path,
           );
         }
-        final target = File('${targetDir.path}/$filename');
+        final target = appFile('${targetDir.path}/$filename');
         if (!await AccountResourceScope.isCanonicalDirectChild(
           target,
           targetDir,
@@ -165,7 +165,7 @@ class GeneratedImageSaveService {
       relativeSegments: relativeSegments,
     );
     verifyAccount();
-    final directoryType = await FileSystemEntity.type(
+    final directoryType = await appFileType(
       directory.path,
       followLinks: false,
     );
@@ -192,7 +192,7 @@ class GeneratedImageSaveService {
         relativeSegments: [...relativeSegments, name],
       );
       verifyAccount();
-      final type = await FileSystemEntity.type(entity.path, followLinks: false);
+      final type = await appFileType(entity.path, followLinks: false);
       verifyAccount();
       final directChild = type == FileSystemEntityType.file &&
           await AccountResourceScope.isCanonicalDirectChild(
@@ -248,7 +248,7 @@ class GeneratedImageSaveService {
           resourceDirectoryName: albumDirectoryName,
           accountHash: resolvedAccountHash,
         );
-        final file = File(path).absolute;
+        final file = appFile(path).absolute;
         final filename = _basename(file.path);
         late final Directory allowedDirectory;
         late final List<String> directorySegments;
@@ -271,7 +271,7 @@ class GeneratedImageSaveService {
           root: legacyRoot,
           relativeSegments: [...directorySegments, filename],
         );
-        final type = await FileSystemEntity.type(file.path, followLinks: false);
+        final type = await appFileType(file.path, followLinks: false);
         if (type == FileSystemEntityType.notFound) return false;
         if (type != FileSystemEntityType.file ||
             !await AccountResourceScope.isCanonicalDirectChild(
@@ -299,14 +299,14 @@ class GeneratedImageSaveService {
     File? backup;
     try {
       await temp.writeAsBytes(bytes, flush: true);
-      if (await FileSystemEntity.type(temp.path, followLinks: false) !=
+      if (await appFileType(temp.path, followLinks: false) !=
           FileSystemEntityType.file) {
         throw FileSystemException(
             'temporary image is not a regular file', temp.path);
       }
 
       final targetType =
-          await FileSystemEntity.type(target.path, followLinks: false);
+          await appFileType(target.path, followLinks: false);
       if (targetType == FileSystemEntityType.link ||
           (targetType != FileSystemEntityType.file &&
               targetType != FileSystemEntityType.notFound)) {
@@ -316,14 +316,14 @@ class GeneratedImageSaveService {
         );
       }
       if (targetType == FileSystemEntityType.file) {
-        backup = File(await _unusedSiblingPath(target, 'backup'));
+        backup = appFile(await _unusedSiblingPath(target, 'backup'));
         await target.rename(backup.path);
       }
       try {
         await temp.rename(target.path);
       } catch (error, stackTrace) {
         if (backup != null &&
-            await FileSystemEntity.type(target.path, followLinks: false) ==
+            await appFileType(target.path, followLinks: false) ==
                 FileSystemEntityType.notFound) {
           await backup.rename(target.path);
           backup = null;
@@ -341,7 +341,7 @@ class GeneratedImageSaveService {
         backup = null;
       }
     } finally {
-      if (await FileSystemEntity.type(temp.path, followLinks: false) ==
+      if (await appFileType(temp.path, followLinks: false) ==
           FileSystemEntityType.file) {
         await temp.delete();
       }
@@ -354,7 +354,7 @@ class GeneratedImageSaveService {
   ) async {
     for (var attempt = 0; attempt < 16; attempt++) {
       final path = await _unusedSiblingPath(target, label);
-      final file = File(path);
+      final file = appFile(path);
       try {
         await file.create(exclusive: true);
         return file;
@@ -371,9 +371,9 @@ class GeneratedImageSaveService {
   static Future<String> _unusedSiblingPath(File target, String label) async {
     for (var attempt = 0; attempt < 16; attempt++) {
       final nonce = '${DateTime.now().microsecondsSinceEpoch}-'
-          '${Random.secure().nextInt(1 << 32)}';
+          '${Random.secure().nextInt(0x100000000)}';
       final candidate = '${target.path}.$label.$nonce';
-      if (await FileSystemEntity.type(candidate, followLinks: false) ==
+      if (await appFileType(candidate, followLinks: false) ==
           FileSystemEntityType.notFound) {
         return candidate;
       }
@@ -404,7 +404,7 @@ class GeneratedImageSaveService {
         if (ownsClient) httpClient.close();
       }
     }
-    final file = File(source);
+    final file = appFile(source);
     if (!file.existsSync()) {
       throw FileSystemException('image source not found', source);
     }

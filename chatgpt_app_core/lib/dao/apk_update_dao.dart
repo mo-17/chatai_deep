@@ -1,6 +1,6 @@
 import 'dart:convert';
-import 'dart:io';
-import 'dart:ffi';
+import 'package:login_sdk/platform/app_io.dart';
+import 'update_abi.dart';
 import 'dart:math';
 import 'package:flutter_hi_cache/flutter_hi_cache.dart';
 
@@ -12,12 +12,7 @@ import 'package:login_sdk/dao/header_util.dart';
 import 'package:package_info_plus/package_info_plus.dart';
 
 class ApkUpdateDao {
-  static String _currentAbi() => switch (Abi.current()) {
-        Abi.androidArm64 => 'arm64-v8a',
-        Abi.androidArm => 'armeabi-v7a',
-        Abi.androidX64 => 'x86_64',
-        _ => '',
-      };
+  static String _currentAbi() => currentUpdateAbi();
   static String _installationId() {
     final cache = HiCache.getInstance();
     final existing = cache.get('update_installation_id_v1')?.toString();

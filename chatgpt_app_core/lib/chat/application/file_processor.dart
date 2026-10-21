@@ -1,6 +1,6 @@
 import 'dart:async';
 import 'dart:convert';
-import 'dart:io';
+import 'package:login_sdk/platform/app_io.dart';
 import 'dart:typed_data';
 
 import 'package:chatgpt_app_core/chat/application/attachment_batch_budget.dart';
@@ -144,12 +144,12 @@ class FileProcessor {
     final Uint8List bytes;
     String? managedPath;
     if (budget == null) {
-      bytes = await readFileBytesBounded(File(path),
+      bytes = await readFileBytesBounded(appFile(path),
           maxBytes: maxImageBytes, label: '图片附件');
     } else {
       // 编码与历史持久化使用同一份快照，原路径后续增长不会改变本轮附件。
       final snapshot =
-          await budget.snapshotFile(File(path), maxBytes: maxImageBytes);
+          await budget.snapshotFile(appFile(path), maxBytes: maxImageBytes);
       bytes = snapshot.bytes;
       managedPath = snapshot.path;
     }
@@ -226,7 +226,7 @@ class FileProcessor {
     for (var index = 0; index < paths.length; index++) {
       await cancellation.checkpoint();
       final path = paths[index];
-      final file = File(path);
+      final file = appFile(path);
       final name = path.split(Platform.pathSeparator).last;
       final ext = name.split('.').last.toLowerCase();
       reportChatSendProgress(
@@ -588,14 +588,14 @@ class FileProcessor {
     final ext = path.split('.').last.toLowerCase();
     final effectiveLimits = limits.normalized;
     if (ext == 'pdf') {
-      return _extractPdfText(File(path), limits: effectiveLimits);
+      return _extractPdfText(appFile(path), limits: effectiveLimits);
     }
     if (_textExts.contains(ext)) {
-      return _readTextFile(File(path), limits: effectiveLimits);
+      return _readTextFile(appFile(path), limits: effectiveLimits);
     }
     if (OfficeTextExtractor.isOfficeFile(path)) {
       // 导入失败必须由调用方报告，不能把失败提示当成知识库正文保存。
-      final extraction = await _readOfficeFile(File(path),
+      final extraction = await _readOfficeFile(appFile(path),
           filename: path.split(RegExp(r'[/\\]')).last, limits: effectiveLimits);
       return _officeContent(extraction, effectiveLimits).text;
     }
@@ -607,7 +607,7 @@ class FileProcessor {
   static Future<void> validateKnowledgeImportFile(String path,
       {AttachmentProcessingLimits limits =
           const AttachmentProcessingLimits()}) async {
-    final file = File(path);
+    final file = appFile(path);
     final ext = path.split('.').last.toLowerCase();
     final maxBytes = ext == 'pdf'
         ? defaultPdfLimit
