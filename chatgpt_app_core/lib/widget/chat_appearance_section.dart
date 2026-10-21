@@ -1,5 +1,5 @@
-import 'package:chat_message/models/message_model.dart';
-import 'package:chat_message/widget/default_message_widget.dart';
+import 'package:chatgpt_app_core/pages/chat_decoration_page.dart';
+import 'package:chatgpt_app_core/widget/chat_decoration_preview.dart';
 import 'package:chatgpt_app_core/provider/theme_provider.dart';
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
@@ -16,6 +16,22 @@ class ChatAppearanceSection extends StatelessWidget {
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
         Text('对话气泡', style: theme.textTheme.titleMedium),
+        const SizedBox(height: 12),
+        ListTile(
+          key: const ValueKey('open_chat_decoration'),
+          contentPadding:
+              const EdgeInsets.symmetric(horizontal: 14, vertical: 6),
+          shape:
+              RoundedRectangleBorder(borderRadius: BorderRadius.circular(18)),
+          tileColor: theme.colorScheme.primaryContainer.withValues(alpha: .32),
+          leading: Icon(Icons.auto_awesome_outlined,
+              color: theme.colorScheme.primary),
+          title: const Text('聊天装扮'),
+          subtitle: const Text('6 款气泡 · 6 款头像框，两侧自由搭配'),
+          trailing: const Icon(Icons.chevron_right_rounded),
+          onTap: () => Navigator.of(context).push(MaterialPageRoute<void>(
+              builder: (_) => const ChatDecorationPage())),
+        ),
         const SizedBox(height: 6),
         Text(
           '设置立即生效，下次打开仍会保留。正文可直接框选复制。',
@@ -65,41 +81,7 @@ class ChatAppearanceSection extends StatelessWidget {
             },
           ),
         const SizedBox(height: 8),
-        Container(
-          key: const ValueKey('chat_appearance_preview'),
-          padding: const EdgeInsets.all(12),
-          decoration: BoxDecoration(
-            color: theme.colorScheme.surfaceContainerLow,
-            borderRadius: BorderRadius.circular(16),
-            border: Border.all(color: theme.colorScheme.outlineVariant),
-          ),
-          child: Column(
-            children: [
-              for (final isUser in [true, false])
-                DefaultMessageWidget(
-                  key: GlobalKey(),
-                  message: MessageModel(
-                    ownerType: isUser ? OwnerType.sender : OwnerType.receiver,
-                    ownerName: isUser ? '我' : 'AI',
-                    content: isUser
-                        ? '试试为我的消息选一种喜欢的颜色。'
-                        : '这是一条较长的回复预览。隐藏头像后，文字会拥有更多空间；你也可以拖动选择其中的一部分文字。',
-                    createdAt: 0,
-                  ),
-                  showAvatars: provider.showMessageAvatars,
-                  senderBackgroundColor: provider.bubbleColor(
-                    theme,
-                    isUser: true,
-                  ),
-                  receiverBackgroundColor: provider.bubbleColor(
-                    theme,
-                    isUser: false,
-                  ),
-                  bubbleRadius: const Radius.circular(14),
-                ),
-            ],
-          ),
-        ),
+        const ChatDecorationPreview(),
       ],
     );
   }

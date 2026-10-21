@@ -1,3 +1,4 @@
+import 'package:chat_message/theme/chat_decoration.dart';
 import 'package:chat_message/widget/default_message_widget.dart';
 import 'package:chat_message/widget/message_avatar_builder.dart';
 import 'package:flutter/material.dart';
@@ -15,6 +16,10 @@ class ChatList extends StatefulWidget {
   final OnBubbleClick? onBubbleLongPress;
   final MessageAvatarBuilder? avatarBuilder;
   final bool showAvatars;
+  final ChatBubbleStyle senderBubbleStyle;
+  final ChatBubbleStyle receiverBubbleStyle;
+  final ChatAvatarFrameStyle senderAvatarFrame;
+  final ChatAvatarFrameStyle receiverAvatarFrame;
   final Color? receiverBackgroundColor;
   final Color? senderBackgroundColor;
   final Color? receiverAvatarBackgroundColor;
@@ -30,6 +35,10 @@ class ChatList extends StatefulWidget {
     this.onBubbleLongPress,
     this.avatarBuilder,
     this.showAvatars = true,
+    this.senderBubbleStyle = ChatBubbleStyle.classic,
+    this.receiverBubbleStyle = ChatBubbleStyle.classic,
+    this.senderAvatarFrame = ChatAvatarFrameStyle.none,
+    this.receiverAvatarFrame = ChatAvatarFrameStyle.none,
     this.receiverBackgroundColor,
     this.senderBackgroundColor,
     this.receiverAvatarBackgroundColor,
@@ -91,6 +100,12 @@ class _ChatListState extends State<ChatList> {
                     contentBuilder: messageContentBuilder,
                     avatarBuilder: widget.avatarBuilder,
                     showAvatars: widget.showAvatars,
+                    bubbleStyle: model.ownerType == OwnerType.sender
+                        ? widget.senderBubbleStyle
+                        : widget.receiverBubbleStyle,
+                    avatarFrameStyle: model.ownerType == OwnerType.sender
+                        ? widget.senderAvatarFrame
+                        : widget.receiverAvatarFrame,
                     onBubbleTap: widget.onBubbleTap,
                     onBubbleLongPress: widget.onBubbleLongPress,
                     receiverBackgroundColor: widget.receiverBackgroundColor,

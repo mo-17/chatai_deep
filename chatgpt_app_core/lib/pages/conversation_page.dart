@@ -32,6 +32,7 @@ import 'package:chatgpt_app_core/chat/application/checklist_state_coordinator.da
 import 'package:chat_message/core/chat_controller.dart';
 import 'package:chat_message/models/message_model.dart';
 import 'package:chat_message/widget/chat_list.dart';
+import 'package:chat_message/theme/chat_decoration.dart';
 import 'package:chatgpt_app_core/ai_readiness/ai_ready_state.dart';
 import 'package:chatgpt_app_core/ai_readiness/ai_readiness_resolver.dart';
 import 'package:chatgpt_app_core/ai_readiness/ai_send_guard.dart';
@@ -2035,6 +2036,14 @@ class _ConversationPageState extends State<ConversationPage>
               onBubbleLongPress: _onBubbleLongPress,
               avatarBuilder: buildStarcoreMessageAvatar,
               showAvatars: appearance?.showMessageAvatars ?? true,
+              senderBubbleStyle: appearance?.bubbleStyle(isUser: true) ??
+                  ChatBubbleStyle.classic,
+              receiverBubbleStyle: appearance?.bubbleStyle(isUser: false) ??
+                  ChatBubbleStyle.classic,
+              senderAvatarFrame: appearance?.avatarFrame(isUser: true) ??
+                  ChatAvatarFrameStyle.none,
+              receiverAvatarFrame: appearance?.avatarFrame(isUser: false) ??
+                  ChatAvatarFrameStyle.none,
               receiverBackgroundColor:
                   appearance?.bubbleColor(Theme.of(context), isUser: false) ??
                       colorScheme.primaryContainer,

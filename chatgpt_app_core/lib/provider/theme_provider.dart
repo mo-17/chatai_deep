@@ -1,3 +1,4 @@
+import 'package:chat_message/theme/chat_decoration.dart';
 import 'package:chatgpt_app_core/theme/app_visual_theme.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_hi_cache/flutter_hi_cache.dart';
@@ -8,6 +9,15 @@ class ThemeProvider extends ChangeNotifier {
   static const keyShowMessageAvatars = 'chat_show_avatars_v1';
   static const keyUserBubbleColor = 'chat_user_bubble_color_v1';
   static const keyAiBubbleColor = 'chat_ai_bubble_color_v1';
+  static const keyUserBubbleStyle = 'chat_user_bubble_style_v1';
+  static const keyAiBubbleStyle = 'chat_ai_bubble_style_v1';
+  static const keyUserAvatarFrame = 'chat_user_avatar_frame_v1';
+  static const keyAiAvatarFrame = 'chat_ai_avatar_frame_v1';
+
+  late ChatBubbleStyle _userBubbleStyle;
+  late ChatBubbleStyle _aiBubbleStyle;
+  late ChatAvatarFrameStyle _userAvatarFrame;
+  late ChatAvatarFrameStyle _aiAvatarFrame;
 
   late bool _showMessageAvatars;
   Color? _userBubbleColor;
@@ -39,6 +49,14 @@ class ThemeProvider extends ChangeNotifier {
 
   ThemeProvider() {
     final cache = HiCache.getInstance();
+    _userBubbleStyle =
+        ChatBubbleStyle.fromStorage(cache.get<String>(keyUserBubbleStyle));
+    _aiBubbleStyle =
+        ChatBubbleStyle.fromStorage(cache.get<String>(keyAiBubbleStyle));
+    _userAvatarFrame =
+        ChatAvatarFrameStyle.fromStorage(cache.get<String>(keyUserAvatarFrame));
+    _aiAvatarFrame =
+        ChatAvatarFrameStyle.fromStorage(cache.get<String>(keyAiAvatarFrame));
     _showMessageAvatars = cache.get<bool>(keyShowMessageAvatars) ?? true;
     _userBubbleColor = _loadBubbleColor(keyUserBubbleColor);
     _aiBubbleColor = _loadBubbleColor(keyAiBubbleColor);
@@ -52,6 +70,55 @@ class ThemeProvider extends ChangeNotifier {
   bool get showMessageAvatars => _showMessageAvatars;
   Color? get userBubbleColor => _userBubbleColor;
   Color? get aiBubbleColor => _aiBubbleColor;
+
+  ChatBubbleStyle bubbleStyle({required bool isUser}) =>
+      isUser ? _userBubbleStyle : _aiBubbleStyle;
+
+  ChatAvatarFrameStyle avatarFrame({required bool isUser}) =>
+      isUser ? _userAvatarFrame : _aiAvatarFrame;
+
+  void setBubbleStyle({required bool isUser, required ChatBubbleStyle style}) {
+    if (bubbleStyle(isUser: isUser) == style) return;
+    if (isUser) {
+      _userBubbleStyle = style;
+    } else {
+      _aiBubbleStyle = style;
+    }
+    HiCache.getInstance()
+        .setString(isUser ? keyUserBubbleStyle : keyAiBubbleStyle, style.name);
+    notifyListeners();
+  }
+
+  void setAvatarFrame(
+      {required bool isUser, required ChatAvatarFrameStyle style}) {
+    if (avatarFrame(isUser: isUser) == style) return;
+    if (isUser) {
+      _userAvatarFrame = style;
+    } else {
+      _aiAvatarFrame = style;
+    }
+    HiCache.getInstance()
+        .setString(isUser ? keyUserAvatarFrame : keyAiAvatarFrame, style.name);
+    notifyListeners();
+  }
+
+  /// 只恢复装扮与气泡配色，保留界面主题、强调色和头像开关。
+  void resetChatDecoration() {
+    _userBubbleStyle = _aiBubbleStyle = ChatBubbleStyle.classic;
+    _userAvatarFrame = _aiAvatarFrame = ChatAvatarFrameStyle.none;
+    _userBubbleColor = _aiBubbleColor = null;
+    for (final key in [
+      keyUserBubbleStyle,
+      keyAiBubbleStyle,
+      keyUserAvatarFrame,
+      keyAiAvatarFrame,
+      keyUserBubbleColor,
+      keyAiBubbleColor
+    ]) {
+      HiCache.getInstance().remove(key);
+    }
+    notifyListeners();
+  }
 
   static Color? _loadBubbleColor(String key) {
     final value = HiCache.getInstance().get<int>(key);
@@ -84,9 +151,14 @@ class ThemeProvider extends ChangeNotifier {
     notifyListeners();
   }
 
-  Color bubbleColor(ThemeData theme, {required bool isUser}) {
+  Color bubbleColor(ThemeData theme,
+      {required bool isUser, ChatBubbleStyle? style}) {
     final custom = isUser ? _userBubbleColor : _aiBubbleColor;
     if (custom != null) return custom;
+    final selectedStyle = style ?? bubbleStyle(isUser: isUser);
+    if (selectedStyle != ChatBubbleStyle.classic) {
+      return selectedStyle.defaultColor(theme, isUser: isUser);
+    }
     final scheme = theme.colorScheme;
     if (theme.extension<AppVisualTheme>()?.isAnime ?? false) {
       return isUser ? scheme.secondaryContainer : scheme.primaryContainer;

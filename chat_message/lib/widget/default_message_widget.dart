@@ -2,7 +2,8 @@ import 'package:login_sdk/platform/app_file_image.dart';
 import 'dart:convert';
 import 'package:login_sdk/platform/app_io.dart';
 
-import 'package:bubble/bubble.dart';
+import 'package:chat_message/theme/chat_decoration.dart';
+import 'chat_bubble_surface.dart';
 import 'package:chat_message/util/wechat_date_format.dart';
 import 'package:flutter/material.dart';
 
@@ -30,6 +31,8 @@ class DefaultMessageWidget extends StatelessWidget {
   /// the size of the [avatar].
   final double avatarSize;
   final bool showAvatars;
+  final ChatBubbleStyle bubbleStyle;
+  final ChatAvatarFrameStyle avatarFrameStyle;
 
   /// the text-color of the [content].
   final Color? textColor;
@@ -63,6 +66,8 @@ class DefaultMessageWidget extends StatelessWidget {
     this.bubbleRadius,
     this.avatarSize = 40,
     this.showAvatars = true,
+    this.bubbleStyle = ChatBubbleStyle.classic,
+    this.avatarFrameStyle = ChatAvatarFrameStyle.none,
     this.messageWidget,
     this.contentBuilder,
     this.avatarBuilder,
@@ -152,27 +157,34 @@ class DefaultMessageWidget extends StatelessWidget {
     );
   }
 
+  Color get _background =>
+      (message.ownerType == OwnerType.receiver
+          ? receiverBackgroundColor
+          : senderBackgroundColor) ??
+      backgroundColor ??
+      (message.ownerType == OwnerType.receiver
+          ? const Color(0xFFE9E8FC)
+          : Colors.white);
+
+  Widget _framedAvatar(BuildContext context) => ChatAvatarFrame(
+        style: avatarFrameStyle,
+        size: avatarSize,
+        child: _buildCircleAvatar(context),
+      );
+
   @override
   Widget build(BuildContext context) {
     if (messageWidget != null) return messageWidget!(message);
     final theme = Theme.of(context);
-    final background = (message.ownerType == OwnerType.receiver
-            ? receiverBackgroundColor
-            : senderBackgroundColor) ??
-        backgroundColor ??
-        (message.ownerType == OwnerType.receiver
-            ? const Color(0xFFE9E8FC)
-            : Colors.white);
+    final background = _background;
     final opaque = Color.alphaBlend(background, theme.colorScheme.surface);
     // 黑白两色取对比度较高者，支持任意手动输入的颜色。
-    final foreground = opaque.computeLuminance() > 0.179
-        ? Colors.black
-        : Colors.white;
+    final foreground =
+        opaque.computeLuminance() > 0.179 ? Colors.black : Colors.white;
     final scheme = ColorScheme.fromSeed(
       seedColor: opaque,
-      brightness: foreground == Colors.white
-          ? Brightness.dark
-          : Brightness.light,
+      brightness:
+          foreground == Colors.white ? Brightness.dark : Brightness.light,
     ).copyWith(
       onSurface: foreground,
       onSurfaceVariant: foreground,
@@ -224,18 +236,18 @@ class DefaultMessageWidget extends StatelessWidget {
       crossAxisAlignment: CrossAxisAlignment.start,
       mainAxisAlignment: MainAxisAlignment.start,
       children: <Widget>[
-        if (showAvatars) _buildCircleAvatar(context),
+        if (showAvatars) _framedAvatar(context),
         Flexible(
-          child: Bubble(
-              margin: BubbleEdges.fromLTRB(showAvatars ? 8 : 0, 0, contentMargin, 0),
-              stick: true,
-              nip: showAvatars ? BubbleNip.leftTop : BubbleNip.no,
-              radius: bubbleRadius,
-              color: receiverBackgroundColor ??
-                  backgroundColor ??
-                  const Color.fromRGBO(233, 232, 252, 10),
-              alignment: Alignment.topLeft,
-              child: _bubbleChild(TextAlign.left, context, actionContext)),
+          child: ChatBubbleSurface(
+            style: bubbleStyle,
+            color: _background,
+            isUser: false,
+            showTail: showAvatars,
+            margin:
+                EdgeInsets.fromLTRB(showAvatars ? 8 : 0, 0, contentMargin, 0),
+            radius: bubbleRadius,
+            child: _bubbleChild(TextAlign.left, context, actionContext),
+          ),
         ),
       ],
     );
@@ -248,16 +260,18 @@ class DefaultMessageWidget extends StatelessWidget {
       crossAxisAlignment: CrossAxisAlignment.start,
       children: <Widget>[
         Flexible(
-          child: Bubble(
-              margin: BubbleEdges.fromLTRB(contentMargin, 0, showAvatars ? 8 : 0, 0),
-              stick: true,
-              nip: showAvatars ? BubbleNip.rightTop : BubbleNip.no,
-              radius: bubbleRadius,
-              color: senderBackgroundColor ?? backgroundColor ?? Colors.white,
-              alignment: Alignment.topRight,
-              child: _bubbleChild(TextAlign.left, context, actionContext)),
+          child: ChatBubbleSurface(
+            style: bubbleStyle,
+            color: _background,
+            isUser: true,
+            showTail: showAvatars,
+            margin:
+                EdgeInsets.fromLTRB(contentMargin, 0, showAvatars ? 8 : 0, 0),
+            radius: bubbleRadius,
+            child: _bubbleChild(TextAlign.left, context, actionContext),
+          ),
         ),
-        if (showAvatars) _buildCircleAvatar(context)
+        if (showAvatars) _framedAvatar(context)
       ],
     );
   }
@@ -303,12 +317,12 @@ class DefaultMessageWidget extends StatelessWidget {
 
     if (!hasImages) {
       return Text(
-          message.content,
-          textAlign: align,
-          style: TextStyle(
-              fontSize: fontSize,
-              color: textColor ?? Theme.of(context).colorScheme.onSurface,
-              fontFamily: fontFamily),
+        message.content,
+        textAlign: align,
+        style: TextStyle(
+            fontSize: fontSize,
+            color: textColor ?? Theme.of(context).colorScheme.onSurface,
+            fontFamily: fontFamily),
       );
     }
 
