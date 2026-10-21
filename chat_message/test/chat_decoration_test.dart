@@ -1,7 +1,10 @@
+import 'dart:ui' as ui;
+
 import 'package:chat_message/core/chat_controller.dart';
 import 'package:chat_message/models/message_model.dart';
 import 'package:chat_message/theme/chat_decoration.dart';
 import 'package:chat_message/theme/chat_tail_shape.dart';
+import 'package:chat_message/theme/chat_ornaments.dart';
 import 'package:chat_message/widget/chat_bubble_surface.dart';
 import 'package:chat_message/widget/chat_list.dart';
 import 'package:chat_message/widget/default_message_widget.dart';
@@ -9,6 +12,47 @@ import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 void main() {
+  testWidgets('主题装饰保持在边缘留白内，不覆盖正文或溢出头像尺寸', (tester) async {
+    await tester.runAsync(() async {
+      for (final theme in ChatOrnament.values) {
+        for (final width in [64, 260]) {
+          final recorder = ui.PictureRecorder();
+          ChatOrnaments.bubble(Canvas(recorder), Size(width.toDouble(), 130),
+              theme, true, Colors.white);
+          final picture = recorder.endRecording();
+          final image = await picture.toImage(width, 130);
+          final pixels =
+              (await image.toByteData(format: ui.ImageByteFormat.rawRgba))!;
+          for (var y = 26; y < 108; y++) {
+            for (var x = 0; x < width; x++) {
+              expect(pixels.getUint8((y * width + x) * 4 + 3), 0,
+                  reason: '$theme decoration at body $x,$y');
+            }
+          }
+          image.dispose();
+          picture.dispose();
+        }
+        final recorder = ui.PictureRecorder();
+        final canvas = Canvas(recorder)..translate(12, 12);
+        ChatOrnaments.frame(
+            canvas, const Size(64, 64), theme, Brightness.light);
+        final picture = recorder.endRecording();
+        final image = await picture.toImage(88, 88);
+        final pixels =
+            (await image.toByteData(format: ui.ImageByteFormat.rawRgba))!;
+        for (var y = 0; y < 88; y++) {
+          for (var x = 0; x < 88; x++) {
+            if (x >= 12 && x < 76 && y >= 12 && y < 76) continue;
+            expect(pixels.getUint8((y * 88 + x) * 4 + 3), 0,
+                reason: '$theme frame overflow $x,$y');
+          }
+        }
+        image.dispose();
+        picture.dispose();
+      }
+    });
+  });
+
   test('两种尾角在长短气泡下边界稳定，双侧镜像且可关闭', () {
     for (final pointed in [true, false]) {
       for (final size in [
@@ -109,21 +153,21 @@ void main() {
         home: Scaffold(
             body: ChatList(
       chatController: controller,
-      senderBubbleStyle: ChatBubbleStyle.messenger,
-      receiverBubbleStyle: ChatBubbleStyle.telegram,
-      senderAvatarFrame: ChatAvatarFrameStyle.halo,
-      receiverAvatarFrame: ChatAvatarFrameStyle.dashed,
+      senderBubbleStyle: ChatBubbleStyle.constellation,
+      receiverBubbleStyle: ChatBubbleStyle.mecha,
+      senderAvatarFrame: ChatAvatarFrameStyle.constellation,
+      receiverAvatarFrame: ChatAvatarFrameStyle.mecha,
       onBubbleLongPress: (_, __) => actions++,
     ))));
     await tester.pumpAndSettle();
     expect(
         tester.widget<DefaultMessageWidget>(find.byKey(sender.key)).bubbleStyle,
-        ChatBubbleStyle.messenger);
+        ChatBubbleStyle.constellation);
     expect(
         tester
             .widget<DefaultMessageWidget>(find.byKey(receiver.key))
             .avatarFrameStyle,
-        ChatAvatarFrameStyle.dashed);
+        ChatAvatarFrameStyle.mecha);
     expect(find.byType(ChatBubbleSurface), findsNWidgets(2));
     expect(find.byType(SelectionArea), findsNWidgets(2));
     expect(find.byType(ChatAvatarFrame), findsNWidgets(2));

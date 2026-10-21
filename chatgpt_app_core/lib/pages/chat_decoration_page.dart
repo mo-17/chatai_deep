@@ -79,7 +79,12 @@ class _ChatDecorationPageState extends State<ChatDecorationPage> {
                 const SizedBox(height: 12),
                 _OptionGrid(
                   children: [
-                    for (final style in ChatBubbleStyle.values)
+                    for (final style in [
+                      ...ChatBubbleStyle.values
+                          .where((s) => s.ornament != null),
+                      ...ChatBubbleStyle.values
+                          .where((s) => s.ornament == null),
+                    ])
                       _DecorationCard(
                         key: ValueKey('bubble_style_${style.name}'),
                         title: style.label,
@@ -123,7 +128,12 @@ class _ChatDecorationPageState extends State<ChatDecorationPage> {
                 const SizedBox(height: 12),
                 _OptionGrid(
                   children: [
-                    for (final frame in ChatAvatarFrameStyle.values)
+                    for (final frame in [
+                      ...ChatAvatarFrameStyle.values
+                          .where((s) => s.ornament != null),
+                      ...ChatAvatarFrameStyle.values
+                          .where((s) => s.ornament == null),
+                    ])
                       _DecorationCard(
                         key: ValueKey('avatar_frame_${frame.name}'),
                         title: frame.label,
@@ -135,7 +145,7 @@ class _ChatDecorationPageState extends State<ChatDecorationPage> {
                         sample: Center(
                           child: ChatAvatarFrame(
                             style: frame,
-                            size: 52,
+                            size: frame.ornament == null ? 52 : 64,
                             child: CircleAvatar(
                               radius: 26,
                               backgroundColor: _isUser

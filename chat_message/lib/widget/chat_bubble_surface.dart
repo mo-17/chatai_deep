@@ -1,6 +1,7 @@
 import 'package:bubble/bubble.dart';
 import 'package:chat_message/theme/chat_decoration.dart';
 import 'package:chat_message/theme/chat_tail_shape.dart';
+import 'package:chat_message/theme/chat_ornaments.dart';
 import 'package:flutter/material.dart';
 
 /// 预览、普通消息与流式块消息共用外壳，正文和消息操作由调用方保留。
@@ -55,6 +56,42 @@ class ChatBubbleSurface extends StatelessWidget {
           child: Padding(
             padding: EdgeInsets.fromLTRB(!isUser && showTail ? 22 : 14, 11,
                 isUser && showTail ? 22 : 14, 11),
+            child: child,
+          ),
+        ),
+      );
+    }
+    final ornament = style.ornament;
+    if (ornament != null) {
+      final accent = ChatOrnaments.accent(ornament,
+          dark: color.computeLuminance() <= .179);
+      return Padding(
+        padding: margin,
+        child: CustomPaint(
+          foregroundPainter: ChatBubbleOrnamentPainter(ornament, isUser, color),
+          child: Container(
+            padding: const EdgeInsets.fromLTRB(18, 26, 18, 22),
+            decoration: ShapeDecoration(
+              gradient: LinearGradient(
+                  colors: style.backgroundColors(color),
+                  begin: Alignment.topLeft,
+                  end: Alignment.bottomRight),
+              shape: ornament == ChatOrnament.mecha
+                  ? BeveledRectangleBorder(
+                      borderRadius: BorderRadius.circular(12),
+                      side: BorderSide(
+                          color: accent.withValues(alpha: .6), width: 1.2))
+                  : RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(20),
+                      side: BorderSide(
+                          color: accent.withValues(alpha: .45), width: 1.2)),
+              shadows: [
+                BoxShadow(
+                    color: accent.withValues(alpha: .1),
+                    offset: const Offset(0, 3),
+                    blurRadius: 6)
+              ],
+            ),
             child: child,
           ),
         ),

@@ -103,14 +103,14 @@ void main() {
   testWidgets('点击选择后预览与存储同步，两侧独立，隐藏头像有恢复入口', (tester) async {
     final provider = ThemeProvider()..setShowMessageAvatars(false);
     await tester.pumpWidget(host(provider));
-    await reveal(tester, 'bubble_style_messenger');
-    await tester.tap(find.byKey(const ValueKey('bubble_style_messenger')));
+    await reveal(tester, 'bubble_style_constellation');
+    await tester.tap(find.byKey(const ValueKey('bubble_style_constellation')));
     await tester.pump();
-    expect(provider.bubbleStyle(isUser: true), ChatBubbleStyle.messenger);
-    await reveal(tester, 'avatar_frame_dashed');
-    await tester.tap(find.byKey(const ValueKey('avatar_frame_dashed')));
+    expect(provider.bubbleStyle(isUser: true), ChatBubbleStyle.constellation);
+    await reveal(tester, 'avatar_frame_ribbon');
+    await tester.tap(find.byKey(const ValueKey('avatar_frame_ribbon')));
     await tester.pump();
-    expect(provider.avatarFrame(isUser: true), ChatAvatarFrameStyle.dashed);
+    expect(provider.avatarFrame(isUser: true), ChatAvatarFrameStyle.ribbon);
     await tester.scrollUntilVisible(find.text('显示头像'), -180,
         scrollable: find.byType(Scrollable).first);
     await tester.tap(find.text('显示头像'));
@@ -122,11 +122,11 @@ void main() {
     await tester.pumpAndSettle();
     await tester.tap(find.text('AI 回复'));
     await tester.pump();
-    await reveal(tester, 'bubble_style_telegram');
-    await tester.tap(find.byKey(const ValueKey('bubble_style_telegram')));
+    await reveal(tester, 'bubble_style_mecha');
+    await tester.tap(find.byKey(const ValueKey('bubble_style_mecha')));
     await tester.pump();
-    expect(provider.bubbleStyle(isUser: false), ChatBubbleStyle.telegram);
-    expect(provider.bubbleStyle(isUser: true), ChatBubbleStyle.messenger);
+    expect(provider.bubbleStyle(isUser: false), ChatBubbleStyle.mecha);
+    expect(provider.bubbleStyle(isUser: true), ChatBubbleStyle.constellation);
     await tester.scrollUntilVisible(
         find.byKey(const ValueKey('chat_appearance_preview')), -180,
         scrollable: find.byType(Scrollable).first);
@@ -134,11 +134,10 @@ void main() {
     final messages = tester
         .widgetList<DefaultMessageWidget>(find.byType(DefaultMessageWidget))
         .toList();
-    expect(messages[0].bubbleStyle, ChatBubbleStyle.messenger);
-    expect(messages[0].avatarFrameStyle, ChatAvatarFrameStyle.dashed);
-    expect(messages[1].bubbleStyle, ChatBubbleStyle.telegram);
-    expect(
-        ThemeProvider().bubbleStyle(isUser: false), ChatBubbleStyle.telegram);
+    expect(messages[0].bubbleStyle, ChatBubbleStyle.constellation);
+    expect(messages[0].avatarFrameStyle, ChatAvatarFrameStyle.ribbon);
+    expect(messages[1].bubbleStyle, ChatBubbleStyle.mecha);
+    expect(ThemeProvider().bubbleStyle(isUser: false), ChatBubbleStyle.mecha);
     await tester.tap(find.byKey(const ValueKey('reset_chat_decoration')));
     await tester.pump();
     expect(provider.bubbleStyle(isUser: true), ChatBubbleStyle.classic);

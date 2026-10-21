@@ -1,6 +1,7 @@
 import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
+import 'chat_ornaments.dart';
 
 /// 使用稳定的名字保存配置；新增款式不改变已有用户的选择。
 enum ChatBubbleStyle {
@@ -11,12 +12,24 @@ enum ChatBubbleStyle {
   paper('手札', '纸感卡片 · 温暖一角', Color(0xFFAC7A3F)),
   pixel('像素', '利落折角 · 复古趣味', Color(0xFF6173BD)),
   messenger('弧尾', '流畅弧线 · 圆润尾角', Color(0xFF497ECC)),
-  telegram('轻聊', '清新色彩 · 轻巧尖尾', Color(0xFF389A75));
+  telegram('轻聊', '清新色彩 · 轻巧尖尾', Color(0xFF389A75)),
+  constellation('星河', '星月角标 · 梦幻微光', Color(0xFF8670CD)),
+  blossom('樱花', '花瓣来信 · 柔粉春意', Color(0xFFD26B93)),
+  ribbon('甜心', '奶油丝带 · 心动角标', Color(0xFFC38A50)),
+  mecha('机甲', '棱角护甲 · 青色能量', Color(0xFF247E86));
 
   const ChatBubbleStyle(this.label, this.description, this.accent);
   final String label;
   final String description;
   final Color accent;
+
+  ChatOrnament? get ornament => switch (this) {
+        constellation => ChatOrnament.constellation,
+        blossom => ChatOrnament.blossom,
+        ribbon => ChatOrnament.ribbon,
+        mecha => ChatOrnament.mecha,
+        _ => null,
+      };
 
   static ChatBubbleStyle fromStorage(String? value) => values.firstWhere(
         (style) => style.name == value,
@@ -33,6 +46,11 @@ enum ChatBubbleStyle {
       pixel => isUser ? const Color(0xFFE0E5FF) : const Color(0xFFE8EBF7),
       messenger => isUser ? const Color(0xFFDDEBFF) : const Color(0xFFEEF1F5),
       telegram => isUser ? const Color(0xFFDAF2DD) : const Color(0xFFF1F7F3),
+      constellation =>
+        isUser ? const Color(0xFFE9E5FF) : const Color(0xFFE6EEFB),
+      blossom => isUser ? const Color(0xFFFFE8F0) : const Color(0xFFFCEFF4),
+      ribbon => isUser ? const Color(0xFFFFEBD4) : const Color(0xFFFFF2E4),
+      mecha => isUser ? const Color(0xFF223449) : const Color(0xFF1E2D40),
       classic => theme.colorScheme.primaryContainer,
     };
     return dark
@@ -41,15 +59,16 @@ enum ChatBubbleStyle {
   }
 
   /// 渐层向同一对比度方向变化，保证整块气泡都能使用同一种正文颜色。
-  List<Color> backgroundColors(Color base) => this == aurora
-      ? [
-          base,
-          Color.lerp(
+  List<Color> backgroundColors(Color base) =>
+      (this == aurora || ornament != null)
+          ? [
               base,
-              base.computeLuminance() > .179 ? Colors.white : Colors.black,
-              .16)!
-        ]
-      : [base];
+              Color.lerp(
+                  base,
+                  base.computeLuminance() > .179 ? Colors.white : Colors.black,
+                  .16)!
+            ]
+          : [base];
 }
 
 enum ChatAvatarFrameStyle {
@@ -60,11 +79,23 @@ enum ChatAvatarFrameStyle {
   orbit('星轨', '环绕行星轨道'),
   pixel('像素', '复古方形边框'),
   halo('晨光', '柔和光晕 · 温暖环绕'),
-  dashed('星点', '渐变虚线 · 轻盈留白');
+  dashed('星点', '渐变虚线 · 轻盈留白'),
+  constellation('星河', '星月宝石 · 流翼环绕'),
+  blossom('樱花', '花簇缠枝 · 轻盈花冠'),
+  ribbon('甜心', '蝴蝶丝带 · 心形宝石'),
+  mecha('机甲', '六角徽章 · 能量护翼');
 
   const ChatAvatarFrameStyle(this.label, this.description);
   final String label;
   final String description;
+
+  ChatOrnament? get ornament => switch (this) {
+        constellation => ChatOrnament.constellation,
+        blossom => ChatOrnament.blossom,
+        ribbon => ChatOrnament.ribbon,
+        mecha => ChatOrnament.mecha,
+        _ => null,
+      };
 
   static ChatAvatarFrameStyle fromStorage(String? value) => values.firstWhere(
         (frame) => frame.name == value,
@@ -92,7 +123,7 @@ class ChatAvatarFrame extends StatelessWidget {
       child: CustomPaint(
         foregroundPainter: _FramePainter(style, Theme.of(context).brightness),
         child: Padding(
-          padding: EdgeInsets.all(size * .105),
+          padding: EdgeInsets.all(size * (style.ornament == null ? .105 : .17)),
           child: ClipRRect(
             borderRadius: BorderRadius.circular(
                 style == ChatAvatarFrameStyle.pixel ? size * .12 : size),
@@ -201,6 +232,11 @@ class _FramePainter extends CustomPainter {
           canvas.drawArc(rect.deflate(unit * .055), index * math.pi / 7,
               math.pi / 10, false, paint);
         }
+      case ChatAvatarFrameStyle.constellation:
+      case ChatAvatarFrameStyle.blossom:
+      case ChatAvatarFrameStyle.ribbon:
+      case ChatAvatarFrameStyle.mecha:
+        ChatOrnaments.frame(canvas, size, style.ornament!, brightness);
       case ChatAvatarFrameStyle.pixel:
         paint
           ..color = brightness == Brightness.dark
