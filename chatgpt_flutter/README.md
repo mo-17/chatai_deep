@@ -25,6 +25,49 @@
 
 登录后，点「我的」→「AI 服务设置」，选择服务商（本地/后端）、填 API key、选模型，保存即可开始对话。
 
+## Android 真机调试
+
+扫描/导出功能仍有此前未跟踪的模块；下述原生 OCR / smoke 测试入口依赖它们。
+本次只归档对应测试与 PDF 修复补丁，复现前需独立整合功能基线，见
+[补丁范围与前置条件](../docs/android-device-debug-20261021-patches/README.md)。
+相机、语音与真实后端的独立 debug 验收入口为
+[`tool/android_device_acceptance.dart`](tool/android_device_acceptance.dart)，
+结果与未验收项见 [本轮真机验收记录](../docs/android-device-debug-20261021.md)。
+
+使用本目录 `.fvmrc` 指定的 Flutter SDK。手机需开启 USB 调试与 USB 安装；
+MIUI 的「USB 安装提示」有自动拒绝倒计时，出现时须在手机点「继续安装」。
+
+```bash
+fvm flutter pub get
+fvm flutter devices
+fvm flutter run -d <device-id>
+fvm flutter test --no-pub -d <device-id> integration_test/android_device_smoke_test.dart
+```
+
+MIUI 每次重装都可能再次弹出 USB 确认。连续调试可改用
+`fvm flutter run --no-pub -d <device-id> --target=integration_test/android_device_smoke_test.dart`，
+修改测试后按大写 `R` 热重启，避免反复重装；终端会输出断言结果。
+
+真机 smoke 使用独立偏好前缀验证离线启动、游客导航和 SQLite 恢复，并通过
+真实 ML Kit / pdfx 验证中文图片、无文字层的两页扫描 PDF 和指定页识别。
+测试不调用真实模型，也不代表相机、麦克风、蓝牙或云同步已验收。
+
+本 shell 已恢复真实 `google_mlkit_text_recognition` / `pdfx` 依赖，并在 Android
+捆绑中文识别模型；勿为 iOS 模拟器全局覆盖成 `ohos_stubs`，否则 Android OCR
+也会失效。Apple Silicon iOS 模拟器的 ML Kit 链接限制需单独处理；OHOS shell
+继续使用自己的依赖覆盖与原生 OCR 桥接。
+
+如需连接电脑上的开发后端，先启动后端，再执行
+`adb -s <device-id> reverse tcp:3000 tcp:3000`，并通过
+`fvm flutter run -d <device-id> --dart-define=BACKEND_HOST=127.0.0.1:3000`
+启动。直接连接真实 AI 服务仍需在应用内配置 API key。
+
+连接项目现有正式后端可使用
+`fvm flutter run -d <device-id> --dart-define-from-file=../deploy/flutter/production.json`，
+然后用普通 App 账号登录，在「AI 服务设置」选择「后端代理」。游客模式只支持
+本地直连；代理模式由服务器保存服务商密钥，手机无需填写 API key。正式后端
+配置和构建说明见 [正式后端连接说明](../deploy/flutter/README.md)。
+
 ## 课程资料和课件
 > 用购课的慕课网账号登录后查看。
 

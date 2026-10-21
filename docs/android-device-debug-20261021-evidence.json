@@ -1,0 +1,150 @@
+{
+  "schemaVersion": 1,
+  "date": "2026-10-21",
+  "device": {
+    "model": "Xiaomi M2102J2SC",
+    "androidVersion": "13",
+    "apiLevel": 33,
+    "abi": "arm64-v8a"
+  },
+  "toolchain": {
+    "flutter": "3.35.7",
+    "dart": "3.9.2"
+  },
+  "sourceScope": {
+    "baseCommit": "f6566bae107b4198462cbdb055295ed629da3743",
+    "deviceTestedSource": "mixed working tree including prior uncommitted features",
+    "scopedCommitsAreNotTheCompleteDeviceTestedTree": true,
+    "deferredPatches": "android-device-debug-20261021-patches/README.md"
+  },
+  "installedApk": {
+    "applicationId": "com.example.chatgpt_flutter",
+    "version": "1.0.10+20",
+    "buildMode": "debug",
+    "signer": "debug",
+    "minSdk": 24,
+    "targetSdk": 35,
+    "sha256": "f390c88c090fd57cb31087c5bb33b4b557263ae95cb1d27dede18dc1b0decbca",
+    "installedBaseApkHashMatched": true,
+    "entrypoint": "lib/main.dart",
+    "diagnosticVmExtensionIncluded": false
+  },
+  "media": {
+    "camera": {
+      "state": "completed",
+      "bytes": 368867,
+      "width": 1799,
+      "height": 2400,
+      "ocrCharacters": 96
+    },
+    "tts": {
+      "state": "completed",
+      "stages": [
+        "preparing",
+        "playing",
+        "completed"
+      ],
+      "engineCompleted": true
+    },
+    "speech": {
+      "state": "completed",
+      "characters": 15,
+      "partialResults": 1,
+      "matchesTestPhrase": true,
+      "listeningStarted": true,
+      "milliseconds": 6351
+    },
+    "ttsAudibleConfirmedByUser": true
+  },
+  "modelProxy": {
+    "origin": "https://kushui.shop",
+    "loggedIn": true,
+    "guest": false,
+    "mode": "backend",
+    "nonStreaming": {
+      "state": "completed",
+      "stream": false,
+      "model": "deepseek-chat",
+      "reply": "真机模型连通测试成功。",
+      "promptTokens": 16,
+      "completionTokens": 7,
+      "estimated": false,
+      "milliseconds": 8726
+    },
+    "streaming": {
+      "state": "completed",
+      "stream": true,
+      "model": "deepseek-chat",
+      "reply": "真机模型连通测试成功。",
+      "textChunks": 7,
+      "promptTokens": 16,
+      "completionTokens": 7,
+      "milliseconds": 11111
+    },
+    "uiChat": {
+      "reply": "界面流式测试成功",
+      "characters": 8,
+      "streamCompleted": true,
+      "persistedMessages": 2
+    }
+  },
+  "coldStart": {
+    "mode": "backend",
+    "guest": false,
+    "normalInstalledEntry": true,
+    "coldStartRestored": true,
+    "approximatelyMilliseconds": 2300
+  },
+  "checks": {
+    "nativeDeviceSmoke": {
+      "result": "passed",
+      "testCases": 2,
+      "frameworkTeardownCases": 1,
+      "logSha256": "a4bb8ab4efbea52cc47e773edbe80aaf9979035b7a5c9950730e37b16262c989"
+    },
+    "scanExport": {
+      "result": "passed",
+      "tests": 10,
+      "scope": "mixed working tree; module baseline remains untracked"
+    },
+    "voiceRegression": {
+      "result": "passed",
+      "tests": 33,
+      "logSha256": "9c634b4c9847e04c915f96985b4fed3a5504a8b10637bf7cb8763cc0acf7cb87"
+    },
+    "scopedCoreRegression": {
+      "result": "passed",
+      "tests": 63,
+      "scope": "base core source plus scoped voice/list fixes; sibling path dependencies and tool cache reused from local checkout",
+      "testFiles": [
+        "speech_input_broker_test.dart",
+        "read_aloud_service_test.dart",
+        "voice_conversation_controller_test.dart",
+        "conversation_search_page_test.dart",
+        "project_dao_test.dart"
+      ],
+      "logSha256": "45a84e80eda5f515d3aad164e0a356ba40d75fe88d01adf75bcbdbad27ff02eb"
+    },
+    "standaloneDriverAnalysis": {
+      "result": "passed",
+      "scope": "base shell/core source plus scoped fixes; no prior scanning modules required"
+    },
+    "patchValidation": {
+      "result": "passed",
+      "landscapeReverseForwardHashesMatch": true,
+      "nativeTestPatchMatchesWorkingSources": true
+    }
+  },
+  "notVerified": [
+    "Bluetooth/headset routing",
+    "speaker full-duplex AEC",
+    "arbitrary photo OCR accuracy",
+    "store release signing"
+  ],
+  "dataBoundary": {
+    "cameraPhotoSentToModel": false,
+    "historicalUserChatsSent": false,
+    "credentialsIncluded": false,
+    "remoteServiceConfigurationChanged": false
+  }
+}

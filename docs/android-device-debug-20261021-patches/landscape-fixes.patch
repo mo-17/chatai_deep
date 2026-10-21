@@ -1,0 +1,75 @@
+diff --git a/chatgpt_app_core/lib/chat/application/document_scan.dart b/chatgpt_app_core/lib/chat/application/document_scan.dart
+--- a/chatgpt_app_core/lib/chat/application/document_scan.dart
++++ b/chatgpt_app_core/lib/chat/application/document_scan.dart
+@@ -132,2 +132,6 @@
+       section.pageSettings.margins.all = 0;
++      // PdfPageSettings 会按方向重排宽高；横图若仍用默认竖向会裁掉右侧内容。
++      section.pageSettings.orientation = bitmap.width > bitmap.height
++          ? PdfPageOrientation.landscape
++          : PdfPageOrientation.portrait;
+       section.pageSettings.size =
+diff --git a/chatgpt_app_core/lib/chat/application/ocr_export.dart b/chatgpt_app_core/lib/chat/application/ocr_export.dart
+--- a/chatgpt_app_core/lib/chat/application/ocr_export.dart
++++ b/chatgpt_app_core/lib/chat/application/ocr_export.dart
+@@ -215,2 +215,6 @@
+       document.pageSettings.margins.all = 0;
++      // 横向原图必须匹配页面方向，防止添加文字层时将可见原图裁成竖页。
++      document.pageSettings.orientation = bitmap.width > bitmap.height
++          ? PdfPageOrientation.landscape
++          : PdfPageOrientation.portrait;
+       document.pageSettings.size =
+diff --git a/chatgpt_app_core/test/scan_export_test.dart b/chatgpt_app_core/test/scan_export_test.dart
+--- a/chatgpt_app_core/test/scan_export_test.dart
++++ b/chatgpt_app_core/test/scan_export_test.dart
+@@ -2,2 +2,3 @@
+ import 'dart:typed_data';
++import 'dart:ui' show Size;
+ import 'package:archive/archive.dart';
+@@ -95,2 +96,20 @@
+   });
++  test('扫描 PDF 保留横页、竖页和方形页的完整尺寸', () async {
++    const sizes = [Size(1200, 360), Size(360, 1200), Size(400, 400)];
++    final pages = sizes
++        .map((size) => img.encodePng(img.Image(
++            width: size.width.toInt(),
++            height: size.height.toInt(),
++            numChannels: 3)))
++        .toList();
++    final doc = PdfDocument(inputBytes: await scannedPagesPdf(pages));
++    try {
++      expect(doc.pages.count, sizes.length);
++      for (var i = 0; i < sizes.length; i++) {
++        expect(doc.pages[i].size, sizes[i], reason: '第 ${i + 1} 页不得交换宽高裁剪图片');
++      }
++    } finally {
++      doc.dispose();
++    }
++  });
+   test('校对文字写入可搜索 PDF，保留原页数与中文', () async {
+@@ -120,2 +139,26 @@
+       doc.dispose();
++    }
++  });
++  test('单图可搜索 PDF 保留横页、竖页和方形页的完整尺寸', () async {
++    for (final size in const [
++      Size(1200, 360),
++      Size(360, 1200),
++      Size(400, 400)
++    ]) {
++      final source = img.encodePng(img.Image(
++          width: size.width.toInt(),
++          height: size.height.toInt(),
++          numChannels: 3));
++      final bytes = await searchableOcrPdf(
++          source: source,
++          pdf: false,
++          result: PdfOcrResult(totalPages: 1, pages: ['中文校对 HELLO']));
++      final doc = PdfDocument(inputBytes: bytes);
++      try {
++        expect(doc.pages.count, 1);
++        expect(doc.pages[0].size, size);
++        expect(PdfTextExtractor(doc).extractText(), contains('中文校对'));
++      } finally {
++        doc.dispose();
++      }
+     }

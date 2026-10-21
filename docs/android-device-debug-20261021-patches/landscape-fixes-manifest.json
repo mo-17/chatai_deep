@@ -1,0 +1,20 @@
+{
+  "precondition": "Existing scanning/export modules must be committed independently first; current working files already contain these fixes.",
+  "files": [
+    {
+      "path": "chatgpt_app_core/lib/chat/application/document_scan.dart",
+      "preimageSha256": "7b383a914bb90c632723ff3993d33154896ae307823ad0233ef529623c795bf5",
+      "postimageSha256": "1ab3c1acf86c35f5ba977c8fbc653e1a092dd5c2687439ef9bb51890256cca96"
+    },
+    {
+      "path": "chatgpt_app_core/lib/chat/application/ocr_export.dart",
+      "preimageSha256": "9e4c06c9ce7d6ebd664f293596481458d59632e2196205fc746ed37f939106e2",
+      "postimageSha256": "14f1b4781d0f5f7d0df497759cbb1d4278472caa515639e3b878860d745808f6"
+    },
+    {
+      "path": "chatgpt_app_core/test/scan_export_test.dart",
+      "preimageSha256": "c8d8314ae1ba0865dae00642b76dc85a18b5e6e4befe32c96ee546138ecfc52d",
+      "postimageSha256": "0767310417cefe09e5461c515bbe6b1757389e131ff3497d4873fcb245e54037"
+    }
+  ]
+}
