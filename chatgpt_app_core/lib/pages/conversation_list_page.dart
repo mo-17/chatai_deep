@@ -541,25 +541,41 @@ class _ConversationListPageState extends State<ConversationListPage>
     ]);
   }
 
-  void _doInit() async {
-    _listAccount = HiDBManager.getAccountHash();
-    final storage =
-        await HiDBManager.instance(dbName: HiDBManager.getAccountHash());
-    conversationListDao = await ConversationListDao.create(storage);
-    projectDao = await ProjectDao.create(storage);
-    if (!mounted || _listAccount != HiDBManager.getAccountHash()) return;
-    _listReady = true;
-    _generationChanged();
-    _loadProjects();
-    _loadStickData();
-    _loadData();
+  Future<void> _doInit() async {
+    final account = HiDBManager.getAccountHash();
+    _listAccount = account;
+    bool current() => mounted && account == HiDBManager.getAccountHash();
+    try {
+      final storage = await HiDBManager.instance(dbName: account);
+      if (!current()) return;
+      conversationListDao = await ConversationListDao.create(storage);
+      if (!current()) return;
+      projectDao = await ProjectDao.create(storage);
+      if (!current()) return;
+      _listReady = true;
+      _generationChanged();
+      await _reloadData();
+    } catch (_) {
+      // 页面销毁/账号退出后连接可能已关闭，迟到的初始化不再访问旧库或更新 UI。
+      if (!current()) return;
+      rethrow;
+    }
   }
 
   int pageIndex = 1;
 
   Future<List<ConversationModel>> _loadStickData() async {
+    final account = _listAccount;
+    final projectId = _selectedProjectId;
+    final uncategorized = _uncategorizedOnly;
     final list = await conversationListDao.getStickConversationList(
-        projectId: _selectedProjectId, uncategorized: _uncategorizedOnly);
+        projectId: projectId, uncategorized: uncategorized);
+    if (!mounted ||
+        account != HiDBManager.getAccountHash() ||
+        projectId != _selectedProjectId ||
+        uncategorized != _uncategorizedOnly) {
+      return list;
+    }
     setState(() {
       stickConversationList = list;
     });
