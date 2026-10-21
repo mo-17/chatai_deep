@@ -34,9 +34,10 @@ Flutter Web 的本地运行、静态构建、后端配置及浏览器能力边�
 
 ## Android 真机调试
 
-扫描/导出功能仍有此前未跟踪的模块；下述原生 OCR / smoke 测试入口依赖它们。
-本次只归档对应测试与 PDF 修复补丁，复现前需独立整合功能基线，见
-[补丁范围与前置条件](../docs/android-device-debug-20261021-patches/README.md)。
+扫描/导出模块及下述原生 OCR / smoke 测试入口已随 OCR 功能批次入库。
+首轮真机修复的精确补丁保留在
+[补丁归档](../docs/android-device-debug-20261021-patches/README.md)，仅供追溯，
+当前源码已包含修复，无需重复应用。
 相机、语音与真实后端的独立 debug 验收入口为
 [`tool/android_device_acceptance.dart`](tool/android_device_acceptance.dart)，
 结果与未验收项见 [本轮真机验收记录](../docs/android-device-debug-20261021.md)。

@@ -1,0 +1,68 @@
+name: desktop
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - 'chatgpt_flutter/**'
+      - 'chatgpt_app_core/**'
+      - 'chat_message/**'
+      - 'login_sdk/**'
+      - 'auth_kit_flutter/**'
+      - 'openai_flutter/**'
+      - 'hi_download/**'
+      - '.github/workflows/desktop.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-15, windows-2022]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: subosito/flutter-action@v2
+        with:
+          flutter-version: '3.35.7'
+          channel: stable
+          cache: true
+      - name: Resolve shell dependencies
+        working-directory: chatgpt_flutter
+        run: flutter pub get --enforce-lockfile --no-example
+      - name: Desktop layout and input regression
+        working-directory: chatgpt_app_core
+        run: |
+          flutter pub get --no-example
+          flutter test --no-pub test/desktop_layout_test.dart test/desktop_message_input_test.dart test/desktop_database_path_test.dart test/desktop_quick_assistant_test.dart test/app_bottom_navigation_bar_test.dart
+      - name: Build macOS
+        if: runner.os == 'macOS'
+        working-directory: chatgpt_flutter
+        run: flutter build macos --release --no-pub
+      - name: Archive macOS app
+        if: runner.os == 'macOS'
+        run: ditto -c -k --sequesterRsrc --keepParent chatgpt_flutter/build/macos/Build/Products/Release/chatgpt_flutter.app chatai-deep-macos.zip
+      - name: Build Windows x64
+        if: runner.os == 'Windows'
+        working-directory: chatgpt_flutter
+        run: flutter build windows --release --no-pub
+      - name: Verify and archive Windows runtime
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $bundle = 'chatgpt_flutter/build/windows/x64/runner/Release'
+          foreach ($required in @('chatgpt_flutter.exe', 'sqlite3.dll', 'flutter_windows.dll', 'data/flutter_assets')) {
+            if (!(Test-Path (Join-Path $bundle $required))) { throw "Missing runtime: $required" }
+          }
+          Compress-Archive -Path "$bundle/*" -DestinationPath chatai-deep-windows-x64.zip
+      - name: Upload build artifacts (macOS still needs signing)
+        uses: actions/upload-artifact@v4
+        with:
+          name: chatai-deep-${{ runner.os }}
+          path: chatai-deep-*.zip
+          if-no-files-found: error
+          retention-days: 14

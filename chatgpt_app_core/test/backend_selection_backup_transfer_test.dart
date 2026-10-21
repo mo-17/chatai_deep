@@ -48,7 +48,7 @@ void main() {
   setUpAll(fx.init);
   tearDownAll(fx.finish);
   test(
-      'archive13 all five foreign selections and v1/v2 profiles survive overwrite/merge without scope restamp',
+      'current archive preserves all five foreign selections and v1/v2 profiles without scope restamp',
       () async {
     final source = await fx.db();
     await fx.seed(source);
@@ -67,7 +67,8 @@ void main() {
     final bytes = await BackupService(source)
         .exportArchive(settings: settings, accountHash: 'account-A');
     final f = files(bytes);
-    expect((read(f, 'manifest.json') as Map)['formatVersion'], 13);
+    expect((read(f, 'manifest.json') as Map)['formatVersion'],
+        BackupService.formatVersion);
     final exported = read(f, 'story_template_translation_tasks.json') as List;
     expect(exported[0]['requestProfile'], v1);
     expect(exported[1]['requestProfile'], v2());

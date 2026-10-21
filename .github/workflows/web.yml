@@ -1,0 +1,68 @@
+name: flutter-web
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - 'chatgpt_flutter/**'
+      - 'chatgpt_app_core/**'
+      - 'chat_message/**'
+      - 'login_sdk/**'
+      - 'auth_kit_flutter/**'
+      - 'openai_flutter/**'
+      - 'hi_download/**'
+      - '.github/workflows/web.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: subosito/flutter-action@v2
+        with:
+          flutter-version: '3.35.7'
+          channel: stable
+          cache: true
+      - name: Build Web including SQLite runtime
+        working-directory: chatgpt_flutter
+        run: dart tool/build_web.dart
+      - name: File storage unit and real IndexedDB tests
+        working-directory: login_sdk
+        run: |
+          flutter pub get --no-example
+          flutter test --no-pub test/persistent_memory_file_system_test.dart
+          flutter test --no-pub --platform chrome test/browser_storage_test.dart
+      - name: Browser credentials and provider persistence
+        working-directory: chatgpt_flutter
+        run: flutter test --no-pub --platform chrome test/browser_settings_test.dart
+      - name: Browser streaming, cancellation and errors
+        working-directory: openai_flutter
+        run: |
+          flutter pub get --no-example
+          python3 ../chatgpt_flutter/tool/web/smoke_server.py > /tmp/web-smoke.log 2>&1 &
+          fixture_pid=$!
+          trap 'kill "$fixture_pid"' EXIT
+          flutter test --no-pub --platform chrome test/browser_http_test.dart
+      - name: Browser OCR upload, UTF8 and cancellation
+        working-directory: chatgpt_flutter
+        run: |
+          python3 tool/web/ocr_fixture.py > /tmp/web-ocr.log 2>&1 &
+          fixture_pid=$!
+          trap 'kill "$fixture_pid"' EXIT
+          curl --retry 5 --retry-connrefused --retry-delay 1 --silent --fail http://127.0.0.1:48353/events > /dev/null
+          flutter test --no-pub --platform chrome test/browser_ocr_test.dart test/browser_ocr_storage_test.dart
+      - name: Shared file and layout regression
+        working-directory: chatgpt_app_core
+        run: |
+          flutter pub get --no-example
+          flutter test --no-pub --concurrency=1 test/browser_picked_bytes_test.dart test/web_zlib_decoder_test.dart test/office_text_extractor_test.dart test/conversation_draft_store_test.dart test/backup_test.dart test/desktop_layout_test.dart test/desktop_message_input_test.dart
+      - uses: actions/upload-artifact@v4
+        with:
+          name: chatai-deep-web
+          path: chatgpt_flutter/build/web/
+          if-no-files-found: error
+          retention-days: 14
