@@ -1,4 +1,5 @@
 import 'package:chat_message/theme/chat_decoration.dart';
+import 'package:chat_message/theme/chat_illustrated_theme.dart';
 import 'package:chatgpt_app_core/theme/app_visual_theme.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_hi_cache/flutter_hi_cache.dart';
@@ -99,6 +100,28 @@ class ThemeProvider extends ChangeNotifier {
     }
     HiCache.getInstance()
         .setString(isUser ? keyUserAvatarFrame : keyAiAvatarFrame, style.name);
+    notifyListeners();
+  }
+
+  /// 一次应用当前消息侧的整套装扮与预设配色，不覆盖另一侧设置。
+  void applyDecorationSet(
+      {required bool isUser, required ChatIllustratedTheme theme}) {
+    final bubble = ChatBubbleStyle.fromStorage(theme.name);
+    final frame = ChatAvatarFrameStyle.fromStorage(theme.name);
+    if (isUser) {
+      _userBubbleStyle = bubble;
+      _userAvatarFrame = frame;
+      _userBubbleColor = null;
+    } else {
+      _aiBubbleStyle = bubble;
+      _aiAvatarFrame = frame;
+      _aiBubbleColor = null;
+    }
+    final cache = HiCache.getInstance();
+    cache.setString(
+        isUser ? keyUserBubbleStyle : keyAiBubbleStyle, bubble.name);
+    cache.setString(isUser ? keyUserAvatarFrame : keyAiAvatarFrame, frame.name);
+    cache.remove(isUser ? keyUserBubbleColor : keyAiBubbleColor);
     notifyListeners();
   }
 

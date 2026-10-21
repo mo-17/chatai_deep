@@ -3,6 +3,7 @@ import 'dart:math' as math;
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import '../theme/chat_illustrated_theme.dart';
+import 'chat_animated_frame_image.dart';
 
 /// 正文是真实组件，边框按尺寸重绘；短句、长文、代码和流式内容共用。
 class ChatIllustratedBubble extends StatelessWidget {
@@ -39,15 +40,17 @@ class ChatIllustratedBubble extends StatelessWidget {
                   clipper: const ChatBubbleBorderClipper(),
                   child: Transform.flip(
                     flipX: !isUser,
-                    child: Image.asset(theme.bubbleAsset,
-                        package: 'chat_message',
-                        scale: ChatIllustratedTheme.bubbleAssetScale,
-                        centerSlice: ChatIllustratedTheme.bubbleCenterSlice,
+                    child: ChatAnimatedFrameImage(
+                        asset: theme.bubbleAsset,
+                        posterAsset: theme.bubblePosterAsset,
+                        animated: theme.animatedBubble,
+                        scale: theme.bubbleScale,
+                        centerSlice: theme.centerSlice,
                         fit: BoxFit.fill,
                         filterQuality: theme == ChatIllustratedTheme.adventure
                             ? FilterQuality.none
                             : FilterQuality.medium,
-                        errorBuilder: (_, __, ___) => CustomPaint(
+                        fallback: CustomPaint(
                             painter: ChatIllustratedBubblePainter(
                                 theme, color, colors,
                                 isUser: true, ornamentsOnly: true))),
@@ -94,8 +97,12 @@ class ChatIllustratedBubblePainter extends CustomPainter {
     canvas.clipRect(rect);
     if (!ornamentsOnly) {
       // 素材上下带透明外沿；底色缩进至边框下方，避免露出整块矩形底板。
-      final path =
-          _outline(Rect.fromLTRB(8, 14, size.width - 8, size.height - 14));
+      final insets = theme.bubbleBackgroundInsets;
+      final directed = isUser
+          ? insets
+          : EdgeInsets.fromLTRB(
+              insets.right, insets.top, insets.left, insets.bottom);
+      final path = _outline(directed.deflateRect(rect));
       canvas.drawPath(
           path,
           Paint()
@@ -333,6 +340,11 @@ class ChatIllustratedBubblePainter extends CustomPainter {
                 ..color = gold
                 ..strokeWidth = .8);
         }
+      default:
+        // 素材无法解码时的轻量回退，仍避开正文区域。
+        c.drawLine(const Offset(22, 10), Offset(w - 22, 10), line);
+        c.drawLine(Offset(22, h - 10), Offset(w - 22, h - 10), line);
+        _diamond(c, Offset(w - 18, 17), 6, ink);
     }
     c.restore();
   }

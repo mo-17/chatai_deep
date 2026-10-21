@@ -77,6 +77,11 @@ class DefaultMessageWidget extends StatelessWidget {
 
   double get contentMargin => showAvatars ? 16 : 4;
 
+  // 透明头像框和插画气泡自身已有外沿留白，避免再叠加原生头像的间距。
+  double get avatarBubbleGap => !showAvatars
+      ? 0
+      : (avatarFrameStyle == ChatAvatarFrameStyle.none ? 8 : 2);
+
   String get senderInitials {
     // ownerName 可能为 null，也可能是空串（后端登录响应缺 userName 时，
     // login_sdk 会把它存成 ''）。空串若直接取 [0] 会抛 RangeError，导致气泡
@@ -169,6 +174,7 @@ class DefaultMessageWidget extends StatelessWidget {
   Widget _framedAvatar(BuildContext context) => ChatAvatarFrame(
         style: avatarFrameStyle,
         size: avatarSize,
+        preserveAvatarSize: true,
         child: _buildCircleAvatar(context),
       );
 
@@ -243,8 +249,7 @@ class DefaultMessageWidget extends StatelessWidget {
             color: _background,
             isUser: false,
             showTail: showAvatars,
-            margin:
-                EdgeInsets.fromLTRB(showAvatars ? 8 : 0, 0, contentMargin, 0),
+            margin: EdgeInsets.fromLTRB(avatarBubbleGap, 0, contentMargin, 0),
             radius: bubbleRadius,
             child: _bubbleChild(TextAlign.left, context, actionContext),
           ),
@@ -265,8 +270,7 @@ class DefaultMessageWidget extends StatelessWidget {
             color: _background,
             isUser: true,
             showTail: showAvatars,
-            margin:
-                EdgeInsets.fromLTRB(contentMargin, 0, showAvatars ? 8 : 0, 0),
+            margin: EdgeInsets.fromLTRB(contentMargin, 0, avatarBubbleGap, 0),
             radius: bubbleRadius,
             child: _bubbleChild(TextAlign.left, context, actionContext),
           ),

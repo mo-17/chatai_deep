@@ -1,0 +1,2386 @@
+{
+  "generator": "built-in imagegen",
+  "sets": [
+    {
+      "id": "crimsonPhoenix",
+      "sourceId": "01-crimson-phoenix",
+      "label": "赤曜凤凰",
+      "generator": "built-in imagegen",
+      "files": {
+        "avatar": {
+          "path": "chat_message/assets/decoration/crimsonPhoenix_frame.webp",
+          "bytes": 284232,
+          "sha256": "7adb95907895dcf045476ef6c0b3665317a716f2fcc7b54ec134ae91300742f7"
+        },
+        "avatarPoster": {
+          "path": "chat_message/assets/decoration/crimsonPhoenix_frame_poster.webp",
+          "bytes": 44278,
+          "sha256": "76fa937c4fc6865f4053f74b4033b4ac9faeeabac0ce18b58e34de475c991ae4"
+        },
+        "bubble": {
+          "path": "chat_message/assets/decoration/crimsonPhoenix_bubble.webp",
+          "bytes": 435830,
+          "sha256": "e718cd5e9653cd4b510f0566125213c5dfb31935c2c4c7bbbff1d583c690d60b"
+        },
+        "bubblePoster": {
+          "path": "chat_message/assets/decoration/crimsonPhoenix_bubble_poster.webp",
+          "bytes": 65070,
+          "sha256": "690addbf0bf97fa0590814ea520ac6c7fa037a5ecb8ec165c32d7e7578bdb933"
+        }
+      },
+      "sourceFrames": {
+        "avatar": [
+          {
+            "path": "output/chat-decoration-20styles-20261022/01-crimson-phoenix/avatar/frames/01.png",
+            "bytes": 51860,
+            "sha256": "07611b2e22382bfb65f92e1921328b3945f38031fcc850896d7ce501ecd39dd5"
+          },
+          {
+            "path": "output/chat-decoration-20styles-20261022/01-crimson-phoenix/avatar/frames/02.png",
+            "bytes": 53761,
+            "sha256": "a4fa04a383bd36b5462f7e323c64573612d3c238b40bcd8e4b5d8d09dd2c27c2"
+          },
+          {
+            "path": "output/chat-decoration-20styles-20261022/01-crimson-phoenix/avatar/frames/03.png",
+            "bytes": 62707,
+            "sha256": "5bce1b347e8ab69a746d04e4e922288539d1054b5d3856853e1a8fc9383d8ea0"
+          },
+          {
+            "path": "output/chat-decoration-20styles-20261022/01-crimson-phoenix/avatar/frames/04.png",
+            "bytes": 65116,
+            "sha256": "5cfc42d80f37210b4a42ddc15403f55cae192a24c6b5c4edd396b0a404c80076"
+          },
+          {
+            "path": "output/chat-decoration-20styles-20261022/01-crimson-phoenix/avatar/frames/05.png",
+            "bytes": 57543,
+            "sha256": "fde1a5927d71165c6b2d99eb37ac113d2ae49c183154ef36c5755ffcfab8e361"
+          },
+          {
+            "path": "output/chat-decoration-20styles-20261022/01-crimson-phoenix/avatar/frames/06.png",
+            "bytes": 52326,
+            "sha256": "3998cc42bb9e6f5e5e09ba2e8b912736fc4ea4e4725299ae2d2f5589a1777f5c"
+          }
+        ],
+        "bubble": [
+          {
+            "path": "output/chat-decoration-20styles-20261022/01-crimson-phoenix/bubble/frames/01.png",
+            "bytes": 83565,
+            "sha256": "408f2f488ac9c5d5b73f3de02505ad015f2f8d114211f1bc7ffb41b1a46774b8"
+          },
+          {
+            "path": "output/chat-decoration-20styles-20261022/01-crimson-phoenix/bubble/frames/02.png",
+            "bytes": 89213,
+            "sha256": "da325b69402f16928fd3b29f38b7db47f8f485dc655d392546dd7b77ef6f1f2a"
+          },
+          {
+            "path": "output/chat-decoration-20styles-20261022/01-crimson-phoenix/bubble/frames/03.png",
+            "bytes": 101464,
+            "sha256": "71c76656a3217114500d30f57eeb98c7f53916e7439534706e6254ff821a2e68"
+          },
+          {
+            "path": "output/chat-decoration-20styles-20261022/01-crimson-phoenix/bubble/frames/04.png",
+            "bytes": 114096,
+            "sha256": "870270280be27c493d86090e0e7a0a9d171d9d137933634d4f4f4f879684a2a5"
+          },
+          {
+            "path": "output/chat-decoration-20styles-20261022/01-crimson-phoenix/bubble/frames/05.png",
+            "bytes": 93930,
+            "sha256": "650238812c29c0aaabd3939cb61a9bdce08ac6c3b330842e2a6d1fce3f873574"
+          },
+          {
+            "path": "output/chat-decoration-20styles-20261022/01-crimson-phoenix/bubble/frames/06.png",
+            "bytes": 83374,
+            "sha256": "38a73a69712bad7bd91730ecd10f7ed22e61cf72de7fab977fa751d2371a8af5"
+          }
+        ]
+      },
+      "avatarInset": 0.25,
+      "bubbleBackgroundInsets": [
+        21.25,
+        21.75,
+        21.5,
+        21.75
+      ],
+      "frameCount": 6,
+      "frameDurationMs": 180,
+      "loopMs": 1080,
+      "frameSize": [
+        256,
+        256
+      ],
+      "bubbleSize": [
+        512,
+        320
+      ],
+      "bubbleScale": 4,
+      "bubbleCenterSlicePixels": [
+        200,
+        156,
+        312,
+        164
+      ]
+    },
+    {
+      "id": "frostPalace",
+      "sourceId": "02-frost-palace",
+      "label": "霜月雪境",
+      "generator": "built-in imagegen",
+      "files": {
+        "avatar": {
+          "path": "chat_message/assets/decoration/frostPalace_frame.webp",
+          "bytes": 238820,
+          "sha256": "89f834226c02589086773c8f8a75a95201aea765e7a0f6149adc73f6f7a8d1af"
+        },
+        "avatarPoster": {
+          "path": "chat_message/assets/decoration/frostPalace_frame_poster.webp",
+          "bytes": 37416,
+          "sha256": "41e9cd469259382dc0a469bddbfd825a6c6f933d7b5b17202f5a91e01a546f9d"
+        },
+        "bubble": {
+          "path": "chat_message/assets/decoration/frostPalace_bubble.webp",
+          "bytes": 410132,
+          "sha256": "dfdb8a7630b3eed087a720fb892f7d3241a861453c90c1c947f956c9500ca95b"
+        },
+        "bubblePoster": {
+          "path": "chat_message/assets/decoration/frostPalace_bubble_poster.webp",
+          "bytes": 64008,
+          "sha256": "a7f59527181fe8f09782794447d61a2b6b5824dd2c12928dd0c609044386dd46"
+        }
+      },
+      "sourceFrames": {
+        "avatar": [
+          {
+            "path": "output/chat-decoration-20styles-20261022/02-frost-palace/avatar/frames/01.png",
+            "bytes": 46334,
+            "sha256": "e4ef8faa88d61dd0fadda91150f88f1f236f78dd6692ac89e3f12e5cad2ff59c"
+          },
+          {
+            "path": "output/chat-decoration-20styles-20261022/02-frost-palace/avatar/frames/02.png",
+            "bytes": 50780,
+            "sha256": "937490a5e823db0f396561b4202a5275ba1a975fceb8cab49126abb0ca92da9b"
+          },
+          {
+            "path": "output/chat-decoration-20styles-20261022/02-frost-palace/avatar/frames/03.png",
+            "bytes": 56475,
+            "sha256": "849ea0ba67a5f0b0fc7fe18c0487549fdd373d594ebc51a931847104afc472dc"
+          },
+          {
+            "path": "output/chat-decoration-20styles-20261022/02-frost-palace/avatar/frames/04.png",
+            "bytes": 52458,
+            "sha256": "02a8e2b20e0215249338f364460c42de75ff0b2a970c03a20a2550471801bc98"
+          },
+          {
+            "path": "output/chat-decoration-20styles-20261022/02-frost-palace/avatar/frames/05.png",
+            "bytes": 46530,
+            "sha256": "d1a7fe59cd0cd792dd5d740694877f8be9af7d490d97625021e211f28a6eb860"
+          },
+          {
+            "path": "output/chat-decoration-20styles-20261022/02-frost-palace/avatar/frames/06.png",
+            "bytes": 46784,
+            "sha256": "7a085ea465bcb1cf45280cfd58ef87248dabb769baa32f20ad7c1ddcdf4006c3"
+          }
+        ],
+        "bubble": [
+          {
+            "path": "output/chat-decoration-20styles-20261022/02-frost-palace/bubble/frames/01.png",
+            "bytes": 86193,
+            "sha256": "76b62c016e9502cc51486ebcd41910d1f5559b8d60d559aacf7dc28e14aa24f0"
+          },
+          {
+            "path": "output/chat-decoration-20styles-20261022/02-frost-palace/bubble/frames/02.png",
+            "bytes": 89356,
+            "sha256": "4b037a8c5f496d85a114fb3289355cdbd9190631987800da8d99b4359bd6f760"
+          },
+          {
+            "path": "output/chat-decoration-20styles-20261022/02-frost-palace/bubble/frames/03.png",
+            "bytes": 101272,
+            "sha256": "59a83f61902cf985af927387e7076457d632b0873362bcfc1a13d4dcc23f9f7e"
+          },
+          {
+            "path": "output/chat-decoration-20styles-20261022/02-frost-palace/bubble/frames/04.png",
+            "bytes": 100675,
+            "sha256": "aa7e6fcc52b6f5a61c358865ff2a5cc1d358599e4560c84db69f192cdf35812e"
+          },
+          {
+            "path": "output/chat-decoration-20styles-20261022/02-frost-palace/bubble/frames/05.png",
+            "bytes": 86023,
+            "sha256": "cd338f096ee3569b67afbf910c75c4f5f1a186f25b6cd1f6ef97d8a736438905"
+          },
+          {
+            "path": "output/chat-decoration-20styles-20261022/02-frost-palace/bubble/frames/06.png",
+            "bytes": 86147,
+            "sha256": "f5a980fa82a05181a360354eb7bddd08b99c07f2c4a6e288b5001ae26435c78e"
+          }
+        ]
+      },
+      "avatarInset": 0.236328,
+      "bubbleBackgroundInsets": [
+        19.5,
+        21.0,
+        19.75,
+        21.25
+      ],
+      "frameCount": 6,
+      "frameDurationMs": 180,
+      "loopMs": 1080,
+      "frameSize": [
+        256,
+        256
+      ],
+      "bubbleSize": [
+        512,
+        320
+      ],
+      "bubbleScale": 4,
+      "bubbleCenterSlicePixels": [
+        200,
+        156,
+        312,
+        164
+      ]
+    },
+    {
+      "id": "fireflyGrove",
+      "sourceId": "03-firefly-grove",
+      "label": "萤森秘语",
+      "generator": "built-in imagegen",
+      "files": {
+        "avatar": {
+          "path": "chat_message/assets/decoration/fireflyGrove_frame.webp",
+          "bytes": 290214,
+          "sha256": "e724032b26d5c3386a9162b49a30bcd9da3504c089a8fc4b95116945b3c46171"
+        },
+        "avatarPoster": {
+          "path": "chat_message/assets/decoration/fireflyGrove_frame_poster.webp",
+          "bytes": 46706,
+          "sha256": "e22c0811d97461778b651f57d21008cce714c3719e85444ef0419e676a9428cb"
+        },
+        "bubble": {
+          "path": "chat_message/assets/decoration/fireflyGrove_bubble.webp",
+          "bytes": 523208,
+          "sha256": "1ba618acddfaeafe0a9e5d718f70c179a426d073d73f7ed51826a100409491d8"
+        },
+        "bubblePoster": {
+          "path": "chat_message/assets/decoration/fireflyGrove_bubble_poster.webp",
+          "bytes": 82150,
+          "sha256": "1e5c898204486ae99b1dce7315d006f12ab6d03196e0dc97632c70ed87cebd6b"
+        }
+      },
+      "sourceFrames": {
+        "avatar": [
+          {
+            "path": "output/chat-decoration-20styles-20261022/03-firefly-grove/avatar/frames/01.png",
+            "bytes": 59027,
+            "sha256": "835fae0f1310bb6395b311c7ec9525b255a3954d8198358049888c5dfd160fbf"
+          },
+          {
+            "path": "output/chat-decoration-20styles-20261022/03-firefly-grove/avatar/frames/02.png",
+            "bytes": 60094,
+            "sha256": "b8f1424218c60fe5981a0ca5bacbe4083be57d1ae4576ec62c2b9fb8b82362fc"
+          },
+          {
+            "path": "output/chat-decoration-20styles-20261022/03-firefly-grove/avatar/frames/03.png",
+            "bytes": 67497,
+            "sha256": "5d2870da1a1217bfb4da1d7acac3d00637f8da825d445743650b5622bfbd020b"
+          },
+          {
+            "path": "output/chat-decoration-20styles-20261022/03-firefly-grove/avatar/frames/04.png",
+            "bytes": 61984,
+            "sha256": "0542df2ea6ea909acd583a510b37150bc7e57ef220d4d43d04099d280a9945bb"
+          },
+          {
+            "path": "output/chat-decoration-20styles-20261022/03-firefly-grove/avatar/frames/05.png",
+            "bytes": 59240,
+            "sha256": "0d4fbf73e3f21a88731a02fe91e73d482c2b2e308b538f87c42874b918fe3df1"
+          },
+          {
+            "path": "output/chat-decoration-20styles-20261022/03-firefly-grove/avatar/frames/06.png",
+            "bytes": 58695,
+            "sha256": "1f8a811f256aa9abd1c4cb1cbadb78030574cb554e2097ffc09663d9541cb4ad"
+          }
+        ],
+        "bubble": [
+          {
+            "path": "output/chat-decoration-20styles-20261022/03-firefly-grove/bubble/frames/01.png",
+            "bytes": 109230,
+            "sha256": "cbcfc9d467edcfd7c1b1921dba70d528a8b80068b51232ca57b7a759a3864b76"
+          },
+          {
+            "path": "output/chat-decoration-20styles-20261022/03-firefly-grove/bubble/frames/02.png",
+            "bytes": 111115,
+            "sha256": "a2768bbb826de86bb6e36088529498f34b5b5def8da18bc69873317afe90cd1a"
+          },
+          {
+            "path": "output/chat-decoration-20styles-20261022/03-firefly-grove/bubble/frames/03.png",
+            "bytes": 125645,
+            "sha256": "865c317c572a471db9a56cc647161463055fb88e573492def0eee9b58df4bdd1"
+          },
+          {
+            "path": "output/chat-decoration-20styles-20261022/03-firefly-grove/bubble/frames/04.png",
+            "bytes": 122593,
+            "sha256": "2923b2977dbbaffa6e87b72bd1dcd98dd35f7012046782cd0520763343132cc4"
+          },
+          {
+            "path": "output/chat-decoration-20styles-20261022/03-firefly-grove/bubble/frames/05.png",
+            "bytes": 117422,
+            "sha256": "1a4683f3474c6099e0c9237fcbc1ff73d636599846c57391bfe483ced525e478"
+          },
+          {
+            "path": "output/chat-decoration-20styles-20261022/03-firefly-grove/bubble/frames/06.png",
+            "bytes": 110410,
+            "sha256": "3ec2a9d855755909b0e0eb68dffeed4720cbee92821ddef1a0d650bc58edb8b5"
+          }
+        ]
+      },
+      "avatarInset": 0.230469,
+      "bubbleBackgroundInsets": [
+        22.5,
+        21.75,
+        22.5,
+        22.0
+      ],
+      "frameCount": 6,
+      "frameDurationMs": 180,
+      "loopMs": 1080,
+      "frameSize": [
+        256,
+        256
+      ],
+      "bubbleSize": [
+        512,
+        320
+      ],
+      "bubbleScale": 4,
+      "bubbleCenterSlicePixels": [
+        200,
+        156,
+        312,
+        164
+      ]
+    },
+    {
+      "id": "cherrySoda",
+      "sourceId": "04-cherry-soda",
+      "label": "樱桃汽水",
+      "generator": "built-in imagegen",
+      "files": {
+        "avatar": {
+          "path": "chat_message/assets/decoration/cherrySoda_frame.webp",
+          "bytes": 261454,
+          "sha256": "001e41eb155192201fd092ed5285d47ebaf4be994fc5485d0db5d47e5594406b"
+        },
+        "avatarPoster": {
+          "path": "chat_message/assets/decoration/cherrySoda_frame_poster.webp",
+          "bytes": 39862,
+          "sha256": "e4be1ad22a84491e2fa925550a5489e03b69cb79883da962e61ecd51ac36a4f9"
+        },
+        "bubble": {
+          "path": "chat_message/assets/decoration/cherrySoda_bubble.webp",
+          "bytes": 463510,
+          "sha256": "1e866257c6311ef5bf363f57df19f5e2bd77fd0dbaadcccce6db36fb7b09facd"
+        },
+        "bubblePoster": {
+          "path": "chat_message/assets/decoration/cherrySoda_bubble_poster.webp",
+          "bytes": 66622,
+          "sha256": "253015721a759c5f763aea64a59621be463437af1ef3d84a34a051ce69de6d0f"
+        }
+      },
+      "sourceFrames": {
+        "avatar": [
+          {
+            "path": "output/chat-decoration-20styles-20261022/04-cherry-soda/avatar/frames/01.png",
+            "bytes": 51977,
+            "sha256": "4dce6039f0444acb726dfdb015939cffe17b60f7f76465c67a157a2146e94ed2"
+          },
+          {
+            "path": "output/chat-decoration-20styles-20261022/04-cherry-soda/avatar/frames/02.png",
+            "bytes": 56297,
+            "sha256": "b543c406c4fdef669f5ffc132c7100d8ee81327310e6992aceaeadde81f04855"
+          },
+          {
+            "path": "output/chat-decoration-20styles-20261022/04-cherry-soda/avatar/frames/03.png",
+            "bytes": 62301,
+            "sha256": "656748c2d2c34e7daa17eb6e637105a5ddaf24f262090e6d2e89ec422427f36b"
+          },
+          {
+            "path": "output/chat-decoration-20styles-20261022/04-cherry-soda/avatar/frames/04.png",
+            "bytes": 59110,
+            "sha256": "75ec147a0e32adda5c10db8e34fc68f95f3601ae48bce67c31db0c54c1696142"
+          },
+          {
+            "path": "output/chat-decoration-20styles-20261022/04-cherry-soda/avatar/frames/05.png",
+            "bytes": 55598,
+            "sha256": "74fff02e5aad69a45909664887060afb1b35897b346591a19399ddc88ad92cb7"
+          },
+          {
+            "path": "output/chat-decoration-20styles-20261022/04-cherry-soda/avatar/frames/06.png",
+            "bytes": 53070,
+            "sha256": "53c978958b234dfd561c1996fe3821a6ea2308eccd12b78b11838c2e9e47e1c7"
+          }
+        ],
+        "bubble": [
+          {
+            "path": "output/chat-decoration-20styles-20261022/04-cherry-soda/bubble/frames/01.png",
+            "bytes": 89889,
+            "sha256": "790bda04654af66da13a18a8e542307a92042653e6a3e271bfed1252834c64f8"
+          },
+          {
+            "path": "output/chat-decoration-20styles-20261022/04-cherry-soda/bubble/frames/02.png",
+            "bytes": 95926,
+            "sha256": "9602c4adc95667d6a61a9641911b26b7419fdd63c775763dc461c5df8deee661"
+          },
+          {
+            "path": "output/chat-decoration-20styles-20261022/04-cherry-soda/bubble/frames/03.png",
+            "bytes": 118685,
+            "sha256": "278a59d33babefc2e1e6b01723583e82362ab8a7457a6c9224db06c0330597b0"
+          },
+          {
+            "path": "output/chat-decoration-20styles-20261022/04-cherry-soda/bubble/frames/04.png",
+            "bytes": 118853,
+            "sha256": "9d6c4425b342a7d08f0538c8b97a0e3c160a6dfe8124100d9eb756111ec63f6b"
+          },
+          {
+            "path": "output/chat-decoration-20styles-20261022/04-cherry-soda/bubble/frames/05.png",
+            "bytes": 97808,
+            "sha256": "48ed43ad653c894a344fbd55f49c9ee4c2600bbf103ed733f933b9279c80ff80"
+          },
+          {
+            "path": "output/chat-decoration-20styles-20261022/04-cherry-soda/bubble/frames/06.png",
+            "bytes": 92530,
+            "sha256": "c5398d96dbaf94e7ff8a1418285bf74d14f489fd2fc3e42f6323815a392bc186"
+          }
+        ]
+      },
+      "avatarInset": 0.25,
+      "bubbleBackgroundInsets": [
+        30.0,
+        23.25,
+        29.75,
+        23.25
+      ],
+      "frameCount": 6,
+      "frameDurationMs": 180,
+      "loopMs": 1080,
+      "frameSize": [
+        256,
+        256
+      ],
+      "bubbleSize": [
+        512,
+        320
+      ],
+      "bubbleScale": 4,
+      "bubbleCenterSlicePixels": [
+        200,
+        156,
+        312,
+        164
+      ]
+    },
+    {
+      "id": "honeyGarden",
+      "sourceId": "05-honey-garden",
+      "label": "蜜蜂花园",
+      "generator": "built-in imagegen",
+      "files": {
+        "avatar": {
+          "path": "chat_message/assets/decoration/honeyGarden_frame.webp",
+          "bytes": 269046,
+          "sha256": "f40febde0c1c2e1cbeec42284c67097a95ace6a6e150e22049b92933953d03c5"
+        },
+        "avatarPoster": {
+          "path": "chat_message/assets/decoration/honeyGarden_frame_poster.webp",
+          "bytes": 43938,
+          "sha256": "99dba8f882911219495bb9e548c2b8dceea467e00878c42af1f6588132256ea1"
+        },
+        "bubble": {
+          "path": "chat_message/assets/decoration/honeyGarden_bubble.webp",
+          "bytes": 402444,
+          "sha256": "1b18a4307dbb278abdcbaeaaf65e64f60d374bd84bf36868cc93bd27239fadcd"
+        },
+        "bubblePoster": {
+          "path": "chat_message/assets/decoration/honeyGarden_bubble_poster.webp",
+          "bytes": 65300,
+          "sha256": "21d118f8da1b98f17d4721fea510e1cda50c1bb126fff2d124e5ab868764c1a0"
+        }
+      },
+      "sourceFrames": {
+        "avatar": [
+          {
+            "path": "output/chat-decoration-20styles-20261022/05-honey-garden/avatar/frames/01.png",
+            "bytes": 57591,
+            "sha256": "c88d06bd2753c86bd2e37238158528b4923a468ca123aa6b69edf5d0c71d8c9f"
+          },
+          {
+            "path": "output/chat-decoration-20styles-20261022/05-honey-garden/avatar/frames/02.png",
+            "bytes": 58398,
+            "sha256": "91a45eb1badff0ed02b06863a84d74bc17302dde7d39ae91c23d9447efa7c13c"
+          },
+          {
+            "path": "output/chat-decoration-20styles-20261022/05-honey-garden/avatar/frames/03.png",
+            "bytes": 57839,
+            "sha256": "4c79efa6f06f69da46c117e8335f0ce45a820ee540de6e49428edbccf5100c73"
+          },
+          {
+            "path": "output/chat-decoration-20styles-20261022/05-honey-garden/avatar/frames/04.png",
+            "bytes": 59036,
+            "sha256": "6b520bcb6901a080b3691c7bb0a47cbba63375c725ba65f552ffc1df64925d86"
+          },
+          {
+            "path": "output/chat-decoration-20styles-20261022/05-honey-garden/avatar/frames/05.png",
+            "bytes": 58950,
+            "sha256": "9e7322bf4fd9fcedc8aa68b3db7a94f51a29099841a076f10602ab7c188db5c0"
+          },
+          {
+            "path": "output/chat-decoration-20styles-20261022/05-honey-garden/avatar/frames/06.png",
+            "bytes": 57681,
+            "sha256": "f10ed3b07191ca65f052ff1a55048515b3396040f9f10238ac13e51f3599a9a4"
+          }
+        ],
+        "bubble": [
+          {
+            "path": "output/chat-decoration-20styles-20261022/05-honey-garden/bubble/frames/01.png",
+            "bytes": 88688,
+            "sha256": "5f6d0a6c075fa0eed2611bd13606ae466927764d408d13c98f16d00cd5d8e052"
+          },
+          {
+            "path": "output/chat-decoration-20styles-20261022/05-honey-garden/bubble/frames/02.png",
+            "bytes": 88993,
+            "sha256": "91fde1f3ffe76e4a63dd97568e06b80a296e324fe169ab755dd155f6ba6ee4c1"
+          },
+          {
+            "path": "output/chat-decoration-20styles-20261022/05-honey-garden/bubble/frames/03.png",
+            "bytes": 92282,
+            "sha256": "e47d64f3d1a6242beffd99dc21de28646a18087d86add255ad9df6387e04dbd3"
+          },
+          {
+            "path": "output/chat-decoration-20styles-20261022/05-honey-garden/bubble/frames/04.png",
+            "bytes": 91945,
+            "sha256": "27e2fcc5598dd4177e6f44f630bf097bf09541cd34eaa25d769aa0924d62d193"
+          },
+          {
+            "path": "output/chat-decoration-20styles-20261022/05-honey-garden/bubble/frames/05.png",
+            "bytes": 88661,
+            "sha256": "643421d9e85b85cd5b17d06d5688647f2cffcc3384bf342efd12debab4316b8f"
+          },
+          {
+            "path": "output/chat-decoration-20styles-20261022/05-honey-garden/bubble/frames/06.png",
+            "bytes": 90158,
+            "sha256": "4062293a7ca6edd8f7b4fcfb0f2c1f61466cf8099244c3cd10879a642f119614"
+          }
+        ]
+      },
+      "avatarInset": 0.230469,
+      "bubbleBackgroundInsets": [
+        21.0,
+        22.25,
+        21.0,
+        22.25
+      ],
+      "frameCount": 6,
+      "frameDurationMs": 180,
+      "loopMs": 1080,
+      "frameSize": [
+        256,
+        256
+      ],
+      "bubbleSize": [
+        512,
+        320
+      ],
+      "bubbleScale": 4,
+      "bubbleCenterSlicePixels": [
+        200,
+        156,
+        312,
+        164
+      ]
+    },
+    {
+      "id": "pandaBamboo",
+      "sourceId": "06-panda-bamboo",
+      "label": "竹影熊猫",
+      "generator": "built-in imagegen",
+      "files": {
+        "avatar": {
+          "path": "chat_message/assets/decoration/pandaBamboo_frame.webp",
+          "bytes": 275256,
+          "sha256": "9ff5641b236ee83fac6d5eeb0f20afd080c34a6f99a68c75088c8ef3b387e64a"
+        },
+        "avatarPoster": {
+          "path": "chat_message/assets/decoration/pandaBamboo_frame_poster.webp",
+          "bytes": 41772,
+          "sha256": "906fd818d5d1d6f70e3d454b157e6b0380b649e8ab07919bbedc9bed4f50ddc8"
+        },
+        "bubble": {
+          "path": "chat_message/assets/decoration/pandaBamboo_bubble.webp",
+          "bytes": 478562,
+          "sha256": "081b8385621ab138e3663fd3a4e7e1c4d34f7a3cf4905f4b6a7116e94f65e86d"
+        },
+        "bubblePoster": {
+          "path": "chat_message/assets/decoration/pandaBamboo_bubble_poster.webp",
+          "bytes": 72460,
+          "sha256": "def7ada7d1c4e20d225088dff0b6c9238d52fe7fb7119e7718d49b82a350b7a0"
+        }
+      },
+      "sourceFrames": {
+        "avatar": [
+          {
+            "path": "output/chat-decoration-20styles-20261022/06-panda-bamboo/avatar/frames/01.png",
+            "bytes": 55834,
+            "sha256": "f781a61c949075cbbd893d3b20e4b80d462d25ee1bba1addf1dba36c99f31ae8"
+          },
+          {
+            "path": "output/chat-decoration-20styles-20261022/06-panda-bamboo/avatar/frames/02.png",
+            "bytes": 58453,
+            "sha256": "305bfe8642873798ff15f400c434939a0960ac8315492bf211b3431a5992a418"
+          },
+          {
+            "path": "output/chat-decoration-20styles-20261022/06-panda-bamboo/avatar/frames/03.png",
+            "bytes": 68223,
+            "sha256": "fa581cd5bf88b018af593975bf5db70168138eed1be82842f5452293681f2a64"
+          },
+          {
+            "path": "output/chat-decoration-20styles-20261022/06-panda-bamboo/avatar/frames/04.png",
+            "bytes": 65096,
+            "sha256": "6939a4b7d2e630ea06e527a6ce3de5e5147de1da8b06875a2dafbefd7921e366"
+          },
+          {
+            "path": "output/chat-decoration-20styles-20261022/06-panda-bamboo/avatar/frames/05.png",
+            "bytes": 56266,
+            "sha256": "86186eedba2212577ae324e51bd35b4d00d00d504bd381c7121198c86ac9df1c"
+          },
+          {
+            "path": "output/chat-decoration-20styles-20261022/06-panda-bamboo/avatar/frames/06.png",
+            "bytes": 57420,
+            "sha256": "17fa69d60c7051527f95ee43ac7c7b23ed0b61db54915495a5fe4716c9353b56"
+          }
+        ],
+        "bubble": [
+          {
+            "path": "output/chat-decoration-20styles-20261022/06-panda-bamboo/bubble/frames/01.png",
+            "bytes": 101944,
+            "sha256": "a0991b945c9de3e003893d6dc20a8275f277f33b82edb6b4d097afe164e240d9"
+          },
+          {
+            "path": "output/chat-decoration-20styles-20261022/06-panda-bamboo/bubble/frames/02.png",
+            "bytes": 105097,
+            "sha256": "e051a3584728ad7565125313e1405c90b1bfa6fae6f8ddb9a4ec9ca6ca915b6d"
+          },
+          {
+            "path": "output/chat-decoration-20styles-20261022/06-panda-bamboo/bubble/frames/03.png",
+            "bytes": 121798,
+            "sha256": "379868168190992a083dd3c3729a8631b057f422e06d9ea8383ec745720f2c9c"
+          },
+          {
+            "path": "output/chat-decoration-20styles-20261022/06-panda-bamboo/bubble/frames/04.png",
+            "bytes": 119135,
+            "sha256": "5ec4a1d1bc29243b241bd1aa46542aeafbb5625b9acbd8af57ec629fdca044ce"
+          },
+          {
+            "path": "output/chat-decoration-20styles-20261022/06-panda-bamboo/bubble/frames/05.png",
+            "bytes": 110011,
+            "sha256": "3082be9cd63e45364f1a90e4e3af29049b817d579ffbaba987c116409052ca5b"
+          },
+          {
+            "path": "output/chat-decoration-20styles-20261022/06-panda-bamboo/bubble/frames/06.png",
+            "bytes": 104209,
+            "sha256": "781614d8ffa141fd59db67199c5ad896e0bf9ef4eefbcf1978448d56d2d8fb4e"
+          }
+        ]
+      },
+      "avatarInset": 0.244141,
+      "bubbleBackgroundInsets": [
+        26.5,
+        23.25,
+        26.5,
+        23.25
+      ],
+      "frameCount": 6,
+      "frameDurationMs": 180,
+      "loopMs": 1080,
+      "frameSize": [
+        256,
+        256
+      ],
+      "bubbleSize": [
+        512,
+        320
+      ],
+      "bubbleScale": 4,
+      "bubbleCenterSlicePixels": [
+        200,
+        156,
+        312,
+        164
+      ]
+    },
+    {
+      "id": "shibaPost",
+      "sourceId": "07-shiba-post",
+      "label": "柴犬邮局",
+      "generator": "built-in imagegen",
+      "files": {
+        "avatar": {
+          "path": "chat_message/assets/decoration/shibaPost_frame.webp",
+          "bytes": 266278,
+          "sha256": "8277edb8321ad08dac917c5dc6840ae9ba4b204d51cfb5d8d0cb5eea31121bb2"
+        },
+        "avatarPoster": {
+          "path": "chat_message/assets/decoration/shibaPost_frame_poster.webp",
+          "bytes": 43048,
+          "sha256": "786241ad0a78aa8382e9f867264564d9d4c1ceef3ad7951ef6feb4ad586b7a8b"
+        },
+        "bubble": {
+          "path": "chat_message/assets/decoration/shibaPost_bubble.webp",
+          "bytes": 351790,
+          "sha256": "cc67df5f693e8d75974ea4e546e77853fcd63ec7e7323357e1a741c37b16f19c"
+        },
+        "bubblePoster": {
+          "path": "chat_message/assets/decoration/shibaPost_bubble_poster.webp",
+          "bytes": 51728,
+          "sha256": "e255b2ebe8be0f5ad283227353a763feae889fa33525ce4c98cfafa3a8c58c57"
+        }
+      },
+      "sourceFrames": {
+        "avatar": [
+          {
+            "path": "output/chat-decoration-20styles-20261022/07-shiba-post/avatar/frames/01.png",
+            "bytes": 56594,
+            "sha256": "62732c3d274f028f2289c913c83e15c164b22ea4baf20b6874497304327de4a3"
+          },
+          {
+            "path": "output/chat-decoration-20styles-20261022/07-shiba-post/avatar/frames/02.png",
+            "bytes": 58601,
+            "sha256": "40468dbf85e38241c0592d9683fe84ddf42e441e87b04d83b6e6896574a8803c"
+          },
+          {
+            "path": "output/chat-decoration-20styles-20261022/07-shiba-post/avatar/frames/03.png",
+            "bytes": 61004,
+            "sha256": "2ea532af48219c7d5d24b4ca73fb0d94707d85f236e34420606d087ddc6a4fb3"
+          },
+          {
+            "path": "output/chat-decoration-20styles-20261022/07-shiba-post/avatar/frames/04.png",
+            "bytes": 57976,
+            "sha256": "16650ff628ebc18769a952409b367744b2e67c93b6bef169cb30bdb60294c9ef"
+          },
+          {
+            "path": "output/chat-decoration-20styles-20261022/07-shiba-post/avatar/frames/05.png",
+            "bytes": 57712,
+            "sha256": "21b7224e01a9cb47d216923d8629f95709281b55add34b6481a83ccf1b62d0ed"
+          },
+          {
+            "path": "output/chat-decoration-20styles-20261022/07-shiba-post/avatar/frames/06.png",
+            "bytes": 56686,
+            "sha256": "62dd7c46c6fe559cf7acb685ac45ea72b4b6fd3ce04769cfd7bf2a9e345950e3"
+          }
+        ],
+        "bubble": [
+          {
+            "path": "output/chat-decoration-20styles-20261022/07-shiba-post/bubble/frames/01.png",
+            "bytes": 72240,
+            "sha256": "0fa7b87acada890a65cd523ca3f3a58e06c7d21e3cc6db59e4e61a4b23fc7660"
+          },
+          {
+            "path": "output/chat-decoration-20styles-20261022/07-shiba-post/bubble/frames/02.png",
+            "bytes": 76676,
+            "sha256": "5b73fc131dd99c5cef16b25274aec88bb89ea520f42fa55512da75c513a206e6"
+          },
+          {
+            "path": "output/chat-decoration-20styles-20261022/07-shiba-post/bubble/frames/03.png",
+            "bytes": 95551,
+            "sha256": "19431b328001dd1b3b7d1d715062152241b3814cddb2df53a486fb6c9a0fd8de"
+          },
+          {
+            "path": "output/chat-decoration-20styles-20261022/07-shiba-post/bubble/frames/04.png",
+            "bytes": 89983,
+            "sha256": "3748c34a37e2d13442b8b31af4a70d19bf1ce29b8555e58d53d332fb91cb5bff"
+          },
+          {
+            "path": "output/chat-decoration-20styles-20261022/07-shiba-post/bubble/frames/05.png",
+            "bytes": 79614,
+            "sha256": "2c76b19b3b42de60a3515f97e5eefe04bd7f638264a915fb4e8a0a4daf251bc9"
+          },
+          {
+            "path": "output/chat-decoration-20styles-20261022/07-shiba-post/bubble/frames/06.png",
+            "bytes": 72526,
+            "sha256": "f77ff7e61999b3db23bf7ac90a51ecb6c3dbbcc830f4b18badf8550aa80386c1"
+          }
+        ]
+      },
+      "avatarInset": 0.261719,
+      "bubbleBackgroundInsets": [
+        27.75,
+        22.5,
+        27.5,
+        22.5
+      ],
+      "frameCount": 6,
+      "frameDurationMs": 180,
+      "loopMs": 1080,
+      "frameSize": [
+        256,
+        256
+      ],
+      "bubbleSize": [
+        512,
+        320
+      ],
+      "bubbleScale": 4,
+      "bubbleCenterSlicePixels": [
+        200,
+        156,
+        312,
+        164
+      ]
+    },
+    {
+      "id": "catMagic",
+      "sourceId": "08-midnight-cat-magic",
+      "label": "猫咪魔法",
+      "generator": "built-in imagegen",
+      "files": {
+        "avatar": {
+          "path": "chat_message/assets/decoration/catMagic_frame.webp",
+          "bytes": 288996,
+          "sha256": "756458a2ed636e771ab37f2eaecee3343a2a0d0cb72a4ba47728772cc6ec775a"
+        },
+        "avatarPoster": {
+          "path": "chat_message/assets/decoration/catMagic_frame_poster.webp",
+          "bytes": 43586,
+          "sha256": "23a31689ef601f33a36806252e12fbac77f24c6f8f47b6f34c0b136b85bc4350"
+        },
+        "bubble": {
+          "path": "chat_message/assets/decoration/catMagic_bubble.webp",
+          "bytes": 477180,
+          "sha256": "d773d6cfc79ef233ecfe278d54a1df390c2a165780a3ce01d127c5116e34c336"
+        },
+        "bubblePoster": {
+          "path": "chat_message/assets/decoration/catMagic_bubble_poster.webp",
+          "bytes": 70722,
+          "sha256": "24fbaebfd2bab681c16e5b7b51d40a2f51e59258a2edd01f95e8f6d8d1b3943c"
+        }
+      },
+      "sourceFrames": {
+        "avatar": [
+          {
+            "path": "output/chat-decoration-20styles-20261022/08-midnight-cat-magic/avatar/frames/01.png",
+            "bytes": 55074,
+            "sha256": "007b9978d4307a979a771b9b9c6409d86ba1fbfc254569f03f0ef252c1b12786"
+          },
+          {
+            "path": "output/chat-decoration-20styles-20261022/08-midnight-cat-magic/avatar/frames/02.png",
+            "bytes": 59587,
+            "sha256": "b32d86fb031fac9df540e152256b55551331b3607a983a0bdc181d58ffbad855"
+          },
+          {
+            "path": "output/chat-decoration-20styles-20261022/08-midnight-cat-magic/avatar/frames/03.png",
+            "bytes": 67487,
+            "sha256": "e5651e798afe78927cbeb733ff8fa5c7272eca4e5bf5376c28eeff8d1280e73c"
+          },
+          {
+            "path": "output/chat-decoration-20styles-20261022/08-midnight-cat-magic/avatar/frames/04.png",
+            "bytes": 58171,
+            "sha256": "ef05a985cb364dc5803b815b01d3b35f78018073b5309589c2ca59dc47e2d7f3"
+          },
+          {
+            "path": "output/chat-decoration-20styles-20261022/08-midnight-cat-magic/avatar/frames/05.png",
+            "bytes": 56432,
+            "sha256": "96ecc70a6b2818fcad137995362c1a9c6979b4b1d4ca410237fc2c0a84a84cb8"
+          },
+          {
+            "path": "output/chat-decoration-20styles-20261022/08-midnight-cat-magic/avatar/frames/06.png",
+            "bytes": 55365,
+            "sha256": "8b79f3188a53b1e237d88fcb38824a507203de039ab6c05f9034cfa3e5cc6bbf"
+          }
+        ],
+        "bubble": [
+          {
+            "path": "output/chat-decoration-20styles-20261022/08-midnight-cat-magic/bubble/frames/01.png",
+            "bytes": 94074,
+            "sha256": "f7f46ab0091d7f50658b07adb8da91e7b2e4294ce2e7b564fc7f89a10bb371ab"
+          },
+          {
+            "path": "output/chat-decoration-20styles-20261022/08-midnight-cat-magic/bubble/frames/02.png",
+            "bytes": 95494,
+            "sha256": "41f4ae9a0f9083e5b9b49664ca4602791f16a28faef62fe5719f0399462549eb"
+          },
+          {
+            "path": "output/chat-decoration-20styles-20261022/08-midnight-cat-magic/bubble/frames/03.png",
+            "bytes": 131379,
+            "sha256": "d1e87a37221c345792f26b8fde28201a35d48c8092d1a8e003674a3f22cd3093"
+          },
+          {
+            "path": "output/chat-decoration-20styles-20261022/08-midnight-cat-magic/bubble/frames/04.png",
+            "bytes": 112822,
+            "sha256": "16c9e4a61a72f468f5d2af47fc942cca05d069e0c801facd1410f74b44ca1825"
+          },
+          {
+            "path": "output/chat-decoration-20styles-20261022/08-midnight-cat-magic/bubble/frames/05.png",
+            "bytes": 99643,
+            "sha256": "d068ff72ea8e75c2bf0da415587e5d01fe78efb1e00574785ce2f719083d47f4"
+          },
+          {
+            "path": "output/chat-decoration-20styles-20261022/08-midnight-cat-magic/bubble/frames/06.png",
+            "bytes": 94553,
+            "sha256": "4a445f1e5fe01ee82414c776d15169ccf397058f3907b5dac32565c0094dc585"
+          }
+        ]
+      },
+      "avatarInset": 0.255859,
+      "bubbleBackgroundInsets": [
+        20.5,
+        20.75,
+        20.5,
+        20.75
+      ],
+      "frameCount": 6,
+      "frameDurationMs": 180,
+      "loopMs": 1080,
+      "frameSize": [
+        256,
+        256
+      ],
+      "bubbleSize": [
+        512,
+        320
+      ],
+      "bubbleScale": 4,
+      "bubbleCenterSlicePixels": [
+        200,
+        156,
+        312,
+        164
+      ]
+    },
+    {
+      "id": "orbitalVoyage",
+      "sourceId": "09-orbital-voyage",
+      "label": "星际航行",
+      "generator": "built-in imagegen",
+      "files": {
+        "avatar": {
+          "path": "chat_message/assets/decoration/orbitalVoyage_frame.webp",
+          "bytes": 294798,
+          "sha256": "7f2c3d1fd11dd79f5d8199a5828dc8dbfcd71d1d8be8c9f8fd0ed8fe156f486c"
+        },
+        "avatarPoster": {
+          "path": "chat_message/assets/decoration/orbitalVoyage_frame_poster.webp",
+          "bytes": 48506,
+          "sha256": "ffb06ba3da37d9904aa8aac740fcb659de55532b8537769bb40ab76764cd2150"
+        },
+        "bubble": {
+          "path": "chat_message/assets/decoration/orbitalVoyage_bubble.webp",
+          "bytes": 361178,
+          "sha256": "7d26a16a29f8f383ee3d147f76f227dcb7a26c86f3a6efbcc4b6e342d2fae3b7"
+        },
+        "bubblePoster": {
+          "path": "chat_message/assets/decoration/orbitalVoyage_bubble_poster.webp",
+          "bytes": 53334,
+          "sha256": "45994048e394c0889da0a8740a26bf98d6fa4d4e22887d42893f41bc758d1586"
+        }
+      },
+      "sourceFrames": {
+        "avatar": [
+          {
+            "path": "output/chat-decoration-20styles-20261022/09-orbital-voyage/avatar/frames/01.png",
+            "bytes": 62459,
+            "sha256": "466f4e525b7ea5969ed73644c195f1d69a9b9f99bccd4fa1f02c810290f11c2e"
+          },
+          {
+            "path": "output/chat-decoration-20styles-20261022/09-orbital-voyage/avatar/frames/02.png",
+            "bytes": 65777,
+            "sha256": "bdc7a5f44b55783d503a12869a74217d370f31c7c6ee9979c8ceed2fd13875e7"
+          },
+          {
+            "path": "output/chat-decoration-20styles-20261022/09-orbital-voyage/avatar/frames/03.png",
+            "bytes": 67615,
+            "sha256": "eea6c762e6ebbeb793323c419da652d553edb7a463798653c3ba46179302db07"
+          },
+          {
+            "path": "output/chat-decoration-20styles-20261022/09-orbital-voyage/avatar/frames/04.png",
+            "bytes": 61973,
+            "sha256": "1948993921cb3987e94fab46ef4f38c83fb5953ede30f1841abd6ab479fae4e7"
+          },
+          {
+            "path": "output/chat-decoration-20styles-20261022/09-orbital-voyage/avatar/frames/05.png",
+            "bytes": 62500,
+            "sha256": "84afe03abbadd25b2d91728aeb0f518359131d99ef2119ef38e3614a4e3cca2d"
+          },
+          {
+            "path": "output/chat-decoration-20styles-20261022/09-orbital-voyage/avatar/frames/06.png",
+            "bytes": 62314,
+            "sha256": "5ca17017ccabb7b6b676064ae687853470d3e0f4166c582253bca698b6a7bcb9"
+          }
+        ],
+        "bubble": [
+          {
+            "path": "output/chat-decoration-20styles-20261022/09-orbital-voyage/bubble/frames/01.png",
+            "bytes": 74016,
+            "sha256": "d8f233f8239f8b78404ff5aa64f174ac330934669aad41edb516a095576613c1"
+          },
+          {
+            "path": "output/chat-decoration-20styles-20261022/09-orbital-voyage/bubble/frames/02.png",
+            "bytes": 81966,
+            "sha256": "eb5a554acc65f8d83f02f58cc7cec55d6926a116fe4d2412f4c3f74d25bf3686"
+          },
+          {
+            "path": "output/chat-decoration-20styles-20261022/09-orbital-voyage/bubble/frames/03.png",
+            "bytes": 95318,
+            "sha256": "cdcc3d1b8ff9323f9fd7ea70dfadaa852c074c9ac0177e54efdacce59c76eae8"
+          },
+          {
+            "path": "output/chat-decoration-20styles-20261022/09-orbital-voyage/bubble/frames/04.png",
+            "bytes": 92952,
+            "sha256": "a48013d7d2ba31f948c8a4f5e62ceba451b42905c8a8c5d33d7ac634742388b3"
+          },
+          {
+            "path": "output/chat-decoration-20styles-20261022/09-orbital-voyage/bubble/frames/05.png",
+            "bytes": 75530,
+            "sha256": "401c6058d69b64f1cc11ee88d1f4de3d36be747cb7f203f8b50ca2ee8cc2cb52"
+          },
+          {
+            "path": "output/chat-decoration-20styles-20261022/09-orbital-voyage/bubble/frames/06.png",
+            "bytes": 74904,
+            "sha256": "a6d562585afede047c6376140b48249cc33fad7964b92c453109d99bf6851c28"
+          }
+        ]
+      },
+      "avatarInset": 0.230469,
+      "bubbleBackgroundInsets": [
+        20.75,
+        22.0,
+        20.75,
+        22.0
+      ],
+      "frameCount": 6,
+      "frameDurationMs": 180,
+      "loopMs": 1080,
+      "frameSize": [
+        256,
+        256
+      ],
+      "bubbleSize": [
+        512,
+        320
+      ],
+      "bubbleScale": 4,
+      "bubbleCenterSlicePixels": [
+        200,
+        156,
+        312,
+        164
+      ]
+    },
+    {
+      "id": "circuitMatrix",
+      "sourceId": "10-circuit-matrix",
+      "label": "电路矩阵",
+      "generator": "built-in imagegen",
+      "files": {
+        "avatar": {
+          "path": "chat_message/assets/decoration/circuitMatrix_frame.webp",
+          "bytes": 294000,
+          "sha256": "02639373fd1424f0d8ac53b935b2c4227379a1733df7b1bcec0b08a41d460644"
+        },
+        "avatarPoster": {
+          "path": "chat_message/assets/decoration/circuitMatrix_frame_poster.webp",
+          "bytes": 39254,
+          "sha256": "29bc6089a7e6e004f0885edb6cf9d624c8a9259daddae29711d688123727443b"
+        },
+        "bubble": {
+          "path": "chat_message/assets/decoration/circuitMatrix_bubble.webp",
+          "bytes": 465354,
+          "sha256": "72d9153c6c6b4171f62eff9db9bd08fe048f65664e74e2b35a9af0b5b523adb3"
+        },
+        "bubblePoster": {
+          "path": "chat_message/assets/decoration/circuitMatrix_bubble_poster.webp",
+          "bytes": 68930,
+          "sha256": "2707cfede42a69d7eea5006eaf2e9e1b10cc75f39a0592a3fe6dfa7125cf50b4"
+        }
+      },
+      "sourceFrames": {
+        "avatar": [
+          {
+            "path": "output/chat-decoration-20styles-20261022/10-circuit-matrix/avatar/frames/01.png",
+            "bytes": 52250,
+            "sha256": "592e8fdc037e134173edc2f972672b2c6819b5359252fd07708c2efe942ea73e"
+          },
+          {
+            "path": "output/chat-decoration-20styles-20261022/10-circuit-matrix/avatar/frames/02.png",
+            "bytes": 55777,
+            "sha256": "1a765740061088bda72f0c205fcd480b091e193607f2c569551bca12c10b086e"
+          },
+          {
+            "path": "output/chat-decoration-20styles-20261022/10-circuit-matrix/avatar/frames/03.png",
+            "bytes": 67491,
+            "sha256": "7ce276c8a7ff2e36da657fc822754224f4d8490a0dfb083d82550e1adb7af00e"
+          },
+          {
+            "path": "output/chat-decoration-20styles-20261022/10-circuit-matrix/avatar/frames/04.png",
+            "bytes": 63813,
+            "sha256": "3725bc2853ad139b9a7f799ad6171bfaa473f1c06b144c21d4ba8dfcd0c5bee3"
+          },
+          {
+            "path": "output/chat-decoration-20styles-20261022/10-circuit-matrix/avatar/frames/05.png",
+            "bytes": 56144,
+            "sha256": "6ceb566473d2de7d558ea57694858c2782b929b79caa61bb480ea8e8ccfd56ee"
+          },
+          {
+            "path": "output/chat-decoration-20styles-20261022/10-circuit-matrix/avatar/frames/06.png",
+            "bytes": 54264,
+            "sha256": "861dbb266fee9200acfbf6810d273ac94f9dc35b9798e78473f2e2c2f876ddc3"
+          }
+        ],
+        "bubble": [
+          {
+            "path": "output/chat-decoration-20styles-20261022/10-circuit-matrix/bubble/frames/01.png",
+            "bytes": 100279,
+            "sha256": "3e724effee019a33a0c567ec0b6549d74c4a46225c8dac56b7cb677ad17e2627"
+          },
+          {
+            "path": "output/chat-decoration-20styles-20261022/10-circuit-matrix/bubble/frames/02.png",
+            "bytes": 104864,
+            "sha256": "1b608755725c7455ce4d4df7a10e42fc6de4edf7e294214b667703b66c6b1077"
+          },
+          {
+            "path": "output/chat-decoration-20styles-20261022/10-circuit-matrix/bubble/frames/03.png",
+            "bytes": 129622,
+            "sha256": "f50c6389b3898a77dc4934bde5d27b2a2a0c228b9d6f10eb0faeb19fd8b4eb95"
+          },
+          {
+            "path": "output/chat-decoration-20styles-20261022/10-circuit-matrix/bubble/frames/04.png",
+            "bytes": 124221,
+            "sha256": "4c4196d8bd8a5a92352a10aa0990257acab1d62d8af7e8786be1ce230eb88fff"
+          },
+          {
+            "path": "output/chat-decoration-20styles-20261022/10-circuit-matrix/bubble/frames/05.png",
+            "bytes": 99674,
+            "sha256": "ec374a90f180f22fa42dc1993e611212a09ee159cc19595935d902a5b4800c03"
+          },
+          {
+            "path": "output/chat-decoration-20styles-20261022/10-circuit-matrix/bubble/frames/06.png",
+            "bytes": 99333,
+            "sha256": "26699fa5f8189c409204ec5a21e3f72ba47bc40de56851bb693be1dd4f732c72"
+          }
+        ]
+      },
+      "avatarInset": 0.230469,
+      "bubbleBackgroundInsets": [
+        24.0,
+        23.25,
+        23.75,
+        23.0
+      ],
+      "frameCount": 6,
+      "frameDurationMs": 180,
+      "loopMs": 1080,
+      "frameSize": [
+        256,
+        256
+      ],
+      "bubbleSize": [
+        512,
+        320
+      ],
+      "bubbleScale": 4,
+      "bubbleCenterSlicePixels": [
+        200,
+        156,
+        312,
+        164
+      ]
+    },
+    {
+      "id": "jadeFiligree",
+      "sourceId": "11-jade-filigree",
+      "label": "翡翠玲珑",
+      "generator": "built-in imagegen",
+      "files": {
+        "avatar": {
+          "path": "chat_message/assets/decoration/jadeFiligree_frame.webp",
+          "bytes": 238120,
+          "sha256": "23ae453b0ca93035149dd67e729ab46737b531bffd441c1092167be51cf59565"
+        },
+        "avatarPoster": {
+          "path": "chat_message/assets/decoration/jadeFiligree_frame_poster.webp",
+          "bytes": 36212,
+          "sha256": "86b3b936cd13ee7f4150c63e003e0689ea02743dec2b95f10b9a9087cf4e84f6"
+        },
+        "bubble": {
+          "path": "chat_message/assets/decoration/jadeFiligree_bubble.webp",
+          "bytes": 409472,
+          "sha256": "f0a2eb8f9a488fcda10e5963b26b1f46cdb76c1c01d8324f51d108c0025c262a"
+        },
+        "bubblePoster": {
+          "path": "chat_message/assets/decoration/jadeFiligree_bubble_poster.webp",
+          "bytes": 61496,
+          "sha256": "05a43a25c4c99514407937f2a0e258a29432540f549508a5181983cff3bec851"
+        }
+      },
+      "sourceFrames": {
+        "avatar": [
+          {
+            "path": "output/chat-decoration-20styles-20261022/11-jade-filigree/avatar/frames/01.png",
+            "bytes": 46467,
+            "sha256": "86312300f6508f0a6f51c3d84420483f52e6cde0d8bb7aab50c745b3fec97519"
+          },
+          {
+            "path": "output/chat-decoration-20styles-20261022/11-jade-filigree/avatar/frames/02.png",
+            "bytes": 51104,
+            "sha256": "e9560473570e3410ecb6def3ae5c3a88840baa9e82dc543301e8aed3931e372a"
+          },
+          {
+            "path": "output/chat-decoration-20styles-20261022/11-jade-filigree/avatar/frames/03.png",
+            "bytes": 58984,
+            "sha256": "3747225b3dd51c426fbd33c848cb85ea47ed3449767421febd825f8b9c63d689"
+          },
+          {
+            "path": "output/chat-decoration-20styles-20261022/11-jade-filigree/avatar/frames/04.png",
+            "bytes": 50818,
+            "sha256": "4c167d0cfe2ad6f18c6cd644b26fdf801da1a5f4bf99858fd6d32db11d0386b4"
+          },
+          {
+            "path": "output/chat-decoration-20styles-20261022/11-jade-filigree/avatar/frames/05.png",
+            "bytes": 48546,
+            "sha256": "3db9c9ce88b6375267ad99aadb7f94c9df438fe51f3548f074c3bd5b7917ca90"
+          },
+          {
+            "path": "output/chat-decoration-20styles-20261022/11-jade-filigree/avatar/frames/06.png",
+            "bytes": 46384,
+            "sha256": "837a420aff449520717562fefb510d7ac47423bf5da4af97180119f61470e4b6"
+          }
+        ],
+        "bubble": [
+          {
+            "path": "output/chat-decoration-20styles-20261022/11-jade-filigree/bubble/frames/01.png",
+            "bytes": 81232,
+            "sha256": "aa135a77074fe28a78cec470ab67dd0a4d1682316c1dc9ce4c6ffffbccdee783"
+          },
+          {
+            "path": "output/chat-decoration-20styles-20261022/11-jade-filigree/bubble/frames/02.png",
+            "bytes": 90647,
+            "sha256": "ba056fe58746e4c6200574fbf8d65ddf26e7e566d4d1ca90366158b75389ddc8"
+          },
+          {
+            "path": "output/chat-decoration-20styles-20261022/11-jade-filigree/bubble/frames/03.png",
+            "bytes": 104538,
+            "sha256": "593ab57323da64c4f79abe2bc8f8545102985682d9f25d4f3245d96767e20dd9"
+          },
+          {
+            "path": "output/chat-decoration-20styles-20261022/11-jade-filigree/bubble/frames/04.png",
+            "bytes": 91599,
+            "sha256": "d50205ebf68f51eb892c8acfdf2b726a560e63cd5a190fe817fca580de3c8bcc"
+          },
+          {
+            "path": "output/chat-decoration-20styles-20261022/11-jade-filigree/bubble/frames/05.png",
+            "bytes": 86267,
+            "sha256": "a0f986f1467fc429959101861d6c83b0fce9e7bb0fc24e59c2619474733ab3e6"
+          },
+          {
+            "path": "output/chat-decoration-20styles-20261022/11-jade-filigree/bubble/frames/06.png",
+            "bytes": 80554,
+            "sha256": "997dd790ca6626f972f5c80b61fe5bbe6355de362e036dcfa63168f043837f08"
+          }
+        ]
+      },
+      "avatarInset": 0.273438,
+      "bubbleBackgroundInsets": [
+        23.0,
+        22.75,
+        23.0,
+        22.5
+      ],
+      "frameCount": 6,
+      "frameDurationMs": 180,
+      "loopMs": 1080,
+      "frameSize": [
+        256,
+        256
+      ],
+      "bubbleSize": [
+        512,
+        320
+      ],
+      "bubbleScale": 4,
+      "bubbleCenterSlicePixels": [
+        200,
+        156,
+        312,
+        164
+      ]
+    },
+    {
+      "id": "dunhuangRibbons",
+      "sourceId": "12-dunhuang-ribbons",
+      "label": "敦煌飞天",
+      "generator": "built-in imagegen",
+      "files": {
+        "avatar": {
+          "path": "chat_message/assets/decoration/dunhuangRibbons_frame.webp",
+          "bytes": 250574,
+          "sha256": "6f4e32f035bddde10a3687b432a25529efe3621820b1e7357337e7fc8af2f14c"
+        },
+        "avatarPoster": {
+          "path": "chat_message/assets/decoration/dunhuangRibbons_frame_poster.webp",
+          "bytes": 35086,
+          "sha256": "57055ab8a7ec6db8495cbf64faa5c3c145ee6cf881fbd37a3215cf7a5eb279c4"
+        },
+        "bubble": {
+          "path": "chat_message/assets/decoration/dunhuangRibbons_bubble.webp",
+          "bytes": 476446,
+          "sha256": "30e9867c7486034b106baeafda82607eaa9afeab0331d6945ef42c3d5a063475"
+        },
+        "bubblePoster": {
+          "path": "chat_message/assets/decoration/dunhuangRibbons_bubble_poster.webp",
+          "bytes": 69416,
+          "sha256": "c78b4c406f8a6c5251ced6700858416585565865aced7cbcc7ef56b80c7832f8"
+        }
+      },
+      "sourceFrames": {
+        "avatar": [
+          {
+            "path": "output/chat-decoration-20styles-20261022/12-dunhuang-ribbons/avatar/frames/01.png",
+            "bytes": 43395,
+            "sha256": "a8f83f789ebeaa97a57a7afe7522b557910d87767d8536f6fd35c5137ca3bb94"
+          },
+          {
+            "path": "output/chat-decoration-20styles-20261022/12-dunhuang-ribbons/avatar/frames/02.png",
+            "bytes": 48984,
+            "sha256": "edc4c4db1fe5ab4b07e8a8a1cb275e73ac4e643575983e7191911e2e1de4bb07"
+          },
+          {
+            "path": "output/chat-decoration-20styles-20261022/12-dunhuang-ribbons/avatar/frames/03.png",
+            "bytes": 65316,
+            "sha256": "4e4467cd5eaaf00dc90ed5b4d9c79c412ad9493729342d36ca089e9d944d8575"
+          },
+          {
+            "path": "output/chat-decoration-20styles-20261022/12-dunhuang-ribbons/avatar/frames/04.png",
+            "bytes": 55035,
+            "sha256": "5a5c3b0b0b0aa166c1d2097b38fd33fb9376053924d7e32c4dbc9fb50fd0eb1c"
+          },
+          {
+            "path": "output/chat-decoration-20styles-20261022/12-dunhuang-ribbons/avatar/frames/05.png",
+            "bytes": 44438,
+            "sha256": "95511fc69c2a5c94cbaa77faf987232c0cd6c8bffccbe4b56b76fa6c0facf244"
+          },
+          {
+            "path": "output/chat-decoration-20styles-20261022/12-dunhuang-ribbons/avatar/frames/06.png",
+            "bytes": 43548,
+            "sha256": "e2dca60f36290e78cef5c2cc2ad4f7a41c78dc058d2a56d491f9495532e857e0"
+          }
+        ],
+        "bubble": [
+          {
+            "path": "output/chat-decoration-20styles-20261022/12-dunhuang-ribbons/bubble/frames/01.png",
+            "bytes": 89642,
+            "sha256": "d8572be58ac0b487aef24bd6fb5895b95c1383af0c6091d657f382b65f3c850f"
+          },
+          {
+            "path": "output/chat-decoration-20styles-20261022/12-dunhuang-ribbons/bubble/frames/02.png",
+            "bytes": 91161,
+            "sha256": "896b416ac8d445b1977525807540d01b2fc1ad8ce354c8935d625d0cf789fa59"
+          },
+          {
+            "path": "output/chat-decoration-20styles-20261022/12-dunhuang-ribbons/bubble/frames/03.png",
+            "bytes": 132804,
+            "sha256": "2d986af6358f9e244000fddde1ac8d4980bc6562c679b6c2466a077003b597fd"
+          },
+          {
+            "path": "output/chat-decoration-20styles-20261022/12-dunhuang-ribbons/bubble/frames/04.png",
+            "bytes": 117691,
+            "sha256": "bc1eab3a21cd80508db6af795a592a5ed227d7076b824bacd7f3f118e3d92cbd"
+          },
+          {
+            "path": "output/chat-decoration-20styles-20261022/12-dunhuang-ribbons/bubble/frames/05.png",
+            "bytes": 88586,
+            "sha256": "1fc1d828d20a81f20c009671fb264a0a1b793c70322b0e60ee72b497508d5adc"
+          },
+          {
+            "path": "output/chat-decoration-20styles-20261022/12-dunhuang-ribbons/bubble/frames/06.png",
+            "bytes": 89653,
+            "sha256": "5d23e48dc155b99ac91ce503d33e72572a3a84e42d326814444837cd3e21e62c"
+          }
+        ]
+      },
+      "avatarInset": 0.248047,
+      "bubbleBackgroundInsets": [
+        23.5,
+        22.25,
+        23.25,
+        22.0
+      ],
+      "frameCount": 6,
+      "frameDurationMs": 180,
+      "loopMs": 1080,
+      "frameSize": [
+        256,
+        256
+      ],
+      "bubbleSize": [
+        512,
+        320
+      ],
+      "bubbleScale": 4,
+      "bubbleCenterSlicePixels": [
+        200,
+        156,
+        312,
+        164
+      ]
+    },
+    {
+      "id": "imperialPeony",
+      "sourceId": "13-imperial-peony",
+      "label": "牡丹国色",
+      "generator": "built-in imagegen",
+      "files": {
+        "avatar": {
+          "path": "chat_message/assets/decoration/imperialPeony_frame.webp",
+          "bytes": 275822,
+          "sha256": "06a9b68ba88979606fdbaad111646c7f632fc446fbc2478949cdbecd7d271359"
+        },
+        "avatarPoster": {
+          "path": "chat_message/assets/decoration/imperialPeony_frame_poster.webp",
+          "bytes": 38524,
+          "sha256": "e3b463e4530fb45a0f5d52c53d2dd5712d280b3fc070e9bba78d27cac25f8700"
+        },
+        "bubble": {
+          "path": "chat_message/assets/decoration/imperialPeony_bubble.webp",
+          "bytes": 485420,
+          "sha256": "c15978ea8e6583c8d8dbfd2c4a4b5987468c82a0c50549b18123877cdca1c308"
+        },
+        "bubblePoster": {
+          "path": "chat_message/assets/decoration/imperialPeony_bubble_poster.webp",
+          "bytes": 68986,
+          "sha256": "c6d835b4e867ddb766401a2e08a01c71a7d214caa58ec0f83fc85706306d7195"
+        }
+      },
+      "sourceFrames": {
+        "avatar": [
+          {
+            "path": "output/chat-decoration-20styles-20261022/13-imperial-peony/avatar/frames/01.png",
+            "bytes": 47483,
+            "sha256": "6780a346df818d9442ce7a5713a5050d8d9fce0680e61e20502328fe01a04db3"
+          },
+          {
+            "path": "output/chat-decoration-20styles-20261022/13-imperial-peony/avatar/frames/02.png",
+            "bytes": 58248,
+            "sha256": "fff529d6c9339866b4519c46bd5e09beb73df8ff6deeb91dfc00095ee8f78103"
+          },
+          {
+            "path": "output/chat-decoration-20styles-20261022/13-imperial-peony/avatar/frames/03.png",
+            "bytes": 67951,
+            "sha256": "7363a2f30e1073a21ab0ca6ada417b2b98fcd497ba27bb7afa32eab0b308a9a4"
+          },
+          {
+            "path": "output/chat-decoration-20styles-20261022/13-imperial-peony/avatar/frames/04.png",
+            "bytes": 64032,
+            "sha256": "f710499b95ba19faa1512fc9071eb8fc0025602f2ab1f56ddbbc5cc14b263623"
+          },
+          {
+            "path": "output/chat-decoration-20styles-20261022/13-imperial-peony/avatar/frames/05.png",
+            "bytes": 53664,
+            "sha256": "0f6f3e20db86875f39968b0f5fa5b540c9de4a101de09020d2d025680a173315"
+          },
+          {
+            "path": "output/chat-decoration-20styles-20261022/13-imperial-peony/avatar/frames/06.png",
+            "bytes": 48220,
+            "sha256": "4b08d69e143fff4b5186abd10e6bbc246852c728ba1133fca9418f5270633627"
+          }
+        ],
+        "bubble": [
+          {
+            "path": "output/chat-decoration-20styles-20261022/13-imperial-peony/bubble/frames/01.png",
+            "bytes": 89608,
+            "sha256": "28e1bd43530ada25ed651af6b2221863fa58576944d2493d27626a7c1a38a6a0"
+          },
+          {
+            "path": "output/chat-decoration-20styles-20261022/13-imperial-peony/bubble/frames/02.png",
+            "bytes": 104142,
+            "sha256": "519494bddce4dcd02c141760edc359677e33dd70acdb3137690ee6f0b9c8e09d"
+          },
+          {
+            "path": "output/chat-decoration-20styles-20261022/13-imperial-peony/bubble/frames/03.png",
+            "bytes": 128057,
+            "sha256": "bdd8f1152ac8fa33404842b1c897ae4dcdea02b4105611a30a073bd46693fcd8"
+          },
+          {
+            "path": "output/chat-decoration-20styles-20261022/13-imperial-peony/bubble/frames/04.png",
+            "bytes": 115555,
+            "sha256": "d19f2a69ee59eae5c7766dd0c4a84dc933c83b46a3044ab540ad0a7e4e2038f0"
+          },
+          {
+            "path": "output/chat-decoration-20styles-20261022/13-imperial-peony/bubble/frames/05.png",
+            "bytes": 100672,
+            "sha256": "e8e82912a30e714ff1b60ecce3b0df9637026299506987742ba3af3403da20bd"
+          },
+          {
+            "path": "output/chat-decoration-20styles-20261022/13-imperial-peony/bubble/frames/06.png",
+            "bytes": 90587,
+            "sha256": "e44cbb74fb75e0bf93886e3f8d8c8ae9528d44d8807d288a5c897b7ce7766d91"
+          }
+        ]
+      },
+      "avatarInset": 0.242188,
+      "bubbleBackgroundInsets": [
+        25.0,
+        21.25,
+        25.0,
+        21.0
+      ],
+      "frameCount": 6,
+      "frameDurationMs": 180,
+      "loopMs": 1080,
+      "frameSize": [
+        256,
+        256
+      ],
+      "bubbleSize": [
+        512,
+        320
+      ],
+      "bubbleScale": 4,
+      "bubbleCenterSlicePixels": [
+        200,
+        156,
+        312,
+        164
+      ]
+    },
+    {
+      "id": "bluePorcelain",
+      "sourceId": "14-blue-porcelain",
+      "label": "青花瓷韵",
+      "generator": "built-in imagegen",
+      "files": {
+        "avatar": {
+          "path": "chat_message/assets/decoration/bluePorcelain_frame.webp",
+          "bytes": 332678,
+          "sha256": "2037635b6b8cbf4678c85085e03507b11931a925bdd04ca027f1dc9f5b76c5a2"
+        },
+        "avatarPoster": {
+          "path": "chat_message/assets/decoration/bluePorcelain_frame_poster.webp",
+          "bytes": 47434,
+          "sha256": "3adced48596cdefb4f00c48a02292d15bfb2186d31418ea5c439716be857463a"
+        },
+        "bubble": {
+          "path": "chat_message/assets/decoration/bluePorcelain_bubble.webp",
+          "bytes": 544962,
+          "sha256": "0ffbe7079ad2f8f6d6ffe58f73c89792611d89aa4622a983c9166cf622d39cfd"
+        },
+        "bubblePoster": {
+          "path": "chat_message/assets/decoration/bluePorcelain_bubble_poster.webp",
+          "bytes": 80844,
+          "sha256": "c5e6cedee3e1c660ca29d4dcf236afff0d7b07e3d40edd84acb90799d5654dd3"
+        }
+      },
+      "sourceFrames": {
+        "avatar": [
+          {
+            "path": "output/chat-decoration-20styles-20261022/14-blue-porcelain/avatar/frames/01.png",
+            "bytes": 61816,
+            "sha256": "f03509d8f094bc920b700bd5b64a6a659f62a3d6e8f146575f6c0ef411d250ef"
+          },
+          {
+            "path": "output/chat-decoration-20styles-20261022/14-blue-porcelain/avatar/frames/02.png",
+            "bytes": 67414,
+            "sha256": "06906766a3e63234def784bec281bff485429f3a8d228c47db98a1bfa7cad0c4"
+          },
+          {
+            "path": "output/chat-decoration-20styles-20261022/14-blue-porcelain/avatar/frames/03.png",
+            "bytes": 74924,
+            "sha256": "9cb61c83e97010c7ecb598ccdebc0afdd5111c464eb6fafbc815c6d174e96a6a"
+          },
+          {
+            "path": "output/chat-decoration-20styles-20261022/14-blue-porcelain/avatar/frames/04.png",
+            "bytes": 70266,
+            "sha256": "f53daadeb2b483a067e7905b2b50574f28bc43ffe9b71f1f93ed736e0687cef7"
+          },
+          {
+            "path": "output/chat-decoration-20styles-20261022/14-blue-porcelain/avatar/frames/05.png",
+            "bytes": 66677,
+            "sha256": "71814ad7f9a62f4810c0bce009a74768afd12cef6717b364e881aeee6c9cd56a"
+          },
+          {
+            "path": "output/chat-decoration-20styles-20261022/14-blue-porcelain/avatar/frames/06.png",
+            "bytes": 61628,
+            "sha256": "dcfff0977087f1916108b07dd57ea59208f203b6dca341d0656f0f6ad00d80e7"
+          }
+        ],
+        "bubble": [
+          {
+            "path": "output/chat-decoration-20styles-20261022/14-blue-porcelain/bubble/frames/01.png",
+            "bytes": 108517,
+            "sha256": "8bfdaf2e473431858b75f00cbdee3c01959cf5d46309e2ec95c1d64b4e5430d0"
+          },
+          {
+            "path": "output/chat-decoration-20styles-20261022/14-blue-porcelain/bubble/frames/02.png",
+            "bytes": 115311,
+            "sha256": "fefbc2da6e2c44b497edb1112036ab0d3600133e3631ab1d5d43f9b9832edcc8"
+          },
+          {
+            "path": "output/chat-decoration-20styles-20261022/14-blue-porcelain/bubble/frames/03.png",
+            "bytes": 140389,
+            "sha256": "10d62b662888a38ee22d2d8b4f2fc59e3a766b9160aa023dec04079f17e8cbcd"
+          },
+          {
+            "path": "output/chat-decoration-20styles-20261022/14-blue-porcelain/bubble/frames/04.png",
+            "bytes": 139583,
+            "sha256": "7be6457d64f96f58051b8a22a3ff2d80c1de75cf7f3bb5c02b556b3bafc6c72f"
+          },
+          {
+            "path": "output/chat-decoration-20styles-20261022/14-blue-porcelain/bubble/frames/05.png",
+            "bytes": 111952,
+            "sha256": "f720db6e9bf1b8956e81557545ea4293f4fc48c4ac5c11492ed925ea360999c1"
+          },
+          {
+            "path": "output/chat-decoration-20styles-20261022/14-blue-porcelain/bubble/frames/06.png",
+            "bytes": 105575,
+            "sha256": "8b6ede5afb1aa4ecc9ace0669b8242b6639335ea84fe50b3276182e77c19f726"
+          }
+        ]
+      },
+      "avatarInset": 0.251953,
+      "bubbleBackgroundInsets": [
+        24.0,
+        24.25,
+        24.25,
+        24.5
+      ],
+      "frameCount": 6,
+      "frameDurationMs": 180,
+      "loopMs": 1080,
+      "frameSize": [
+        256,
+        256
+      ],
+      "bubbleSize": [
+        512,
+        320
+      ],
+      "bubbleScale": 4,
+      "bubbleCenterSlicePixels": [
+        200,
+        156,
+        312,
+        164
+      ]
+    },
+    {
+      "id": "koiLotus",
+      "sourceId": "15-koi-lotus",
+      "label": "锦鲤荷塘",
+      "generator": "built-in imagegen",
+      "files": {
+        "avatar": {
+          "path": "chat_message/assets/decoration/koiLotus_frame.webp",
+          "bytes": 302214,
+          "sha256": "c2b8e1168d1397e4dce3a6f1af948038cdda82ead7fd38920ccd56842be2e50b"
+        },
+        "avatarPoster": {
+          "path": "chat_message/assets/decoration/koiLotus_frame_poster.webp",
+          "bytes": 48358,
+          "sha256": "d0ba73259edef6ffe9c7b0e2171ee62e3d367523356202d96856202f703adc12"
+        },
+        "bubble": {
+          "path": "chat_message/assets/decoration/koiLotus_bubble.webp",
+          "bytes": 392100,
+          "sha256": "b910e2faf3dab4f576863e9bc424f5af494407832de6a20ba1728a0702ffd395"
+        },
+        "bubblePoster": {
+          "path": "chat_message/assets/decoration/koiLotus_bubble_poster.webp",
+          "bytes": 63622,
+          "sha256": "c14e0ca6b97043438a6b60da26ebcc5b6df8584cd5f8b1ec80a905c99c8613cf"
+        }
+      },
+      "sourceFrames": {
+        "avatar": [
+          {
+            "path": "output/chat-decoration-20styles-20261022/15-koi-lotus/avatar/frames/01.png",
+            "bytes": 61774,
+            "sha256": "f374680df99d9e15d4545856ffb4e545b4747a0f0acee027188d75e41e43419b"
+          },
+          {
+            "path": "output/chat-decoration-20styles-20261022/15-koi-lotus/avatar/frames/02.png",
+            "bytes": 64319,
+            "sha256": "29d15abec96981fe0a112584ca6661dcf25a567ebb9c14e939dafc8358d17976"
+          },
+          {
+            "path": "output/chat-decoration-20styles-20261022/15-koi-lotus/avatar/frames/03.png",
+            "bytes": 66500,
+            "sha256": "6089cd12f9b5c3e88b99d7dcd88e0c6d8a49f40cfffb3b634ecb50e58940bcb4"
+          },
+          {
+            "path": "output/chat-decoration-20styles-20261022/15-koi-lotus/avatar/frames/04.png",
+            "bytes": 66574,
+            "sha256": "ab8ff82007c0540c33e7f6b0afaaa641c01f468822fcf3258cfd396e6e650b9c"
+          },
+          {
+            "path": "output/chat-decoration-20styles-20261022/15-koi-lotus/avatar/frames/05.png",
+            "bytes": 64780,
+            "sha256": "8133e49248128911963d90eac6cb14f088bcd639f0482506a9beef01fdaa7f3c"
+          },
+          {
+            "path": "output/chat-decoration-20styles-20261022/15-koi-lotus/avatar/frames/06.png",
+            "bytes": 61832,
+            "sha256": "58cfa9f6609568301b4bc6afd6c8ad24f4b30fe5ebd34b857559da7c61a0f790"
+          }
+        ],
+        "bubble": [
+          {
+            "path": "output/chat-decoration-20styles-20261022/15-koi-lotus/bubble/frames/01.png",
+            "bytes": 87612,
+            "sha256": "0da9517d1374350f945907462743fe2105703f5a0a8489a5ecf779f4f2212a6d"
+          },
+          {
+            "path": "output/chat-decoration-20styles-20261022/15-koi-lotus/bubble/frames/02.png",
+            "bytes": 86596,
+            "sha256": "5005eb9d64042a269ede7d3ed615bf23b9d2771a8d2a7bad87c4704edb687b31"
+          },
+          {
+            "path": "output/chat-decoration-20styles-20261022/15-koi-lotus/bubble/frames/03.png",
+            "bytes": 91685,
+            "sha256": "b0ebad7cdad4c86b794b7b99b290ad6702acaaa7f1da3283f899cf84cb6d268b"
+          },
+          {
+            "path": "output/chat-decoration-20styles-20261022/15-koi-lotus/bubble/frames/04.png",
+            "bytes": 93718,
+            "sha256": "f8c213c9fea524c4f265a4d3fdaec9374f5b5c675be79c0c4494a2b814df6639"
+          },
+          {
+            "path": "output/chat-decoration-20styles-20261022/15-koi-lotus/bubble/frames/05.png",
+            "bytes": 86398,
+            "sha256": "a8230ce67868c08cb77de455208380c5e9106f9f798ddb613fac8b42bc8dc95e"
+          },
+          {
+            "path": "output/chat-decoration-20styles-20261022/15-koi-lotus/bubble/frames/06.png",
+            "bytes": 88659,
+            "sha256": "f560b13fa3e36f9f5203f6691747891938cdd27b6c32a3f3384854973b778e2d"
+          }
+        ]
+      },
+      "avatarInset": 0.248047,
+      "bubbleBackgroundInsets": [
+        27.0,
+        25.25,
+        27.25,
+        25.0
+      ],
+      "frameCount": 6,
+      "frameDurationMs": 180,
+      "loopMs": 1080,
+      "frameSize": [
+        256,
+        256
+      ],
+      "bubbleSize": [
+        512,
+        320
+      ],
+      "bubbleScale": 4,
+      "bubbleCenterSlicePixels": [
+        200,
+        156,
+        312,
+        164
+      ]
+    },
+    {
+      "id": "ginkgoLetter",
+      "sourceId": "16-ginkgo-letter",
+      "label": "银杏秋信",
+      "generator": "built-in imagegen",
+      "files": {
+        "avatar": {
+          "path": "chat_message/assets/decoration/ginkgoLetter_frame.webp",
+          "bytes": 260714,
+          "sha256": "036b3bd9edd4f5f93dec09376733519dd1cf03dea067d94fe3db0fdcca97a96d"
+        },
+        "avatarPoster": {
+          "path": "chat_message/assets/decoration/ginkgoLetter_frame_poster.webp",
+          "bytes": 35542,
+          "sha256": "caae0d41f4bf4a961d51febb4d6465d0ca8ac5894dc3952afb3e6fa328e9ca41"
+        },
+        "bubble": {
+          "path": "chat_message/assets/decoration/ginkgoLetter_bubble.webp",
+          "bytes": 486966,
+          "sha256": "f78642edbfcf28ea155b989073b2692a1644d8f01141deeb84eeca4563a9ba25"
+        },
+        "bubblePoster": {
+          "path": "chat_message/assets/decoration/ginkgoLetter_bubble_poster.webp",
+          "bytes": 74050,
+          "sha256": "39c8399480c626b74093f39a4436bb1d1a6626bbe5970daf6178be373ed7402b"
+        }
+      },
+      "sourceFrames": {
+        "avatar": [
+          {
+            "path": "output/chat-decoration-20styles-20261022/16-ginkgo-letter/avatar/frames/01.png",
+            "bytes": 46117,
+            "sha256": "8beeb44ffee60313b692370804549331f926a3ec839135aa4156d32822edbd2a"
+          },
+          {
+            "path": "output/chat-decoration-20styles-20261022/16-ginkgo-letter/avatar/frames/02.png",
+            "bytes": 53145,
+            "sha256": "576ed79f64936dc51c678d41604267a6e3b17df3614b1953b08aac6da5b5b6f4"
+          },
+          {
+            "path": "output/chat-decoration-20styles-20261022/16-ginkgo-letter/avatar/frames/03.png",
+            "bytes": 59518,
+            "sha256": "0f53949d9dca5a9a9d0aaabb5fc7ef8b2df43b98e199d3eaabe515ce81145f36"
+          },
+          {
+            "path": "output/chat-decoration-20styles-20261022/16-ginkgo-letter/avatar/frames/04.png",
+            "bytes": 56267,
+            "sha256": "bc79f1b3686328a8e2458e15b989e250c1378a056a08c4d49708650efeaf970f"
+          },
+          {
+            "path": "output/chat-decoration-20styles-20261022/16-ginkgo-letter/avatar/frames/05.png",
+            "bytes": 52373,
+            "sha256": "1076c5083007463559b9d444275fed6e367d671dcd69466c8af148928717b656"
+          },
+          {
+            "path": "output/chat-decoration-20styles-20261022/16-ginkgo-letter/avatar/frames/06.png",
+            "bytes": 47584,
+            "sha256": "76d5ce1aa80be97c3d97d8f9b347b2af6fcae212a621ac07bdaa9b51327827b0"
+          }
+        ],
+        "bubble": [
+          {
+            "path": "output/chat-decoration-20styles-20261022/16-ginkgo-letter/bubble/frames/01.png",
+            "bytes": 104014,
+            "sha256": "215586d14f3b16fe18962b9388d5b598669e94fec0a28bd2c7a17d96d839b68f"
+          },
+          {
+            "path": "output/chat-decoration-20styles-20261022/16-ginkgo-letter/bubble/frames/02.png",
+            "bytes": 113828,
+            "sha256": "c289d5efb4fc9f6b40c1454899a9929908713dacf96b90d876e9ad93ed1cc981"
+          },
+          {
+            "path": "output/chat-decoration-20styles-20261022/16-ginkgo-letter/bubble/frames/03.png",
+            "bytes": 128179,
+            "sha256": "cb59b8287be3c31fa8e1838b0db180957598444b96766f998179e1ba0ae23680"
+          },
+          {
+            "path": "output/chat-decoration-20styles-20261022/16-ginkgo-letter/bubble/frames/04.png",
+            "bytes": 117227,
+            "sha256": "32cba5dd96a34a801cfbc6b4d4033cc9dbd4a3020f45516a65c09d73c98f6500"
+          },
+          {
+            "path": "output/chat-decoration-20styles-20261022/16-ginkgo-letter/bubble/frames/05.png",
+            "bytes": 110251,
+            "sha256": "53ca7fb99cb7fea960f830ceaa3e4d80ed6cdffc874a288aa5ec435ef76ae7fe"
+          },
+          {
+            "path": "output/chat-decoration-20styles-20261022/16-ginkgo-letter/bubble/frames/06.png",
+            "bytes": 103767,
+            "sha256": "7341de24f5db3ec0a4cb4b1d0d567cdd0a2fd8655cd9bcf056619077a2a5807e"
+          }
+        ]
+      },
+      "avatarInset": 0.222656,
+      "bubbleBackgroundInsets": [
+        23.25,
+        22.5,
+        23.5,
+        22.5
+      ],
+      "frameCount": 6,
+      "frameDurationMs": 180,
+      "loopMs": 1080,
+      "frameSize": [
+        256,
+        256
+      ],
+      "bubbleSize": [
+        512,
+        320
+      ],
+      "bubbleScale": 4,
+      "bubbleCenterSlicePixels": [
+        200,
+        156,
+        312,
+        164
+      ]
+    },
+    {
+      "id": "mushroomFable",
+      "sourceId": "17-mushroom-fable",
+      "label": "蘑菇童话",
+      "generator": "built-in imagegen",
+      "files": {
+        "avatar": {
+          "path": "chat_message/assets/decoration/mushroomFable_frame.webp",
+          "bytes": 279078,
+          "sha256": "688235a9736fcf93520af5c26b8a1be11a4e8c174b7820f24c3dcba80c57ce84"
+        },
+        "avatarPoster": {
+          "path": "chat_message/assets/decoration/mushroomFable_frame_poster.webp",
+          "bytes": 43416,
+          "sha256": "154384a60fc61b534a41a00e648eae2d1992e4a3de66a1d365d9b07370cb3616"
+        },
+        "bubble": {
+          "path": "chat_message/assets/decoration/mushroomFable_bubble.webp",
+          "bytes": 469554,
+          "sha256": "347118ffd3cfea43ab4d262d823ff86b8ecaa43222913bbd42ee480ec833f3aa"
+        },
+        "bubblePoster": {
+          "path": "chat_message/assets/decoration/mushroomFable_bubble_poster.webp",
+          "bytes": 66764,
+          "sha256": "5294d62da619a7a59f70df0617cb4e24fb0da92fc4ff7884fc727a861d100f4f"
+        }
+      },
+      "sourceFrames": {
+        "avatar": [
+          {
+            "path": "output/chat-decoration-20styles-20261022/17-mushroom-fable/avatar/frames/01.png",
+            "bytes": 54633,
+            "sha256": "122eecc729ccdae6f5d03a82275692df38d400b343dc8d6893d2fa3d7795a823"
+          },
+          {
+            "path": "output/chat-decoration-20styles-20261022/17-mushroom-fable/avatar/frames/02.png",
+            "bytes": 57458,
+            "sha256": "15baec8d252a0a2bf05c17067d931ffed964b102c8485c528b97a95f5414e7e1"
+          },
+          {
+            "path": "output/chat-decoration-20styles-20261022/17-mushroom-fable/avatar/frames/03.png",
+            "bytes": 65446,
+            "sha256": "42bee6561f5180f973089be08165b22bb0f860231ff86dc188947c018801e088"
+          },
+          {
+            "path": "output/chat-decoration-20styles-20261022/17-mushroom-fable/avatar/frames/04.png",
+            "bytes": 61858,
+            "sha256": "19e184cd6aab9ab2cea550118f94e73fdce11a50d38b60db9aa85259979a664b"
+          },
+          {
+            "path": "output/chat-decoration-20styles-20261022/17-mushroom-fable/avatar/frames/05.png",
+            "bytes": 54293,
+            "sha256": "1334cb19c7ab020ad3d0b66a996c5f73ffb8d37cf625fd4f7b4bba97fbb63f5b"
+          },
+          {
+            "path": "output/chat-decoration-20styles-20261022/17-mushroom-fable/avatar/frames/06.png",
+            "bytes": 55349,
+            "sha256": "071f20810e912f3a5e2d12f744fbd1f3386241986449a64a2cec66629c3df3de"
+          }
+        ],
+        "bubble": [
+          {
+            "path": "output/chat-decoration-20styles-20261022/17-mushroom-fable/bubble/frames/01.png",
+            "bytes": 89924,
+            "sha256": "24b3ec916c20567e7ecd2a194755d8805139a9bd856a90d5892a5554fb87bd09"
+          },
+          {
+            "path": "output/chat-decoration-20styles-20261022/17-mushroom-fable/bubble/frames/02.png",
+            "bytes": 103217,
+            "sha256": "5f4df735ba0fe9165a6e7edf0d46da3933836bb0712af87e9b60ed1f717e0db6"
+          },
+          {
+            "path": "output/chat-decoration-20styles-20261022/17-mushroom-fable/bubble/frames/03.png",
+            "bytes": 130991,
+            "sha256": "24800be68505cfa58b23767a69078a8a0f1fb60888164d4b790038805f520649"
+          },
+          {
+            "path": "output/chat-decoration-20styles-20261022/17-mushroom-fable/bubble/frames/04.png",
+            "bytes": 117098,
+            "sha256": "5276b0457d6c08a0d6592ce3550b933c81f333e361271e2a29c777d50afe7c38"
+          },
+          {
+            "path": "output/chat-decoration-20styles-20261022/17-mushroom-fable/bubble/frames/05.png",
+            "bytes": 91146,
+            "sha256": "8f289955a76279dbde3b019322fc1cec6f15d4a43ecbe2518e6a9ead1930e56a"
+          },
+          {
+            "path": "output/chat-decoration-20styles-20261022/17-mushroom-fable/bubble/frames/06.png",
+            "bytes": 90986,
+            "sha256": "ddc55c813d96d58bf035b5b8e516df7656ed37a839baa815a2aa9a8ad3c8a9ec"
+          }
+        ]
+      },
+      "avatarInset": 0.238281,
+      "bubbleBackgroundInsets": [
+        23.25,
+        21.25,
+        23.25,
+        21.25
+      ],
+      "frameCount": 6,
+      "frameDurationMs": 180,
+      "loopMs": 1080,
+      "frameSize": [
+        256,
+        256
+      ],
+      "bubbleSize": [
+        512,
+        320
+      ],
+      "bubbleScale": 4,
+      "bubbleCenterSlicePixels": [
+        200,
+        156,
+        312,
+        164
+      ]
+    },
+    {
+      "id": "carnivalDream",
+      "sourceId": "18-carnival-dream",
+      "label": "游乐绮梦",
+      "generator": "built-in imagegen",
+      "files": {
+        "avatar": {
+          "path": "chat_message/assets/decoration/carnivalDream_frame.webp",
+          "bytes": 307636,
+          "sha256": "5c031dc25ad5ae991e04138a108979d0a1bf22caedd63707c340935de37f06c6"
+        },
+        "avatarPoster": {
+          "path": "chat_message/assets/decoration/carnivalDream_frame_poster.webp",
+          "bytes": 48166,
+          "sha256": "af85ce6f202f0caafd384cc22d43f9529541cf09edd61677603432d20fff9563"
+        },
+        "bubble": {
+          "path": "chat_message/assets/decoration/carnivalDream_bubble.webp",
+          "bytes": 545566,
+          "sha256": "94dd9901bf4fad98e2e85bf5e181f8c7955d1ce03713b472e440106758d34b9d"
+        },
+        "bubblePoster": {
+          "path": "chat_message/assets/decoration/carnivalDream_bubble_poster.webp",
+          "bytes": 83542,
+          "sha256": "1250e48e1c0648c55580b42a890443914185db50415cf126a87b6a50255e8897"
+        }
+      },
+      "sourceFrames": {
+        "avatar": [
+          {
+            "path": "output/chat-decoration-20styles-20261022/18-carnival-dream/avatar/frames/01.png",
+            "bytes": 61170,
+            "sha256": "e5e70668e7880a5e90336358e9b62c61f95212f05dae92e32d6644b9ec333ebc"
+          },
+          {
+            "path": "output/chat-decoration-20styles-20261022/18-carnival-dream/avatar/frames/02.png",
+            "bytes": 61010,
+            "sha256": "39a5279568ab7768492a32f78b83436871c0411134220338678a1b6638253e97"
+          },
+          {
+            "path": "output/chat-decoration-20styles-20261022/18-carnival-dream/avatar/frames/03.png",
+            "bytes": 70580,
+            "sha256": "96d8743290ad9e3fc89926da97500a3a88fae415b30decd5c70d9d1a208699c7"
+          },
+          {
+            "path": "output/chat-decoration-20styles-20261022/18-carnival-dream/avatar/frames/04.png",
+            "bytes": 70926,
+            "sha256": "d61725cbe51ce37e35596d3bf94f8095da2fa24be8ec787620894fef27f2446c"
+          },
+          {
+            "path": "output/chat-decoration-20styles-20261022/18-carnival-dream/avatar/frames/05.png",
+            "bytes": 63634,
+            "sha256": "b24ed6f9adeed9a647ead3dd271bfe8935f369cecd413454dd77522c1d6de02b"
+          },
+          {
+            "path": "output/chat-decoration-20styles-20261022/18-carnival-dream/avatar/frames/06.png",
+            "bytes": 62185,
+            "sha256": "4cc566b5c377a2f5bfd6beb7d0af2a51c9316d12099a3e9837b17358c05e8a4b"
+          }
+        ],
+        "bubble": [
+          {
+            "path": "output/chat-decoration-20styles-20261022/18-carnival-dream/bubble/frames/01.png",
+            "bytes": 109041,
+            "sha256": "fdbfe62807a03352d054b52b9c9ada103a1f5e8c1944ef81f3823958e9d50fe7"
+          },
+          {
+            "path": "output/chat-decoration-20styles-20261022/18-carnival-dream/bubble/frames/02.png",
+            "bytes": 116468,
+            "sha256": "b57f13048ffa7a50a887fd9591913c2de1e1ec0de6e04ea78c325e74fe9ea7e3"
+          },
+          {
+            "path": "output/chat-decoration-20styles-20261022/18-carnival-dream/bubble/frames/03.png",
+            "bytes": 137190,
+            "sha256": "a3fccfbafa278d6bf426fcdaa8aa02da51e2a75019328f8c129ad55f3aafd4ca"
+          },
+          {
+            "path": "output/chat-decoration-20styles-20261022/18-carnival-dream/bubble/frames/04.png",
+            "bytes": 130881,
+            "sha256": "7d5d4dfa558610faec17d14025e7e6a405fe236484ce8c89502123939a48091b"
+          },
+          {
+            "path": "output/chat-decoration-20styles-20261022/18-carnival-dream/bubble/frames/05.png",
+            "bytes": 114598,
+            "sha256": "fd84ea41f244fcde59c659377bc89621276685e5c0e991f1424e9a5455220859"
+          },
+          {
+            "path": "output/chat-decoration-20styles-20261022/18-carnival-dream/bubble/frames/06.png",
+            "bytes": 104491,
+            "sha256": "790c77fdc48303aea0dd7f75bbee27b93f196e2ba13704a2268bee7a102c146d"
+          }
+        ]
+      },
+      "avatarInset": 0.251953,
+      "bubbleBackgroundInsets": [
+        25.5,
+        24.0,
+        25.5,
+        24.0
+      ],
+      "frameCount": 6,
+      "frameDurationMs": 180,
+      "loopMs": 1080,
+      "frameSize": [
+        256,
+        256
+      ],
+      "bubbleSize": [
+        512,
+        320
+      ],
+      "bubbleScale": 4,
+      "bubbleCenterSlicePixels": [
+        200,
+        156,
+        312,
+        164
+      ]
+    },
+    {
+      "id": "orangeSummer",
+      "sourceId": "19-orange-summer",
+      "label": "甜橙夏日",
+      "generator": "built-in imagegen",
+      "files": {
+        "avatar": {
+          "path": "chat_message/assets/decoration/orangeSummer_frame.webp",
+          "bytes": 267204,
+          "sha256": "3ebc43ff5616fa7cca46e3a740760486838923f87623877d89eeb75654b2f68f"
+        },
+        "avatarPoster": {
+          "path": "chat_message/assets/decoration/orangeSummer_frame_poster.webp",
+          "bytes": 39690,
+          "sha256": "a0ec8387e808ee913c06dc42a1f7405ccacbf0791a858869bdc0d9c7cc23cf59"
+        },
+        "bubble": {
+          "path": "chat_message/assets/decoration/orangeSummer_bubble.webp",
+          "bytes": 529090,
+          "sha256": "3dab33ca126b43777198f09f184f79cdb4cc8280c9c2bb4cfcadc4386956aceb"
+        },
+        "bubblePoster": {
+          "path": "chat_message/assets/decoration/orangeSummer_bubble_poster.webp",
+          "bytes": 75558,
+          "sha256": "4608d4704344be33573ec441dad041377b387aedb2d77c01890d23cf3abe255d"
+        }
+      },
+      "sourceFrames": {
+        "avatar": [
+          {
+            "path": "output/chat-decoration-20styles-20261022/19-orange-summer/avatar/frames/01.png",
+            "bytes": 50892,
+            "sha256": "a51a3a4295139c97654135d4361a9a39d42ae0cffa23380243be31f87cd4902b"
+          },
+          {
+            "path": "output/chat-decoration-20styles-20261022/19-orange-summer/avatar/frames/02.png",
+            "bytes": 54711,
+            "sha256": "634f3bbf20febe3796098127a4ff633e1571c57309e09c8a167c8a5909fdc3a3"
+          },
+          {
+            "path": "output/chat-decoration-20styles-20261022/19-orange-summer/avatar/frames/03.png",
+            "bytes": 70310,
+            "sha256": "d6f78ea508c2a5d2000f6c304ce1e49af8a86dd61126b4d8dce4ff1022dd0229"
+          },
+          {
+            "path": "output/chat-decoration-20styles-20261022/19-orange-summer/avatar/frames/04.png",
+            "bytes": 60988,
+            "sha256": "784751349981dcfd4f4a4466baa04b6f0758fdcdc039641008fc0c6c56b28504"
+          },
+          {
+            "path": "output/chat-decoration-20styles-20261022/19-orange-summer/avatar/frames/05.png",
+            "bytes": 50647,
+            "sha256": "63a0dc85ab13cea7718a0a0d63d0420ecb5eba171ccb8e43d569555022351977"
+          },
+          {
+            "path": "output/chat-decoration-20styles-20261022/19-orange-summer/avatar/frames/06.png",
+            "bytes": 50734,
+            "sha256": "cce7902d9b190a5dfb4d9894a364783d9257b36bc6c87b99f89d65b9fb353a8f"
+          }
+        ],
+        "bubble": [
+          {
+            "path": "output/chat-decoration-20styles-20261022/19-orange-summer/bubble/frames/01.png",
+            "bytes": 100960,
+            "sha256": "4571322bd24358c527ded549ecb8da9803d2764dcf2feec4d2c536d21835b2ef"
+          },
+          {
+            "path": "output/chat-decoration-20styles-20261022/19-orange-summer/bubble/frames/02.png",
+            "bytes": 116586,
+            "sha256": "34b0c23d9a6b2dab3ff4e08c85e7644714b99bc9cec1c29af6c88d20a2269e22"
+          },
+          {
+            "path": "output/chat-decoration-20styles-20261022/19-orange-summer/bubble/frames/03.png",
+            "bytes": 153564,
+            "sha256": "dc0add1f9c5cfdc335bdd653d43749a4a112be7321cab5b3c83df48b1c68ce95"
+          },
+          {
+            "path": "output/chat-decoration-20styles-20261022/19-orange-summer/bubble/frames/04.png",
+            "bytes": 124106,
+            "sha256": "5f926b748466ed865a7d38f9c1daa193e0f7ae0f77d462d8842d42a3bb5c0d96"
+          },
+          {
+            "path": "output/chat-decoration-20styles-20261022/19-orange-summer/bubble/frames/05.png",
+            "bytes": 106821,
+            "sha256": "46db244e80bd8f094a2c79d61363f2ce13d005ee6c8a14e1eaf8477e6d20cb58"
+          },
+          {
+            "path": "output/chat-decoration-20styles-20261022/19-orange-summer/bubble/frames/06.png",
+            "bytes": 104548,
+            "sha256": "b83ec4d1b36a00bcf5bc3814638caee5e4b89845280ba823e3f1e52cfa3f29bc"
+          }
+        ]
+      },
+      "avatarInset": 0.238281,
+      "bubbleBackgroundInsets": [
+        23.0,
+        21.0,
+        23.0,
+        21.0
+      ],
+      "frameCount": 6,
+      "frameDurationMs": 180,
+      "loopMs": 1080,
+      "frameSize": [
+        256,
+        256
+      ],
+      "bubbleSize": [
+        512,
+        320
+      ],
+      "bubbleScale": 4,
+      "bubbleCenterSlicePixels": [
+        200,
+        156,
+        312,
+        164
+      ]
+    },
+    {
+      "id": "royalChess",
+      "sourceId": "20-royal-chess",
+      "label": "皇家棋局",
+      "generator": "built-in imagegen",
+      "files": {
+        "avatar": {
+          "path": "chat_message/assets/decoration/royalChess_frame.webp",
+          "bytes": 280740,
+          "sha256": "47b5839d4cbe5431cd9d69f577e69992e229803f7415ec1bbf3f935bb2d384a1"
+        },
+        "avatarPoster": {
+          "path": "chat_message/assets/decoration/royalChess_frame_poster.webp",
+          "bytes": 42002,
+          "sha256": "8d4da1e379086536ec8e1ef3607df9b4fb66d842f045acf46887ac2e41b9711f"
+        },
+        "bubble": {
+          "path": "chat_message/assets/decoration/royalChess_bubble.webp",
+          "bytes": 416160,
+          "sha256": "d076d8acb8d45c3824c23679e823181458589a53e88ede8fd5c310963ed673e7"
+        },
+        "bubblePoster": {
+          "path": "chat_message/assets/decoration/royalChess_bubble_poster.webp",
+          "bytes": 61806,
+          "sha256": "93f10c6d9fbb1700ac459ac94495de8ab85e135628a683608b60fca53996cd27"
+        }
+      },
+      "sourceFrames": {
+        "avatar": [
+          {
+            "path": "output/chat-decoration-20styles-20261022/20-royal-chess/avatar/frames/01.png",
+            "bytes": 54703,
+            "sha256": "76fc11e86693f796bef704186d92b30debae1fb5caf8db338eb73d8792bd2fd1"
+          },
+          {
+            "path": "output/chat-decoration-20styles-20261022/20-royal-chess/avatar/frames/02.png",
+            "bytes": 59571,
+            "sha256": "50dca846e5ec7b18eaa9911099d384af3990dfec6af5b1cf1e247829285cee5c"
+          },
+          {
+            "path": "output/chat-decoration-20styles-20261022/20-royal-chess/avatar/frames/03.png",
+            "bytes": 64601,
+            "sha256": "87b80ab1a60f988727b0e9705e70da71e4b200e75dc458dd54e10c073e3b9cd6"
+          },
+          {
+            "path": "output/chat-decoration-20styles-20261022/20-royal-chess/avatar/frames/04.png",
+            "bytes": 62753,
+            "sha256": "5e177c549fb839c9eab3b3e8e3c097dfe2e76aeef6e9847ace8a1724e0966ec9"
+          },
+          {
+            "path": "output/chat-decoration-20styles-20261022/20-royal-chess/avatar/frames/05.png",
+            "bytes": 58771,
+            "sha256": "c415f8aafbaea2c4729777574acc5447f7f987af406b053a374f12e998c313da"
+          },
+          {
+            "path": "output/chat-decoration-20styles-20261022/20-royal-chess/avatar/frames/06.png",
+            "bytes": 55163,
+            "sha256": "02a52c0da9f12a3c5c9acb6860f61ef7f5c64120c644811e1582203e0ba18eec"
+          }
+        ],
+        "bubble": [
+          {
+            "path": "output/chat-decoration-20styles-20261022/20-royal-chess/bubble/frames/01.png",
+            "bytes": 85943,
+            "sha256": "6b27720605e0f511fe09d47fd24af4f190c94fc0746b453659c58bfb6e2f6be5"
+          },
+          {
+            "path": "output/chat-decoration-20styles-20261022/20-royal-chess/bubble/frames/02.png",
+            "bytes": 93684,
+            "sha256": "a441482cc5437022b68ea3a98cc0472fcb617bcf1dcdc122056d75772f75699c"
+          },
+          {
+            "path": "output/chat-decoration-20styles-20261022/20-royal-chess/bubble/frames/03.png",
+            "bytes": 106506,
+            "sha256": "2c64f0ae621255e2b892a4d2d88c97c432dfd8125eb1e1927b9560704434b907"
+          },
+          {
+            "path": "output/chat-decoration-20styles-20261022/20-royal-chess/bubble/frames/04.png",
+            "bytes": 100605,
+            "sha256": "51c948ca1e88b1b41487ac0e556a3f5ff93d264b76ad50e41502d91300c14044"
+          },
+          {
+            "path": "output/chat-decoration-20styles-20261022/20-royal-chess/bubble/frames/05.png",
+            "bytes": 92309,
+            "sha256": "85a3161c9cf25b50836b049c241467bcacf1df3c38320762e1d59d6af664817e"
+          },
+          {
+            "path": "output/chat-decoration-20styles-20261022/20-royal-chess/bubble/frames/06.png",
+            "bytes": 88659,
+            "sha256": "5bdd2bd6ac5021613d27398193034ad311455f3b0f950d40e41a2f9fd580ff88"
+          }
+        ]
+      },
+      "avatarInset": 0.244824,
+      "bubbleBackgroundInsets": [
+        21.25,
+        23.75,
+        21.25,
+        23.75
+      ],
+      "frameCount": 6,
+      "frameDurationMs": 180,
+      "loopMs": 1080,
+      "frameSize": [
+        256,
+        256
+      ],
+      "bubbleSize": [
+        512,
+        320
+      ],
+      "bubbleScale": 4,
+      "bubbleCenterSlicePixels": [
+        200,
+        156,
+        312,
+        164
+      ]
+    }
+  ],
+  "runtimeBytes": 16892002
+}

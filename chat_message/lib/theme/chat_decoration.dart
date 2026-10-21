@@ -23,7 +23,37 @@ enum ChatBubbleStyle {
   crystal('海盐水晶', '晶莹海蓝 · 贝壳珍珠', Color(0xFF459CAD)),
   ink('墨染山河', '水墨竹影 · 朱砂落款', Color(0xFF777267)),
   plush('绒绒伙伴', '绒毛耳朵 · 软软爪印', Color(0xFFC18465)),
-  brass('黄铜航行', '黄铜齿轮 · 远航罗盘', Color(0xFFAB823D));
+  brass('黄铜航行', '黄铜齿轮 · 远航罗盘', Color(0xFFAB823D)),
+  butterflyGlass('蝶影琉璃', '蝶翼轻舞 · 琉璃微光', Color(0xFF9478CF)),
+  dragonEmber('龙焰赤金', '龙焰流动 · 赤金宝珠', Color(0xFFC65A35)),
+  midnightRose('暗夜蔷薇', '蔷薇花雨 · 暗红宝石', Color(0xFF9C4366)),
+  cloudFeather('云羽圣歌', '羽翼轻摆 · 云端星辉', Color(0xFFB3955D)),
+  moonRabbit('月兔绮梦', '月兔桂香 · 玉穗轻摇', Color(0xFF829B77)),
+  abyssGlow('深海荧光', '水母浮游 · 深海流光', Color(0xFF657ECD)),
+  foxCharm('狐火御守', '狐火闪烁 · 铃结轻摇', Color(0xFFBC5E53)),
+  creamBakery('奶油烘焙', '奶油甜梦 · 草莓心语', Color(0xFFC38758)),
+  streetGraffiti('街头涂鸦', '街头笔触 · 闪电节拍', Color(0xFF4269C7)),
+  vinylJazz('黑胶爵士', '黑胶转动 · 黄铜爵士', Color(0xFFAB823D)),
+  crimsonPhoenix('赤曜凤凰', '火羽流动 · 赤金流光', Color(0xFFC24B36)),
+  frostPalace('霜月雪境', '冰晶闪耀 · 霜光环绕', Color(0xFF629BC8)),
+  fireflyGrove('萤森秘语', '萤火轻舞 · 绿藤秘境', Color(0xFF658C47)),
+  cherrySoda('樱桃汽水', '樱桃气泡 · 清甜闪光', Color(0xFFCC5971)),
+  honeyGarden('蜜蜂花园', '蜜光流淌 · 花间振翅', Color(0xFFB78A35)),
+  pandaBamboo('竹影熊猫', '竹叶轻摇 · 熊猫眨眼', Color(0xFF5F9270)),
+  shibaPost('柴犬邮局', '柴犬来信 · 邮笺飞舞', Color(0xFFB17A51)),
+  catMagic('猫咪魔法', '星月流转 · 猫咪施法', Color(0xFF7C61B5)),
+  orbitalVoyage('星际航行', '星轨巡游 · 火箭启航', Color(0xFF526FBB)),
+  circuitMatrix('电路矩阵', '电流脉冲 · 机械萌宠', Color(0xFF398B64)),
+  jadeFiligree('翡翠玲珑', '玉光流转 · 莲瓣轻舞', Color(0xFF589C8C)),
+  dunhuangRibbons('敦煌飞天', '彩带飞扬 · 金铃流光', Color(0xFFBF8243)),
+  imperialPeony('牡丹国色', '花瓣飘落 · 国色生香', Color(0xFFB34D58)),
+  bluePorcelain('青花瓷韵', '青花流光 · 瓷珠轻摇', Color(0xFF507EBA)),
+  koiLotus('锦鲤荷塘', '锦鲤游弋 · 荷塘涟漪', Color(0xFF4D9DAB)),
+  ginkgoLetter('银杏秋信', '金叶飞舞 · 秋日来信', Color(0xFFB18C3D)),
+  mushroomFable('蘑菇童话', '蘑菇暖灯 · 森林魔法', Color(0xFF8B8147)),
+  carnivalDream('游乐绮梦', '彩球轻摇 · 木马星光', Color(0xFFBA7FAD)),
+  orangeSummer('甜橙夏日', '橙香流光 · 夏日花雨', Color(0xFFCE8935)),
+  royalChess('皇家棋局', '王冠闪耀 · 黑金棋语', Color(0xFF94773E));
 
   const ChatBubbleStyle(this.label, this.description, this.accent);
   final String label;
@@ -37,6 +67,36 @@ enum ChatBubbleStyle {
         ink => ChatIllustratedTheme.ink,
         plush => ChatIllustratedTheme.plush,
         brass => ChatIllustratedTheme.brass,
+        butterflyGlass => ChatIllustratedTheme.butterflyGlass,
+        dragonEmber => ChatIllustratedTheme.dragonEmber,
+        midnightRose => ChatIllustratedTheme.midnightRose,
+        cloudFeather => ChatIllustratedTheme.cloudFeather,
+        moonRabbit => ChatIllustratedTheme.moonRabbit,
+        abyssGlow => ChatIllustratedTheme.abyssGlow,
+        foxCharm => ChatIllustratedTheme.foxCharm,
+        creamBakery => ChatIllustratedTheme.creamBakery,
+        streetGraffiti => ChatIllustratedTheme.streetGraffiti,
+        vinylJazz => ChatIllustratedTheme.vinylJazz,
+        crimsonPhoenix => ChatIllustratedTheme.crimsonPhoenix,
+        frostPalace => ChatIllustratedTheme.frostPalace,
+        fireflyGrove => ChatIllustratedTheme.fireflyGrove,
+        cherrySoda => ChatIllustratedTheme.cherrySoda,
+        honeyGarden => ChatIllustratedTheme.honeyGarden,
+        pandaBamboo => ChatIllustratedTheme.pandaBamboo,
+        shibaPost => ChatIllustratedTheme.shibaPost,
+        catMagic => ChatIllustratedTheme.catMagic,
+        orbitalVoyage => ChatIllustratedTheme.orbitalVoyage,
+        circuitMatrix => ChatIllustratedTheme.circuitMatrix,
+        jadeFiligree => ChatIllustratedTheme.jadeFiligree,
+        dunhuangRibbons => ChatIllustratedTheme.dunhuangRibbons,
+        imperialPeony => ChatIllustratedTheme.imperialPeony,
+        bluePorcelain => ChatIllustratedTheme.bluePorcelain,
+        koiLotus => ChatIllustratedTheme.koiLotus,
+        ginkgoLetter => ChatIllustratedTheme.ginkgoLetter,
+        mushroomFable => ChatIllustratedTheme.mushroomFable,
+        carnivalDream => ChatIllustratedTheme.carnivalDream,
+        orangeSummer => ChatIllustratedTheme.orangeSummer,
+        royalChess => ChatIllustratedTheme.royalChess,
         _ => null,
       };
 
@@ -110,7 +170,37 @@ enum ChatAvatarFrameStyle {
   crystal('海盐水晶', '晶莹海蓝 · 贝壳珍珠'),
   ink('墨染山河', '水墨竹影 · 朱砂落款'),
   plush('绒绒伙伴', '绒毛耳朵 · 软软爪印'),
-  brass('黄铜航行', '黄铜齿轮 · 远航罗盘');
+  brass('黄铜航行', '黄铜齿轮 · 远航罗盘'),
+  butterflyGlass('蝶影琉璃', '蝶翼轻舞 · 琉璃微光'),
+  dragonEmber('龙焰赤金', '龙焰流动 · 赤金宝珠'),
+  midnightRose('暗夜蔷薇', '蔷薇花雨 · 暗红宝石'),
+  cloudFeather('云羽圣歌', '羽翼轻摆 · 云端星辉'),
+  moonRabbit('月兔绮梦', '月兔桂香 · 玉穗轻摇'),
+  abyssGlow('深海荧光', '水母浮游 · 深海流光'),
+  foxCharm('狐火御守', '狐火闪烁 · 铃结轻摇'),
+  creamBakery('奶油烘焙', '奶油甜梦 · 草莓心语'),
+  streetGraffiti('街头涂鸦', '街头笔触 · 闪电节拍'),
+  vinylJazz('黑胶爵士', '黑胶转动 · 黄铜爵士'),
+  crimsonPhoenix('赤曜凤凰', '火羽流动 · 赤金流光'),
+  frostPalace('霜月雪境', '冰晶闪耀 · 霜光环绕'),
+  fireflyGrove('萤森秘语', '萤火轻舞 · 绿藤秘境'),
+  cherrySoda('樱桃汽水', '樱桃气泡 · 清甜闪光'),
+  honeyGarden('蜜蜂花园', '蜜光流淌 · 花间振翅'),
+  pandaBamboo('竹影熊猫', '竹叶轻摇 · 熊猫眨眼'),
+  shibaPost('柴犬邮局', '柴犬来信 · 邮笺飞舞'),
+  catMagic('猫咪魔法', '星月流转 · 猫咪施法'),
+  orbitalVoyage('星际航行', '星轨巡游 · 火箭启航'),
+  circuitMatrix('电路矩阵', '电流脉冲 · 机械萌宠'),
+  jadeFiligree('翡翠玲珑', '玉光流转 · 莲瓣轻舞'),
+  dunhuangRibbons('敦煌飞天', '彩带飞扬 · 金铃流光'),
+  imperialPeony('牡丹国色', '花瓣飘落 · 国色生香'),
+  bluePorcelain('青花瓷韵', '青花流光 · 瓷珠轻摇'),
+  koiLotus('锦鲤荷塘', '锦鲤游弋 · 荷塘涟漪'),
+  ginkgoLetter('银杏秋信', '金叶飞舞 · 秋日来信'),
+  mushroomFable('蘑菇童话', '蘑菇暖灯 · 森林魔法'),
+  carnivalDream('游乐绮梦', '彩球轻摇 · 木马星光'),
+  orangeSummer('甜橙夏日', '橙香流光 · 夏日花雨'),
+  royalChess('皇家棋局', '王冠闪耀 · 黑金棋语');
 
   const ChatAvatarFrameStyle(this.label, this.description);
   final String label;
@@ -123,6 +213,36 @@ enum ChatAvatarFrameStyle {
         ink => ChatIllustratedTheme.ink,
         plush => ChatIllustratedTheme.plush,
         brass => ChatIllustratedTheme.brass,
+        butterflyGlass => ChatIllustratedTheme.butterflyGlass,
+        dragonEmber => ChatIllustratedTheme.dragonEmber,
+        midnightRose => ChatIllustratedTheme.midnightRose,
+        cloudFeather => ChatIllustratedTheme.cloudFeather,
+        moonRabbit => ChatIllustratedTheme.moonRabbit,
+        abyssGlow => ChatIllustratedTheme.abyssGlow,
+        foxCharm => ChatIllustratedTheme.foxCharm,
+        creamBakery => ChatIllustratedTheme.creamBakery,
+        streetGraffiti => ChatIllustratedTheme.streetGraffiti,
+        vinylJazz => ChatIllustratedTheme.vinylJazz,
+        crimsonPhoenix => ChatIllustratedTheme.crimsonPhoenix,
+        frostPalace => ChatIllustratedTheme.frostPalace,
+        fireflyGrove => ChatIllustratedTheme.fireflyGrove,
+        cherrySoda => ChatIllustratedTheme.cherrySoda,
+        honeyGarden => ChatIllustratedTheme.honeyGarden,
+        pandaBamboo => ChatIllustratedTheme.pandaBamboo,
+        shibaPost => ChatIllustratedTheme.shibaPost,
+        catMagic => ChatIllustratedTheme.catMagic,
+        orbitalVoyage => ChatIllustratedTheme.orbitalVoyage,
+        circuitMatrix => ChatIllustratedTheme.circuitMatrix,
+        jadeFiligree => ChatIllustratedTheme.jadeFiligree,
+        dunhuangRibbons => ChatIllustratedTheme.dunhuangRibbons,
+        imperialPeony => ChatIllustratedTheme.imperialPeony,
+        bluePorcelain => ChatIllustratedTheme.bluePorcelain,
+        koiLotus => ChatIllustratedTheme.koiLotus,
+        ginkgoLetter => ChatIllustratedTheme.ginkgoLetter,
+        mushroomFable => ChatIllustratedTheme.mushroomFable,
+        carnivalDream => ChatIllustratedTheme.carnivalDream,
+        orangeSummer => ChatIllustratedTheme.orangeSummer,
+        royalChess => ChatIllustratedTheme.royalChess,
         _ => null,
       };
 
@@ -140,34 +260,48 @@ enum ChatAvatarFrameStyle {
       );
 }
 
-/// 框在原头像尺寸内绘制，避免装扮改变聊天排版与点击区域。
+/// 样卡默认按外框尺寸绘制；消息开启 preserveAvatarSize 时保留头像原尺寸，
+/// 让布局为外围装饰预留空间，避免头像缩小或装饰挤入气泡。
 class ChatAvatarFrame extends StatelessWidget {
   final ChatAvatarFrameStyle style;
   final double size;
   final Widget child;
+  final bool preserveAvatarSize;
 
   const ChatAvatarFrame(
       {super.key,
       required this.style,
       required this.size,
+      this.preserveAvatarSize = false,
       required this.child});
+
+  double get _frameSize {
+    if (!preserveAvatarSize || style == ChatAvatarFrameStyle.none) return size;
+    final inset = style.illustration?.avatarInset ??
+        (style.ornament == null ? .105 : .17);
+    return size / (1 - 2 * inset);
+  }
 
   @override
   Widget build(BuildContext context) {
     if (style == ChatAvatarFrameStyle.none) return child;
+    final frameSize = _frameSize;
     if (style.illustration case final illustrated?) {
       return ChatIllustratedAvatarFrame(
-          theme: illustrated, size: size, child: child);
+          theme: illustrated, size: frameSize, child: child);
     }
     return SizedBox.square(
-      dimension: size,
+      dimension: frameSize,
       child: CustomPaint(
         foregroundPainter: _FramePainter(style, Theme.of(context).brightness),
         child: Padding(
-          padding: EdgeInsets.all(size * (style.ornament == null ? .105 : .17)),
+          padding:
+              EdgeInsets.all(frameSize * (style.ornament == null ? .105 : .17)),
           child: ClipRRect(
             borderRadius: BorderRadius.circular(
-                style == ChatAvatarFrameStyle.pixel ? size * .12 : size),
+                style == ChatAvatarFrameStyle.pixel
+                    ? frameSize * .12
+                    : frameSize),
             child: SizedBox.expand(
                 child: FittedBox(fit: BoxFit.cover, child: child)),
           ),
@@ -197,6 +331,36 @@ class _FramePainter extends CustomPainter {
       case ChatAvatarFrameStyle.ink:
       case ChatAvatarFrameStyle.plush:
       case ChatAvatarFrameStyle.brass:
+      case ChatAvatarFrameStyle.butterflyGlass:
+      case ChatAvatarFrameStyle.dragonEmber:
+      case ChatAvatarFrameStyle.midnightRose:
+      case ChatAvatarFrameStyle.cloudFeather:
+      case ChatAvatarFrameStyle.moonRabbit:
+      case ChatAvatarFrameStyle.abyssGlow:
+      case ChatAvatarFrameStyle.foxCharm:
+      case ChatAvatarFrameStyle.creamBakery:
+      case ChatAvatarFrameStyle.streetGraffiti:
+      case ChatAvatarFrameStyle.vinylJazz:
+      case ChatAvatarFrameStyle.crimsonPhoenix:
+      case ChatAvatarFrameStyle.frostPalace:
+      case ChatAvatarFrameStyle.fireflyGrove:
+      case ChatAvatarFrameStyle.cherrySoda:
+      case ChatAvatarFrameStyle.honeyGarden:
+      case ChatAvatarFrameStyle.pandaBamboo:
+      case ChatAvatarFrameStyle.shibaPost:
+      case ChatAvatarFrameStyle.catMagic:
+      case ChatAvatarFrameStyle.orbitalVoyage:
+      case ChatAvatarFrameStyle.circuitMatrix:
+      case ChatAvatarFrameStyle.jadeFiligree:
+      case ChatAvatarFrameStyle.dunhuangRibbons:
+      case ChatAvatarFrameStyle.imperialPeony:
+      case ChatAvatarFrameStyle.bluePorcelain:
+      case ChatAvatarFrameStyle.koiLotus:
+      case ChatAvatarFrameStyle.ginkgoLetter:
+      case ChatAvatarFrameStyle.mushroomFable:
+      case ChatAvatarFrameStyle.carnivalDream:
+      case ChatAvatarFrameStyle.orangeSummer:
+      case ChatAvatarFrameStyle.royalChess:
         return; // 插画头像框由独立的透明素材层绘制。
       case ChatAvatarFrameStyle.none:
         return;

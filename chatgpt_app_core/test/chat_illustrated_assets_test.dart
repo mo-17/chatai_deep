@@ -1,10 +1,12 @@
 import 'dart:ui' as ui;
+import 'package:crypto/crypto.dart';
 
 import 'package:chat_message/theme/chat_decoration.dart';
 import 'package:chat_message/theme/chat_illustrated_theme.dart';
 import 'package:chat_message/widget/chat_illustrated_bubble.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:flutter/rendering.dart';
 import 'package:flutter_hi_cache/flutter_hi_cache.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:shared_preferences/shared_preferences.dart';
@@ -13,26 +15,61 @@ import 'package:chatgpt_app_core/provider/theme_provider.dart';
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
 
-  testWidgets('六张气泡边框可解码，九宫格尺寸匹配且正文裁剪区域完整', (tester) async {
-    final logicalImage = Offset.zero &
-        (ChatIllustratedTheme.bubbleAssetSize /
-            ChatIllustratedTheme.bubbleAssetScale);
-    expect(
-        logicalImage.contains(ChatIllustratedTheme.bubbleCenterSlice.topLeft),
-        isTrue);
-    expect(
-        logicalImage
-            .contains(ChatIllustratedTheme.bubbleCenterSlice.bottomRight),
-        isTrue);
+  testWidgets('完整头像框组件在头像外侧真实绘制素材像素', (tester) async {
+    final key = GlobalKey();
+    const theme = ChatIllustratedTheme.dragonEmber;
+    await tester.pumpWidget(MaterialApp(
+      home: MediaQuery(
+        data: const MediaQueryData(disableAnimations: true),
+        child: Center(
+            child: RepaintBoundary(
+          key: key,
+          child: const ChatIllustratedAvatarFrame(
+              theme: theme, size: 256, child: ColoredBox(color: Colors.blue)),
+        )),
+      ),
+    ));
+    await tester.runAsync(() => precacheImage(
+        const ResizeImage(
+            AssetImage('assets/decoration/dragonEmber_frame_poster.webp',
+                package: 'chat_message'),
+            width: 256,
+            height: 256),
+        key.currentContext!));
+    await tester.pump();
+    final boundary =
+        key.currentContext!.findRenderObject()! as RenderRepaintBoundary;
+    await tester.runAsync(() async {
+      final image = await boundary.toImage();
+      final rgba =
+          (await image.toByteData(format: ui.ImageByteFormat.rawRgba))!;
+      var pixels = 0;
+      for (var y = 0; y < 256; y++) {
+        for (var x = 0; x < 256; x++) {
+          if (x >= 56 && x < 200 && y >= 56 && y < 200) continue;
+          if (rgba.getUint8((y * 256 + x) * 4 + 3) > 100) pixels++;
+        }
+      }
+      expect(pixels, greaterThan(1000));
+      image.dispose();
+    });
+    await tester.pumpWidget(const SizedBox.shrink());
+  });
+
+  testWidgets('全部气泡边框可解码，九宫格尺寸匹配且正文裁剪区域完整', (tester) async {
     await tester.runAsync(() async {
       for (final theme in ChatIllustratedTheme.values) {
+        final logicalImage =
+            Offset.zero & (theme.bubbleSize / theme.bubbleScale);
+        expect(logicalImage.contains(theme.centerSlice.topLeft), isTrue);
+        expect(logicalImage.contains(theme.centerSlice.bottomRight), isTrue);
         final bytes =
             await rootBundle.load('packages/chat_message/${theme.bubbleAsset}');
         final codec =
             await ui.instantiateImageCodec(bytes.buffer.asUint8List());
         final image = (await codec.getNextFrame()).image;
         expect(Size(image.width.toDouble(), image.height.toDouble()),
-            ChatIllustratedTheme.bubbleAssetSize);
+            theme.bubbleSize);
         final data =
             (await image.toByteData(format: ui.ImageByteFormat.rawRgba))!;
         Future<ByteData> paintBorder(Size size) async {
@@ -41,8 +78,8 @@ void main() {
               canvas: Canvas(recorder),
               rect: Offset.zero & size,
               image: image,
-              scale: ChatIllustratedTheme.bubbleAssetScale,
-              centerSlice: ChatIllustratedTheme.bubbleCenterSlice,
+              scale: theme.bubbleScale,
+              centerSlice: theme.centerSlice,
               fit: BoxFit.fill);
           final picture = recorder.endRecording();
           final rendered =
@@ -84,7 +121,7 @@ void main() {
     }
   });
 
-  testWidgets('依赖包的六张插画素材可真实解码，中心和外角保持透明', (tester) async {
+  testWidgets('全部插画头像框可真实解码，中心和外角保持透明', (tester) async {
     await tester.runAsync(() async {
       for (final theme in ChatIllustratedTheme.values) {
         final bytes =
@@ -112,15 +149,89 @@ void main() {
                 reason: '${theme.name} avatar hole');
           }
         }
-        expect(alpha(.5, .15), greaterThan(100),
-            reason: '${theme.name} visible ring');
+        if (!theme.animated) {
+          expect(alpha(.5, .15), greaterThan(100),
+              reason: '${theme.name} visible ring');
+        }
         image.dispose();
         codec.dispose();
       }
     });
   });
 
-  test('六组装扮可跨 Provider 重建保存，两侧和原有自定义颜色互不覆盖', () async {
+  testWidgets('三十套动态头像框均有独立画面、正确时长、透明头像孔与封面', (tester) async {
+    final animated = ChatIllustratedTheme.values.where((t) => t.animated);
+    expect(animated.length, 30);
+    await tester.runAsync(() async {
+      for (final theme in animated) {
+        final data =
+            await rootBundle.load('packages/chat_message/${theme.frameAsset}');
+        final codec = await ui.instantiateImageCodec(data.buffer.asUint8List());
+        final frames = theme.animatedBubble ? 6 : 9;
+        expect(codec.frameCount, frames);
+        final hashes = <String>{};
+        for (var frame = 0; frame < codec.frameCount; frame++) {
+          final info = await codec.getNextFrame();
+          expect(info.duration,
+              Duration(milliseconds: theme.animatedBubble ? 180 : 120));
+          final image = info.image;
+          expect(Size(image.width.toDouble(), image.height.toDouble()),
+              const Size(256, 256));
+          final rgba =
+              (await image.toByteData(format: ui.ImageByteFormat.rawRgba))!;
+          expect(rgba.getUint8((128 * 256 + 128) * 4 + 3), 0);
+          hashes.add(sha256.convert(rgba.buffer.asUint8List()).toString());
+          image.dispose();
+        }
+        expect(hashes.length, frames, reason: theme.name);
+        codec.dispose();
+        final poster = await rootBundle
+            .load('packages/chat_message/${theme.framePosterAsset}');
+        final posterCodec =
+            await ui.instantiateImageCodec(poster.buffer.asUint8List());
+        expect(posterCodec.frameCount, 1);
+        (await posterCodec.getNextFrame()).image.dispose();
+        posterCodec.dispose();
+      }
+    });
+  });
+
+  testWidgets('新增二十套气泡均有六帧、透明中心、配套封面和正确时长', (tester) async {
+    final paired =
+        ChatIllustratedTheme.values.where((theme) => theme.animatedBubble);
+    expect(paired.length, 20);
+    await tester.runAsync(() async {
+      for (final theme in paired) {
+        final bytes =
+            await rootBundle.load('packages/chat_message/${theme.bubbleAsset}');
+        final codec =
+            await ui.instantiateImageCodec(bytes.buffer.asUint8List());
+        expect(codec.frameCount, 6, reason: theme.name);
+        final hashes = <String>{};
+        for (var i = 0; i < codec.frameCount; i++) {
+          final info = await codec.getNextFrame();
+          expect(info.duration, const Duration(milliseconds: 180));
+          final rgba = (await info.image
+              .toByteData(format: ui.ImageByteFormat.rawRgba))!;
+          expect(rgba.getUint8((160 * 512 + 256) * 4 + 3), 0,
+              reason: theme.name);
+          hashes.add(sha256.convert(rgba.buffer.asUint8List()).toString());
+          info.image.dispose();
+        }
+        expect(hashes.length, 6, reason: theme.name);
+        codec.dispose();
+        final poster = await rootBundle
+            .load('packages/chat_message/${theme.bubblePosterAsset}');
+        final still =
+            await ui.instantiateImageCodec(poster.buffer.asUint8List());
+        expect(still.frameCount, 1);
+        (await still.getNextFrame()).image.dispose();
+        still.dispose();
+      }
+    });
+  });
+
+  test('全部插画装扮可跨 Provider 重建保存，两侧和原有自定义颜色互不覆盖', () async {
     SharedPreferences.setMockInitialValues({});
     await HiCache.preInit();
     for (final theme in ChatIllustratedTheme.values) {

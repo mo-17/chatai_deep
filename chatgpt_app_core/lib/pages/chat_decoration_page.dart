@@ -1,4 +1,5 @@
 import 'package:chat_message/theme/chat_decoration.dart';
+import 'package:chat_message/theme/chat_illustrated_theme.dart';
 import 'package:chat_message/widget/chat_bubble_surface.dart';
 import 'package:chatgpt_app_core/provider/theme_provider.dart';
 import 'package:chatgpt_app_core/widget/chat_decoration_preview.dart';
@@ -14,6 +15,17 @@ class ChatDecorationPage extends StatefulWidget {
 
 class _ChatDecorationPageState extends State<ChatDecorationPage> {
   bool _isUser = true;
+  final _search = TextEditingController();
+  String _query = '';
+
+  bool _matches(String label, String description) =>
+      '$label $description'.toLowerCase().contains(_query.trim().toLowerCase());
+
+  @override
+  void dispose() {
+    _search.dispose();
+    super.dispose();
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -54,6 +66,27 @@ class _ChatDecorationPageState extends State<ChatDecorationPage> {
                     style: theme.textTheme.bodyMedium
                         ?.copyWith(color: scheme.onSurfaceVariant)),
                 const SizedBox(height: 20),
+                TextField(
+                  key: const ValueKey('decoration_search'),
+                  controller: _search,
+                  onChanged: (value) => setState(() => _query = value),
+                  decoration: InputDecoration(
+                    hintText: '搜索套装、气泡或头像框',
+                    prefixIcon: const Icon(Icons.search_rounded),
+                    suffixIcon: _query.isEmpty
+                        ? null
+                        : IconButton(
+                            tooltip: '清除搜索',
+                            icon: const Icon(Icons.close_rounded),
+                            onPressed: () {
+                              _search.clear();
+                              setState(() => _query = '');
+                            },
+                          ),
+                    border: const OutlineInputBorder(),
+                  ),
+                ),
+                const SizedBox(height: 20),
                 const ChatDecorationPreview(),
                 const SizedBox(height: 20),
                 SegmentedButton<bool>(
@@ -74,6 +107,54 @@ class _ChatDecorationPageState extends State<ChatDecorationPage> {
                 ),
                 const SizedBox(height: 26),
                 _SectionHeading(
+                    title: '动态套装',
+                    detail:
+                        '${ChatIllustratedTheme.animatedSets.length} 套 · 20 套双动态'),
+                const SizedBox(height: 6),
+                Text('点击同时使用配套气泡、头像框与配色，也可以在下方分别选择。',
+                    style: theme.textTheme.bodySmall
+                        ?.copyWith(color: scheme.onSurfaceVariant)),
+                const SizedBox(height: 12),
+                _OptionGrid(children: [
+                  for (final set in ChatIllustratedTheme.animatedSets
+                      .where((set) => _matches(set.label, set.description)))
+                    _DecorationCard(
+                      key: ValueKey('decoration_set_${set.name}'),
+                      title: set.label,
+                      description: set.description,
+                      selected: provider
+                                  .bubbleStyle(isUser: _isUser)
+                                  .illustration ==
+                              set &&
+                          provider.avatarFrame(isUser: _isUser).illustration ==
+                              set,
+                      onTap: () => provider.applyDecorationSet(
+                          isUser: _isUser, theme: set),
+                      sample: Row(children: [
+                        ChatAvatarFrame(
+                          style: ChatAvatarFrameStyle.fromStorage(set.name),
+                          size: 54,
+                          child: CircleAvatar(
+                            backgroundColor: scheme.secondaryContainer,
+                            child: Icon(_isUser
+                                ? Icons.person_rounded
+                                : Icons.auto_awesome_rounded),
+                          ),
+                        ),
+                        const SizedBox(width: 4),
+                        Expanded(
+                            child: _BubbleSample(
+                          style: ChatBubbleStyle.fromStorage(set.name),
+                          color: set.bubbleColor(
+                              dark: theme.brightness == Brightness.dark,
+                              isUser: _isUser),
+                          isUser: _isUser,
+                        )),
+                      ]),
+                    ),
+                ]),
+                const SizedBox(height: 28),
+                _SectionHeading(
                     title: '气泡样式',
                     detail: provider.bubbleStyle(isUser: _isUser).label),
                 const SizedBox(height: 12),
@@ -81,12 +162,15 @@ class _ChatDecorationPageState extends State<ChatDecorationPage> {
                   children: [
                     for (final style in [
                       ...ChatBubbleStyle.values
-                          .where((s) => s.illustration != null),
+                          .where((s) => s.illustration?.animated == true),
+                      ...ChatBubbleStyle.values
+                          .where((s) => s.illustration?.animated == false),
                       ...ChatBubbleStyle.values
                           .where((s) => s.ornament != null),
                       ...ChatBubbleStyle.values.where(
                           (s) => s.ornament == null && s.illustration == null),
-                    ])
+                    ].where(
+                        (style) => _matches(style.label, style.description)))
                       _DecorationCard(
                         key: ValueKey('bubble_style_${style.name}'),
                         title: style.label,
@@ -132,12 +216,15 @@ class _ChatDecorationPageState extends State<ChatDecorationPage> {
                   children: [
                     for (final frame in [
                       ...ChatAvatarFrameStyle.values
-                          .where((s) => s.illustration != null),
+                          .where((s) => s.illustration?.animated == true),
+                      ...ChatAvatarFrameStyle.values
+                          .where((s) => s.illustration?.animated == false),
                       ...ChatAvatarFrameStyle.values
                           .where((s) => s.ornament != null),
                       ...ChatAvatarFrameStyle.values.where(
                           (s) => s.ornament == null && s.illustration == null),
-                    ])
+                    ].where(
+                        (style) => _matches(style.label, style.description)))
                       _DecorationCard(
                         key: ValueKey('avatar_frame_${frame.name}'),
                         title: frame.label,
@@ -190,14 +277,17 @@ class _SectionHeading extends StatelessWidget {
   const _SectionHeading({required this.title, required this.detail});
 
   @override
-  Widget build(BuildContext context) => Row(
+  Widget build(BuildContext context) => Wrap(
+        alignment: WrapAlignment.spaceBetween,
+        crossAxisAlignment: WrapCrossAlignment.center,
+        spacing: 12,
+        runSpacing: 4,
         children: [
-          Expanded(
-              child: Text(title,
-                  style: Theme.of(context)
-                      .textTheme
-                      .titleMedium
-                      ?.copyWith(fontWeight: FontWeight.w700))),
+          Text(title,
+              style: Theme.of(context)
+                  .textTheme
+                  .titleMedium
+                  ?.copyWith(fontWeight: FontWeight.w700)),
           Text(detail,
               style: Theme.of(context)
                   .textTheme

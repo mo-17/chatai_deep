@@ -1,4 +1,5 @@
 import 'package:chat_message/theme/chat_decoration.dart';
+import 'package:chat_message/theme/chat_illustrated_theme.dart';
 import 'package:chat_message/widget/default_message_widget.dart';
 import 'package:chatgpt_app_core/pages/appearance_settings_page.dart';
 import 'package:chatgpt_app_core/pages/chat_decoration_page.dart';
@@ -62,6 +63,30 @@ void main() {
     expect(restored.showMessageAvatars, isFalse);
   });
 
+  test('整套选择只清除当前侧的自定义色，另一侧及头像开关保持不变', () {
+    final provider = ThemeProvider()
+      ..setShowMessageAvatars(false)
+      ..setBubbleStyle(isUser: false, style: ChatBubbleStyle.paper)
+      ..setAvatarFrame(isUser: false, style: ChatAvatarFrameStyle.mint)
+      ..setBubbleColor(isUser: false, color: Colors.green)
+      ..setBubbleColor(isUser: true, color: Colors.black);
+    var updates = 0;
+    provider.addListener(() => updates++);
+    provider.applyDecorationSet(
+        isUser: true, theme: ChatIllustratedTheme.foxCharm);
+    expect(updates, 1);
+    final restored = ThemeProvider();
+    expect(restored.bubbleStyle(isUser: true), ChatBubbleStyle.foxCharm);
+    expect(restored.avatarFrame(isUser: true), ChatAvatarFrameStyle.foxCharm);
+    expect(restored.userBubbleColor, isNull);
+    expect(restored.bubbleStyle(isUser: false), ChatBubbleStyle.paper);
+    expect(restored.avatarFrame(isUser: false), ChatAvatarFrameStyle.mint);
+    expect(restored.aiBubbleColor, const Color(0xFF4CAF50));
+    expect(restored.showMessageAvatars, isFalse);
+    provider.dispose();
+    restored.dispose();
+  });
+
   Widget host(ThemeProvider provider,
           {Widget page = const ChatDecorationPage(),
           Brightness brightness = Brightness.light,
@@ -98,6 +123,43 @@ void main() {
     await tester.pumpAndSettle();
     expect(find.byType(AppearanceSettingsPage), findsOneWidget);
     expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('三十套动态装扮都可整套选择并传入真实消息预览', (tester) async {
+    final provider = ThemeProvider();
+    await tester.pumpWidget(host(provider));
+    for (final theme in ChatIllustratedTheme.animatedSets) {
+      final key = 'decoration_set_${theme.name}';
+      await reveal(tester, key);
+      await tester.tap(find.byKey(ValueKey(key)));
+      await tester.pump();
+      expect(provider.bubbleStyle(isUser: true).illustration, theme);
+      expect(provider.avatarFrame(isUser: true).illustration, theme);
+      expect(ThemeProvider().avatarFrame(isUser: true).illustration, theme);
+    }
+    await tester.scrollUntilVisible(
+        find.byKey(const ValueKey('decoration_target')), -180,
+        maxScrolls: 100, scrollable: find.byType(Scrollable).first);
+    await tester.tap(find.text('AI 回复'));
+    await tester.pump();
+    await reveal(tester, 'decoration_set_moonRabbit');
+    await tester.tap(find.byKey(const ValueKey('decoration_set_moonRabbit')));
+    await tester.pump();
+    expect(provider.bubbleStyle(isUser: false), ChatBubbleStyle.moonRabbit);
+    expect(provider.bubbleStyle(isUser: true), ChatBubbleStyle.vinylJazz);
+    await tester.scrollUntilVisible(
+        find.byKey(const ValueKey('chat_appearance_preview')), -180,
+        maxScrolls: 100, scrollable: find.byType(Scrollable).first);
+    final messages = tester
+        .widgetList<DefaultMessageWidget>(find.byType(DefaultMessageWidget))
+        .toList();
+    expect(messages[0].bubbleStyle, ChatBubbleStyle.vinylJazz);
+    expect(messages[0].avatarFrameStyle, ChatAvatarFrameStyle.vinylJazz);
+    expect(messages[1].bubbleStyle, ChatBubbleStyle.moonRabbit);
+    expect(messages[1].avatarFrameStyle, ChatAvatarFrameStyle.moonRabbit);
+    expect(tester.takeException(), isNull);
+    await tester.pumpWidget(const SizedBox.shrink());
+    provider.dispose();
   });
 
   testWidgets('点击选择后预览与存储同步，两侧独立，隐藏头像有恢复入口', (tester) async {
@@ -156,6 +218,10 @@ void main() {
           ..setAvatarFrame(isUser: true, style: ChatAvatarFrameStyle.plush);
         await tester
             .pumpWidget(host(provider, brightness: brightness, scale: 2));
+        await tester.enterText(
+            find.byKey(const ValueKey('decoration_search')), '像素');
+        tester.testTextInput.hide();
+        await tester.pump();
         await reveal(tester, 'avatar_frame_pixel');
         await tester.tap(find.byKey(const ValueKey('avatar_frame_pixel')));
         await tester.pump();

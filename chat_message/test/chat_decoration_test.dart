@@ -14,6 +14,80 @@ import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 void main() {
+  testWidgets('有框头像靠近气泡且双侧不重叠，原生头像保留原间距', (tester) async {
+    tester.view.physicalSize = const Size(320, 568);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+    for (final owner in OwnerType.values) {
+      for (final frame in [
+        ChatAvatarFrameStyle.none,
+        ChatAvatarFrameStyle.dragonEmber,
+        ChatAvatarFrameStyle.cloudFeather,
+        ...ChatAvatarFrameStyle.values
+            .where((style) => style.illustration?.animatedBubble == true),
+      ]) {
+        await tester.pumpWidget(MaterialApp(
+            home: Scaffold(
+          body: DefaultMessageWidget(
+            key: GlobalKey(),
+            avatarFrameStyle: frame,
+            bubbleStyle: ChatBubbleStyle.dragonEmber,
+            message: MessageModel(
+                ownerType: owner,
+                ownerName: '我',
+                content: '间距与窄屏多行正文验收。' * 4,
+                createdAt: 0),
+          ),
+        )));
+        final avatar = tester.getRect(find.byType(ChatAvatarFrame));
+        final bubble = tester.getRect(find.byType(ChatIllustratedBubble));
+        final gap = owner == OwnerType.sender
+            ? avatar.left - bubble.right
+            : bubble.left - avatar.right;
+        expect(gap, closeTo(frame == ChatAvatarFrameStyle.none ? 8 : 2, .001));
+        expect(avatar.overlaps(bubble), isFalse);
+        expect(tester.takeException(), isNull);
+      }
+    }
+    await tester.pumpWidget(const SizedBox.shrink());
+  });
+  testWidgets('实际消息使用任意头像框都保留原头像的显示尺寸', (tester) async {
+    for (final style in ChatAvatarFrameStyle.values) {
+      await tester.pumpWidget(MaterialApp(
+          home: Scaffold(
+              body: DefaultMessageWidget(
+        key: GlobalKey(),
+        avatarSize: 40,
+        avatarFrameStyle: style,
+        message: MessageModel(
+            ownerType: OwnerType.sender,
+            ownerName: '我',
+            content: '头像尺寸验收',
+            createdAt: 0),
+      ))));
+      final framed = find.byType(ChatAvatarFrame);
+      if (style == ChatAvatarFrameStyle.none) {
+        expect(
+            tester
+                .getSize(find.descendant(
+                    of: framed, matching: find.byType(CircleAvatar)))
+                .width,
+            40);
+      } else {
+        final body =
+            find.descendant(of: framed, matching: find.byType(FittedBox)).first;
+        expect(tester.getSize(body).width, closeTo(40, .001),
+            reason: style.name);
+        expect(tester.getSize(body).height, closeTo(40, .001),
+            reason: style.name);
+        expect(tester.getSize(framed).width, greaterThan(40),
+            reason: style.name);
+      }
+      expect(tester.takeException(), isNull);
+    }
+    await tester.pumpWidget(const SizedBox.shrink());
+  });
   testWidgets('六组插画气泡在长短宽度、双侧和任意颜色下不覆盖正文或越界', (tester) async {
     await tester.runAsync(() async {
       for (final theme in ChatIllustratedTheme.values) {
