@@ -1,10 +1,10 @@
 {
-  "name": "艾普 AI 工作台",
+  "name": "艾普",
   "short_name": "艾普",
   "start_url": ".",
   "display": "standalone",
-  "background_color": "#120D24",
-  "theme_color": "#6D28D9",
+  "background_color": "#F8FAFC",
+  "theme_color": "#6558E8",
   "description": "多模型 AI 聊天、助手、知识库与创作工作台",
   "orientation": "any",
   "prefer_related_applications": false,

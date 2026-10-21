@@ -5,15 +5,58 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <meta name="description" content="艾普：多模型 AI 聊天、助手、知识库与创作工作台">
-  <meta name="theme-color" content="#6D28D9">
+  <meta name="theme-color" content="#6558E8">
   <meta name="apple-mobile-web-app-capable" content="yes">
   <meta name="apple-mobile-web-app-title" content="艾普">
   <link rel="apple-touch-icon" href="icons/Icon-192.png">
   <link rel="icon" type="image/png" href="favicon.png">
   <link rel="manifest" href="manifest.json">
   <title>艾普 · AI 工作台</title>
+  <style>
+    :root { color-scheme: light dark; --launch-bg: #f8fafc; --launch-text: #17213d; --launch-muted: #59667e; --launch-backdrop: url("data:image/svg+xml,%3Csvg%20xmlns%3D%22http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%22%20width%3D%221170%22%20height%3D%222532%22%20viewBox%3D%220%200%201170%202532%22%3E%0A%20%20%3Cdefs%3E%0A%20%20%20%20%3CradialGradient%20id%3D%22blue%22%3E%3Cstop%20stop-color%3D%22%23B6B5F8%22%20stop-opacity%3D%22.38%22%2F%3E%3Cstop%20offset%3D%221%22%20stop-color%3D%22%23B6B5F8%22%20stop-opacity%3D%220%22%2F%3E%3C%2FradialGradient%3E%0A%20%20%20%20%3CradialGradient%20id%3D%22mint%22%3E%3Cstop%20stop-color%3D%22%23B2DED6%22%20stop-opacity%3D%22.32%22%2F%3E%3Cstop%20offset%3D%221%22%20stop-color%3D%22%23B2DED6%22%20stop-opacity%3D%220%22%2F%3E%3C%2FradialGradient%3E%0A%20%20%3C%2Fdefs%3E%0A%20%20%3Crect%20width%3D%221170%22%20height%3D%222532%22%20fill%3D%22%23F8FAFC%22%2F%3E%0A%20%20%3Cellipse%20cx%3D%22630%22%20cy%3D%221010%22%20rx%3D%22720%22%20ry%3D%22850%22%20fill%3D%22url%28%23blue%29%22%2F%3E%0A%20%20%3Cellipse%20cx%3D%221150%22%20cy%3D%221800%22%20rx%3D%22680%22%20ry%3D%22920%22%20fill%3D%22url%28%23mint%29%22%2F%3E%0A%3C%2Fsvg%3E%0A"); }
+    @media (prefers-color-scheme: dark) { :root { --launch-bg: #0c1020; --launch-text: #f1f5fe; --launch-muted: #a8b1c8; --launch-backdrop: url("data:image/svg+xml,%3Csvg%20xmlns%3D%22http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%22%20width%3D%221170%22%20height%3D%222532%22%20viewBox%3D%220%200%201170%202532%22%3E%0A%20%20%3Cdefs%3E%0A%20%20%20%20%3CradialGradient%20id%3D%22blue%22%3E%3Cstop%20stop-color%3D%22%234D4A9B%22%20stop-opacity%3D%22.34%22%2F%3E%3Cstop%20offset%3D%221%22%20stop-color%3D%22%234D4A9B%22%20stop-opacity%3D%220%22%2F%3E%3C%2FradialGradient%3E%0A%20%20%20%20%3CradialGradient%20id%3D%22mint%22%3E%3Cstop%20stop-color%3D%22%23217879%22%20stop-opacity%3D%22.19%22%2F%3E%3Cstop%20offset%3D%221%22%20stop-color%3D%22%23217879%22%20stop-opacity%3D%220%22%2F%3E%3C%2FradialGradient%3E%0A%20%20%20%20%3CradialGradient%20id%3D%22violet%22%3E%3Cstop%20stop-color%3D%22%2361518B%22%20stop-opacity%3D%22.17%22%2F%3E%3Cstop%20offset%3D%221%22%20stop-color%3D%22%2361518B%22%20stop-opacity%3D%220%22%2F%3E%3C%2FradialGradient%3E%0A%20%20%3C%2Fdefs%3E%0A%20%20%3Crect%20width%3D%221170%22%20height%3D%222532%22%20fill%3D%22%230C1020%22%2F%3E%0A%20%20%3Cellipse%20cx%3D%22630%22%20cy%3D%221010%22%20rx%3D%22720%22%20ry%3D%22850%22%20fill%3D%22url%28%23blue%29%22%2F%3E%0A%20%20%3Cellipse%20cx%3D%221120%22%20cy%3D%221730%22%20rx%3D%22680%22%20ry%3D%22920%22%20fill%3D%22url%28%23mint%29%22%2F%3E%0A%20%20%3Cellipse%20cx%3D%2270%22%20cy%3D%22270%22%20rx%3D%22650%22%20ry%3D%22810%22%20fill%3D%22url%28%23violet%29%22%2F%3E%0A%3C%2Fsvg%3E%0A"); } }
+    html, body { margin: 0; height: 100%; background: var(--launch-bg); }
+    #aipu-startup { position: fixed; inset: 0; background: var(--launch-bg) var(--launch-backdrop) center / cover no-repeat; font-family: system-ui, sans-serif; color: var(--launch-text); }
+    .aipu-brand { position: absolute; top: 44%; left: 50%; transform: translate(-50%, -44%); text-align: center; }
+    .aipu-brand svg { display: block; margin: -32px auto; }
+    .aipu-brand h1 { margin: 0; font-size: 32px; line-height: 1.4; font-weight: 500; letter-spacing: 10px; }
+    .aipu-english { margin: 12px 0 0; color: var(--launch-muted); font-size: 10px; line-height: 12px; font-weight: 500; letter-spacing: 7px; }
+    .aipu-footer { position: absolute; bottom: max(40px, env(safe-area-inset-bottom)); left: 0; right: 0; text-align: center; color: var(--launch-muted); }
+    .aipu-progress { width: 56px; height: 2px; margin: auto; overflow: hidden; border-radius: 2px; background: #828aa32b; }
+    .aipu-progress::after { content: ''; display: block; width: 28px; height: 2px; border-radius: 2px; background: #a39af5; animation: drift 1.5s ease-in-out infinite alternate; }
+    .aipu-tagline { margin: 24px 0 0; font-size: 11px; letter-spacing: 2px; }
+    @keyframes drift { to { transform: translateX(28px); } }
+    @media (prefers-reduced-motion: reduce) { .aipu-progress::after { animation: none; } }
+    @media (max-height: 400px) { .aipu-brand { top: 50%; transform: translate(-50%, -50%); } .aipu-brand svg { width: 160px; height: 160px; margin: -26px auto; } .aipu-brand h1 { font-size: 26px; } .aipu-footer { display: none; } }
+  </style>
 </head>
 <body>
+  <div id="aipu-startup" role="status" aria-label="正在启动艾普，请稍候">
+    <div class="aipu-brand"><svg xmlns="http://www.w3.org/2000/svg" width="240" height="240" aria-hidden="true" viewBox="0 0 480 480">
+  <defs>
+    <linearGradient id="tile" x1="0" y1="0" x2="1" y2="1"><stop stop-color="#A79AFF"/><stop offset=".42" stop-color="#7064E8"/><stop offset="1" stop-color="#414BB6"/></linearGradient>
+    <linearGradient id="edge" x1="0" y1="0" x2=".8" y2="1"><stop stop-color="#FFFFFF" stop-opacity=".8"/><stop offset=".5" stop-color="#FFFFFF" stop-opacity=".13"/><stop offset="1" stop-color="#A9C8FF" stop-opacity=".46"/></linearGradient>
+    <radialGradient id="halo"><stop stop-color="#7A73ED" stop-opacity=".34"/><stop offset="1" stop-color="#7A73ED" stop-opacity="0"/></radialGradient>
+    <linearGradient id="ink" x1="0" y1="0" x2="1" y2="1"><stop stop-color="#FFFFFF"/><stop offset="1" stop-color="#E9EDFF"/></linearGradient>
+  </defs>
+  <circle cx="240" cy="242" r="225" fill="url(#halo)"/>
+  <g transform="translate(240 232) rotate(-8) translate(-240 -232)">
+    <rect x="117" y="117" width="246" height="246" rx="76" fill="#11172F" opacity=".13" transform="translate(0 14)"/>
+    <rect x="117" y="103" width="246" height="246" rx="76" fill="url(#tile)" stroke="url(#edge)" stroke-width="2"/>
+    <path d="M194 179H276C299 179 313 193 313 216V257C313 280 299 294 276 294H232L194 320V294C172 294 158 280 158 257V216C158 193 172 179 194 179Z" fill="url(#ink)"/>
+    <path d="M235 196C240 219 247 226 270 231C247 236 240 243 235 266C230 243 223 236 200 231C223 226 230 219 235 196Z" fill="#6A65D6"/>
+    <circle cx="316" cy="165" r="16" fill="#BFEFE1"/>
+    <path d="M149 169C160 139 177 126 211 123" fill="none" stroke="#FFFFFF" stroke-opacity=".36" stroke-width="2" stroke-linecap="round"/>
+  </g>
+</svg>
+<h1>艾普</h1><p class="aipu-english" aria-hidden="true">AIPU</p></div>
+    <div class="aipu-footer" aria-hidden="true"><div class="aipu-progress"></div><p class="aipu-tagline">对话 · 灵感 · 创作</p></div>
+  </div>
+  <script>
+    window.addEventListener('flutter-first-frame', function () {
+      document.getElementById('aipu-startup')?.remove();
+    }, { once: true });
+  </script>
   <script src="flutter_bootstrap.js" async></script>
 </body>
 </html>

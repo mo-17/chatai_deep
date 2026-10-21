@@ -16,13 +16,40 @@
                     <view key="view" contentMode="scaleToFill" id="Ze5-6b-2t3">
                         <autoresizingMask key="autoresizingMask" widthSizable="YES" heightSizable="YES"/>
                         <subviews>
-                            <imageView opaque="NO" clipsSubviews="YES" multipleTouchEnabled="YES" contentMode="center" image="LaunchImage" translatesAutoresizingMaskIntoConstraints="NO" id="YRO-k0-Ey4">
+                            <imageView userInteractionEnabled="NO" contentMode="scaleAspectFill" image="LaunchBackdrop" translatesAutoresizingMaskIntoConstraints="NO" id="aipu-backdrop"/>
+                            <imageView opaque="NO" clipsSubviews="YES" multipleTouchEnabled="YES" contentMode="scaleAspectFit" image="LaunchImage" translatesAutoresizingMaskIntoConstraints="NO" id="YRO-k0-Ey4">
+                                <constraints>
+                                    <constraint firstAttribute="width" constant="240" id="aipu-icon-width"/>
+                                    <constraint firstAttribute="height" constant="240" id="aipu-icon-height"/>
+                                </constraints>
                             </imageView>
+                            <label opaque="NO" userInteractionEnabled="NO" text="艾普" textAlignment="center" translatesAutoresizingMaskIntoConstraints="NO" id="aipu-name">
+                                <fontDescription key="fontDescription" type="system" weight="medium" pointSize="32"/>
+                                <color key="textColor" name="LaunchForeground"/>
+                            </label>
+                            <label opaque="NO" userInteractionEnabled="NO" text="A  I  P  U" textAlignment="center" translatesAutoresizingMaskIntoConstraints="NO" id="aipu-english">
+                                <fontDescription key="fontDescription" type="system" weight="medium" pointSize="10"/>
+                                <color key="textColor" name="LaunchMuted"/>
+                            </label>
+                            <label opaque="NO" userInteractionEnabled="NO" text="对话 · 灵感 · 创作" textAlignment="center" translatesAutoresizingMaskIntoConstraints="NO" id="aipu-tagline">
+                                <fontDescription key="fontDescription" type="system" pointSize="11"/>
+                                <color key="textColor" name="LaunchMuted"/>
+                            </label>
                         </subviews>
-                        <color key="backgroundColor" red="1" green="1" blue="1" alpha="1" colorSpace="custom" customColorSpace="sRGB"/>
+                        <color key="backgroundColor" name="LaunchBackground"/>
                         <constraints>
+                            <constraint firstItem="aipu-backdrop" firstAttribute="leading" secondItem="Ze5-6b-2t3" secondAttribute="leading" id="aipu-backdrop-left"/>
+                            <constraint firstItem="aipu-backdrop" firstAttribute="trailing" secondItem="Ze5-6b-2t3" secondAttribute="trailing" id="aipu-backdrop-right"/>
+                            <constraint firstItem="aipu-backdrop" firstAttribute="top" secondItem="Ze5-6b-2t3" secondAttribute="top" id="aipu-backdrop-top"/>
+                            <constraint firstItem="aipu-backdrop" firstAttribute="bottom" secondItem="Ze5-6b-2t3" secondAttribute="bottom" id="aipu-backdrop-bottom"/>
+                            <constraint firstItem="aipu-english" firstAttribute="top" secondItem="aipu-name" secondAttribute="bottom" constant="12" id="aipu-english-top"/>
+                            <constraint firstItem="aipu-english" firstAttribute="centerX" secondItem="Ze5-6b-2t3" secondAttribute="centerX" id="aipu-english-center"/>
+                            <constraint firstItem="aipu-tagline" firstAttribute="bottom" secondItem="xbc-2k-c8Z" secondAttribute="top" constant="-40" id="aipu-tagline-bottom"/>
+                            <constraint firstItem="aipu-tagline" firstAttribute="centerX" secondItem="Ze5-6b-2t3" secondAttribute="centerX" id="aipu-tagline-center"/>
                             <constraint firstItem="YRO-k0-Ey4" firstAttribute="centerX" secondItem="Ze5-6b-2t3" secondAttribute="centerX" id="1a2-6s-vTC"/>
-                            <constraint firstItem="YRO-k0-Ey4" firstAttribute="centerY" secondItem="Ze5-6b-2t3" secondAttribute="centerY" id="4X2-HB-R7a"/>
+                            <constraint firstItem="YRO-k0-Ey4" firstAttribute="centerY" secondItem="Ze5-6b-2t3" secondAttribute="centerY" multiplier="0.88" constant="-20" id="4X2-HB-R7a"/>
+                            <constraint firstItem="aipu-name" firstAttribute="centerX" secondItem="Ze5-6b-2t3" secondAttribute="centerX" id="aipu-name-center"/>
+                            <constraint firstItem="aipu-name" firstAttribute="top" secondItem="YRO-k0-Ey4" secondAttribute="bottom" constant="-32" id="aipu-name-top"/>
                         </constraints>
                     </view>
                 </viewController>
@@ -32,6 +59,10 @@
         </scene>
     </scenes>
     <resources>
-        <image name="LaunchImage" width="168" height="185"/>
+        <image name="LaunchImage" width="240" height="240"/>
+        <image name="LaunchBackdrop" width="780" height="1688"/>
+        <namedColor name="LaunchMuted"><color red="0.349020" green="0.400000" blue="0.494118" alpha="1" colorSpace="custom" customColorSpace="sRGB"/></namedColor>
+        <namedColor name="LaunchBackground"><color red="0.972549" green="0.980392" blue="0.988235" alpha="1" colorSpace="custom" customColorSpace="sRGB"/></namedColor>
+        <namedColor name="LaunchForeground"><color red="0.090196" green="0.129412" blue="0.239216" alpha="1" colorSpace="custom" customColorSpace="sRGB"/></namedColor>
     </resources>
 </document>

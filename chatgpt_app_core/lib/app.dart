@@ -30,8 +30,11 @@ import 'package:login_sdk/dao/login_dao.dart';
 import 'package:login_sdk/dao/public_config_dao.dart';
 import 'package:login_sdk/login_sdk.dart';
 import 'package:login_sdk/pages/login_page.dart';
-import 'package:login_sdk/platform/app_io.dart' show initializeBrowserFileSystem;
+import 'package:login_sdk/platform/app_io.dart'
+    show initializeBrowserFileSystem;
 import 'package:provider/provider.dart';
+import 'branding/app_branding.dart';
+import 'branding/startup_page.dart';
 
 Future<void> runChatGptApp({
   Future<void> Function()? platformInitializer,
@@ -105,14 +108,14 @@ class _MyAppState extends State<MyApp> {
   }
 
   Widget get _loadingPage => const MaterialApp(
-        home: Scaffold(
-          body: Center(
-            child: CircularProgressIndicator(),
-          ),
-        ),
+        title: AppBranding.name,
+        debugShowCheckedModeBanner: false,
+        home: StartupPage(),
       );
 
   Widget _errorPage(Object error) => MaterialApp(
+        title: AppBranding.name,
+        debugShowCheckedModeBanner: false,
         home: Scaffold(
           body: Center(
             child: Column(
@@ -209,7 +212,7 @@ class _MyAppState extends State<MyApp> {
               // 页面内的选中态和内容仍各自保留 180–220ms 动效。
               themeAnimationDuration: Duration.zero,
               debugShowCheckedModeBanner: false,
-              title: '艾普',
+              title: AppBranding.name,
             );
           }),
         );

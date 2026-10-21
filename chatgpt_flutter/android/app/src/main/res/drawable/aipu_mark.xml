@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Generated from branding/aipu-mark.svg. -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android" android:width="108dp" android:height="108dp" android:viewportWidth="1024" android:viewportHeight="1024">
+    <path android:fillColor="#6558E8" android:pathData="M248,0H776A248,248 0,0 1,1024,248V776A248,248 0,0 1,776,1024H248A248,248 0,0 1,0,776V248A248,248 0,0 1,248,0Z"/>
+    <path android:fillColor="#FFFFFF" android:pathData="M330,300H635C690,300 724,334 724,389V558C724,613 690,648 635,648H479L350,737V648H330C275,648 240,613 240,558V389C240,334 275,300 330,300Z"/>
+    <path android:fillColor="#6558E8" android:pathData="M482,365C494,424 515,446 574,458C515,470 494,492 482,551C470,492 449,470 390,458C449,446 470,424 482,365Z"/>
+    <path android:fillColor="#BCEBDC" android:pathData="M698,265a49,49 0,1 0,98 0a49,49 0,1 0,-98 0"/>
+</vector>

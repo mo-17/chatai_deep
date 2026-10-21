@@ -1,4 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
     <color name="primary_dark">#000000</color>
+    <color name="launch_background">#F8FAFC</color>
+    <color name="launch_foreground">#17213D</color>
+    <color name="launch_muted">#59667E</color>
 </resources>
