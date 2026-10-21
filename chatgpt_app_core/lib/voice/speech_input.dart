@@ -1,7 +1,7 @@
 import 'dart:async';
 import 'dart:io';
 
-import 'package:flutter/foundation.dart';
+import 'package:flutter/services.dart';
 import 'package:speech_to_text/speech_to_text.dart' as stt;
 
 abstract interface class SpeechInput {
@@ -78,12 +78,16 @@ class SpeechInputBroker {
   static final instance = SpeechInputBroker();
   final stt.SpeechToText _speech;
   final Duration resultTimeout;
+  final Duration localeTimeout;
+  final Duration finalResultGrace;
   Future<void> _tail = Future.value();
   _Lease? _active;
   Object? _cancelOwner;
   SpeechInputBroker(
       {stt.SpeechToText? speech,
-      this.resultTimeout = const Duration(seconds: 25)})
+      this.resultTimeout = const Duration(seconds: 25),
+      this.localeTimeout = const Duration(seconds: 2),
+      this.finalResultGrace = const Duration(seconds: 3)})
       : _speech = speech ?? stt.SpeechToText();
 
   Future<void> _serial(Future<void> Function() action) {
@@ -102,9 +106,8 @@ class SpeechInputBroker {
     _active?.finish(const _Result(''));
     final lease = _Lease(owner);
     _active = lease;
-    final deadline = Timer(resultTimeout, () {
-      if (_current(lease)) lease.finish(const _Result('', '未收到完整识别结果，请重试'));
-    });
+    Timer? deadline;
+    Timer? finalDeadline;
     unawaited(_serial(() async {
       if (_speech.isAvailable) await _speech.cancel();
       _cancelOwner = null;
@@ -130,17 +133,33 @@ class SpeechInputBroker {
         }
       };
       _speech.statusListener = (status) {
-        // notListening 可能先于最终结果；只接收插件保证结算后的 done。
+        // 无 partial 的 Android 识别器会先发 doneNoResult，再发最终全文。
+        // 插件把 doneNoResult 映射为 done，必须给最终结果留出返回时间。
         if (_current(lease) && status == stt.SpeechToText.doneStatus) {
-          lease.finish(const _Result(''));
+          finalDeadline ??= Timer(finalResultGrace, () {
+            if (_current(lease)) lease.finish(const _Result(''));
+          });
         }
       };
-      final locales = await _speech.locales();
+      // 部分 Android 13 系统识别器不回传语言列表；可选元数据不能阻塞收音。
+      List<stt.LocaleName> locales;
+      try {
+        locales = await _speech
+            .locales()
+            .timeout(localeTimeout, onTimeout: () => const <stt.LocaleName>[]);
+      } on PlatformException {
+        locales = const <stt.LocaleName>[];
+      }
       if (!_current(lease)) return;
+      // 首次授权可能需要用户阅读系统弹窗，不能占用实际录音的识别结果期限。
+      deadline = Timer(resultTimeout, () {
+        if (_current(lease)) lease.finish(const _Result('', '未收到完整识别结果，请重试'));
+      });
       await _speech.listen(
-        localeId: pickSpeechLocaleId(locales, preferredLocale: locale),
+        localeId:
+            pickSpeechLocaleId(locales, preferredLocale: locale) ?? locale,
         listenFor: const Duration(seconds: 20),
-        pauseFor: const Duration(seconds: 2),
+        // 无 partial 不代表用户静音，由系统判断语音端点，保留 20 秒上限。
         listenOptions: stt.SpeechListenOptions(
             partialResults: true,
             cancelOnError: true,
@@ -164,7 +183,8 @@ class SpeechInputBroker {
       if (result.error != null) throw SpeechInputFailure(result.error!);
       return result.text;
     } finally {
-      deadline.cancel();
+      deadline?.cancel();
+      finalDeadline?.cancel();
       if (identical(_active, lease)) await cancel(owner);
     }
   }
