@@ -2,6 +2,7 @@ import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
 import 'chat_ornaments.dart';
+import 'chat_illustrated_theme.dart';
 
 /// 使用稳定的名字保存配置；新增款式不改变已有用户的选择。
 enum ChatBubbleStyle {
@@ -16,12 +17,28 @@ enum ChatBubbleStyle {
   constellation('星河', '星月角标 · 梦幻微光', Color(0xFF8670CD)),
   blossom('樱花', '花瓣来信 · 柔粉春意', Color(0xFFD26B93)),
   ribbon('甜心', '奶油丝带 · 心动角标', Color(0xFFC38A50)),
-  mecha('机甲', '棱角护甲 · 青色能量', Color(0xFF247E86));
+  mecha('机甲', '棱角护甲 · 青色能量', Color(0xFF247E86)),
+  adventure('像素冒险', '宝石剑刃 · 森林像素', Color(0xFF44724C)),
+  neon('霓虹信号', '紫青光轨 · 全息信号', Color(0xFF8864D4)),
+  crystal('海盐水晶', '晶莹海蓝 · 贝壳珍珠', Color(0xFF459CAD)),
+  ink('墨染山河', '水墨竹影 · 朱砂落款', Color(0xFF777267)),
+  plush('绒绒伙伴', '绒毛耳朵 · 软软爪印', Color(0xFFC18465)),
+  brass('黄铜航行', '黄铜齿轮 · 远航罗盘', Color(0xFFAB823D));
 
   const ChatBubbleStyle(this.label, this.description, this.accent);
   final String label;
   final String description;
   final Color accent;
+
+  ChatIllustratedTheme? get illustration => switch (this) {
+        adventure => ChatIllustratedTheme.adventure,
+        neon => ChatIllustratedTheme.neon,
+        crystal => ChatIllustratedTheme.crystal,
+        ink => ChatIllustratedTheme.ink,
+        plush => ChatIllustratedTheme.plush,
+        brass => ChatIllustratedTheme.brass,
+        _ => null,
+      };
 
   ChatOrnament? get ornament => switch (this) {
         constellation => ChatOrnament.constellation,
@@ -38,6 +55,9 @@ enum ChatBubbleStyle {
 
   Color defaultColor(ThemeData theme, {required bool isUser}) {
     final dark = theme.brightness == Brightness.dark;
+    if (illustration case final illustrated?) {
+      return illustrated.bubbleColor(dark: dark, isUser: isUser);
+    }
     final seed = switch (this) {
       cloud => isUser ? const Color(0xFFDCECFB) : const Color(0xFFE8EEF7),
       aurora => isUser ? const Color(0xFFE3DDFB) : const Color(0xFFD9F1EC),
@@ -52,6 +72,7 @@ enum ChatBubbleStyle {
       ribbon => isUser ? const Color(0xFFFFEBD4) : const Color(0xFFFFF2E4),
       mecha => isUser ? const Color(0xFF223449) : const Color(0xFF1E2D40),
       classic => theme.colorScheme.primaryContainer,
+      _ => theme.colorScheme.primaryContainer,
     };
     return dark
         ? Color.lerp(const Color(0xFF111827), accent, isUser ? .32 : .20)!
@@ -60,7 +81,7 @@ enum ChatBubbleStyle {
 
   /// 渐层向同一对比度方向变化，保证整块气泡都能使用同一种正文颜色。
   List<Color> backgroundColors(Color base) =>
-      (this == aurora || ornament != null)
+      (this == aurora || ornament != null || illustration != null)
           ? [
               base,
               Color.lerp(
@@ -83,11 +104,27 @@ enum ChatAvatarFrameStyle {
   constellation('星河', '星月宝石 · 流翼环绕'),
   blossom('樱花', '花簇缠枝 · 轻盈花冠'),
   ribbon('甜心', '蝴蝶丝带 · 心形宝石'),
-  mecha('机甲', '六角徽章 · 能量护翼');
+  mecha('机甲', '六角徽章 · 能量护翼'),
+  adventure('像素冒险', '宝石剑刃 · 森林像素'),
+  neon('霓虹信号', '紫青光轨 · 全息信号'),
+  crystal('海盐水晶', '晶莹海蓝 · 贝壳珍珠'),
+  ink('墨染山河', '水墨竹影 · 朱砂落款'),
+  plush('绒绒伙伴', '绒毛耳朵 · 软软爪印'),
+  brass('黄铜航行', '黄铜齿轮 · 远航罗盘');
 
   const ChatAvatarFrameStyle(this.label, this.description);
   final String label;
   final String description;
+
+  ChatIllustratedTheme? get illustration => switch (this) {
+        adventure => ChatIllustratedTheme.adventure,
+        neon => ChatIllustratedTheme.neon,
+        crystal => ChatIllustratedTheme.crystal,
+        ink => ChatIllustratedTheme.ink,
+        plush => ChatIllustratedTheme.plush,
+        brass => ChatIllustratedTheme.brass,
+        _ => null,
+      };
 
   ChatOrnament? get ornament => switch (this) {
         constellation => ChatOrnament.constellation,
@@ -118,6 +155,10 @@ class ChatAvatarFrame extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     if (style == ChatAvatarFrameStyle.none) return child;
+    if (style.illustration case final illustrated?) {
+      return ChatIllustratedAvatarFrame(
+          theme: illustrated, size: size, child: child);
+    }
     return SizedBox.square(
       dimension: size,
       child: CustomPaint(
@@ -150,6 +191,13 @@ class _FramePainter extends CustomPainter {
       ..style = PaintingStyle.stroke
       ..strokeWidth = unit * .035;
     switch (style) {
+      case ChatAvatarFrameStyle.adventure:
+      case ChatAvatarFrameStyle.neon:
+      case ChatAvatarFrameStyle.crystal:
+      case ChatAvatarFrameStyle.ink:
+      case ChatAvatarFrameStyle.plush:
+      case ChatAvatarFrameStyle.brass:
+        return; // 插画头像框由独立的透明素材层绘制。
       case ChatAvatarFrameStyle.none:
         return;
       case ChatAvatarFrameStyle.aurora:

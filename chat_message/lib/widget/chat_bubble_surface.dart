@@ -3,6 +3,7 @@ import 'package:chat_message/theme/chat_decoration.dart';
 import 'package:chat_message/theme/chat_tail_shape.dart';
 import 'package:chat_message/theme/chat_ornaments.dart';
 import 'package:flutter/material.dart';
+import 'chat_illustrated_bubble.dart';
 
 /// 预览、普通消息与流式块消息共用外壳，正文和消息操作由调用方保留。
 class ChatBubbleSurface extends StatelessWidget {
@@ -27,6 +28,16 @@ class ChatBubbleSurface extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final alignment = isUser ? Alignment.topRight : Alignment.topLeft;
+    if (style.illustration case final illustrated?) {
+      return Padding(
+          padding: margin,
+          child: ChatIllustratedBubble(
+              theme: illustrated,
+              color: color,
+              colors: style.backgroundColors(color),
+              isUser: isUser,
+              child: child));
+    }
     if (style == ChatBubbleStyle.classic) {
       return Bubble(
         margin: BubbleEdges.fromLTRB(

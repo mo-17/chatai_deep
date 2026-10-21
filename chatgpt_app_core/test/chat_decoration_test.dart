@@ -83,7 +83,7 @@ void main() {
 
   Future<void> reveal(WidgetTester tester, String key) async {
     await tester.scrollUntilVisible(find.byKey(ValueKey(key)), 180,
-        scrollable: find.byType(Scrollable).first);
+        maxScrolls: 100, scrollable: find.byType(Scrollable).first);
     await tester.pumpAndSettle();
   }
 
@@ -103,14 +103,14 @@ void main() {
   testWidgets('点击选择后预览与存储同步，两侧独立，隐藏头像有恢复入口', (tester) async {
     final provider = ThemeProvider()..setShowMessageAvatars(false);
     await tester.pumpWidget(host(provider));
-    await reveal(tester, 'bubble_style_constellation');
-    await tester.tap(find.byKey(const ValueKey('bubble_style_constellation')));
+    await reveal(tester, 'bubble_style_neon');
+    await tester.tap(find.byKey(const ValueKey('bubble_style_neon')));
     await tester.pump();
-    expect(provider.bubbleStyle(isUser: true), ChatBubbleStyle.constellation);
-    await reveal(tester, 'avatar_frame_ribbon');
-    await tester.tap(find.byKey(const ValueKey('avatar_frame_ribbon')));
+    expect(provider.bubbleStyle(isUser: true), ChatBubbleStyle.neon);
+    await reveal(tester, 'avatar_frame_plush');
+    await tester.tap(find.byKey(const ValueKey('avatar_frame_plush')));
     await tester.pump();
-    expect(provider.avatarFrame(isUser: true), ChatAvatarFrameStyle.ribbon);
+    expect(provider.avatarFrame(isUser: true), ChatAvatarFrameStyle.plush);
     await tester.scrollUntilVisible(find.text('显示头像'), -180,
         scrollable: find.byType(Scrollable).first);
     await tester.tap(find.text('显示头像'));
@@ -122,11 +122,11 @@ void main() {
     await tester.pumpAndSettle();
     await tester.tap(find.text('AI 回复'));
     await tester.pump();
-    await reveal(tester, 'bubble_style_mecha');
-    await tester.tap(find.byKey(const ValueKey('bubble_style_mecha')));
+    await reveal(tester, 'bubble_style_ink');
+    await tester.tap(find.byKey(const ValueKey('bubble_style_ink')));
     await tester.pump();
-    expect(provider.bubbleStyle(isUser: false), ChatBubbleStyle.mecha);
-    expect(provider.bubbleStyle(isUser: true), ChatBubbleStyle.constellation);
+    expect(provider.bubbleStyle(isUser: false), ChatBubbleStyle.ink);
+    expect(provider.bubbleStyle(isUser: true), ChatBubbleStyle.neon);
     await tester.scrollUntilVisible(
         find.byKey(const ValueKey('chat_appearance_preview')), -180,
         scrollable: find.byType(Scrollable).first);
@@ -134,10 +134,10 @@ void main() {
     final messages = tester
         .widgetList<DefaultMessageWidget>(find.byType(DefaultMessageWidget))
         .toList();
-    expect(messages[0].bubbleStyle, ChatBubbleStyle.constellation);
-    expect(messages[0].avatarFrameStyle, ChatAvatarFrameStyle.ribbon);
-    expect(messages[1].bubbleStyle, ChatBubbleStyle.mecha);
-    expect(ThemeProvider().bubbleStyle(isUser: false), ChatBubbleStyle.mecha);
+    expect(messages[0].bubbleStyle, ChatBubbleStyle.neon);
+    expect(messages[0].avatarFrameStyle, ChatAvatarFrameStyle.plush);
+    expect(messages[1].bubbleStyle, ChatBubbleStyle.ink);
+    expect(ThemeProvider().bubbleStyle(isUser: false), ChatBubbleStyle.ink);
     await tester.tap(find.byKey(const ValueKey('reset_chat_decoration')));
     await tester.pump();
     expect(provider.bubbleStyle(isUser: true), ChatBubbleStyle.classic);
@@ -152,8 +152,8 @@ void main() {
         addTearDown(tester.view.resetPhysicalSize);
         addTearDown(tester.view.resetDevicePixelRatio);
         final provider = ThemeProvider()
-          ..setBubbleStyle(isUser: true, style: ChatBubbleStyle.aurora)
-          ..setAvatarFrame(isUser: true, style: ChatAvatarFrameStyle.orbit);
+          ..setBubbleStyle(isUser: true, style: ChatBubbleStyle.neon)
+          ..setAvatarFrame(isUser: true, style: ChatAvatarFrameStyle.plush);
         await tester
             .pumpWidget(host(provider, brightness: brightness, scale: 2));
         await reveal(tester, 'avatar_frame_pixel');

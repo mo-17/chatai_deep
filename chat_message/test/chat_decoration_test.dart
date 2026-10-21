@@ -5,6 +5,8 @@ import 'package:chat_message/models/message_model.dart';
 import 'package:chat_message/theme/chat_decoration.dart';
 import 'package:chat_message/theme/chat_tail_shape.dart';
 import 'package:chat_message/theme/chat_ornaments.dart';
+import 'package:chat_message/theme/chat_illustrated_theme.dart';
+import 'package:chat_message/widget/chat_illustrated_bubble.dart';
 import 'package:chat_message/widget/chat_bubble_surface.dart';
 import 'package:chat_message/widget/chat_list.dart';
 import 'package:chat_message/widget/default_message_widget.dart';
@@ -12,6 +14,47 @@ import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 void main() {
+  testWidgets('六组插画气泡在长短宽度、双侧和任意颜色下不覆盖正文或越界', (tester) async {
+    await tester.runAsync(() async {
+      for (final theme in ChatIllustratedTheme.values) {
+        for (final isUser in [true, false]) {
+          for (final color in [
+            Colors.white,
+            Colors.black,
+            const Color(0xFF00A04C)
+          ]) {
+            for (final size in [const Size(68, 80), const Size(360, 700)]) {
+              final recorder = ui.PictureRecorder();
+              final canvas = Canvas(recorder)..translate(8, 8);
+              ChatIllustratedBubblePainter(theme, color, [color, color],
+                      isUser: isUser, ornamentsOnly: true)
+                  .paint(canvas, size);
+              final picture = recorder.endRecording();
+              final width = size.width.toInt() + 16;
+              final height = size.height.toInt() + 16;
+              final image = await picture.toImage(width, height);
+              final bytes =
+                  (await image.toByteData(format: ui.ImageByteFormat.rawRgba))!;
+              for (var y = 0; y < height; y++) {
+                for (var x = 0; x < width; x++) {
+                  final outside =
+                      x < 8 || x >= width - 8 || y < 8 || y >= height - 8;
+                  final body = y >= 38 && y < height - 36;
+                  if (!outside && !body) continue;
+                  if (bytes.getUint8((y * width + x) * 4 + 3) != 0) {
+                    fail(
+                        '${theme.name} $size $isUser paint at protected $x,$y');
+                  }
+                }
+              }
+              image.dispose();
+              picture.dispose();
+            }
+          }
+        }
+      }
+    });
+  });
   testWidgets('主题装饰保持在边缘留白内，不覆盖正文或溢出头像尺寸', (tester) async {
     await tester.runAsync(() async {
       for (final theme in ChatOrnament.values) {
@@ -153,21 +196,21 @@ void main() {
         home: Scaffold(
             body: ChatList(
       chatController: controller,
-      senderBubbleStyle: ChatBubbleStyle.constellation,
-      receiverBubbleStyle: ChatBubbleStyle.mecha,
-      senderAvatarFrame: ChatAvatarFrameStyle.constellation,
-      receiverAvatarFrame: ChatAvatarFrameStyle.mecha,
+      senderBubbleStyle: ChatBubbleStyle.neon,
+      receiverBubbleStyle: ChatBubbleStyle.plush,
+      senderAvatarFrame: ChatAvatarFrameStyle.neon,
+      receiverAvatarFrame: ChatAvatarFrameStyle.plush,
       onBubbleLongPress: (_, __) => actions++,
     ))));
     await tester.pumpAndSettle();
     expect(
         tester.widget<DefaultMessageWidget>(find.byKey(sender.key)).bubbleStyle,
-        ChatBubbleStyle.constellation);
+        ChatBubbleStyle.neon);
     expect(
         tester
             .widget<DefaultMessageWidget>(find.byKey(receiver.key))
             .avatarFrameStyle,
-        ChatAvatarFrameStyle.mecha);
+        ChatAvatarFrameStyle.plush);
     expect(find.byType(ChatBubbleSurface), findsNWidgets(2));
     expect(find.byType(SelectionArea), findsNWidgets(2));
     expect(find.byType(ChatAvatarFrame), findsNWidgets(2));

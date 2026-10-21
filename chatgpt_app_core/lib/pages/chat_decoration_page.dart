@@ -81,9 +81,11 @@ class _ChatDecorationPageState extends State<ChatDecorationPage> {
                   children: [
                     for (final style in [
                       ...ChatBubbleStyle.values
-                          .where((s) => s.ornament != null),
+                          .where((s) => s.illustration != null),
                       ...ChatBubbleStyle.values
-                          .where((s) => s.ornament == null),
+                          .where((s) => s.ornament != null),
+                      ...ChatBubbleStyle.values.where(
+                          (s) => s.ornament == null && s.illustration == null),
                     ])
                       _DecorationCard(
                         key: ValueKey('bubble_style_${style.name}'),
@@ -130,9 +132,11 @@ class _ChatDecorationPageState extends State<ChatDecorationPage> {
                   children: [
                     for (final frame in [
                       ...ChatAvatarFrameStyle.values
-                          .where((s) => s.ornament != null),
+                          .where((s) => s.illustration != null),
                       ...ChatAvatarFrameStyle.values
-                          .where((s) => s.ornament == null),
+                          .where((s) => s.ornament != null),
+                      ...ChatAvatarFrameStyle.values.where(
+                          (s) => s.ornament == null && s.illustration == null),
                     ])
                       _DecorationCard(
                         key: ValueKey('avatar_frame_${frame.name}'),
@@ -145,7 +149,9 @@ class _ChatDecorationPageState extends State<ChatDecorationPage> {
                         sample: Center(
                           child: ChatAvatarFrame(
                             style: frame,
-                            size: frame.ornament == null ? 52 : 64,
+                            size: frame.illustration != null
+                                ? 76
+                                : (frame.ornament == null ? 52 : 64),
                             child: CircleAvatar(
                               radius: 26,
                               backgroundColor: _isUser
