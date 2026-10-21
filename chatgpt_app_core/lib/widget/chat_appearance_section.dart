@@ -1,3 +1,4 @@
+import 'package:chat_message/theme/chat_decoration.dart';
 import 'package:chatgpt_app_core/pages/chat_decoration_page.dart';
 import 'package:chatgpt_app_core/widget/chat_decoration_preview.dart';
 import 'package:chatgpt_app_core/provider/theme_provider.dart';
@@ -27,7 +28,8 @@ class ChatAppearanceSection extends StatelessWidget {
           leading: Icon(Icons.auto_awesome_outlined,
               color: theme.colorScheme.primary),
           title: const Text('聊天装扮'),
-          subtitle: const Text('6 款气泡 · 6 款头像框，两侧自由搭配'),
+          subtitle: Text(
+              '${ChatBubbleStyle.values.length} 款气泡 · ${ChatAvatarFrameStyle.values.length} 款头像框，两侧自由搭配'),
           trailing: const Icon(Icons.chevron_right_rounded),
           onTap: () => Navigator.of(context).push(MaterialPageRoute<void>(
               builder: (_) => const ChatDecorationPage())),

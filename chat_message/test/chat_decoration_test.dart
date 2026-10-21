@@ -1,6 +1,7 @@
 import 'package:chat_message/core/chat_controller.dart';
 import 'package:chat_message/models/message_model.dart';
 import 'package:chat_message/theme/chat_decoration.dart';
+import 'package:chat_message/theme/chat_tail_shape.dart';
 import 'package:chat_message/widget/chat_bubble_surface.dart';
 import 'package:chat_message/widget/chat_list.dart';
 import 'package:chat_message/widget/default_message_widget.dart';
@@ -8,6 +9,48 @@ import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 void main() {
+  test('两种尾角在长短气泡下边界稳定，双侧镜像且可关闭', () {
+    for (final pointed in [true, false]) {
+      for (final size in [
+        const Size(1, 1),
+        const Size(52, 36),
+        const Size(210, 500)
+      ]) {
+        final rect = const Offset(11, 17) & size;
+        final right =
+            ChatTailShape(isUser: true, pointed: pointed).getOuterPath(rect);
+        final left =
+            ChatTailShape(isUser: false, pointed: pointed).getOuterPath(rect);
+        for (final path in [right, left]) {
+          final bounds = path.getBounds();
+          expect(bounds.left, greaterThanOrEqualTo(rect.left - .001));
+          expect(bounds.right, lessThanOrEqualTo(rect.right + .001));
+          expect(bounds.top, greaterThanOrEqualTo(rect.top - .001));
+          expect(bounds.bottom, lessThanOrEqualTo(rect.bottom + .001));
+          expect(path.contains(rect.center), isTrue);
+        }
+        for (var x = .1; x < 1; x += .1) {
+          for (var y = .1; y < 1; y += .1) {
+            expect(
+                right.contains(Offset(
+                    rect.left + size.width * x, rect.top + size.height * y)),
+                left.contains(Offset(
+                    rect.right - size.width * x, rect.top + size.height * y)));
+          }
+        }
+        final noTail =
+            ChatTailShape(isUser: true, pointed: pointed, showTail: false)
+                .getOuterPath(rect);
+        expect(noTail.contains(rect.center), isTrue);
+        expect(
+            ChatTailShape(isUser: false, pointed: pointed, showTail: false)
+                .getOuterPath(rect)
+                .getBounds(),
+            noTail.getBounds());
+      }
+    }
+  });
+
   test('预设与任意自定义配色的所有渐层端点均保留正文对比度', () {
     for (final brightness in Brightness.values) {
       final theme = ThemeData(brightness: brightness);
@@ -66,21 +109,21 @@ void main() {
         home: Scaffold(
             body: ChatList(
       chatController: controller,
-      senderBubbleStyle: ChatBubbleStyle.aurora,
-      receiverBubbleStyle: ChatBubbleStyle.paper,
-      senderAvatarFrame: ChatAvatarFrameStyle.orbit,
-      receiverAvatarFrame: ChatAvatarFrameStyle.gold,
+      senderBubbleStyle: ChatBubbleStyle.messenger,
+      receiverBubbleStyle: ChatBubbleStyle.telegram,
+      senderAvatarFrame: ChatAvatarFrameStyle.halo,
+      receiverAvatarFrame: ChatAvatarFrameStyle.dashed,
       onBubbleLongPress: (_, __) => actions++,
     ))));
     await tester.pumpAndSettle();
     expect(
         tester.widget<DefaultMessageWidget>(find.byKey(sender.key)).bubbleStyle,
-        ChatBubbleStyle.aurora);
+        ChatBubbleStyle.messenger);
     expect(
         tester
             .widget<DefaultMessageWidget>(find.byKey(receiver.key))
             .avatarFrameStyle,
-        ChatAvatarFrameStyle.gold);
+        ChatAvatarFrameStyle.dashed);
     expect(find.byType(ChatBubbleSurface), findsNWidgets(2));
     expect(find.byType(SelectionArea), findsNWidgets(2));
     expect(find.byType(ChatAvatarFrame), findsNWidgets(2));
@@ -115,7 +158,8 @@ void main() {
                     createdAt: 0),
                 showAvatars: showAvatars,
                 bubbleStyle: ChatBubbleStyle.values[i],
-                avatarFrameStyle: ChatAvatarFrameStyle.values[i],
+                avatarFrameStyle: ChatAvatarFrameStyle
+                    .values[i % ChatAvatarFrameStyle.values.length],
                 senderBackgroundColor:
                     ChatBubbleStyle.values[i].defaultColor(theme, isUser: true),
               )))));

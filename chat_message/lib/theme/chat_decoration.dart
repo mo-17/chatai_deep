@@ -9,7 +9,9 @@ enum ChatBubbleStyle {
   aurora('极光', '微光渐层 · 通透色彩', Color(0xFF7C65D5)),
   outline('描边', '纤细线条 · 清爽留白', Color(0xFF2B9385)),
   paper('手札', '纸感卡片 · 温暖一角', Color(0xFFAC7A3F)),
-  pixel('像素', '利落折角 · 复古趣味', Color(0xFF6173BD));
+  pixel('像素', '利落折角 · 复古趣味', Color(0xFF6173BD)),
+  messenger('弧尾', '流畅弧线 · 圆润尾角', Color(0xFF497ECC)),
+  telegram('轻聊', '清新色彩 · 轻巧尖尾', Color(0xFF389A75));
 
   const ChatBubbleStyle(this.label, this.description, this.accent);
   final String label;
@@ -29,6 +31,8 @@ enum ChatBubbleStyle {
       outline => isUser ? const Color(0xFFE1F2ED) : const Color(0xFFEEF4F2),
       paper => isUser ? const Color(0xFFF7E9CE) : const Color(0xFFFFF6E6),
       pixel => isUser ? const Color(0xFFE0E5FF) : const Color(0xFFE8EBF7),
+      messenger => isUser ? const Color(0xFFDDEBFF) : const Color(0xFFEEF1F5),
+      telegram => isUser ? const Color(0xFFDAF2DD) : const Color(0xFFF1F7F3),
       classic => theme.colorScheme.primaryContainer,
     };
     return dark
@@ -54,7 +58,9 @@ enum ChatAvatarFrameStyle {
   mint('薄荷', '清透双线环'),
   gold('星芒', '香槟金星角'),
   orbit('星轨', '环绕行星轨道'),
-  pixel('像素', '复古方形边框');
+  pixel('像素', '复古方形边框'),
+  halo('晨光', '柔和光晕 · 温暖环绕'),
+  dashed('星点', '渐变虚线 · 轻盈留白');
 
   const ChatAvatarFrameStyle(this.label, this.description);
   final String label;
@@ -165,6 +171,36 @@ class _FramePainter extends CustomPainter {
         canvas.restore();
         canvas.drawCircle(center + Offset(unit * .35, -unit * .31), unit * .055,
             Paint()..color = const Color(0xFF5BB9AE));
+      case ChatAvatarFrameStyle.halo:
+        final glow = brightness == Brightness.dark
+            ? const Color(0xFFF6C28A)
+            : const Color(0xFFAC703D);
+        canvas.save();
+        canvas.clipRect(rect);
+        paint
+          ..color = glow.withValues(alpha: .45)
+          ..strokeWidth = unit * .085
+          ..maskFilter = MaskFilter.blur(BlurStyle.normal, unit * .045);
+        canvas.drawCircle(center, unit * .445, paint);
+        paint
+          ..maskFilter = null
+          ..color = glow
+          ..strokeWidth = unit * .027;
+        canvas.drawCircle(center, unit * .43, paint);
+        canvas.restore();
+      case ChatAvatarFrameStyle.dashed:
+        paint
+          ..strokeWidth = unit * .047
+          ..strokeCap = StrokeCap.round
+          ..shader = const SweepGradient(colors: [
+            Color(0xFF8870D6),
+            Color(0xFF52B5B2),
+            Color(0xFF8870D6)
+          ]).createShader(rect);
+        for (var index = 0; index < 14; index++) {
+          canvas.drawArc(rect.deflate(unit * .055), index * math.pi / 7,
+              math.pi / 10, false, paint);
+        }
       case ChatAvatarFrameStyle.pixel:
         paint
           ..color = brightness == Brightness.dark
