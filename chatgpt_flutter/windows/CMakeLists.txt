@@ -70,6 +70,27 @@ endif()
 
 set(INSTALL_BUNDLE_DATA_DIR "${CMAKE_INSTALL_PREFIX}/data")
 set(INSTALL_BUNDLE_LIB_DIR "${CMAKE_INSTALL_PREFIX}")
+include("${FLUTTER_MANAGED_DIR}/ephemeral/generated_config.cmake")
+
+# sqflite_common_ffi 2.x only bundles SQLite for development. Ship the locked
+# x64 DLL beside the executable so installed release builds can open their DB.
+if(NOT FLUTTER_TARGET_PLATFORM STREQUAL "windows-x64")
+  message(FATAL_ERROR "The bundled SQLite runtime currently requires Windows x64.")
+endif()
+execute_process(
+  COMMAND "${FLUTTER_ROOT}/bin/cache/dart-sdk/bin/dart.exe"
+    "${CMAKE_CURRENT_SOURCE_DIR}/../tool/windows_sqlite_path.dart"
+  WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/.."
+  RESULT_VARIABLE SQLITE_PATH_RESULT
+  OUTPUT_VARIABLE SQLITE_DLL_PATH
+  OUTPUT_STRIP_TRAILING_WHITESPACE
+)
+if(NOT SQLITE_PATH_RESULT EQUAL 0 OR NOT EXISTS "${SQLITE_DLL_PATH}")
+  message(FATAL_ERROR "Unable to locate the locked sqlite3.dll runtime.")
+endif()
+file(TO_CMAKE_PATH "${SQLITE_DLL_PATH}" SQLITE_DLL_PATH)
+install(FILES "${SQLITE_DLL_PATH}" DESTINATION "${INSTALL_BUNDLE_LIB_DIR}"
+  COMPONENT Runtime)
 
 install(TARGETS ${BINARY_NAME} RUNTIME DESTINATION "${CMAKE_INSTALL_PREFIX}"
   COMPONENT Runtime)

@@ -257,6 +257,7 @@ class ConversationWidget extends StatelessWidget {
         if (onPressed != null) onPressed!(model);
       },
       onLongPress: () => _showPopMenu(context),
+      onSecondaryTap: () => _showPopMenu(context),
       child: _item,
     );
   }
@@ -282,6 +283,7 @@ class ConversationWidget extends StatelessWidget {
             if (onPressed != null) onPressed!(model);
           },
           onLongPress: () => _showPopMenu(context),
+          onSecondaryTap: () => _showPopMenu(context),
           child: ConstrainedBox(
             constraints: const BoxConstraints(minHeight: 84),
             child: Padding(

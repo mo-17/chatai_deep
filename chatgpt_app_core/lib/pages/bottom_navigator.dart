@@ -10,6 +10,7 @@ import 'package:chatgpt_app_core/provider/theme_provider.dart';
 import 'package:chatgpt_app_core/theme/starcore_icon_assets.dart';
 import 'package:chatgpt_app_core/update/app_update_controller.dart';
 import 'package:chatgpt_app_core/widget/starcore_svg_icon.dart';
+import 'package:chatgpt_app_core/widget/desktop_layout.dart';
 import 'package:flutter/material.dart';
 import 'package:login_sdk/util/navigator_util.dart';
 import 'package:provider/provider.dart';
@@ -112,7 +113,9 @@ class _BottomNavigatorState extends State<BottomNavigator> {
   Widget build(BuildContext context) {
     //更新导航器的context，供退出登录时使用
     NavigatorUtil.updateContext(context);
-    return Scaffold(
+    return DesktopHomeLayout(
+      selectedIndex: _currentIndex,
+      onSelected: _selectPage,
       body: PageView(
         controller: _controller,
         onPageChanged: (index) {

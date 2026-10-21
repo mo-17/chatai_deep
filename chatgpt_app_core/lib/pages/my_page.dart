@@ -30,6 +30,8 @@ import '../storage/ohos_storage_service.dart';
 import 'storage_management_page.dart';
 import 'knowledge_assistant_page.dart';
 import 'ocr_task_center_page.dart';
+import 'desktop_assistant_page.dart';
+import '../platform/desktop_quick_assistant.dart';
 import 'package:login_sdk/dao/login_dao.dart';
 import 'package:login_sdk/util/padding_extension.dart';
 import 'package:provider/provider.dart';
@@ -113,6 +115,9 @@ class _MyPageState extends State<MyPage> {
                     context,
                     MaterialPageRoute(
                         builder: (_) => const AppearanceSettingsPage()))),
+            if (DesktopQuickAssistant.instance.supported)
+              ..._itemWidget(color: color, title: '桌面快捷助手', icon: Icons.desktop_windows_outlined,
+                  onTap: () => Navigator.push(context, MaterialPageRoute(builder: (_) => const DesktopAssistantPage()))),
             ..._itemWidget(
                 color: color,
                 title: 'AI 服务设置',

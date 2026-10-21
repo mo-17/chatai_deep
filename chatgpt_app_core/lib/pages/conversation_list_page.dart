@@ -42,7 +42,11 @@ import 'package:provider/provider.dart';
 
 import '../db/hi_db_manager.dart';
 import '../widget/conversation_widget.dart';
+import '../widget/desktop_layout.dart';
 import 'package:chatgpt_app_core/platform/picked_file.dart';
+
+typedef OpenDesktopConversation = void Function(ConversationModel model,
+    {int? initialTargetCreatedAt, String initialAssistantOpening});
 
 typedef ConversationSearchPageBuilder = Widget Function(
   BuildContext context,
@@ -55,11 +59,17 @@ typedef ConversationSearchPageBuilder = Widget Function(
 class ConversationListPage extends StatefulWidget {
   final ConversationSearchPageBuilder? searchPageBuilder;
   final bool skipInitialLoad;
+  final OpenDesktopConversation? onOpenConversation;
+  final int? selectedCid;
+  final VoidCallback? onSelectedConversationDeleted;
 
   const ConversationListPage({
     super.key,
     this.searchPageBuilder,
     this.skipInitialLoad = false,
+    this.onOpenConversation,
+    this.selectedCid,
+    this.onSelectedConversationDeleted,
   });
 
   @override
@@ -509,7 +519,7 @@ class _ConversationListPageState extends State<ConversationListPage>
     } else {
       model = conversationList[pos - stickConversationList.length];
     }
-    final tile = ConversationWidget(
+    Widget tile = ConversationWidget(
       model: model,
       onPressed: _jumpToConversation,
       onDelete: _onDelete,
@@ -517,6 +527,26 @@ class _ConversationListPageState extends State<ConversationListPage>
       onAvatar: _editConversationAvatar,
       onStick: _onStick,
     );
+    if (widget.selectedCid != null) {
+      final selected = widget.selectedCid == model.cid;
+      tile = Semantics(
+        selected: selected,
+        child: DecoratedBox(
+          position: DecorationPosition.foreground,
+          decoration: BoxDecoration(
+            border: Border(
+              left: BorderSide(
+                width: 3,
+                color: selected
+                    ? Theme.of(context).colorScheme.primary
+                    : Colors.transparent,
+              ),
+            ),
+          ),
+          child: tile,
+        ),
+      );
+    }
     final run = ConversationGenerationService.instance
         .lookup(HiDBManager.getAccountHash(), model.cid);
     if (run == null || !run.busy) return tile;
@@ -693,6 +723,23 @@ class _ConversationListPageState extends State<ConversationListPage>
 
   void _jumpToConversation(ConversationModel model,
       {int? initialTargetCreatedAt, String initialAssistantOpening = ''}) {
+    final open = widget.onOpenConversation;
+    if (open != null) {
+      open(model,
+          initialTargetCreatedAt: initialTargetCreatedAt,
+          initialAssistantOpening: initialAssistantOpening);
+      return;
+    }
+    if (supportsWideAppLayout) {
+      Navigator.of(context)
+          .push<void>(_desktopConversationRoute(model,
+              initialTargetCreatedAt: initialTargetCreatedAt,
+              initialAssistantOpening: initialAssistantOpening))
+          .then((_) {
+        if (mounted) unawaited(_reloadData());
+      });
+      return;
+    }
     NavigatorUtil.push(
         context,
         ConversationPage(
@@ -704,6 +751,35 @@ class _ConversationListPageState extends State<ConversationListPage>
       if (mounted) unawaited(_reloadData());
     });
   }
+
+  Route<void> _desktopConversationRoute(ConversationModel model,
+          {int? initialTargetCreatedAt, String initialAssistantOpening = ''}) =>
+      MaterialPageRoute<void>(
+        builder: (routeContext) => DesktopConversationLayout(
+          master: ConversationListPage(
+            selectedCid: model.cid,
+            onSelectedConversationDeleted: () => Navigator.pop(routeContext),
+            onOpenConversation: (next,
+                {initialTargetCreatedAt, initialAssistantOpening = ''}) {
+              if (next.cid == model.cid && initialTargetCreatedAt == null) {
+                return;
+              }
+              Navigator.of(routeContext).pushReplacement<void, void>(
+                _desktopConversationRoute(next,
+                    initialTargetCreatedAt: initialTargetCreatedAt,
+                    initialAssistantOpening: initialAssistantOpening),
+              );
+            },
+          ),
+          detail: ConversationPage(
+            key: ValueKey(model.cid),
+            conversationModel: model,
+            initialAssistantOpening: initialAssistantOpening,
+            initialTargetCreatedAt: initialTargetCreatedAt,
+            conversationUpdate: (_) => AppEvents.notifyConversationsChanged(),
+          ),
+        ),
+      );
 
   @override
   bool get wantKeepAlive => true;
@@ -718,6 +794,9 @@ class _ConversationListPageState extends State<ConversationListPage>
     conversationList.remove(model);
     //fix 置顶消息无法删除问题
     stickConversationList.remove(model);
+    if (widget.selectedCid == model.cid) {
+      widget.onSelectedConversationDeleted?.call();
+    }
     setState(() {});
     _loadProjects();
   }

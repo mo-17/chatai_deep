@@ -1,8 +1,10 @@
 import 'package:login_sdk/platform/app_io.dart';
 
 import 'package:chatgpt_app_core/db/db_migration.dart';
+import 'package:chatgpt_app_core/db/desktop_database_path.dart';
 import 'package:flutter/cupertino.dart';
 import 'package:login_sdk/dao/login_dao.dart';
+import 'package:chatgpt_app_core/platform/app_paths.dart';
 import 'package:chatgpt_app_core/db/database_platform.dart';
 
 ///用于管理数据库的创建和销毁
@@ -59,7 +61,11 @@ class HiDBManager {
     configureDatabasePlatform();
     if (Platform.isWindows) {
       sqfliteFfiInit();
-      _db = await databaseFactoryFfi.openDatabase(_dbName,
+      final path = await resolveDesktopDatabasePath(_dbName,
+          supportDirectory: await getApplicationSupportDirectory(),
+          legacyDirectory:
+              appDirectory(await databaseFactoryFfi.getDatabasesPath()));
+      _db = await databaseFactoryFfi.openDatabase(path,
           options: OpenDatabaseOptions(
               version: _kSchemaVersion,
               onUpgrade: _onUpgrade,

@@ -7,6 +7,7 @@ import 'package:chatgpt_app_core/chat/application/ohos_image_recovery.dart';
 import 'package:chatgpt_app_core/chat/application/composer_reference_trigger.dart';
 import 'package:chatgpt_app_core/chat/domain/composer_reference.dart';
 import 'package:chatgpt_app_core/widget/message_reference_picker.dart';
+import 'package:chatgpt_app_core/widget/desktop_layout.dart';
 import 'package:chatgpt_app_core/platform/picked_file.dart';
 import 'package:chatgpt_app_core/provider/theme_provider.dart';
 import 'package:chatgpt_app_core/platform/app_file_picker.dart';
@@ -701,12 +702,40 @@ class _MessageInputWidgetState extends State<MessageInputWidget> {
         selection: TextSelection.collapsed(offset: start + data.text!.length));
   }
 
-  Widget _pasteShortcuts(Widget input) => CallbackShortcuts(bindings: {
+  Widget _pasteShortcuts(Widget input) => Focus(
+      skipTraversal: true,
+      onKeyEvent: (_, event) {
+        if (!supportsWideAppLayout ||
+            event is! KeyDownEvent ||
+            (event.logicalKey != LogicalKeyboardKey.enter &&
+                event.logicalKey != LogicalKeyboardKey.numpadEnter) ||
+            (_controller.value.composing.isValid &&
+                !_controller.value.composing.isCollapsed)) {
+          return KeyEventResult.ignored;
+        }
+        if (HardwareKeyboard.instance.isShiftPressed) {
+          if (widget.editingEnabled) {
+            final value = _controller.value;
+            final selection = value.selection;
+            final start =
+                selection.isValid ? selection.start : value.text.length;
+            final end = selection.isValid ? selection.end : value.text.length;
+            _controller.value = TextEditingValue(
+              text: value.text.replaceRange(start, end, '\n'),
+              selection: TextSelection.collapsed(offset: start + 1),
+            );
+          }
+          return KeyEventResult.handled;
+        }
+        _onSend();
+        return KeyEventResult.handled;
+      },
+      child: CallbackShortcuts(bindings: {
         const SingleActivator(LogicalKeyboardKey.keyV, meta: true): () =>
             unawaited(_pasteFromKeyboard()),
         const SingleActivator(LogicalKeyboardKey.keyV, control: true): () =>
             unawaited(_pasteFromKeyboard()),
-      }, child: input);
+      }, child: input));
 
   @override
   void dispose() {
@@ -1128,6 +1157,11 @@ class _MessageInputWidgetState extends State<MessageInputWidget> {
           focusNode: _focusNode,
           onChanged: _onChanged,
           controller: _controller,
+          minLines: 1,
+          maxLines: supportsWideAppLayout ? 5 : 1,
+          keyboardType: supportsWideAppLayout ? TextInputType.multiline : null,
+          textInputAction:
+              supportsWideAppLayout ? TextInputAction.newline : null,
           //回车发送消息
           onSubmitted: (_) => _onSend(),
           style: const TextStyle(
@@ -1142,7 +1176,8 @@ class _MessageInputWidgetState extends State<MessageInputWidget> {
                       const BorderSide(width: 0, style: BorderStyle.none)),
               filled: true,
               //输入框样式的大小约束
-              constraints: const BoxConstraints(maxHeight: 39),
+              constraints:
+                  BoxConstraints(maxHeight: supportsWideAppLayout ? 152 : 39),
               fillColor: Colors.white,
               contentPadding: const EdgeInsets.only(left: 10),
               hintStyle: const TextStyle(fontSize: 16),
@@ -1230,6 +1265,11 @@ class _MessageInputWidgetState extends State<MessageInputWidget> {
           focusNode: _focusNode,
           onChanged: _onChanged,
           controller: _controller,
+          minLines: 1,
+          maxLines: supportsWideAppLayout ? 5 : 1,
+          keyboardType: supportsWideAppLayout ? TextInputType.multiline : null,
+          textInputAction:
+              supportsWideAppLayout ? TextInputAction.newline : null,
           onSubmitted: (_) => _onSend(),
           style: Theme.of(context).textTheme.bodyLarge,
           decoration: InputDecoration(

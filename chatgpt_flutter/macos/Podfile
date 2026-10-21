@@ -1,5 +1,5 @@
-# speech_to_text 要求 macOS 部署目标 ≥ 11.0
-platform :osx, '11.0'
+# 当前 sherpa_onnx 随附的 ONNX Runtime 二进制要求 macOS 15.5。
+platform :osx, '15.5'
 
 # CocoaPods analytics sends network stats synchronously affecting flutter build latency.
 ENV['COCOAPODS_DISABLE_STATS'] = 'true'

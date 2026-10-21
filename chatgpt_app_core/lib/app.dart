@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'platform/desktop_quick_assistant.dart';
 import 'package:chatgpt_app_core/chat/ui/conversation_generation_routes.dart';
 
 import 'package:chatgpt_app_core/diagnostics/diagnostics_consent_store.dart';
@@ -29,8 +30,8 @@ import 'package:login_sdk/dao/login_dao.dart';
 import 'package:login_sdk/dao/public_config_dao.dart';
 import 'package:login_sdk/login_sdk.dart';
 import 'package:login_sdk/pages/login_page.dart';
-import 'package:provider/provider.dart';
 import 'package:login_sdk/platform/app_io.dart' show initializeBrowserFileSystem;
+import 'package:provider/provider.dart';
 
 Future<void> runChatGptApp({
   Future<void> Function()? platformInitializer,
@@ -94,6 +95,7 @@ class MyApp extends StatefulWidget {
 }
 
 class _MyAppState extends State<MyApp> {
+  final _navigatorKey = GlobalKey<NavigatorState>();
   late Future<void> _initFuture;
 
   @override
@@ -198,6 +200,7 @@ class _MyAppState extends State<MyApp> {
           child: Consumer<ThemeProvider>(builder: (BuildContext context,
               ThemeProvider themeProvider, Widget? child) {
             return MaterialApp(
+              navigatorKey: _navigatorKey,
               navigatorObservers: [ConversationGenerationRoutes.instance],
               home: widget,
               theme: themeProvider.getTheme(),
@@ -206,7 +209,7 @@ class _MyAppState extends State<MyApp> {
               // 页面内的选中态和内容仍各自保留 180–220ms 动效。
               themeAnimationDuration: Duration.zero,
               debugShowCheckedModeBanner: false,
-              title: 'ChatGPT',
+              title: '艾普',
             );
           }),
         );
@@ -229,6 +232,7 @@ class _MyAppState extends State<MyApp> {
       await AISettingsDao.loadForAsync(initialAccount);
     }
     HiAPICache.init(HiCache.getInstance());
+    await DesktopQuickAssistant.instance.initialize(_navigatorKey);
     ModelCatalog.loadFromCache();
     unawaited(ModelCatalog.refreshFromBackend());
 
