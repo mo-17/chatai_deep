@@ -6,6 +6,7 @@ import 'package:chatgpt_app_core/model/knowledge_model.dart';
 import 'package:sqflite/sqflite.dart';
 import 'knowledge_evidence.dart';
 import 'knowledge_hybrid_search.dart';
+import 'semantic_embedding.dart';
 import 'package:chatgpt_app_core/db/schema_guard.dart';
 import 'package:chatgpt_app_core/util/uuid_v4.dart';
 
@@ -31,9 +32,11 @@ abstract class IKnowledgeRepository {
 class KnowledgeRepository implements IKnowledgeRepository, ITable {
   final HiDBManager storage;
   final KnowledgeDao knowledge;
+  final SemanticKnowledgeIndex semantic;
+  String semanticNotice = '当前使用本地词项检索';
   @override
   String tableName = 'tb_knowledge_answer';
-  KnowledgeRepository._(this.storage, this.knowledge);
+  KnowledgeRepository._(this.storage, this.knowledge, this.semantic);
   static Future<KnowledgeRepository> create(HiDBManager storage) async {
     final knowledge = await KnowledgeDao.create(storage);
     await storage.db.execute('create table if not exists tb_knowledge_answer '
@@ -48,7 +51,8 @@ class KnowledgeRepository implements IKnowledgeRepository, ITable {
           where: "id = ? and (uid is null or uid = '')",
           whereArgs: [row['id']]);
     }
-    return KnowledgeRepository._(storage, knowledge);
+    return KnowledgeRepository._(
+        storage, knowledge, await SemanticKnowledgeIndex.create(storage));
   }
 
   @override
@@ -77,7 +81,17 @@ class KnowledgeRepository implements IKnowledgeRepository, ITable {
       throw const KnowledgeScopeException('所选资料超过 5000 个片段，请缩小文档范围');
     }
     await _verifySources(storage.db, ids, const []);
-    return KnowledgeHybridSearch.search(question, rows.map(_source).toList())
+    final pool = rows.map(_source).toList();
+    try {
+      final found = await semantic.search(question, pool);
+      semanticNotice = semantic.lastSearchUsed
+          ? '已查询语义索引并融合本地检索，匹配分数不代表结论正确率'
+          : '当前使用本地词项检索；可在知识库操作菜单配置并建立语义索引';
+      return found;
+    } on FormatException {
+      semanticNotice = '语义检索未完成，本次使用本地词项检索，请检查语义检索设置';
+    }
+    return KnowledgeHybridSearch.search(question, pool)
         .map((hit) => hit.source)
         .toList();
   }

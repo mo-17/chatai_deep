@@ -23,6 +23,7 @@ import 'package:chatgpt_app_core/voice/speech_input.dart';
 import 'package:chatgpt_app_core/chat/application/sherpa_onnx_read_aloud_service.dart';
 import 'package:flutter/foundation.dart';
 import 'package:chatgpt_app_core/knowledge/knowledge_hybrid_search.dart';
+import 'package:chatgpt_app_core/knowledge/semantic_embedding.dart';
 import 'package:chatgpt_app_core/chat/application/read_aloud_service.dart';
 
 class KnowledgeAssistantPage extends StatefulWidget {
@@ -78,6 +79,7 @@ class _KnowledgeAssistantPageState extends State<KnowledgeAssistantPage>
     BackendConfig.changes.addListener(_environmentChanged);
     AiCatalogIdentity.changes.addListener(_environmentChanged);
     BackupService.restoreTick.addListener(_environmentChanged);
+    SemanticKnowledgeIndex.changes.addListener(_environmentChanged);
     widget.access?.addListener(_environmentChanged);
     _init();
   }
@@ -369,6 +371,11 @@ class _KnowledgeAssistantPageState extends State<KnowledgeAssistantPage>
                         child: Text(_error!,
                             key: const ValueKey('knowledge_error'))),
                   const SizedBox(height: 20),
+                  if (_assistant?.repository is KnowledgeRepository)
+                    Text(
+                        (_assistant!.repository as KnowledgeRepository)
+                            .semanticNotice,
+                        style: const TextStyle(fontSize: 12)),
                   Text('问答历史', style: Theme.of(context).textTheme.titleMedium),
                   if (_history.isEmpty)
                     const Padding(
@@ -541,6 +548,7 @@ class _KnowledgeAssistantPageState extends State<KnowledgeAssistantPage>
     BackendConfig.changes.removeListener(_environmentChanged);
     AiCatalogIdentity.changes.removeListener(_environmentChanged);
     BackupService.restoreTick.removeListener(_environmentChanged);
+    SemanticKnowledgeIndex.changes.removeListener(_environmentChanged);
     WidgetsBinding.instance.removeObserver(this);
     _question.dispose();
     super.dispose();

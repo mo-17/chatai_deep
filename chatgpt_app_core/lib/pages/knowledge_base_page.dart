@@ -18,6 +18,7 @@ import 'package:flutter/material.dart';
 import 'knowledge_assistant_page.dart';
 import 'team_knowledge_page.dart';
 import 'ocr_task_center_page.dart';
+import 'semantic_knowledge_settings_page.dart';
 import 'package:chatgpt_app_core/knowledge/knowledge_library.dart';
 import 'package:chatgpt_app_core/dao/ai_catalog_dao.dart';
 
@@ -181,7 +182,13 @@ class _KnowledgeBasePageState extends State<KnowledgeBasePage> {
               tooltip: '知识库操作',
               enabled: !_loading && _identity.current,
               onSelected: (action) async {
-                if (action == 'team') {
+                if (action == 'semantic') {
+                  await Navigator.push(
+                      context,
+                      MaterialPageRoute(
+                          builder: (_) =>
+                              const SemanticKnowledgeSettingsPage()));
+                } else if (action == 'team') {
                   await Navigator.push(
                       context,
                       MaterialPageRoute(
@@ -193,6 +200,7 @@ class _KnowledgeBasePageState extends State<KnowledgeBasePage> {
                 }
               },
               itemBuilder: (_) => const [
+                    PopupMenuItem(value: 'semantic', child: Text('语义检索设置与索引')),
                     PopupMenuItem(value: 'team', child: Text('团队知识库')),
                     PopupMenuItem(value: 'conflicts', child: Text('同步冲突')),
                     PopupMenuItem(value: 'index', child: Text('重建检索索引'))
