@@ -1,0 +1,78 @@
+{
+  "recordedAt": "2026-10-20T08:52:37.391781+00:00",
+  "scope": "Server OCR in ordinary chat file attachments; knowledge import retained",
+  "behavior": [
+    "File attachment picker accepts PNG/JPEG/WebP/BMP for ordinary chat OCR",
+    "Text PDF and model-native PDF keep their existing paths; only missing PDF pages request OCR",
+    "Explicit run confirmation precedes any document upload and identifies the backend",
+    "Frozen actual bytes are uploaded; local PDF text and original page numbers are preserved",
+    "Declining, failure or stopping preserves unaccepted draft; late OCR text cannot reach model",
+    "Recognized text persists in FileMetadata and is reused by history/regeneration",
+    "Existing task workspace attachment path is unchanged"
+  ],
+  "tests": {
+    "focusedFlutter": 63,
+    "flutterRegression": 134,
+    "realChromeHttp": 3,
+    "totalPassed": 200,
+    "scopedFlutterAnalyze": "No issues found",
+    "browserTestAnalyze": "No issues found",
+    "browserBoundary": "Real Chrome HTTP against a loopback deterministic fixture, not production OCR or a real model provider",
+    "criticalCases": [
+      "No upload before approval",
+      "Declining preserves draft and makes no model request",
+      "OCR text reaches model and persists with original user message",
+      "Mixed PDF recognizes only missing pages",
+      "Cancellation during pending HTTP upload sends DELETE and rejects late job",
+      "Aggregate text budget enforced"
+    ]
+  },
+  "builds": {
+    "androidRelease": "passed; production backend; historical direct signing verified",
+    "iosSimulatorDebug": "passed",
+    "macosRelease": "passed",
+    "ohosReleaseHap": "passed with fresh AOT/native-library/license checks",
+    "webRelease": "passed",
+    "windows": "not built on macOS"
+  },
+  "artifacts": {
+    "androidApk": {
+      "path": "chatgpt_flutter/build/app/outputs/flutter-apk/app-release.apk",
+      "bytes": 183896547,
+      "sha256": "9454fcebe9b58c064d715000596f5860c0394483f3d00e498d4695caeb2fab9d"
+    },
+    "ohosHap": {
+      "path": "chatgpt_flutter_ohos/build/ohos/hap/entry-default-signed.hap",
+      "bytes": 73055420,
+      "sha256": "a6f32a36579840603b71be7f6c58fd36fa4d9c14c27b4acb6582ffa6d1f328a5"
+    },
+    "webZip": {
+      "path": "chatgpt_flutter/build/chatai-deep-web.zip",
+      "bytes": 15978847,
+      "sha256": "c2c387b233c243dbef954267edc301675e904ab69d87a6d9b51daeab293f26a0"
+    }
+  },
+  "sourceSha256": {
+    "chatgpt_app_core/lib/chat/application/attachment_ocr.dart": "59dbfcd84be2e0efde0940f9a219beda2d0f6e7679fba704330414dc93b4e5fb",
+    "chatgpt_app_core/lib/chat/application/conversation_attachment_ocr.dart": "451fef9cf686bdf657a635fb3d710a5d89d4b2244ff70d196470db24afa48c4d",
+    "chatgpt_app_core/lib/chat/application/server_ocr_client.dart": "57771b3bf5b5fb9dfa18ab2386da8848ec3aeea6dfc9c729a014310baa5c5c69",
+    "chatgpt_app_core/lib/chat/application/file_processor.dart": "9f84ca71178b9299d694329a8db6426e2e99e21cf741cd27a0363a901c8cf92a",
+    "chatgpt_app_core/lib/chat/application/conversation_composer_preparation.dart": "e86214995e10fd5ae5b9a49a4dc9a8e3373b8169ce22a93dc1c67c1835322831",
+    "chatgpt_app_core/lib/chat/application/conversation_generation_service.dart": "44eb411cf70785f32452d650a28ad247d4269039f0a46a4d50f4a8ae7eac816c",
+    "chatgpt_app_core/lib/pages/conversation_page.dart": "7e534427be44eb05f52c83bae6e2313c36913fcf788c496b82c9015a2eeec2a7",
+    "chatgpt_app_core/lib/widget/message_input_widget.dart": "4241e93225dc96bd78c85535c666f8a9e5542073d9c5067fb2464c2b749c58c2"
+  },
+  "server": {
+    "changedThisIteration": false,
+    "usesExistingApi": "/uapi/ocr",
+    "priorRealModelAndHttpsEvidence": "20261020.json"
+  },
+  "notVerified": [
+    "Physical-device OCR uploads, network transitions and lifecycle",
+    "Windows build/runtime",
+    "macOS GUI/signing acceptance",
+    "Production browser UI with a real user account and real model provider",
+    "GitHub Actions execution"
+  ],
+  "git": "Existing mixed worktree preserved; no commit or push"
+}

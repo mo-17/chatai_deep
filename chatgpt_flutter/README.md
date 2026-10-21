@@ -1,4 +1,6 @@
 ## Tips
+
+服务器 OCR 已接入知识库导入，支持图片和扫描 PDF，使用方式、部署限制与验收记录见 [服务器 OCR](../deploy/ocr/README.md)。
 这是慕课网官方实战课【[ChatGPT + Flutter快速开发多端聊天机器人App](https://coding.imooc.com/class/672.html)】的项目源码，课件，文档。
 
 >课程会不定期更新，建议大家多关注下仓库首页的变更记录以便获得最新的更新内容哦

@@ -34,6 +34,7 @@ const menuItems = [
   { href: '/access', label: '试用与额度', icon: Settings2 },
   { href: '/feedback', label: '用户反馈', icon: MessageCircle },
   { href: '/usage', label: '用量明细', icon: BarChart3 },
+  { href: '/ocr', label: 'OCR 管理', icon: FileText },
   { href: '/ai-chat', label: 'AI 对话', icon: MessageCircle },
   { href: '/cloud-tasks', label: '我的云任务', icon: Cloud },
 ];

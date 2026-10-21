@@ -1,0 +1,43 @@
+[Unit]
+Description=Chatai bounded CPU OCR worker
+After=network.target
+
+[Service]
+Type=simple
+User=chatai-ocr
+Group=chatai-ocr
+WorkingDirectory=/opt/chatai-deep/ocr/current
+ExecStart=/opt/chatai-deep/ocr/current/.venv/bin/python server.py
+EnvironmentFile=/etc/chatai-deep/ocr.env
+Environment=PYTHONDONTWRITEBYTECODE=1 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 OCR_SPOOL_ROOT=/run/chatai-ocr
+Environment=OCR_STATE_ROOT=/var/lib/chatai-ocr
+StateDirectory=chatai-ocr
+StateDirectoryMode=0700
+RuntimeDirectory=chatai-ocr
+RuntimeDirectoryMode=0700
+Restart=on-failure
+RestartSec=5
+MemoryHigh=512M
+MemoryMax=640M
+MemorySwapMax=128M
+CPUQuota=100%
+TasksMax=24
+OOMPolicy=continue
+KillMode=control-group
+TimeoutStopSec=5
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+RestrictAddressFamilies=AF_INET AF_UNIX
+IPAddressDeny=any
+IPAddressAllow=localhost
+
+[Install]
+WantedBy=multi-user.target

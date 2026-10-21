@@ -1,0 +1,100 @@
+{
+  "date": "2026-10-20",
+  "scope": "Knowledge-base hybrid OCR; server deployed; Android/iOS-simulator/macOS/OHOS/Web builds checked",
+  "server": {
+    "origin": "https://kushui.shop",
+    "cpuCores": 2,
+    "memoryMiB": 1899,
+    "apiRelease": "/opt/chatai-deep/releases/20261020T074510Z.ocr.v9hIkaUG",
+    "previousApiRelease": "/opt/chatai-deep/releases/20261019T010046Z.HZTlt5UL",
+    "workerRelease": "/opt/chatai-deep/ocr/releases/20261020.cancel-fix.J2bEYhex",
+    "apiAdminWorkerActive": true,
+    "automaticWorkerRestarts": 0,
+    "workerMemoryPeakBytes": 532303872,
+    "workerMemoryAfterTasksBytes": 21331968,
+    "workerMemoryHighBytes": 536870912,
+    "workerMemoryMaxBytes": 671088640,
+    "originalFilesAfterTasks": 0,
+    "remainingTemporaryTestAccounts": 0
+  },
+  "httpsSmoke": {
+    "startedAt": "2026-10-20T07:47:33.464Z",
+    "elapsedSeconds": 115,
+    "checks": [
+      "JWT required; worker internal shared token never sent to client",
+      "Actual English image text, four-point boxes and confidence",
+      "Actual Chinese image recognition",
+      "Other account cannot read or cancel a task",
+      "Scanned PDF recognition preserves original page number",
+      "5-page PDF recognizes only requested pages 2 and 4",
+      "Cancellation prevents publication of results",
+      "20-page Chinese scanned PDF completes under worker limits",
+      "Public API health check succeeds after stress task"
+    ],
+    "stress": {
+      "pages": 20,
+      "inputBytes": 5794535,
+      "linesPerPage": 22,
+      "elapsedSeconds": 92,
+      "fixture": "Generated non-sensitive Chinese text; each page includes 2026",
+      "qualityBoundary": "Confirms execution and expected text presence; not a document accuracy benchmark"
+    }
+  },
+  "local": {
+    "flutterFocusedTestsPassed": 26,
+    "backendHttpTestsPassed": 5,
+    "workerTestsPassed": 6,
+    "flutterScopedAnalyze": "No issues found",
+    "nestBuild": "passed",
+    "webReleaseBuild": "passed",
+    "webArchive": {
+      "path": "chatgpt_flutter/build/chatai-deep-web.zip",
+      "bytes": 15976687,
+      "files": 46,
+      "sha256": "d4d46a4963f1aff133b6103c1ceda64a8f88baab0952e0b640c00eeb0411f21e"
+    },
+    "workerActualImageAndPdfWarmup": "passed on macOS and Ubuntu",
+    "prettierAndShellSyntax": "passed",
+    "ohosShellTestsPassed": 9,
+    "nativeBuilds": {
+      "androidRelease": "passed; direct distribution, production backend, historical signing certificate",
+      "iosSimulatorDebug": "passed; no physical-device acceptance",
+      "macosRelease": "passed; universal x86_64 and arm64; GUI/signing acceptance separate",
+      "ohosRelease": "passed after dependency resolution; AOT/native-library/license verification passed",
+      "windowsRelease": "not executed on this macOS host"
+    },
+    "nativeArtifacts": {
+      "androidApk": {
+        "path": "chatgpt_flutter/build/app/outputs/flutter-apk/app-release.apk",
+        "bytes": 183880163,
+        "sha256": "d1ea27316d58e324fa548e6f845bbb7c8e3bb0d6e74827510efcda3cb4a9ae49",
+        "abis": [
+          "arm64-v8a",
+          "armeabi-v7a",
+          "x86_64"
+        ]
+      },
+      "ohosHap": {
+        "path": "chatgpt_flutter_ohos/build/ohos/hap/entry-default-signed.hap",
+        "bytes": 73039037,
+        "sha256": "c1cf7e584dc9738b25aa3b213db3f935b80757348b34c585977967ba7bb7917a"
+      }
+    },
+    "apkSignatureVerified": true
+  },
+  "deployedHashes": {
+    "engine.py": "9f46514ccc13b2fdd56185944c10dd7d982b7d331bd7ef04f7931fb052f5d091",
+    "server.py": "98610e6b06891b69d451308d5e1f693f106cb653aa64f065ad7db8d42f0c02d9",
+    "ocr.controller.js": "319e8208fc0cbaff7931e5d09a16928ebf8bb6f3ca2c09cb54cadb471b0ec848",
+    "ocr.module.js": "94bfab4b1915a54bef975d9d1c80d22cc618232e79e30837554c5204f7011764",
+    "ocr.service.js": "fc1c75fdb06916e0df175ec3a31d41777cc0413011f45a791e40c6e6aa128550"
+  },
+  "notVerified": [
+    "Physical Android/iOS/OHOS/macOS/Windows OCR uploads, account changes, cancellation and lifecycle",
+    "Windows build/runtime and signed macOS GUI acceptance",
+    "Browser UI upload against production with a real user account",
+    "GitHub Actions execution",
+    "Sustained concurrent production load or OCR accuracy on user documents"
+  ],
+  "git": "Existing mixed worktree preserved; no commit or push performed"
+}

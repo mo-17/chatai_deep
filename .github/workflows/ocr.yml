@@ -1,0 +1,21 @@
+name: OCR worker
+on:
+  push:
+    paths: ['deploy/ocr/**', '.github/workflows/ocr.yml']
+  pull_request:
+    paths: ['deploy/ocr/**', '.github/workflows/ocr.yml']
+jobs:
+  worker:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: deploy/ocr/requirements-lock.txt
+      - run: python -m unittest discover -s deploy/ocr -v
+      - run: pip install -r deploy/ocr/requirements-lock.txt
+      - run: python deploy/ocr/warmup.py
+      - run: python -m unittest discover -s deploy/ocr -p test_engine_preview.py -v
+      - run: bash -n deploy/ocr/install.sh deploy/ocr/apply-api.sh

@@ -1,4 +1,5 @@
 import { logUrl } from './common/auth-log-safety';
+import { OcrModule } from './ocr/ocr.module';
 import { FeedbackModule } from './feedback/feedback.module';
 import { OperationsModule } from './operations/operations.module';
 import { KnowledgeTeamModule } from './knowledge-team/knowledge-team.module';
@@ -79,6 +80,7 @@ import { CloudWorkflowModule } from './cloud-workflow/cloud-workflow.module';
       },
     }),
     FeedbackModule,
+    OcrModule,
     KnowledgeTeamModule,
     UserModule,
     NoticeModule,

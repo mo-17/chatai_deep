@@ -13,6 +13,7 @@ const breadcrumbMap: Record<string, string> = {
   '/access': '试用与额度',
   '/feedback': '用户反馈',
   '/usage': '用量明细',
+  '/ocr': 'OCR 管理',
   '/ai-chat': 'AI 对话',
   '/cloud-tasks': '我的云任务',
   '/ai/providers': 'AI 服务商',

@@ -1,0 +1,81 @@
+{
+  "date": "2026-10-20",
+  "flutter": "3.35.7",
+  "tests": {
+    "flutterCore": 181,
+    "chromeContractsAndIndexedDb": 5,
+    "nestHttp": 8,
+    "worker": 9,
+    "realEngine": 1
+  },
+  "builds": {
+    "androidRelease": "passed",
+    "iosSimulator": "passed",
+    "macosRelease": "passed",
+    "ohosReleaseAndAotNativeLicenses": "passed",
+    "flutterWeb": "passed",
+    "nest": "passed",
+    "nextLocalAndLinuxCandidate": "passed"
+  },
+  "production": {
+    "origin": "https://kushui.shop",
+    "startedAt": "2026-10-20T11:45:11.126Z",
+    "checks": [
+      "real admin role guard, no-store overview and worker RSS",
+      "per-owner quota blocks only the configured temporary account",
+      "real HTTPS OCR image, bounded JPEG preview, geometry and confidence",
+      "selected page 2 keeps original PDF number and preview",
+      "completion/page metrics survive client result DELETE and queue settles",
+      "deployed admin OCR route responds over HTTPS"
+    ],
+    "previewBytes": 13966,
+    "workerRssBytes": 23986176,
+    "averageSeconds": 3.36,
+    "serviceHealth": "api/admin/ocr active",
+    "originalFilesRemaining": 0,
+    "quotaRestored": {
+      "ownerHourly": 20,
+      "globalHourly": 120,
+      "ownerOverrides": {}
+    },
+    "settingsFileMode": "0600"
+  },
+  "artifacts": {
+    "android": {
+      "path": "chatgpt_flutter/build/app/outputs/flutter-apk/app-release.apk",
+      "bytes": 187943591,
+      "sha256": "65fed05f9e25ac5782a4e1f601b5cc40d63f84256bf871d9110c8148b2f985c4"
+    },
+    "ohos": {
+      "path": "chatgpt_flutter_ohos/build/ohos/hap/entry-default-signed.hap",
+      "bytes": 74386458,
+      "sha256": "c24889e3ff0fae16530d4dd0358dd5dd554ca82060a33ac532c0d9e45e0628e5"
+    },
+    "web": {
+      "path": "chatgpt_flutter/build/chatai-deep-web.zip",
+      "bytes": 16120361,
+      "sha256": "e2d8eecde860a1bc72a15e516912fc8aded29769b63ac768a530514a270bed56"
+    }
+  },
+  "ui": {
+    "admin": "local API fixture; real browser layout, duplicate validation, save/reload verified",
+    "screenshot": "20261020-workbench-admin-ui.jpg",
+    "productionAdminLogin": "not attempted; temporary admin creation rejected by automatic approval review"
+  },
+  "unverified": [
+    "Windows native compilation and GUI",
+    "macOS GUI blocked by restricted signing entitlements",
+    "new mobile camera/permission flows on physical devices",
+    "real external Embedding model quality and billing",
+    "remote GitHub CI"
+  ],
+  "git": "working tree only; no commit or push",
+  "deployment": {
+    "release": "/opt/chatai-deep/releases/20261020T113841Z.ocr-workbench.v1EuODRi",
+    "worker": "/opt/chatai-deep/ocr/releases/20261020T114337Z.workbench.1k2aqS6O",
+    "previousRelease": "/opt/chatai-deep/releases/20261020T074510Z.ocr.v9hIkaUG",
+    "previousWorker": "/opt/chatai-deep/ocr/releases/20261020.cancel-fix.J2bEYhex",
+    "activatedAt": "2026-10-20T11:43:39.913223+00:00",
+    "runtimeHashesMatchLocal": true
+  }
+}
