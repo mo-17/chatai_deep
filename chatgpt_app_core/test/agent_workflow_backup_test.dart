@@ -89,7 +89,7 @@ void main() {
     LoginSdkConfig.reset();
   });
   for (final mode in BackupImportMode.values) {
-    test('备份13 ${mode.name} 不导入执行授权；覆盖清理派生，合并/选择性保留本地记录', () async {
+    test('工作流备份 ${mode.name} 不导入执行授权；覆盖清理派生，合并/选择性保留本地记录', () async {
       final source = await database(), target = await database();
       final (_, sourceTask) = await seed(source, 1, complete: true);
       final (targetDao, targetTask) = await seed(target, 2);
@@ -99,7 +99,7 @@ void main() {
       expect(archive.files.any((f) => f.name.contains('workflow')), false);
       final manifest = jsonDecode(utf8.decode(
           archive.findFile('manifest.json')!.content as List<int>)) as Map;
-      expect(manifest['formatVersion'], 13);
+      expect(manifest['formatVersion'], BackupService.formatVersion);
       final captured = AgentWorkflowScope(accountHash: 'a');
       await BackupService(target)
           .importArchive(bytes, accountHash: 'a', mode: mode);

@@ -66,14 +66,14 @@ void main() {
     LoginSdkConfig.reset();
   });
   for (final mode in BackupImportMode.values) {
-    test('真实backup13 ${mode.name} 不导出cloud关联且旧来源永久失效', () async {
+    test('真实备份 ${mode.name} 不导出cloud关联且旧来源永久失效', () async {
       final bytes = await BackupService(db)
           .exportArchive(settings: AISettings.defaults(), accountHash: 'a');
       final archive = ZipDecoder().decodeBytes(bytes);
       expect(archive.files.any((f) => f.name.contains('cloud')), false);
       final manifest = jsonDecode(
           utf8.decode(archive.findFile('manifest.json')!.content as List<int>));
-      expect(manifest['formatVersion'], 13);
+      expect(manifest['formatVersion'], BackupService.formatVersion);
       final old = scope();
       await BackupService(db)
           .importArchive(bytes, accountHash: 'a', mode: mode);
@@ -102,7 +102,7 @@ void main() {
         throwsStateError);
     expect(await db.db.query('tb_cloud_publications'), isEmpty);
   });
-  test('无sidecar旧库恢复不初始化云表，也不改变backup13清单', () async {
+  test('无sidecar旧库恢复不初始化云表，也不改变备份清单', () async {
     final old = HiDBManager.test(await databaseFactoryFfi.openDatabase(
         inMemoryDatabasePath,
         options: OpenDatabaseOptions(singleInstance: false)));
