@@ -1,3 +1,4 @@
+import 'support/owned_test_directory.dart';
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
@@ -23,6 +24,11 @@ import 'backend_pair_transport_test.dart' show PairTokens;
 import 'support/story_p2_gate_database.dart';
 
 void main() {
+  final ownedFixture = OwnedTestDirectory(
+    rootKey: 'R3B3B_ROOT',
+    nonceKey: 'R3B3B_NONCE',
+    legacyPrefix: '/tmp/chatai-r3b3b-owned-',
+  );
   TestWidgetsFlutterBinding.ensureInitialized();
   late Directory root;
   late HiDBManager storage;
@@ -39,13 +45,7 @@ void main() {
   late StoryBackendGenerationSnapshot run;
   setUpAll(() {
     sqfliteFfiInit();
-    root = Directory(Platform.environment['R3B3B_ROOT']!);
-    expect(root.path,
-        '/tmp/chatai-r3b3b-owned-${Platform.environment['R3B3B_NONCE']}');
-    expect(
-        jsonDecode(
-            File('${root.path}/fixture-sentinel.json').readAsStringSync()),
-        {'nonce': Platform.environment['R3B3B_NONCE']});
+    root = ownedFixture.directory;
   });
   setUp(() async {
     gate = StoryP2Gate();

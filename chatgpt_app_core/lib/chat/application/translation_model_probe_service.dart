@@ -54,7 +54,7 @@ final class TranslationModelProbeIdentity {
 
   bool get _backendCurrent =>
       _backendIdentity == null ||
-      _backendIdentity!.current &&
+      _backendIdentity.current &&
           _restoreTick == BackupService.restoreTick.value &&
           _restoreRevision == BackupService.agentExecutionRevision;
 }
@@ -320,8 +320,7 @@ final class TranslationModelProbeService
         !current._backendCurrent ||
         (existing._backendIdentity != null &&
             (current._backendIdentity == null ||
-                !existing._backendIdentity!
-                    .sameAs(current._backendIdentity!))) ||
+                !existing._backendIdentity.sameAs(current._backendIdentity))) ||
         existing.accountHash != current.accountHash ||
         existing.fingerprint != current.fingerprint ||
         !existing.cacheToken.sameAs(current.cacheToken)) {

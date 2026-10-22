@@ -652,7 +652,7 @@ class AgentWorkflowDao implements IAgentWorkflowStore, ITable {
               !mapEquals(step, snapshot[i].toRow())) {
             throw const WorkflowStale('原节点快照或后端准备许可已变化');
           }
-          _profileGuard!(profile);
+          _profileGuard(profile);
           prepared.add(profile);
         }
         final checkpoint = WorkflowStep(step).checkpoint;
@@ -751,7 +751,7 @@ class AgentWorkflowDao implements IAgentWorkflowStore, ITable {
                 jsonEncode(expectedProfile.toJson())) {
           throw const WorkflowStale('原节点模型或准备许可已变化');
         }
-        _profileGuard!(profile);
+        _profileGuard(profile);
         prepared = profile;
       }
       final pending = await tx.query(attempts,

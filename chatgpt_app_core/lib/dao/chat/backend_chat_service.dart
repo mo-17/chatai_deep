@@ -54,7 +54,7 @@ class BackendChatService
           error.statusCode == 401 &&
           error.failureStage == ChatFailureStage.response &&
           _loginSession != null) {
-        _scheduleExpiredSessionLogout(_loginSession!);
+        _scheduleExpiredSessionLogout(_loginSession);
       }
       rethrow;
     }

@@ -21,6 +21,12 @@ import 'backend_pair_transport_test.dart' show PairTokens, PairHttpOverrides;
 
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
+  if (Platform.environment['FINAL_OWNED'] == null ||
+      Platform.environment['FINAL_NONCE'] == null) {
+    test('自有 Nest 与合成 upstream 的真实调用验收', () {},
+        skip: '需显式提供 FINAL_OWNED 和 FINAL_NONCE 验收环境');
+    return;
+  }
   final root = Directory(Platform.environment['FINAL_OWNED']!);
   final meta =
       jsonDecode(File('${root.path}/nest-ready.json').readAsStringSync())

@@ -1,3 +1,4 @@
+import 'support/owned_test_directory.dart';
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
@@ -18,6 +19,11 @@ import 'package:sqflite_common_ffi/sqflite_ffi.dart';
 import 'backend_pair_transport_test.dart' show PairTokens;
 
 void main() {
+  final ownedFixture = OwnedTestDirectory(
+    rootKey: 'R3B3A_ROOT',
+    nonceKey: 'R3B3A_NONCE',
+    legacyPrefix: '/tmp/chatai-r3b3a-owned-',
+  );
   TestWidgetsFlutterBinding.ensureInitialized();
   late Directory root;
   late HttpServer server;
@@ -43,13 +49,7 @@ void main() {
           accountHash: account,
           origin: BackendConfig.buildUri('/uapi/ai/catalog').origin);
   setUpAll(() {
-    root = Directory(Platform.environment['R3B3A_ROOT']!);
-    final nonce = Platform.environment['R3B3A_NONCE']!;
-    expect(root.path, '/tmp/chatai-r3b3a-owned-$nonce');
-    expect(
-        jsonDecode(
-            File('${root.path}/fixture-sentinel.json').readAsStringSync()),
-        {'nonce': nonce});
+    root = ownedFixture.directory;
     sqfliteFfiInit();
   });
   setUp(() async {

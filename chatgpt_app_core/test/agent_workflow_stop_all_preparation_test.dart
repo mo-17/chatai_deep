@@ -1,3 +1,4 @@
+import 'support/owned_test_directory.dart';
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
@@ -9,6 +10,10 @@ import 'package:flutter_test/flutter_test.dart';
 import 'support/workflow_backend_consumer_fixture.dart';
 
 void main() {
+  final ownedFixture = OwnedTestDirectory(
+      rootKey: 'R3B4_ROOT',
+      nonceKey: 'R3B4_NONCE',
+      legacyPrefix: '/tmp/chatai-r3b4-owned-');
   TestWidgetsFlutterBinding.ensureInitialized();
   late WorkflowBackendFixture f;
   WidgetTester? active;
@@ -17,7 +22,7 @@ void main() {
   final evidence = <Map<String, Object?>>[];
   final checks = <Map<String, Object?>>[];
   setUp(() async {
-    f = WorkflowBackendFixture('stop-all');
+    f = WorkflowBackendFixture('stop-all', baseRoot: ownedFixture.directory);
     active = null;
     closed = false;
     claimWrites = reservationWrites = 0;
@@ -30,7 +35,7 @@ void main() {
     evidence.add({...f.evidence(), 'stopChecks': List.of(checks)});
   });
   tearDownAll(() {
-    final root = Platform.environment['R3B4_ROOT']!;
+    final root = ownedFixture.directory.path;
     File('$root/stop-all-evidence.json')
         .writeAsStringSync(jsonEncode(evidence));
     File('$root/cleanup.json').writeAsStringSync(jsonEncode({

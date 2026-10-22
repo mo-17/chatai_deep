@@ -1,3 +1,4 @@
+import 'support/owned_test_directory.dart';
 import 'dart:convert';
 import 'dart:io';
 import 'package:chatgpt_app_core/chat/application/assistant_role_card_service.dart';
@@ -29,6 +30,11 @@ import 'backend_pair_transport_test.dart' show PairTokens;
 class _OwnedLoopbackHTTP extends HttpOverrides {}
 
 void main() {
+  final ownedFixture = OwnedTestDirectory(
+    rootKey: 'R3B4_ROOT',
+    nonceKey: 'R3B4_NONCE',
+    legacyPrefix: '/tmp/chatai-r3b4-owned-',
+  );
   TestWidgetsFlutterBinding.ensureInitialized();
   late Directory root;
   late Database db;
@@ -104,13 +110,7 @@ void main() {
   }
 
   setUpAll(() {
-    root = Directory(Platform.environment['R3B4_ROOT']!);
-    expect(root.path,
-        '/tmp/chatai-r3b4-owned-${Platform.environment['R3B4_NONCE']}');
-    expect(
-        jsonDecode(
-            File('${root.path}/fixture-sentinel.json').readAsStringSync()),
-        {'nonce': Platform.environment['R3B4_NONCE']});
+    root = ownedFixture.directory;
     sqfliteFfiInit();
   });
   setUp(() async {

@@ -1,3 +1,4 @@
+import 'support/owned_test_directory.dart';
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
@@ -11,13 +12,17 @@ import 'package:login_sdk/dao/backend_host.dart';
 import 'support/workflow_backend_consumer_fixture.dart';
 
 void main() {
+  final ownedFixture = OwnedTestDirectory(
+      rootKey: 'R3B4_ROOT',
+      nonceKey: 'R3B4_NONCE',
+      legacyPrefix: '/tmp/chatai-r3b4-owned-');
   TestWidgetsFlutterBinding.ensureInitialized();
   late WorkflowBackendFixture f;
   WidgetTester? active;
   bool closed = false;
   final evidence = <Map<String, Object?>>[];
   setUp(() async {
-    f = WorkflowBackendFixture('page');
+    f = WorkflowBackendFixture('page', baseRoot: ownedFixture.directory);
     closed = false;
     await f.setup();
   });
@@ -27,7 +32,7 @@ void main() {
     evidence.add(f.evidence());
   });
   tearDownAll(() {
-    final root = Platform.environment['R3B4_ROOT']!;
+    final root = ownedFixture.directory.path;
     File('$root/page-evidence.json').writeAsStringSync(jsonEncode(evidence));
     File('$root/cleanup.json').writeAsStringSync(jsonEncode({
       'cases': evidence.length,

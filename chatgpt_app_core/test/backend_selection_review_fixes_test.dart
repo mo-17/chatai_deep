@@ -1,3 +1,4 @@
+import 'support/owned_test_directory.dart';
 import 'dart:convert';
 import 'dart:io';
 
@@ -11,6 +12,11 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:sqflite_common_ffi/sqflite_ffi.dart';
 
 void main() {
+  final ownedFixture = OwnedTestDirectory(
+    rootKey: 'R2B_SQLITE_ROOT',
+    nonceKey: 'R2B_SQLITE_NONCE',
+    legacyPrefix: '/tmp/chatai-r2b-sqlite-',
+  );
   TestWidgetsFlutterBinding.ensureInitialized();
   final selections = <String, String>{
     'pair': jsonEncode({
@@ -30,13 +36,7 @@ void main() {
   int next = 0;
   setUpAll(() {
     sqfliteFfiInit();
-    final nonce = Platform.environment['R2B_SQLITE_NONCE']!;
-    owned = Directory(Platform.environment['R2B_SQLITE_ROOT']!);
-    expect(owned.path, '/tmp/chatai-r2b-sqlite-$nonce');
-    expect(
-        jsonDecode(
-            File('${owned.path}/fixture-sentinel.json').readAsStringSync()),
-        {'nonce': nonce});
+    owned = ownedFixture.directory;
     HttpOverrides.global = network;
   });
   tearDownAll(() async {

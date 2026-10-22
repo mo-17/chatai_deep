@@ -1,3 +1,4 @@
+import 'support/owned_test_directory.dart';
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
@@ -14,6 +15,11 @@ import 'package:login_sdk/login_sdk.dart';
 import 'backend_pair_transport_test.dart' show PairTokens;
 
 void main() {
+  final ownedFixture = OwnedTestDirectory(
+    rootKey: 'R3B3A_ROOT',
+    nonceKey: 'R3B3A_NONCE',
+    legacyPrefix: '/tmp/chatai-r3b3a-p2-owned-',
+  );
   TestWidgetsFlutterBinding.ensureInitialized();
   late Directory root;
   late HttpServer server;
@@ -30,13 +36,7 @@ void main() {
   Duration responseDelay = Duration.zero;
   bool current = true;
   setUpAll(() {
-    root = Directory(Platform.environment['R3B3A_ROOT']!);
-    expect(root.path,
-        '/tmp/chatai-r3b3a-p2-owned-${Platform.environment['R3B3A_NONCE']}');
-    expect(
-        jsonDecode(
-            File('${root.path}/fixture-sentinel.json').readAsStringSync()),
-        {'nonce': Platform.environment['R3B3A_NONCE']});
+    root = ownedFixture.directory;
   });
   Future<void> respond(HttpRequest r) async {
     expect(r.method, 'POST');

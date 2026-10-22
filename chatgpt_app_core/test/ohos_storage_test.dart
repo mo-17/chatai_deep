@@ -184,9 +184,10 @@ void main() {
     var fail = false, cleaned = false;
     messenger.setMockMethodCallHandler(OhosStorageService.channel,
         (call) async {
-      if (fail)
+      if (fail) {
         throw PlatformException(
             code: 'bad', message: '/private/account.db secret-body');
+      }
       if (call.method == 'storageInventory') return inventory([image(0)]);
       cleaned = true;
       return {'removed': 1, 'bytes': 1048576, 'retained': 0};

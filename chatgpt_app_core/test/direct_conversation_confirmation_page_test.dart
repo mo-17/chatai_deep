@@ -1,3 +1,4 @@
+import 'support/owned_test_directory.dart';
 import 'package:chat_message/models/message_model.dart';
 import 'package:chatgpt_app_core/db/message_dao.dart';
 import 'package:chatgpt_app_core/chat/application/agent_task_executor.dart';
@@ -41,6 +42,11 @@ import 'backend_pair_transport_test.dart' show PairTokens;
 class _OwnedLoopbackHTTP extends HttpOverrides {}
 
 void main() {
+  final ownedFixture = OwnedTestDirectory(
+    rootKey: 'R3B4_ROOT',
+    nonceKey: 'R3B4_NONCE',
+    legacyPrefix: '/tmp/chatai-r3b4-owned-',
+  );
   TestWidgetsFlutterBinding.ensureInitialized();
   late Directory owned, caseRoot;
   late DatabaseFactory? oldFactory;
@@ -68,13 +74,7 @@ void main() {
       cleanup = <Object>[];
   const channel = MethodChannel('plugins.flutter.io/path_provider');
   setUpAll(() {
-    owned = Directory(Platform.environment['R3B4_ROOT']!);
-    final nonce = Platform.environment['R3B4_NONCE']!;
-    expect(owned.path, '/tmp/chatai-r3b4-owned-$nonce');
-    expect(
-        jsonDecode(
-            File('${owned.path}/fixture-sentinel.json').readAsStringSync()),
-        {'nonce': nonce});
+    owned = ownedFixture.directory;
     sqfliteFfiInit();
   });
   setUp(() async {

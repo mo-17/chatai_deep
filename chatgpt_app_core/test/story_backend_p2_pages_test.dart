@@ -1,3 +1,4 @@
+import 'support/owned_test_directory.dart';
 import 'package:chatgpt_app_core/backup/backup_service.dart';
 import 'support/story_p2_gate_database.dart';
 import 'dart:async';
@@ -34,6 +35,11 @@ import 'package:sqflite_common_ffi/sqflite_ffi.dart';
 import 'backend_pair_transport_test.dart' show PairTokens;
 
 void main() {
+  final ownedFixture = OwnedTestDirectory(
+    rootKey: 'R3B3B_ROOT',
+    nonceKey: 'R3B3B_NONCE',
+    legacyPrefix: '/tmp/chatai-r3b3b-owned-',
+  );
   TestWidgetsFlutterBinding.ensureInitialized();
   late Directory root, caseRoot;
   late DatabaseFactory? oldFactory;
@@ -60,13 +66,7 @@ void main() {
       accountHash: 'account-a',
       origin: BackendConfig.buildUri('/uapi/ai/catalog').origin);
   setUpAll(() {
-    root = Directory(Platform.environment['R3B3B_ROOT']!);
-    expect(root.path,
-        '/tmp/chatai-r3b3b-owned-${Platform.environment['R3B3B_NONCE']}');
-    expect(
-        jsonDecode(
-            File('${root.path}/fixture-sentinel.json').readAsStringSync()),
-        {'nonce': Platform.environment['R3B3B_NONCE']});
+    root = ownedFixture.directory;
     sqfliteFfiInit();
   });
   setUp(() async {

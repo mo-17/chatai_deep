@@ -1,3 +1,4 @@
+import 'support/owned_test_directory.dart';
 import 'package:chatgpt_app_core/db/story_template_translation_task_dao.dart';
 import 'package:chatgpt_app_core/model/story_template_translation_task_model.dart';
 import 'package:chatgpt_app_core/pages/story_room_list_page.dart';
@@ -95,6 +96,11 @@ Future<void> guardedPreferenceSave(TranslationModelPreferenceStore store,
 }
 
 void main() {
+  final ownedFixture = OwnedTestDirectory(
+    rootKey: 'R3B4_ROOT',
+    nonceKey: 'R3B4_NONCE',
+    legacyPrefix: '/tmp/chatai-r3b4-owned-',
+  );
   TestWidgetsFlutterBinding.ensureInitialized();
   late Directory root, owned;
   late DatabaseFactory? oldFactory;
@@ -131,13 +137,7 @@ void main() {
           backendSelection: pair(code, account: account),
           reasoningPolicy: ChatReasoningPolicy.offIfSupported);
   setUpAll(() {
-    root = Directory(Platform.environment['R3B4_ROOT']!);
-    expect(root.path,
-        '/tmp/chatai-r3b4-owned-${Platform.environment['R3B4_NONCE']}');
-    expect(
-        jsonDecode(
-            File('${root.path}/fixture-sentinel.json').readAsStringSync()),
-        {'nonce': Platform.environment['R3B4_NONCE']});
+    root = ownedFixture.directory;
     sqfliteFfiInit();
   });
   setUp(() async {

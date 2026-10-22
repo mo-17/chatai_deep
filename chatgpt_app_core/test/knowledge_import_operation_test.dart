@@ -55,8 +55,9 @@ void main() {
     final result = await KnowledgeFileImporter(dao)
         .importPaths(paths, cancellation: cancel, onProgress: (value) {
       progress.add(value);
-      if (value.filename == 'beta.txt' && value.stage == '正在保存')
+      if (value.filename == 'beta.txt' && value.stage == '正在保存') {
         cancel.cancel();
+      }
     });
     expect(result.cancelled, true);
     expect(result.total, 3);
@@ -128,8 +129,8 @@ void main() {
           KnowledgeImportErrorKind.tooLarge,
       ArgumentError('Invalid position -1 secret-body'):
           KnowledgeImportErrorKind.damaged,
-      FileSystemException(
-              'secret-body', '/private/user.pdf', const OSError('missing', 2)):
+      const FileSystemException(
+              'secret-body', '/private/user.pdf', OSError('missing', 2)):
           KnowledgeImportErrorKind.missing,
       TimeoutException('secret-body'): KnowledgeImportErrorKind.timeout,
       PlatformException(code: 'ocr_busy', message: 'secret-body'):

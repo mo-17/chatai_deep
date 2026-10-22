@@ -1,3 +1,4 @@
+import 'support/owned_test_directory.dart';
 import 'dart:convert';
 import 'dart:io';
 import 'package:chatgpt_app_core/ai_readiness/ai_onboarding_store.dart';
@@ -35,6 +36,11 @@ import 'backend_pair_transport_test.dart' show PairTokens;
 import 'support/fake_composer_chat.dart';
 
 void main() {
+  final ownedFixture = OwnedTestDirectory(
+    rootKey: 'R3A2_ROOT',
+    nonceKey: 'R3A2_NONCE',
+    legacyPrefix: '/tmp/chatai-r3a2-owned-',
+  );
   TestWidgetsFlutterBinding.ensureInitialized();
   for (final reason in [
     'invalid_backend_selection',
@@ -88,13 +94,7 @@ void main() {
     final observations = <Object>[];
     const pathChannel = MethodChannel('plugins.flutter.io/path_provider');
     setUpAll(() {
-      final nonce = Platform.environment['R3A2_NONCE']!;
-      owned = Directory(Platform.environment['R3A2_ROOT']!);
-      expect(owned.path, '/tmp/chatai-r3a2-owned-$nonce');
-      expect(
-          jsonDecode(
-              File('${owned.path}/fixture-sentinel.json').readAsStringSync()),
-          {'nonce': nonce});
+      owned = ownedFixture.directory;
       sqfliteFfiInit();
     });
     setUp(() async {

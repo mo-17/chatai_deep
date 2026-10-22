@@ -99,7 +99,7 @@ final class AttachmentBatchBudget {
     _checkBytes(await source.length());
     final readLimit = maxBytes < remainingBytes ? maxBytes : remainingBytes;
     if (_snapshotFile != null) {
-      final snapshot = await _snapshotFile!(source, readLimit);
+      final snapshot = await _snapshotFile(source, readLimit);
       if (snapshot.bytes.length > readLimit) {
         throw const FormatException('附件快照超过读取上限');
       }

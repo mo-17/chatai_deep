@@ -1,3 +1,4 @@
+import 'support/owned_test_directory.dart';
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
@@ -31,6 +32,11 @@ class DeadlineClient extends MockClient {
 }
 
 void main() {
+  final ownedFixture = OwnedTestDirectory(
+    rootKey: 'R3B4_ROOT',
+    nonceKey: 'R3B4_NONCE',
+    legacyPrefix: '/tmp/chatai-r3b4-owned-',
+  );
   TestWidgetsFlutterBinding.ensureInitialized();
   late Directory root;
   late PairTokens tokens;
@@ -38,13 +44,7 @@ void main() {
   late bool oldHttps;
   final evidence = <Map<String, Object?>>[];
   setUpAll(() {
-    root = Directory(Platform.environment['R3B4_ROOT']!);
-    expect(root.path,
-        '/tmp/chatai-r3b4-owned-${Platform.environment['R3B4_NONCE']}');
-    expect(
-        jsonDecode(
-            File('${root.path}/fixture-sentinel.json').readAsStringSync()),
-        {'nonce': Platform.environment['R3B4_NONCE']});
+    root = ownedFixture.directory;
   });
   setUp(() async {
     SharedPreferences.setMockInitialValues({});

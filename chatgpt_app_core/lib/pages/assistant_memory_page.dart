@@ -364,7 +364,7 @@ class _AssistantMemoryPageState extends State<AssistantMemoryPage> {
         await write();
       } else {
         await LoginDao.runWithStableAccount(
-            expectedAccountHash: _account!, action: write);
+            expectedAccountHash: _account, action: write);
       }
       if (!mounted) return;
       _guard(tick);

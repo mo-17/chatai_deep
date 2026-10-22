@@ -30,7 +30,7 @@ dependencies:
   lottie: ^3.3.3
   package_info_plus: ^9.0.0
   open_filex: ^4.7.0
-  speech_to_text: ^7.0.0
+  speech_to_text: ^7.4.0
   flutter_tts: ^4.2.3
   image_picker: ^1.1.2
   # 本机文档裁边、透视校正与受限图片编码；不上传照片做预处理。

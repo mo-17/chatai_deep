@@ -1,3 +1,4 @@
+import 'support/owned_test_directory.dart';
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
@@ -85,6 +86,11 @@ String keyOf(ModelOption option) {
 }
 
 void main() {
+  final ownedFixture = OwnedTestDirectory(
+    rootKey: 'R3A_HTTP_ROOT',
+    nonceKey: 'R3A_HTTP_NONCE',
+    legacyPrefix: '/tmp/chatai-r3a1-http-',
+  );
   TestWidgetsFlutterBinding.ensureInitialized();
   late HttpServer server;
   late PairTokens tokens;
@@ -118,13 +124,7 @@ void main() {
         'supportsReasoning': false
       };
   setUpAll(() async {
-    final nonce = Platform.environment['R3A_HTTP_NONCE']!;
-    owned = Directory(Platform.environment['R3A_HTTP_ROOT']!);
-    expect(owned.path, '/tmp/chatai-r3a1-http-$nonce');
-    expect(
-        jsonDecode(
-            await File('${owned.path}/fixture-sentinel.json').readAsString()),
-        {'nonce': nonce});
+    owned = ownedFixture.directory;
     previousOverrides = HttpOverrides.current;
     HttpOverrides.global = PairHttpOverrides();
     SharedPreferences.setMockInitialValues({});

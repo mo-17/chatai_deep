@@ -85,7 +85,7 @@ class StoryTavernPresetPreview {
 
   /// 清洗后的原始预设。每次读取都会返回副本，避免调用方污染预览结果。
   Map<String, dynamic>? get sanitized =>
-      _sanitized == null ? null : _copyMap(_sanitized!);
+      _sanitized == null ? null : _copyMap(_sanitized);
 
   /// [sanitized] 的别名，方便导入 UI 直接消费。
   Map<String, dynamic>? get sanitizedMap => sanitized;
@@ -97,7 +97,7 @@ class StoryTavernPresetPreview {
   /// OpenAI 预设中的 `prompts` 和 `prompt_order`，保持原始安全结构，
   /// 由主线程按自己的运行时语义映射，解析器本身绝不执行它们。
   Map<String, dynamic>? get openAiPromptData =>
-      _openAiPromptData == null ? null : _copyMap(_openAiPromptData!);
+      _openAiPromptData == null ? null : _copyMap(_openAiPromptData);
 
   factory StoryTavernPresetPreview.accepted({
     required StoryTavernPresetKind kind,

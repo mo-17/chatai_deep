@@ -1,3 +1,4 @@
+import 'support/owned_test_directory.dart';
 import 'support/fake_composer_chat.dart';
 import 'dart:async';
 import 'dart:convert';
@@ -40,6 +41,11 @@ class _Preparation implements ConversationTurnPreparation {
 }
 
 void main() {
+  final ownedFixture = OwnedTestDirectory(
+    rootKey: 'R3A2_ROOT',
+    nonceKey: 'R3A2_NONCE',
+    legacyPrefix: '/tmp/chatai-r3a2-owned-',
+  );
   TestWidgetsFlutterBinding.ensureInitialized();
   late Directory owned;
   HttpOverrides? previous;
@@ -181,13 +187,7 @@ void main() {
               ReadyConversationTurn(
                   PreparedConversationTurn(prompt: 'SYNTHETIC_INPUT')));
   setUpAll(() async {
-    owned = Directory(Platform.environment['R3A2_ROOT']!);
-    final nonce = Platform.environment['R3A2_NONCE']!;
-    expect(owned.path, '/tmp/chatai-r3a2-owned-$nonce');
-    expect(
-        jsonDecode(
-            File('${owned.path}/fixture-sentinel.json').readAsStringSync()),
-        {'nonce': nonce});
+    owned = ownedFixture.directory;
     previous = HttpOverrides.current;
     HttpOverrides.global = PairHttpOverrides();
     SharedPreferences.setMockInitialValues({});

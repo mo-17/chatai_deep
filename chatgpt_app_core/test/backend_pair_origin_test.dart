@@ -1,3 +1,4 @@
+import 'support/owned_test_directory.dart';
 import 'dart:convert';
 import 'dart:io';
 import 'package:chatgpt_app_core/chat/application/agent_workflow_scope.dart';
@@ -17,6 +18,11 @@ import 'backend_pair_transport_test.dart'
     show PairTokens, PairHttpOverrides, errorOf, pairAvailable;
 
 void main() {
+  final ownedFixture = OwnedTestDirectory(
+    rootKey: 'R3A_HTTP_ROOT',
+    nonceKey: 'R3A_HTTP_NONCE',
+    legacyPrefix: '/tmp/chatai-r3a1-http-',
+  );
   TestWidgetsFlutterBinding.ensureInitialized();
   late HttpServer origin, sibling;
   late PairTokens storage;
@@ -41,13 +47,7 @@ void main() {
         'supportsReasoning': false,
       };
   setUpAll(() async {
-    final nonce = Platform.environment['R3A_HTTP_NONCE']!;
-    owned = Directory(Platform.environment['R3A_HTTP_ROOT']!);
-    expect(owned.path, '/tmp/chatai-r3a1-http-$nonce');
-    expect(
-        jsonDecode(
-            File('${owned.path}/fixture-sentinel.json').readAsStringSync()),
-        {'nonce': nonce});
+    owned = ownedFixture.directory;
     previousOverrides = HttpOverrides.current;
     HttpOverrides.global = PairHttpOverrides();
     SharedPreferences.setMockInitialValues({});

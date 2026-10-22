@@ -74,7 +74,7 @@ class AgentWorkflowScope {
 
     try {
       if (_stable != null) {
-        await _stable!(checked);
+        await _stable(checked);
       } else {
         await LoginDao.runWithStableAccount(
             expectedAccountHash: accountHash,

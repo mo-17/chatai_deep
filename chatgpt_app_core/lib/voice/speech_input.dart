@@ -156,11 +156,11 @@ class SpeechInputBroker {
         if (_current(lease)) lease.finish(const _Result('', '未收到完整识别结果，请重试'));
       });
       await _speech.listen(
-        localeId:
-            pickSpeechLocaleId(locales, preferredLocale: locale) ?? locale,
-        listenFor: const Duration(seconds: 20),
         // 无 partial 不代表用户静音，由系统判断语音端点，保留 20 秒上限。
         listenOptions: stt.SpeechListenOptions(
+            localeId:
+                pickSpeechLocaleId(locales, preferredLocale: locale) ?? locale,
+            listenFor: const Duration(seconds: 20),
             partialResults: true,
             cancelOnError: true,
             listenMode: stt.ListenMode.dictation),

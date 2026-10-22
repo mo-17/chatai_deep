@@ -1,3 +1,4 @@
+import 'support/owned_test_directory.dart';
 import 'dart:convert';
 import 'dart:io';
 
@@ -41,19 +42,18 @@ Map<String, dynamic> preferenceJson() => {
     };
 
 void main() {
+  final ownedFixture = OwnedTestDirectory(
+    rootKey: 'R2C_SQLITE_ROOT',
+    nonceKey: 'R2C_SQLITE_NONCE',
+    legacyPrefix: '/tmp/chatai-r2c-sqlite-',
+  );
   TestWidgetsFlutterBinding.ensureInitialized();
   final connections = <Database>[];
   final resources = <Map<String, Object?>>[];
   late Directory root;
   setUpAll(() {
     sqfliteFfiInit();
-    final nonce = Platform.environment['R2C_SQLITE_NONCE']!;
-    root = Directory(Platform.environment['R2C_SQLITE_ROOT']!);
-    expect(root.path, '/tmp/chatai-r2c-sqlite-$nonce');
-    expect(
-        jsonDecode(
-            File('${root.path}/fixture-sentinel.json').readAsStringSync()),
-        {'nonce': nonce});
+    root = ownedFixture.directory;
   });
   tearDownAll(() async {
     for (final db in connections) {

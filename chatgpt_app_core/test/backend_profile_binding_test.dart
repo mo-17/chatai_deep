@@ -1,3 +1,4 @@
+import 'support/owned_test_directory.dart';
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
@@ -25,6 +26,11 @@ import 'package:sqflite_common_ffi/sqflite_ffi.dart';
 import 'support/personal_memory_test_support.dart';
 
 void main() {
+  final ownedFixture = OwnedTestDirectory(
+    rootKey: 'R2C_SQLITE_ROOT',
+    nonceKey: 'R2C_SQLITE_NONCE',
+    legacyPrefix: '/tmp/chatai-r2c-sqlite-',
+  );
   TestWidgetsFlutterBinding.ensureInitialized();
   final databases = <Database>[];
   final resources = <Map<String, Object?>>[];
@@ -69,13 +75,7 @@ void main() {
 
   setUpAll(() {
     sqfliteFfiInit();
-    final nonce = Platform.environment['R2C_SQLITE_NONCE']!;
-    root = Directory(Platform.environment['R2C_SQLITE_ROOT']!);
-    expect(root.path, '/tmp/chatai-r2c-sqlite-$nonce');
-    expect(
-        jsonDecode(
-            File('${root.path}/fixture-sentinel.json').readAsStringSync()),
-        {'nonce': nonce});
+    root = ownedFixture.directory;
     HttpOverrides.global = network;
   });
   setUp(() {

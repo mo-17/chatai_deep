@@ -1109,7 +1109,7 @@ class StoryBackendSelectionSnapshot {
   bool matchesModel(Map<String, dynamic> model) =>
       _text(model) == _text(_model);
   bool matchesRow(Map<String, Object?> row) =>
-      _row != null && _text(row) == _text(_row!);
+      _row != null && _text(row) == _text(_row);
   static String _declaration(Map<String, Object?> row) => jsonEncode([
         row['id'],
         row['roomId'],

@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:convert';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:speech_to_text/speech_recognition_result.dart';
 import 'package:speech_to_text/speech_to_text.dart' as stt;
 import 'package:chatgpt_app_core/voice/speech_input.dart';
 
@@ -72,13 +73,10 @@ void main() {
 
   Future<void> words(String text, {bool finalResult = true}) => emit(
       'textRecognition',
-      jsonEncode({
-        'recognizedWords': text,
-        'alternates': [
-          {'recognizedWords': text, 'confidence': 0.9}
-        ],
-        'finalResult': finalResult
-      }));
+      jsonEncode(SpeechRecognitionResult.init(
+        [SpeechRecognitionWords(text, null, 0.9)],
+        finalResult ? ResultType.finalResult : ResultType.partial,
+      ).toJson()));
 
   test(
       'final result ends exactly once; notListening cannot prematurely submit partial text',
@@ -100,6 +98,10 @@ void main() {
         (calls.firstWhere((c) => c.method == 'listen').arguments
             as Map)['localeId'],
         'zh_CN');
+    expect(
+        (calls.firstWhere((c) => c.method == 'listen').arguments
+            as Map)['listenFor'],
+        20000);
     expect(count('cancel'), greaterThan(0));
   });
   test(

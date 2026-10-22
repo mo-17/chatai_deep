@@ -144,7 +144,7 @@ class BackendRequestSelection {
       if (declared != null) {
         if (!declared.isPair ||
             !declared.matchesScope(
-                accountHash: _scope!.accountHash, origin: _scope!.origin)) {
+                accountHash: _scope!.accountHash, origin: _scope.origin)) {
           throw _failure('invalid_backend_selection');
         }
         pair = declared;
@@ -156,7 +156,7 @@ class BackendRequestSelection {
                 .resolve;
         pair = await probe(_scope!, modelId);
         verify();
-        _scope!.verifyPair(pair, modelId);
+        _scope.verifyPair(pair, modelId);
       }
       verify();
       _fixed = pair;

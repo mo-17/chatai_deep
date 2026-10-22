@@ -153,7 +153,8 @@ class WorkflowSqlDatabase extends WorkflowSqlForwarder implements Database {
 class WorkflowBackendFixture {
   static int serial = 0;
   final String label;
-  WorkflowBackendFixture(this.label);
+  final Directory baseRoot;
+  WorkflowBackendFixture(this.label, {required this.baseRoot});
   late Database raw;
   late WorkflowSqlDatabase sql;
   late HiDBManager storage;
@@ -241,13 +242,7 @@ class WorkflowBackendFixture {
   }
 
   Future<void> setup() async {
-    root = Directory(Platform.environment['R3B4_ROOT']!);
-    expect(root.path,
-        '/tmp/chatai-r3b4-owned-${Platform.environment['R3B4_NONCE']}');
-    expect(
-        jsonDecode(
-            File('${root.path}/fixture-sentinel.json').readAsStringSync()),
-        {'nonce': Platform.environment['R3B4_NONCE']});
+    root = baseRoot;
     SharedPreferences.setMockInitialValues({});
     await HiCache.preInit();
     await HiCache.getInstance().prefs!.clear();

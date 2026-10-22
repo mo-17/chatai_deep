@@ -9,6 +9,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:flutter_hi_cache/flutter_hi_cache.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:sqflite_common_ffi/sqflite_ffi.dart';
+import 'owned_test_directory.dart';
 
 final pairA = BackendSelection.pair(
     providerCode: 'A/code',
@@ -36,6 +37,11 @@ const archiveFiles = {
 };
 
 class TransferFixture {
+  final _owned = OwnedTestDirectory(
+    rootKey: 'R2D_SQLITE_ROOT',
+    nonceKey: 'R2D_SQLITE_NONCE',
+    legacyPrefix: '/tmp/chatai-r2d-sqlite-',
+  );
   late Directory root;
   final List<HiDBManager> opened = [];
   int closed = 0;
@@ -44,14 +50,7 @@ class TransferFixture {
   Future<void> init() async {
     TestWidgetsFlutterBinding.ensureInitialized();
     sqfliteFfiInit();
-    root = Directory(Platform.environment['R2D_SQLITE_ROOT']!);
-    final nonce = Platform.environment['R2D_SQLITE_NONCE'];
-    if (!root.path.endsWith('chatai-r2d-sqlite-$nonce') ||
-        (jsonDecode(await File('${root.path}/fixture-sentinel.json')
-                .readAsString()) as Map)['nonce'] !=
-            nonce) {
-      throw StateError('fixture ownership mismatch');
-    }
+    root = _owned.directory;
     SharedPreferences.setMockInitialValues({});
     await HiCache.preInit();
     await Directory('${root.path}/images').create();

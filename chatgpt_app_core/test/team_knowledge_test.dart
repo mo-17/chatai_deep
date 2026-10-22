@@ -2,7 +2,6 @@ import 'dart:async';
 import 'dart:convert';
 import 'package:chatgpt_app_core/knowledge/team_knowledge.dart';
 import 'package:chatgpt_app_core/knowledge/knowledge_assistant.dart';
-import 'package:chatgpt_app_core/knowledge/knowledge_evidence.dart';
 import 'package:chatgpt_app_core/knowledge/knowledge_repository.dart';
 import 'package:flutter_hi_cache/flutter_hi_cache.dart';
 import 'package:flutter_test/flutter_test.dart';

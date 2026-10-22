@@ -331,7 +331,7 @@ class WorldBookEntry {
   }
 
   String toLine({bool preserveSource = true}) {
-    if (preserveSource && _preservedLine != null) return _preservedLine!;
+    if (preserveSource && _preservedLine != null) return _preservedLine;
     final tags = <String>[
       if (!enabled) '[off]',
       if (regex) '[re]',
