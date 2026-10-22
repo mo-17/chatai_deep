@@ -18,6 +18,9 @@ chatgpt_flutter/assets/sherpa_onnx/
 # 本地备份压缩包（仅根目录，子目录里的 .zip 资源不受影响）
 /*.zip
 
+# 本地生成的素材、预览和打包产物，保留文件但不入库
+/output/
+
 # 本地生成的 PDF、工作区备份与渲染校验产物（保留 PDF 生成源码）
 /output/pdf/
 /output/worktree-backups/
