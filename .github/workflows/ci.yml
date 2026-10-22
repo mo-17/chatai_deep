@@ -199,9 +199,11 @@ jobs:
             test/agent_task_lifecycle_test.dart \
             test/conversation_page_draft_integration_test.dart \
             test/conversation_reference_page_test.dart \
-            test/knowledge_assistant_page_test.dart
+            test/knowledge_assistant_page_test.dart \
+            test/direct_translation_confirmation_test.dart
           # 多个资源/备份测试会替换进程级 resolver，串行运行避免相互污染。
-          flutter test --no-pub --concurrency=1 --fail-fast
+          # 完整回归汇总所有失败，平台敏感用例已在上面的前置检查中先行验证。
+          flutter test --no-pub --concurrency=1
       - name: Cache bundled offline speech models
         uses: actions/cache@v4
         with:

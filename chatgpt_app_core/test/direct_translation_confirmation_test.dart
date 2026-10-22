@@ -1,4 +1,5 @@
 import 'support/owned_test_directory.dart';
+import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 import 'package:chatgpt_app_core/chat/application/assistant_role_card_service.dart';
@@ -43,6 +44,7 @@ void main() {
   late AISettings settings;
   late PairTokens tokens;
   late HttpServer server;
+  late Completer<void> accepted;
   HttpOverrides? previousHttp;
   int serial = 0;
   final posts = <String>[], evidence = <Map<String, Object?>>[];
@@ -66,13 +68,14 @@ void main() {
     return TranslationStreamExecutor(
         service: ChatService.from(selected),
         profile: p,
-        firstEventTimeout: const Duration(milliseconds: 40),
+        // 冷启动和真实 HTTP 握手不能占用用来验证已受理请求的闲置期限。
+        firstEventTimeout: const Duration(seconds: 5),
         idleTimeout: const Duration(milliseconds: 40),
-        totalTimeout: const Duration(milliseconds: 100));
+        totalTimeout: const Duration(seconds: 10));
   }
 
   Future<void> wait(bool Function() done) async {
-    for (var i = 0; i < 180 && !done(); i++) {
+    for (var i = 0; i < 1000 && !done(); i++) {
       await Future<void>.delayed(const Duration(milliseconds: 10));
     }
     expect(done(), true, reason: 'bounded coordinator settlement');
@@ -136,12 +139,30 @@ void main() {
     await StoryTemplateDao.create(storage);
     coordinator = StoryTemplateTranslationCoordinator();
     posts.clear();
+    accepted = Completer<void>();
     server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
     server.listen((r) async {
       expect(r.method, 'POST');
+      if (r.uri.path.contains('/A/')) {
+        // 明确覆盖慢于旧 40ms 窗口的握手，随后才验证部分响应后的闲置超时。
+        await Future<void>.delayed(const Duration(milliseconds: 120));
+      }
       await r.drain<void>();
       posts.add(r.uri.path);
+      if (!accepted.isCompleted) accepted.complete();
       if (r.uri.path.contains('/A/')) {
+        r.response.bufferOutput = false;
+        r.response.headers.contentType =
+            ContentType('text', 'event-stream', charset: 'utf-8');
+        r.response.writeln('data: ${jsonEncode({
+              'choices': [
+                {
+                  'delta': {'content': '{"partial":'}
+                }
+              ]
+            })}');
+        r.response.writeln();
+        await r.response.flush();
         return;
       }
       r.response.statusCode = 503;
@@ -192,11 +213,13 @@ void main() {
         requestProfile: profile('A'),
         checkEligibility: allow,
         resolveExecutor: executor);
+    await accepted.future.timeout(const Duration(seconds: 10));
     await wait(() =>
         coordinator.tasks.isNotEmpty &&
         coordinator.tasks.single.status ==
             StoryTemplateTranslationTaskStatus.failed);
     expect(posts.length, 1);
+    expect(coordinator.tasks.single.error, 'idle_timeout');
     final before = (await dao.getTasks()).single.toJson();
     await coordinator.resumeRecoverable(
         checkEligibility: allow, resolveExecutor: executor);
