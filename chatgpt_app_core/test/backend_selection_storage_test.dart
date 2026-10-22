@@ -366,9 +366,9 @@ void main() {
         pair('beta', 'https://foreign.invalid'));
     expect(loaded.backendModel, 'legacy-backend');
     expect(loaded.activeProviderId, local);
-    // 这里只存储；未把新 pair 偷接到旧 model-only transport/effectiveModel。
+    // 旧字段原样保留；实际执行模型由显式 pair 决定，发送仍需校验其 scope。
     loaded.mode = AIMode.backend;
-    expect(loaded.effectiveModel, 'legacy-backend');
+    expect(loaded.effectiveModel, 'same/model');
   });
   test(
       'storage global settings unrelated save never clears malformed/future JSON into legacy',

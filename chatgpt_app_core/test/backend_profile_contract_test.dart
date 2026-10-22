@@ -13,6 +13,8 @@ import 'package:chatgpt_app_core/db/story_template_translation_task_dao.dart';
 import 'package:chatgpt_app_core/model/ai_settings.dart';
 import 'package:chatgpt_app_core/model/story_template_translation_task_model.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:flutter_hi_cache/flutter_hi_cache.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 import 'package:sqflite_common_ffi/sqflite_ffi.dart';
 
 Map<String, dynamic> selection(
@@ -51,7 +53,9 @@ void main() {
   final connections = <Database>[];
   final resources = <Map<String, Object?>>[];
   late Directory root;
-  setUpAll(() {
+  setUpAll(() async {
+    SharedPreferences.setMockInitialValues({});
+    await HiCache.preInit();
     sqfliteFfiInit();
     root = ownedFixture.directory;
   });
