@@ -32,7 +32,9 @@ jobs:
         run: |
           set -o pipefail
           pnpm --filter chatgpt_backend migration:run:prod | tee /tmp/migration-prod.log
-          grep -Fq 'Applied 10 migration(s)' /tmp/migration-prod.log
+          MIGRATION_COUNT=$(node -p "require('node:fs').readdirSync('chatgpt_backend/dist/src/migrations').filter(name => name.endsWith('.js')).length")
+          test "$MIGRATION_COUNT" -gt 0
+          grep -Fxq "Applied ${MIGRATION_COUNT} migration(s)" /tmp/migration-prod.log
         env:
           DB_HOST: localhost
           DB_PORT: '5432'
