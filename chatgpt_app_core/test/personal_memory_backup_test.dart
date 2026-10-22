@@ -240,6 +240,8 @@ void main() {
     final bytes = await export();
     final legacy = rewrite(bytes, (entries, manifest) {
       manifest['formatVersion'] = 11;
+      entries.remove('knowledge_workbench.json');
+      (manifest['counts'] as Map).remove('knowledgeWorkbench');
       for (final file in PersonalMemoryBackup.rowFiles.entries) {
         entries.remove(file.key);
         (manifest['counts'] as Map).remove(file.value);

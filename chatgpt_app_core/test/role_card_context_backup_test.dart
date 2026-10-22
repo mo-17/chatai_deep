@@ -92,7 +92,7 @@ void main() {
     BackupImportMode.mergeAppend
   ]) {
     test(
-        'format13 ${mode.name} preserves keys, runtime binding and metadata original',
+        'current format ${mode.name} preserves keys, runtime binding and metadata original',
         () async {
       await seed();
       final bytes = await archive();
@@ -100,7 +100,7 @@ void main() {
           (await BackupService(target)
                   .previewArchive(bytes, accountHash: 'synthetic'))
               .formatVersion,
-          13);
+          BackupService.formatVersion);
       if (mode == BackupImportMode.mergeAppend) {
         final dao = await StoryRoomDao.create(target);
         await dao.saveRoom(StoryRoomModel(title: '本地'));
@@ -140,6 +140,8 @@ void main() {
       entries['story_rooms.json'] = utf8.encode(jsonEncode(rooms));
       final m = jsonDecode(utf8.decode(entries['manifest.json']!)) as Map;
       m['formatVersion'] = 12;
+      entries.remove('knowledge_workbench.json');
+      (m['counts'] as Map).remove('knowledgeWorkbench');
       entries['manifest.json'] = utf8.encode(jsonEncode(m));
     });
     final result = await BackupService(target)
