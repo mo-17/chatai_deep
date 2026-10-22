@@ -284,7 +284,7 @@ class _KnowledgeAssistantPageState extends State<KnowledgeAssistantPage>
   @override
   Widget build(BuildContext context) => Scaffold(
       appBar: AppBar(title: const Text('可信知识助手'), actions: [
-        if (continuousSpeechSupported)
+        if (widget.speechInput != null || continuousSpeechSupported)
           IconButton(
               tooltip: '资料语音问答',
               icon: Icon(_voice == null
